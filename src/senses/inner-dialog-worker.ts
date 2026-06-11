@@ -192,42 +192,42 @@ export function createInnerDialogWorker(
   const recentHabitFires: number[] = []
   let heartbeatOkRestedAt: number | null = null
 
-  function habitOutcomeForTurn(turnResults: unknown[], errors: string[]): { outcome: HabitRunReceipt["outcome"]; producedRefs: FlightRecorderProducedRef[] } {
-    if (errors.length > 0) return { outcome: "error", producedRefs: [] }
-    const toolNames = new Set<string>()
-    const results = turnResults.flatMap((entry) => Array.isArray(entry) ? entry : [entry])
-    for (const turnResult of results) {
-      if (!turnResult || typeof turnResult !== "object" || !Array.isArray((turnResult as { messages?: unknown }).messages)) continue
-      for (const message of (turnResult as { messages: Array<Record<string, unknown>> }).messages) {
-        const toolCalls = message.tool_calls
-        if (!Array.isArray(toolCalls)) continue
-        for (const call of toolCalls) {
-          const functionName = (call as { function?: { name?: unknown } }).function?.name
-          if (typeof functionName === "string") toolNames.add(functionName)
-        }
-      }
+  function successfulSurfaceAttempt(attempt: HabitRunReceipt["surfaceAttempts"][number]): boolean {
+    return attempt.result !== "blocked"
+      && attempt.result !== "failed"
+      && attempt.result !== "unavailable"
+  }
+
+  function surfaceRefsFromAttempts(attempts: HabitRunReceipt["surfaceAttempts"]): FlightRecorderProducedRef[] {
+    return attempts
+      .filter(successfulSurfaceAttempt)
+      .map((attempt) => ({
+        kind: "surface",
+        locator: `surface/${attempt.recipient}/${attempt.channel}`,
+      }))
+  }
+
+  function habitOutcomeForRun(habitRun: PreparedHabitRun): { outcome: HabitRunReceipt["outcome"]; producedRefs: FlightRecorderProducedRef[] } {
+    const producedRefs = habitRun.producedRefs.length > 0
+      ? [...habitRun.producedRefs]
+      : surfaceRefsFromAttempts(habitRun.surfaceAttempts)
+    if (habitRun.errors.length > 0) return { outcome: "error", producedRefs }
+    if (producedRefs.some((ref) => ref.kind === "surface")) return { outcome: "surfaced", producedRefs }
+    if (producedRefs.some((ref) => ref.kind === "desk_record")) return { outcome: "wrote_record", producedRefs }
+    if (producedRefs.some((ref) => ref.kind === "desk_task")) return { outcome: "updated_desk", producedRefs }
+    if (producedRefs.some((ref) => ref.kind === "arc" || ref.kind === "claim")) return { outcome: "wrote_arc", producedRefs }
+    if (habitRun.surfaceAttempts.length > 0 && habitRun.surfaceAttempts.every((attempt) => !successfulSurfaceAttempt(attempt))) {
+      return { outcome: "blocked", producedRefs }
     }
-    if (toolNames.has("send_message") || toolNames.has("surface")) {
-      return { outcome: "surfaced", producedRefs: [{ kind: "surface", locator: "tool:send_message_or_surface" }] }
-    }
-    if (toolNames.has("diary_write") || toolNames.has("note")) {
-      return { outcome: "wrote_record", producedRefs: [{ kind: "desk_record", locator: "desk/_record" }] }
-    }
-    if ([...toolNames].some((name) => name.startsWith("mcp__desk__"))) {
-      return { outcome: "updated_desk", producedRefs: [{ kind: "desk_task", locator: "desk/" }] }
-    }
-    return { outcome: "no_change", producedRefs: [] }
+    return { outcome: "no_change", producedRefs }
   }
 
   function recordHabitCompletion(
     habitRun: PreparedHabitRun,
     endedAt = habitRun.startedAt,
   ): void {
+    const { outcome, producedRefs } = habitOutcomeForRun(habitRun)
     try {
-      recordHabitRun(habitRun.agentRoot, habitRun.habit.name, endedAt, {
-        definitionPath: path.join(habitRun.agentRoot, "habits", `${habitRun.habit.name}.md`),
-      })
-      const { outcome, producedRefs } = habitOutcomeForTurn(habitRun.results, habitRun.errors)
       writeHabitRunReceipt(habitRun.agentRoot, buildHabitRunReceipt({
         agentRoot: habitRun.agentRoot,
         habit: habitRun.habit,
@@ -238,12 +238,40 @@ export function createInnerDialogWorker(
         outcome,
         permissionEnvelope: habitRun.permissionEnvelope,
         toolPolicy: habitRun.toolPolicy,
-        producedRefs: habitRun.producedRefs.length > 0 ? habitRun.producedRefs : producedRefs,
+        producedRefs,
         surfaceAttempts: habitRun.surfaceAttempts,
         errors: habitRun.errors,
       }))
-    } catch {
-      // Habit file/state may be unavailable during the turn — skip gracefully
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.habit_receipt_write_error",
+        message: "habit receipt could not be written; runtime state was not advanced",
+        meta: {
+          habitName: habitRun.habit.name,
+          runId: habitRun.runId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+      return
+    }
+    try {
+      recordHabitRun(habitRun.agentRoot, habitRun.habit.name, endedAt, {
+        definitionPath: path.join(habitRun.agentRoot, "habits", `${habitRun.habit.name}.md`),
+      })
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.habit_runtime_state_record_error",
+        message: "habit runtime state could not be updated after receipt write",
+        meta: {
+          habitName: habitRun.habit.name,
+          runId: habitRun.runId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
     }
   }
 
