@@ -260,6 +260,14 @@ describe("habit-session helpers", () => {
     await expect(resolveHabitReturnRoute({
       agentRoot,
       envelope,
+      toolName: "surface",
+      args: { friendId: "ari", channel: "bluebubbles", key: "chat", content: "checking in" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: true, routeKind: "family", friendId: "ari", channel: "bluebubbles", key: "chat" })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
       toolName: "send_message",
       args: { friendId: "ari", content: "checking in" },
       friendStore,

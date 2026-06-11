@@ -662,6 +662,15 @@ describe("inner-dialog-worker", () => {
       await worker.run("habit", undefined, "heartbeat")
 
       expect(mockRecordHabitRun).toHaveBeenCalledTimes(1)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "senses.habit_runtime_state_record_error",
+        meta: expect.objectContaining({
+          habitName: "heartbeat",
+          runId: "habit-run-id",
+          error: "ENOENT: no such file or directory",
+        }),
+      }))
     })
 
     it("does not advance runtime state when habit receipt writing fails", async () => {
@@ -681,6 +690,27 @@ describe("inner-dialog-worker", () => {
           habitName: "heartbeat",
           runId: "habit-run-id",
           error: "disk full",
+        }),
+      }))
+    })
+
+    it("records non-Error habit receipt write failures without advancing runtime state", async () => {
+      mockWriteHabitRunReceipt.mockImplementation(() => {
+        throw "disk full as string"
+      })
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      expect(mockRecordHabitRun).not.toHaveBeenCalled()
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        event: "senses.habit_receipt_write_error",
+        meta: expect.objectContaining({
+          habitName: "heartbeat",
+          runId: "habit-run-id",
+          error: "disk full as string",
         }),
       }))
     })
