@@ -266,6 +266,7 @@ function outcomeClass(outcome: MailboxHabitRunSummary["outcome"]): string {
 function HabitRunRow({ run }: { run: MailboxHabitRunSummary }) {
   const routes = run.permissionEnvelope.returnRoutes
   const attempts = run.surfaceAttempts
+  const errors = run.errors ?? []
   const deniedTools = Array.from(new Set([
     ...run.permissionEnvelope.deniedTools,
     ...run.toolPolicy.deniedTools,
@@ -363,6 +364,15 @@ function HabitRunRow({ run }: { run: MailboxHabitRunSummary }) {
             {run.toolPolicy.grantedTools.length === 0 && deniedTools.length === 0 && <span className="text-ouro-shadow">none</span>}
           </div>
           {run.errorCount > 0 && <p className="mt-1 font-mono text-[10px] text-ouro-fang">{run.errorCount} error{run.errorCount === 1 ? "" : "s"}</p>}
+          {errors.length > 0 && (
+            <div className="mt-1 space-y-1">
+              {errors.map((error, index) => (
+                <p key={`${run.runId}-error-${index}`} className="max-w-full break-words font-mono text-[10px] text-ouro-fang">
+                  {error}
+                </p>
+              ))}
+            </div>
+          )}
         </RunFact>
       </div>
 

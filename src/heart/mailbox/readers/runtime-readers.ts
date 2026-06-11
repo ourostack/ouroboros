@@ -656,6 +656,7 @@ function summarizeHabitRunReceipt(receipt: HabitRunReceipt): MailboxHabitRunSumm
     producedRefs: receipt.producedRefs,
     surfaceAttempts: receipt.surfaceAttempts,
     errorCount: receipt.errors.length,
+    errors: receipt.errors,
     receiptLocator: receipt.receiptLocator,
     sessionLocator: receipt.sessionLocator,
     runtimeStateLocator: receipt.runtimeStateLocator,

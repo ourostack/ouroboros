@@ -818,6 +818,7 @@ export interface MailboxHabitRunSummary {
   producedRefs: FlightRecorderProducedRef[]
   surfaceAttempts: HabitSurfaceAttempt[]
   errorCount: number
+  errors: string[]
   receiptLocator: string
   sessionLocator: string
   runtimeStateLocator: string

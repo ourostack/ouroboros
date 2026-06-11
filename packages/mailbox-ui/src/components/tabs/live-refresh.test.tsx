@@ -1365,6 +1365,7 @@ describe("Mailbox deep-tab live refresh", () => {
           rawStatus: "queued",
         }],
         errorCount: 1,
+        errors: ["need reply target"],
         receiptLocator: "arc/flight-recorder/habit-receipts/run-mail-check-2026-06-11-long-id-for-wrapping.json",
         sessionLocator: "state/habit-sessions/run-mail-check-2026-06-11-long-id-for-wrapping/session.json",
         runtimeStateLocator: "state/habits/mail-check.json",
@@ -1381,6 +1382,7 @@ describe("Mailbox deep-tab live refresh", () => {
         producedRefs: [],
         surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "failed", error: "offline" }],
         errorCount: 0,
+        errors: [],
         receiptLocator: "arc/flight-recorder/habit-receipts/run-heartbeat.json",
         sessionLocator: "state/habit-sessions/run-heartbeat/session.json",
         runtimeStateLocator: "state/habits/heartbeat.json",
@@ -1413,6 +1415,7 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(ui.getByText("ari/cli/session")).toBeTruthy()
     expect(ui.getByText("originator route checked")).toBeTruthy()
     expect(ui.getByText("queued")).toBeTruthy()
+    expect(ui.getByText("need reply target")).toBeTruthy()
     expect(ui.getByText("shell")).toBeTruthy()
     expect(ui.getByText("arc/flight-recorder/habit-receipts/run-mail-check-2026-06-11-long-id-for-wrapping.json")).toBeTruthy()
     expect(ui.getByText("failed")).toBeTruthy()

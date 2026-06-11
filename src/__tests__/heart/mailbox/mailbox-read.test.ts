@@ -2667,6 +2667,7 @@ describe("mailbox deep readers", () => {
           producedRefs: [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }],
           surfaceAttempts: [expect.objectContaining({ recipient: "ari", result: "queued" })],
           errorCount: 1,
+          errors: ["need reply target"],
           receiptLocator: "arc/flight-recorder/habit-receipts/run-new.json",
           sessionLocator: "state/habit-sessions/run-new/session.json",
           runtimeStateLocator: "state/habits/mail-check.json",
