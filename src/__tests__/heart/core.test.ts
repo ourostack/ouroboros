@@ -1196,6 +1196,76 @@ describe("runAgent", () => {
     ]))
   })
 
+  it("habit mode suppresses streamed callback output when the final tool batch is blocked", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          { choices: [{ delta: { reasoning_content: "thinking before a blocked call" } }] },
+          makeChunk("draft text that should not leak"),
+          makeChunk(undefined, [
+            { index: 0, id: "tc_shell", function: { name: "shell", arguments: '{"command":"rm -rf /tmp/habit"}' } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"blocked"}' } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "side effect happened")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: vi.fn(),
+      onReasoningChunk: vi.fn(),
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: vi.fn(),
+      flushNow: vi.fn(),
+    }
+    const shellTool = {
+      type: "function" as const,
+      function: { name: "shell", description: "shell", parameters: { type: "object", properties: {} } },
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [shellTool],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: null,
+          grantedTools: [],
+          deniedTools: ["shell", "send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
+    expect(callbacks.onReasoningChunk).not.toHaveBeenCalled()
+    expect(callbacks.onClearText).not.toHaveBeenCalled()
+    expect(callbacks.flushNow).not.toHaveBeenCalled()
+    expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
+    expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_shell", content: expect.stringContaining("blocked") }),
+    ]))
+  })
+
   it("habit mode route-checks allowed send_message before handler execution", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1284,6 +1354,8 @@ describe("runAgent", () => {
       callCount++
       if (callCount === 1) {
         return makeStream([
+          { choices: [{ delta: { reasoning_content: "checking route" } }] },
+          makeChunk("approved text"),
           makeChunk(undefined, [
             { index: 0, id: "tc_send", function: { name: "send_message", arguments: '{"friendId":"ari","channel":"bluebubbles","key":"chat","content":"checking in"}' } },
           ]),
@@ -1297,12 +1369,13 @@ describe("runAgent", () => {
     })
 
     const execTool = vi.fn(async () => "message delivered")
+    const events: string[] = []
     const callbacks: ChannelCallbacks = {
       onModelStart: () => {},
-      onModelStreamStart: () => {},
-      onTextChunk: () => {},
-      onReasoningChunk: () => {},
-      onToolStart: () => {},
+      onModelStreamStart: () => events.push("stream-start"),
+      onTextChunk: (text) => events.push(`text:${text}`),
+      onReasoningChunk: (text) => events.push(`reasoning:${text}`),
+      onToolStart: (name) => events.push(`tool:${name}`),
       onToolEnd: () => {},
       onError: () => {},
     }
@@ -1361,6 +1434,13 @@ describe("runAgent", () => {
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_send", content: "message delivered" }),
     ]))
+    expect(events).toEqual([
+      "stream-start",
+      "reasoning:checking route",
+      "text:approved text",
+      "tool:send_message",
+      "tool:rest",
+    ])
   })
 
   it("loops back for another model call after tool execution", async () => {

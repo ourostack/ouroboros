@@ -289,6 +289,57 @@ export interface ChannelCallbacks {
   flushNow?(): void | Promise<void>;
 }
 
+type HabitBufferedCallbackEvent =
+  | { kind: "stream-start" }
+  | { kind: "text"; text: string }
+  | { kind: "reasoning"; text: string }
+  | { kind: "clear" }
+  | { kind: "flush" };
+
+interface HabitCallbackBuffer {
+  callbacks: ChannelCallbacks;
+  flush(): Promise<void>;
+  discard(): void;
+}
+
+function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+  const events: HabitBufferedCallbackEvent[] = [];
+  return {
+    callbacks: {
+      ...callbacks,
+      onModelStreamStart: () => { events.push({ kind: "stream-start" }) },
+      onTextChunk: (text) => { events.push({ kind: "text", text }) },
+      onReasoningChunk: (text) => { events.push({ kind: "reasoning", text }) },
+      onClearText: () => { events.push({ kind: "clear" }) },
+      flushNow: () => { events.push({ kind: "flush" }) },
+    },
+    async flush(): Promise<void> {
+      for (const event of events.splice(0)) {
+        switch (event.kind) {
+          case "stream-start":
+            callbacks.onModelStreamStart();
+            break;
+          case "text":
+            callbacks.onTextChunk(event.text);
+            break;
+          case "reasoning":
+            callbacks.onReasoningChunk(event.text);
+            break;
+          case "clear":
+            callbacks.onClearText?.();
+            break;
+          case "flush":
+            await callbacks.flushNow?.();
+            break;
+        }
+      }
+    },
+    discard(): void {
+      events.splice(0);
+    },
+  };
+}
+
 export interface RunAgentOptions {
   toolChoiceRequired?: boolean;
   toolContext?: ToolContext;
@@ -1092,13 +1143,15 @@ export async function runAgent(
       break;
     }
     try {
+      const habitCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
         callbacks.onModelStart();
+        habitCallbackBufferRef.current = habitSession ? createHabitCallbackBuffer(callbacks) : null;
         try {
           return await providerRuntime.streamTurn({
             messages,
             activeTools,
-            callbacks,
+            callbacks: habitCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
             traceId,
             toolChoiceRequired,
@@ -1107,6 +1160,8 @@ export async function runAgent(
             systemPrompt: structuredSystemPrompt,
           });
         } catch (error) {
+          habitCallbackBufferRef.current?.discard();
+          habitCallbackBufferRef.current = null;
           if (signal?.aborted) throw new ProviderAttemptAbortError()
           throw error
         }
@@ -1178,6 +1233,8 @@ export async function runAgent(
       }
 
       const result = attempt.value;
+      const streamCallbackBuffer = habitCallbackBufferRef.current;
+      habitCallbackBufferRef.current = null;
 
       // Track usage from the latest API call
       if (result.usage) lastUsage = result.usage;
@@ -1260,6 +1317,7 @@ export async function runAgent(
         : null;
 
       if (!result.toolCalls.length) {
+        await streamCallbackBuffer?.flush();
         if (privateReturnTextAckRetryError) {
           callbacks.onClearText?.();
           if (noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
@@ -1344,6 +1402,7 @@ export async function runAgent(
         noToolCallRetries = 0;
         const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins)
         if (habitBlockReason) {
+          streamCallbackBuffer?.discard();
           messages.push(msg)
           const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
           for (const call of result.toolCalls) {
@@ -1359,6 +1418,7 @@ export async function runAgent(
           })
           continue
         }
+        await streamCallbackBuffer?.flush();
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
