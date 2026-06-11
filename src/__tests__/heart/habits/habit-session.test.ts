@@ -263,7 +263,7 @@ describe("habit-session helpers", () => {
       toolName: "send_message",
       args: { friendId: "ari", content: "checking in" },
       friendStore,
-    })).resolves.toMatchObject({ allowed: true, routeKind: "family", friendId: "ari", channel: "", key: "" })
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("target") })
 
     await expect(resolveHabitReturnRoute({
       agentRoot,
@@ -390,7 +390,7 @@ describe("habit-session helpers", () => {
       toolName: "surface",
       args: { friendId: "ari", content: "floating answer" },
       friendStore,
-    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no habit return route") })
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no permitted return route target") })
 
     await expect(resolveHabitReturnRoute({
       agentRoot,
@@ -420,7 +420,7 @@ describe("habit-session helpers", () => {
     }))
   })
 
-  it("allows exact routes with omitted optional keys when the tool target also omits them", async () => {
+  it("denies exact routes with omitted keys before handlers run", async () => {
     const friendStore = makeFriendStore([makeFriend("ari", "Ari", "family")])
     await expect(resolveHabitReturnRoute({
       agentRoot,
@@ -434,7 +434,7 @@ describe("habit-session helpers", () => {
       toolName: "send_message",
       args: { friendId: "ari", channel: "cli", content: "checking in" },
       friendStore,
-    })).resolves.toMatchObject({ allowed: true, routeKind: "extra", friendId: "ari", channel: "cli", key: "" })
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no permitted return route target") })
   })
 
   it("resolves singleton delegated surface routes without mutating queues", async () => {

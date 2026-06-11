@@ -369,11 +369,13 @@ function readString(value: unknown): string | null {
 function resolveRouteTarget(input: ResolveHabitReturnRouteInput): RouteTarget | null {
   if (input.toolName === "send_message") {
     const friendId = readString(input.args.friendId)
-    if (!friendId) return null
+    const channel = readString(input.args.channel)
+    const key = readString(input.args.key)
+    if (!friendId || !channel || !key) return null
     return {
       friendId,
-      channel: readString(input.args.channel) ?? "",
-      key: readString(input.args.key) ?? "",
+      channel,
+      key,
     }
   }
 
@@ -387,10 +389,13 @@ function resolveRouteTarget(input: ResolveHabitReturnRouteInput): RouteTarget | 
 
   const friendId = readString(input.args.friendId)
   if (friendId) {
+    const channel = readString(input.args.channel)
+    const key = readString(input.args.key)
+    if (!channel || !key) return null
     return {
       friendId,
-      channel: readString(input.args.channel) ?? "",
-      key: readString(input.args.key) ?? "",
+      channel,
+      key,
     }
   }
 
