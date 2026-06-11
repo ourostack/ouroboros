@@ -96,6 +96,8 @@ export type OuroCliCommand =
   | { kind: "hook"; event: string; agent: string }
   | { kind: "habit.list"; agent?: string }
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
+  | { kind: "habit.runs"; agent?: string; limit: number }
+  | { kind: "habit.inspect"; agent?: string; runId: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
@@ -249,7 +251,7 @@ export type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.statu
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
-export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" }>
+export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" } | { kind: "habit.runs" } | { kind: "habit.inspect" }>
 export type DeskCliCommand = Extract<OuroCliCommand, { kind: "desk" }>
 export type MigrateToDeskCliCommand = Extract<OuroCliCommand, { kind: "migrate-to-desk" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>

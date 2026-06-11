@@ -12,6 +12,15 @@ import type {
   ContextLossGauntletStatus,
   ContextLossGauntletVerdict,
 } from "../context-loss-gauntlet"
+import type {
+  FlightRecorderProducedRef,
+  HabitPermissionEnvelope,
+  HabitRunOutcome,
+  HabitRunReceipt,
+  HabitRunTrigger,
+  HabitSurfaceAttempt,
+  HabitToolPolicy,
+} from "../../arc/flight-recorder"
 
 // Re-export domain types through the observation layer
 export type { UsageData } from "../../nerves/observation"
@@ -794,6 +803,34 @@ export interface MailboxHabitView {
   degradedCount: number
   overdueCount: number
   items: MailboxHabitItem[]
+}
+
+export interface MailboxHabitRunSummary {
+  runId: string
+  habitName: string
+  trigger: HabitRunTrigger
+  startedAt: string
+  endedAt: string
+  outcome: HabitRunOutcome
+  nextRunAt: string | null
+  permissionEnvelope: HabitPermissionEnvelope
+  toolPolicy: HabitToolPolicy
+  producedRefs: FlightRecorderProducedRef[]
+  surfaceAttempts: HabitSurfaceAttempt[]
+  errorCount: number
+  receiptLocator: string
+  sessionLocator: string
+  runtimeStateLocator: string
+}
+
+export interface MailboxHabitRunView {
+  totalCount: number
+  limit: number
+  items: MailboxHabitRunSummary[]
+}
+
+export interface MailboxHabitRunDetailView {
+  receipt: HabitRunReceipt
 }
 
 // ---------------------------------------------------------------------------

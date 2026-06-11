@@ -34,6 +34,14 @@ export interface MailboxHttpStaticFiles {
   serveStaticFile(response: http.ServerResponse, filePath: string): boolean
 }
 
+function decodePathSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return null
+  }
+}
+
 export function createMailboxHttpRequestHandler(options: MailboxHttpRouteOptions): http.RequestListener {
   const staticFiles = options.staticFiles ?? { resolveSpaDistDir, serveStaticFile }
 
@@ -229,6 +237,24 @@ async function handleAgentRoute(request: http.IncomingMessage, response: http.Se
 
   if (surface === "habits") {
     writeJson(response, 200, options.hooks.readAgentHabits(agent))
+    return
+  }
+
+  if (surface === "habit-runs") {
+    writeJson(response, 200, options.hooks.readAgentHabitRuns(agent))
+    return
+  }
+
+  const habitRunMatch = /^habit-runs\/([^/]+)$/.exec(surface)
+  if (habitRunMatch) {
+    const rawRunId = habitRunMatch[1]!
+    const runId = decodePathSegment(rawRunId)
+    const view = runId ? options.hooks.readAgentHabitRun(agent, runId) : null
+    if (!view) {
+      writeJson(response, 404, { ok: false, error: `habit run '${rawRunId}' not found` })
+      return
+    }
+    writeJson(response, 200, view)
     return
   }
 

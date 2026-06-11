@@ -118,6 +118,8 @@ export function usage(): string {
     "  ouro poke <agent> --habit <name>",
     "  ouro habit list [--agent <name>]",
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
+    "  ouro habit runs [--agent <name>] [--limit <n>]",
+    "  ouro habit inspect [--agent <name>] <runId>",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro friend list [--agent <name>]",
@@ -241,6 +243,25 @@ function parseHabitCommand(args: string[]): OuroCliCommand {
     name = positional[0]
     if (!name) throw new Error(`Usage\n${usage()}`)
     return { kind: "habit.create", name, ...(agent ? { agent } : {}), ...(cadence ? { cadence } : {}) }
+  }
+  if (sub === "runs") {
+    let limit = 20
+    const options = rest.slice(1)
+    for (let i = 0; i < options.length; i += 1) {
+      if (options[i] !== "--limit" || !options[i + 1]) throw new Error(`Usage\n${usage()}`)
+      const parsedLimit = Number.parseInt(options[i + 1]!, 10)
+      if (!Number.isInteger(parsedLimit) || String(parsedLimit) !== options[i + 1] || parsedLimit < 1 || parsedLimit > 100) {
+        throw new Error("--limit must be an integer between 1 and 100")
+      }
+      limit = parsedLimit
+      i += 1
+    }
+    return { kind: "habit.runs", ...(agent ? { agent } : {}), limit }
+  }
+  if (sub === "inspect") {
+    const positional = rest.slice(1)
+    if (positional.length !== 1 || !positional[0]) throw new Error(`Usage\n${usage()}`)
+    return { kind: "habit.inspect", ...(agent ? { agent } : {}), runId: positional[0] }
   }
 
   throw new Error(`Usage\n${usage()}`)

@@ -21,6 +21,8 @@ export {
   readDaemonHealthDeep,
   readDeskPrefs,
   readFriendView,
+  readHabitRunReceiptView,
+  readHabitRunView,
   readHabitView,
   readLogView,
   readNotesView,

@@ -8,6 +8,8 @@ import {
   readDaemonHealthDeep,
   readDeskPrefs,
   readFriendView,
+  readHabitRunReceiptView,
+  readHabitRunView,
   readHabitView,
   readLogView,
   readMailMessageView,
@@ -33,6 +35,8 @@ import type {
   MailboxDaemonHealthDeep,
   MailboxDeskPrefs,
   MailboxFriendView,
+  MailboxHabitRunDetailView,
+  MailboxHabitRunView,
   MailboxHabitView,
   MailboxLogView,
   MailboxMailMessageView,
@@ -68,6 +72,8 @@ export interface MailboxHttpReadHookOptions {
   readAgentSentinel?: (agentName: string) => MailboxSentinelView
   readAgentNoteDecisions?: (agentName: string) => MailboxNoteDecisionView
   readAgentHabits?: (agentName: string) => MailboxHabitView
+  readAgentHabitRuns?: (agentName: string, options?: { limit?: number }) => MailboxHabitRunView
+  readAgentHabitRun?: (agentName: string, runId: string) => MailboxHabitRunDetailView | null
   readAgentMail?: (agentName: string) => Promise<MailboxMailView> | MailboxMailView
   readAgentMailMessage?: (agentName: string, messageId: string) => Promise<MailboxMailMessageView> | MailboxMailMessageView
   readDaemonHealth?: () => MailboxDaemonHealthDeep | null
@@ -92,6 +98,8 @@ export interface MailboxHttpReadHooks {
   readAgentSentinel(agentName: string): MailboxSentinelView
   readAgentNoteDecisions(agentName: string): MailboxNoteDecisionView
   readAgentHabits(agentName: string): MailboxHabitView
+  readAgentHabitRuns(agentName: string, options?: { limit?: number }): MailboxHabitRunView
+  readAgentHabitRun(agentName: string, runId: string): MailboxHabitRunDetailView | null
   readAgentMail(agentName: string): Promise<MailboxMailView> | MailboxMailView
   readAgentMailMessage(agentName: string, messageId: string): Promise<MailboxMailMessageView> | MailboxMailMessageView
   readDaemonHealth(): MailboxDaemonHealthDeep | null
@@ -123,6 +131,8 @@ export function createMailboxHttpReadHooks(options: MailboxHttpReadHookOptions):
     readAgentSentinel: options.readAgentSentinel ?? ((agentName: string) => readSentinelView(agentRoot(agentName))),
     readAgentNoteDecisions: options.readAgentNoteDecisions ?? ((agentName: string) => readNoteDecisionView(agentRoot(agentName))),
     readAgentHabits: options.readAgentHabits ?? ((agentName: string) => readHabitView(agentRoot(agentName))),
+    readAgentHabitRuns: options.readAgentHabitRuns ?? ((agentName: string, habitOptions?: { limit?: number }) => readHabitRunView(agentRoot(agentName), habitOptions)),
+    readAgentHabitRun: options.readAgentHabitRun ?? ((agentName: string, runId: string) => readHabitRunReceiptView(agentRoot(agentName), runId)),
     readAgentMail: options.readAgentMail ?? ((agentName: string) => readMailView(agentName)),
     readAgentMailMessage: options.readAgentMailMessage ?? ((agentName: string, messageId: string) => readMailMessageView(agentName, messageId)),
     readDaemonHealth: options.readDaemonHealth ?? (() => readDaemonHealthDeep(options.healthPath)),
