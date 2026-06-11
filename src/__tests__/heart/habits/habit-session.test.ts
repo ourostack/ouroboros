@@ -689,4 +689,38 @@ describe("habit-session helpers", () => {
       runtimeState: null,
     })
   })
+
+  it("keeps recovery available when runtime state exists but is malformed", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+    const receipt = buildHabitRunReceipt({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat" }),
+      runId: "run-bad-runtime",
+      trigger: "launchd",
+      startedAt: "2026-06-11T08:00:00.000Z",
+      endedAt: "2026-06-11T08:01:00.000Z",
+      outcome: "no_change",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+    writeHabitRunReceipt(agentRoot, receipt)
+    const runtimeStatePath = path.join(agentRoot, "state", "habits", "heartbeat.json")
+    fs.mkdirSync(path.dirname(runtimeStatePath), { recursive: true })
+    fs.writeFileSync(runtimeStatePath, JSON.stringify([]), "utf-8")
+
+    expect(readLatestHabitSessionState(agentRoot)).toMatchObject({
+      receipt: { runId: "run-bad-runtime", trigger: "launchd" },
+      runtimeState: null,
+    })
+    expect(readLatestHabitSessionState(agentRoot, { habitName: "other-habit" })).toBeNull()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.habit_runtime_state_malformed",
+    }))
+  })
 })

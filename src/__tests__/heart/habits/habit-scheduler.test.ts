@@ -876,6 +876,53 @@ describe("HabitScheduler", () => {
       expect(syncedJobs[0].command).toBe("/usr/local/bin/ouro poke slugger --habit heartbeat --trigger launchd")
     })
 
+    it("lists and triggers habit jobs with canonical cron provenance", async () => {
+      const readdir = vi.fn(() => ["zeta.md", "heartbeat.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile })
+
+      mockParseHabitFile.mockImplementation((_content: string, filePath: string) =>
+        filePath.includes("zeta")
+          ? { ...makeHeartbeatHabit(), name: "zeta", title: "Zeta" }
+          : makeHeartbeatHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      expect(scheduler.listJobs()).toEqual([
+        {
+          id: "slugger:heartbeat:cadence",
+          schedule: "*/30 * * * *",
+          lastRun: "2026-03-27T10:00:00.000Z",
+        },
+        {
+          id: "slugger:zeta:cadence",
+          schedule: "*/30 * * * *",
+          lastRun: "2026-03-27T10:00:00.000Z",
+        },
+      ])
+
+      await expect(scheduler.triggerJob("slugger:heartbeat:cadence")).resolves.toEqual({
+        ok: true,
+        message: "triggered habit slugger:heartbeat:cadence",
+      })
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "cron")
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.habit_job_triggered",
+      }))
+
+      await expect(scheduler.triggerJob("slugger:missing:cadence")).resolves.toEqual({
+        ok: false,
+        message: "unknown habit job: slugger:missing:cadence",
+      })
+      expect(onHabitFire).toHaveBeenCalledTimes(1)
+    })
+
     it("uses cadence with unparseable cron: skips habit", () => {
       const readdir = vi.fn(() => ["broken-cadence.md"])
       const readFile = vi.fn(() => "content")

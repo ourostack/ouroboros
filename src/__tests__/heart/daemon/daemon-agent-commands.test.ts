@@ -278,6 +278,28 @@ describe("daemon agent service command routing", () => {
     }
   })
 
+  it("rejects invalid daemon habit poke trigger provenance", async () => {
+    const socketPath = tmpSocketPath("agent-habit-poke-invalid-trigger")
+    const { daemon, processManager } = make(socketPath)
+    await daemon.start()
+    try {
+      const raw = await sendRaw(socketPath, JSON.stringify({
+        kind: "habit.poke",
+        agent: "a",
+        habitName: "heartbeat",
+        trigger: "banana",
+      }))
+      const response = JSON.parse(raw)
+      expect(response).toEqual({
+        ok: false,
+        error: "invalid habit trigger: banana",
+      })
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
+  })
+
   it("routes daemon cron.trigger habit jobs as cron before falling back to task scheduler", async () => {
     const socketPath = tmpSocketPath("agent-habit-cron-trigger")
     const { daemon, processManager, scheduler } = make(socketPath)
