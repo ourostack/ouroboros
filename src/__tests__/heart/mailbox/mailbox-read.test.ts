@@ -3,8 +3,10 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import {
+  writeHabitRunReceipt,
   writeFlightRecorderResume,
   type FlightRecorderResume,
+  type HabitRunReceipt,
 } from "../../../arc/flight-recorder"
 import {
   contextLossSentinelPaths,
@@ -19,6 +21,8 @@ import {
   readDaemonHealthDeep,
   readDeskPrefs,
   readFriendView,
+  readHabitRunReceiptView,
+  readHabitRunView,
   readHabitView,
   readLogView,
   readNotesView,
@@ -2571,6 +2575,118 @@ describe("mailbox deep readers", () => {
         bodyExcerpt: null,
         isOverdue: true,
       })
+    })
+  })
+
+  describe("readHabitRunView", () => {
+    function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunReceipt {
+      const runId = overrides.runId ?? "run-base"
+      return {
+        schemaVersion: 2,
+        runId,
+        sessionId: runId,
+        habitName: overrides.habitName ?? "heartbeat",
+        trigger: overrides.trigger ?? "poke",
+        startedAt: overrides.startedAt ?? "2026-06-11T10:00:00.000Z",
+        endedAt: overrides.endedAt ?? "2026-06-11T10:01:00.000Z",
+        outcome: overrides.outcome ?? "surfaced",
+        definitionLocator: overrides.definitionLocator ?? "habits/heartbeat.md",
+        sessionLocator: overrides.sessionLocator ?? `state/habit-sessions/${runId}/session.json`,
+        pendingLocator: overrides.pendingLocator ?? `state/habit-sessions/${runId}/pending`,
+        runtimeStateLocator: overrides.runtimeStateLocator ?? "state/habits/heartbeat.json",
+        receiptLocator: overrides.receiptLocator ?? `arc/flight-recorder/habit-receipts/${runId}.json`,
+        nextRunAt: overrides.nextRunAt ?? null,
+        permissionEnvelope: overrides.permissionEnvelope ?? {
+          schemaVersion: 1,
+          canMessageOutward: true,
+          returnRoutes: [{ kind: "originator", recipient: "ari/cli/session", status: "allowed", friendId: "ari", channel: "cli", key: "session" }],
+          deniedTools: [],
+          warnings: [],
+        },
+        toolPolicy: overrides.toolPolicy ?? {
+          requestedTools: null,
+          grantedTools: ["send_message", "surface"],
+          deniedTools: [],
+          outwardMessagingAllowed: true,
+        },
+        producedRefs: overrides.producedRefs ?? [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }],
+        surfaceAttempts: overrides.surfaceAttempts ?? [{
+          recipient: "ari",
+          channel: "cli",
+          reason: "status",
+          result: "queued",
+          routeKind: "originator",
+        }],
+        errors: overrides.errors ?? [],
+      }
+    }
+
+    it("summarizes recent habit run receipts without loading transcripts", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+
+      writeHabitRunReceipt(agentRoot, makeHabitReceipt({
+        runId: "run-old",
+        habitName: "heartbeat",
+        trigger: "poke",
+        endedAt: "2026-06-11T09:00:00.000Z",
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-old.json",
+      }))
+      writeHabitRunReceipt(agentRoot, makeHabitReceipt({
+        runId: "run-new",
+        habitName: "mail-check",
+        trigger: "cron",
+        outcome: "blocked",
+        endedAt: "2026-06-11T10:00:00.000Z",
+        nextRunAt: "2026-06-11T10:30:00.000Z",
+        errors: ["need reply target"],
+        runtimeStateLocator: "state/habits/mail-check.json",
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-new.json",
+      }))
+      fs.mkdirSync(path.join(agentRoot, "state", "habit-sessions", "run-new"), { recursive: true })
+      fs.writeFileSync(path.join(agentRoot, "state", "habit-sessions", "run-new", "session.json"), JSON.stringify({
+        transcriptShouldNotLeak: true,
+      }), "utf-8")
+      fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "bad.json"), "{bad", "utf-8")
+
+      const view = readHabitRunView(agentRoot, { limit: 1 })
+
+      expect(view).toEqual({
+        totalCount: 2,
+        limit: 1,
+        items: [{
+          runId: "run-new",
+          habitName: "mail-check",
+          trigger: "cron",
+          startedAt: "2026-06-11T10:00:00.000Z",
+          endedAt: "2026-06-11T10:00:00.000Z",
+          outcome: "blocked",
+          nextRunAt: "2026-06-11T10:30:00.000Z",
+          permissionEnvelope: expect.objectContaining({ canMessageOutward: true }),
+          toolPolicy: expect.objectContaining({ outwardMessagingAllowed: true }),
+          producedRefs: [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }],
+          surfaceAttempts: [expect.objectContaining({ recipient: "ari", result: "queued" })],
+          errorCount: 1,
+          receiptLocator: "arc/flight-recorder/habit-receipts/run-new.json",
+          sessionLocator: "state/habit-sessions/run-new/session.json",
+          runtimeStateLocator: "state/habits/mail-check.json",
+        }],
+      })
+      expect(JSON.stringify(view)).not.toContain("transcriptShouldNotLeak")
+    })
+
+    it("reads one habit receipt and returns null for missing unsafe or malformed receipts", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      const receipt = makeHabitReceipt({ runId: "run-detail" })
+      writeHabitRunReceipt(agentRoot, receipt)
+      fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "malformed.json"), "{\"schemaVersion\":2}", "utf-8")
+
+      expect(readHabitRunReceiptView(agentRoot, "run-detail")).toEqual({ receipt })
+      expect(readHabitRunReceiptView(agentRoot, "missing")).toBeNull()
+      expect(readHabitRunReceiptView(agentRoot, "../escape")).toBeNull()
+      expect(readHabitRunReceiptView(agentRoot, "bad%2fescape")).toBeNull()
+      expect(readHabitRunReceiptView(agentRoot, "malformed")).toBeNull()
     })
   })
 

@@ -53,6 +53,8 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentSentinel: vi.fn(() => ({ schemaVersion: 1, latest: null, latestReady: null, history: [], degraded: { issues: [] } })),
     readAgentNoteDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
     readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
+    readAgentHabitRuns: vi.fn(() => ({ totalCount: 0, limit: 20, items: [] })),
+    readAgentHabitRun: vi.fn(() => null),
     readAgentMail: vi.fn(() => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [], messages: [], accessLog: [], error: null })),
     readAgentMailMessage: vi.fn(() => ({ status: "not-found", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", message: null, accessLog: [], error: "missing" })),
     readDaemonHealth: vi.fn(() => null),
@@ -1191,6 +1193,90 @@ describe("mailbox http", () => {
     expect(response.statusCode).toBe(200)
     expect(JSON.parse(response.body.toString("utf8"))).toEqual(sentinel)
     expect(hooks.readAgentSentinel).toHaveBeenCalledWith("slugger")
+  })
+
+  it("serves canonical habit run list and detail endpoints through read-only hooks", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const habitRuns = {
+      totalCount: 1,
+      limit: 20,
+      items: [{
+        runId: "run-http",
+        habitName: "heartbeat",
+        trigger: "poke",
+        startedAt: "2026-06-11T10:00:00.000Z",
+        endedAt: "2026-06-11T10:01:00.000Z",
+        outcome: "surfaced",
+        nextRunAt: null,
+        permissionEnvelope: { schemaVersion: 1, canMessageOutward: false, returnRoutes: [], deniedTools: ["send_message", "surface"], warnings: [] },
+        toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: ["send_message", "surface"], outwardMessagingAllowed: false },
+        producedRefs: [],
+        surfaceAttempts: [],
+        errorCount: 0,
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-http.json",
+        sessionLocator: "state/habit-sessions/run-http/session.json",
+        runtimeStateLocator: "state/habits/heartbeat.json",
+      }],
+    }
+    const receipt = {
+      schemaVersion: 2,
+      runId: "run-http",
+      sessionId: "run-http",
+      habitName: "heartbeat",
+      trigger: "poke",
+      startedAt: "2026-06-11T10:00:00.000Z",
+      endedAt: "2026-06-11T10:01:00.000Z",
+      outcome: "surfaced",
+      definitionLocator: "habits/heartbeat.md",
+      sessionLocator: "state/habit-sessions/run-http/session.json",
+      pendingLocator: "state/habit-sessions/run-http/pending",
+      runtimeStateLocator: "state/habits/heartbeat.json",
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-http.json",
+      nextRunAt: null,
+      permissionEnvelope: habitRuns.items[0]!.permissionEnvelope,
+      toolPolicy: habitRuns.items[0]!.toolPolicy,
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: [],
+    }
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentHabitRuns = vi.fn(() => habitRuns)
+    hooks.readAgentHabitRun = vi.fn((_agent: string, runId: string) => (
+      runId === "run-http" ? { receipt } : null
+    ))
+    const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const listResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs"), listResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(listResponse.statusCode).toBe(200)
+    expect(JSON.parse(listResponse.body.toString("utf8"))).toEqual(habitRuns)
+    expect(hooks.readAgentHabitRuns).toHaveBeenCalledWith("slugger")
+
+    const detailResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs/run-http"), detailResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(detailResponse.statusCode).toBe(200)
+    expect(JSON.parse(detailResponse.body.toString("utf8"))).toEqual({ receipt })
+    expect(hooks.readAgentHabitRun).toHaveBeenCalledWith("slugger", "run-http")
+  })
+
+  it("returns 404 for missing unsafe or malformed habit run detail receipts", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentHabitRun = vi.fn(() => null)
+    const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    for (const runId of ["missing", "bad%2fescape", "bad%5cescape", "malformed"]) {
+      const response = createMockResponse()
+      handler(createMockRequest(`/api/agents/slugger/habit-runs/${runId}`), response)
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(response.statusCode).toBe(404)
+      expect(JSON.parse(response.body.toString("utf8"))).toEqual({
+        ok: false,
+        error: `habit run '${runId}' not found`,
+      })
+    }
   })
 
   it("serves /api/agents/:agent/note-decisions endpoint", async () => {
