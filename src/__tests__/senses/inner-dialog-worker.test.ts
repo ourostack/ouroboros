@@ -11,6 +11,7 @@ const {
   mockCreateHabitRunId,
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
+  mockApplyHabitRuntimeState,
   mockReadFileSync,
   MockFileFriendStore,
 } = vi.hoisted(() => ({
@@ -24,6 +25,7 @@ const {
   mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
+  mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
   mockReadFileSync: vi.fn(),
   MockFileFriendStore: class {
     get = vi.fn(async () => null)
@@ -61,6 +63,7 @@ vi.mock("../../mind/pending", () => ({
 }))
 
 vi.mock("../../heart/habits/habit-runtime-state", () => ({
+  applyHabitRuntimeState: (...args: any[]) => mockApplyHabitRuntimeState(...args),
   recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
 }))
 
@@ -90,6 +93,7 @@ describe("inner-dialog-worker", () => {
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
     mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
+    mockApplyHabitRuntimeState.mockReset().mockImplementation((_agentRoot: string, habit: any) => habit)
     mockEmitNervesEvent.mockReset()
   })
 
@@ -212,6 +216,36 @@ describe("inner-dialog-worker", () => {
           continuity: { mode: "stateful" },
           tools: ["send_message", "session_summary"],
           body: "Keep durable context between fires.",
+        }),
+      }),
+    }))
+  })
+
+  it("applies runtime lastRun before passing prepared habit context", async () => {
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/heartbeat.md")) {
+        return "---\ntitle: Heartbeat\ncadence: 30m\ncreated: 2026-06-01T00:00:00.000Z\n---\n\nCheck in."
+      }
+      return ""
+    })
+    mockApplyHabitRuntimeState.mockImplementation((_agentRoot: string, habit: any) => ({
+      ...habit,
+      lastRun: "2026-06-08T11:30:00.000Z",
+    }))
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "heartbeat", trigger: "overdue" })
+
+    expect(mockApplyHabitRuntimeState).toHaveBeenCalledWith(
+      "/bundles/slugger.ouro",
+      expect.objectContaining({ name: "heartbeat", lastRun: null }),
+    )
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      preparedHabit: expect.objectContaining({
+        habit: expect.objectContaining({
+          name: "heartbeat",
+          lastRun: "2026-06-08T11:30:00.000Z",
         }),
       }),
     }))

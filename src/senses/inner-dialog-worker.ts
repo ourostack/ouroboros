@@ -5,6 +5,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
 import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
+import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import {
   completeHabitRun,
   createHabitSessionPaths,
@@ -149,7 +150,7 @@ function readHabitForRun(agentRoot: string, habitName: string, errors: string[])
 async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trigger"], startedAt: string): Promise<PreparedHabitRun> {
   const agentRoot = getAgentRoot()
   const errors: string[] = []
-  const habit = readHabitForRun(agentRoot, habitName, errors)
+  const habit = applyHabitRuntimeState(agentRoot, readHabitForRun(agentRoot, habitName, errors))
   const runId = createHabitRunId(habitName, new Date(startedAt))
   const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
   const paths = createHabitSessionPaths(agentRoot, runId, habit.name)
