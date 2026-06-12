@@ -1155,13 +1155,17 @@ export async function runAgent(
     const innerHabitCanSendMessage = isInnerDialog
       && habitSession?.toolPolicy.outwardMessagingAllowed === true
       && habitSession.toolPolicy.grantedTools.includes("send_message");
+    const innerHabitCanSurface = isInnerDialog
+      && (!habitSession || (habitSession.toolPolicy.outwardMessagingAllowed === true
+        && habitSession.toolPolicy.grantedTools.includes("surface")));
     const filteredBaseTools = isInnerDialog
       ? baseTools.filter((t) => innerHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
     const activeTools = [
       ...filteredBaseTools,
       ponderTool,
-      ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
+      ...(isInnerDialog && innerHabitCanSurface ? [surfaceToolDef] : []),
+      ...(isInnerDialog ? [restTool] : []),
       ...(!isInnerDialog ? [observeTool] : []),
       ...(!isInnerDialog ? [settleTool] : []),
       ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),

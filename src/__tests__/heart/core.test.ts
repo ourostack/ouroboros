@@ -1199,6 +1199,48 @@ describe("runAgent", () => {
     ]))
   })
 
+  it("habit mode with no return routes does not advertise send_message or surface", async () => {
+    mockCreate.mockReturnValue(makeStream([makeChunk("done")]))
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const sendTool = {
+      type: "function" as const,
+      function: { name: "send_message", description: "send", parameters: { type: "object", properties: {} } },
+    }
+
+    await (runAgent as any)([{ role: "system", content: "test" }], callbacks, "inner", undefined, {
+      tools: [sendTool],
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: null,
+          grantedTools: [],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    const apiCall = mockCreate.mock.calls[0][0]
+    const toolNames = apiCall.tools.map((tool: any) => tool.function.name)
+    expect(toolNames).not.toContain("send_message")
+    expect(toolNames).not.toContain("surface")
+    expect(toolNames).toContain("rest")
+  })
+
   it("habit callback buffers replay clear and flush only after approval", async () => {
     const { createHabitCallbackBuffer } = await import("../../heart/core")
     const events: string[] = []
