@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.668",
       "changes": [
-        "Reconcile flight-recorder active obligations from canonical Arc state so fulfilled obligations cannot remain in context-loss recovery snapshots."
+        "Harden flight-recorder reconciliation so terminal fulfilled-only repairs are not treated as continuable work, unverifiable obligation ids are preserved and degraded, and read-time repairs compare-before-write."
       ]
     },
     {

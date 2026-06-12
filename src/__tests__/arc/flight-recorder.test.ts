@@ -85,10 +85,12 @@ describe("Arc flight recorder", () => {
     expect(resume.canContinue).toBe(false)
     expect(resume.hasCompleteState).toBe(false)
     expect(resume.missing).toContain("currentAsk")
-    expect(resume.activeObligationIds).toEqual([])
-    expect(resume.nextSafeAction.value).toBe("wait for new input; reconciled completed or missing obligations: ob-bad")
+    expect(resume.activeObligationIds).toEqual(["ob-bad"])
+    expect(resume.nextSafeAction.value).toBe("inspect unverifiable active obligations before acting: ob-bad")
+    expect(resume.nextSafeAction.stopBefore).toContain("acting on unverifiable obligation state")
     expect(resume.recorderHealth.status).toBe("degraded")
     expect(resume.recorderHealth.issues).toContain("canContinue true while hasCompleteState false")
+    expect(resume.recorderHealth.issues).toContain("active obligation ids could not be verified in arc/obligations: ob-bad")
   })
 
   it("removes fulfilled obligation ids from persisted latest state on read", async () => {
@@ -112,16 +114,181 @@ describe("Arc flight recorder", () => {
     const persisted = JSON.parse(fs.readFileSync(flightRecorderLatestPath(agentRoot), "utf-8"))
 
     expect(resume.activeObligationIds).toEqual([])
+    expect(resume.hasCompleteState).toBe(true)
+    expect(resume.canContinue).toBe(false)
     expect(resume.nextSafeAction.value).toBe(`wait for new input; reconciled completed or missing obligations: ${obligation.id}`)
+    expect(resume.nextSafeAction.sourceEventIds).toEqual(["reconcile:active-obligations"])
     expect(persisted.activeObligationIds).toEqual([])
     expect(persisted.nextSafeAction.value).toBe(resume.nextSafeAction.value)
+    expect(persisted.canContinue).toBe(false)
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "mind.flight_recorder_resume_reconciled",
       meta: expect.objectContaining({
         staleActiveObligationIds: [obligation.id],
         missingActiveObligationIds: [],
+        unverifiableActiveObligationIds: [],
       }),
     }))
+  })
+
+  it("skips repair persistence when latest changed under the reader", async () => {
+    const { flightRecorderLatestPath, persistFlightRecorderResumeIfUnchanged } = await import("../../arc/flight-recorder")
+    const latestPath = flightRecorderLatestPath(agentRoot)
+    fs.mkdirSync(path.dirname(latestPath), { recursive: true })
+    const originalRaw = `${JSON.stringify({
+      schemaVersion: 1,
+      hasCompleteState: true,
+      canContinue: true,
+      missing: [],
+      gaps: [],
+      currentAsk: { value: "old checkpoint", confidence: "current", sourceEventIds: ["fr-old"] },
+      nextSafeAction: { value: "old action", stopBefore: [], sourceEventIds: ["fr-old"] },
+      blockedBecause: [],
+      activeObligationIds: ["old-obligation"],
+      activeReturnObligationIds: [],
+      activePacketIds: [],
+      openEvolutionCaseIds: [],
+      recentClaimIds: [],
+      unverifiedClaimIds: [],
+      lastSafeCheckpoint: { turnId: null, sessionRef: "friend/cli/session", recordedAt: "2026-06-08T12:00:00.000Z", sourceEventIds: ["fr-old"] },
+      recorderHealth: { status: "ok", issues: [] },
+    }, null, 2)}\n`
+    const changedRaw = `${JSON.stringify({
+      schemaVersion: 1,
+      hasCompleteState: true,
+      canContinue: true,
+      missing: [],
+      gaps: [],
+      currentAsk: { value: "newer checkpoint", confidence: "current", sourceEventIds: ["fr-newer"] },
+      nextSafeAction: { value: "preserve newer checkpoint", stopBefore: [], sourceEventIds: ["fr-newer"] },
+      blockedBecause: [],
+      activeObligationIds: [],
+      activeReturnObligationIds: [],
+      activePacketIds: [],
+      openEvolutionCaseIds: [],
+      recentClaimIds: [],
+      unverifiedClaimIds: [],
+      lastSafeCheckpoint: { turnId: null, sessionRef: "friend/cli/session", recordedAt: "2026-06-08T12:02:00.000Z", sourceEventIds: ["fr-newer"] },
+      recorderHealth: { status: "ok", issues: [] },
+    }, null, 2)}\n`
+    fs.writeFileSync(latestPath, changedRaw, "utf-8")
+
+    const result = persistFlightRecorderResumeIfUnchanged(agentRoot, latestPath, originalRaw, JSON.parse(originalRaw))
+
+    expect(result).toBe("skipped_changed")
+    expect(fs.readFileSync(latestPath, "utf-8")).toBe(changedRaw)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.flight_recorder_resume_reconcile_persist_skipped",
+      meta: expect.objectContaining({ persistResult: "skipped_changed" }),
+    }))
+  })
+
+  it("warns when repair persistence cannot read the latest file", async () => {
+    const { flightRecorderLatestPath, persistFlightRecorderResumeIfUnchanged } = await import("../../arc/flight-recorder")
+    const latestPath = flightRecorderLatestPath(agentRoot)
+    const resume = {
+      schemaVersion: 1 as const,
+      hasCompleteState: true,
+      canContinue: false,
+      missing: [],
+      gaps: [],
+      currentAsk: { value: "old checkpoint", confidence: "current" as const, sourceEventIds: ["fr-old"] },
+      nextSafeAction: { value: "wait for input", stopBefore: [], sourceEventIds: ["reconcile:active-obligations"] },
+      blockedBecause: [],
+      activeObligationIds: [],
+      activeReturnObligationIds: [],
+      activePacketIds: [],
+      openEvolutionCaseIds: [],
+      recentClaimIds: [],
+      unverifiedClaimIds: [],
+      lastSafeCheckpoint: { turnId: null, sessionRef: "friend/cli/session", recordedAt: "2026-06-08T12:00:00.000Z", sourceEventIds: ["fr-old"] },
+      recorderHealth: { status: "ok" as const, issues: [] },
+    }
+
+    const result = persistFlightRecorderResumeIfUnchanged(agentRoot, latestPath, "missing", resume)
+
+    expect(result).toBe("failed")
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.flight_recorder_resume_reconcile_persist_skipped",
+      meta: expect.objectContaining({ persistResult: "failed" }),
+    }))
+  })
+
+  it("preserves and degrades active obligation ids that the obligation store cannot verify", async () => {
+    const { flightRecorderLatestPath, readFlightRecorderResume } = await import("../../arc/flight-recorder")
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "ob-corrupt.json"), "{", "utf-8")
+    fs.mkdirSync(path.dirname(flightRecorderLatestPath(agentRoot)), { recursive: true })
+    fs.writeFileSync(flightRecorderLatestPath(agentRoot), `${JSON.stringify({
+      schemaVersion: 1,
+      hasCompleteState: true,
+      canContinue: true,
+      missing: [],
+      gaps: [],
+      currentAsk: { value: "recover safely", confidence: "current", sourceEventIds: ["fr-corrupt"] },
+      nextSafeAction: { value: "continue old obligation", stopBefore: [], sourceEventIds: ["fr-corrupt"] },
+      blockedBecause: [],
+      activeObligationIds: ["ob-corrupt"],
+      activeReturnObligationIds: [],
+      activePacketIds: [],
+      openEvolutionCaseIds: [],
+      recentClaimIds: [],
+      unverifiedClaimIds: [],
+      lastSafeCheckpoint: { turnId: null, sessionRef: "friend/cli/session", recordedAt: "2026-06-08T12:00:00.000Z", sourceEventIds: ["fr-corrupt"] },
+      recorderHealth: { status: "ok", issues: [] },
+    }, null, 2)}\n`, "utf-8")
+
+    const resume = readFlightRecorderResume(agentRoot)
+    const persisted = JSON.parse(fs.readFileSync(flightRecorderLatestPath(agentRoot), "utf-8"))
+
+    expect(resume.activeObligationIds).toEqual(["ob-corrupt"])
+    expect(resume.canContinue).toBe(false)
+    expect(resume.nextSafeAction.value).toBe("inspect unverifiable active obligations before acting: ob-corrupt")
+    expect(resume.nextSafeAction.sourceEventIds).toEqual(["reconcile:active-obligations"])
+    expect(resume.nextSafeAction.stopBefore).toContain("acting on unverifiable obligation state")
+    expect(resume.recorderHealth.status).toBe("degraded")
+    expect(resume.recorderHealth.issues).toContain("active obligation ids could not be verified in arc/obligations: ob-corrupt")
+    expect(persisted.activeObligationIds).toEqual(["ob-corrupt"])
+    expect(persisted.canContinue).toBe(false)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.flight_recorder_resume_reconciled",
+      meta: expect.objectContaining({
+        staleActiveObligationIds: [],
+        missingActiveObligationIds: [],
+        unverifiableActiveObligationIds: ["ob-corrupt"],
+      }),
+    }))
+  })
+
+  it("keeps unavailable recorder health unavailable while preserving unverifiable obligation ids", async () => {
+    const { flightRecorderLatestPath, readFlightRecorderResume } = await import("../../arc/flight-recorder")
+    fs.mkdirSync(path.dirname(flightRecorderLatestPath(agentRoot)), { recursive: true })
+    fs.writeFileSync(flightRecorderLatestPath(agentRoot), `${JSON.stringify({
+      schemaVersion: 1,
+      hasCompleteState: true,
+      canContinue: false,
+      missing: [],
+      gaps: [],
+      currentAsk: { value: "recover safely", confidence: "current", sourceEventIds: ["fr-unavailable"] },
+      nextSafeAction: { value: "continue old obligation", stopBefore: [], sourceEventIds: ["fr-unavailable"] },
+      blockedBecause: [],
+      activeObligationIds: ["ob-unavailable"],
+      activeReturnObligationIds: [],
+      activePacketIds: [],
+      openEvolutionCaseIds: [],
+      recentClaimIds: [],
+      unverifiedClaimIds: [],
+      lastSafeCheckpoint: { turnId: null, sessionRef: "friend/cli/session", recordedAt: "2026-06-08T12:00:00.000Z", sourceEventIds: ["fr-unavailable"] },
+      recorderHealth: { status: "unavailable", issues: ["source unavailable"] },
+    }, null, 2)}\n`, "utf-8")
+
+    const resume = readFlightRecorderResume(agentRoot)
+
+    expect(resume.activeObligationIds).toEqual(["ob-unavailable"])
+    expect(resume.canContinue).toBe(false)
+    expect(resume.recorderHealth.status).toBe("unavailable")
+    expect(resume.recorderHealth.issues).toContain("source unavailable")
+    expect(resume.recorderHealth.issues).toContain("active obligation ids could not be verified in arc/obligations: ob-unavailable")
   })
 
   it("adds missing open obligation ids from the obligation store on read", async () => {
@@ -149,6 +316,7 @@ describe("Arc flight recorder", () => {
       meta: expect.objectContaining({
         staleActiveObligationIds: [],
         missingActiveObligationIds: [obligation.id],
+        unverifiableActiveObligationIds: [],
       }),
     }))
   })
@@ -179,7 +347,13 @@ describe("Arc flight recorder", () => {
   })
 
   it("keeps remaining Arc work as the next safe action when reconciling stale obligations", async () => {
+    const { createObligation, fulfillObligation } = await import("../../arc/obligations")
     const { flightRecorderLatestPath, readFlightRecorderResume } = await import("../../arc/flight-recorder")
+    const obligation = createObligation(agentRoot, {
+      origin: { friendId: "friend-1", channel: "cli", key: "session" },
+      content: "fulfilled work",
+    })
+    fulfillObligation(agentRoot, obligation.id)
     fs.mkdirSync(path.dirname(flightRecorderLatestPath(agentRoot)), { recursive: true })
     fs.writeFileSync(flightRecorderLatestPath(agentRoot), `${JSON.stringify({
       schemaVersion: 1,
@@ -190,7 +364,7 @@ describe("Arc flight recorder", () => {
       currentAsk: { value: "finish remaining work", confidence: "current", sourceEventIds: ["fr-packet"] },
       nextSafeAction: { value: "stale obligation action", stopBefore: [], sourceEventIds: ["fr-packet"] },
       blockedBecause: [],
-      activeObligationIds: ["ob-stale"],
+      activeObligationIds: [obligation.id],
       activeReturnObligationIds: ["ret-1"],
       activePacketIds: ["packet-1"],
       openEvolutionCaseIds: ["case-1"],
@@ -204,6 +378,7 @@ describe("Arc flight recorder", () => {
 
     expect(resume.activeObligationIds).toEqual([])
     expect(resume.nextSafeAction.value).toBe("continue remaining Arc work: return obligation ret-1, packet packet-1, evolution case case-1")
+    expect(resume.nextSafeAction.sourceEventIds).toEqual(["reconcile:active-obligations"])
   })
 
   it("removes stale missing fields when latest has complete continuation state", async () => {
