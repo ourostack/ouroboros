@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.668",
       "changes": [
-        "Harden flight-recorder reconciliation so terminal fulfilled-only repairs are not treated as continuable work, unverifiable obligation ids are preserved and degraded, and read-time repairs compare-before-write."
+        "Harden flight-recorder reconciliation so terminal fulfilled-only repairs are not continuable work, unverifiable active obligation ids are preserved and degraded, parseable-invalid obligation records are excluded from canonical state, synthesized recovery actions get fresh provenance, and reads remain side-effect-free."
       ]
     },
     {

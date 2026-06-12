@@ -61,6 +61,33 @@ export function isOpenObligation(obligation: Obligation): boolean {
   return isOpenObligationStatus(obligation.status)
 }
 
+function isReadableObligation(value: unknown): value is Obligation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const obligation = value as Partial<Obligation>
+  return typeof obligation.id === "string"
+    && typeof obligation.content === "string"
+    && typeof obligation.status === "string"
+}
+
+function isVerifiedObligationStatus(value: unknown): value is ObligationStatus {
+  return value === "pending"
+    || value === "investigating"
+    || value === "waiting_for_merge"
+    || value === "updating_runtime"
+    || value === "fulfilled"
+}
+
+function isVerifiedObligation(value: unknown): value is Obligation {
+  if (!isReadableObligation(value)) return false
+  const obligation = value as Partial<Obligation>
+  return isVerifiedObligationStatus(obligation.status)
+    && typeof obligation.createdAt === "string"
+    && !!obligation.origin
+    && typeof obligation.origin.friendId === "string"
+    && typeof obligation.origin.channel === "string"
+    && typeof obligation.origin.key === "string"
+}
+
 export function createObligation(
   agentRoot: string,
   input: Omit<Obligation, "id" | "createdAt" | "status">,
@@ -96,11 +123,20 @@ export function createObligation(
 
 export function readObligations(agentRoot: string): Obligation[] {
   const all = readJsonDir<Obligation>(obligationsDir(agentRoot))
-  return all.filter((parsed) => typeof parsed.id === "string" && typeof parsed.content === "string")
+  return all.filter(isReadableObligation)
 }
 
 export function readPendingObligations(agentRoot: string): Obligation[] {
   return readObligations(agentRoot).filter(isOpenObligation)
+}
+
+export function readVerifiedObligations(agentRoot: string): Obligation[] {
+  const all = readJsonDir<Obligation>(obligationsDir(agentRoot))
+  return all.filter(isVerifiedObligation)
+}
+
+export function readVerifiedPendingObligations(agentRoot: string): Obligation[] {
+  return readVerifiedObligations(agentRoot).filter(isOpenObligation)
 }
 
 export function advanceObligation(

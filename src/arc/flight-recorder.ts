@@ -3,7 +3,7 @@ import * as path from "path"
 import { randomUUID } from "crypto"
 import { capStructuredRecordString, capStructuredRecordStringLeaves } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
-import { readObligations, readPendingObligations, type Obligation } from "./obligations"
+import { readVerifiedObligations, readVerifiedPendingObligations, type Obligation } from "./obligations"
 
 export type FlightRecorderConfidence = "current" | "stale_risky" | "unknown"
 export type FlightRecorderHealthStatus = "ok" | "degraded" | "unavailable"
@@ -410,8 +410,8 @@ function nextSafeActionAfterObligationReconcile(
 }
 
 function reconcileActiveObligations(agentRoot: string, resume: FlightRecorderResume): ReconciledResume {
-  const obligations = readObligations(agentRoot)
-  const activeObligations = readPendingObligations(agentRoot)
+  const obligations = readVerifiedObligations(agentRoot)
+  const activeObligations = readVerifiedPendingObligations(agentRoot)
   const canonicalIdSet = new Set(obligations.map((obligation) => obligation.id))
   const openIdSet = new Set(activeObligations.map((obligation) => obligation.id))
   const resumeIdSet = new Set(resume.activeObligationIds)
@@ -457,7 +457,6 @@ function reconcileActiveObligations(agentRoot: string, resume: FlightRecorderRes
     && recorderHealth.status === "ok"
     && hasActiveArcContinuation
     && !isTerminalWait
-  const replacedNextSafeAction = nextSafeActionValue !== resume.nextSafeAction.value
   return {
     resume: normalizeResumeInvariants({
       ...resume,
@@ -467,7 +466,7 @@ function reconcileActiveObligations(agentRoot: string, resume: FlightRecorderRes
       nextSafeAction: {
         ...resume.nextSafeAction,
         value: nextSafeActionValue,
-        sourceEventIds: replacedNextSafeAction
+        sourceEventIds: mustSynthesizeAction
           ? [FLIGHT_RECORDER_RECONCILE_SOURCE_ID]
           : resume.nextSafeAction.sourceEventIds,
         stopBefore: unverifiableActiveObligationIds.length > 0
@@ -507,36 +506,6 @@ function emitFlightRecorderReconciled(
       unverifiableActiveObligationIds,
     },
   })
-}
-
-export function persistFlightRecorderResumeIfUnchanged(
-  agentRoot: string,
-  latestPath: string,
-  originalRaw: string,
-  resume: FlightRecorderResume,
-): "written" | "skipped_changed" | "failed" {
-  let persistResult: "written" | "skipped_changed" | "failed"
-  try {
-    const currentRaw = fs.readFileSync(latestPath, "utf-8")
-    if (currentRaw !== originalRaw) {
-      persistResult = "skipped_changed"
-    } else {
-      atomicWriteJson(latestPath, resume)
-      persistResult = "written"
-    }
-  } catch {
-    persistResult = "failed"
-  }
-  if (persistResult !== "written") {
-    emitNervesEvent({
-      level: "warn",
-      component: "mind",
-      event: "mind.flight_recorder_resume_reconcile_persist_skipped",
-      message: "flight recorder resume reconciliation was not persisted",
-      meta: { agentRoot, persistResult },
-    })
-  }
-  return persistResult
 }
 
 function latestFromEvent(event: FlightRecorderEvent, previous: FlightRecorderResume): FlightRecorderResume {
@@ -588,8 +557,7 @@ function latestFromEvent(event: FlightRecorderEvent, previous: FlightRecorderRes
 export function readFlightRecorderResume(agentRoot: string): FlightRecorderResume {
   const latestPath = flightRecorderLatestPath(agentRoot)
   try {
-    const raw = fs.readFileSync(latestPath, "utf-8")
-    const parsed = JSON.parse(raw) as unknown
+    const parsed = JSON.parse(fs.readFileSync(latestPath, "utf-8")) as unknown
     if (!isFlightRecorderResume(parsed)) {
       throw new Error("latest.json has invalid flight-recorder resume shape")
     }
@@ -604,7 +572,6 @@ export function readFlightRecorderResume(agentRoot: string): FlightRecorderResum
       || missingActiveObligationIds.length > 0
       || unverifiableActiveObligationIds.length > 0
     ) {
-      persistFlightRecorderResumeIfUnchanged(agentRoot, latestPath, raw, resume)
       emitFlightRecorderReconciled(agentRoot, staleActiveObligationIds, missingActiveObligationIds, unverifiableActiveObligationIds)
     }
     emitNervesEvent({

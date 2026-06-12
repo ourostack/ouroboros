@@ -6,6 +6,8 @@ import {
   createObligation,
   readObligations,
   readPendingObligations,
+  readVerifiedObligations,
+  readVerifiedPendingObligations,
   fulfillObligation,
   findPendingObligationForOrigin,
   advanceObligation,
@@ -97,6 +99,89 @@ describe("obligations store", () => {
       const all = readObligations(tmpDir)
       expect(all).toHaveLength(1)
       expect(all[0].content).toBe("valid")
+    })
+
+    it("skips parseable JSON files that are not readable obligations", () => {
+      createObligation(tmpDir, { origin: sampleOrigin, content: "valid" })
+
+      const obligationsDir = path.join(tmpDir, "arc", "obligations")
+      const invalidShapes = [
+        null,
+        [],
+        { content: "missing id", status: "pending" },
+        { id: "bad-content", status: "pending" },
+        { id: "bad-status", content: "missing status" },
+        { id: "non-string-status", content: "non-string status", status: 1 },
+      ]
+      invalidShapes.forEach((shape, index) => {
+        fs.writeFileSync(path.join(obligationsDir, `invalid-${index}.json`), `${JSON.stringify(shape)}\n`, "utf-8")
+      })
+
+      const all = readObligations(tmpDir)
+      expect(all).toHaveLength(1)
+      expect(all[0].content).toBe("valid")
+    })
+
+    it("keeps legacy-readable obligations visible while exposing only verified obligations for recovery", () => {
+      const obligationsDir = path.join(tmpDir, "arc", "obligations")
+      fs.mkdirSync(obligationsDir, { recursive: true })
+      const validStatuses = ["pending", "investigating", "waiting_for_merge", "updating_runtime", "fulfilled"]
+      validStatuses.forEach((status) => {
+        fs.writeFileSync(path.join(obligationsDir, `valid-${status}.json`), `${JSON.stringify({
+          id: `valid-${status}`,
+          content: `valid ${status}`,
+          status,
+          createdAt: "2026-06-08T12:00:00.000Z",
+          origin: sampleOrigin,
+        })}\n`, "utf-8")
+      })
+      fs.writeFileSync(path.join(obligationsDir, "legacy-missing-origin.json"), `${JSON.stringify({
+        id: "legacy-missing-origin",
+        content: "visible legacy obligation",
+        status: "pending",
+        createdAt: "2026-06-08T12:00:00.000Z",
+      })}\n`, "utf-8")
+      fs.writeFileSync(path.join(obligationsDir, "legacy-unknown-status.json"), `${JSON.stringify({
+        id: "legacy-unknown-status",
+        content: "visible unknown status",
+        status: "returning",
+        createdAt: "2026-06-08T12:00:00.000Z",
+        origin: sampleOrigin,
+      })}\n`, "utf-8")
+      fs.writeFileSync(path.join(obligationsDir, "legacy-missing-created.json"), `${JSON.stringify({
+        id: "legacy-missing-created",
+        content: "visible missing createdAt",
+        status: "pending",
+        origin: sampleOrigin,
+      })}\n`, "utf-8")
+
+      const readable = readObligations(tmpDir).map((obligation) => obligation.id)
+      const verified = readVerifiedObligations(tmpDir).map((obligation) => obligation.id)
+      const verifiedPending = readVerifiedPendingObligations(tmpDir).map((obligation) => obligation.id)
+
+      expect(readable).toEqual([
+        "legacy-missing-created",
+        "legacy-missing-origin",
+        "legacy-unknown-status",
+        "valid-fulfilled",
+        "valid-investigating",
+        "valid-pending",
+        "valid-updating_runtime",
+        "valid-waiting_for_merge",
+      ])
+      expect(verified).toEqual([
+        "valid-fulfilled",
+        "valid-investigating",
+        "valid-pending",
+        "valid-updating_runtime",
+        "valid-waiting_for_merge",
+      ])
+      expect(verifiedPending).toEqual([
+        "valid-investigating",
+        "valid-pending",
+        "valid-updating_runtime",
+        "valid-waiting_for_merge",
+      ])
     })
 
     it("skips non-json files", () => {
