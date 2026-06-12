@@ -21,6 +21,8 @@ import type {
   MailboxSelfFixView,
   MailboxSentinelView,
   MailboxFriendView,
+  MailboxHabitRunDetailView,
+  MailboxHabitRunView,
   MailboxHabitView,
   MailboxLogView,
   MailboxMailMessageView,
@@ -58,6 +60,8 @@ export interface StartMailboxHttpServerOptions {
   readAgentSentinel?: (agentName: string) => MailboxSentinelView
   readAgentNoteDecisions?: (agentName: string) => MailboxNoteDecisionView
   readAgentHabits?: (agentName: string) => MailboxHabitView
+  readAgentHabitRuns?: (agentName: string, options?: { limit?: number }) => MailboxHabitRunView
+  readAgentHabitRun?: (agentName: string, runId: string) => MailboxHabitRunDetailView | null
   readAgentMail?: (agentName: string) => Promise<MailboxMailView> | MailboxMailView
   readAgentMailMessage?: (agentName: string, messageId: string) => Promise<MailboxMailMessageView> | MailboxMailMessageView
   readDaemonHealth?: () => MailboxDaemonHealthDeep | null

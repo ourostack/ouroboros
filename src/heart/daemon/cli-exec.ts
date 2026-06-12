@@ -429,6 +429,8 @@ type MissingAgentResolvableKind =
   | "friend.update"
   | "habit.list"
   | "habit.create"
+  | "habit.runs"
+  | "habit.inspect"
   | "provider.use"
   | "provider.check"
   | "provider.status"
@@ -529,6 +531,8 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "friend.update":
     case "habit.list":
     case "habit.create":
+    case "habit.runs":
+    case "habit.inspect":
     case "thoughts":
     case "attention.list":
     case "attention.show":
@@ -7858,9 +7862,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── habit subcommands (local, no daemon socket needed) ──
-  if (command.kind === "habit.list" || command.kind === "habit.create") {
+  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
+    const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
     const bundleRoot = deps.agentBundleRoot ?? path.join(
       deps.bundlesRoot ?? getAgentBundlesRoot(),
@@ -7892,6 +7897,54 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
       const message = lines.join("\n")
       deps.writeStdout(message)
+      return message
+    }
+
+    if (command.kind === "habit.runs") {
+      const receipts = listHabitRunReceipts(bundleRoot, { limit: command.limit })
+      const message = receipts.length === 0
+        ? "no habit runs found"
+        : receipts.map((receipt) => [
+          receipt.runId,
+          `habit=${receipt.habitName}`,
+          `trigger=${receipt.trigger}`,
+          `outcome=${receipt.outcome}`,
+          `endedAt=${receipt.endedAt}`,
+          `receipt=${receipt.receiptLocator}`,
+        ].join("  ")).join("\n")
+      deps.writeStdout(message)
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.habit_runs_cli_read",
+        message: "habit run receipts listed from CLI",
+        meta: { agent: command.agent, limit: command.limit, count: receipts.length },
+      })
+      return message
+    }
+
+    if (command.kind === "habit.inspect") {
+      const receipt = readHabitRunReceipt(bundleRoot, command.runId)
+      if (!receipt) {
+        const message = `error: habit run '${command.runId}' not found`
+        deps.writeStdout(message)
+        deps.setExitCode?.(1)
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.habit_run_cli_read_missing",
+          message: "habit run receipt not found from CLI",
+          meta: { agent: command.agent, runId: command.runId },
+        })
+        return message
+      }
+      const message = `${JSON.stringify(receipt, null, 2)}\n`
+      deps.writeStdout(message)
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.habit_run_cli_read",
+        message: "habit run receipt read from CLI",
+        meta: { agent: command.agent, runId: command.runId },
+      })
       return message
     }
 

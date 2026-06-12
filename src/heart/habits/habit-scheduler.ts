@@ -5,6 +5,7 @@ import { applyHabitRuntimeState } from "./habit-runtime-state"
 import { parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
 import type { OsCronManager } from "../daemon/os-cron"
 import type { ScheduledTaskJob } from "../daemon/task-scheduler"
+import type { HabitRunTrigger } from "../../arc/flight-recorder"
 
 export interface FsWatcher {
   close: () => void
@@ -24,7 +25,7 @@ export interface HabitSchedulerOptions {
   agent: string
   habitsDir: string
   osCronManager: OsCronManager
-  onHabitFire: (habitName: string) => void
+  onHabitFire: (habitName: string, trigger: HabitRunTrigger) => void
   deps: HabitSchedulerDeps
   execForVerify?: (cmd: string) => string
   platform?: string
@@ -51,7 +52,7 @@ export class HabitScheduler {
   private readonly agent: string
   private readonly habitsDir: string
   private readonly osCronManager: OsCronManager
-  private readonly onHabitFire: (habitName: string) => void
+  private readonly onHabitFire: (habitName: string, trigger: HabitRunTrigger) => void
   private readonly deps: HabitSchedulerDeps
   private readonly execForVerify?: (cmd: string) => string
   private readonly platform: string
@@ -122,7 +123,7 @@ export class HabitScheduler {
           message: "firing overdue habit (never run)",
           meta: { habitName: habit.name, agent: this.agent },
         })
-        this.onHabitFire(habit.name)
+        this.onHabitFire(habit.name, "overdue")
         continue
       }
 
@@ -135,7 +136,7 @@ export class HabitScheduler {
           message: "firing overdue habit",
           meta: { habitName: habit.name, agent: this.agent, elapsedMs: elapsed },
         })
-        this.onHabitFire(habit.name)
+        this.onHabitFire(habit.name, "overdue")
       }
     }
   }
@@ -194,6 +195,27 @@ export class HabitScheduler {
     } catch {
       return null
     }
+  }
+
+  listJobs(): Array<{ id: string; schedule: string; lastRun: string | null }> {
+    return this.buildJobs(this.scanHabits())
+      .map((job) => ({ id: job.id, schedule: job.schedule, lastRun: job.lastRun }))
+      .sort((a, b) => a.id.localeCompare(b.id))
+  }
+
+  async triggerJob(jobId: string, trigger: HabitRunTrigger = "cron"): Promise<{ ok: boolean; message: string }> {
+    const job = this.buildJobs(this.scanHabits()).find((candidate) => candidate.id === jobId)
+    if (!job) {
+      return { ok: false, message: `unknown habit job: ${jobId}` }
+    }
+    this.onHabitFire(job.taskId, trigger)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.habit_job_triggered",
+      message: "habit scheduler job triggered",
+      meta: { agent: job.agent, habitName: job.taskId, jobId, trigger },
+    })
+    return { ok: true, message: `triggered habit ${jobId}` }
   }
 
   watchForChanges(): void {
@@ -312,7 +334,7 @@ export class HabitScheduler {
         const output = this.execForVerify!("crontab -l")
         const lines = output.split("\n")
         for (const line of lines) {
-          const match = line.match(/ouro poke \S+ --habit (\S+)/)
+          const match = line.match(/ouro poke \S+ --habit (\S+)(?:\s+--trigger\s+\S+)?/)
           if (match) {
             verified.add(match[1])
           }
@@ -328,7 +350,7 @@ export class HabitScheduler {
   private createTimerFallback(habitName: string, cadenceMs: number): void {
     const schedule = (): void => {
       const timer = setTimeout(() => {
-        this.onHabitFire(habitName)
+        this.onHabitFire(habitName, "overdue")
         schedule()
       }, cadenceMs)
       this.timerFallbacks.set(habitName, timer)
@@ -400,7 +422,7 @@ export class HabitScheduler {
         taskId: habit.name,
         schedule: cronSchedule,
         lastRun: habit.lastRun,
-        command: `${this.deps.ouroPath} poke ${this.agent} --habit ${habit.name}`,
+        command: `${this.deps.ouroPath} poke ${this.agent} --habit ${habit.name} --trigger launchd`,
         taskPath: path.join(this.habitsDir, `${habit.name}.md`),
       })
     }

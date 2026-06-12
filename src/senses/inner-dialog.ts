@@ -42,6 +42,7 @@ import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/flight-recorder"
 import { deskRecordOrientationSection } from "../mind/desk-section"
+import type { HabitSessionToolContext } from "../repertoire/tools-base"
 
 export interface InnerDialogInstinct {
   id: string
@@ -70,6 +71,7 @@ export interface RunInnerDialogTurnOptions {
   instincts?: InnerDialogInstinct[]
   now?: () => Date
   signal?: AbortSignal
+  habitSession?: HabitSessionToolContext
 }
 
 export interface InnerDialogTurnResult {
@@ -699,7 +701,7 @@ function buildHabitSurfacePolicy(origin: HabitOrigin | null, surface: HabitSurfa
 export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): Promise<InnerDialogTurnResult> {
   const now = options?.now ?? (() => new Date())
   const reason = options?.reason ?? "instinct"
-  const sessionFilePath = innerDialogSessionPath()
+  const sessionFilePath = options?.habitSession?.sessionPath ?? innerDialogSessionPath()
   const agentName = getAgentName()
   writeInnerDialogRuntimeState(sessionFilePath, {
     status: "running",
@@ -716,7 +718,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     resting: false,
     lastHeartbeatAt: now().toISOString(),
   }
-  const pendingDir = getInnerDialogPendingDir(agentName)
+  const pendingDir = options?.habitSession?.pendingDir ?? getInnerDialogPendingDir(agentName)
   const shouldUseHeldReturnWake =
     !options?.taskId && reason !== "habit" && reason !== "await"
       ? listActiveReturnObligations(agentName).length > 0
@@ -727,7 +729,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
   let habitTools: string[] | undefined
   let habitParsedSuccessfully = false
 
-  if (existingMessages.length === 0) {
+  if (existingMessages.length === 0 && !(reason === "habit" && options?.habitName)) {
     // Fresh session: bootstrap message with non-canonical cleanup nudge
     const aspirations = readAspirations(getAgentRoot())
     const nonCanonical = findNonCanonicalBundlePaths(getAgentRoot())
@@ -979,7 +981,9 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       toolContext: {
         signin: async () => undefined,
         delegatedOrigins: attentionQueue,
+        ...(options?.habitSession ? { habitSession: options.habitSession } : {}),
       },
+      ...(options?.habitSession ? { habitSession: options.habitSession } : {}),
     },
   })
   // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.

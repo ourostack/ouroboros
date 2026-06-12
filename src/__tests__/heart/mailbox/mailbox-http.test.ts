@@ -3,6 +3,10 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
+import {
+  writeHabitRunReceipt,
+  type HabitRunReceipt,
+} from "../../../arc/flight-recorder"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -53,6 +57,8 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentSentinel: vi.fn(() => ({ schemaVersion: 1, latest: null, latestReady: null, history: [], degraded: { issues: [] } })),
     readAgentNoteDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
     readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
+    readAgentHabitRuns: vi.fn(() => ({ totalCount: 0, limit: 20, items: [] })),
+    readAgentHabitRun: vi.fn(() => null),
     readAgentMail: vi.fn(() => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [], messages: [], accessLog: [], error: null })),
     readAgentMailMessage: vi.fn(() => ({ status: "not-found", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", message: null, accessLog: [], error: "missing" })),
     readDaemonHealth: vi.fn(() => null),
@@ -222,6 +228,28 @@ describe("mailbox http", () => {
     expect(createMailboxHttpReadHooks({}).agentRoot("slugger")).toBe("slugger.ouro")
 
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mailbox-default-hooks-"))
+    const receipt: HabitRunReceipt = {
+      schemaVersion: 2,
+      runId: "run-default-hook",
+      sessionId: "run-default-hook",
+      habitName: "heartbeat",
+      trigger: "poke",
+      startedAt: "2026-06-11T10:00:00.000Z",
+      endedAt: "2026-06-11T10:01:00.000Z",
+      outcome: "surfaced",
+      definitionLocator: "habits/heartbeat.md",
+      sessionLocator: "state/habit-sessions/run-default-hook/session.json",
+      pendingLocator: "state/habit-sessions/run-default-hook/pending",
+      runtimeStateLocator: "state/habits/heartbeat.json",
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-default-hook.json",
+      nextRunAt: null,
+      permissionEnvelope: { schemaVersion: 1, canMessageOutward: false, returnRoutes: [], deniedTools: [], warnings: [] },
+      toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: false },
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: [],
+    }
+    writeHabitRunReceipt(path.join(bundlesRoot, "nobody.ouro"), receipt)
     const defaultHooks = createMailboxHttpReadHooks({ bundlesRoot })
     expect(defaultHooks.readAgentContinuity("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentOrientation("nobody")).toBeTruthy()
@@ -231,6 +259,12 @@ describe("mailbox http", () => {
     expect(defaultHooks.readAgentContextLossGauntlet("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentSentinel("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentNoteDecisions("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentHabitRuns("nobody", { limit: 1 })).toEqual({
+      totalCount: 1,
+      limit: 1,
+      items: [expect.objectContaining({ runId: "run-default-hook" })],
+    })
+    expect(defaultHooks.readAgentHabitRun("nobody", "run-default-hook")).toEqual({ receipt })
     await expect(defaultHooks.readAgentMail("mailless-default-hooks")).resolves.toEqual(expect.objectContaining({
       status: "auth-required",
     }))
@@ -1191,6 +1225,115 @@ describe("mailbox http", () => {
     expect(response.statusCode).toBe(200)
     expect(JSON.parse(response.body.toString("utf8"))).toEqual(sentinel)
     expect(hooks.readAgentSentinel).toHaveBeenCalledWith("slugger")
+  })
+
+  it("serves canonical habit run list and detail endpoints through read-only hooks", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const habitRuns = {
+      totalCount: 1,
+      limit: 20,
+      items: [{
+        runId: "run-http",
+        habitName: "heartbeat",
+        trigger: "poke",
+        startedAt: "2026-06-11T10:00:00.000Z",
+        endedAt: "2026-06-11T10:01:00.000Z",
+        outcome: "surfaced",
+        nextRunAt: null,
+        permissionEnvelope: { schemaVersion: 1, canMessageOutward: false, returnRoutes: [], deniedTools: ["send_message", "surface"], warnings: [] },
+        toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: ["send_message", "surface"], outwardMessagingAllowed: false },
+        producedRefs: [],
+        surfaceAttempts: [],
+        errorCount: 0,
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-http.json",
+        sessionLocator: "state/habit-sessions/run-http/session.json",
+        runtimeStateLocator: "state/habits/heartbeat.json",
+      }],
+    }
+    const receipt = {
+      schemaVersion: 2,
+      runId: "run-http",
+      sessionId: "run-http",
+      habitName: "heartbeat",
+      trigger: "poke",
+      startedAt: "2026-06-11T10:00:00.000Z",
+      endedAt: "2026-06-11T10:01:00.000Z",
+      outcome: "surfaced",
+      definitionLocator: "habits/heartbeat.md",
+      sessionLocator: "state/habit-sessions/run-http/session.json",
+      pendingLocator: "state/habit-sessions/run-http/pending",
+      runtimeStateLocator: "state/habits/heartbeat.json",
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-http.json",
+      nextRunAt: null,
+      permissionEnvelope: habitRuns.items[0]!.permissionEnvelope,
+      toolPolicy: habitRuns.items[0]!.toolPolicy,
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: [],
+    }
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentHabitRuns = vi.fn(() => habitRuns)
+    hooks.readAgentHabitRun = vi.fn((_agent: string, runId: string) => (
+      runId === "run-http" ? { receipt } : null
+    ))
+    const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const listResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs"), listResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(listResponse.statusCode).toBe(200)
+    expect(JSON.parse(listResponse.body.toString("utf8"))).toEqual(habitRuns)
+    expect(hooks.readAgentHabitRuns).toHaveBeenCalledWith("slugger")
+
+    const limitedResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs?limit=1"), limitedResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(limitedResponse.statusCode).toBe(200)
+    expect(JSON.parse(limitedResponse.body.toString("utf8"))).toEqual(habitRuns)
+    expect(hooks.readAgentHabitRuns).toHaveBeenCalledWith("slugger", { limit: 1 })
+
+    const invalidLimitResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs?limit=0"), invalidLimitResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(invalidLimitResponse.statusCode).toBe(400)
+    expect(JSON.parse(invalidLimitResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "limit must be an integer between 1 and 100",
+    })
+
+    const detailResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs/run-http"), detailResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(detailResponse.statusCode).toBe(200)
+    expect(JSON.parse(detailResponse.body.toString("utf8"))).toEqual({ receipt })
+    expect(hooks.readAgentHabitRun).toHaveBeenCalledWith("slugger", "run-http")
+  })
+
+  it("returns 404 for missing unsafe or malformed habit run detail receipts", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentHabitRun = vi.fn(() => null)
+    const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    for (const runId of ["missing", "bad%2fescape", "bad%5cescape", "bad%E0%A4%A", "malformed", "foo/bar"]) {
+      const response = createMockResponse()
+      handler(createMockRequest(`/api/agents/slugger/habit-runs/${runId}`), response)
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(response.statusCode).toBe(404)
+      expect(JSON.parse(response.body.toString("utf8"))).toEqual({
+        ok: false,
+        error: `habit run '${runId}' not found`,
+      })
+    }
+
+    const highLimitResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs?limit=101"), highLimitResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(highLimitResponse.statusCode).toBe(400)
+    expect(JSON.parse(highLimitResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "limit must be an integer between 1 and 100",
+    })
   })
 
   it("serves /api/agents/:agent/note-decisions endpoint", async () => {

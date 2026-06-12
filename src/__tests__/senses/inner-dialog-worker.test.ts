@@ -1,14 +1,46 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const mockRunInnerDialogTurn = vi.fn()
-const mockEmitNervesEvent = vi.fn()
-const mockGetAgentName = vi.fn(() => "slugger")
-const mockGetAgentRoot = vi.fn(() => "/bundles/slugger.ouro")
-const mockGetInnerDialogPendingDir = vi.fn(() => "/mock/pending/self/inner/dialog")
-const mockHasPendingMessages = vi.fn(() => false)
-const mockRecordHabitRun = vi.fn()
-const mockCreateHabitRunId = vi.fn(() => "habit-run-id")
-const mockWriteHabitRunReceipt = vi.fn()
+const {
+  mockRunInnerDialogTurn,
+  mockEmitNervesEvent,
+  mockGetAgentName,
+  mockGetAgentRoot,
+  mockGetInnerDialogPendingDir,
+  mockHasPendingMessages,
+  mockRecordHabitRun,
+  mockCreateHabitRunId,
+  mockIsSafeHabitRunId,
+  mockWriteHabitRunReceipt,
+  mockReadFileSync,
+  MockFileFriendStore,
+} = vi.hoisted(() => ({
+  mockRunInnerDialogTurn: vi.fn(),
+  mockEmitNervesEvent: vi.fn(),
+  mockGetAgentName: vi.fn(() => "slugger"),
+  mockGetAgentRoot: vi.fn(() => "/bundles/slugger.ouro"),
+  mockGetInnerDialogPendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
+  mockHasPendingMessages: vi.fn(() => false),
+  mockRecordHabitRun: vi.fn(),
+  mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
+  mockIsSafeHabitRunId: vi.fn(() => true),
+  mockWriteHabitRunReceipt: vi.fn(),
+  mockReadFileSync: vi.fn(),
+  MockFileFriendStore: class {
+    get = vi.fn(async () => null)
+    put = vi.fn(async () => undefined)
+    delete = vi.fn(async () => undefined)
+    findByExternalId = vi.fn(async () => null)
+    listAll = vi.fn(async () => [])
+  },
+}))
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>()
+  return {
+    ...actual,
+    readFileSync: (...args: any[]) => mockReadFileSync(...args),
+  }
+})
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
@@ -32,8 +64,13 @@ vi.mock("../../heart/habits/habit-runtime-state", () => ({
   recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
 }))
 
+vi.mock("../../mind/friends/store-file", () => ({
+  FileFriendStore: MockFileFriendStore,
+}))
+
 vi.mock("../../arc/flight-recorder", () => ({
   createHabitRunId: (...args: any[]) => mockCreateHabitRunId(...args),
+  isSafeHabitRunId: (...args: any[]) => mockIsSafeHabitRunId(...args),
   writeHabitRunReceipt: (...args: any[]) => mockWriteHabitRunReceipt(...args),
 }))
 
@@ -41,12 +78,17 @@ import { createInnerDialogWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startInnerDi
 
 describe("inner-dialog-worker", () => {
   beforeEach(() => {
+    mockReadFileSync.mockReset().mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/")) return "habit body"
+      return ""
+    })
     mockHasPendingMessages.mockReset().mockReturnValue(false)
     mockGetAgentName.mockReset().mockReturnValue("slugger")
     mockGetAgentRoot.mockReset().mockReturnValue("/bundles/slugger.ouro")
     mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
     mockRecordHabitRun.mockReset()
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
+    mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
     mockEmitNervesEvent.mockReset()
   })
@@ -65,7 +107,7 @@ describe("inner-dialog-worker", () => {
 
     expect(runTurn).toHaveBeenCalledTimes(5)
     expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "boot", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
     expect(runTurn).toHaveBeenNthCalledWith(3, { reason: "instinct", taskId: undefined, habitName: undefined })
     expect(runTurn).toHaveBeenNthCalledWith(4, { reason: "instinct", taskId: undefined, habitName: undefined })
     expect(runTurn).toHaveBeenNthCalledWith(5, { reason: "instinct", taskId: undefined, habitName: undefined })
@@ -105,7 +147,7 @@ describe("inner-dialog-worker", () => {
     const worker = createInnerDialogWorker(runTurn)
 
     await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
-    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat", awaitName: undefined })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat", awaitName: undefined }))
   })
 
   it("handles await messages with awaitName", async () => {
@@ -129,7 +171,7 @@ describe("inner-dialog-worker", () => {
     const worker = createInnerDialogWorker(runTurn)
 
     await worker.handleMessage({ type: "habit", habitName: "daily-reflection" })
-    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "daily-reflection" })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "daily-reflection" }))
   })
 
   it("backward compat: heartbeat message maps to habit/heartbeat", async () => {
@@ -137,7 +179,7 @@ describe("inner-dialog-worker", () => {
     const worker = createInnerDialogWorker(runTurn)
 
     await worker.handleMessage({ type: "heartbeat" })
-    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
   })
 
   it("queues multiple pokes while busy instead of overwriting", async () => {
@@ -224,10 +266,10 @@ describe("inner-dialog-worker", () => {
 
     expect(runTurn).toHaveBeenCalledTimes(5)
     expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "boot", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
     expect(runTurn).toHaveBeenNthCalledWith(3, { reason: "instinct", taskId: "task-x", habitName: undefined })
     expect(runTurn).toHaveBeenNthCalledWith(4, { reason: "instinct", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(5, { reason: "habit", taskId: undefined, habitName: "daily-check" })
+    expect(runTurn).toHaveBeenNthCalledWith(5, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "daily-check" }))
   })
 
   it("emits an error event when a turn fails", async () => {
@@ -283,8 +325,8 @@ describe("inner-dialog-worker", () => {
     await Promise.all([first, second])
 
     expect(runTurn).toHaveBeenCalledTimes(2)
-    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
   })
 
   it("preserves deferred taskId when an overlapping poke arrives during an active run", async () => {
@@ -301,7 +343,7 @@ describe("inner-dialog-worker", () => {
     await Promise.all([first, second])
 
     expect(runTurn).toHaveBeenCalledTimes(2)
-    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
     expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: "daily-standup", habitName: undefined })
   })
 
@@ -335,11 +377,11 @@ describe("inner-dialog-worker", () => {
       expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "boot", taskId: undefined, habitName: undefined })
 
       listeners.message?.({ type: "heartbeat" })
-      await Promise.resolve()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
 
       listeners.message?.({ type: "poke", taskId: "check-in" })
-      await Promise.resolve()
+      await new Promise((resolve) => setImmediate(resolve))
       expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "check-in", habitName: undefined })
 
       expect(() => listeners.disconnect?.()).toThrow("process.exit called")
@@ -370,13 +412,9 @@ describe("inner-dialog-worker", () => {
     })
 
     it("writes an Arc habit receipt with outcome and trigger", async () => {
-      const runTurn = vi.fn().mockResolvedValue({
-        messages: [{
-          role: "assistant",
-          tool_calls: [
-            { id: "tc-1", type: "function", function: { name: "diary_write", arguments: "{}" } },
-          ],
-        }],
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordProducedRef({ kind: "desk_record", locator: "desk/_record" })
+        return { messages: [] }
       })
       const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
@@ -384,27 +422,37 @@ describe("inner-dialog-worker", () => {
 
       expect(mockCreateHabitRunId).toHaveBeenCalledWith("daily-record", new Date("2026-06-08T12:00:00.000Z"))
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: "habit-run-id",
+        sessionId: "habit-run-id",
         habitName: "daily-record",
         trigger: "poke",
         startedAt: "2026-06-08T12:00:00.000Z",
         endedAt: "2026-06-08T12:00:00.000Z",
         outcome: "wrote_record",
+        definitionLocator: "habits/daily-record.md",
+        sessionLocator: "state/habit-sessions/habit-run-id/session.json",
+        pendingLocator: "state/habit-sessions/habit-run-id/pending",
+        runtimeStateLocator: "state/habits/daily-record.json",
+        receiptLocator: "arc/flight-recorder/habit-receipts/habit-run-id.json",
+        permissionEnvelope: expect.objectContaining({ schemaVersion: 1, canMessageOutward: true }),
+        toolPolicy: expect.objectContaining({ requestedTools: null, outwardMessagingAllowed: true }),
         producedRefs: [{ kind: "desk_record", locator: "desk/_record" }],
         surfaceAttempts: [],
         errors: [],
       }))
     })
 
-    it("classifies habit turns that surface through conversation tools", async () => {
-      const runTurn = vi.fn().mockResolvedValue({
-        messages: [{
-          role: "assistant",
-          tool_calls: [
-            { id: "tc-1", type: "function", function: { name: "send_message", arguments: "{}" } },
-          ],
-        }],
+    it("classifies successful structured surface attempts as surfaced", async () => {
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordSurfaceAttempt({
+          recipient: "ari",
+          channel: "cli",
+          reason: "status",
+          result: "queued",
+          rawStatus: "queued",
+        })
+        return { messages: [] }
       })
       const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
@@ -412,18 +460,58 @@ describe("inner-dialog-worker", () => {
 
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         outcome: "surfaced",
-        producedRefs: [{ kind: "surface", locator: "tool:send_message_or_surface" }],
+        producedRefs: [{ kind: "surface", locator: "surface/ari/cli" }],
       }))
     })
 
-    it("classifies habit turns that update Desk through MCP desk tools", async () => {
-      const runTurn = vi.fn().mockResolvedValue({
-        messages: [{
-          role: "assistant",
-          tool_calls: [
-            { id: "tc-1", type: "function", function: { name: "mcp__desk__task_update", arguments: "{}" } },
-          ],
-        }],
+    it("does not classify blocked transcript tool calls as successful surface refs", async () => {
+      const runTurn = vi.fn().mockResolvedValue([
+        { messages: [] },
+        {
+          messages: [{
+            role: "assistant",
+            tool_calls: [
+              { id: "tc-1", type: "function", function: { name: "surface", arguments: "{}" } },
+            ],
+          }],
+        },
+      ])
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "array-result", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        outcome: "no_change",
+        producedRefs: [],
+      }))
+    })
+
+    it("classifies blocked structured surface attempts as blocked without surface refs", async () => {
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordSurfaceAttempt({
+          recipient: "ari",
+          channel: "cli",
+          reason: "blocked",
+          result: "blocked",
+          rawStatus: "blocked",
+          error: "route denied",
+        })
+        return { messages: [] }
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "blocked-surface", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        outcome: "blocked",
+        producedRefs: [],
+      }))
+    })
+
+    it("classifies structured Desk produced refs as updated desk", async () => {
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordProducedRef({ kind: "desk_task", locator: "desk/main/task" })
+        return { messages: [] }
       })
       const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
@@ -431,7 +519,7 @@ describe("inner-dialog-worker", () => {
 
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         outcome: "updated_desk",
-        producedRefs: [{ kind: "desk_task", locator: "desk/" }],
+        producedRefs: [{ kind: "desk_task", locator: "desk/main/task" }],
       }))
     })
 
@@ -449,6 +537,135 @@ describe("inner-dialog-worker", () => {
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         outcome: "no_change",
         producedRefs: [],
+      }))
+    })
+
+    it("writes structured recorder refs and surface attempts into the habit receipt", async () => {
+      const producedRef = { kind: "claim" as const, locator: "claim:abc123" }
+      const surfaceAttempt = {
+        recipient: "ari",
+        channel: "bluebubbles",
+        reason: "answer" as const,
+        result: "queued" as const,
+        rawStatus: "queued",
+        routeKind: "originator" as const,
+      }
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordProducedRef(producedRef)
+        options.habitSession.recordSurfaceAttempt(surfaceAttempt)
+        return { messages: [] }
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "structured", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        schemaVersion: 2,
+        habitName: "structured",
+        producedRefs: [producedRef],
+        surfaceAttempts: [surfaceAttempt],
+        errors: [],
+      }))
+    })
+
+    it("records unreadable habit files as receipt errors with a fail-closed session", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/")) throw new Error("habit missing")
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "missing", trigger: "poke" })
+
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+        habitSession: expect.objectContaining({
+          permissionEnvelope: expect.objectContaining({
+            canMessageOutward: false,
+            deniedTools: ["send_message", "surface"],
+          }),
+          toolPolicy: expect.objectContaining({
+            requestedTools: [],
+            grantedTools: [],
+          }),
+        }),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "missing",
+        outcome: "error",
+        errors: [expect.stringContaining("habit missing")],
+      }))
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_file_read_error",
+        level: "warn",
+      }))
+    })
+
+    it("uses executable shell risk when preparing habit tool policy", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/")) return [
+          "---",
+          "tools: [shell]",
+          "---",
+          "",
+          "try a shell command",
+          "",
+        ].join("\n")
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "shell-probe", trigger: "poke" })
+
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+        habitSession: expect.objectContaining({
+          toolPolicy: expect.objectContaining({
+            requestedTools: ["shell"],
+            grantedTools: [],
+            deniedTools: ["shell"],
+          }),
+        }),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        toolPolicy: expect.objectContaining({
+          requestedTools: ["shell"],
+          grantedTools: [],
+          deniedTools: ["shell"],
+        }),
+      }))
+    })
+
+    it("records non-Error habit file read failures losslessly", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/")) throw "habit missing as string"
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "string-missing", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "string-missing",
+        outcome: "error",
+        errors: [expect.stringContaining("habit missing as string")],
+      }))
+    })
+
+    it("writes structured recorder errors into the habit receipt", async () => {
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordError("tool metadata failed")
+        return { messages: [] }
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "error-recorder", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "error-recorder",
+        outcome: "error",
+        errors: ["tool metadata failed"],
       }))
     })
 
@@ -480,6 +697,78 @@ describe("inner-dialog-worker", () => {
       await worker.run("habit", undefined, "heartbeat")
 
       expect(mockRecordHabitRun).toHaveBeenCalledTimes(1)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "senses.habit_runtime_state_record_error",
+        meta: expect.objectContaining({
+          habitName: "heartbeat",
+          runId: "habit-run-id",
+          error: "ENOENT: no such file or directory",
+        }),
+      }))
+    })
+
+    it("does not advance runtime state when habit receipt writing fails", async () => {
+      mockWriteHabitRunReceipt.mockImplementation(() => {
+        throw new Error("disk full")
+      })
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      expect(mockRecordHabitRun).not.toHaveBeenCalled()
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        event: "senses.habit_receipt_write_error",
+        meta: expect.objectContaining({
+          habitName: "heartbeat",
+          runId: "habit-run-id",
+          error: "disk full",
+        }),
+      }))
+    })
+
+    it("records non-Error habit receipt write failures without advancing runtime state", async () => {
+      mockWriteHabitRunReceipt.mockImplementation(() => {
+        throw "disk full as string"
+      })
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      expect(mockRecordHabitRun).not.toHaveBeenCalled()
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        event: "senses.habit_receipt_write_error",
+        meta: expect.objectContaining({
+          habitName: "heartbeat",
+          runId: "habit-run-id",
+          error: "disk full as string",
+        }),
+      }))
+    })
+
+    it("records non-Error runtime-state failures after receipt write", async () => {
+      mockRecordHabitRun.mockImplementation(() => {
+        throw "runtime state unavailable"
+      })
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(1)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "senses.habit_runtime_state_record_error",
+        meta: expect.objectContaining({
+          habitName: "heartbeat",
+          runId: "habit-run-id",
+          error: "runtime state unavailable",
+        }),
+      }))
     })
 
     it("does not update lastRun for non-habit turns", async () => {
@@ -518,11 +807,11 @@ describe("inner-dialog-worker", () => {
 
       await worker.run("habit", undefined, "heartbeat")
 
-      // Heartbeat turn (1) + 3 instinct follow-ups + cap = 4 total turns
+      // Heartbeat turn (1) + 3 same-run habit follow-ups + cap = 4 total turns
       expect(runTurn).toHaveBeenCalledTimes(4)
       expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
       for (let i = 1; i <= 3; i++) {
-        expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "instinct" }))
+        expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
       }
       // Cap event was emitted exactly once
       const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
@@ -532,8 +821,42 @@ describe("inner-dialog-worker", () => {
         meta: expect.objectContaining({
           consecutiveInstinctTurns: 3,
           cap: 3,
-          lastReason: "instinct",
+          lastReason: "habit",
         }),
+      }))
+    })
+
+    it("keeps habit-created follow-on pending work in the same habit run instead of generic instinct", async () => {
+      mockCreateHabitRunId
+        .mockReturnValueOnce("habit-run-1")
+        .mockReturnValueOnce("habit-run-2")
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn()
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat", undefined, "poke")
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
+      expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        reason: "habit",
+        habitName: "heartbeat",
+      }))
+      expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        reason: "habit",
+        habitName: "heartbeat",
+      }))
+      expect(mockCreateHabitRunId).toHaveBeenCalledTimes(1)
+      expect(runTurn.mock.calls[0]?.[0].habitSession).toEqual(expect.objectContaining({
+        runId: "habit-run-1",
+        sessionPath: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/session.json",
+        pendingDir: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/pending",
+      }))
+      expect(runTurn.mock.calls[1]?.[0].habitSession).toEqual(expect.objectContaining({
+        runId: "habit-run-1",
+        sessionPath: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/session.json",
+        pendingDir: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/pending",
       }))
     })
 
@@ -682,7 +1005,7 @@ describe("inner-dialog-worker", () => {
       await worker.handleMessage({ type: "heartbeat" })
 
       expect(runTurn).toHaveBeenCalledTimes(1)
-      expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
       expect(mockRecordHabitRun).toHaveBeenCalledTimes(2)
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(
         expect.objectContaining({

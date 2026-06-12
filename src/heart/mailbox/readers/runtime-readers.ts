@@ -5,6 +5,7 @@ import { parseHabitFile } from "../../habits/habit-parser"
 import { applyHabitRuntimeState } from "../../habits/habit-runtime-state"
 import { getAgentBundlesRoot } from "../../identity"
 import { isDaemonStatus } from "../../daemon/daemon-health"
+import { listHabitRunReceipts, readHabitRunReceipt, type HabitRunReceipt } from "../../../arc/flight-recorder"
 import {
   type MailboxAttentionQueueItem,
   type MailboxAttentionView,
@@ -19,6 +20,9 @@ import {
   type MailboxFriendSummary,
   type MailboxFriendView,
   type MailboxHabitItem,
+  type MailboxHabitRunDetailView,
+  type MailboxHabitRunSummary,
+  type MailboxHabitRunView,
   type MailboxHabitView,
   type MailboxLogEntry,
   type MailboxLogView,
@@ -42,6 +46,8 @@ import { readSessionInventory } from "./sessions"
 import { resolveDeskRecordPaths } from "../../../mind/record-paths"
 
 const NOTES_VIEW_LIMIT = 20
+const DEFAULT_HABIT_RUN_LIMIT = 20
+const MAX_HABIT_RUN_LIMIT = 100
 
 /* v8 ignore start — defensive parsing of on-disk JSON, fallback branches are safety nets */
 export function readCodingDeep(agentRoot: string): MailboxCodingDeep {
@@ -629,6 +635,60 @@ export function readHabitView(agentRoot: string, options: MailboxReadOptions = {
     overdueCount: items.filter((h) => h.isOverdue).length,
     items,
   }
+}
+
+function normalizeHabitRunLimit(limit?: number): number {
+  if (limit === undefined || !Number.isInteger(limit)) return DEFAULT_HABIT_RUN_LIMIT
+  return Math.min(MAX_HABIT_RUN_LIMIT, Math.max(1, limit))
+}
+
+function summarizeHabitRunReceipt(receipt: HabitRunReceipt): MailboxHabitRunSummary {
+  return {
+    runId: receipt.runId,
+    habitName: receipt.habitName,
+    trigger: receipt.trigger,
+    startedAt: receipt.startedAt,
+    endedAt: receipt.endedAt,
+    outcome: receipt.outcome,
+    nextRunAt: receipt.nextRunAt,
+    permissionEnvelope: receipt.permissionEnvelope,
+    toolPolicy: receipt.toolPolicy,
+    producedRefs: receipt.producedRefs,
+    surfaceAttempts: receipt.surfaceAttempts,
+    errorCount: receipt.errors.length,
+    errors: receipt.errors,
+    receiptLocator: receipt.receiptLocator,
+    sessionLocator: receipt.sessionLocator,
+    runtimeStateLocator: receipt.runtimeStateLocator,
+  }
+}
+
+export function readHabitRunView(agentRoot: string, options: { limit?: number } = {}): MailboxHabitRunView {
+  const limit = normalizeHabitRunLimit(options.limit)
+  const receipts = listHabitRunReceipts(agentRoot)
+  const items = receipts.slice(0, limit).map(summarizeHabitRunReceipt)
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.mailbox_habit_runs_read",
+    message: "reading mailbox habit run receipts",
+    meta: { agentRoot, totalCount: receipts.length, limit, itemCount: items.length },
+  })
+  return {
+    totalCount: receipts.length,
+    limit,
+    items,
+  }
+}
+
+export function readHabitRunReceiptView(agentRoot: string, runId: string): MailboxHabitRunDetailView | null {
+  const receipt = readHabitRunReceipt(agentRoot, runId)
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.mailbox_habit_run_receipt_read",
+    message: "reading mailbox habit run receipt",
+    meta: { agentRoot, runId, found: receipt !== null },
+  })
+  return receipt ? { receipt } : null
 }
 
 export function readNeedsMeView(agentName: string, options: MailboxReadOptions = {}): MailboxNeedsMeView {

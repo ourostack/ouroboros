@@ -1300,6 +1300,7 @@ describe("Mailbox deep-tab live refresh", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith("/habits")) return jsonResponse({ totalCount: 1, items: [{ name: "heartbeat", cadence: "5m", lastRun: "2026-04-09T17:00:00.000Z", isOverdue: false, status: "active" }] })
+      if (url.endsWith("/habit-runs")) return jsonResponse({ totalCount: 0, limit: 20, items: [] })
       if (url.endsWith("/inner-transcript")) return jsonResponse({ friendId: "self", friendName: "self", channel: "inner", key: "inner", sessionPath: "/tmp/inner.json", messageCount: 0, lastUsage: null, continuity: null, messages: [] })
       throw new Error(`unexpected url: ${url}`)
     })
@@ -1313,12 +1314,112 @@ describe("Mailbox deep-tab live refresh", () => {
       </NavigationContext.Provider>
     )
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     await act(async () => {
       ui.getByText("Load inner dialog").click()
       await flushRefresh()
     })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+
+    ui.rerender(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={1} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6))
+  })
+
+  it("renders habit run history without loading habit transcripts", async () => {
+    const habitRuns = {
+      totalCount: 2,
+      limit: 20,
+      items: [{
+        runId: "run-mail-check-2026-06-11-long-id-for-wrapping",
+        habitName: "mail-check",
+        trigger: "cron",
+        startedAt: "2026-06-11T10:00:00.000Z",
+        endedAt: "2026-06-11T10:02:00.000Z",
+        outcome: "blocked",
+        nextRunAt: "2026-06-11T10:30:00.000Z",
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: true,
+          returnRoutes: [{ kind: "originator", recipient: "ari/cli/session", status: "allowed", friendId: "ari", channel: "cli", key: "session" }],
+          deniedTools: ["shell"],
+          warnings: ["originator route checked"],
+        },
+        toolPolicy: {
+          requestedTools: null,
+          grantedTools: ["send_message", "surface"],
+          deniedTools: ["shell"],
+          outwardMessagingAllowed: true,
+        },
+        producedRefs: [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }],
+        surfaceAttempts: [{
+          recipient: "ari",
+          channel: "cli",
+          reason: "needed_input",
+          result: "queued",
+          routeKind: "originator",
+          rawStatus: "queued",
+        }],
+        errorCount: 1,
+        errors: ["need reply target"],
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-mail-check-2026-06-11-long-id-for-wrapping.json",
+        sessionLocator: "state/habit-sessions/run-mail-check-2026-06-11-long-id-for-wrapping/session.json",
+        runtimeStateLocator: "state/habits/mail-check.json",
+      }, {
+        runId: "run-heartbeat",
+        habitName: "heartbeat",
+        trigger: "poke",
+        startedAt: "2026-06-11T09:00:00.000Z",
+        endedAt: "2026-06-11T09:01:00.000Z",
+        outcome: "surfaced",
+        nextRunAt: null,
+        permissionEnvelope: { schemaVersion: 1, canMessageOutward: false, returnRoutes: [], deniedTools: ["send_message", "surface"], warnings: [] },
+        toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: ["send_message", "surface"], outwardMessagingAllowed: false },
+        producedRefs: [],
+        surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "failed", error: "offline" }],
+        errorCount: 0,
+        errors: [],
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-heartbeat.json",
+        sessionLocator: "state/habit-sessions/run-heartbeat/session.json",
+        runtimeStateLocator: "state/habits/heartbeat.json",
+      }],
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/habits")) return jsonResponse({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })
+      if (url.endsWith("/habit-runs")) return jsonResponse(habitRuns)
+      if (url.endsWith("/inner-transcript")) return jsonResponse({ transcriptShouldNotLeak: true })
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView()
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={0} />
+      </NavigationContext.Provider>
+    )
+
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock).toHaveBeenCalledWith("/api/agents/slugger/habit-runs", expect.any(Object))
+    expect(ui.getByText("Habit sessions")).toBeTruthy()
+    expect(ui.getByText("mail-check")).toBeTruthy()
+    expect(ui.getByText("blocked")).toBeTruthy()
+    expect(ui.getByText("originator")).toBeTruthy()
+    expect(ui.getByText("allowed")).toBeTruthy()
+    expect(ui.getByText("ari/cli/session")).toBeTruthy()
+    expect(ui.getByText("originator route checked")).toBeTruthy()
+    expect(ui.getByText("queued")).toBeTruthy()
+    expect(ui.getByText("need reply target")).toBeTruthy()
+    expect(ui.getByText("shell")).toBeTruthy()
+    expect(ui.getByText("arc/flight-recorder/habit-receipts/run-mail-check-2026-06-11-long-id-for-wrapping.json")).toBeTruthy()
+    expect(ui.getByText("failed")).toBeTruthy()
+    expect(ui.queryByText("transcriptShouldNotLeak")).toBeNull()
 
     ui.rerender(
       <NavigationContext.Provider value={() => {}}>
@@ -1327,6 +1428,83 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+  })
+
+  it("does not show an empty habit run ledger while history is loading", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/habits")) return Promise.resolve(jsonResponse({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }))
+      if (url.endsWith("/habit-runs")) return new Promise<Response>(() => {})
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView()
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={0} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(ui.getByText("Loading runs")).toBeTruthy()
+    expect(ui.queryByText("No habit sessions recorded.")).toBeNull()
+  })
+
+  it("clears stale habit run rows when refresh cannot reload history", async () => {
+    const habitRuns = {
+      totalCount: 1,
+      limit: 20,
+      items: [{
+        runId: "run-stale-row",
+        habitName: "mail-check",
+        trigger: "cron",
+        startedAt: "2026-06-11T10:00:00.000Z",
+        endedAt: "2026-06-11T10:02:00.000Z",
+        outcome: "surfaced",
+        nextRunAt: null,
+        permissionEnvelope: { schemaVersion: 1, canMessageOutward: true, returnRoutes: [], deniedTools: [], warnings: [] },
+        toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: true },
+        producedRefs: [],
+        surfaceAttempts: [],
+        errorCount: 0,
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-stale-row.json",
+        sessionLocator: "state/habit-sessions/run-stale-row/session.json",
+        runtimeStateLocator: "state/habits/mail-check.json",
+      }],
+    }
+    let habitRunCalls = 0
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/habits")) return Promise.resolve(jsonResponse({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }))
+      if (url.endsWith("/habit-runs")) {
+        habitRunCalls += 1
+        if (habitRunCalls === 1) return Promise.resolve(jsonResponse(habitRuns))
+        return Promise.reject(new Error("network down"))
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView()
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={0} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(ui.getByText("mail-check")).toBeTruthy())
+
+    ui.rerender(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={1} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(ui.getByText("Habit sessions unavailable.")).toBeTruthy())
+    expect(ui.queryByText("mail-check")).toBeNull()
+    expect(ui.queryByText("1 recorded")).toBeNull()
   })
 
   it("re-fetches notes data when refreshGeneration advances", async () => {

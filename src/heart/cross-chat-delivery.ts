@@ -21,6 +21,7 @@ export interface CrossChatDeliveryRequest {
 export interface CrossChatDeliveryResult {
   status: "delivered_now" | "queued_for_later" | "blocked" | "failed"
   detail: string
+  rawStatus?: CrossChatDirectDeliveryResult["status"] | "queued_for_later"
 }
 
 export interface CrossChatDirectDeliveryResult {
@@ -50,11 +51,13 @@ function queueForLater(
   request: CrossChatDeliveryRequest,
   deps: CrossChatDeliveryDeps,
   detail: string,
+  rawStatus: CrossChatDeliveryResult["rawStatus"] = "queued_for_later",
 ): CrossChatDeliveryResult {
   deps.queuePending(buildPendingEnvelope(request, deps.agentName, (deps.now ?? Date.now)()))
   return {
     status: "queued_for_later",
     detail,
+    ...(rawStatus !== "queued_for_later" ? { rawStatus } : {}),
   }
 }
 
@@ -148,6 +151,7 @@ export async function deliverCrossChatMessage(
       request,
       deps,
       direct.detail.trim() || "live delivery unavailable right now; queued for the next active turn",
+      direct.status,
     )
     emitNervesEvent({
       component: "engine",

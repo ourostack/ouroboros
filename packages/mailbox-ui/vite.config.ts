@@ -24,5 +24,14 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replaceAll("\\", "/")
+          if (!normalized.includes("/node_modules/")) return undefined
+          return "vendor"
+        },
+      },
+    },
   },
 })

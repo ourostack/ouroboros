@@ -85,6 +85,10 @@ import * as sessionActivity from "../../../heart/session-activity"
 import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
+import {
+  writeHabitRunReceipt,
+  type HabitRunReceipt,
+} from "../../../arc/flight-recorder"
 
 const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
@@ -7995,12 +7999,59 @@ describe("ouro habit CLI parsing", () => {
     expect(() => parseOuroCommand(["habit", "delete"])).toThrow("Usage")
   })
 
+  it("parses ouro habit runs with default and bounded limit", () => {
+    expect(parseOuroCommand(["habit", "runs", "--agent", "slugger"])).toEqual({
+      kind: "habit.runs",
+      agent: "slugger",
+      limit: 20,
+    })
+    expect(parseOuroCommand(["habit", "runs"])).toEqual({
+      kind: "habit.runs",
+      limit: 20,
+    })
+    expect(parseOuroCommand(["habit", "runs", "--agent", "slugger", "--limit", "5"])).toEqual({
+      kind: "habit.runs",
+      agent: "slugger",
+      limit: 5,
+    })
+    expect(() => parseOuroCommand(["habit", "runs", "--limit", "0"])).toThrow("limit")
+    expect(() => parseOuroCommand(["habit", "runs", "--limit", "101"])).toThrow("limit")
+    expect(() => parseOuroCommand(["habit", "runs", "--limit"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["habit", "runs", "--unknown", "5"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["habit", "runs", "--limit", "1.5"])).toThrow("limit")
+  })
+
+  it("parses ouro habit inspect with an agent and run id", () => {
+    expect(parseOuroCommand(["habit", "inspect", "--agent", "slugger", "run-new"])).toEqual({
+      kind: "habit.inspect",
+      agent: "slugger",
+      runId: "run-new",
+    })
+    expect(parseOuroCommand(["habit", "inspect", "run-new"])).toEqual({
+      kind: "habit.inspect",
+      runId: "run-new",
+    })
+    expect(() => parseOuroCommand(["habit", "inspect", "--agent", "slugger"])).toThrow("Usage")
+  })
+
   it("parses poke --habit <name> as habit poke", () => {
     expect(parseOuroCommand(["poke", "slugger", "--habit", "heartbeat"])).toEqual({
       kind: "habit.poke",
       agent: "slugger",
       habitName: "heartbeat",
+      trigger: "poke",
     })
+  })
+
+  it("parses generated habit pokes with canonical launchd trigger provenance", () => {
+    expect(parseOuroCommand(["poke", "slugger", "--habit", "heartbeat", "--trigger", "launchd"])).toEqual({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "launchd",
+    })
+    expect(() => parseOuroCommand(["poke", "slugger", "--habit", "heartbeat", "--trigger", "banana"])).toThrow("trigger")
+    expect(() => parseOuroCommand(["poke", "slugger", "--trigger", "manual"])).toThrow("Usage")
   })
 
   it("poke --habit takes priority over --task", () => {
@@ -8008,6 +8059,7 @@ describe("ouro habit CLI parsing", () => {
       kind: "habit.poke",
       agent: "slugger",
       habitName: "heartbeat",
+      trigger: "poke",
     })
   })
 
@@ -8029,6 +8081,49 @@ describe("ouro habit CLI parsing", () => {
 })
 
 describe("ouro habit CLI execution", () => {
+  function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunReceipt {
+    const runId = overrides.runId ?? "run-base"
+    return {
+      schemaVersion: 2,
+      runId,
+      sessionId: runId,
+      habitName: overrides.habitName ?? "heartbeat",
+      trigger: overrides.trigger ?? "poke",
+      startedAt: overrides.startedAt ?? "2026-06-11T10:00:00.000Z",
+      endedAt: overrides.endedAt ?? "2026-06-11T10:01:00.000Z",
+      outcome: overrides.outcome ?? "surfaced",
+      definitionLocator: overrides.definitionLocator ?? "habits/heartbeat.md",
+      sessionLocator: overrides.sessionLocator ?? `state/habit-sessions/${runId}/session.json`,
+      pendingLocator: overrides.pendingLocator ?? `state/habit-sessions/${runId}/pending`,
+      runtimeStateLocator: overrides.runtimeStateLocator ?? "state/habits/heartbeat.json",
+      receiptLocator: overrides.receiptLocator ?? `arc/flight-recorder/habit-receipts/${runId}.json`,
+      nextRunAt: overrides.nextRunAt ?? "2026-06-12T10:01:00.000Z",
+      permissionEnvelope: overrides.permissionEnvelope ?? {
+        schemaVersion: 1,
+        canMessageOutward: true,
+        returnRoutes: [{ kind: "family", recipient: "ari", status: "allowed", friendId: "ari", channel: "cli", key: "session" }],
+        deniedTools: [],
+        warnings: [],
+      },
+      toolPolicy: overrides.toolPolicy ?? {
+        requestedTools: null,
+        grantedTools: ["send_message"],
+        deniedTools: [],
+        outwardMessagingAllowed: true,
+      },
+      producedRefs: overrides.producedRefs ?? [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }],
+      surfaceAttempts: overrides.surfaceAttempts ?? [{
+        recipient: "ari",
+        channel: "cli",
+        reason: "status",
+        result: "delivered_now",
+        rawStatus: "delivered_now",
+        routeKind: "family",
+      }],
+      errors: overrides.errors ?? [],
+    }
+  }
+
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     return {
       socketPath: "/tmp/ouro-test.sock",
@@ -8104,6 +8199,106 @@ describe("ouro habit CLI execution", () => {
     expect(result).toContain("24h")
     expect(result).toContain("paused")
     expect(result).toContain("2026-03-27T12:00:00.000Z")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro habit runs lists recent habit receipts without using the daemon", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-runs-"))
+    cleanup.push(tempBundle)
+    writeHabitRunReceipt(tempBundle, makeHabitReceipt({
+      runId: "run-old",
+      habitName: "heartbeat",
+      trigger: "poke",
+      outcome: "surfaced",
+      endedAt: "2026-06-11T09:00:00.000Z",
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-old.json",
+    }))
+    writeHabitRunReceipt(tempBundle, makeHabitReceipt({
+      runId: "run-new-b",
+      habitName: "sync",
+      trigger: "cron",
+      outcome: "blocked",
+      endedAt: "2026-06-11T10:00:00.000Z",
+      errors: ["needs input"],
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-new-b.json",
+    }))
+    writeHabitRunReceipt(tempBundle, makeHabitReceipt({
+      runId: "run-new-a",
+      habitName: "journal",
+      trigger: "overdue",
+      outcome: "error",
+      endedAt: "2026-06-11T10:00:00.000Z",
+      errors: ["boom"],
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-new-a.json",
+    }))
+    fs.writeFileSync(path.join(tempBundle, "arc", "flight-recorder", "habit-receipts", "malformed.json"), "{nope", "utf-8")
+
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+    const result = await runOuroCli(["habit", "runs", "--agent", "test", "--limit", "2"], deps)
+
+    expect(result.split("\n")).toEqual([
+      "run-new-b  habit=sync  trigger=cron  outcome=blocked  endedAt=2026-06-11T10:00:00.000Z  receipt=arc/flight-recorder/habit-receipts/run-new-b.json",
+      "run-new-a  habit=journal  trigger=overdue  outcome=error  endedAt=2026-06-11T10:00:00.000Z  receipt=arc/flight-recorder/habit-receipts/run-new-a.json",
+    ])
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro habit runs prints an empty-state line when no receipts exist", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-runs-empty-"))
+    cleanup.push(tempBundle)
+
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+    const result = await runOuroCli(["habit", "runs", "--agent", "test"], deps)
+
+    expect(result).toBe("no habit runs found")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro habit inspect prints the full receipt as stable pretty JSON", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-inspect-"))
+    cleanup.push(tempBundle)
+    const receipt = makeHabitReceipt({
+      runId: "run-inspect",
+      habitName: "heartbeat",
+      outcome: "surfaced",
+      endedAt: "2026-06-11T10:01:00.000Z",
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-inspect.json",
+    })
+    writeHabitRunReceipt(tempBundle, receipt)
+    fs.mkdirSync(path.join(tempBundle, "state", "habit-sessions", "run-inspect"), { recursive: true })
+    fs.writeFileSync(path.join(tempBundle, "state", "habit-sessions", "run-inspect", "session.json"), JSON.stringify({
+      transcriptShouldNotBeLoaded: true,
+    }), "utf-8")
+
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+    const result = await runOuroCli(["habit", "inspect", "--agent", "test", "run-inspect"], deps)
+
+    expect(result).toBe(`${JSON.stringify(receipt, null, 2)}\n`)
+    expect(result).not.toContain("transcriptShouldNotBeLoaded")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro habit inspect rejects unsafe, missing, and malformed receipts with exit code 1", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-inspect-missing-"))
+    cleanup.push(tempBundle)
+    const setExitCode = vi.fn()
+    const deps = makeDeps({ agentBundleRoot: tempBundle, setExitCode })
+
+    const unsafe = await runOuroCli(["habit", "inspect", "--agent", "test", "../escape"], deps)
+    expect(unsafe).toBe("error: habit run '../escape' not found")
+    expect(setExitCode).toHaveBeenLastCalledWith(1)
+
+    const encoded = await runOuroCli(["habit", "inspect", "--agent", "test", "bad%2fescape"], deps)
+    expect(encoded).toBe("error: habit run 'bad%2fescape' not found")
+    expect(setExitCode).toHaveBeenLastCalledWith(1)
+
+    const receiptsDir = path.join(tempBundle, "arc", "flight-recorder", "habit-receipts")
+    fs.mkdirSync(receiptsDir, { recursive: true })
+    fs.writeFileSync(path.join(receiptsDir, "malformed.json"), "{\"schemaVersion\":2}", "utf-8")
+
+    const malformed = await runOuroCli(["habit", "inspect", "--agent", "test", "malformed"], deps)
+    expect(malformed).toBe("error: habit run 'malformed' not found")
+    expect(setExitCode).toHaveBeenLastCalledWith(1)
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
@@ -8213,6 +8408,24 @@ describe("ouro habit CLI execution", () => {
         kind: "habit.poke",
         agent: "slugger",
         habitName: "heartbeat",
+        trigger: "poke",
+      }),
+    )
+  })
+
+  it("ouro poke --habit forwards generated trigger provenance to the daemon", async () => {
+    const deps = makeDeps({
+      sendCommand: vi.fn(async () => ({ ok: true, message: "poked" })),
+    })
+    const result = await runOuroCli(["poke", "slugger", "--habit", "heartbeat", "--trigger", "launchd"], deps)
+    expect(result).toContain("poked")
+    expect(deps.sendCommand).toHaveBeenCalledWith(
+      deps.socketPath,
+      expect.objectContaining({
+        kind: "habit.poke",
+        agent: "slugger",
+        habitName: "heartbeat",
+        trigger: "launchd",
       }),
     )
   })

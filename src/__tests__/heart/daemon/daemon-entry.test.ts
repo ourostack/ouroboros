@@ -11,12 +11,14 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
 }))
 
-const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock } = vi.hoisted(() => ({
+const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock, habitSchedulerListJobsMock, habitSchedulerTriggerJobMock } = vi.hoisted(() => ({
   habitSchedulerStartMock: vi.fn(),
   habitSchedulerStopMock: vi.fn(),
   habitSchedulerWatchMock: vi.fn(),
   habitSchedulerStopWatchMock: vi.fn(),
   habitSchedulerStartPeriodicReconciliationMock: vi.fn(),
+  habitSchedulerListJobsMock: vi.fn(),
+  habitSchedulerTriggerJobMock: vi.fn(),
 }))
 
 const { migrateHabitsFromTaskSystemMock } = vi.hoisted(() => ({
@@ -31,6 +33,8 @@ vi.mock("../../../heart/habits/habit-scheduler", () => ({
     watchForChanges = habitSchedulerWatchMock
     stopWatching = habitSchedulerStopWatchMock
     startPeriodicReconciliation = habitSchedulerStartPeriodicReconciliationMock
+    listJobs = habitSchedulerListJobsMock
+    triggerJob = habitSchedulerTriggerJobMock
   },
 }))
 
@@ -89,6 +93,8 @@ describe("daemon entrypoint", () => {
     originalHome = process.env.HOME
     testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-test-home-"))
     process.env.HOME = testHomeRoot
+    habitSchedulerListJobsMock.mockReturnValue([])
+    habitSchedulerTriggerJobMock.mockResolvedValue({ ok: false, message: "unhandled habit trigger" })
   })
 
   afterEach(() => {
@@ -99,6 +105,8 @@ describe("daemon entrypoint", () => {
     habitSchedulerWatchMock.mockReset()
     habitSchedulerStopWatchMock.mockReset()
     habitSchedulerStartPeriodicReconciliationMock.mockReset()
+    habitSchedulerListJobsMock.mockReset()
+    habitSchedulerTriggerJobMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     createMcpStatusCanaryProbeMock.mockReset()
@@ -201,6 +209,7 @@ describe("daemon entrypoint", () => {
       scheduler: {
         listJobs: () => unknown[]
         triggerJob: (jobId: string) => Promise<{ ok: boolean; message: string }>
+        triggerHabitJob: (jobId: string) => Promise<{ ok: boolean; message: string }>
       }
       healthMonitor: { runChecks: () => Promise<unknown[]> }
       router: {
@@ -263,9 +272,18 @@ describe("daemon entrypoint", () => {
     expect(onSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function))
 
     // HabitScheduler should be started (not HeartbeatTimer)
-    expect(habitSchedulerStartMock).toHaveBeenCalled()
+    await vi.waitFor(() => expect(habitSchedulerStartMock).toHaveBeenCalled())
     // Migration should be called before scheduler start
     expect(migrateHabitsFromTaskSystemMock).toHaveBeenCalled()
+    habitSchedulerTriggerJobMock.mockResolvedValueOnce({
+      ok: true,
+      message: "triggered habit slugger:heartbeat:cadence",
+    })
+    await expect(daemonOptions.scheduler.triggerHabitJob("slugger:heartbeat:cadence")).resolves.toEqual({
+      ok: true,
+      message: "triggered habit slugger:heartbeat:cadence",
+    })
+    expect(habitSchedulerTriggerJobMock).toHaveBeenCalledWith("slugger:heartbeat:cadence", "cron")
 
     onHandlers.SIGINT?.()
     await Promise.resolve()
@@ -410,8 +428,13 @@ describe("daemon entrypoint", () => {
     const stop = vi.fn(async () => undefined)
     const emitNervesEvent = vi.fn()
     const configureDaemonRuntimeLogger = vi.fn()
+    const daemonCtor = vi.fn()
     const processManagerCtor = vi.fn()
     const schedulerCtor = vi.fn()
+    const schedulerStart = vi.fn()
+    const schedulerStop = vi.fn()
+    const schedulerReconcile = vi.fn(async () => undefined)
+    const schedulerRecordTaskRun = vi.fn(async () => undefined)
     const senseManagerCtor = vi.fn()
 
     vi.spyOn(process, "on").mockImplementation(((
@@ -420,6 +443,9 @@ describe("daemon entrypoint", () => {
     ) => process) as any)
 
     class MockOuroDaemon {
+      constructor(options: unknown) {
+        daemonCtor(options)
+      }
       start = start
       stop = stop
     }
@@ -435,8 +461,12 @@ describe("daemon entrypoint", () => {
       constructor(options: unknown) {
         schedulerCtor(options)
       }
-      listJobs = vi.fn(() => [])
-      triggerJob = vi.fn(async (jobId: string) => ({ ok: false, message: `unknown scheduled job: ${jobId}` }))
+      listJobs = vi.fn(() => [{ id: "slugger:nightly", schedule: "0 8 * * *", lastRun: null }])
+      triggerJob = vi.fn(async (jobId: string) => ({ ok: true, message: `triggered scheduled job: ${jobId}` }))
+      start = schedulerStart
+      stop = schedulerStop
+      reconcile = schedulerReconcile
+      recordTaskRun = schedulerRecordTaskRun
     }
 
     vi.doMock("os", async () => {
@@ -468,6 +498,38 @@ describe("daemon entrypoint", () => {
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
+
+    const daemonOptions = daemonCtor.mock.calls[0]?.[0] as {
+      scheduler: {
+        listJobs: () => unknown[]
+        triggerJob: (jobId: string) => Promise<{ ok: boolean; message: string }>
+        triggerHabitJob: (jobId: string) => Promise<{ ok: boolean; message: string }>
+        start: () => void
+        stop: () => void
+        reconcile: () => Promise<void>
+        recordTaskRun: (agent: string, taskId: string) => Promise<void>
+      }
+    }
+    expect(daemonOptions.scheduler.listJobs()).toEqual([
+      { id: "slugger:nightly", schedule: "0 8 * * *", lastRun: null },
+    ])
+    await expect(daemonOptions.scheduler.triggerJob("slugger:nightly")).resolves.toEqual({
+      ok: true,
+      message: "triggered scheduled job: slugger:nightly",
+    })
+    await expect(daemonOptions.scheduler.triggerHabitJob("slugger:missing:cadence")).resolves.toEqual({
+      ok: false,
+      message: "unknown habit job: slugger:missing:cadence",
+    })
+    daemonOptions.scheduler.start()
+    daemonOptions.scheduler.stop()
+    await daemonOptions.scheduler.reconcile()
+    await daemonOptions.scheduler.recordTaskRun("slugger", "nightly")
+    expect(schedulerStart).toHaveBeenCalledTimes(1)
+    expect(schedulerStop).toHaveBeenCalledTimes(1)
+    expect(schedulerReconcile).toHaveBeenCalledTimes(1)
+    expect(schedulerRecordTaskRun).toHaveBeenCalledWith("slugger", "nightly")
+
     await Promise.resolve()
 
     expect(processManagerCtor).toHaveBeenCalledWith(

@@ -1477,6 +1477,53 @@ describe("inner dialog runtime", () => {
     expect(content).toBe("unified habit turn message")
   })
 
+  it("uses a fresh per-run habit session path and habit prompt instead of bootstrapping", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "heartbeat.md"),
+      "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\ncreated: 2026-03-01\n---\n\nCheck in on responsibilities.",
+      "utf8",
+    )
+    const runId = "2026-06-11T17-00-00-000Z-heartbeat-abc123ef"
+    const sessionPath = path.join(agentRoot, "state", "habit-sessions", runId, "session.json")
+    const pendingDir = path.join(agentRoot, "state", "habit-sessions", runId, "pending")
+    mockLoadSession.mockReturnValueOnce(null)
+    mockBuildHabitTurnMessage.mockReturnValueOnce("fresh habit turn message")
+
+    await (runInnerDialogTurn as any)({
+      reason: "habit",
+      habitName: "heartbeat",
+      now: () => new Date("2026-06-11T17:00:00.000Z"),
+      habitSession: {
+        runId,
+        sessionPath,
+        pendingDir,
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: null,
+          grantedTools: ["read"],
+          deniedTools: ["shell", "send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(mockLoadSession).toHaveBeenCalledWith(sessionPath)
+    expect(mockBuildHabitTurnMessage).toHaveBeenCalledTimes(1)
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.pendingDir).toBe(pendingDir)
+    expect(input.runAgentOptions.toolContext.habitSession.runId).toBe(runId)
+    await expect(input.sessionLoader.loadOrCreate()).resolves.toMatchObject({ sessionPath })
+    expect(String(input.messages[0].content)).toBe("fresh habit turn message")
+  })
+
   // ── Habit turn tests ──────────────────────────────────────────────
 
   it("passes habitBody and habitTitle to buildHabitTurnMessage for heartbeat", async () => {

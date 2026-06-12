@@ -3,8 +3,8 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel } from "../repertoire/tools";
-import type { ToolContext } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName } from "../repertoire/tools";
+import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
@@ -41,6 +41,7 @@ import {
   type ProviderCredentialRecord,
 } from "./provider-credentials";
 import type { ProviderLane } from "./provider-lanes";
+import { resolveHabitReturnRoute } from "./habits/habit-session";
 import {
   ProviderAttemptAbortError,
   runProviderAttempt,
@@ -288,6 +289,57 @@ export interface ChannelCallbacks {
   flushNow?(): void | Promise<void>;
 }
 
+type HabitBufferedCallbackEvent =
+  | { kind: "stream-start" }
+  | { kind: "text"; text: string }
+  | { kind: "reasoning"; text: string }
+  | { kind: "clear" }
+  | { kind: "flush" };
+
+export interface HabitCallbackBuffer {
+  callbacks: ChannelCallbacks;
+  flush(): Promise<void>;
+  discard(): void;
+}
+
+export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+  const events: HabitBufferedCallbackEvent[] = [];
+  return {
+    callbacks: {
+      ...callbacks,
+      onModelStreamStart: () => { events.push({ kind: "stream-start" }) },
+      onTextChunk: (text) => { events.push({ kind: "text", text }) },
+      onReasoningChunk: (text) => { events.push({ kind: "reasoning", text }) },
+      onClearText: () => { events.push({ kind: "clear" }) },
+      flushNow: () => { events.push({ kind: "flush" }) },
+    },
+    async flush(): Promise<void> {
+      for (const event of events.splice(0)) {
+        switch (event.kind) {
+          case "stream-start":
+            callbacks.onModelStreamStart();
+            break;
+          case "text":
+            callbacks.onTextChunk(event.text);
+            break;
+          case "reasoning":
+            callbacks.onReasoningChunk(event.text);
+            break;
+          case "clear":
+            callbacks.onClearText?.();
+            break;
+          case "flush":
+            await callbacks.flushNow?.();
+            break;
+        }
+      }
+    },
+    discard(): void {
+      events.splice(0);
+    },
+  };
+}
+
 export interface RunAgentOptions {
   toolChoiceRequired?: boolean;
   toolContext?: ToolContext;
@@ -317,6 +369,8 @@ export interface RunAgentOptions {
   providerVisibility?: AgentProviderVisibility;
   /** Structured orientation frame for the current inbound turn. */
   orientationFrame?: OrientationFrame;
+  /** Habit-session policy envelope for private habit turns. */
+  habitSession?: HabitSessionToolContext;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -361,6 +415,87 @@ function hasFreshPendingWork(options?: RunAgentOptions): boolean {
     typeof message?.content === "string"
     && message.content.trim().length > 0,
   )
+}
+
+const HABIT_CONTROL_TOOLS = new Set(["rest", "ponder", "observe"])
+
+function habitToolArgs(call: { name: string; arguments: string }): { ok: true; args: Record<string, string> } | { ok: false; reason: string } {
+  try {
+    const parsed = JSON.parse(call.arguments)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, reason: `habit tool '${call.name}' arguments must be a JSON object` }
+    }
+    return { ok: true, args: parsed as Record<string, string> }
+  } catch {
+    return { ok: false, reason: `habit tool '${call.name}' has malformed JSON arguments` }
+  }
+}
+
+function highRiskExternalMutation(profile: ToolRiskProfile): string | null {
+  if (profile.risk !== "high") return null
+  const mutates = typeof profile.mutates === "string" ? [profile.mutates] : [...profile.mutates]
+  return mutates.includes("external_side_effect") ? mutates.join(", ") : null
+}
+
+function recordBlockedHabitSurfaceAttempts(
+  habitSession: HabitSessionToolContext | undefined,
+  toolCalls: Array<{ name: string; arguments: string }>,
+  reason: string,
+): void {
+  if (toolCalls.some((call) => call.name !== "send_message" && call.name !== "surface")) {
+    habitSession?.recordError?.(`blocked habit tool batch: ${reason}`)
+  }
+  if (!habitSession?.recordSurfaceAttempt) return
+  for (const call of toolCalls) {
+    if (call.name !== "send_message" && call.name !== "surface") continue
+    const parsed = habitToolArgs(call)
+    const args = parsed.ok ? parsed.args : {}
+    habitSession.recordSurfaceAttempt({
+      recipient: String(args.friendId ?? args.delegationId ?? "unknown"),
+      channel: String(args.channel ?? call.name),
+      reason: "blocked",
+      result: "blocked",
+      rawStatus: "blocked",
+      error: reason,
+    })
+  }
+}
+
+async function habitToolBatchBlockReason(
+  habitSession: HabitSessionToolContext | undefined,
+  toolCalls: Array<{ name: string; arguments: string }>,
+  delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
+  activeToolNames: ReadonlySet<string>,
+): Promise<string | null> {
+  if (!habitSession) return null
+  const granted = new Set(habitSession.toolPolicy.grantedTools)
+  const denied = new Set(habitSession.toolPolicy.deniedTools)
+  for (const call of toolCalls) {
+    if (denied.has(call.name)) return `habit tool '${call.name}' is denied by this habit session`
+    if (!activeToolNames.has(call.name)) return `habit tool '${call.name}' was not advertised to this model turn`
+    if (HABIT_CONTROL_TOOLS.has(call.name)) continue
+    if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
+    const parsed = habitToolArgs(call)
+    if (!parsed.ok) return parsed.reason
+    const riskProfile = riskProfileForToolName(call.name, parsed.args)
+    if (!riskProfile) return `habit tool '${call.name}' does not have a known executable risk profile`
+    const externalMutation = highRiskExternalMutation(riskProfile)
+    if (externalMutation && call.name !== "send_message" && call.name !== "surface") {
+      return `habit tool '${call.name}' has high-risk executable mutation ${externalMutation}: ${riskProfile.reason}`
+    }
+    if (call.name === "send_message" || call.name === "surface") {
+      const route = await resolveHabitReturnRoute({
+        agentRoot: getAgentRoot(),
+        envelope: habitSession.permissionEnvelope,
+        toolName: call.name,
+        args: parsed.args,
+        friendStore: habitSession.friendStore,
+        delegatedOrigins,
+      })
+      if (!route.allowed) return route.reason
+    }
+  }
+  return null
 }
 
 export type RunAgentOutcome =
@@ -984,6 +1119,7 @@ export async function runAgent(
   // Augment tool context with reasoning effort controls from provider
   const baseToolContext: ToolContext | undefined = options?.toolContext
     ?? (options?.orientationFrame ? { signin: async () => undefined, orientationFrame: options.orientationFrame } : undefined)
+  const habitSession = options?.habitSession ?? baseToolContext?.habitSession
   const augmentedToolContext: ToolContext | undefined = baseToolContext
       ? {
         ...baseToolContext,
@@ -991,6 +1127,14 @@ export async function runAgent(
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
         activeWorkFrame: options?.activeWorkFrame,
         orientationFrame: options?.orientationFrame ?? baseToolContext.orientationFrame,
+        ...(habitSession ? { habitSession } : {}),
+      }
+    : habitSession
+      ? {
+        signin: async () => undefined,
+        habitSession,
+        supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
+        setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
       }
     : undefined;
 
@@ -1008,17 +1152,25 @@ export async function runAgent(
     // Inner dialog gets restTool instead of settleTool (rest = end turn, gated by attention queue).
     // toolChoiceRequired only controls whether tool_choice: "required" is set in the API call.
     const isInnerDialog = channel === "inner";
+    const innerHabitCanSendMessage = isInnerDialog
+      && habitSession?.toolPolicy.outwardMessagingAllowed === true
+      && habitSession.toolPolicy.grantedTools.includes("send_message");
+    const innerHabitCanSurface = isInnerDialog
+      && (!habitSession || (habitSession.toolPolicy.outwardMessagingAllowed === true
+        && habitSession.toolPolicy.grantedTools.includes("surface")));
     const filteredBaseTools = isInnerDialog
-      ? baseTools.filter((t) => t.function.name !== "send_message")
+      ? baseTools.filter((t) => innerHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
     const activeTools = [
       ...filteredBaseTools,
       ponderTool,
-      ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
+      ...(isInnerDialog && innerHabitCanSurface ? [surfaceToolDef] : []),
+      ...(isInnerDialog ? [restTool] : []),
       ...(!isInnerDialog ? [observeTool] : []),
       ...(!isInnerDialog ? [settleTool] : []),
       ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
     ];
+    const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
@@ -1045,13 +1197,15 @@ export async function runAgent(
       break;
     }
     try {
+      const habitCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
         callbacks.onModelStart();
+        habitCallbackBufferRef.current = habitSession ? createHabitCallbackBuffer(callbacks) : null;
         try {
           return await providerRuntime.streamTurn({
             messages,
             activeTools,
-            callbacks,
+            callbacks: habitCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
             traceId,
             toolChoiceRequired,
@@ -1060,6 +1214,8 @@ export async function runAgent(
             systemPrompt: structuredSystemPrompt,
           });
         } catch (error) {
+          habitCallbackBufferRef.current?.discard();
+          habitCallbackBufferRef.current = null;
           if (signal?.aborted) throw new ProviderAttemptAbortError()
           throw error
         }
@@ -1131,6 +1287,8 @@ export async function runAgent(
       }
 
       const result = attempt.value;
+      const streamCallbackBuffer = habitCallbackBufferRef.current;
+      habitCallbackBufferRef.current = null;
 
       // Track usage from the latest API call
       if (result.usage) lastUsage = result.usage;
@@ -1213,6 +1371,7 @@ export async function runAgent(
         : null;
 
       if (!result.toolCalls.length) {
+        await streamCallbackBuffer?.flush();
         if (privateReturnTextAckRetryError) {
           callbacks.onClearText?.();
           if (noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
@@ -1295,6 +1454,26 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
+        const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins, activeToolNames)
+        if (habitBlockReason) {
+          streamCallbackBuffer?.discard();
+          recordBlockedHabitSurfaceAttempts(habitSession, result.toolCalls, habitBlockReason)
+          messages.push(msg)
+          const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
+          for (const call of result.toolCalls) {
+            messages.push({ role: "tool", tool_call_id: call.id, content: blockedOutput })
+            providerRuntime.appendToolOutput(call.id, blockedOutput)
+          }
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.habit_tool_batch_blocked",
+            message: "habit tool batch blocked before side effects",
+            meta: { reason: habitBlockReason, toolCalls: result.toolCalls.map((call) => call.name) },
+          })
+          continue
+        }
+        await streamCallbackBuffer?.flush();
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
@@ -1746,6 +1925,7 @@ export async function runAgent(
           } catch (e) {
             toolResult = `error: ${e}`;
             success = false;
+            augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
           toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);

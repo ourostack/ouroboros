@@ -31,6 +31,7 @@ import { readMailboxAgentState, readMailboxMachineState } from "../mailbox/mailb
 import { buildMailboxAgentView, buildMailboxMachineView } from "../mailbox/mailbox-view"
 import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
+import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -375,6 +376,7 @@ export interface DaemonProcessManagerLike {
 export interface DaemonSchedulerLike {
   listJobs(): DaemonCronJobSummary[]
   triggerJob(jobId: string): Promise<{ ok: boolean; message: string }>
+  triggerHabitJob?(jobId: string): Promise<{ ok: boolean; message: string }>
   start?: () => void
   stop?: () => void
   reconcile?: () => Promise<void> | void
@@ -428,7 +430,7 @@ export type DaemonCommand =
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
-  | { kind: "habit.poke"; agent: string; habitName: string }
+  | { kind: "habit.poke"; agent: string; habitName: string; trigger?: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
@@ -1453,6 +1455,10 @@ export class OuroDaemon {
         return { ok: true, summary, data: jobs }
       }
       case "cron.trigger": {
+        const habitResult = await this.scheduler.triggerHabitJob?.(command.jobId)
+        if (habitResult?.ok) {
+          return { ok: true, message: habitResult.message }
+        }
         const result = await this.scheduler.triggerJob(command.jobId)
         return { ok: result.ok, message: result.message }
       }
@@ -1519,7 +1525,11 @@ export class OuroDaemon {
         }
       }
       case "habit.poke": {
-        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName, trigger: "poke" })
+        const trigger = command.trigger ?? "poke"
+        if (!isHabitRunTrigger(trigger)) {
+          return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
+        }
+        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName, trigger })
         return {
           ok: true,
           message: `poked habit ${command.habitName} for ${command.agent}`,

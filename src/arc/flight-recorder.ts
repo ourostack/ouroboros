@@ -85,24 +85,89 @@ export interface FlightRecorderProducedRef {
   locator: string
 }
 
+export type HabitRunTrigger = "cron" | "launchd" | "poke" | "overdue" | "manual"
+export type HabitRunOutcome = "no_change" | "wrote_arc" | "updated_desk" | "wrote_record" | "surfaced" | "blocked" | "error"
+export type HabitReturnRouteKind = "family" | "originator" | "extra"
+export type HabitReturnRouteStatus = "allowed" | "unresolved"
+
+export interface HabitReturnRoute {
+  kind: HabitReturnRouteKind
+  recipient: string
+  status: HabitReturnRouteStatus
+  friendId?: string
+  channel?: string
+  key?: string
+  reason?: string
+}
+
+export interface HabitPermissionEnvelope {
+  schemaVersion: 1
+  canMessageOutward: boolean
+  returnRoutes: HabitReturnRoute[]
+  deniedTools: string[]
+  warnings: string[]
+}
+
+export interface HabitToolPolicy {
+  requestedTools: string[] | null
+  grantedTools: string[]
+  deniedTools: string[]
+  outwardMessagingAllowed: boolean
+}
+
 export interface HabitSurfaceAttempt {
   recipient: string
   channel: string
   reason: "needed_input" | "status" | "answer" | "blocked" | "other"
-  result: "sent" | "queued" | "blocked" | "failed"
+  result: "sent" | "delivered" | "delivered_now" | "queued" | "deferred" | "blocked" | "failed" | "unavailable"
+  routeKind?: HabitReturnRouteKind
+  rawStatus?: string
+  error?: string
 }
 
-export interface HabitRunReceipt {
+export interface LegacyHabitRunReceipt {
   schemaVersion: 1
   runId: string
   habitName: string
-  trigger: "cron" | "launchd" | "poke" | "overdue" | "manual"
+  trigger: HabitRunTrigger
   startedAt: string
   endedAt: string
-  outcome: "no_change" | "wrote_arc" | "updated_desk" | "wrote_record" | "surfaced" | "blocked" | "error"
+  outcome: HabitRunOutcome
   producedRefs: FlightRecorderProducedRef[]
   surfaceAttempts: HabitSurfaceAttempt[]
   errors: string[]
+}
+
+export interface HabitRunReceipt {
+  schemaVersion: 2
+  runId: string
+  sessionId: string
+  habitName: string
+  trigger: HabitRunTrigger
+  startedAt: string
+  endedAt: string
+  outcome: HabitRunOutcome
+  definitionLocator: string
+  sessionLocator: string
+  pendingLocator: string
+  runtimeStateLocator: string
+  receiptLocator: string
+  nextRunAt: string | null
+  permissionEnvelope: HabitPermissionEnvelope
+  toolPolicy: HabitToolPolicy
+  producedRefs: FlightRecorderProducedRef[]
+  surfaceAttempts: HabitSurfaceAttempt[]
+  errors: string[]
+}
+
+export type WritableHabitRunReceipt = HabitRunReceipt | LegacyHabitRunReceipt
+
+export function isHabitRunTrigger(value: unknown): value is HabitRunTrigger {
+  return value === "cron"
+    || value === "launchd"
+    || value === "poke"
+    || value === "overdue"
+    || value === "manual"
 }
 
 export interface RecordFlightRecorderEventInput extends Omit<FlightRecorderEvent, "schemaVersion" | "id" | "recordedAt" | "summary"> {
@@ -121,6 +186,10 @@ function eventsDir(agentRoot: string): string {
 
 function receiptsDir(agentRoot: string): string {
   return path.join(flightRecorderDir(agentRoot), "habit-receipts")
+}
+
+function habitReceiptPath(agentRoot: string, runId: string): string {
+  return path.join(receiptsDir(agentRoot), `${runId}.json`)
 }
 
 export function flightRecorderLatestPath(agentRoot: string): string {
@@ -392,20 +461,282 @@ export function recordFlightRecorderEvent(agentRoot: string, input: RecordFlight
   return event
 }
 
-export function writeHabitRunReceipt(agentRoot: string, receipt: HabitRunReceipt): void {
-  fs.mkdirSync(receiptsDir(agentRoot), { recursive: true })
-  const safeReceipt: HabitRunReceipt = {
+export function isSafeHabitRunId(value: unknown): value is string {
+  return typeof value === "string"
+    && /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value)
+    && !value.includes("..")
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function isProducedRefArray(value: unknown): value is FlightRecorderProducedRef[] {
+  return Array.isArray(value)
+    && value.every((entry) => isPlainRecord(entry)
+      && (entry.kind === "arc"
+        || entry.kind === "desk_task"
+        || entry.kind === "desk_record"
+        || entry.kind === "claim"
+        || entry.kind === "surface"
+        || entry.kind === "none")
+      && typeof entry.locator === "string")
+}
+
+function isHabitSurfaceAttemptArray(value: unknown): value is HabitSurfaceAttempt[] {
+  return Array.isArray(value)
+    && value.every((entry) => isPlainRecord(entry)
+      && typeof entry.recipient === "string"
+      && typeof entry.channel === "string"
+      && (entry.reason === "needed_input"
+        || entry.reason === "status"
+        || entry.reason === "answer"
+        || entry.reason === "blocked"
+        || entry.reason === "other")
+      && (entry.result === "sent"
+        || entry.result === "delivered"
+        || entry.result === "delivered_now"
+        || entry.result === "queued"
+        || entry.result === "deferred"
+        || entry.result === "blocked"
+        || entry.result === "failed"
+        || entry.result === "unavailable")
+      && (entry.routeKind === undefined
+        || entry.routeKind === "family"
+        || entry.routeKind === "originator"
+        || entry.routeKind === "extra")
+      && (entry.rawStatus === undefined || typeof entry.rawStatus === "string")
+      && (entry.error === undefined || typeof entry.error === "string"))
+}
+
+function isHabitReturnRouteArray(value: unknown): value is HabitReturnRoute[] {
+  return Array.isArray(value)
+    && value.every((entry) => isPlainRecord(entry)
+      && (entry.kind === "family" || entry.kind === "originator" || entry.kind === "extra")
+      && typeof entry.recipient === "string"
+      && (entry.status === "allowed" || entry.status === "unresolved")
+      && (entry.friendId === undefined || typeof entry.friendId === "string")
+      && (entry.channel === undefined || typeof entry.channel === "string")
+      && (entry.key === undefined || typeof entry.key === "string")
+      && (entry.reason === undefined || typeof entry.reason === "string"))
+}
+
+function isHabitPermissionEnvelope(value: unknown): value is HabitPermissionEnvelope {
+  if (!isPlainRecord(value)) return false
+  return value.schemaVersion === 1
+    && typeof value.canMessageOutward === "boolean"
+    && isHabitReturnRouteArray(value.returnRoutes)
+    && isStringArray(value.deniedTools)
+    && isStringArray(value.warnings)
+}
+
+function isHabitToolPolicy(value: unknown): value is HabitToolPolicy {
+  if (!isPlainRecord(value)) return false
+  return (value.requestedTools === null || isStringArray(value.requestedTools))
+    && isStringArray(value.grantedTools)
+    && isStringArray(value.deniedTools)
+    && typeof value.outwardMessagingAllowed === "boolean"
+}
+
+function isHabitRunReceipt(value: unknown): value is HabitRunReceipt {
+  if (!isPlainRecord(value)) return false
+  return value.schemaVersion === 2
+    && isSafeHabitRunId(value.runId)
+    && typeof value.sessionId === "string"
+    && typeof value.habitName === "string"
+    && (value.trigger === "cron"
+      || value.trigger === "launchd"
+      || value.trigger === "poke"
+      || value.trigger === "overdue"
+      || value.trigger === "manual")
+    && typeof value.startedAt === "string"
+    && typeof value.endedAt === "string"
+    && (value.outcome === "no_change"
+      || value.outcome === "wrote_arc"
+      || value.outcome === "updated_desk"
+      || value.outcome === "wrote_record"
+      || value.outcome === "surfaced"
+      || value.outcome === "blocked"
+      || value.outcome === "error")
+    && typeof value.definitionLocator === "string"
+    && typeof value.sessionLocator === "string"
+    && typeof value.pendingLocator === "string"
+    && typeof value.runtimeStateLocator === "string"
+    && typeof value.receiptLocator === "string"
+    && (value.nextRunAt === null || typeof value.nextRunAt === "string")
+    && isHabitPermissionEnvelope(value.permissionEnvelope)
+    && isHabitToolPolicy(value.toolPolicy)
+    && isProducedRefArray(value.producedRefs)
+    && isHabitSurfaceAttemptArray(value.surfaceAttempts)
+    && isStringArray(value.errors)
+}
+
+function isLegacyHabitRunReceipt(value: unknown): value is LegacyHabitRunReceipt {
+  if (!isPlainRecord(value)) return false
+  return value.schemaVersion === 1
+    && isSafeHabitRunId(value.runId)
+    && typeof value.habitName === "string"
+    && (value.trigger === "cron"
+      || value.trigger === "launchd"
+      || value.trigger === "poke"
+      || value.trigger === "overdue"
+      || value.trigger === "manual")
+    && typeof value.startedAt === "string"
+    && typeof value.endedAt === "string"
+    && (value.outcome === "no_change"
+      || value.outcome === "wrote_arc"
+      || value.outcome === "updated_desk"
+      || value.outcome === "wrote_record"
+      || value.outcome === "surfaced"
+      || value.outcome === "blocked"
+      || value.outcome === "error")
+    && isProducedRefArray(value.producedRefs)
+    && isHabitSurfaceAttemptArray(value.surfaceAttempts)
+    && isStringArray(value.errors)
+}
+
+function warnMalformedHabitReceipt(agentRoot: string, runId: string, reason: string): void {
+  emitNervesEvent({
+    level: "warn",
+    component: "mind",
+    event: "mind.flight_recorder_habit_receipt_malformed",
+    message: "flight recorder habit receipt malformed",
+    meta: { agentRoot, runId: capStructuredRecordString(runId), reason },
+  })
+}
+
+function normalizeLegacyHabitRunReceipt(receipt: LegacyHabitRunReceipt): HabitRunReceipt {
+  const sawSurface = receipt.surfaceAttempts.length > 0 || receipt.producedRefs.some((ref) => ref.kind === "surface")
+  return {
+    schemaVersion: 2,
+    runId: receipt.runId,
+    sessionId: receipt.runId,
+    habitName: receipt.habitName,
+    trigger: receipt.trigger,
+    startedAt: receipt.startedAt,
+    endedAt: receipt.endedAt,
+    outcome: receipt.outcome,
+    definitionLocator: `habits/${receipt.habitName}.md`,
+    sessionLocator: `state/habit-sessions/${receipt.runId}/session.json`,
+    pendingLocator: `state/habit-sessions/${receipt.runId}/pending`,
+    runtimeStateLocator: `state/habits/${receipt.habitName}.json`,
+    receiptLocator: `arc/flight-recorder/habit-receipts/${receipt.runId}.json`,
+    nextRunAt: null,
+    permissionEnvelope: {
+      schemaVersion: 1,
+      canMessageOutward: sawSurface,
+      returnRoutes: [],
+      deniedTools: sawSurface ? [] : ["send_message", "surface"],
+      warnings: ["legacy receipt normalized without habit permission envelope"],
+    },
+    toolPolicy: {
+      requestedTools: null,
+      grantedTools: sawSurface ? ["surface"] : [],
+      deniedTools: sawSurface ? [] : ["send_message", "surface"],
+      outwardMessagingAllowed: sawSurface,
+    },
+    producedRefs: receipt.producedRefs,
+    surfaceAttempts: receipt.surfaceAttempts,
+    errors: receipt.errors,
+  }
+}
+
+function capHabitRunReceipt(receipt: HabitRunReceipt): HabitRunReceipt {
+  return {
     ...receipt,
     habitName: capStructuredRecordString(receipt.habitName),
+    definitionLocator: capStructuredRecordString(receipt.definitionLocator),
+    sessionLocator: capStructuredRecordString(receipt.sessionLocator),
+    pendingLocator: capStructuredRecordString(receipt.pendingLocator),
+    runtimeStateLocator: capStructuredRecordString(receipt.runtimeStateLocator),
+    receiptLocator: capStructuredRecordString(receipt.receiptLocator),
+    permissionEnvelope: {
+      ...receipt.permissionEnvelope,
+      returnRoutes: receipt.permissionEnvelope.returnRoutes.map((route) => ({
+        ...route,
+        recipient: capStructuredRecordString(route.recipient),
+        ...(route.friendId ? { friendId: capStructuredRecordString(route.friendId) } : {}),
+        ...(route.channel ? { channel: capStructuredRecordString(route.channel) } : {}),
+        ...(route.key ? { key: capStructuredRecordString(route.key) } : {}),
+        ...(route.reason ? { reason: capStructuredRecordString(route.reason) } : {}),
+      })),
+      deniedTools: cappedArray(receipt.permissionEnvelope.deniedTools),
+      warnings: cappedArray(receipt.permissionEnvelope.warnings),
+    },
+    toolPolicy: {
+      requestedTools: receipt.toolPolicy.requestedTools ? cappedArray(receipt.toolPolicy.requestedTools) : null,
+      grantedTools: cappedArray(receipt.toolPolicy.grantedTools),
+      deniedTools: cappedArray(receipt.toolPolicy.deniedTools),
+      outwardMessagingAllowed: receipt.toolPolicy.outwardMessagingAllowed,
+    },
     producedRefs: receipt.producedRefs.map((ref) => ({ ...ref, locator: capStructuredRecordString(ref.locator) })),
     surfaceAttempts: receipt.surfaceAttempts.map((attempt) => ({
       ...attempt,
       recipient: capStructuredRecordString(attempt.recipient),
       channel: capStructuredRecordString(attempt.channel),
+      ...(attempt.rawStatus ? { rawStatus: capStructuredRecordString(attempt.rawStatus) } : {}),
+      ...(attempt.error ? { error: capStructuredRecordString(attempt.error) } : {}),
     })),
     errors: receipt.errors.map((error) => capStructuredRecordString(error)),
   }
-  atomicWriteJson(path.join(receiptsDir(agentRoot), `${safeReceipt.runId}.json`), safeReceipt)
+}
+
+function normalizeHabitRunReceiptForWrite(receipt: WritableHabitRunReceipt): HabitRunReceipt {
+  return capHabitRunReceipt(receipt.schemaVersion === 1 ? normalizeLegacyHabitRunReceipt(receipt) : receipt)
+}
+
+export function readHabitRunReceipt(agentRoot: string, runId: string): HabitRunReceipt | null {
+  if (!isSafeHabitRunId(runId)) {
+    warnMalformedHabitReceipt(agentRoot, runId, "unsafe run id")
+    return null
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(habitReceiptPath(agentRoot, runId), "utf-8")) as unknown
+    const receipt = isHabitRunReceipt(parsed)
+      ? parsed
+      : isLegacyHabitRunReceipt(parsed)
+        ? normalizeLegacyHabitRunReceipt(parsed)
+        : null
+    if (!receipt) {
+      warnMalformedHabitReceipt(agentRoot, runId, "invalid habit receipt shape")
+      return null
+    }
+    emitNervesEvent({
+      component: "mind",
+      event: "mind.flight_recorder_habit_receipt_read",
+      message: "flight recorder habit receipt read",
+      meta: { agentRoot, runId },
+    })
+    return receipt
+  } catch (error) {
+    warnMalformedHabitReceipt(
+      agentRoot,
+      runId,
+      error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error),
+    )
+    return null
+  }
+}
+
+export function listHabitRunReceipts(agentRoot: string, options: { limit?: number } = {}): HabitRunReceipt[] {
+  const dir = receiptsDir(agentRoot)
+  if (!fs.existsSync(dir)) return []
+  const receipts = fs.readdirSync(dir)
+    .filter((fileName) => fileName.endsWith(".json"))
+    .map((fileName) => readHabitRunReceipt(agentRoot, path.basename(fileName, ".json")))
+    .filter((receipt): receipt is HabitRunReceipt => receipt !== null)
+    .sort((left, right) => right.endedAt.localeCompare(left.endedAt) || right.runId.localeCompare(left.runId))
+  return typeof options.limit === "number" && options.limit >= 0 ? receipts.slice(0, options.limit) : receipts
+}
+
+export function writeHabitRunReceipt(agentRoot: string, receipt: WritableHabitRunReceipt): void {
+  fs.mkdirSync(receiptsDir(agentRoot), { recursive: true })
+  const safeReceipt = normalizeHabitRunReceiptForWrite(receipt)
+  if (!isSafeHabitRunId(safeReceipt.runId)) {
+    warnMalformedHabitReceipt(agentRoot, safeReceipt.runId, "unsafe run id")
+    throw new Error(`unsafe habit run id: ${safeReceipt.runId}`)
+  }
+  atomicWriteJson(habitReceiptPath(agentRoot, safeReceipt.runId), safeReceipt)
   recordFlightRecorderEvent(agentRoot, {
     kind: "habit_run",
     recordedAt: safeReceipt.endedAt,

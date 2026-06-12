@@ -1,15 +1,24 @@
+import * as fs from "fs"
 import * as path from "path"
 import { runInnerDialogTurn } from "./inner-dialog"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
-import { recordHabitRun } from "../heart/habits/habit-runtime-state"
+import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
+import {
+  completeHabitRun,
+  createHabitSessionPaths,
+  filterHabitToolsForEnvelope,
+  normalizeHabitPermissionEnvelope,
+} from "../heart/habits/habit-session"
 import {
   createHabitRunId,
-  writeHabitRunReceipt,
-  type FlightRecorderProducedRef,
   type HabitRunReceipt,
 } from "../arc/flight-recorder"
+import { FileFriendStore } from "../mind/friends/store-file"
+import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition, type ToolRiskProfile } from "../repertoire/tools-base"
+import { surfaceToolDefinition } from "../repertoire/tools-surface"
+import { riskProfileForTool } from "../repertoire/tools"
 
 export type InnerDialogWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -26,6 +35,8 @@ export interface InnerDialogWorkerRunOptions {
   taskId?: string
   habitName?: string
   awaitName?: string
+  trigger?: HabitRunReceipt["trigger"]
+  habitSession?: HabitSessionToolContext
 }
 
 export interface InnerDialogWorkerController {
@@ -39,6 +50,22 @@ interface QueueEntry {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
+}
+
+interface PreparedHabitRun {
+  agentRoot: string
+  habit: HabitFile
+  runId: string
+  trigger: HabitRunReceipt["trigger"]
+  startedAt: string
+  paths: ReturnType<typeof createHabitSessionPaths>
+  permissionEnvelope: HabitRunReceipt["permissionEnvelope"]
+  toolPolicy: HabitRunReceipt["toolPolicy"]
+  friendStore: FileFriendStore
+  results: unknown[]
+  errors: string[]
+  producedRefs: HabitRunReceipt["producedRefs"]
+  surfaceAttempts: HabitRunReceipt["surfaceAttempts"]
 }
 
 /**
@@ -83,9 +110,78 @@ function isHeartbeatOkRestResult(result: unknown): boolean {
   return maybeResult.turnOutcome === "rested" && maybeResult.restStatus === "HEARTBEAT_OK"
 }
 
+function fallbackHabitFile(habitName: string): HabitFile {
+  return {
+    name: habitName,
+    title: habitName,
+    cadence: null,
+    status: "active",
+    lastRun: null,
+    created: null,
+    tools: [],
+    origin: null,
+    surface: { family: false, originator: false, extra: [] },
+    body: "",
+  }
+}
+
+function readHabitForRun(agentRoot: string, habitName: string, errors: string[]): HabitFile {
+  const habitPath = path.join(agentRoot, "habits", `${habitName}.md`)
+  try {
+    return parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    errors.push(`habit file could not be read: ${reason}`)
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.habit_file_read_error",
+      message: "habit file could not be read for habit session",
+      meta: { habitName, habitPath, reason },
+    })
+    return fallbackHabitFile(habitName)
+  }
+}
+
+async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trigger"], startedAt: string): Promise<PreparedHabitRun> {
+  const agentRoot = getAgentRoot()
+  const errors: string[] = []
+  const habit = readHabitForRun(agentRoot, habitName, errors)
+  const runId = createHabitRunId(habitName, new Date(startedAt))
+  const paths = createHabitSessionPaths(agentRoot, runId, habit.name)
+  const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+  const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
+  const toolPolicy = filterHabitToolsForEnvelope(
+    [...baseToolDefinitions, surfaceToolDefinition],
+    habit.tools ?? null,
+    permissionEnvelope,
+    riskProfileForHabitPolicy,
+  )
+  return {
+    agentRoot,
+    habit,
+    runId,
+    trigger,
+    startedAt,
+    paths,
+    permissionEnvelope,
+    toolPolicy,
+    friendStore,
+    results: [],
+    errors,
+    producedRefs: [],
+    surfaceAttempts: [],
+  }
+}
+
+function riskProfileForHabitPolicy(definition: ToolDefinition, name: string): ToolRiskProfile {
+  const probeArgs: Record<string, string> = name === "shell" ? { command: "touch /tmp/habit-policy-probe" } : {}
+  return riskProfileForTool(definition, name, probeArgs)
+}
+
 export function createInnerDialogWorker(
   runTurn: (options: InnerDialogWorkerRunOptions) => Promise<unknown> = (options) => runInnerDialogTurn(options),
-  hasPendingWork: () => boolean = () => hasPendingMessages(getInnerDialogPendingDir(getAgentName())),
+  hasPendingWork: (pendingDir?: string) => boolean = (pendingDir) => hasPendingMessages(pendingDir ?? getInnerDialogPendingDir(getAgentName())),
   nowSource: () => number = () => Date.now(),
 ): InnerDialogWorkerController {
   let running = false
@@ -94,60 +190,23 @@ export function createInnerDialogWorker(
   const recentHabitFires: number[] = []
   let heartbeatOkRestedAt: number | null = null
 
-  function habitOutcomeForTurn(result: unknown, errors: string[]): { outcome: HabitRunReceipt["outcome"]; producedRefs: FlightRecorderProducedRef[] } {
-    if (errors.length > 0) return { outcome: "error", producedRefs: [] }
-    const toolNames = new Set<string>()
-    if (result && typeof result === "object" && Array.isArray((result as { messages?: unknown }).messages)) {
-      for (const message of (result as { messages: Array<Record<string, unknown>> }).messages) {
-        const toolCalls = message.tool_calls
-        if (!Array.isArray(toolCalls)) continue
-        for (const call of toolCalls) {
-          const functionName = (call as { function?: { name?: unknown } }).function?.name
-          if (typeof functionName === "string") toolNames.add(functionName)
-        }
-      }
-    }
-    if (toolNames.has("send_message") || toolNames.has("surface")) {
-      return { outcome: "surfaced", producedRefs: [{ kind: "surface", locator: "tool:send_message_or_surface" }] }
-    }
-    if (toolNames.has("diary_write") || toolNames.has("note")) {
-      return { outcome: "wrote_record", producedRefs: [{ kind: "desk_record", locator: "desk/_record" }] }
-    }
-    if ([...toolNames].some((name) => name.startsWith("mcp__desk__"))) {
-      return { outcome: "updated_desk", producedRefs: [{ kind: "desk_task", locator: "desk/" }] }
-    }
-    return { outcome: "no_change", producedRefs: [] }
-  }
-
   function recordHabitCompletion(
-    habitName: string,
-    startedAt = new Date(nowSource()).toISOString(),
-    endedAt = startedAt,
-    trigger: HabitRunReceipt["trigger"] = "overdue",
-    result?: unknown,
-    errors: string[] = [],
+    habitRun: PreparedHabitRun,
+    endedAt = habitRun.startedAt,
   ): void {
-    try {
-      const agentRoot = getAgentRoot()
-      recordHabitRun(agentRoot, habitName, endedAt, {
-        definitionPath: path.join(agentRoot, "habits", `${habitName}.md`),
-      })
-      const { outcome, producedRefs } = habitOutcomeForTurn(result, errors)
-      writeHabitRunReceipt(agentRoot, {
-        schemaVersion: 1,
-        runId: createHabitRunId(habitName, new Date(startedAt)),
-        habitName,
-        trigger,
-        startedAt,
-        endedAt,
-        outcome,
-        producedRefs,
-        surfaceAttempts: [],
-        errors,
-      })
-    } catch {
-      // Habit file/state may be unavailable during the turn — skip gracefully
-    }
+    completeHabitRun({
+      agentRoot: habitRun.agentRoot,
+      habit: habitRun.habit,
+      runId: habitRun.runId,
+      trigger: habitRun.trigger,
+      startedAt: habitRun.startedAt,
+      endedAt,
+      permissionEnvelope: habitRun.permissionEnvelope,
+      toolPolicy: habitRun.toolPolicy,
+      producedRefs: habitRun.producedRefs,
+      surfaceAttempts: habitRun.surfaceAttempts,
+      errors: habitRun.errors,
+    })
   }
 
   function clearHeartbeatRestShield(): void {
@@ -164,9 +223,11 @@ export function createInnerDialogWorker(
     return true
   }
 
-  function reuseHeartbeatOkRest(habitName: string): void {
+  async function reuseHeartbeatOkRest(habitName: string): Promise<void> {
     const nowIso = new Date(nowSource()).toISOString()
-    recordHabitCompletion(habitName, nowIso, nowIso, "overdue", { turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+    const habitRun = await prepareHabitRun(habitName, "overdue", nowIso)
+    habitRun.results.push({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+    recordHabitCompletion(habitRun, nowIso)
     emitNervesEvent({
       level: "info",
       component: "senses",
@@ -233,20 +294,54 @@ export function createInnerDialogWorker(
       let nextHabitName = habitName
       let nextAwaitName = awaitName
       let nextTrigger = trigger
+      let nextHabitRun: PreparedHabitRun | null = null
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
       runLoop: do {
         const currentReason = nextReason
         const currentHabitName = nextHabitName
         const currentTrigger = nextTrigger ?? "overdue"
-        const habitStartedAt = currentReason === "habit" && currentHabitName ? new Date(nowSource()).toISOString() : null
+        const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
+          ? nextHabitRun && nextHabitRun.habit.name === currentHabitName
+            ? nextHabitRun
+            : await prepareHabitRun(currentHabitName, currentTrigger, new Date(nowSource()).toISOString())
+          : null
+        nextHabitRun = null
+        let currentHabitRunFinalized = false
+        const finalizeCurrentHabitRun = (): void => {
+          if (!currentHabitRun || currentHabitRunFinalized) return
+          recordHabitCompletion(currentHabitRun, new Date(nowSource()).toISOString())
+          currentHabitRunFinalized = true
+        }
         const turnErrors: string[] = []
         if (!(currentReason === "habit" && currentHabitName === "heartbeat")) {
           clearHeartbeatRestShield()
         }
         let turnResult: unknown
         try {
-          turnResult = await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName, awaitName: nextAwaitName })
+          const turnOptions: InnerDialogWorkerRunOptions = {
+            reason: nextReason,
+            taskId: nextTaskId,
+            habitName: nextHabitName,
+            awaitName: nextAwaitName,
+            ...(currentHabitRun
+              ? {
+                trigger: currentHabitRun.trigger,
+                habitSession: {
+                  runId: currentHabitRun.runId,
+                  sessionPath: currentHabitRun.paths.sessionPath,
+                  pendingDir: currentHabitRun.paths.pendingDir,
+                  permissionEnvelope: currentHabitRun.permissionEnvelope,
+                  toolPolicy: currentHabitRun.toolPolicy,
+                  friendStore: currentHabitRun.friendStore,
+                  recordProducedRef: (ref) => { currentHabitRun.producedRefs.push(ref) },
+                  recordSurfaceAttempt: (attempt) => { currentHabitRun.surfaceAttempts.push(attempt) },
+                  recordError: (error) => { currentHabitRun.errors.push(error) },
+                },
+              }
+              : {}),
+          }
+          turnResult = await runTurn(turnOptions)
         } catch (error) {
           clearHeartbeatRestShield()
           turnErrors.push(error instanceof Error ? error.message : String(error))
@@ -264,17 +359,9 @@ export function createInnerDialogWorker(
         if (currentReason === "habit" && currentHabitName === "heartbeat") {
           heartbeatOkRestedAt = isHeartbeatOkRestResult(turnResult) ? nowSource() : null
         }
-
-        // Record lastRun after a habit turn without dirtying the tracked habit file.
-        if (currentReason === "habit" && currentHabitName && habitStartedAt) {
-          recordHabitCompletion(
-            currentHabitName,
-            habitStartedAt,
-            new Date(nowSource()).toISOString(),
-            currentTrigger,
-            turnResult,
-            turnErrors,
-          )
+        if (currentHabitRun) {
+          currentHabitRun.results.push(turnResult)
+          currentHabitRun.errors.push(...turnErrors)
         }
 
         // Drain queue first. Externally-queued work resets the instinct cap
@@ -282,12 +369,14 @@ export function createInnerDialogWorker(
         while (queue.length > 0) {
           const next = queue.shift()!
           if (next.reason === "habit" && next.habitName === "heartbeat" && shouldReuseHeartbeatOkRest(next.habitName)) {
-            reuseHeartbeatOkRest(next.habitName)
+            finalizeCurrentHabitRun()
+            await reuseHeartbeatOkRest(next.habitName)
             continue
           }
           if (!(next.reason === "habit" && next.habitName === "heartbeat")) {
             clearHeartbeatRestShield()
           }
+          finalizeCurrentHabitRun()
           nextReason = next.reason
           nextTaskId = next.taskId
           nextHabitName = next.habitName
@@ -301,7 +390,7 @@ export function createInnerDialogWorker(
         // tool that writes to the inner-dialog pending dir during a turn
         // would cause hasPendingWork() to be true here, producing a
         // self-sustaining "instinct" loop with no external input. Cap it.
-        if (hasPendingWork()) {
+        if (hasPendingWork(currentHabitRun?.paths.pendingDir)) {
           clearHeartbeatRestShield()
           if (consecutiveInstinctTurns >= MAX_CONSECUTIVE_INSTINCT_TURNS) {
             emitNervesEvent({
@@ -315,17 +404,30 @@ export function createInnerDialogWorker(
                 lastReason: nextReason,
               },
             })
+            finalizeCurrentHabitRun()
             break
           }
-          consecutiveInstinctTurns += 1
-          nextReason = "instinct"
-          nextTaskId = undefined
-          nextHabitName = undefined
-          nextAwaitName = undefined
-          nextTrigger = undefined
+          if (currentReason === "habit" && currentHabitName && currentHabitRun) {
+            consecutiveInstinctTurns += 1
+            nextReason = "habit"
+            nextTaskId = undefined
+            nextHabitName = currentHabitName
+            nextAwaitName = undefined
+            nextTrigger = currentTrigger
+            nextHabitRun = currentHabitRun
+          } else {
+            finalizeCurrentHabitRun()
+            consecutiveInstinctTurns += 1
+            nextReason = "instinct"
+            nextTaskId = undefined
+            nextHabitName = undefined
+            nextAwaitName = undefined
+            nextTrigger = undefined
+          }
           continue
         }
 
+        finalizeCurrentHabitRun()
         break
       } while (true)
     } finally {
@@ -340,7 +442,7 @@ export function createInnerDialogWorker(
       /* v8 ignore next -- defensive fallback: live habit dispatch always sets habitName @preserve */
       const habitName = maybeMessage.habitName ?? "(unnamed)"
       if (shouldReuseHeartbeatOkRest(habitName)) {
-        reuseHeartbeatOkRest(habitName)
+        await reuseHeartbeatOkRest(habitName)
         return
       }
       recordHabitFireForRecursion(habitName)
@@ -358,7 +460,7 @@ export function createInnerDialogWorker(
     if (maybeMessage.type === "heartbeat") {
       // Backward compatibility: heartbeat -> habit/heartbeat
       if (shouldReuseHeartbeatOkRest("heartbeat")) {
-        reuseHeartbeatOkRest("heartbeat")
+        await reuseHeartbeatOkRest("heartbeat")
         return
       }
       recordHabitFireForRecursion("heartbeat")

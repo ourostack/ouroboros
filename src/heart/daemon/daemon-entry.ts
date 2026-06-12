@@ -131,9 +131,31 @@ const processManager = new DaemonProcessManager({
   /* v8 ignore stop */
 })
 
-const scheduler = new TaskDrivenScheduler({
+const taskScheduler = new TaskDrivenScheduler({
   agents: [...managedAgents],
 })
+
+const habitSchedulers: HabitScheduler[] = []
+const awaitSchedulers: AwaitScheduler[] = []
+
+const scheduler = {
+  listJobs: () => [
+    ...taskScheduler.listJobs(),
+    ...habitSchedulers.flatMap((habitScheduler) => habitScheduler.listJobs()),
+  ],
+  triggerJob: (jobId: string) => taskScheduler.triggerJob(jobId),
+  triggerHabitJob: async (jobId: string) => {
+    for (const habitScheduler of habitSchedulers) {
+      const result = await habitScheduler.triggerJob(jobId, "cron")
+      if (result.ok) return result
+    }
+    return { ok: false, message: `unknown habit job: ${jobId}` }
+  },
+  start: () => taskScheduler.start(),
+  stop: () => taskScheduler.stop(),
+  reconcile: () => taskScheduler.reconcile(),
+  recordTaskRun: (agent: string, taskId: string) => taskScheduler.recordTaskRun(agent, taskId),
+}
 
 const router = new FileMessageRouter()
 
@@ -181,8 +203,6 @@ const healthMonitor = new HealthMonitor({
   },
 })
 
-const habitSchedulers: HabitScheduler[] = []
-const awaitSchedulers: AwaitScheduler[] = []
 let entryRuntimeStopping = false
 let stopCommandExitScheduled = false
 
@@ -387,8 +407,8 @@ void daemon.start().then(async () => {
         agent,
         habitsDir,
         osCronManager,
-        onHabitFire: (habitName) => {
-          processManager.sendToAgent(agent, { type: "habit", habitName, trigger: "overdue" })
+        onHabitFire: (habitName, trigger) => {
+          processManager.sendToAgent(agent, { type: "habit", habitName, trigger })
         },
         deps: {
           readdir: (dir) => fs.readdirSync(dir),
