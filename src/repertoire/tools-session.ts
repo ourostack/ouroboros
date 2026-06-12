@@ -28,6 +28,12 @@ import type { PendingMessage } from "../mind/pending";
 import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../arc/obligations";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
 import {
+  readHabitSessionSummary,
+  type HabitSessionSummary,
+  type HabitSessionSummarySelector,
+  type HabitSummaryWhich,
+} from "../heart/habits/habit-session-summary";
+import {
   deliverCrossChatMessage,
   type CrossChatDeliveryRequest,
   type CrossChatDeliveryResult,
@@ -39,6 +45,11 @@ import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
+const VALID_HABIT_SUMMARY_WHICH = new Set<HabitSummaryWhich>(["latest", "previous", "latest-success", "latest-failure"])
+
+type SessionSummarySelectorValidation =
+  | { ok: true; selector: HabitSessionSummarySelector }
+  | { ok: false; code: "run_id_exclusive" | "selector_required" | "invalid_which"; message: string }
 
 async function summarizeSessionTailSafely(options: SessionTailOptions): Promise<SessionTailResult | { kind: "missing" }> {
   try {
@@ -81,6 +92,72 @@ function normalizeProgressOutcome(text: string): string | null {
     return trimmed.slice(1, -1)
   }
   return trimmed
+}
+
+function optionalArg(args: Record<string, string>, key: string): string | undefined {
+  const value = args[key]?.trim()
+  return value ? value : undefined
+}
+
+function validateSessionSummarySelector(args: Record<string, string>): SessionSummarySelectorValidation {
+  const runId = optionalArg(args, "runId")
+  const habitName = optionalArg(args, "habitName")
+  const operationId = optionalArg(args, "operationId")
+  const which = optionalArg(args, "which")
+
+  if (runId !== undefined) {
+    if (habitName !== undefined || operationId !== undefined || which !== undefined) {
+      return {
+        ok: false,
+        code: "run_id_exclusive",
+        message: "runId cannot be combined with habitName, operationId, or which",
+      }
+    }
+    return { ok: true, selector: { runId } }
+  }
+
+  if (habitName === undefined && operationId === undefined) {
+    return {
+      ok: false,
+      code: "selector_required",
+      message: "provide runId, habitName, or operationId",
+    }
+  }
+
+  if (which !== undefined && !VALID_HABIT_SUMMARY_WHICH.has(which as HabitSummaryWhich)) {
+    return {
+      ok: false,
+      code: "invalid_which",
+      message: "which must be latest, previous, latest-success, or latest-failure",
+    }
+  }
+
+  return {
+    ok: true,
+    selector: {
+      ...(habitName !== undefined ? { habitName } : {}),
+      ...(operationId !== undefined ? { operationId } : {}),
+      ...(which !== undefined ? { which } : {}),
+    },
+  }
+}
+
+function renderSessionSummaryText(summary: HabitSessionSummary): string {
+  const lines = [
+    `habit ${summary.habitName} run ${summary.runId} finished with ${summary.status}.`,
+    summary.operationId ? `operation: ${summary.operationId}` : null,
+    summary.summary,
+    summary.nextLikelyStep ? `next: ${summary.nextLikelyStep}` : null,
+    summary.decisions.length > 0 ? `decisions: ${summary.decisions.join("; ")}` : null,
+    summary.pending.count > 0 ? `pending: ${summary.pending.count} file(s) (${summary.pending.files.join(", ")})` : "pending: none",
+    summary.messagesSent.length > 0 ? `messages: ${summary.messagesSent.length}` : "messages: none",
+    summary.toolsUsed.length > 0 ? `tools: ${summary.toolsUsed.join(", ")}` : "tools: none",
+    summary.errors.length > 0 ? `errors: ${summary.errors.join("; ")}` : null,
+    summary.warnings.length > 0 ? `warnings: ${summary.warnings.join("; ")}` : null,
+    `receipt: ${summary.sources.receipt}`,
+    `session: ${summary.sources.session}`,
+  ]
+  return lines.filter((line): line is string => Boolean(line)).join("\n")
 }
 
 function writePendingEnvelope(queueDir: string, message: PendingMessage): void {
@@ -390,6 +467,57 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       const frame = await buildToolActiveWorkFrame(ctx)
       return `this is my current top-level live world-state.\nanswer whole-self status questions from this before drilling into individual sessions.\n\n${formatActiveWorkFrame(frame)}`
     },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "session_summary",
+        description: "read-only orientation for habit runs. returns a structured live summary from habit receipts, session files, pending dirs, and runtime cursors without writing state.",
+        parameters: {
+          type: "object",
+          properties: {
+            runId: { type: "string", description: "exact habit run id; cannot be combined with habitName, operationId, or which" },
+            habitName: { type: "string", description: "habit name to select from" },
+            operationId: { type: "string", description: "operation id for stateful habit run groups, such as habit:heartbeat" },
+            which: {
+              type: "string",
+              enum: ["latest", "previous", "latest-success", "latest-failure"],
+              description: "which matching run to read; defaults to latest",
+            },
+          },
+        },
+      },
+    },
+    handler: (args) => {
+      const validation = validateSessionSummarySelector(args)
+      if (!validation.ok) {
+        return JSON.stringify({
+          kind: "invalid_selector",
+          code: validation.code,
+          message: validation.message,
+        }, null, 2)
+      }
+      const summary = readHabitSessionSummary(getAgentRoot(), validation.selector)
+      if (!summary) {
+        return JSON.stringify({
+          kind: "not_found",
+          message: "no habit run matched selector",
+          selector: validation.selector,
+        }, null, 2)
+      }
+      return JSON.stringify({
+        kind: "habit_session_summary",
+        text: renderSessionSummaryText(summary),
+        summary,
+      }, null, 2)
+    },
+    riskProfile: {
+      mutates: "none",
+      risk: "low",
+      reason: "reads habit run summaries from local receipts and session artifacts",
+    },
+    summaryKeys: ["runId", "habitName", "operationId", "which"],
   },
   {
     tool: {
