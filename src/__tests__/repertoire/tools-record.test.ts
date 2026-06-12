@@ -224,7 +224,6 @@ describe("record tools: note and consult_notes", () => {
       content: "Habit sessions should leave a receipt trail.",
     } as never, {
       ...selfContext(),
-      agentRoot,
       habitSession: { recordProducedRef } as never,
     }) as NoteHandlerResult
 
@@ -233,6 +232,25 @@ describe("record tools: note and consult_notes", () => {
     expect(recordProducedRef).toHaveBeenCalledWith({
       kind: "desk_record",
       locator: `desk/_record/notes/${path.basename(savedPath!)}`,
+    })
+  })
+
+  it("note falls back to an absolute habit produced ref outside the context root", async () => {
+    const handler = await handlerFor("note")
+    const recordProducedRef = vi.fn()
+    const result = await handler({
+      content: "Context roots can be narrower than the bundle root.",
+    } as never, {
+      ...selfContext(),
+      agentRoot: path.join(agentRoot, "state", "habit-sessions", "run-1"),
+      habitSession: { recordProducedRef } as never,
+    }) as NoteHandlerResult
+
+    const savedPath = typeof result === "string" ? result : result.path
+    expect(savedPath).toBeDefined()
+    expect(recordProducedRef).toHaveBeenCalledWith({
+      kind: "desk_record",
+      locator: savedPath!.split(path.sep).join("/"),
     })
   })
 

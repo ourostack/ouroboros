@@ -264,7 +264,6 @@ describe("diary_write tool handler", () => {
 
     await diaryWrite!.handler({ entry: "habit receipts should capture diary writes" }, {
       signin: async () => undefined,
-      agentRoot,
       context: { channel: { channel: "inner" } },
       habitSession: { recordProducedRef } as never,
     } as never)
@@ -272,6 +271,27 @@ describe("diary_write tool handler", () => {
     expect(recordProducedRef).toHaveBeenCalledWith({
       kind: "desk_record",
       locator: "desk/_record/diary/facts.jsonl",
+    })
+  })
+
+  it("diary_write falls back to an absolute habit produced ref outside the context root", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-produced-ref-fallback-"))
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const diaryWrite = baseToolDefinitions.find((d) => d.tool.function.name === "diary_write")
+    const recordProducedRef = vi.fn()
+
+    await diaryWrite!.handler({ entry: "habit receipts should capture diary write fallback paths" }, {
+      signin: async () => undefined,
+      agentRoot: path.join(agentRoot, "state", "habit-sessions", "run-1"),
+      context: { channel: { channel: "inner" } },
+      habitSession: { recordProducedRef } as never,
+    } as never)
+
+    expect(recordProducedRef).toHaveBeenCalledWith({
+      kind: "desk_record",
+      locator: path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl").split(path.sep).join("/"),
     })
   })
 })

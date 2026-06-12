@@ -56,22 +56,11 @@ function hasRecordReadTrust(ctx?: ToolContext): boolean {
   return Boolean(friend) && isTrustedLevel(friend?.trustLevel)
 }
 
-function safeAgentRoot(ctx?: ToolContext): string | undefined {
-  if (ctx?.agentRoot) return ctx.agentRoot
-  try {
-    return getAgentRoot()
-  } catch {
-    return undefined
-  }
-}
-
 function bundleRelativeLocator(filePath: string, ctx?: ToolContext): string {
-  const agentRoot = safeAgentRoot(ctx)
-  if (agentRoot) {
-    const relativePath = path.relative(agentRoot, filePath)
-    if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
-      return relativePath.split(path.sep).join("/")
-    }
+  const agentRoot = ctx?.agentRoot ?? getAgentRoot()
+  const relativePath = path.relative(agentRoot, filePath)
+  if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+    return relativePath.split(path.sep).join("/")
   }
   return filePath.split(path.sep).join("/")
 }

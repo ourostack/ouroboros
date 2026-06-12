@@ -12,22 +12,11 @@ import type { ToolContext, ToolDefinition } from "./tools-base";
 
 const CLAUDE_READ_ONLY_TOOLS = "Read,Grep,Glob,LS";
 
-function safeAgentRoot(ctx?: ToolContext): string | undefined {
-  if (ctx?.agentRoot) return ctx.agentRoot;
-  try {
-    return getAgentRoot();
-  } catch {
-    return undefined;
-  }
-}
-
 function bundleRelativeLocator(filePath: string, ctx?: ToolContext): string {
-  const agentRoot = safeAgentRoot(ctx);
-  if (agentRoot) {
-    const relativePath = path.relative(agentRoot, filePath);
-    if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
-      return relativePath.split(path.sep).join("/");
-    }
+  const agentRoot = ctx?.agentRoot ?? getAgentRoot();
+  const relativePath = path.relative(agentRoot, filePath);
+  if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+    return relativePath.split(path.sep).join("/");
   }
   return filePath.split(path.sep).join("/");
 }
