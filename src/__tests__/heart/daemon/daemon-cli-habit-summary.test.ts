@@ -128,6 +128,19 @@ describe("ouro habit summary CLI", () => {
     expect(getCommandHelp("habit")).toContain("summary")
   })
 
+  it("prints focused habit summary help for nested help invocations", async () => {
+    const deps = makeDeps()
+
+    expect(parseOuroCommand(["habit", "summary", "--help"])).toEqual({ kind: "help", command: "habit summary" })
+    const result = await runOuroCli(["habit", "summary", "--help"], deps)
+
+    expect(result).toContain("ouro habit summary")
+    expect(result).toContain("--run-id <id>")
+    expect(result).toContain("--operation-id <id>")
+    expect(deps.writeStdout).toHaveBeenCalledWith(result)
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
   it("prints habit summary JSON from local bundle artifacts without daemon access", async () => {
     const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-summary-json-"))
     cleanup.push(tempBundle)
@@ -150,6 +163,28 @@ describe("ouro habit summary CLI", () => {
         session: "state/habit-sessions/run-summary-json/session.json",
       },
     })
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("resolves a sole discovered agent before reading local bundle artifacts", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "habit-summary-bundles-"))
+    cleanup.push(bundlesRoot)
+    const discoveredBundle = path.join(bundlesRoot, "test.ouro")
+    fs.mkdirSync(discoveredBundle, { recursive: true })
+    writeSummaryArtifacts(discoveredBundle, makeHabitReceipt({ runId: "run-sole-agent" }))
+    const deps = makeDeps({
+      bundlesRoot,
+      listDiscoveredAgents: vi.fn(async () => ["test"]),
+    })
+
+    const result = await runOuroCli(["habit", "summary", "--run-id", "run-sole-agent", "--json"], deps)
+    const parsed = JSON.parse(result)
+
+    expect(parsed).toMatchObject({
+      runId: "run-sole-agent",
+      habitName: "heartbeat",
+    })
+    expect(deps.listDiscoveredAgents).toHaveBeenCalled()
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 

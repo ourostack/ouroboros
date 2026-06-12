@@ -90,6 +90,7 @@ export type OuroCliCommand =
   | { kind: "work.sentinel"; agent?: string; format?: "text" | "json" }
   | { kind: "work.sentinel.refresh"; agent?: string; format?: "text" | "json" }
   | { kind: "inner.status"; agent?: string }
+  | { kind: "nerves-review"; agent?: string; process: string; component?: string; event?: string; level?: string; since?: string; limit?: number; json: boolean }
   | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
   | { kind: "plugin.install"; source: string; agent?: string; version?: string }
@@ -251,6 +252,7 @@ export type WorkCardCliCommand = Extract<OuroCliCommand, { kind: "work.card" }>
 export type WorkGauntletCliCommand = Extract<OuroCliCommand, { kind: "work.gauntlet" }>
 export type WorkSentinelCliCommand = Extract<OuroCliCommand, { kind: "work.sentinel" } | { kind: "work.sentinel.refresh" }>
 export type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.status" }>
+export type NervesReviewCliCommand = Extract<OuroCliCommand, { kind: "nerves-review" }>
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>

@@ -132,6 +132,7 @@ export function usage(): string {
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     "  ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
+    "  ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
     "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
@@ -1619,6 +1620,55 @@ function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
   }
 }
 
+function parseNervesReviewCommand(args: string[]): OuroCliCommand {
+  const { agent, rest } = extractAgentFlag(args)
+  let processName = "daemon"
+  let component: string | undefined
+  let event: string | undefined
+  let level: string | undefined
+  let since: string | undefined
+  let limit: number | undefined
+  let json = false
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    const next = rest[i + 1]
+    if (token === "--json") {
+      json = true
+      continue
+    }
+    if ((token === "--process" || token === "--component" || token === "--event" || token === "--level" || token === "--since" || token === "--limit") && next) {
+      if (token === "--process") processName = next
+      if (token === "--component") component = next
+      if (token === "--event") event = next
+      if (token === "--level") level = next
+      if (token === "--since") since = next
+      if (token === "--limit") {
+        const parsed = Number.parseInt(next, 10)
+        if (!Number.isInteger(parsed) || String(parsed) !== next || parsed < 1 || parsed > 1000) {
+          throw new Error("--limit must be an integer between 1 and 1000")
+        }
+        limit = parsed
+      }
+      i += 1
+      continue
+    }
+    throw new Error(`Usage\n${usage()}`)
+  }
+
+  return {
+    kind: "nerves-review",
+    ...(agent ? { agent } : {}),
+    process: processName,
+    ...(component ? { component } : {}),
+    ...(event ? { event } : {}),
+    ...(level ? { level } : {}),
+    ...(since ? { since } : {}),
+    ...(limit ? { limit } : {}),
+    json,
+  }
+}
+
 // ── Main dispatch ──
 
 export function parseOuroCommand(args: string[]): OuroCliCommand {
@@ -1741,6 +1791,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "msg") return parseMessageCommand(args.slice(1))
   if (head === "poke") return parsePokeCommand(args.slice(1))
+  if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
