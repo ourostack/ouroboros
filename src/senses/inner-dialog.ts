@@ -32,7 +32,7 @@ import type { FriendStore } from "../mind/friends/store"
 import { createBridgeManager } from "../heart/bridges/manager"
 import { listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
-import { buildHabitTurnMessage } from "./habit-turn-message"
+import { buildHabitTurnMessage, type PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import { buildAwaitTurnMessage } from "./await-turn-message"
 import { parseAwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
@@ -80,6 +80,7 @@ export interface PreparedHabitContext {
   trigger: string
   operationId: string | null
   habit: HabitFile
+  priorSessionSummary?: PriorHabitSessionSummaryInfo
 }
 
 export interface InnerDialogTurnResult {
@@ -832,6 +833,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
           arcResume,
           deskOrientation,
           surfacePolicy,
+          priorSessionSummary: options.preparedHabit?.habit.name === habitName ? options.preparedHabit.priorSessionSummary : undefined,
           now,
         })
       }

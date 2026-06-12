@@ -12,6 +12,7 @@ const {
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
   mockApplyHabitRuntimeState,
+  mockReadHabitSessionSummary,
   mockReadFileSync,
   MockFileFriendStore,
 } = vi.hoisted(() => ({
@@ -26,6 +27,7 @@ const {
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
   mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
+  mockReadHabitSessionSummary: vi.fn(() => null),
   mockReadFileSync: vi.fn(),
   MockFileFriendStore: class {
     get = vi.fn(async () => null)
@@ -67,6 +69,10 @@ vi.mock("../../heart/habits/habit-runtime-state", () => ({
   recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
 }))
 
+vi.mock("../../heart/habits/habit-session-summary", () => ({
+  readHabitSessionSummary: (...args: any[]) => mockReadHabitSessionSummary(...args),
+}))
+
 vi.mock("../../mind/friends/store-file", () => ({
   FileFriendStore: MockFileFriendStore,
 }))
@@ -94,6 +100,7 @@ describe("inner-dialog-worker", () => {
     mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
     mockApplyHabitRuntimeState.mockReset().mockImplementation((_agentRoot: string, habit: any) => habit)
+    mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
     mockEmitNervesEvent.mockReset()
   })
 
@@ -179,6 +186,14 @@ describe("inner-dialog-worker", () => {
   })
 
   it("passes a single prepared parsed habit context into habit turns", async () => {
+    mockReadHabitSessionSummary.mockReturnValue({
+      summary: "Prior run asked Ari for deployment input.",
+      sources: {
+        receipt: "arc/flight-recorder/habit-receipts/run-1.json",
+        session: "state/habit-sessions/run-1/session.json",
+      },
+      warnings: ["session file missing"],
+    })
     mockReadFileSync.mockImplementation((filePath: any) => {
       if (String(filePath).includes("/habits/stateful.md")) {
         return [
@@ -210,6 +225,15 @@ describe("inner-dialog-worker", () => {
         runId: "habit-run-id",
         trigger: "poke",
         operationId: "habit:stateful",
+        priorSessionSummary: {
+          mode: "stateful",
+          summary: "Prior run asked Ari for deployment input.",
+          sources: {
+            receipt: "arc/flight-recorder/habit-receipts/run-1.json",
+            session: "state/habit-sessions/run-1/session.json",
+          },
+          warnings: ["session file missing"],
+        },
         habit: expect.objectContaining({
           name: "stateful",
           title: "Stateful Check",
@@ -219,6 +243,10 @@ describe("inner-dialog-worker", () => {
         }),
       }),
     }))
+    expect(mockReadHabitSessionSummary).toHaveBeenCalledWith("/bundles/slugger.ouro", {
+      operationId: "habit:stateful",
+      which: "latest",
+    })
   })
 
   it("applies runtime lastRun before passing prepared habit context", async () => {

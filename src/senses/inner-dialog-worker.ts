@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { runInnerDialogTurn, type PreparedHabitContext } from "./inner-dialog"
+import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
@@ -16,6 +17,7 @@ import {
   createHabitRunId,
   type HabitRunReceipt,
 } from "../arc/flight-recorder"
+import { readHabitSessionSummary } from "../heart/habits/habit-session-summary"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition, type ToolRiskProfile } from "../repertoire/tools-base"
 import { surfaceToolDefinition } from "../repertoire/tools-surface"
@@ -61,6 +63,7 @@ interface PreparedHabitRun {
   operationId: string | null
   trigger: HabitRunReceipt["trigger"]
   startedAt: string
+  priorSessionSummary?: PriorHabitSessionSummaryInfo
   paths: ReturnType<typeof createHabitSessionPaths>
   permissionEnvelope: HabitRunReceipt["permissionEnvelope"]
   toolPolicy: HabitRunReceipt["toolPolicy"]
@@ -153,6 +156,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const habit = applyHabitRuntimeState(agentRoot, readHabitForRun(agentRoot, habitName, errors))
   const runId = createHabitRunId(habitName, new Date(startedAt))
   const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
+  const priorSessionSummary = readPriorSessionSummary(agentRoot, operationId)
   const paths = createHabitSessionPaths(agentRoot, runId, habit.name)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
@@ -169,6 +173,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     operationId,
     trigger,
     startedAt,
+    priorSessionSummary,
     paths,
     permissionEnvelope,
     toolPolicy,
@@ -183,6 +188,27 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
 function riskProfileForHabitPolicy(definition: ToolDefinition, name: string): ToolRiskProfile {
   const probeArgs: Record<string, string> = name === "shell" ? { command: "touch /tmp/habit-policy-probe" } : {}
   return riskProfileForTool(definition, name, probeArgs)
+}
+
+function readPriorSessionSummary(agentRoot: string, operationId: string | null): PriorHabitSessionSummaryInfo | undefined {
+  if (operationId === null) return undefined
+  try {
+    const summary = readHabitSessionSummary(agentRoot, { operationId, which: "latest" })
+    if (!summary) return { mode: "stateful", summary: null, sources: {}, warnings: [] }
+    return {
+      mode: "stateful",
+      summary: summary.summary,
+      sources: summary.sources,
+      warnings: summary.warnings,
+    }
+  } catch (error) {
+    return {
+      mode: "stateful",
+      summary: null,
+      sources: {},
+      warnings: [`prior summary read failed: ${String(error)}`],
+    }
+  }
 }
 
 export function createInnerDialogWorker(
@@ -339,6 +365,7 @@ export function createInnerDialogWorker(
                   trigger: currentHabitRun.trigger,
                   operationId: currentHabitRun.operationId,
                   habit: currentHabitRun.habit,
+                  priorSessionSummary: currentHabitRun.priorSessionSummary,
                 },
                 habitSession: {
                   runId: currentHabitRun.runId,
