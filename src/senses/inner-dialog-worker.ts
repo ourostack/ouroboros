@@ -175,7 +175,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
 }
 
 function riskProfileForHabitPolicy(definition: ToolDefinition, name: string): ToolRiskProfile {
-  const probeArgs = name === "shell" ? { command: "rm -rf /tmp/habit-policy-probe" } : {}
+  const probeArgs: Record<string, string> = name === "shell" ? { command: "rm -rf /tmp/habit-policy-probe" } : {}
   return riskProfileForTool(definition, name, probeArgs)
 }
 
