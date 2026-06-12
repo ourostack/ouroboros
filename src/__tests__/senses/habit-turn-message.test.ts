@@ -24,6 +24,7 @@ function makeOptions(overrides: Partial<HabitTurnMessageOptions> = {}): HabitTur
     arcResume: overrides.arcResume,
     deskOrientation: overrides.deskOrientation,
     surfacePolicy: overrides.surfacePolicy,
+    priorSessionSummary: overrides.priorSessionSummary,
     now: overrides.now ?? (() => new Date("2026-03-26T12:00:00Z")),
   }
 }
@@ -69,6 +70,69 @@ describe("buildHabitTurnMessage", () => {
 
     expect(result.startsWith("## Arc resume\nnext safe action: inspect workbench")).toBe(true)
     expect(result).toContain("\n\n## Desk record\nfacts: 3\n\n## habit surface policy\nfamily: allowed\n\n30 minutes have passed.")
+  })
+
+  it("includes bounded prior session summary and source locators for stateful habits", () => {
+    const result = buildHabitTurnMessage(makeOptions({
+      priorSessionSummary: {
+        mode: "stateful",
+        summary: "Last run asked Ari for the missing deployment decision.",
+        sources: {
+          receipt: "arc/flight-recorder/habit-receipts/run-1.json",
+          session: "state/habit-sessions/run-1/session.json",
+          pending: "state/habit-sessions/run-1/pending",
+          runtimeState: "state/habits/stateful-check.json",
+        },
+        warnings: ["session file missing"],
+      },
+    }))
+
+    expect(result).toContain("## Prior habit session summary")
+    expect(result).toContain("Last run asked Ari for the missing deployment decision.")
+    expect(result).toContain("receipt: arc/flight-recorder/habit-receipts/run-1.json")
+    expect(result).toContain("session: state/habit-sessions/run-1/session.json")
+    expect(result).toContain("pending: state/habit-sessions/run-1/pending")
+    expect(result).toContain("runtimeState: state/habits/stateful-check.json")
+    expect(result).toContain("warnings: session file missing")
+  })
+
+  it("omits prior session summary for fresh habits", () => {
+    const result = buildHabitTurnMessage(makeOptions())
+
+    expect(result).not.toContain("## Prior habit session summary")
+  })
+
+  it("states when a stateful habit has no prior summary", () => {
+    const result = buildHabitTurnMessage(makeOptions({
+      lastRun: null,
+      priorSessionSummary: {
+        mode: "stateful",
+        summary: null,
+        sources: {},
+        warnings: [],
+      },
+    }))
+
+    expect(result).toContain("## Prior habit session summary")
+    expect(result).toContain("No prior stateful habit summary found for this operation.")
+    expect(result).toContain("your Heartbeat is alive. this is its first breath.")
+  })
+
+  it("truncates overlong prior session summaries", () => {
+    const result = buildHabitTurnMessage(makeOptions({
+      priorSessionSummary: {
+        mode: "stateful",
+        summary: "x".repeat(1800),
+        sources: { receipt: "arc/flight-recorder/habit-receipts/run-long.json" },
+        warnings: [],
+      },
+    }))
+
+    const section = result.split("\n\n").find((part) => part.startsWith("## Prior habit session summary"))
+    expect(section).toBeDefined()
+    expect(section!.length).toBeLessThan(1750)
+    expect(section).toContain("[truncated]")
+    expect(section).toContain("receipt: arc/flight-recorder/habit-receipts/run-long.json")
   })
 
   it("normal turn: includes stale obligation alerts with timing and friend name", () => {
