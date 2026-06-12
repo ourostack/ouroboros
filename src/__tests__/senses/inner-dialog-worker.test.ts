@@ -174,6 +174,49 @@ describe("inner-dialog-worker", () => {
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "daily-reflection" }))
   })
 
+  it("passes a single prepared parsed habit context into habit turns", async () => {
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/stateful.md")) {
+        return [
+          "---",
+          "title: Stateful Check",
+          "cadence: 1h",
+          "continuity:",
+          "  mode: stateful",
+          "tools: [send_message, session_summary]",
+          "---",
+          "",
+          "Keep durable context between fires.",
+        ].join("\n")
+      }
+      return ""
+    })
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
+
+    const habitReads = mockReadFileSync.mock.calls.filter(([filePath]) => String(filePath).includes("/habits/stateful.md"))
+    expect(habitReads).toHaveLength(1)
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "habit",
+      habitName: "stateful",
+      trigger: "poke",
+      preparedHabit: expect.objectContaining({
+        runId: "habit-run-id",
+        trigger: "poke",
+        operationId: "op-habit-run-id",
+        habit: expect.objectContaining({
+          name: "stateful",
+          title: "Stateful Check",
+          continuity: { mode: "stateful" },
+          tools: ["send_message", "session_summary"],
+          body: "Keep durable context between fires.",
+        }),
+      }),
+    }))
+  })
+
   it("backward compat: heartbeat message maps to habit/heartbeat", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
     const worker = createInnerDialogWorker(runTurn)

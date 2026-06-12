@@ -1524,6 +1524,70 @@ describe("inner dialog runtime", () => {
     expect(String(input.messages[0].content)).toBe("fresh habit turn message")
   })
 
+  it("uses prepared habit context without reparsing the habit file", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "checkpoint: waiting on habit" },
+      ],
+    })
+    mockBuildHabitTurnMessage.mockReturnValueOnce("prepared habit turn message")
+    const runId = "run-prepared"
+    const sessionPath = path.join(agentRoot, "state", "habit-sessions", runId, "session.json")
+    const pendingDir = path.join(agentRoot, "state", "habit-sessions", runId, "pending")
+
+    await (runInnerDialogTurn as any)({
+      reason: "habit",
+      habitName: "stateful-check",
+      now: () => new Date("2026-06-11T17:00:00.000Z"),
+      preparedHabit: {
+        runId,
+        trigger: "poke",
+        operationId: "op-prepared",
+        habit: {
+          name: "stateful-check",
+          title: "Stateful Check",
+          cadence: "1h",
+          status: "active",
+          lastRun: "2026-06-11T16:00:00.000Z",
+          created: "2026-06-01T00:00:00.000Z",
+          tools: ["send_message"],
+          origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+          surface: { family: false, originator: true, extra: [] },
+          continuity: { mode: "stateful" },
+          body: "Use the prepared habit body.",
+        },
+      },
+      habitSession: {
+        runId,
+        sessionPath,
+        pendingDir,
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: true,
+          returnRoutes: [],
+          deniedTools: [],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["send_message"],
+          grantedTools: ["send_message"],
+          deniedTools: [],
+          outwardMessagingAllowed: true,
+        },
+      },
+    })
+
+    expect(mockBuildHabitTurnMessage).toHaveBeenCalledTimes(1)
+    const call = mockBuildHabitTurnMessage.mock.calls[0][0]
+    expect(call.habitName).toBe("stateful-check")
+    expect(call.habitTitle).toBe("Stateful Check")
+    expect(call.habitBody).toBe("Use the prepared habit body.")
+    expect(call.lastRun).toBe("2026-06-11T16:00:00.000Z")
+    expect(call.surfacePolicy).toContain("ari via bluebubbles/chat")
+    expect(String(mockHandleInboundTurn.mock.calls[0][0].messages[0].content)).toBe("prepared habit turn message")
+  })
+
   // ── Habit turn tests ──────────────────────────────────────────────
 
   it("passes habitBody and habitTitle to buildHabitTurnMessage for heartbeat", async () => {
