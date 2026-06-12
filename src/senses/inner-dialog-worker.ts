@@ -18,6 +18,7 @@ import {
 import { FileFriendStore } from "../mind/friends/store-file"
 import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition, type ToolRiskProfile } from "../repertoire/tools-base"
 import { surfaceToolDefinition } from "../repertoire/tools-surface"
+import { riskProfileForTool } from "../repertoire/tools"
 
 export type InnerDialogWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -173,9 +174,9 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   }
 }
 
-function riskProfileForHabitPolicy(definition: ToolDefinition): ToolRiskProfile {
-  if (typeof definition.riskProfile === "function") return definition.riskProfile({})
-  return definition.riskProfile ?? { mutates: "none", risk: "low" }
+function riskProfileForHabitPolicy(definition: ToolDefinition, name: string): ToolRiskProfile {
+  const probeArgs = name === "shell" ? { command: "rm -rf /tmp/habit-policy-probe" } : {}
+  return riskProfileForTool(definition, name, probeArgs)
 }
 
 export function createInnerDialogWorker(

@@ -509,7 +509,7 @@ export function filterHabitToolsForEnvelope(
   definitions: ToolDefinition[],
   requestedTools: string[] | null,
   envelope: HabitPermissionEnvelope,
-  riskClassifier: (definition: ToolDefinition) => ToolRiskProfile,
+  riskClassifier: (definition: ToolDefinition, name: string) => ToolRiskProfile,
 ): HabitToolPolicy {
   const requested = requestedTools ? new Set(requestedTools) : null
   const grantedTools: string[] = []
@@ -520,7 +520,7 @@ export function filterHabitToolsForEnvelope(
     if (requested && !requested.has(name)) continue
 
     const deniedByEnvelope = envelope.deniedTools.includes(name)
-    const profile = riskClassifier(definition)
+    const profile = riskClassifier(definition, name)
     const allowedOutward = isOutwardMessagingTool(name) && envelope.canMessageOutward && !deniedByEnvelope
     if (deniedByEnvelope || (isHighRisk(profile) && !allowedOutward)) {
       deniedTools.push(name)

@@ -601,6 +601,41 @@ describe("inner-dialog-worker", () => {
       }))
     })
 
+    it("uses executable shell risk when preparing habit tool policy", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/")) return [
+          "---",
+          "tools: [shell]",
+          "---",
+          "",
+          "try a shell command",
+          "",
+        ].join("\n")
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "shell-probe", trigger: "poke" })
+
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+        habitSession: expect.objectContaining({
+          toolPolicy: expect.objectContaining({
+            requestedTools: ["shell"],
+            grantedTools: [],
+            deniedTools: ["shell"],
+          }),
+        }),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        toolPolicy: expect.objectContaining({
+          requestedTools: ["shell"],
+          grantedTools: [],
+          deniedTools: ["shell"],
+        }),
+      }))
+    })
+
     it("records non-Error habit file read failures losslessly", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
         if (String(filePath).includes("/habits/")) throw "habit missing as string"
