@@ -135,6 +135,28 @@ describe("buildHabitTurnMessage", () => {
     expect(section).toContain("receipt: arc/flight-recorder/habit-receipts/run-long.json")
   })
 
+  it("ignores blank and malformed prior summary source locators", () => {
+    const result = buildHabitTurnMessage(makeOptions({
+      priorSessionSummary: {
+        mode: "stateful",
+        summary: "Prior run produced a usable summary.",
+        sources: {
+          receipt: 42,
+          session: "   ",
+          pending: null,
+          runtimeState: "state/habits/stateful-check.json",
+        } as any,
+        warnings: [],
+      },
+    }))
+
+    expect(result).toContain("Prior run produced a usable summary.")
+    expect(result).toContain("runtimeState: state/habits/stateful-check.json")
+    expect(result).not.toContain("receipt: 42")
+    expect(result).not.toContain("session:")
+    expect(result).not.toContain("pending:")
+  })
+
   it("normal turn: includes stale obligation alerts with timing and friend name", () => {
     const result = buildHabitTurnMessage(makeOptions({
       staleObligations: [

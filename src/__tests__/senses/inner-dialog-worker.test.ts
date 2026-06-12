@@ -249,6 +249,81 @@ describe("inner-dialog-worker", () => {
     })
   })
 
+  it("passes an empty prior stateful summary when no matching operation is found", async () => {
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/stateful.md")) {
+        return [
+          "---",
+          "title: Stateful Check",
+          "cadence: 1h",
+          "continuity:",
+          "  mode: stateful",
+          "---",
+          "",
+          "Keep durable context between fires.",
+        ].join("\n")
+      }
+      return ""
+    })
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
+
+    expect(mockReadHabitSessionSummary).toHaveBeenCalledWith("/bundles/slugger.ouro", {
+      operationId: "habit:stateful",
+      which: "latest",
+    })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      preparedHabit: expect.objectContaining({
+        operationId: "habit:stateful",
+        priorSessionSummary: {
+          mode: "stateful",
+          summary: null,
+          sources: {},
+          warnings: [],
+        },
+      }),
+    }))
+  })
+
+  it("degrades prior stateful summary read failures into warnings", async () => {
+    mockReadHabitSessionSummary.mockImplementation(() => {
+      throw new Error("summary index corrupt")
+    })
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/stateful.md")) {
+        return [
+          "---",
+          "title: Stateful Check",
+          "cadence: 1h",
+          "continuity:",
+          "  mode: stateful",
+          "---",
+          "",
+          "Keep durable context between fires.",
+        ].join("\n")
+      }
+      return ""
+    })
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
+
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      preparedHabit: expect.objectContaining({
+        operationId: "habit:stateful",
+        priorSessionSummary: {
+          mode: "stateful",
+          summary: null,
+          sources: {},
+          warnings: ["prior summary read failed: Error: summary index corrupt"],
+        },
+      }),
+    }))
+  })
+
   it("applies runtime lastRun before passing prepared habit context", async () => {
     mockReadFileSync.mockImplementation((filePath: any) => {
       if (String(filePath).includes("/habits/heartbeat.md")) {

@@ -193,13 +193,19 @@ function buildPriorSessionSummarySection(priorSessionSummary: PriorHabitSessionS
 
   const sourceLines = (["receipt", "session", "pending", "runtimeState"] as const)
     .flatMap((key) => {
-      const value = priorSessionSummary.sources[key]?.trim()
+      const value = cleanSourceLocator((priorSessionSummary.sources as Partial<Record<typeof key, unknown>>)[key])
       return value ? [`${key}: ${value}`] : []
     })
   if (sourceLines.length > 0) lines.push(...sourceLines)
   if (priorSessionSummary.warnings.length > 0) lines.push(`warnings: ${priorSessionSummary.warnings.join("; ")}`)
 
   return lines.join("\n")
+}
+
+function cleanSourceLocator(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
 function appendTrailingExtras(
