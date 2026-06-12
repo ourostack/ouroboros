@@ -57,6 +57,13 @@ describe("habit-session-summary selector", () => {
       ok: true,
       receipt: { runId: "run-b" },
     })
+    expect(selectHabitRunReceipt(receipts, { runId: "missing" })).toEqual({
+      ok: false,
+      error: {
+        code: "not_found",
+        message: "no habit run matched selector",
+      },
+    })
 
     expect(selectHabitRunReceipt(receipts, { runId: "run-b", habitName: "heartbeat" })).toEqual({
       ok: false,
@@ -83,6 +90,13 @@ describe("habit-session-summary selector", () => {
         message: "provide runId, habitName, or operationId",
       },
     })
+    expect(selectHabitRunReceipt([], { habitName: "journal" })).toEqual({
+      ok: false,
+      error: {
+        code: "not_found",
+        message: "no habit run matched selector",
+      },
+    })
   })
 
   it("defaults to latest and sorts by endedAt descending then runId descending", () => {
@@ -100,6 +114,7 @@ describe("habit-session-summary selector", () => {
       ok: true,
       receipt: { runId: "run-a" },
     })
+    expect(receipts.map((receipt) => receipt.runId)).toEqual(["run-a", "run-c", "run-z"])
   })
 
   it("filters by operationId with an optional habitName", () => {
