@@ -22,6 +22,8 @@ import {
   readDeskPrefs,
   readFriendView,
   readHabitRunReceiptView,
+  readHabitSessionSummaryListView,
+  readHabitSessionSummaryView,
   readHabitRunView,
   readHabitView,
   readLogView,
@@ -2595,6 +2597,7 @@ describe("mailbox deep readers", () => {
         pendingLocator: overrides.pendingLocator ?? `state/habit-sessions/${runId}/pending`,
         runtimeStateLocator: overrides.runtimeStateLocator ?? "state/habits/heartbeat.json",
         receiptLocator: overrides.receiptLocator ?? `arc/flight-recorder/habit-receipts/${runId}.json`,
+        operationId: "operationId" in overrides ? overrides.operationId : null,
         nextRunAt: overrides.nextRunAt ?? null,
         permissionEnvelope: overrides.permissionEnvelope ?? {
           schemaVersion: 1,
@@ -2691,6 +2694,95 @@ describe("mailbox deep readers", () => {
       expect(readHabitRunReceiptView(agentRoot, "../escape")).toBeNull()
       expect(readHabitRunReceiptView(agentRoot, "bad%2fescape")).toBeNull()
       expect(readHabitRunReceiptView(agentRoot, "malformed")).toBeNull()
+    })
+
+    it("projects habit session summaries with bounded lists and selector detail", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      const oldReceipt = {
+        ...makeHabitReceipt({
+          runId: "run-summary-old",
+          operationId: "habit:heartbeat",
+          endedAt: "2026-06-11T09:00:00.000Z",
+        }),
+        summarySnapshot: {
+          summary: "Older heartbeat summary.",
+          decisions: ["old decision"],
+          nextLikelyStep: "older next",
+        },
+      } as HabitRunReceipt & { summarySnapshot: { summary: string; decisions: string[]; nextLikelyStep: string } }
+      const newReceipt = {
+        ...makeHabitReceipt({
+          runId: "run-summary-new",
+          operationId: "habit:heartbeat",
+          endedAt: "2026-06-11T10:00:00.000Z",
+          surfaceAttempts: [{ recipient: "ari", channel: "bluebubbles", reason: "status", result: "queued", routeKind: "family" }],
+          producedRefs: [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
+        }),
+        summarySnapshot: {
+          summary: "Queued iMessage and recorded the route.",
+          decisions: ["receipt decision"],
+          nextLikelyStep: "inspect delivery",
+        },
+      } as HabitRunReceipt & { summarySnapshot: { summary: string; decisions: string[]; nextLikelyStep: string } }
+      writeHabitRunReceipt(agentRoot, oldReceipt)
+      writeHabitRunReceipt(agentRoot, newReceipt)
+      writeJson(path.join(agentRoot, "state", "habit-sessions", "run-summary-new", "session.json"), {
+        version: 1,
+        messages: [{ role: "assistant", name: "send_message", content: "queued" }],
+        summary: { decisions: ["session decision"], nextLikelyStep: "session next" },
+      })
+      writeJson(path.join(agentRoot, "state", "habit-sessions", "run-summary-new", "pending", "reply.json"), {
+        content: "waiting",
+      })
+
+      const list = readHabitSessionSummaryListView(agentRoot, { limit: 1 })
+
+      expect(list).toEqual({
+        totalCount: 2,
+        limit: 1,
+        items: [expect.objectContaining({
+          runId: "run-summary-new",
+          habitName: "heartbeat",
+          operationId: "habit:heartbeat",
+          summary: "Queued iMessage and recorded the route.",
+          decisions: ["receipt decision", "session decision"],
+          pending: { count: 1, files: ["reply.json"] },
+          messagesSent: [expect.objectContaining({ channel: "bluebubbles", result: "queued" })],
+          toolsUsed: ["send_message"],
+          producedRefs: [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
+          nextLikelyStep: "inspect delivery",
+          sources: expect.objectContaining({
+            receipt: "arc/flight-recorder/habit-receipts/run-summary-new.json",
+            session: "state/habit-sessions/run-summary-new/session.json",
+          }),
+        })],
+      })
+      expect(readHabitSessionSummaryView(agentRoot, { operationId: "habit:heartbeat", which: "previous" })?.runId).toBe("run-summary-old")
+      expect(readHabitSessionSummaryView(agentRoot, { runId: "missing" })).toBeNull()
+    })
+
+    it("handles empty summary lists and sparse fallback summaries", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+
+      expect(readHabitSessionSummaryListView(agentRoot, { limit: 0 })).toEqual({
+        totalCount: 0,
+        limit: 1,
+        items: [],
+      })
+
+      writeHabitRunReceipt(agentRoot, makeHabitReceipt({ runId: "run-fallback", operationId: null }))
+      const summary = readHabitSessionSummaryView(agentRoot, { runId: "run-fallback" })
+
+      expect(summary).toMatchObject({
+        runId: "run-fallback",
+        operationId: null,
+        summary: "Habit heartbeat finished with surfaced.",
+        pending: { count: 0, files: [] },
+        toolsUsed: [],
+      })
+      expect(summary?.warnings).toContain("session file missing")
     })
   })
 

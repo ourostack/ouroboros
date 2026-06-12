@@ -268,6 +268,15 @@ describe("mailbox http", () => {
       items: [expect.objectContaining({ runId: "run-default-hook" })],
     })
     expect(defaultHooks.readAgentHabitRun("nobody", "run-default-hook")).toEqual({ receipt })
+    expect(defaultHooks.readAgentHabitRunSummaries("nobody", { limit: 1 })).toEqual({
+      totalCount: 1,
+      limit: 1,
+      items: [expect.objectContaining({ runId: "run-default-hook", summary: "Habit heartbeat finished with surfaced." })],
+    })
+    expect(defaultHooks.readAgentHabitRunSummary("nobody", { runId: "run-default-hook" })).toEqual(expect.objectContaining({
+      runId: "run-default-hook",
+      sources: expect.objectContaining({ receipt: "arc/flight-recorder/habit-receipts/run-default-hook.json" }),
+    }))
     await expect(defaultHooks.readAgentMail("mailless-default-hooks")).resolves.toEqual(expect.objectContaining({
       status: "auth-required",
     }))
@@ -1362,12 +1371,19 @@ describe("mailbox http", () => {
     const hooks = createRouteOptions().hooks
     hooks.readAgentHabitRunSummaries = vi.fn(() => summaries)
     hooks.readAgentHabitRunSummary = vi.fn((_agent: string, selector: Record<string, string>) => (
-      selector.runId === "run-http-summary" ? summary : null
+      selector.runId === "run-http-summary" || selector.operationId === "habit:heartbeat" ? summary : null
     ))
     hooks.readAgentHabitRun = vi.fn((_agent: string, runId: string) => (
       runId === "summary" ? { receipt } : null
     ))
     const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const defaultListResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summaries"), defaultListResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(defaultListResponse.statusCode).toBe(200)
+    expect(JSON.parse(defaultListResponse.body.toString("utf8"))).toEqual(summaries)
+    expect(hooks.readAgentHabitRunSummaries).toHaveBeenCalledWith("slugger")
 
     const listResponse = createMockResponse()
     handler(createMockRequest("/api/agents/slugger/habit-run-summaries?limit=5"), listResponse)
@@ -1392,6 +1408,17 @@ describe("mailbox http", () => {
     expect(JSON.parse(detailResponse.body.toString("utf8"))).toEqual(summary)
     expect(hooks.readAgentHabitRunSummary).toHaveBeenCalledWith("slugger", { runId: "run-http-summary" })
 
+    const aliasDetailResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary?habit=heartbeat&operation-id=habit%3Aheartbeat&which=latest-success"), aliasDetailResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(aliasDetailResponse.statusCode).toBe(200)
+    expect(JSON.parse(aliasDetailResponse.body.toString("utf8"))).toEqual(summary)
+    expect(hooks.readAgentHabitRunSummary).toHaveBeenCalledWith("slugger", {
+      habitName: "heartbeat",
+      operationId: "habit:heartbeat",
+      which: "latest-success",
+    })
+
     const missingResponse = createMockResponse()
     handler(createMockRequest("/api/agents/slugger/habit-run-summary?operationId=habit%3Amissing"), missingResponse)
     await new Promise((resolve) => setImmediate(resolve))
@@ -1399,6 +1426,24 @@ describe("mailbox http", () => {
     expect(JSON.parse(missingResponse.body.toString("utf8"))).toEqual({
       ok: false,
       error: "habit summary not found",
+    })
+
+    const missingSelectorResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary"), missingSelectorResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(missingSelectorResponse.statusCode).toBe(400)
+    expect(JSON.parse(missingSelectorResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "provide runId, habitName, or operationId",
+    })
+
+    const invalidWhichResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary?operationId=habit%3Aheartbeat&which=oldest"), invalidWhichResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(invalidWhichResponse.statusCode).toBe(400)
+    expect(JSON.parse(invalidWhichResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "which must be latest, previous, latest-success, or latest-failure",
     })
 
     const invalidSelectorResponse = createMockResponse()
