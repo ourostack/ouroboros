@@ -121,6 +121,7 @@ function fallbackHabitFile(habitName: string): HabitFile {
     tools: [],
     origin: null,
     surface: { family: false, originator: false, extra: [] },
+    continuity: { mode: "fresh" },
     body: "",
   }
 }

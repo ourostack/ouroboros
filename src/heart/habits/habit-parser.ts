@@ -16,6 +16,12 @@ export interface HabitSurface {
   extra: string[]
 }
 
+export type HabitContinuityMode = "fresh" | "stateful"
+
+export interface HabitContinuity {
+  mode: HabitContinuityMode
+}
+
 export interface HabitFile {
   name: string
   title: string
@@ -26,6 +32,7 @@ export interface HabitFile {
   tools: string[] | undefined
   origin: HabitOrigin | null
   surface: HabitSurface
+  continuity: HabitContinuity
   body: string
 }
 
@@ -95,6 +102,12 @@ function parseSurface(raw: unknown): HabitSurface {
   }
 }
 
+function parseContinuity(raw: unknown): HabitContinuity {
+  const record = objectRecord(raw)
+  const mode = record ? record.mode : null
+  return { mode: mode === "stateful" ? "stateful" : "fresh" }
+}
+
 function extractFrontmatterAndBody(content: string): { frontmatter: Record<string, unknown>; body: string } | null {
   const lines = content.split(/\r?\n/)
   if (lines[0]?.trim() !== "---") {
@@ -133,6 +146,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
       tools: undefined,
       origin: null,
       surface: { family: true, originator: true, extra: [] },
+      continuity: { mode: "fresh" },
       body: content.trim(),
     }
   }
@@ -158,6 +172,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const tools = parseToolsField(frontmatter.tools)
   const origin = parseOrigin(frontmatter.origin)
   const surface = parseSurface(frontmatter.surface)
+  const continuity = parseContinuity(frontmatter.continuity)
 
   return {
     name: stem,
@@ -169,6 +184,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     tools,
     origin,
     surface,
+    continuity,
     body,
   }
 }
