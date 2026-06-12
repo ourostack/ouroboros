@@ -134,6 +134,24 @@ describe("session_summary tool", () => {
     expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
   })
 
+  it("rejects every runId selector combination that would make the exact run ambiguous", async () => {
+    const tool = await getSessionSummaryTool()
+
+    for (const args of [
+      { runId: "run-1", operationId: "habit:stateful-check" },
+      { runId: "run-1", which: "previous" },
+    ]) {
+      mockReadHabitSessionSummary.mockClear()
+      const result = parseToolResult(await tool.handler(args) as string)
+
+      expect(result).toMatchObject({
+        kind: "invalid_selector",
+        code: "run_id_exclusive",
+      })
+      expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
+    }
+  })
+
   it("validates which values before reading summaries", async () => {
     const tool = await getSessionSummaryTool()
 
@@ -144,6 +162,35 @@ describe("session_summary tool", () => {
       code: "invalid_which",
     })
     expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
+  })
+
+  it("requires a selector before reading summaries", async () => {
+    const tool = await getSessionSummaryTool()
+
+    const result = parseToolResult(await tool.handler({ which: "latest" }) as string)
+
+    expect(result).toMatchObject({
+      kind: "invalid_selector",
+      code: "selector_required",
+    })
+    expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
+  })
+
+  it("passes operation and habit filters through to the shared projector", async () => {
+    const tool = await getSessionSummaryTool()
+
+    const result = parseToolResult(await tool.handler({
+      habitName: " stateful-check ",
+      operationId: " habit:stateful-check ",
+      which: "latest-success",
+    }) as string)
+
+    expect(mockReadHabitSessionSummary).toHaveBeenCalledWith("/mock/agent-root", {
+      habitName: "stateful-check",
+      operationId: "habit:stateful-check",
+      which: "latest-success",
+    })
+    expect(result.kind).toBe("habit_session_summary")
   })
 
   it("returns not_found when no habit run matches", async () => {
@@ -160,5 +207,33 @@ describe("session_summary tool", () => {
       kind: "not_found",
       message: "no habit run matched selector",
     })
+  })
+
+  it("renders sparse fallback summaries without optional clutter", async () => {
+    mockReadHabitSessionSummary.mockReturnValue(sampleSummary({
+      operationId: null,
+      status: "no_change",
+      summary: "Habit stateful-check finished with no_change.",
+      decisions: [],
+      pending: { count: 0, files: [] },
+      messagesSent: [],
+      toolsUsed: [],
+      errors: ["receipt had a stale tool result"],
+      nextLikelyStep: null,
+      warnings: [],
+    }))
+    const tool = await getSessionSummaryTool()
+
+    const result = parseToolResult(await tool.handler({ habitName: "stateful-check" }) as string)
+
+    expect(result.text).toContain("Habit stateful-check finished with no_change.")
+    expect(result.text).toContain("pending: none")
+    expect(result.text).toContain("messages: none")
+    expect(result.text).toContain("tools: none")
+    expect(result.text).toContain("errors: receipt had a stale tool result")
+    expect(result.text).not.toContain("operation:")
+    expect(result.text).not.toContain("next:")
+    expect(result.text).not.toContain("decisions:")
+    expect(result.text).not.toContain("warnings:")
   })
 })
