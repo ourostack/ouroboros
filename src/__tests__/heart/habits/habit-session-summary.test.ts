@@ -1,13 +1,25 @@
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
+import { afterEach } from "vitest"
 import { describe, expect, it } from "vitest"
-import type { HabitRunOutcome, HabitRunReceipt } from "../../../arc/flight-recorder"
+import { writeHabitRunReceipt, type HabitRunOutcome, type HabitRunReceipt } from "../../../arc/flight-recorder"
 import {
+  readHabitSessionSummary,
   selectHabitRunReceipt,
   type HabitSummaryReceipt,
 } from "../../../heart/habits/habit-session-summary"
 
 function makeReceipt(
   runId: string,
-  overrides: Partial<HabitRunReceipt> & { operationId?: string | null } = {},
+  overrides: Partial<HabitRunReceipt> & {
+    operationId?: string | null
+    summarySnapshot?: {
+      summary?: string
+      decisions?: string[]
+      nextLikelyStep?: string | null
+    }
+  } = {},
 ): HabitSummaryReceipt {
   const habitName = overrides.habitName ?? "journal"
   const endedAt = overrides.endedAt ?? "2026-06-11T12:00:00.000Z"
@@ -43,6 +55,7 @@ function makeReceipt(
     surfaceAttempts: overrides.surfaceAttempts ?? [],
     errors: overrides.errors ?? [],
     operationId: overrides.operationId ?? null,
+    ...(overrides.summarySnapshot ? { summarySnapshot: overrides.summarySnapshot } : {}),
   }
 }
 
@@ -178,6 +191,186 @@ describe("habit-session-summary selector", () => {
     expect(selectHabitRunReceipt(receipts, { habitName: "journal", which: "previous" })).toMatchObject({
       ok: false,
       error: { code: "not_found" },
+    })
+  })
+})
+
+describe("habit-session-summary artifact reader", () => {
+  const cleanup: string[] = []
+
+  afterEach(() => {
+    while (cleanup.length > 0) {
+      const dir = cleanup.pop()
+      if (dir) fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  function makeAgentRoot(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "habit-summary-"))
+    cleanup.push(dir)
+    return dir
+  }
+
+  function writeSummaryReceipt(
+    agentRoot: string,
+    runId: string,
+    overrides: Partial<HabitSummaryReceipt> & {
+      operationId?: string | null
+      summarySnapshot?: {
+        summary?: string
+        decisions?: string[]
+        nextLikelyStep?: string | null
+      }
+    } = {},
+  ): HabitSummaryReceipt {
+    const receipt = makeReceipt(runId, overrides)
+    writeHabitRunReceipt(agentRoot, receipt as HabitRunReceipt)
+    return receipt
+  }
+
+  function writeSession(agentRoot: string, runId: string, payload: unknown): void {
+    const sessionPath = path.join(agentRoot, "state", "habit-sessions", runId, "session.json")
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+    fs.writeFileSync(sessionPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8")
+  }
+
+  it("builds a receipt-authoritative summary enriched by session, pending dir, and runtime cursor", () => {
+    const agentRoot = makeAgentRoot()
+    const runId = "run-rich"
+    writeSummaryReceipt(agentRoot, runId, {
+      operationId: "op-live",
+      outcome: "surfaced",
+      producedRefs: [{ kind: "desk_record", locator: "desk/tasks/follow-up" }],
+      surfaceAttempts: [{
+        recipient: "ari",
+        channel: "bluebubbles",
+        reason: "needed_input",
+        result: "queued",
+        routeKind: "originator",
+        rawStatus: "queued",
+      }],
+      errors: ["minor warning"],
+      summarySnapshot: {
+        summary: "Receipt says Slugger asked Ari for the missing decision.",
+        decisions: ["Ask Ari for the missing decision."],
+        nextLikelyStep: "Wait for Ari to reply.",
+      },
+    })
+    writeSession(agentRoot, runId, {
+      messages: [
+        { role: "assistant", content: "I will ask Ari and wait." },
+        { role: "tool", name: "send_message", content: "queued" },
+      ],
+      summary: {
+        decisions: ["Use iMessage rather than an internal note."],
+        nextLikelyStep: "Check the reply queue.",
+      },
+    })
+    const pendingDir = path.join(agentRoot, "state", "habit-sessions", runId, "pending")
+    fs.mkdirSync(pendingDir, { recursive: true })
+    fs.writeFileSync(path.join(pendingDir, "ask-ari.json"), JSON.stringify({ content: "need decision" }), "utf-8")
+    const runtimeStatePath = path.join(agentRoot, "state", "habits", "journal.json")
+    fs.mkdirSync(path.dirname(runtimeStatePath), { recursive: true })
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "journal",
+      lastRun: "2026-06-11T12:00:00.000Z",
+      updatedAt: "2026-06-11T12:00:00.000Z",
+      activeOperationId: "op-live",
+      latestRunId: runId,
+      latestReceiptLocator: `arc/flight-recorder/habit-receipts/${runId}.json`,
+    }, null, 2), "utf-8")
+
+    expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
+      runId,
+      habitName: "journal",
+      operationId: "op-live",
+      status: "surfaced",
+      summary: "Receipt says Slugger asked Ari for the missing decision.",
+      decisions: ["Ask Ari for the missing decision.", "Use iMessage rather than an internal note."],
+      pending: {
+        count: 1,
+        files: ["ask-ari.json"],
+      },
+      messagesSent: [{
+        recipient: "ari",
+        channel: "bluebubbles",
+        result: "queued",
+      }],
+      toolsUsed: ["send_message"],
+      producedRefs: [{ kind: "desk_record", locator: "desk/tasks/follow-up" }],
+      errors: ["minor warning"],
+      nextLikelyStep: "Wait for Ari to reply.",
+      sources: expect.objectContaining({
+        receipt: `arc/flight-recorder/habit-receipts/${runId}.json`,
+        session: `state/habit-sessions/${runId}/session.json`,
+        pending: `state/habit-sessions/${runId}/pending`,
+        runtimeState: "state/habits/journal.json",
+      }),
+      warnings: [],
+    })
+  })
+
+  it("returns a receipt-only summary with warnings when session artifacts are missing, empty, or malformed", () => {
+    const agentRoot = makeAgentRoot()
+    writeSummaryReceipt(agentRoot, "run-missing", {
+      summarySnapshot: { summary: "Receipt summary survived missing session." },
+    })
+    writeSummaryReceipt(agentRoot, "run-empty", {
+      endedAt: "2026-06-11T12:01:00.000Z",
+      summarySnapshot: { summary: "Receipt summary survived empty session." },
+    })
+    writeSession(agentRoot, "run-empty", { messages: [] })
+    writeSummaryReceipt(agentRoot, "run-bad", {
+      endedAt: "2026-06-11T12:02:00.000Z",
+      summarySnapshot: { summary: "Receipt summary survived malformed session." },
+    })
+    const badSessionPath = path.join(agentRoot, "state", "habit-sessions", "run-bad", "session.json")
+    fs.mkdirSync(path.dirname(badSessionPath), { recursive: true })
+    fs.writeFileSync(badSessionPath, "{bad", "utf-8")
+
+    expect(readHabitSessionSummary(agentRoot, { runId: "run-missing" })).toMatchObject({
+      summary: "Receipt summary survived missing session.",
+      warnings: ["session file missing"],
+    })
+    expect(readHabitSessionSummary(agentRoot, { runId: "run-empty" })).toMatchObject({
+      summary: "Receipt summary survived empty session.",
+      warnings: ["session file had no usable messages"],
+    })
+    expect(readHabitSessionSummary(agentRoot, { runId: "run-bad" })).toMatchObject({
+      summary: "Receipt summary survived malformed session.",
+      warnings: [expect.stringContaining("session file malformed")],
+    })
+  })
+
+  it("normalizes legacy receipts and falls back to deterministic receipt prose", () => {
+    const agentRoot = makeAgentRoot()
+    const receiptDir = path.join(agentRoot, "arc", "flight-recorder", "habit-receipts")
+    fs.mkdirSync(receiptDir, { recursive: true })
+    fs.writeFileSync(path.join(receiptDir, "legacy-run.json"), JSON.stringify({
+      schemaVersion: 1,
+      runId: "legacy-run",
+      habitName: "legacy-checkup",
+      trigger: "poke",
+      startedAt: "2026-06-11T11:00:00.000Z",
+      endedAt: "2026-06-11T11:01:00.000Z",
+      outcome: "blocked",
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: ["legacy block"],
+    }, null, 2), "utf-8")
+
+    expect(readHabitSessionSummary(agentRoot, { runId: "legacy-run" })).toMatchObject({
+      runId: "legacy-run",
+      habitName: "legacy-checkup",
+      operationId: null,
+      status: "blocked",
+      summary: "Habit legacy-checkup finished with blocked.",
+      errors: ["legacy block"],
+      sources: expect.objectContaining({
+        receipt: "arc/flight-recorder/habit-receipts/legacy-run.json",
+      }),
+      warnings: expect.arrayContaining(["legacy receipt normalized without summary snapshot", "session file missing"]),
     })
   })
 })
