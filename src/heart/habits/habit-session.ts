@@ -70,6 +70,7 @@ export interface BuildHabitRunReceiptInput {
   startedAt: string
   endedAt: string
   outcome: HabitRunOutcome
+  operationId?: string | null
   permissionEnvelope: HabitPermissionEnvelope
   toolPolicy: HabitToolPolicy
   producedRefs?: FlightRecorderProducedRef[]
@@ -92,6 +93,9 @@ export interface HabitRuntimeStateSnapshot {
   name: string
   lastRun: string
   updatedAt: string
+  activeOperationId: string | null
+  latestRunId: string | null
+  latestReceiptLocator: string | null
 }
 
 export interface HabitSessionRecoveryState {
@@ -123,13 +127,30 @@ function isHabitRuntimeStateSnapshot(value: unknown, habitName: string): value i
     && record.name === habitName
     && typeof record.lastRun === "string"
     && typeof record.updatedAt === "string"
+    && (record.activeOperationId === undefined || record.activeOperationId === null || typeof record.activeOperationId === "string")
+    && (record.latestRunId === undefined || record.latestRunId === null || typeof record.latestRunId === "string")
+    && (record.latestReceiptLocator === undefined || record.latestReceiptLocator === null || typeof record.latestReceiptLocator === "string")
+}
+
+function runtimeCursorValue(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
 }
 
 function readHabitRuntimeStateSnapshot(agentRoot: string, habitName: string): HabitRuntimeStateSnapshot | null {
   const runtimeStatePath = path.join(agentRoot, "state", "habits", `${habitName}.json`)
   try {
     const parsed = JSON.parse(fs.readFileSync(runtimeStatePath, "utf-8")) as unknown
-    if (isHabitRuntimeStateSnapshot(parsed, habitName)) return parsed
+    if (isHabitRuntimeStateSnapshot(parsed, habitName)) {
+      return {
+        schemaVersion: 1,
+        name: parsed.name,
+        lastRun: parsed.lastRun,
+        updatedAt: parsed.updatedAt,
+        activeOperationId: runtimeCursorValue(parsed.activeOperationId),
+        latestRunId: runtimeCursorValue(parsed.latestRunId),
+        latestReceiptLocator: runtimeCursorValue(parsed.latestReceiptLocator),
+      }
+    }
     emitNervesEvent({
       level: "warn",
       component: "daemon",
@@ -568,6 +589,7 @@ export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRun
     pendingLocator: paths.pendingLocator,
     runtimeStateLocator: paths.runtimeStateLocator,
     receiptLocator: paths.receiptLocator,
+    operationId: input.operationId ?? null,
     nextRunAt: input.nextRunAt ?? computeNextRunAt(input.habit, input.endedAt),
     permissionEnvelope: input.permissionEnvelope,
     toolPolicy: input.toolPolicy,
@@ -617,8 +639,9 @@ function habitOutcomeForCompletion(input: CompleteHabitRunInput): { outcome: Hab
 
 export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRunResult {
   const { outcome, producedRefs } = habitOutcomeForCompletion(input)
+  let receipt: HabitRunReceipt
   try {
-    writeHabitRunReceipt(input.agentRoot, buildHabitRunReceipt({
+    receipt = buildHabitRunReceipt({
       agentRoot: input.agentRoot,
       habit: input.habit,
       runId: input.runId,
@@ -626,12 +649,14 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       startedAt: input.startedAt,
       endedAt: input.endedAt,
       outcome,
+      operationId: input.operationId ?? null,
       permissionEnvelope: input.permissionEnvelope,
       toolPolicy: input.toolPolicy,
       producedRefs,
       surfaceAttempts: input.surfaceAttempts,
       errors: input.errors,
-    }))
+    })
+    writeHabitRunReceipt(input.agentRoot, receipt)
   } catch (error) {
     emitNervesEvent({
       level: "error",
@@ -649,6 +674,9 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
   try {
     recordHabitRun(input.agentRoot, input.habit.name, input.endedAt, {
       definitionPath: path.join(input.agentRoot, "habits", `${input.habit.name}.md`),
+      activeOperationId: receipt.operationId ?? null,
+      latestRunId: receipt.runId,
+      latestReceiptLocator: receipt.receiptLocator,
     })
     return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: true }
   } catch (error) {

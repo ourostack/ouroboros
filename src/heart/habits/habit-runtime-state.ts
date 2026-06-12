@@ -9,6 +9,15 @@ interface HabitRuntimeStateRecord {
   name: string
   lastRun: string
   updatedAt: string
+  activeOperationId: string | null
+  latestRunId: string | null
+  latestReceiptLocator: string | null
+}
+
+export interface HabitRuntimeCursorOptions {
+  activeOperationId?: string | null
+  latestRunId?: string | null
+  latestReceiptLocator?: string | null
 }
 
 function habitRuntimeStateDir(agentRoot: string): string {
@@ -17,6 +26,10 @@ function habitRuntimeStateDir(agentRoot: string): string {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function nullableCursor(value: unknown): string | null {
+  return isNonEmptyString(value) ? value.trim() : null
 }
 
 function stripLegacyLastRunFromDefinition(definitionPath: string): void {
@@ -46,19 +59,36 @@ export function applyHabitRuntimeState(agentRoot: string, habit: HabitFile): Hab
   return { ...habit, lastRun: runtimeLastRun }
 }
 
-export function writeHabitLastRun(agentRoot: string, habitName: string, lastRun: string, updatedAt = lastRun): void {
+export function writeHabitLastRun(
+  agentRoot: string,
+  habitName: string,
+  lastRun: string,
+  updatedAt = lastRun,
+  options: HabitRuntimeCursorOptions = {},
+): void {
   const record: HabitRuntimeStateRecord = {
     schemaVersion: 1,
     name: habitName,
     lastRun,
     updatedAt,
+    activeOperationId: nullableCursor(options.activeOperationId),
+    latestRunId: nullableCursor(options.latestRunId),
+    latestReceiptLocator: nullableCursor(options.latestReceiptLocator),
   }
   writeJsonFile(habitRuntimeStateDir(agentRoot), habitName, record)
   emitNervesEvent({
     component: "daemon",
     event: "daemon.habit_runtime_state_write",
     message: "wrote habit runtime state",
-    meta: { agentRoot, habitName, lastRun, updatedAt },
+    meta: {
+      agentRoot,
+      habitName,
+      lastRun,
+      updatedAt,
+      activeOperationId: record.activeOperationId,
+      latestRunId: record.latestRunId,
+      latestReceiptLocator: record.latestReceiptLocator,
+    },
   })
 }
 
@@ -66,9 +96,9 @@ export function recordHabitRun(
   agentRoot: string,
   habitName: string,
   lastRun: string,
-  options: { definitionPath?: string } = {},
+  options: { definitionPath?: string } & HabitRuntimeCursorOptions = {},
 ): void {
-  writeHabitLastRun(agentRoot, habitName, lastRun)
+  writeHabitLastRun(agentRoot, habitName, lastRun, lastRun, options)
   if (!options.definitionPath) return
   try {
     stripLegacyLastRunFromDefinition(options.definitionPath)

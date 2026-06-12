@@ -469,9 +469,9 @@ describe("Arc flight recorder", () => {
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-produced-entry")).toBeNull()
 
     const listed = recorder.listHabitRunReceipts(agentRoot, { limit: 10 })
-    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
-    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
-    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
+    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
       event: "mind.flight_recorder_habit_receipt_malformed",

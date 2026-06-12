@@ -152,6 +152,7 @@ export interface HabitRunReceipt {
   pendingLocator: string
   runtimeStateLocator: string
   receiptLocator: string
+  operationId?: string | null
   nextRunAt: string | null
   permissionEnvelope: HabitPermissionEnvelope
   toolPolicy: HabitToolPolicy
@@ -563,6 +564,7 @@ function isHabitRunReceipt(value: unknown): value is HabitRunReceipt {
     && typeof value.pendingLocator === "string"
     && typeof value.runtimeStateLocator === "string"
     && typeof value.receiptLocator === "string"
+    && (value.operationId === undefined || value.operationId === null || typeof value.operationId === "string")
     && (value.nextRunAt === null || typeof value.nextRunAt === "string")
     && isHabitPermissionEnvelope(value.permissionEnvelope)
     && isHabitToolPolicy(value.toolPolicy)
@@ -621,6 +623,7 @@ function normalizeLegacyHabitRunReceipt(receipt: LegacyHabitRunReceipt): HabitRu
     pendingLocator: `state/habit-sessions/${receipt.runId}/pending`,
     runtimeStateLocator: `state/habits/${receipt.habitName}.json`,
     receiptLocator: `arc/flight-recorder/habit-receipts/${receipt.runId}.json`,
+    operationId: null,
     nextRunAt: null,
     permissionEnvelope: {
       schemaVersion: 1,
@@ -650,6 +653,7 @@ function capHabitRunReceipt(receipt: HabitRunReceipt): HabitRunReceipt {
     pendingLocator: capStructuredRecordString(receipt.pendingLocator),
     runtimeStateLocator: capStructuredRecordString(receipt.runtimeStateLocator),
     receiptLocator: capStructuredRecordString(receipt.receiptLocator),
+    operationId: receipt.operationId ? capStructuredRecordString(receipt.operationId) : null,
     permissionEnvelope: {
       ...receipt.permissionEnvelope,
       returnRoutes: receipt.permissionEnvelope.returnRoutes.map((route) => ({
@@ -707,7 +711,7 @@ export function readHabitRunReceipt(agentRoot: string, runId: string): HabitRunR
       message: "flight recorder habit receipt read",
       meta: { agentRoot, runId },
     })
-    return receipt
+    return capHabitRunReceipt(receipt)
   } catch (error) {
     warnMalformedHabitReceipt(
       agentRoot,
@@ -742,7 +746,10 @@ export function writeHabitRunReceipt(agentRoot: string, receipt: WritableHabitRu
     recordedAt: safeReceipt.endedAt,
     summary: `habit ${safeReceipt.habitName} finished with ${safeReceipt.outcome}`,
     producedRefs: safeReceipt.producedRefs,
-    meta: { receiptPath: path.join("arc", "flight-recorder", "habit-receipts", `${safeReceipt.runId}.json`) },
+    meta: {
+      receiptPath: path.join("arc", "flight-recorder", "habit-receipts", `${safeReceipt.runId}.json`),
+      operationId: safeReceipt.operationId ?? null,
+    },
   })
   emitNervesEvent({
     component: "mind",
