@@ -242,22 +242,26 @@ function scanArcSourceIssues(agentRoot: string): WorkCardIssue[] {
 function obligationItem(obligation: {
   id: string
   content: string
-  status: ObligationStatus
-  updatedAt?: string
-  createdAt: string
+  status?: ObligationStatus
+  updatedAt?: unknown
+  createdAt?: unknown
   nextAction?: string
   latestNote?: string
   meaning?: { waitingOn?: { kind: string; target: string; detail: string } | null; stalenessClass?: string }
 }): WorkCardItem {
   const freshness = obligation.meaning?.stalenessClass === "at-risk" ? "stale_risky" : "current"
+  const status = typeof obligation.status === "string" ? obligation.status : "pending"
+  const updatedAt = typeof obligation.updatedAt === "string"
+    ? obligation.updatedAt
+    : typeof obligation.createdAt === "string" ? obligation.createdAt : undefined
   return {
     id: obligation.id,
     title: obligation.content,
-    status: obligation.status,
+    status,
     source: source("obligation", obligationLocator(obligation.id), freshness),
     ...(obligation.latestNote ? { summary: obligation.latestNote } : {}),
     ...(obligation.nextAction ? { nextAction: obligation.nextAction } : {}),
-    updatedAt: obligation.updatedAt ?? obligation.createdAt,
+    ...(updatedAt ? { updatedAt } : {}),
   }
 }
 

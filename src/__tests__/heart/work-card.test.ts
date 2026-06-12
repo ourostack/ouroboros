@@ -331,6 +331,34 @@ describe("Work Card projection", () => {
     })
   })
 
+  it("keeps legacy obligations without status or timestamps visible without crashing", () => {
+    const agentRoot = makeAgentRoot()
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "ob-legacy.json"), JSON.stringify({
+      id: "ob-legacy",
+      content: "legacy obligation",
+    }), "utf-8")
+
+    const card = buildWorkCard("slugger", agentRoot, {
+      now: () => new Date("2026-06-08T12:00:00.000Z"),
+      homeDir: agentRoot,
+    })
+
+    expect(card.counts.owed).toBe(1)
+    expect(card.counts.waitingOnHuman).toBe(0)
+    expect(card.owed[0]).toMatchObject({
+      id: "ob-legacy",
+      status: "pending",
+      title: "legacy obligation",
+    })
+    expect(card.owed[0].updatedAt).toBeUndefined()
+    expect(card.nextAction).toMatchObject({
+      actor: "agent",
+      summary: "legacy obligation",
+    })
+    expect(formatWorkCardText(card)).toContain("[pending] legacy obligation")
+  })
+
   it("chooses active packet work when no obligations exist", async () => {
     const agentRoot = makeAgentRoot()
     const packet = createPonderPacket(agentRoot, {
