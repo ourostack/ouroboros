@@ -81,6 +81,8 @@ const SUCCESS_OUTCOMES = new Set<HabitRunOutcome>([
 ])
 
 const FAILURE_OUTCOMES = new Set<HabitRunOutcome>(["blocked", "error"])
+const MAX_SUMMARY_CHARS = 1600
+const TRUNCATION_SUFFIX = "\n[truncated]"
 
 function selectorError(code: HabitSessionSummarySelectorErrorCode, message: string): HabitSummaryReceiptSelection {
   return { ok: false, error: { code, message } }
@@ -178,7 +180,7 @@ function readJsonFile(filePath: string): { ok: true; value: unknown } | { ok: fa
   } catch (error) {
     return {
       ok: false,
-      warning: `session file malformed: ${error instanceof Error ? error.message : String(error)}`,
+      warning: `session file malformed: ${String(error)}`,
     }
   }
 }
@@ -260,6 +262,11 @@ function fallbackSummary(receipt: HabitSummaryReceipt): string {
   return `Habit ${receipt.habitName} finished with ${receipt.outcome}.`
 }
 
+function truncateSummary(value: string): string {
+  if (value.length <= MAX_SUMMARY_CHARS) return value
+  return `${value.slice(0, MAX_SUMMARY_CHARS - TRUNCATION_SUFFIX.length)}${TRUNCATION_SUFFIX}`
+}
+
 function legacySummaryWarnings(receipt: HabitSummaryReceipt, snapshot: HabitSessionSummarySnapshot | null): string[] {
   if (snapshot) return []
   return receipt.permissionEnvelope.warnings.some((warning) => warning.includes("legacy receipt normalized"))
@@ -283,7 +290,7 @@ export function readHabitSessionSummary(
     ...(snapshot?.decisions ?? []),
     ...session.decisions,
   ])
-  const summary = snapshot?.summary ?? fallbackSummary(receipt)
+  const summary = truncateSummary(snapshot?.summary ?? fallbackSummary(receipt))
   const nextLikelyStep = snapshot?.nextLikelyStep ?? session.nextLikelyStep
   const result: HabitSessionSummary = {
     runId: receipt.runId,

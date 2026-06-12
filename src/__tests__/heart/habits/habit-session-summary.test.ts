@@ -373,4 +373,100 @@ describe("habit-session-summary artifact reader", () => {
       warnings: expect.arrayContaining(["legacy receipt normalized without summary snapshot", "session file missing"]),
     })
   })
+
+  it("covers malformed enrichment edges and runtime operation fallback", () => {
+    const agentRoot = makeAgentRoot()
+    const runId = "run-edge"
+    writeSummaryReceipt(agentRoot, runId, {
+      operationId: null,
+      summarySnapshot: {
+        summary: "Snapshot summary.",
+        decisions: ["One decision.", "One decision."],
+        nextLikelyStep: null,
+      },
+    })
+    writeSession(agentRoot, runId, [])
+    const pendingParent = path.join(agentRoot, "state", "habit-sessions", runId)
+    fs.mkdirSync(pendingParent, { recursive: true })
+    fs.writeFileSync(path.join(pendingParent, "pending"), "not a directory", "utf-8")
+    const runtimeStatePath = path.join(agentRoot, "state", "habits", "journal.json")
+    fs.mkdirSync(path.dirname(runtimeStatePath), { recursive: true })
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "journal",
+      activeOperationId: "op-runtime",
+    }), "utf-8")
+
+    expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
+      operationId: "op-runtime",
+      decisions: ["One decision."],
+      pending: { count: 0, files: [] },
+      nextLikelyStep: null,
+      warnings: ["session file malformed: expected object"],
+    })
+
+    fs.writeFileSync(runtimeStatePath, "[]", "utf-8")
+    expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
+      operationId: null,
+    })
+    expect(readHabitSessionSummary(agentRoot, { runId: "missing-run" })).toBeNull()
+  })
+
+  it("falls back to session next step and deterministically truncates long receipt summaries", () => {
+    const agentRoot = makeAgentRoot()
+    const runId = "run-long"
+    writeSummaryReceipt(agentRoot, runId, {
+      summarySnapshot: {
+        summary: "x".repeat(1800),
+      },
+    })
+    writeSession(agentRoot, runId, {
+      messages: [
+        "not an object",
+        { role: "tool", toolName: "record", content: "ok" },
+      ],
+      summary: {
+        decisions: ["Use the session decision."],
+        nextLikelyStep: "Use the session next step.",
+      },
+    })
+
+    const summary = readHabitSessionSummary(agentRoot, { runId })
+
+    expect(summary?.summary).toHaveLength(1600)
+    expect(summary?.summary.endsWith("\n[truncated]")).toBe(true)
+    expect(summary).toMatchObject({
+      decisions: ["Use the session decision."],
+      toolsUsed: ["record"],
+      nextLikelyStep: "Use the session next step.",
+    })
+  })
+
+  it("covers snapshot-without-summary and ordinary receipt-without-snapshot branches", () => {
+    const agentRoot = makeAgentRoot()
+    writeSummaryReceipt(agentRoot, "run-snapshot-without-summary", {
+      summarySnapshot: {
+        decisions: ["Snapshot has only a decision."],
+      },
+    })
+    writeSession(agentRoot, "run-snapshot-without-summary", {
+      messages: [{ role: "assistant", content: "ok" }],
+    })
+    writeSummaryReceipt(agentRoot, "run-no-snapshot", {
+      endedAt: "2026-06-11T12:05:00.000Z",
+    })
+    writeSession(agentRoot, "run-no-snapshot", {
+      summary: {},
+    })
+
+    expect(readHabitSessionSummary(agentRoot, { runId: "run-snapshot-without-summary" })).toMatchObject({
+      summary: "Habit journal finished with no_change.",
+      decisions: ["Snapshot has only a decision."],
+      warnings: [],
+    })
+    expect(readHabitSessionSummary(agentRoot, { runId: "run-no-snapshot" })).toMatchObject({
+      summary: "Habit journal finished with no_change.",
+      warnings: ["session file had no usable messages"],
+    })
+  })
 })
