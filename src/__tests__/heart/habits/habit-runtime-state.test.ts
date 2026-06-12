@@ -30,6 +30,9 @@ function makeHabit(overrides: Partial<HabitFile> = {}): HabitFile {
     lastRun: "2026-03-27T10:00:00.000Z",
     created: "2026-03-01T00:00:00.000Z",
     tools: undefined,
+    origin: null,
+    surface: { family: true, originator: true, extra: [] },
+    continuity: { mode: "fresh" },
     body: "Check in.",
     ...overrides,
   }
@@ -64,6 +67,32 @@ describe("habit-runtime-state", () => {
       component: "daemon",
       event: "daemon.habit_runtime_state_write",
     }))
+  })
+
+  it("writes cursor-only runtime state for latest run recovery", () => {
+    const bundleRoot = makeTempDir("habit-runtime-cursor")
+    cleanup.push(bundleRoot)
+
+    writeHabitLastRun(bundleRoot, "heartbeat", "2026-03-27T12:00:00.000Z", "2026-03-27T12:00:01.000Z", {
+      activeOperationId: "op-heartbeat",
+      latestRunId: "run-heartbeat",
+      latestReceiptLocator: "arc/flight-recorder/habit-receipts/run-heartbeat.json",
+    })
+
+    const record = JSON.parse(
+      fs.readFileSync(path.join(bundleRoot, "state", "habits", "heartbeat.json"), "utf-8"),
+    ) as Record<string, unknown>
+    expect(record).toEqual({
+      schemaVersion: 1,
+      name: "heartbeat",
+      lastRun: "2026-03-27T12:00:00.000Z",
+      updatedAt: "2026-03-27T12:00:01.000Z",
+      activeOperationId: "op-heartbeat",
+      latestRunId: "run-heartbeat",
+      latestReceiptLocator: "arc/flight-recorder/habit-receipts/run-heartbeat.json",
+    })
+    expect(JSON.stringify(record)).not.toContain("summary")
+    expect(JSON.stringify(record)).not.toContain("decision")
   })
 
   it("prefers runtime state over legacy habit frontmatter", () => {
@@ -110,9 +139,19 @@ describe("habit-runtime-state", () => {
       "",
     ].join("\n"), "utf-8")
 
-    recordHabitRun(bundleRoot, "heartbeat", "2026-03-27T12:00:00.000Z", { definitionPath })
+    recordHabitRun(bundleRoot, "heartbeat", "2026-03-27T12:00:00.000Z", {
+      definitionPath,
+      activeOperationId: "op-heartbeat",
+      latestRunId: "run-heartbeat",
+      latestReceiptLocator: "arc/flight-recorder/habit-receipts/run-heartbeat.json",
+    })
 
     expect(readHabitLastRun(bundleRoot, "heartbeat")).toBe("2026-03-27T12:00:00.000Z")
+    expect(JSON.parse(fs.readFileSync(path.join(bundleRoot, "state", "habits", "heartbeat.json"), "utf-8"))).toMatchObject({
+      activeOperationId: "op-heartbeat",
+      latestRunId: "run-heartbeat",
+      latestReceiptLocator: "arc/flight-recorder/habit-receipts/run-heartbeat.json",
+    })
     const updatedDefinition = fs.readFileSync(definitionPath, "utf-8")
     expect(updatedDefinition).not.toContain("lastRun:")
     expect(updatedDefinition).not.toContain("last_run:")
