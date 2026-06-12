@@ -110,8 +110,6 @@ describe("obligations store", () => {
         [],
         { content: "missing id", status: "pending" },
         { id: "bad-content", status: "pending" },
-        { id: "bad-status", content: "missing status" },
-        { id: "non-string-status", content: "non-string status", status: 1 },
       ]
       invalidShapes.forEach((shape, index) => {
         fs.writeFileSync(path.join(obligationsDir, `invalid-${index}.json`), `${JSON.stringify(shape)}\n`, "utf-8")
@@ -120,6 +118,7 @@ describe("obligations store", () => {
       const all = readObligations(tmpDir)
       expect(all).toHaveLength(1)
       expect(all[0].content).toBe("valid")
+      expect(readVerifiedObligations(tmpDir).map((obligation) => obligation.content)).toEqual(["valid"])
     })
 
     it("keeps legacy-readable obligations visible while exposing only verified obligations for recovery", () => {
@@ -140,6 +139,19 @@ describe("obligations store", () => {
         content: "visible legacy obligation",
         status: "pending",
         createdAt: "2026-06-08T12:00:00.000Z",
+      })}\n`, "utf-8")
+      fs.writeFileSync(path.join(obligationsDir, "legacy-missing-status.json"), `${JSON.stringify({
+        id: "legacy-missing-status",
+        content: "visible missing status",
+        createdAt: "2026-06-08T12:00:00.000Z",
+        origin: sampleOrigin,
+      })}\n`, "utf-8")
+      fs.writeFileSync(path.join(obligationsDir, "legacy-non-string-status.json"), `${JSON.stringify({
+        id: "legacy-non-string-status",
+        content: "visible non-string status",
+        status: 1,
+        createdAt: "2026-06-08T12:00:00.000Z",
+        origin: sampleOrigin,
       })}\n`, "utf-8")
       fs.writeFileSync(path.join(obligationsDir, "legacy-unknown-status.json"), `${JSON.stringify({
         id: "legacy-unknown-status",
@@ -162,6 +174,8 @@ describe("obligations store", () => {
       expect(readable).toEqual([
         "legacy-missing-created",
         "legacy-missing-origin",
+        "legacy-missing-status",
+        "legacy-non-string-status",
         "legacy-unknown-status",
         "valid-fulfilled",
         "valid-investigating",

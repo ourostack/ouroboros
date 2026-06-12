@@ -1227,6 +1227,39 @@ describe("mailbox deep readers", () => {
       expect(state.obligations.items[0]!.currentSurface).toBeNull()
     })
 
+    it("keeps legacy obligations without status or timestamps visible", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "dialog.json"), { version: 1, messages: [] })
+      writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "runtime.json"), { status: "idle" })
+      writeJson(path.join(alphaRoot, "arc", "obligations", "ob-legacy.json"), {
+        id: "ob-legacy",
+        content: "legacy obligation",
+      })
+      writeJson(path.join(alphaRoot, "arc", "obligations", "ob-current.json"), {
+        id: "ob-current",
+        content: "current obligation",
+        status: "pending",
+        createdAt: "2026-03-30T10:00:00.000Z",
+      })
+
+      const { readMailboxAgentState } = await import("../../../heart/mailbox/mailbox-read")
+      const state = readMailboxAgentState("alpha", { bundlesRoot, now: () => new Date("2026-03-30T12:00:00.000Z") })
+
+      expect(state.obligations.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "ob-legacy",
+          status: "pending",
+          updatedAt: "",
+        }),
+        expect.objectContaining({
+          id: "ob-current",
+          updatedAt: "2026-03-30T10:00:00.000Z",
+        }),
+      ]))
+    })
+
     it("handles malformed session files without crashing", async () => {
       const bundlesRoot = makeBundleRoot()
       const alphaRoot = path.join(bundlesRoot, "alpha.ouro")

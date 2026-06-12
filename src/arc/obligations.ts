@@ -66,7 +66,6 @@ function isReadableObligation(value: unknown): value is Obligation {
   const obligation = value as Partial<Obligation>
   return typeof obligation.id === "string"
     && typeof obligation.content === "string"
-    && typeof obligation.status === "string"
 }
 
 function isVerifiedObligationStatus(value: unknown): value is ObligationStatus {
