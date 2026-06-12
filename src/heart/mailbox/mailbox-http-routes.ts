@@ -13,6 +13,7 @@ import {
 import type {
   MailboxAgentState,
   MailboxAgentView,
+  MailboxHabitSessionSummarySelector,
   MailboxMachineState,
   MailboxMachineView,
 } from "./mailbox-types"
@@ -48,6 +49,48 @@ function parseHabitRunLimit(urlValue: string): number | null | undefined {
   if (!/^[1-9][0-9]*$/.test(rawLimit)) return null
   const limit = Number.parseInt(rawLimit, 10)
   return limit >= 1 && limit <= 100 ? limit : null
+}
+
+type HabitSummarySelectorParseResult =
+  | { ok: true; selector: MailboxHabitSessionSummarySelector }
+  | { ok: false; error: string }
+
+const VALID_HABIT_SUMMARY_WHICH = new Set(["latest", "previous", "latest-success", "latest-failure"])
+
+function firstQueryValue(params: URLSearchParams, names: string[]): string | undefined {
+  for (const name of names) {
+    const value = params.get(name)
+    if (value !== null && value.trim().length > 0) return value
+  }
+  return undefined
+}
+
+function parseHabitSummarySelector(urlValue: string): HabitSummarySelectorParseResult {
+  const params = new URL(urlValue, "http://127.0.0.1").searchParams
+  const runId = firstQueryValue(params, ["runId", "run-id"])
+  const habitName = firstQueryValue(params, ["habitName", "habit"])
+  const operationId = firstQueryValue(params, ["operationId", "operation-id"])
+  const which = firstQueryValue(params, ["which"])
+
+  if (runId !== undefined && (habitName !== undefined || operationId !== undefined || which !== undefined)) {
+    return { ok: false, error: "--run-id cannot be combined with --habit, --operation-id, or --which" }
+  }
+  if (runId === undefined && habitName === undefined && operationId === undefined) {
+    return { ok: false, error: "provide runId, habitName, or operationId" }
+  }
+  if (which !== undefined && !VALID_HABIT_SUMMARY_WHICH.has(which)) {
+    return { ok: false, error: "which must be latest, previous, latest-success, or latest-failure" }
+  }
+
+  return {
+    ok: true,
+    selector: {
+      ...(runId ? { runId } : {}),
+      ...(habitName ? { habitName } : {}),
+      ...(operationId ? { operationId } : {}),
+      ...(which ? { which } : {}),
+    },
+  }
 }
 
 export function createMailboxHttpRequestHandler(options: MailboxHttpRouteOptions): http.RequestListener {
@@ -258,6 +301,34 @@ async function handleAgentRoute(request: http.IncomingMessage, response: http.Se
       ? options.hooks.readAgentHabitRuns(agent)
       : options.hooks.readAgentHabitRuns(agent, { limit })
     writeJson(response, 200, view)
+    return
+  }
+
+  if (surface === "habit-run-summaries") {
+    const limit = parseHabitRunLimit(request.url as string)
+    if (limit === null) {
+      writeJson(response, 400, { ok: false, error: "limit must be an integer between 1 and 100" })
+      return
+    }
+    const view = limit === undefined
+      ? options.hooks.readAgentHabitRunSummaries(agent)
+      : options.hooks.readAgentHabitRunSummaries(agent, { limit })
+    writeJson(response, 200, view)
+    return
+  }
+
+  if (surface === "habit-run-summary") {
+    const parsed = parseHabitSummarySelector(request.url as string)
+    if (!parsed.ok) {
+      writeJson(response, 400, { ok: false, error: parsed.error })
+      return
+    }
+    const summary = options.hooks.readAgentHabitRunSummary(agent, parsed.selector)
+    if (!summary) {
+      writeJson(response, 404, { ok: false, error: "habit summary not found" })
+      return
+    }
+    writeJson(response, 200, summary)
     return
   }
 

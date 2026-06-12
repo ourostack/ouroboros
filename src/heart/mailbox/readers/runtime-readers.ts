@@ -3,6 +3,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { parseHabitFile } from "../../habits/habit-parser"
 import { applyHabitRuntimeState } from "../../habits/habit-runtime-state"
+import { readHabitSessionSummary, type HabitSessionSummarySelector } from "../../habits/habit-session-summary"
 import { getAgentBundlesRoot } from "../../identity"
 import { isDaemonStatus } from "../../daemon/daemon-health"
 import { listHabitRunReceipts, readHabitRunReceipt, type HabitRunReceipt } from "../../../arc/flight-recorder"
@@ -23,6 +24,8 @@ import {
   type MailboxHabitRunDetailView,
   type MailboxHabitRunSummary,
   type MailboxHabitRunView,
+  type MailboxHabitSessionSummary,
+  type MailboxHabitSessionSummaryView,
   type MailboxHabitView,
   type MailboxLogEntry,
   type MailboxLogView,
@@ -689,6 +692,36 @@ export function readHabitRunReceiptView(agentRoot: string, runId: string): Mailb
     meta: { agentRoot, runId, found: receipt !== null },
   })
   return receipt ? { receipt } : null
+}
+
+export function readHabitSessionSummaryListView(agentRoot: string, options: { limit?: number } = {}): MailboxHabitSessionSummaryView {
+  const limit = normalizeHabitRunLimit(options.limit)
+  const receipts = listHabitRunReceipts(agentRoot)
+  const items = receipts.slice(0, limit)
+    .map((receipt) => readHabitSessionSummary(agentRoot, { runId: receipt.runId }))
+    .filter((summary): summary is MailboxHabitSessionSummary => summary !== null)
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.mailbox_habit_run_summaries_read",
+    message: "reading mailbox habit run summaries",
+    meta: { agentRoot, totalCount: receipts.length, limit, itemCount: items.length },
+  })
+  return {
+    totalCount: receipts.length,
+    limit,
+    items,
+  }
+}
+
+export function readHabitSessionSummaryView(agentRoot: string, selector: HabitSessionSummarySelector): MailboxHabitSessionSummary | null {
+  const summary = readHabitSessionSummary(agentRoot, selector)
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.mailbox_habit_run_summary_read",
+    message: "reading mailbox habit run summary",
+    meta: { agentRoot, runId: summary?.runId ?? null, habitName: summary?.habitName ?? selector.habitName ?? null, found: summary !== null },
+  })
+  return summary
 }
 
 export function readNeedsMeView(agentName: string, options: MailboxReadOptions = {}): MailboxNeedsMeView {
