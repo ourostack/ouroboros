@@ -1149,6 +1149,7 @@ describe("runAgent", () => {
     })
 
     const execTool = vi.fn(async () => "side effect happened")
+    const recordError = vi.fn()
     const toolStarts: string[] = []
     const textChunks: string[] = []
     const messages: any[] = [{ role: "system", content: "test" }]
@@ -1183,10 +1184,12 @@ describe("runAgent", () => {
           deniedTools: ["shell", "send_message", "surface"],
           outwardMessagingAllowed: false,
         },
+        recordError,
       },
     })
 
     expect(execTool).not.toHaveBeenCalled()
+    expect(recordError).toHaveBeenCalledWith(expect.stringContaining("habit tool 'shell' is denied"))
     expect(toolStarts).toEqual(["rest"])
     expect(textChunks).toEqual([])
     const toolResults = messages.filter((message: any) => message.role === "tool")
@@ -1558,6 +1561,7 @@ describe("runAgent", () => {
     })
 
     const execTool = vi.fn(async () => "side effect happened")
+    const recordError = vi.fn()
     const callbacks: ChannelCallbacks = {
       onModelStart: () => {},
       onModelStreamStart: () => {},
@@ -1590,10 +1594,12 @@ describe("runAgent", () => {
           deniedTools: ["send_message", "surface"],
           outwardMessagingAllowed: false,
         },
+        recordError,
       },
     })
 
     expect(execTool).not.toHaveBeenCalled()
+    expect(recordError).toHaveBeenCalledWith(expect.stringContaining("external_side_effect"))
     expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([

@@ -442,6 +442,9 @@ function recordBlockedHabitSurfaceAttempts(
   toolCalls: Array<{ name: string; arguments: string }>,
   reason: string,
 ): void {
+  if (toolCalls.some((call) => call.name !== "send_message" && call.name !== "surface")) {
+    habitSession?.recordError?.(`blocked habit tool batch: ${reason}`)
+  }
   if (!habitSession?.recordSurfaceAttempt) return
   for (const call of toolCalls) {
     if (call.name !== "send_message" && call.name !== "surface") continue
