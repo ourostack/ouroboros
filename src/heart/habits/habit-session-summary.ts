@@ -248,6 +248,8 @@ function runtimeOperationId(agentRoot: string, receipt: HabitSummaryReceipt): st
   try {
     const parsed = JSON.parse(fs.readFileSync(runtimePath, "utf-8")) as unknown
     if (!isRecord(parsed)) return null
+    if (stringValue(parsed.latestRunId) !== receipt.runId) return null
+    if (stringValue(parsed.latestReceiptLocator) !== receipt.receiptLocator) return null
     return stringValue(parsed.activeOperationId)
   } catch {
     return null

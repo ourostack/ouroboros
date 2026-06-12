@@ -374,7 +374,7 @@ describe("habit-session-summary artifact reader", () => {
     })
   })
 
-  it("covers malformed enrichment edges and runtime operation fallback", () => {
+  it("covers malformed enrichment edges and matched runtime operation fallback", () => {
     const agentRoot = makeAgentRoot()
     const runId = "run-edge"
     writeSummaryReceipt(agentRoot, runId, {
@@ -395,6 +395,8 @@ describe("habit-session-summary artifact reader", () => {
       schemaVersion: 1,
       name: "journal",
       activeOperationId: "op-runtime",
+      latestRunId: runId,
+      latestReceiptLocator: `arc/flight-recorder/habit-receipts/${runId}.json`,
     }), "utf-8")
 
     expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
@@ -403,6 +405,28 @@ describe("habit-session-summary artifact reader", () => {
       pending: { count: 0, files: [] },
       nextLikelyStep: null,
       warnings: ["session file malformed: expected object"],
+    })
+
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "journal",
+      activeOperationId: "op-stale",
+      latestRunId: "different-run",
+      latestReceiptLocator: "arc/flight-recorder/habit-receipts/different-run.json",
+    }), "utf-8")
+    expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
+      operationId: null,
+    })
+
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "journal",
+      activeOperationId: "op-stale-same-run",
+      latestRunId: runId,
+      latestReceiptLocator: "arc/flight-recorder/habit-receipts/other-receipt.json",
+    }), "utf-8")
+    expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
+      operationId: null,
     })
 
     fs.writeFileSync(runtimeStatePath, "[]", "utf-8")
