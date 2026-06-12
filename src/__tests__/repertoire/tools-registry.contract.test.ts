@@ -236,6 +236,9 @@ describe("tool registry contract", () => {
     // Added in orientation substrate: 1 turn-frame inspection tool
     expect(names).toContain("orientation_get");
 
+    // Added in habit session continuity: 1 read-only session summary tool
+    expect(names).toContain("session_summary");
+
     // Added in A2A + commerce substrate: 3 A2A tools and 4 commerce authority tools
     expect(names).toContain("a2a_list_peers");
     expect(names).toContain("a2a_send_message");
@@ -245,7 +248,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("commerce_receipt_get");
     expect(names).toContain("commerce_access_log");
 
-    // Exact count: 108 tools
-    expect(names).toHaveLength(108);
+    // Exact count: 109 tools
+    expect(names).toHaveLength(109);
   });
 });
