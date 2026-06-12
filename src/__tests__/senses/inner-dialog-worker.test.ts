@@ -205,7 +205,7 @@ describe("inner-dialog-worker", () => {
       preparedHabit: expect.objectContaining({
         runId: "habit-run-id",
         trigger: "poke",
-        operationId: "op-habit-run-id",
+        operationId: "habit:stateful",
         habit: expect.objectContaining({
           name: "stateful",
           title: "Stateful Check",
@@ -447,7 +447,12 @@ describe("inner-dialog-worker", () => {
         "/bundles/slugger.ouro",
         "heartbeat",
         expect.any(String),
-        { definitionPath: "/bundles/slugger.ouro/habits/heartbeat.md" },
+        {
+          definitionPath: "/bundles/slugger.ouro/habits/heartbeat.md",
+          activeOperationId: null,
+          latestRunId: "habit-run-id",
+          latestReceiptLocator: "arc/flight-recorder/habit-receipts/habit-run-id.json",
+        },
       )
 
       const lastRun = mockRecordHabitRun.mock.calls[0]?.[2] as string
@@ -746,7 +751,7 @@ describe("inner-dialog-worker", () => {
         meta: expect.objectContaining({
           habitName: "heartbeat",
           runId: "habit-run-id",
-          error: "ENOENT: no such file or directory",
+          error: "Error: ENOENT: no such file or directory",
         }),
       }))
     })
@@ -767,7 +772,7 @@ describe("inner-dialog-worker", () => {
         meta: expect.objectContaining({
           habitName: "heartbeat",
           runId: "habit-run-id",
-          error: "disk full",
+          error: "Error: disk full",
         }),
       }))
     })

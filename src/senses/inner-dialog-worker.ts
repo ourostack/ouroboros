@@ -1,6 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
-import { runInnerDialogTurn } from "./inner-dialog"
+import { runInnerDialogTurn, type PreparedHabitContext } from "./inner-dialog"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
@@ -37,6 +37,7 @@ export interface InnerDialogWorkerRunOptions {
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
   habitSession?: HabitSessionToolContext
+  preparedHabit?: PreparedHabitContext
 }
 
 export interface InnerDialogWorkerController {
@@ -56,6 +57,7 @@ interface PreparedHabitRun {
   agentRoot: string
   habit: HabitFile
   runId: string
+  operationId: string | null
   trigger: HabitRunReceipt["trigger"]
   startedAt: string
   paths: ReturnType<typeof createHabitSessionPaths>
@@ -149,6 +151,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const errors: string[] = []
   const habit = readHabitForRun(agentRoot, habitName, errors)
   const runId = createHabitRunId(habitName, new Date(startedAt))
+  const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
   const paths = createHabitSessionPaths(agentRoot, runId, habit.name)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
@@ -162,6 +165,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     agentRoot,
     habit,
     runId,
+    operationId,
     trigger,
     startedAt,
     paths,
@@ -202,6 +206,7 @@ export function createInnerDialogWorker(
       trigger: habitRun.trigger,
       startedAt: habitRun.startedAt,
       endedAt,
+      operationId: habitRun.operationId,
       permissionEnvelope: habitRun.permissionEnvelope,
       toolPolicy: habitRun.toolPolicy,
       producedRefs: habitRun.producedRefs,
@@ -328,6 +333,12 @@ export function createInnerDialogWorker(
             ...(currentHabitRun
               ? {
                 trigger: currentHabitRun.trigger,
+                preparedHabit: {
+                  runId: currentHabitRun.runId,
+                  trigger: currentHabitRun.trigger,
+                  operationId: currentHabitRun.operationId,
+                  habit: currentHabitRun.habit,
+                },
                 habitSession: {
                   runId: currentHabitRun.runId,
                   sessionPath: currentHabitRun.paths.sessionPath,
