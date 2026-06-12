@@ -4,6 +4,7 @@ import * as path from "path"
 import { afterAll, describe, expect, it, vi } from "vitest"
 import { writeHabitRunReceipt, type HabitRunReceipt } from "../../../arc/flight-recorder"
 import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
+import { getCommandHelp } from "../../../heart/daemon/cli-help"
 
 function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunReceipt {
   const runId = overrides.runId ?? "run-base"
@@ -12,7 +13,7 @@ function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunRec
     runId,
     sessionId: runId,
     habitName: overrides.habitName ?? "heartbeat",
-    operationId: overrides.operationId ?? "habit:heartbeat",
+    operationId: "operationId" in overrides ? overrides.operationId : "habit:heartbeat",
     trigger: overrides.trigger ?? "poke",
     startedAt: overrides.startedAt ?? "2026-06-11T10:00:00.000Z",
     endedAt: overrides.endedAt ?? "2026-06-11T10:01:00.000Z",
@@ -118,10 +119,13 @@ describe("ouro habit summary CLI", () => {
     expect(() => parseOuroCommand(["habit", "summary", "--run-id", "run-1", "--habit", "heartbeat"])).toThrow("run-id")
     expect(() => parseOuroCommand(["habit", "summary", "--habit", "heartbeat", "--which", "oldest"])).toThrow("which")
     expect(() => parseOuroCommand(["habit", "summary", "--run-id"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["habit", "summary", "--operation-id"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["habit", "summary", "--surprise", "x"])).toThrow("Usage")
   })
 
   it("includes habit summary usage in help text", () => {
     expect(() => parseOuroCommand(["habit", "unknown"])).toThrow("ouro habit summary")
+    expect(getCommandHelp("habit")).toContain("summary")
   })
 
   it("prints habit summary JSON from local bundle artifacts without daemon access", async () => {
@@ -176,5 +180,41 @@ describe("ouro habit summary CLI", () => {
     expect(result).toBe("error: habit summary not found")
     expect(setExitCode).toHaveBeenCalledWith(1)
     expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("renders sparse text summaries with errors and without optional fields", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-summary-sparse-"))
+    cleanup.push(tempBundle)
+    const receipt = makeHabitReceipt({
+      runId: "run-summary-sparse",
+      operationId: null,
+      outcome: "error",
+      summarySnapshot: { summary: "Habit heartbeat finished with error.", decisions: [], nextLikelyStep: null },
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: ["provider went away"],
+    })
+    writeHabitRunReceipt(tempBundle, receipt)
+    fs.mkdirSync(path.join(tempBundle, "state", "habit-sessions", "run-summary-sparse"), { recursive: true })
+    fs.writeFileSync(path.join(tempBundle, "state", "habit-sessions", "run-summary-sparse", "session.json"), JSON.stringify({
+      version: 1,
+      messages: [],
+      summary: { decisions: [], nextLikelyStep: null },
+    }, null, 2), "utf-8")
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+
+    const result = await runOuroCli(["habit", "summary", "--agent", "test", "--habit", "heartbeat", "--which", "latest-failure"], deps)
+
+    expect(result).toContain("run-summary-sparse")
+    expect(result).toContain("summary=Habit heartbeat finished with error.")
+    expect(result).toContain("pending=0")
+    expect(result).toContain("messages=0")
+    expect(result).toContain("tools=none")
+    expect(result).toContain("errors=provider went away")
+    expect(result).toContain("warnings=session file had no usable messages")
+    expect(result).not.toContain("operation=")
+    expect(result).not.toContain("next=")
+    expect(result).not.toContain("decisions=")
+    expect(result).not.toContain("refs=")
   })
 })

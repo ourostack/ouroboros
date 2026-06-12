@@ -8088,6 +8088,7 @@ describe("ouro habit CLI execution", () => {
       runId,
       sessionId: runId,
       habitName: overrides.habitName ?? "heartbeat",
+      operationId: overrides.operationId ?? null,
       trigger: overrides.trigger ?? "poke",
       startedAt: overrides.startedAt ?? "2026-06-11T10:00:00.000Z",
       endedAt: overrides.endedAt ?? "2026-06-11T10:01:00.000Z",
