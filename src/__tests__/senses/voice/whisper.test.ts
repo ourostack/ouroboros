@@ -156,6 +156,7 @@ describe("Whisper.cpp voice transcriber", () => {
 
     const result = await runner(process.execPath, ["-e", "process.stdout.write('voice-runner-ok')"], { timeoutMs: 5_000 })
     const stderr = await runner(process.execPath, ["-e", "process.stderr.write('voice-runner-err')"], { timeoutMs: 5_000 })
+    const signalExit = await runner(process.execPath, ["-e", "process.kill(process.pid, 'SIGTERM')"], { timeoutMs: 5_000 })
     await expect(runner(process.execPath, ["-e", "setTimeout(() => undefined, 50)"], { timeoutMs: 1 }))
       .rejects.toThrow("command timed out")
     await expect(runner("/definitely/not-a-real-ouro-command", [], { timeoutMs: 5_000 }))
@@ -163,6 +164,7 @@ describe("Whisper.cpp voice transcriber", () => {
 
     expect(result).toMatchObject({ stdout: "voice-runner-ok", stderr: "", exitCode: 0 })
     expect(stderr).toMatchObject({ stdout: "", stderr: "voice-runner-err", exitCode: 0 })
+    expect(signalExit).toMatchObject({ stdout: "", stderr: "", exitCode: 0 })
   })
 
   it("wraps non-Error transcription failures defensively", async () => {
