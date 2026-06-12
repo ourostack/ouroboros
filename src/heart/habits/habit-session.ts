@@ -7,6 +7,7 @@ import {
   writeHabitRunReceipt,
   type FlightRecorderProducedRef,
   type HabitPermissionEnvelope,
+  type HabitRunSummarySnapshot,
   type HabitReturnRoute,
   type HabitReturnRouteKind,
   type HabitRunOutcome,
@@ -77,6 +78,7 @@ export interface BuildHabitRunReceiptInput {
   surfaceAttempts?: HabitSurfaceAttempt[]
   errors?: string[]
   nextRunAt?: string | null
+  summarySnapshot?: HabitRunSummarySnapshot
 }
 
 export type CompleteHabitRunInput = Omit<BuildHabitRunReceiptInput, "outcome" | "nextRunAt">
@@ -573,6 +575,39 @@ function computeNextRunAt(habit: HabitFile, endedAt: string): string | null {
   return new Date(endedMs + cadenceMs).toISOString()
 }
 
+function defaultSummarySnapshot(input: BuildHabitRunReceiptInput): HabitRunSummarySnapshot {
+  const errors = input.errors ?? []
+  if (errors.length > 0) {
+    return {
+      summary: `Habit ${input.habit.name} finished with errors: ${errors.join("; ")}`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const surfaced = (input.surfaceAttempts ?? []).find((attempt) =>
+    attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+  if (surfaced) {
+    return {
+      summary: `Habit ${input.habit.name} surfaced via ${surfaced.recipient}/${surfaced.channel}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const produced = (input.producedRefs ?? []).find((ref) => ref.kind !== "none")
+  if (produced) {
+    return {
+      summary: `Habit ${input.habit.name} produced ${produced.kind}: ${produced.locator}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  return {
+    summary: `Habit ${input.habit.name} finished with ${input.outcome}.`,
+    decisions: [],
+    nextLikelyStep: null,
+  }
+}
+
 export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRunReceipt {
   const paths = createHabitSessionPaths(input.agentRoot, input.runId, input.habit.name)
   const receipt: HabitRunReceipt = {
@@ -593,6 +628,7 @@ export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRun
     nextRunAt: input.nextRunAt ?? computeNextRunAt(input.habit, input.endedAt),
     permissionEnvelope: input.permissionEnvelope,
     toolPolicy: input.toolPolicy,
+    summarySnapshot: input.summarySnapshot ?? defaultSummarySnapshot(input),
     producedRefs: input.producedRefs ?? [],
     surfaceAttempts: input.surfaceAttempts ?? [],
     errors: input.errors ?? [],
@@ -655,6 +691,7 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       producedRefs,
       surfaceAttempts: input.surfaceAttempts,
       errors: input.errors,
+      summarySnapshot: input.summarySnapshot,
     })
     writeHabitRunReceipt(input.agentRoot, receipt)
   } catch (error) {

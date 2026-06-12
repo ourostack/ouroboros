@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.667",
       "changes": [
-        "Add stateful habit session summaries, summary tooling, mailbox APIs, nerves review, and habit history visibility."
+        "Add stateful habit session summaries, summary tooling, mailbox APIs, nerves review, and habit history visibility.",
+        "Harden habit summary receipts as the canonical summary snapshot, validate agent-scoped Mailbox routes, await post-turn persistence, and preserve session-summary recovery through malformed locators and projected session edge cases."
       ]
     },
     {

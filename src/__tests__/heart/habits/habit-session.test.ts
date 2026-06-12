@@ -568,6 +568,11 @@ describe("habit-session helpers", () => {
       nextRunAt: "2026-06-11T17:31:00.000Z",
       permissionEnvelope: envelope,
       toolPolicy: policy,
+      summarySnapshot: {
+        summary: "Habit heartbeat surfaced via ari/cli.",
+        decisions: [],
+        nextLikelyStep: null,
+      },
     })
     expect(fs.existsSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", `${receipt.runId}.json`))).toBe(false)
   })
@@ -593,6 +598,11 @@ describe("habit-session helpers", () => {
       producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
       surfaceAttempts: [],
       errors: [],
+      summarySnapshot: {
+        summary: "Reviewed stale work and updated the desk task.",
+        decisions: ["Keep the check-in task open."],
+        nextLikelyStep: "Wait for the next cadence.",
+      },
     })
 
     expect(result).toMatchObject({
@@ -605,6 +615,11 @@ describe("habit-session helpers", () => {
       habitName: "heartbeat",
       outcome: "updated_desk",
       producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
+      summarySnapshot: {
+        summary: "Reviewed stale work and updated the desk task.",
+        decisions: ["Keep the check-in task open."],
+        nextLikelyStep: "Wait for the next cadence.",
+      },
     })
     expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "state", "habits", "heartbeat.json"), "utf-8"))).toMatchObject({
       schemaVersion: 1,

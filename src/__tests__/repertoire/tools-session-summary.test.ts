@@ -164,8 +164,45 @@ describe("session_summary tool", () => {
     expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
   })
 
-  it("requires a selector before reading summaries", async () => {
-    const tool = await getSessionSummaryTool()
+	  it("returns invalid selector JSON for non-string selector fields", async () => {
+	    const tool = await getSessionSummaryTool()
+
+	    const result = parseToolResult(await tool.handler({ habitName: "stateful-check", which: 3 }) as string)
+
+    expect(result).toMatchObject({
+      kind: "invalid_selector",
+      code: "invalid_which",
+	    })
+	    expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
+	  })
+
+	  it("returns selector_required for non-string non-which selector fields", async () => {
+	    const tool = await getSessionSummaryTool()
+
+	    const result = parseToolResult(await tool.handler({ habitName: 3 }) as string)
+
+	    expect(result).toMatchObject({
+	      kind: "invalid_selector",
+	      code: "selector_required",
+	      message: "selector fields must be strings",
+	    })
+	    expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
+	  })
+
+	  it("treats blank selector strings as omitted", async () => {
+	    const tool = await getSessionSummaryTool()
+
+	    const result = parseToolResult(await tool.handler({ habitName: "   " }) as string)
+
+	    expect(result).toMatchObject({
+	      kind: "invalid_selector",
+	      code: "selector_required",
+	    })
+	    expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
+	  })
+
+	  it("requires a selector before reading summaries", async () => {
+	    const tool = await getSessionSummaryTool()
 
     const result = parseToolResult(await tool.handler({ which: "latest" }) as string)
 

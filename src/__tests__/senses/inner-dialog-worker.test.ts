@@ -628,6 +628,74 @@ describe("inner-dialog-worker", () => {
       }))
     })
 
+    it("derives the receipt summary snapshot from the latest assistant result", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [
+          { role: "assistant", content: "checkpoint: Asked Ari for the missing production URL." },
+        ],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "stateful-check",
+        summarySnapshot: {
+          summary: "Asked Ari for the missing production URL.",
+          decisions: [],
+          nextLikelyStep: null,
+        },
+      }))
+      expect(mockRecordHabitRun).toHaveBeenCalledTimes(1)
+    })
+
+    it("derives the receipt summary snapshot from multimodal assistant text parts", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "checkpoint: Confirmed the first run summary." },
+              { type: "text", text: "Next, compare the second run." },
+              { type: "image", image_url: "ignored" },
+            ],
+          },
+        ],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        summarySnapshot: {
+          summary: "Confirmed the first run summary.\nNext, compare the second run.",
+          decisions: [],
+          nextLikelyStep: null,
+        },
+      }))
+    })
+
+    it("ignores non-assistant result messages before using assistant checkpoint text", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [
+          { role: "assistant", content: "checkpoint:" },
+          { role: "user", content: "ignore me" },
+          null,
+        ],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        summarySnapshot: {
+          summary: "checkpoint:",
+          decisions: [],
+          nextLikelyStep: null,
+        },
+      }))
+    })
+
     it("classifies successful structured surface attempts as surfaced", async () => {
       const runTurn = vi.fn().mockImplementation(async (options) => {
         options.habitSession.recordSurfaceAttempt({

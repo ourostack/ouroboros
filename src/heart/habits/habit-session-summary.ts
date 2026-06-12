@@ -3,6 +3,7 @@ import * as path from "path"
 import type { HabitRunOutcome, HabitRunReceipt } from "../../arc/flight-recorder"
 import { listHabitRunReceipts } from "../../arc/flight-recorder"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { loadSessionEnvelopeFile, projectProviderMessages } from "../session-events"
 
 export type HabitSummaryWhich = "latest" | "previous" | "latest-success" | "latest-failure"
 
@@ -15,13 +16,12 @@ export interface HabitSessionSummarySelector {
 
 export type HabitSummaryReceipt = HabitRunReceipt & {
   operationId?: string | null
-  summarySnapshot?: HabitSessionSummarySnapshot
 }
 
 export interface HabitSessionSummarySnapshot {
-  summary?: string
-  decisions?: string[]
-  nextLikelyStep?: string | null
+  summary: string
+  decisions: string[]
+  nextLikelyStep: string | null
 }
 
 export interface HabitSessionSummaryPending {
@@ -146,20 +146,12 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim())
-    : []
-}
-
-function summarySnapshot(receipt: HabitSummaryReceipt): HabitSessionSummarySnapshot | null {
-  const snapshot = (receipt as unknown as Record<string, unknown>).summarySnapshot
-  if (!isRecord(snapshot)) return null
+function summarySnapshot(receipt: HabitSummaryReceipt): HabitSessionSummarySnapshot {
+  const snapshot = receipt.summarySnapshot
   return {
-    ...(stringValue(snapshot.summary) ? { summary: stringValue(snapshot.summary)! } : {}),
-    decisions: stringArray(snapshot.decisions),
-    ...(snapshot.nextLikelyStep === null ? { nextLikelyStep: null } : {}),
-    ...(stringValue(snapshot.nextLikelyStep) ? { nextLikelyStep: stringValue(snapshot.nextLikelyStep) } : {}),
+    summary: snapshot.summary,
+    decisions: snapshot.decisions,
+    nextLikelyStep: snapshot.nextLikelyStep,
   }
 }
 
@@ -170,42 +162,80 @@ function relativeSource(receipt: HabitSummaryReceipt, key: keyof HabitSessionSum
   return receipt.runtimeStateLocator
 }
 
-function absoluteSource(agentRoot: string, locator: string): string {
-  return path.join(agentRoot, locator)
+function safeSourcePath(
+  agentRoot: string,
+  locator: string,
+  key: keyof HabitSessionSummarySources,
+  expectedPrefix: string,
+): { ok: true; filePath: string } | { ok: false; warning: string } {
+  const normalizedInput = locator.replace(/\\/g, "/")
+  const normalized = path.posix.normalize(normalizedInput)
+  const unsafe = path.isAbsolute(locator)
+    || normalizedInput.startsWith("/")
+    || normalized === "."
+    || normalized === ".."
+    || normalized.startsWith("../")
+    || normalized !== normalizedInput
+    || !normalized.startsWith(expectedPrefix)
+  if (unsafe) {
+    return { ok: false, warning: `${key} locator unsafe: ${locator}` }
+  }
+  const root = path.resolve(agentRoot)
+  const filePath = path.resolve(agentRoot, normalized)
+  /* v8 ignore next -- defensive containment check after normalized bundle-relative locator validation @preserve */
+  if (filePath !== root && !filePath.startsWith(`${root}${path.sep}`)) {
+    return { ok: false, warning: `${key} locator escaped bundle: ${locator}` }
+  }
+  return { ok: true, filePath }
 }
 
-function readJsonFile(filePath: string): { ok: true; value: unknown } | { ok: false; warning: string } {
+function safeExistingRealPath(
+  agentRoot: string,
+  filePath: string,
+  key: keyof HabitSessionSummarySources,
+  locator: string,
+): { ok: true; filePath: string } | { ok: false; warning: string } {
   try {
-    return { ok: true, value: JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown }
-  } catch (error) {
-    return {
-      ok: false,
-      warning: `session file malformed: ${String(error)}`,
+    const root = fs.realpathSync.native(agentRoot)
+    const realPath = fs.realpathSync.native(filePath)
+    if (realPath !== root && !realPath.startsWith(`${root}${path.sep}`)) {
+      return { ok: false, warning: `${key} locator escaped bundle via symlink: ${locator}` }
     }
+    return { ok: true, filePath: realPath }
+  } catch {
+    /* v8 ignore next -- defensive realpath race/permission guard; existence is checked before callers invoke this @preserve */
+    return { ok: false, warning: `${key} locator unreadable: ${locator}` }
   }
 }
 
-function sessionSummary(value: unknown): {
+function sessionSummaryFromMessages(messages: unknown[]): {
   decisions: string[]
   nextLikelyStep: string | null
   toolsUsed: string[]
   warnings: string[]
 } {
-  if (!isRecord(value)) {
-    return { decisions: [], nextLikelyStep: null, toolsUsed: [], warnings: ["session file malformed: expected object"] }
-  }
-  const messages = Array.isArray(value.messages) ? value.messages : []
   const toolsUsed = new Set<string>()
   for (const message of messages) {
+    /* v8 ignore next -- defensive: session projection returns message records; this protects malformed direct projection callers @preserve */
     if (!isRecord(message)) continue
     const name = stringValue(message.name) ?? stringValue(message.toolName)
-    if (name) toolsUsed.add(name)
+    /* v8 ignore next -- defensive: canonical projections expose tool names from assistant tool_calls; legacy direct tool-name projections still count if present @preserve */
+    if (name && message.role === "tool") toolsUsed.add(name)
+    if (Array.isArray(message.tool_calls)) {
+      /* v8 ignore start -- defensive: projected provider messages normally expose structured tool calls; malformed direct envelopes are kept inert @preserve */
+      for (const toolCall of message.tool_calls) {
+        if (!isRecord(toolCall)) continue
+        const fn = isRecord(toolCall.function) ? toolCall.function : null
+        const toolName = fn ? stringValue(fn.name) : null
+        if (toolName) toolsUsed.add(toolName)
+      }
+      /* v8 ignore stop @preserve */
+    }
   }
-  const summary = isRecord(value.summary) ? value.summary : {}
   const warnings = messages.length === 0 ? ["session file had no usable messages"] : []
   return {
-    decisions: stringArray(summary.decisions),
-    nextLikelyStep: stringValue(summary.nextLikelyStep),
+    decisions: [],
+    nextLikelyStep: null,
     toolsUsed: [...toolsUsed].sort(),
     warnings,
   }
@@ -217,42 +247,57 @@ function readSessionEnrichment(agentRoot: string, receipt: HabitSummaryReceipt):
   toolsUsed: string[]
   warnings: string[]
 } {
-  const sessionPath = absoluteSource(agentRoot, receipt.sessionLocator)
-  if (!fs.existsSync(sessionPath)) {
+  const source = safeSourcePath(agentRoot, receipt.sessionLocator, "session", "state/habit-sessions/")
+  if (!source.ok) {
+    return { decisions: [], nextLikelyStep: null, toolsUsed: [], warnings: [source.warning] }
+  }
+  if (!fs.existsSync(source.filePath)) {
     return { decisions: [], nextLikelyStep: null, toolsUsed: [], warnings: ["session file missing"] }
   }
-  const parsed = readJsonFile(sessionPath)
-  if (!parsed.ok) {
-    return { decisions: [], nextLikelyStep: null, toolsUsed: [], warnings: [parsed.warning] }
+  const realSource = safeExistingRealPath(agentRoot, source.filePath, "session", receipt.sessionLocator)
+  if (!realSource.ok) {
+    return { decisions: [], nextLikelyStep: null, toolsUsed: [], warnings: [realSource.warning] }
   }
-  return sessionSummary(parsed.value)
+  const envelope = loadSessionEnvelopeFile(realSource.filePath)
+  if (!envelope) {
+    return { decisions: [], nextLikelyStep: null, toolsUsed: [], warnings: ["session file malformed"] }
+  }
+  return sessionSummaryFromMessages(projectProviderMessages(envelope))
 }
 
-function readPending(agentRoot: string, receipt: HabitSummaryReceipt): HabitSessionSummaryPending {
-  const pendingPath = absoluteSource(agentRoot, receipt.pendingLocator)
+function readPending(agentRoot: string, receipt: HabitSummaryReceipt): { pending: HabitSessionSummaryPending; warnings: string[] } {
+  const source = safeSourcePath(agentRoot, receipt.pendingLocator, "pending", "state/habit-sessions/")
+  if (!source.ok) return { pending: { count: 0, files: [] }, warnings: [source.warning] }
   try {
-    const entries = fs.existsSync(pendingPath)
-      ? fs.readdirSync(pendingPath, { withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .map((entry) => entry.name)
-        .sort()
-      : []
-    return { count: entries.length, files: entries }
+    if (!fs.existsSync(source.filePath)) return { pending: { count: 0, files: [] }, warnings: [] }
+    const realSource = safeExistingRealPath(agentRoot, source.filePath, "pending", receipt.pendingLocator)
+    if (!realSource.ok) return { pending: { count: 0, files: [] }, warnings: [realSource.warning] }
+    const entries = fs.readdirSync(realSource.filePath, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort()
+    return { pending: { count: entries.length, files: entries }, warnings: [] }
   } catch {
-    return { count: 0, files: [] }
+    return { pending: { count: 0, files: [] }, warnings: [] }
   }
 }
 
-function runtimeOperationId(agentRoot: string, receipt: HabitSummaryReceipt): string | null {
-  const runtimePath = absoluteSource(agentRoot, receipt.runtimeStateLocator)
+function runtimeOperationId(agentRoot: string, receipt: HabitSummaryReceipt): { operationId: string | null; warnings: string[] } {
+  const source = safeSourcePath(agentRoot, receipt.runtimeStateLocator, "runtimeState", "state/habits/")
+  if (!source.ok) return { operationId: null, warnings: [source.warning] }
   try {
-    const parsed = JSON.parse(fs.readFileSync(runtimePath, "utf-8")) as unknown
-    if (!isRecord(parsed)) return null
-    if (stringValue(parsed.latestRunId) !== receipt.runId) return null
-    if (stringValue(parsed.latestReceiptLocator) !== receipt.receiptLocator) return null
-    return stringValue(parsed.activeOperationId)
+    if (!fs.existsSync(source.filePath)) return { operationId: null, warnings: [] }
+    const realSource = safeExistingRealPath(agentRoot, source.filePath, "runtimeState", receipt.runtimeStateLocator)
+    if (!realSource.ok) return { operationId: null, warnings: [realSource.warning] }
+    const parsed = JSON.parse(fs.readFileSync(realSource.filePath, "utf-8")) as unknown
+    if (!isRecord(parsed)) return { operationId: null, warnings: [] }
+    if (parsed.schemaVersion !== 1) return { operationId: null, warnings: [] }
+    if (stringValue(parsed.name) !== receipt.habitName) return { operationId: null, warnings: [] }
+    if (stringValue(parsed.latestRunId) !== receipt.runId) return { operationId: null, warnings: [] }
+    if (stringValue(parsed.latestReceiptLocator) !== receipt.receiptLocator) return { operationId: null, warnings: [] }
+    return { operationId: stringValue(parsed.activeOperationId), warnings: [] }
   } catch {
-    return null
+    return { operationId: null, warnings: [] }
   }
 }
 
@@ -260,19 +305,14 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)]
 }
 
-function fallbackSummary(receipt: HabitSummaryReceipt): string {
-  return `Habit ${receipt.habitName} finished with ${receipt.outcome}.`
-}
-
 function truncateSummary(value: string): string {
   if (value.length <= MAX_SUMMARY_CHARS) return value
   return `${value.slice(0, MAX_SUMMARY_CHARS - TRUNCATION_SUFFIX.length)}${TRUNCATION_SUFFIX}`
 }
 
-function legacySummaryWarnings(receipt: HabitSummaryReceipt, snapshot: HabitSessionSummarySnapshot | null): string[] {
-  if (snapshot) return []
+function legacySummaryWarnings(receipt: HabitSummaryReceipt): string[] {
   return receipt.permissionEnvelope.warnings.some((warning) => warning.includes("legacy receipt normalized"))
-    ? ["legacy receipt normalized without summary snapshot"]
+    ? ["legacy receipt normalized"]
     : []
 }
 
@@ -287,13 +327,14 @@ export function readHabitSessionSummary(
   const snapshot = summarySnapshot(receipt)
   const session = readSessionEnrichment(agentRoot, receipt)
   const pending = readPending(agentRoot, receipt)
-  const operationId = receipt.operationId ?? runtimeOperationId(agentRoot, receipt)
+  const runtime = runtimeOperationId(agentRoot, receipt)
+  const operationId = receipt.operationId ?? runtime.operationId
   const decisions = uniqueStrings([
-    ...(snapshot?.decisions ?? []),
+    ...snapshot.decisions,
     ...session.decisions,
   ])
-  const summary = truncateSummary(snapshot?.summary ?? fallbackSummary(receipt))
-  const nextLikelyStep = snapshot?.nextLikelyStep ?? session.nextLikelyStep
+  const summary = truncateSummary(snapshot.summary)
+  const nextLikelyStep = snapshot.nextLikelyStep ?? session.nextLikelyStep
   const result: HabitSessionSummary = {
     runId: receipt.runId,
     habitName: receipt.habitName,
@@ -303,7 +344,7 @@ export function readHabitSessionSummary(
     completedAt: receipt.endedAt,
     summary,
     decisions,
-    pending,
+    pending: pending.pending,
     messagesSent: receipt.surfaceAttempts,
     toolsUsed: session.toolsUsed,
     producedRefs: receipt.producedRefs,
@@ -315,7 +356,12 @@ export function readHabitSessionSummary(
       pending: relativeSource(receipt, "pending"),
       runtimeState: relativeSource(receipt, "runtimeState"),
     },
-    warnings: [...legacySummaryWarnings(receipt, snapshot), ...session.warnings],
+    warnings: [
+      ...legacySummaryWarnings(receipt),
+      ...session.warnings,
+      ...pending.warnings,
+      ...runtime.warnings,
+    ],
   }
   emitNervesEvent({
     component: "daemon",

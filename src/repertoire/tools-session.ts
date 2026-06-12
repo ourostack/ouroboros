@@ -94,16 +94,29 @@ function normalizeProgressOutcome(text: string): string | null {
   return trimmed
 }
 
-function optionalArg(args: Record<string, string>, key: string): string | undefined {
-  const value = args[key]?.trim()
-  return value ? value : undefined
+function optionalArg(args: Record<string, unknown>, key: string): string | undefined | null {
+  const value = args[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
 }
 
-function validateSessionSummarySelector(args: Record<string, string>): SessionSummarySelectorValidation {
+function validateSessionSummarySelector(args: Record<string, unknown>): SessionSummarySelectorValidation {
   const runId = optionalArg(args, "runId")
   const habitName = optionalArg(args, "habitName")
   const operationId = optionalArg(args, "operationId")
   const which = optionalArg(args, "which")
+
+  if (runId === null || habitName === null || operationId === null || which === null) {
+    return {
+      ok: false,
+      code: which === null ? "invalid_which" : "selector_required",
+      message: which === null
+        ? "which must be latest, previous, latest-success, or latest-failure"
+        : "selector fields must be strings",
+    }
+  }
 
   if (runId !== undefined) {
     if (habitName !== undefined || operationId !== undefined || which !== undefined) {

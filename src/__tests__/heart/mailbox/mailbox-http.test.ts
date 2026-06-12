@@ -81,6 +81,65 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
 }
 
 describe("mailbox http", () => {
+	  it("rejects unsafe encoded agent names before habit summary readers run", async () => {
+	    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+	    const options = createRouteOptions()
+	    const handler = createMailboxHttpRequestHandler(options)
+
+    for (const url of [
+      "/api/agents/..%2Foutside/habit-run-summaries?limit=5",
+      "/api/agents/..%5Coutside/habit-run-summary?habit=heartbeat",
+      "/api/agents/%2E/habit-run-summary?habit=heartbeat",
+      "/api/agents/%2E%2E/habit-run-summary?habit=heartbeat",
+    ]) {
+      const response = createMockResponse()
+      handler(createMockRequest(url), response)
+      expect(response.statusCode).toBe(400)
+      expect(JSON.parse(response.body.toString("utf-8"))).toEqual(expect.objectContaining({
+        ok: false,
+        error: expect.stringContaining("safe bundle name"),
+      }))
+    }
+
+	    expect(options.hooks.readAgentHabitRunSummaries).not.toHaveBeenCalled()
+	    expect(options.hooks.readAgentHabitRunSummary).not.toHaveBeenCalled()
+	  })
+
+	  it("handles an empty raw request URL through the normal 404 path", async () => {
+	    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+	    const handler = createMailboxHttpRequestHandler(createRouteOptions({
+	      staticFiles: {
+	        resolveSpaDistDir: () => null,
+	        serveStaticFile: () => false,
+	      },
+	    }))
+	    const response = createMockResponse()
+
+	    handler(createMockRequest(""), response)
+
+	    expect(response.statusCode).toBe(404)
+	    expect(JSON.parse(response.body.toString("utf-8"))).toEqual({
+	      ok: false,
+	      error: "not found: /",
+	    })
+	  })
+
+	  it("default mailbox hooks reject unsafe agent roots before path construction", async () => {
+    const { createMailboxHttpReadHooks } = await import("../../../heart/mailbox/mailbox-http-hooks")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mailbox-bundles-"))
+    const hooks = createMailboxHttpReadHooks({ bundlesRoot })
+
+    try {
+      expect(hooks.agentRoot("slugger")).toBe(path.join(bundlesRoot, "slugger.ouro"))
+      expect(() => hooks.agentRoot("../outside")).toThrow(/safe agent name/)
+      expect(() => hooks.agentRoot("..")).toThrow(/safe agent name/)
+      expect(() => hooks.agentRoot("slugger/other")).toThrow(/safe agent name/)
+      expect(() => hooks.agentRoot("slugger\\other")).toThrow(/safe agent name/)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
   it("keeps path normalization and static serving in explicit helper seams", async () => {
     const {
       normalizeMailboxRequestPath,
@@ -267,7 +326,16 @@ describe("mailbox http", () => {
       limit: 1,
       items: [expect.objectContaining({ runId: "run-default-hook" })],
     })
-    expect(defaultHooks.readAgentHabitRun("nobody", "run-default-hook")).toEqual({ receipt })
+    expect(defaultHooks.readAgentHabitRun("nobody", "run-default-hook")).toEqual({
+      receipt: {
+        ...receipt,
+        summarySnapshot: {
+          summary: "Habit heartbeat finished with surfaced.",
+          decisions: [],
+          nextLikelyStep: null,
+        },
+      },
+    })
     expect(defaultHooks.readAgentHabitRunSummaries("nobody", { limit: 1 })).toEqual({
       totalCount: 1,
       limit: 1,

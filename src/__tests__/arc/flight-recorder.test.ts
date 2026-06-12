@@ -475,9 +475,62 @@ describe("Arc flight recorder", () => {
     expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
     expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
     expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
-    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      level: "warn",
-      event: "mind.flight_recorder_habit_receipt_malformed",
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "partial-snapshot.json"), JSON.stringify({
+      ...first,
+      runId: "partial-snapshot",
+      sessionId: "partial-snapshot",
+      receiptLocator: "arc/flight-recorder/habit-receipts/partial-snapshot.json",
+      summarySnapshot: {
+        summary: 7,
+        decisions: "bad",
+        nextLikelyStep: 42,
+      },
+    }), "utf-8")
+	    expect(recorder.readHabitRunReceipt(agentRoot, "partial-snapshot")).toMatchObject({
+	      runId: "partial-snapshot",
+	      summarySnapshot: {
+	        summary: "Habit checkup surfaced via ari/cli.",
+	        decisions: [],
+	        nextLikelyStep: null,
+	      },
+	    })
+	    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "error-snapshot.json"), JSON.stringify({
+	      ...first,
+	      runId: "error-snapshot",
+	      sessionId: "error-snapshot",
+	      receiptLocator: "arc/flight-recorder/habit-receipts/error-snapshot.json",
+	      producedRefs: [],
+	      surfaceAttempts: [],
+	      errors: ["boom"],
+	    }), "utf-8")
+	    expect(recorder.readHabitRunReceipt(agentRoot, "error-snapshot")).toMatchObject({
+	      runId: "error-snapshot",
+	      summarySnapshot: {
+	        summary: "Habit checkup finished with errors: boom",
+	        decisions: [],
+	        nextLikelyStep: null,
+	      },
+	    })
+	    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "produced-snapshot.json"), JSON.stringify({
+	      ...first,
+	      runId: "produced-snapshot",
+	      sessionId: "produced-snapshot",
+	      receiptLocator: "arc/flight-recorder/habit-receipts/produced-snapshot.json",
+	      producedRefs: [{ kind: "desk_task", locator: "desk/tasks/follow-up" }],
+	      surfaceAttempts: [],
+	      errors: [],
+	    }), "utf-8")
+	    expect(recorder.readHabitRunReceipt(agentRoot, "produced-snapshot")).toMatchObject({
+	      runId: "produced-snapshot",
+	      summarySnapshot: {
+	        summary: "Habit checkup produced desk_task: desk/tasks/follow-up.",
+	        decisions: [],
+	        nextLikelyStep: null,
+	      },
+	    })
+	    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+	      level: "warn",
+	      event: "mind.flight_recorder_habit_receipt_malformed",
     }))
   })
 

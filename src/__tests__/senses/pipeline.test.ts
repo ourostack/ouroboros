@@ -903,6 +903,36 @@ describe("handleInboundTurn", () => {
       expect(callOrder).toEqual(["runAgent", "postTurn"])
     })
 
+    it("awaits async postTurn before accumulating tokens or resolving the turn", async () => {
+      const callOrder: string[] = []
+      let resolvePostTurn!: () => void
+      const input = makeInput({
+        postTurn: vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+          callOrder.push("postTurn-start")
+          resolvePostTurn = () => {
+            callOrder.push("postTurn-resolve")
+            resolve()
+          }
+        })),
+        accumulateFriendTokens: vi.fn().mockImplementation(async () => {
+          callOrder.push("accumulateFriendTokens")
+        }),
+      })
+
+      const turn = handleInboundTurn(input)
+      await new Promise((resolve) => setImmediate(resolve))
+
+      expect(input.postTurn).toHaveBeenCalledTimes(1)
+      expect(input.accumulateFriendTokens).not.toHaveBeenCalled()
+      expect(callOrder).toEqual(["postTurn-start"])
+
+      resolvePostTurn()
+      await turn
+
+      expect(input.accumulateFriendTokens).toHaveBeenCalledTimes(1)
+      expect(callOrder).toEqual(["postTurn-start", "postTurn-resolve", "accumulateFriendTokens"])
+    })
+
     it("records a post-turn flight recorder checkpoint for normal persisted turns", async () => {
       const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-flight-recorder-"))
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
@@ -2164,6 +2194,74 @@ describe("handleInboundTurn", () => {
         }))
         expect(sentinelObservedResume?.blockedBecause).toContain("turn errored before a safe continuation was reached")
         expect(sentinelObservedResume?.nextSafeAction).toContain("switch to anthropic")
+      } finally {
+        agentNameSpy.mockRestore()
+        agentRootSpy.mockRestore()
+        loadConfigSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
+    })
+
+    it("awaits async postTurn before failover checkpointing and Sentinel refresh", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-postturn-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+        version: 1,
+        enabled: true,
+        humanFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        agentFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        phrases: { thinking: [], tool: [], followup: [] },
+      } as any)
+      mockRunMachineProviderFailoverInventory.mockResolvedValue({
+        ready: [{
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialRevision: "cred_anthropic",
+          source: "auth-flow",
+          result: { ok: true },
+        }],
+        unavailable: [],
+        unconfigured: [],
+      })
+      let resolvePostTurn!: () => void
+      let settled = false
+      const failoverState = { pending: null }
+      const input = makeInput({
+        failoverState,
+        runAgent: vi.fn().mockResolvedValue({
+          usage: usageData,
+          outcome: "errored",
+          error: new Error("usage limit exceeded"),
+          errorClassification: "usage-limit",
+        }),
+        postTurn: vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+          resolvePostTurn = resolve
+        })),
+      })
+
+      try {
+        const turn = handleInboundTurn(input).then((result) => {
+          settled = true
+          return result
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        expect(input.postTurn).toHaveBeenCalledTimes(1)
+        expect(failoverState.pending).not.toBeNull()
+        expect(mockRefreshContextLossSentinel).not.toHaveBeenCalled()
+        expect(settled).toBe(false)
+
+        resolvePostTurn()
+        const result = await turn
+
+        expect(result.failoverMessage).toContain("switch to anthropic")
+        expect(mockRefreshContextLossSentinel).toHaveBeenCalledWith("slugger", agentRoot, expect.objectContaining({
+          trigger: "provider_failover",
+        }))
       } finally {
         agentNameSpy.mockRestore()
         agentRootSpy.mockRestore()

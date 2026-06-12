@@ -3,6 +3,7 @@ import * as http from "http"
 import * as path from "path"
 import type { SseBroadcaster } from "./mailbox-http-transport"
 import type { MailboxHttpReadHooks } from "./mailbox-http-hooks"
+import { isSafeMailboxAgentName } from "./mailbox-http-hooks"
 import { writeJson } from "./mailbox-http-response"
 import {
   normalizeLegacyMailboxApiPath,
@@ -41,6 +42,16 @@ function decodePathSegment(value: string): string | null {
   } catch {
     return null
   }
+}
+
+function rawRequestTargetsUnsafeAgent(urlValue = "/"): boolean {
+  const rawTarget = urlValue.split(/[?#]/, 1)[0]
+  const rawPath = rawTarget.replace(/\/+$/, "") || "/"
+  const pathname = normalizeLegacyMailboxApiPath(rawPath)
+  const rawAgentMatch = /^\/api\/agents\/([^/]+)(?:\/|$)/.exec(pathname)
+  if (!rawAgentMatch) return false
+  const agent = decodePathSegment(rawAgentMatch[1]!)
+  return !agent || !isSafeMailboxAgentName(agent)
 }
 
 function parseHabitRunLimit(urlValue: string): number | null | undefined {
@@ -97,6 +108,11 @@ export function createMailboxHttpRequestHandler(options: MailboxHttpRouteOptions
   const staticFiles = options.staticFiles ?? { resolveSpaDistDir, serveStaticFile }
 
   return (request, response) => {
+    if (rawRequestTargetsUnsafeAgent(request.url)) {
+      writeJson(response, 400, { ok: false, error: "agent name must be a safe bundle name" })
+      return
+    }
+
     let pathname = normalizeMailboxRequestPath(request.url)
     const origin = `http://${options.host}:${options.getPort()}`
 
@@ -145,8 +161,14 @@ export function createMailboxHttpRequestHandler(options: MailboxHttpRouteOptions
 
     const agentMatch = /^\/api\/agents\/([^/]+)(?:\/(.+))?$/.exec(pathname)
     if (agentMatch) {
+      const agent = decodePathSegment(agentMatch[1]!)
+      /* v8 ignore next -- rawRequestTargetsUnsafeAgent rejects unsafe/malformed agent segments before normalization @preserve */
+      if (!agent || !isSafeMailboxAgentName(agent)) {
+        writeJson(response, 400, { ok: false, error: "agent name must be a safe bundle name" })
+        return
+      }
       void handleAgentRoute(request, response, {
-        agent: decodeURIComponent(agentMatch[1]!),
+        agent,
         surface: agentMatch[2] ?? null,
         options,
       }).catch((error) => {

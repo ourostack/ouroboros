@@ -16,6 +16,7 @@ import {
 import {
   createHabitRunId,
   type HabitRunReceipt,
+  type HabitRunSummarySnapshot,
 } from "../arc/flight-recorder"
 import { readHabitSessionSummary } from "../heart/habits/habit-session-summary"
 import { FileFriendStore } from "../mind/friends/store-file"
@@ -114,6 +115,79 @@ function isHeartbeatOkRestResult(result: unknown): boolean {
   if (!result || typeof result !== "object") return false
   const maybeResult = result as { turnOutcome?: unknown; restStatus?: unknown }
   return maybeResult.turnOutcome === "rested" && maybeResult.restStatus === "HEARTBEAT_OK"
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content.trim()
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => isRecord(part) && typeof part.text === "string" ? part.text : "")
+    .filter((text) => text.trim().length > 0)
+    .join("\n")
+    .trim()
+}
+
+function resultMessages(result: unknown): unknown[] {
+  if (Array.isArray(result)) return result.flatMap((entry) => resultMessages(entry))
+  return isRecord(result) && Array.isArray(result.messages) ? result.messages : []
+}
+
+function latestAssistantText(results: unknown[]): string | null {
+  for (let resultIndex = results.length - 1; resultIndex >= 0; resultIndex--) {
+    const messages = resultMessages(results[resultIndex])
+    for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
+      const message = messages[messageIndex]
+      if (!isRecord(message) || message.role !== "assistant") continue
+      const text = contentToText(message.content)
+      if (text.length > 0) return text.replace(/^checkpoint\s*:\s*/i, "").trim() || text
+    }
+  }
+  return null
+}
+
+function deriveHabitSummarySnapshot(habitRun: PreparedHabitRun): HabitRunSummarySnapshot {
+  const assistant = latestAssistantText(habitRun.results)
+  if (assistant) return { summary: assistant, decisions: [], nextLikelyStep: null }
+  if (habitRun.errors.length > 0) {
+    return {
+      summary: `Habit ${habitRun.habit.name} finished with errors: ${habitRun.errors.join("; ")}`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const surfaced = habitRun.surfaceAttempts.find((attempt) =>
+    attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+  if (surfaced) {
+    return {
+      summary: `Habit ${habitRun.habit.name} surfaced via ${surfaced.recipient}/${surfaced.channel}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const produced = habitRun.producedRefs.find((ref) => ref.kind !== "none")
+  if (produced) {
+    return {
+      summary: `Habit ${habitRun.habit.name} produced ${produced.kind}: ${produced.locator}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  if (habitRun.results.some(isHeartbeatOkRestResult)) {
+    return {
+      summary: `Habit ${habitRun.habit.name} rested with HEARTBEAT_OK.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  return {
+    summary: `Habit ${habitRun.habit.name} completed without additional surfaced output.`,
+    decisions: [],
+    nextLikelyStep: null,
+  }
 }
 
 function fallbackHabitFile(habitName: string): HabitFile {
@@ -239,6 +313,7 @@ export function createInnerDialogWorker(
       producedRefs: habitRun.producedRefs,
       surfaceAttempts: habitRun.surfaceAttempts,
       errors: habitRun.errors,
+      summarySnapshot: deriveHabitSummarySnapshot(habitRun),
     })
   }
 

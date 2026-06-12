@@ -961,7 +961,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     runAgent,
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
       const prepared = postTurnTrim(turnMessages, usage, hooks)
-      deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+      return deferPostTurnPersist(sessionPathArg, prepared, usage, state)
     },
     accumulateFriendTokens,
     signal: options?.signal,

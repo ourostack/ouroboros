@@ -13,6 +13,7 @@ import {
   refreshContextLossSentinel,
 } from "../../../heart/context-loss-sentinel"
 import type { AgentProviderVisibility } from "../../../heart/provider-visibility"
+import { buildCanonicalSessionEnvelope } from "../../../heart/session-events"
 import type { MailboxSentinelView } from "../../../heart/mailbox/mailbox-types"
 import {
   readAttentionView,
@@ -2580,22 +2581,64 @@ describe("mailbox deep readers", () => {
     })
   })
 
-  describe("readHabitRunView", () => {
-    function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunReceipt {
-      const runId = overrides.runId ?? "run-base"
-      return {
-        schemaVersion: 2,
-        runId,
-        sessionId: runId,
-        habitName: overrides.habitName ?? "heartbeat",
-        trigger: overrides.trigger ?? "poke",
-        startedAt: overrides.startedAt ?? "2026-06-11T10:00:00.000Z",
-        endedAt: overrides.endedAt ?? "2026-06-11T10:01:00.000Z",
-        outcome: overrides.outcome ?? "surfaced",
-        definitionLocator: overrides.definitionLocator ?? "habits/heartbeat.md",
-        sessionLocator: overrides.sessionLocator ?? `state/habit-sessions/${runId}/session.json`,
-        pendingLocator: overrides.pendingLocator ?? `state/habit-sessions/${runId}/pending`,
-        runtimeStateLocator: overrides.runtimeStateLocator ?? "state/habits/heartbeat.json",
+	  describe("readHabitRunView", () => {
+	    function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunReceipt {
+	      const runId = overrides.runId ?? "run-base"
+	      const habitName = overrides.habitName ?? "heartbeat"
+	      const outcome = overrides.outcome ?? "surfaced"
+	      const producedRefs = overrides.producedRefs ?? [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }] satisfies HabitRunReceipt["producedRefs"]
+	      const surfaceAttempts = overrides.surfaceAttempts ?? [{
+	        recipient: "ari",
+	        channel: "cli",
+	        reason: "status",
+	        result: "queued",
+	        routeKind: "originator",
+	      }] satisfies HabitRunReceipt["surfaceAttempts"]
+	      const errors = overrides.errors ?? []
+	      const summarySnapshot = overrides.summarySnapshot ?? (() => {
+	        if (errors.length > 0) {
+	          return {
+	            summary: `Habit ${habitName} finished with errors: ${errors.join("; ")}`,
+	            decisions: [],
+	            nextLikelyStep: null,
+	          }
+	        }
+	        const surface = surfaceAttempts.find((attempt) =>
+	          attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+	        if (surface) {
+	          return {
+	            summary: `Habit ${habitName} surfaced via ${surface.recipient}/${surface.channel}.`,
+	            decisions: [],
+	            nextLikelyStep: null,
+	          }
+	        }
+	        const produced = producedRefs.find((ref) => ref.kind !== "none")
+	        if (produced) {
+	          return {
+	            summary: `Habit ${habitName} produced ${produced.kind}: ${produced.locator}.`,
+	            decisions: [],
+	            nextLikelyStep: null,
+	          }
+	        }
+	        return {
+	          summary: `Habit ${habitName} finished with ${outcome}.`,
+	          decisions: [],
+	          nextLikelyStep: null,
+	        }
+	      })()
+	      return {
+	        schemaVersion: 2,
+	        runId,
+	        sessionId: runId,
+	        habitName,
+	        trigger: overrides.trigger ?? "poke",
+	        startedAt: overrides.startedAt ?? "2026-06-11T10:00:00.000Z",
+	        endedAt: overrides.endedAt ?? "2026-06-11T10:01:00.000Z",
+	        outcome,
+	        definitionLocator: overrides.definitionLocator ?? "habits/heartbeat.md",
+	        sessionLocator: overrides.sessionLocator ?? `state/habit-sessions/${runId}/session.json`,
+	        pendingLocator: overrides.pendingLocator ?? `state/habit-sessions/${runId}/pending`,
+	        runtimeStateLocator: overrides.runtimeStateLocator ?? "state/habits/heartbeat.json",
         receiptLocator: overrides.receiptLocator ?? `arc/flight-recorder/habit-receipts/${runId}.json`,
         operationId: "operationId" in overrides ? overrides.operationId : null,
         nextRunAt: overrides.nextRunAt ?? null,
@@ -2609,22 +2652,46 @@ describe("mailbox deep readers", () => {
         toolPolicy: overrides.toolPolicy ?? {
           requestedTools: null,
           grantedTools: ["send_message", "surface"],
-          deniedTools: [],
-          outwardMessagingAllowed: true,
-        },
-        producedRefs: overrides.producedRefs ?? [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }],
-        surfaceAttempts: overrides.surfaceAttempts ?? [{
-          recipient: "ari",
-          channel: "cli",
-          reason: "status",
-          result: "queued",
-          routeKind: "originator",
-        }],
-        errors: overrides.errors ?? [],
-      }
-    }
+	          deniedTools: [],
+	          outwardMessagingAllowed: true,
+	        },
+	        producedRefs,
+	        surfaceAttempts,
+	        errors,
+	        summarySnapshot,
+	      }
+	    }
 
-    it("summarizes recent habit run receipts without loading transcripts", async () => {
+	    function writeCanonicalHabitSession(agentRoot: string, runId: string): void {
+	      const messages = [
+	        { role: "system" as const, content: "system" },
+	        { role: "user" as const, content: "run the habit" },
+	        {
+	          role: "assistant" as const,
+	          content: null,
+	          tool_calls: [{
+	            id: "call-send",
+	            type: "function" as const,
+	            function: { name: "send_message", arguments: "{\"friendId\":\"ari\"}" },
+	          }],
+	        },
+	        { role: "tool" as const, tool_call_id: "call-send", content: "queued" },
+	        { role: "assistant" as const, content: "checkpoint: asked Ari and waiting." },
+	      ]
+	      const { envelope } = buildCanonicalSessionEnvelope({
+	        existing: null,
+	        previousMessages: [],
+	        currentMessages: messages,
+	        trimmedMessages: messages,
+	        recordedAt: "2026-06-11T10:00:30.000Z",
+	        lastUsage: null,
+	        state: null,
+	        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+	      })
+	      writeJson(path.join(agentRoot, "state", "habit-sessions", runId, "session.json"), envelope)
+	    }
+
+	    it("summarizes recent habit run receipts without loading transcripts", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
@@ -2724,17 +2791,13 @@ describe("mailbox deep readers", () => {
           decisions: ["receipt decision"],
           nextLikelyStep: "inspect delivery",
         },
-      } as HabitRunReceipt & { summarySnapshot: { summary: string; decisions: string[]; nextLikelyStep: string } }
-      writeHabitRunReceipt(agentRoot, oldReceipt)
-      writeHabitRunReceipt(agentRoot, newReceipt)
-      writeJson(path.join(agentRoot, "state", "habit-sessions", "run-summary-new", "session.json"), {
-        version: 1,
-        messages: [{ role: "assistant", name: "send_message", content: "queued" }],
-        summary: { decisions: ["session decision"], nextLikelyStep: "session next" },
-      })
-      writeJson(path.join(agentRoot, "state", "habit-sessions", "run-summary-new", "pending", "reply.json"), {
-        content: "waiting",
-      })
+	      } as HabitRunReceipt & { summarySnapshot: { summary: string; decisions: string[]; nextLikelyStep: string } }
+	      writeHabitRunReceipt(agentRoot, oldReceipt)
+	      writeHabitRunReceipt(agentRoot, newReceipt)
+	      writeCanonicalHabitSession(agentRoot, "run-summary-new")
+	      writeJson(path.join(agentRoot, "state", "habit-sessions", "run-summary-new", "pending", "reply.json"), {
+	        content: "waiting",
+	      })
 
       const list = readHabitSessionSummaryListView(agentRoot, { limit: 1 })
 
@@ -2743,13 +2806,13 @@ describe("mailbox deep readers", () => {
         limit: 1,
         items: [expect.objectContaining({
           runId: "run-summary-new",
-          habitName: "heartbeat",
-          operationId: "habit:heartbeat",
-          summary: "Queued iMessage and recorded the route.",
-          decisions: ["receipt decision", "session decision"],
-          pending: { count: 1, files: ["reply.json"] },
-          messagesSent: [expect.objectContaining({ channel: "bluebubbles", result: "queued" })],
-          toolsUsed: ["send_message"],
+	          habitName: "heartbeat",
+	          operationId: "habit:heartbeat",
+	          summary: "Queued iMessage and recorded the route.",
+	          decisions: ["receipt decision"],
+	          pending: { count: 1, files: ["reply.json"] },
+	          messagesSent: [expect.objectContaining({ channel: "bluebubbles", result: "queued" })],
+	          toolsUsed: ["send_message"],
           producedRefs: [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
           nextLikelyStep: "inspect delivery",
           sources: expect.objectContaining({
@@ -2775,13 +2838,13 @@ describe("mailbox deep readers", () => {
       writeHabitRunReceipt(agentRoot, makeHabitReceipt({ runId: "run-fallback", operationId: null }))
       const summary = readHabitSessionSummaryView(agentRoot, { runId: "run-fallback" })
 
-      expect(summary).toMatchObject({
-        runId: "run-fallback",
-        operationId: null,
-        summary: "Habit heartbeat finished with surfaced.",
-        pending: { count: 0, files: [] },
-        toolsUsed: [],
-      })
+	      expect(summary).toMatchObject({
+	        runId: "run-fallback",
+	        operationId: null,
+	        summary: "Habit heartbeat surfaced via ari/cli.",
+	        pending: { count: 0, files: [] },
+	        toolsUsed: [],
+	      })
       expect(summary?.warnings).toContain("session file missing")
     })
   })

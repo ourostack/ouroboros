@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest"
 import { writeHabitRunReceipt, type HabitRunReceipt } from "../../../arc/flight-recorder"
 import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 import { getCommandHelp } from "../../../heart/daemon/cli-help"
+import { buildCanonicalSessionEnvelope } from "../../../heart/session-events"
 
 function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunReceipt {
   const runId = overrides.runId ?? "run-base"
@@ -73,16 +74,32 @@ function writeSummaryArtifacts(bundleRoot: string, receipt: HabitRunReceipt): vo
   writeHabitRunReceipt(bundleRoot, receipt)
   const sessionPath = path.join(bundleRoot, receipt.sessionLocator)
   fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
-  fs.writeFileSync(sessionPath, JSON.stringify({
-    version: 1,
-    messages: [
-      { role: "assistant", name: "send_message", content: "queued iMessage" },
-    ],
-    summary: {
-      decisions: ["session decision"],
-      nextLikelyStep: "inspect delivery status",
+  const messages = [
+    { role: "system" as const, content: "system" },
+    { role: "user" as const, content: "run the habit" },
+    {
+      role: "assistant" as const,
+      content: null,
+      tool_calls: [{
+        id: "call-send",
+        type: "function" as const,
+        function: { name: "send_message", arguments: "{\"friendId\":\"ari\"}" },
+      }],
     },
-  }, null, 2), "utf-8")
+    { role: "tool" as const, tool_call_id: "call-send", content: "queued iMessage" },
+    { role: "assistant" as const, content: "checkpoint: asked Ari and waiting." },
+  ]
+  const { envelope } = buildCanonicalSessionEnvelope({
+    existing: null,
+    previousMessages: [],
+    currentMessages: messages,
+    trimmedMessages: messages,
+    recordedAt: "2026-06-11T10:01:30.000Z",
+    lastUsage: null,
+    state: null,
+    projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+  })
+  fs.writeFileSync(sessionPath, JSON.stringify(envelope, null, 2), "utf-8")
   const pendingDir = path.join(bundleRoot, receipt.pendingLocator)
   fs.mkdirSync(pendingDir, { recursive: true })
   fs.writeFileSync(path.join(pendingDir, "reply.json"), JSON.stringify({ content: "waiting" }), "utf-8")
@@ -155,7 +172,7 @@ describe("ouro habit summary CLI", () => {
       habitName: "heartbeat",
       operationId: "habit:heartbeat",
       summary: "Asked Ari for the missing deployment decision.",
-      decisions: ["wait for Ari", "session decision"],
+      decisions: ["wait for Ari"],
       pending: { count: 1, files: ["reply.json"] },
       toolsUsed: ["send_message"],
       sources: {
