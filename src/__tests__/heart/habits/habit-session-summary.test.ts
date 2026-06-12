@@ -421,6 +421,17 @@ describe("habit-session-summary artifact reader", () => {
     fs.writeFileSync(runtimeStatePath, JSON.stringify({
       schemaVersion: 1,
       name: "journal",
+      activeOperationId: "op-stale-matching-receipt",
+      latestRunId: "different-run",
+      latestReceiptLocator: `arc/flight-recorder/habit-receipts/${runId}.json`,
+    }), "utf-8")
+    expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
+      operationId: null,
+    })
+
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "journal",
       activeOperationId: "op-stale-same-run",
       latestRunId: runId,
       latestReceiptLocator: "arc/flight-recorder/habit-receipts/other-receipt.json",
