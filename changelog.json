@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.668",
+      "changes": [
+        "Reconcile flight-recorder active obligations from canonical Arc state so fulfilled obligations cannot remain in context-loss recovery snapshots."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.667",
       "changes": [
         "Add stateful habit session summaries, summary tooling, mailbox APIs, nerves review, and habit history visibility.",
