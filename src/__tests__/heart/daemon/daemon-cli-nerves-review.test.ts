@@ -139,6 +139,23 @@ describe("ouro nerves-review CLI", () => {
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
+  it("filters local nerves logs by a valid since duration", async () => {
+    const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "nerves-review-since-"))
+    cleanup.push(logsDir)
+    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), [
+      eventLine({ time: new Date(Date.now() - 120 * 60 * 1000).toISOString(), message: "old habit event" }),
+      eventLine({ time: new Date(Date.now() - 5 * 60 * 1000).toISOString(), message: "recent habit event" }),
+    ].join("\n") + "\n", "utf-8")
+    mockGetAgentDaemonLogsDir.mockReturnValue(logsDir)
+    const deps = makeDeps()
+
+    const result = await runOuroCli(["nerves-review", "--agent", "slugger", "--since", "30m"], deps)
+
+    expect(result).toContain("recent habit event")
+    expect(result).not.toContain("old habit event")
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
   it("prints a no-match message for missing local nerves logs", async () => {
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "nerves-review-empty-"))
     cleanup.push(logsDir)
