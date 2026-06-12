@@ -3,6 +3,7 @@ import * as path from "path"
 import { randomUUID } from "crypto"
 import { capStructuredRecordString, capStructuredRecordStringLeaves } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
+import { readVerifiedObligations, readVerifiedPendingObligations, type Obligation } from "./obligations"
 
 export type FlightRecorderConfidence = "current" | "stale_risky" | "unknown"
 export type FlightRecorderHealthStatus = "ok" | "degraded" | "unavailable"
@@ -344,7 +345,7 @@ function normalizeResumeInvariants(resume: FlightRecorderResume): FlightRecorder
   ]
   const missingChanged = resume.missing.join("\n") !== missing.join("\n")
   const issues = [
-    ...(resume.canContinue && !resume.hasCompleteState ? ["canContinue true while hasCompleteState false"] : []),
+    ...(resume.canContinue && !hasCompleteState ? ["canContinue true while hasCompleteState false"] : []),
     ...(resume.canContinue && !hasCurrentAsk ? ["canContinue true without currentAsk"] : []),
     ...(resume.canContinue && !hasNextSafeAction ? ["canContinue true without nextSafeAction"] : []),
     ...(resume.canContinue && resume.blockedBecause.length > 0 ? ["canContinue true while blocked"] : []),
@@ -369,6 +370,143 @@ function normalizeResumeInvariants(resume: FlightRecorderResume): FlightRecorder
   }
 }
 /* v8 ignore stop */
+
+interface ReconciledResume {
+  resume: FlightRecorderResume
+  staleActiveObligationIds: string[]
+  missingActiveObligationIds: string[]
+  unverifiableActiveObligationIds: string[]
+}
+
+const FLIGHT_RECORDER_RECONCILE_SOURCE_ID = "reconcile:active-obligations"
+
+function remainingArcWorkDescriptions(resume: FlightRecorderResume): string[] {
+  return [
+    ...resume.activeReturnObligationIds.map((id) => `return obligation ${id}`),
+    ...resume.activePacketIds.map((id) => `packet ${id}`),
+    ...resume.openEvolutionCaseIds.map((id) => `evolution case ${id}`),
+  ]
+}
+
+function nextSafeActionAfterObligationReconcile(
+  resume: FlightRecorderResume,
+  activeObligations: Obligation[],
+  staleActiveObligationIds: string[],
+  unverifiableActiveObligationIds: string[],
+): string {
+  if (unverifiableActiveObligationIds.length > 0) {
+    return capStructuredRecordString(`inspect unverifiable active obligations before acting: ${unverifiableActiveObligationIds.join(", ")}`)
+  }
+  const firstActive = activeObligations[0]
+  if (firstActive) {
+    const detail = firstActive.nextAction?.trim() || firstActive.content
+    return capStructuredRecordString(`continue open obligation ${firstActive.id}: ${detail}`)
+  }
+  const remainingWork = remainingArcWorkDescriptions(resume)
+  if (remainingWork.length > 0) {
+    return capStructuredRecordString(`continue remaining Arc work: ${remainingWork.slice(0, 5).join(", ")}`)
+  }
+  return capStructuredRecordString(`wait for new input; reconciled completed or missing obligations: ${staleActiveObligationIds.join(", ")}`)
+}
+
+function reconcileActiveObligations(agentRoot: string, resume: FlightRecorderResume): ReconciledResume {
+  const obligations = readVerifiedObligations(agentRoot)
+  const activeObligations = readVerifiedPendingObligations(agentRoot)
+  const canonicalIdSet = new Set(obligations.map((obligation) => obligation.id))
+  const openIdSet = new Set(activeObligations.map((obligation) => obligation.id))
+  const resumeIdSet = new Set(resume.activeObligationIds)
+  const staleActiveObligationIds = resume.activeObligationIds.filter((id) => canonicalIdSet.has(id) && !openIdSet.has(id))
+  const unverifiableActiveObligationIds = resume.activeObligationIds.filter((id) => !canonicalIdSet.has(id))
+  const missingActiveObligationIds = activeObligations
+    .map((obligation) => obligation.id)
+    .filter((id) => !resumeIdSet.has(id))
+  if (
+    staleActiveObligationIds.length === 0
+    && missingActiveObligationIds.length === 0
+    && unverifiableActiveObligationIds.length === 0
+  ) {
+    return { resume, staleActiveObligationIds, missingActiveObligationIds, unverifiableActiveObligationIds }
+  }
+  const activeObligationIds = uniqueStrings([
+    ...resume.activeObligationIds.filter((id) => !staleActiveObligationIds.includes(id)),
+    ...missingActiveObligationIds,
+  ])
+  const hasActiveArcContinuation = activeObligationIds.length > 0
+    || resume.activeReturnObligationIds.length > 0
+    || resume.activePacketIds.length > 0
+    || resume.openEvolutionCaseIds.length > 0
+  const isTerminalWait = staleActiveObligationIds.length > 0 && !hasActiveArcContinuation
+  const mustSynthesizeAction = staleActiveObligationIds.length > 0
+    || unverifiableActiveObligationIds.length > 0
+    || !nonEmpty(resume.nextSafeAction.value)
+  const nextSafeActionValue = mustSynthesizeAction
+    ? nextSafeActionAfterObligationReconcile(resume, activeObligations, staleActiveObligationIds, unverifiableActiveObligationIds)
+    : resume.nextSafeAction.value
+  const recorderHealth = unverifiableActiveObligationIds.length > 0
+    ? {
+        status: resume.recorderHealth.status === "unavailable" ? "unavailable" as const : "degraded" as const,
+        issues: uniqueStrings([
+          ...resume.recorderHealth.issues,
+          `active obligation ids could not be verified in arc/obligations: ${unverifiableActiveObligationIds.join(", ")}`,
+        ]),
+      }
+    : resume.recorderHealth
+  const canContinue = nonEmpty(resume.currentAsk.value)
+    && nonEmpty(nextSafeActionValue)
+    && resume.blockedBecause.length === 0
+    && recorderHealth.status === "ok"
+    && hasActiveArcContinuation
+    && !isTerminalWait
+  return {
+    resume: normalizeResumeInvariants({
+      ...resume,
+      canContinue,
+      recorderHealth,
+      activeObligationIds,
+      nextSafeAction: {
+        ...resume.nextSafeAction,
+        value: nextSafeActionValue,
+        sourceEventIds: mustSynthesizeAction
+          ? [FLIGHT_RECORDER_RECONCILE_SOURCE_ID]
+          : resume.nextSafeAction.sourceEventIds,
+        stopBefore: unverifiableActiveObligationIds.length > 0
+          ? uniqueStrings([...resume.nextSafeAction.stopBefore, "acting on unverifiable obligation state"])
+          : resume.nextSafeAction.stopBefore,
+      },
+    }),
+    staleActiveObligationIds,
+    missingActiveObligationIds,
+    unverifiableActiveObligationIds,
+  }
+}
+
+function normalizeResumeForAgentRoot(agentRoot: string, resume: FlightRecorderResume): ReconciledResume {
+  return reconcileActiveObligations(agentRoot, normalizeResumeInvariants(resume))
+}
+
+function emitFlightRecorderReconciled(
+  agentRoot: string,
+  staleActiveObligationIds: string[],
+  missingActiveObligationIds: string[],
+  unverifiableActiveObligationIds: string[],
+): void {
+  if (
+    staleActiveObligationIds.length === 0
+    && missingActiveObligationIds.length === 0
+    && unverifiableActiveObligationIds.length === 0
+  ) return
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.flight_recorder_resume_reconciled",
+    message: "flight recorder resume reconciled with canonical Arc state",
+    meta: {
+      agentRoot,
+      staleActiveObligationIds,
+      missingActiveObligationIds,
+      unverifiableActiveObligationIds,
+    },
+  })
+}
 
 function latestFromEvent(event: FlightRecorderEvent, previous: FlightRecorderResume): FlightRecorderResume {
   const currentAskValue = event.currentAsk !== undefined ? event.currentAsk : previous.currentAsk.value
@@ -423,7 +561,19 @@ export function readFlightRecorderResume(agentRoot: string): FlightRecorderResum
     if (!isFlightRecorderResume(parsed)) {
       throw new Error("latest.json has invalid flight-recorder resume shape")
     }
-    const resume = normalizeResumeInvariants(parsed)
+    const {
+      resume,
+      staleActiveObligationIds,
+      missingActiveObligationIds,
+      unverifiableActiveObligationIds,
+    } = normalizeResumeForAgentRoot(agentRoot, parsed)
+    if (
+      staleActiveObligationIds.length > 0
+      || missingActiveObligationIds.length > 0
+      || unverifiableActiveObligationIds.length > 0
+    ) {
+      emitFlightRecorderReconciled(agentRoot, staleActiveObligationIds, missingActiveObligationIds, unverifiableActiveObligationIds)
+    }
     emitNervesEvent({
       component: "mind",
       event: "mind.flight_recorder_resume_read",
@@ -446,8 +596,14 @@ export function readFlightRecorderResume(agentRoot: string): FlightRecorderResum
 }
 
 export function writeFlightRecorderResume(agentRoot: string, resume: FlightRecorderResume): void {
-  const safeResume = normalizeResumeInvariants(resume)
+  const {
+    resume: safeResume,
+    staleActiveObligationIds,
+    missingActiveObligationIds,
+    unverifiableActiveObligationIds,
+  } = normalizeResumeForAgentRoot(agentRoot, resume)
   atomicWriteJson(flightRecorderLatestPath(agentRoot), safeResume)
+  emitFlightRecorderReconciled(agentRoot, staleActiveObligationIds, missingActiveObligationIds, unverifiableActiveObligationIds)
   emitNervesEvent({
     component: "mind",
     event: "mind.flight_recorder_resume_written",

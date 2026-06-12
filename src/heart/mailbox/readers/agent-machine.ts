@@ -138,14 +138,24 @@ function normalizeObligationCurrentSurface(
   return recentlyTouched ? currentSurface : null
 }
 
+function legacyObligationTimestamp(obligation: { updatedAt?: unknown; createdAt?: unknown }): string {
+  if (typeof obligation.updatedAt === "string") return obligation.updatedAt
+  if (typeof obligation.createdAt === "string") return obligation.createdAt
+  return ""
+}
+
+function legacyObligationStatus(obligation: { status?: unknown }): string {
+  return typeof obligation.status === "string" ? obligation.status : "pending"
+}
+
 export function readObligationSummary(agentRoot: string): { items: MailboxObligationItem[] } {
   const liveCodingSurfaceLabels = buildLiveCodingSurfaceLabels(agentRoot)
   const items = readPendingObligations(agentRoot)
     .map((obligation) => {
-      const updatedAt = obligation.updatedAt ?? obligation.createdAt
+      const updatedAt = legacyObligationTimestamp(obligation)
       return {
         id: obligation.id,
-        status: obligation.status,
+        status: legacyObligationStatus(obligation),
         content: obligation.content,
         updatedAt,
         nextAction: obligation.nextAction ?? null,
