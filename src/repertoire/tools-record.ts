@@ -6,6 +6,7 @@ import { cosineSimilarity } from "../mind/note-search"
 import { resolveRecordNotesRoot } from "../mind/record-paths"
 import { isTrustedLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getAgentRoot } from "../heart/identity"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
 const NOTES_INDEX_VERSION = 1
@@ -53,6 +54,26 @@ function hasRecordReadTrust(ctx?: ToolContext): boolean {
   if (hasSelfTrust(ctx)) return true
   const friend = ctx?.context?.friend
   return Boolean(friend) && isTrustedLevel(friend?.trustLevel)
+}
+
+function safeAgentRoot(ctx?: ToolContext): string | undefined {
+  if (ctx?.agentRoot) return ctx.agentRoot
+  try {
+    return getAgentRoot()
+  } catch {
+    return undefined
+  }
+}
+
+function bundleRelativeLocator(filePath: string, ctx?: ToolContext): string {
+  const agentRoot = safeAgentRoot(ctx)
+  if (agentRoot) {
+    const relativePath = path.relative(agentRoot, filePath)
+    if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+      return relativePath.split(path.sep).join("/")
+    }
+  }
+  return filePath.split(path.sep).join("/")
 }
 
 function normalizeTags(value: unknown): string[] | undefined {
@@ -384,6 +405,10 @@ export const recordToolDefinitions: ToolDefinition[] = [
         const savedPath = ensureUniquePath(notesDir, date, slugForContent(content))
         fs.writeFileSync(savedPath, renderNote(createdAt, cappedContent, tags), "utf8")
         await updateIndexForSavedNote(notesDir, indexPath, savedPath, provider)
+        ctx?.habitSession?.recordProducedRef?.({
+          kind: "desk_record",
+          locator: bundleRelativeLocator(savedPath, ctx),
+        })
         emitNervesEvent({
           component: "repertoire",
           event: "repertoire.record_note_saved",

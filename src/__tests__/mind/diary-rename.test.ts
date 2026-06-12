@@ -253,4 +253,25 @@ describe("diary_write tool handler", () => {
     const content = fs.readFileSync(factsPath, "utf8")
     expect(content).toContain("tool:diary_write")
   })
+
+  it("records a habit produced ref when diary_write adds a Desk record fact", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-produced-ref-"))
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const diaryWrite = baseToolDefinitions.find((d) => d.tool.function.name === "diary_write")
+    const recordProducedRef = vi.fn()
+
+    await diaryWrite!.handler({ entry: "habit receipts should capture diary writes" }, {
+      signin: async () => undefined,
+      agentRoot,
+      context: { channel: { channel: "inner" } },
+      habitSession: { recordProducedRef } as never,
+    } as never)
+
+    expect(recordProducedRef).toHaveBeenCalledWith({
+      kind: "desk_record",
+      locator: "desk/_record/diary/facts.jsonl",
+    })
+  })
 })

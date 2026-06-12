@@ -1,13 +1,36 @@
 import { spawnSync } from "child_process";
+import * as path from "path";
 import { listSkills, loadSkill } from "./skills";
 import { getIntegrationsConfig } from "../heart/config";
 import { emitNervesEvent } from "../nerves/runtime";
+import { getAgentRoot } from "../heart/identity";
 import type { FriendRecord } from "../mind/friends/types";
 import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryProvenance } from "../mind/diary";
+import { resolveRecordDiaryRoot } from "../mind/record-paths";
 import { classifyProvenanceTrust } from "../mind/provenance-trust";
-import type { ToolDefinition } from "./tools-base";
+import type { ToolContext, ToolDefinition } from "./tools-base";
 
 const CLAUDE_READ_ONLY_TOOLS = "Read,Grep,Glob,LS";
+
+function safeAgentRoot(ctx?: ToolContext): string | undefined {
+  if (ctx?.agentRoot) return ctx.agentRoot;
+  try {
+    return getAgentRoot();
+  } catch {
+    return undefined;
+  }
+}
+
+function bundleRelativeLocator(filePath: string, ctx?: ToolContext): string {
+  const agentRoot = safeAgentRoot(ctx);
+  if (agentRoot) {
+    const relativePath = path.relative(agentRoot, filePath);
+    if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+      return relativePath.split(path.sep).join("/");
+    }
+  }
+  return filePath.split(path.sep).join("/");
+}
 
 export const notesToolDefinitions: ToolDefinition[] = [
   {
@@ -251,6 +274,12 @@ export const notesToolDefinitions: ToolDefinition[] = [
         about: typeof a.about === "string" ? a.about : undefined,
         provenance,
       });
+      if (result.added > 0) {
+        ctx?.habitSession?.recordProducedRef?.({
+          kind: "desk_record",
+          locator: bundleRelativeLocator(path.join(resolveRecordDiaryRoot(), "facts.jsonl"), ctx),
+        });
+      }
       return `saved diary entry (added=${result.added}, skipped=${result.skipped})`;
     },
     summaryKeys: ["entry", "about"],
