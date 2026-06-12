@@ -7,6 +7,7 @@ import {
   writeHabitRunReceipt,
   type FlightRecorderProducedRef,
   type HabitPermissionEnvelope,
+  type HabitRunSummarySnapshot,
   type HabitReturnRoute,
   type HabitReturnRouteKind,
   type HabitRunOutcome,
@@ -70,12 +71,14 @@ export interface BuildHabitRunReceiptInput {
   startedAt: string
   endedAt: string
   outcome: HabitRunOutcome
+  operationId?: string | null
   permissionEnvelope: HabitPermissionEnvelope
   toolPolicy: HabitToolPolicy
   producedRefs?: FlightRecorderProducedRef[]
   surfaceAttempts?: HabitSurfaceAttempt[]
   errors?: string[]
   nextRunAt?: string | null
+  summarySnapshot?: HabitRunSummarySnapshot
 }
 
 export type CompleteHabitRunInput = Omit<BuildHabitRunReceiptInput, "outcome" | "nextRunAt">
@@ -92,6 +95,9 @@ export interface HabitRuntimeStateSnapshot {
   name: string
   lastRun: string
   updatedAt: string
+  activeOperationId: string | null
+  latestRunId: string | null
+  latestReceiptLocator: string | null
 }
 
 export interface HabitSessionRecoveryState {
@@ -123,13 +129,30 @@ function isHabitRuntimeStateSnapshot(value: unknown, habitName: string): value i
     && record.name === habitName
     && typeof record.lastRun === "string"
     && typeof record.updatedAt === "string"
+    && (record.activeOperationId === undefined || record.activeOperationId === null || typeof record.activeOperationId === "string")
+    && (record.latestRunId === undefined || record.latestRunId === null || typeof record.latestRunId === "string")
+    && (record.latestReceiptLocator === undefined || record.latestReceiptLocator === null || typeof record.latestReceiptLocator === "string")
+}
+
+function runtimeCursorValue(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
 }
 
 function readHabitRuntimeStateSnapshot(agentRoot: string, habitName: string): HabitRuntimeStateSnapshot | null {
   const runtimeStatePath = path.join(agentRoot, "state", "habits", `${habitName}.json`)
   try {
     const parsed = JSON.parse(fs.readFileSync(runtimeStatePath, "utf-8")) as unknown
-    if (isHabitRuntimeStateSnapshot(parsed, habitName)) return parsed
+    if (isHabitRuntimeStateSnapshot(parsed, habitName)) {
+      return {
+        schemaVersion: 1,
+        name: parsed.name,
+        lastRun: parsed.lastRun,
+        updatedAt: parsed.updatedAt,
+        activeOperationId: runtimeCursorValue(parsed.activeOperationId),
+        latestRunId: runtimeCursorValue(parsed.latestRunId),
+        latestReceiptLocator: runtimeCursorValue(parsed.latestReceiptLocator),
+      }
+    }
     emitNervesEvent({
       level: "warn",
       component: "daemon",
@@ -552,6 +575,39 @@ function computeNextRunAt(habit: HabitFile, endedAt: string): string | null {
   return new Date(endedMs + cadenceMs).toISOString()
 }
 
+function defaultSummarySnapshot(input: BuildHabitRunReceiptInput): HabitRunSummarySnapshot {
+  const errors = input.errors ?? []
+  if (errors.length > 0) {
+    return {
+      summary: `Habit ${input.habit.name} finished with errors: ${errors.join("; ")}`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const surfaced = (input.surfaceAttempts ?? []).find((attempt) =>
+    attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+  if (surfaced) {
+    return {
+      summary: `Habit ${input.habit.name} surfaced via ${surfaced.recipient}/${surfaced.channel}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const produced = (input.producedRefs ?? []).find((ref) => ref.kind !== "none")
+  if (produced) {
+    return {
+      summary: `Habit ${input.habit.name} produced ${produced.kind}: ${produced.locator}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  return {
+    summary: `Habit ${input.habit.name} finished with ${input.outcome}.`,
+    decisions: [],
+    nextLikelyStep: null,
+  }
+}
+
 export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRunReceipt {
   const paths = createHabitSessionPaths(input.agentRoot, input.runId, input.habit.name)
   const receipt: HabitRunReceipt = {
@@ -568,9 +624,11 @@ export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRun
     pendingLocator: paths.pendingLocator,
     runtimeStateLocator: paths.runtimeStateLocator,
     receiptLocator: paths.receiptLocator,
+    operationId: input.operationId ?? null,
     nextRunAt: input.nextRunAt ?? computeNextRunAt(input.habit, input.endedAt),
     permissionEnvelope: input.permissionEnvelope,
     toolPolicy: input.toolPolicy,
+    summarySnapshot: input.summarySnapshot ?? defaultSummarySnapshot(input),
     producedRefs: input.producedRefs ?? [],
     surfaceAttempts: input.surfaceAttempts ?? [],
     errors: input.errors ?? [],
@@ -617,8 +675,9 @@ function habitOutcomeForCompletion(input: CompleteHabitRunInput): { outcome: Hab
 
 export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRunResult {
   const { outcome, producedRefs } = habitOutcomeForCompletion(input)
+  let receipt: HabitRunReceipt
   try {
-    writeHabitRunReceipt(input.agentRoot, buildHabitRunReceipt({
+    receipt = buildHabitRunReceipt({
       agentRoot: input.agentRoot,
       habit: input.habit,
       runId: input.runId,
@@ -626,12 +685,15 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       startedAt: input.startedAt,
       endedAt: input.endedAt,
       outcome,
+      operationId: input.operationId ?? null,
       permissionEnvelope: input.permissionEnvelope,
       toolPolicy: input.toolPolicy,
       producedRefs,
       surfaceAttempts: input.surfaceAttempts,
       errors: input.errors,
-    }))
+      summarySnapshot: input.summarySnapshot,
+    })
+    writeHabitRunReceipt(input.agentRoot, receipt)
   } catch (error) {
     emitNervesEvent({
       level: "error",
@@ -641,7 +703,7 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       meta: {
         habitName: input.habit.name,
         runId: input.runId,
-        error: error instanceof Error ? error.message : String(error),
+        error: String(error),
       },
     })
     return { outcome, producedRefs, receiptWritten: false, runtimeStateRecorded: false }
@@ -649,6 +711,9 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
   try {
     recordHabitRun(input.agentRoot, input.habit.name, input.endedAt, {
       definitionPath: path.join(input.agentRoot, "habits", `${input.habit.name}.md`),
+      activeOperationId: receipt.operationId ?? null,
+      latestRunId: receipt.runId,
+      latestReceiptLocator: receipt.receiptLocator,
     })
     return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: true }
   } catch (error) {
@@ -660,7 +725,7 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       meta: {
         habitName: input.habit.name,
         runId: input.runId,
-        error: error instanceof Error ? error.message : String(error),
+        error: String(error),
       },
     })
     return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: false }

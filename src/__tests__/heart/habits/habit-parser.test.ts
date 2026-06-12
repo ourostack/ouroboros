@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   parseHabitFile,
   renderHabitFile,
+  type HabitContinuity,
   type HabitFile,
   type HabitStatus,
 } from "../../../heart/habits/habit-parser"
@@ -33,6 +34,7 @@ describe("parseHabitFile", () => {
       tools: undefined,
       origin: null,
       surface: { family: true, originator: true, extra: [] },
+      continuity: { mode: "fresh" },
       body: "Check in on my responsibilities and reflect.",
     })
   })
@@ -204,7 +206,7 @@ describe("parseHabitFile", () => {
 
     const result: HabitFile = parseHabitFile(content, "/bundles/agent.ouro/habits/shape-test.md")
     const keys = Object.keys(result).sort()
-    expect(keys).toEqual(["body", "cadence", "created", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
+    expect(keys).toEqual(["body", "cadence", "continuity", "created", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
   })
 
   it("parses habit origin and surface policy from nested frontmatter", () => {
@@ -291,6 +293,46 @@ describe("parseHabitFile", () => {
     const paused: HabitStatus = "paused"
     expect(active).toBe("active")
     expect(paused).toBe("paused")
+  })
+
+  it("parses nested stateful continuity and defaults invalid continuity to fresh", () => {
+    const stateful = parseHabitFile([
+      "---",
+      "title: Stateful",
+      "continuity:",
+      "  mode: stateful",
+      "---",
+      "",
+      "Keep durable context.",
+    ].join("\n"), "/bundles/agent.ouro/habits/stateful.md")
+    const invalid = parseHabitFile([
+      "---",
+      "title: Invalid continuity",
+      "continuity:",
+      "  mode: transcript",
+      "---",
+      "",
+      "Should stay fresh.",
+    ].join("\n"), "/bundles/agent.ouro/habits/invalid-continuity.md")
+    const scalar = parseHabitFile([
+      "---",
+      "title: Scalar continuity",
+      "continuity: stateful",
+      "---",
+      "",
+      "Should stay fresh.",
+    ].join("\n"), "/bundles/agent.ouro/habits/scalar-continuity.md")
+
+    expect(stateful.continuity).toEqual({ mode: "stateful" })
+    expect(invalid.continuity).toEqual({ mode: "fresh" })
+    expect(scalar.continuity).toEqual({ mode: "fresh" })
+  })
+
+  it("exports HabitContinuity type correctly", () => {
+    const fresh: HabitContinuity = { mode: "fresh" }
+    const stateful: HabitContinuity = { mode: "stateful" }
+    expect(fresh.mode).toBe("fresh")
+    expect(stateful.mode).toBe("stateful")
   })
 })
 
@@ -484,10 +526,12 @@ describe("renderHabitFile", () => {
       title: "Check on Ari",
       origin: { friendId: "ari", channel: "cli", key: "main" },
       surface: { family: true, originator: false, extra: ["teammate"] },
+      continuity: { mode: "stateful" },
     }, "Ask whether Ari needs anything.")
 
     expect(rendered).toContain("origin:\n  friendId: ari\n  channel: cli\n  key: main")
     expect(rendered).toContain("surface:\n  family: true\n  originator: false\n  extra: [teammate]")
+    expect(rendered).toContain("continuity:\n  mode: stateful")
     expect(rendered).toContain("Ask whether Ari needs anything.")
   })
 })

@@ -125,6 +125,12 @@ export interface HabitSurfaceAttempt {
   error?: string
 }
 
+export interface HabitRunSummarySnapshot {
+  summary: string
+  decisions: string[]
+  nextLikelyStep: string | null
+}
+
 export interface LegacyHabitRunReceipt {
   schemaVersion: 1
   runId: string
@@ -152,15 +158,19 @@ export interface HabitRunReceipt {
   pendingLocator: string
   runtimeStateLocator: string
   receiptLocator: string
+  operationId?: string | null
   nextRunAt: string | null
   permissionEnvelope: HabitPermissionEnvelope
   toolPolicy: HabitToolPolicy
+  summarySnapshot: HabitRunSummarySnapshot
   producedRefs: FlightRecorderProducedRef[]
   surfaceAttempts: HabitSurfaceAttempt[]
   errors: string[]
 }
 
-export type WritableHabitRunReceipt = HabitRunReceipt | LegacyHabitRunReceipt
+export type WritableHabitRunReceipt =
+  | (Omit<HabitRunReceipt, "summarySnapshot"> & { summarySnapshot?: HabitRunSummarySnapshot })
+  | LegacyHabitRunReceipt
 
 export function isHabitRunTrigger(value: unknown): value is HabitRunTrigger {
   return value === "cron"
@@ -538,6 +548,64 @@ function isHabitToolPolicy(value: unknown): value is HabitToolPolicy {
     && typeof value.outwardMessagingAllowed === "boolean"
 }
 
+function defaultHabitRunSummarySnapshot(receipt: {
+  habitName: string
+  outcome: HabitRunOutcome
+  producedRefs: FlightRecorderProducedRef[]
+  surfaceAttempts: HabitSurfaceAttempt[]
+  errors: string[]
+}): HabitRunSummarySnapshot {
+  if (receipt.errors.length > 0) {
+    return {
+      summary: `Habit ${receipt.habitName} finished with errors: ${receipt.errors.join("; ")}`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const surface = receipt.surfaceAttempts.find((attempt) =>
+    attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+  if (surface) {
+    return {
+      summary: `Habit ${receipt.habitName} surfaced via ${surface.recipient}/${surface.channel}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const produced = receipt.producedRefs.find((ref) => ref.kind !== "none")
+  if (produced) {
+    return {
+      summary: `Habit ${receipt.habitName} produced ${produced.kind}: ${produced.locator}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  return {
+    summary: `Habit ${receipt.habitName} finished with ${receipt.outcome}.`,
+    decisions: [],
+    nextLikelyStep: null,
+  }
+}
+
+function normalizeHabitRunSummarySnapshot(
+  value: unknown,
+  fallback: HabitRunSummarySnapshot,
+): HabitRunSummarySnapshot {
+  const snapshot = isPlainRecord(value) ? value : {}
+  const summary = typeof snapshot.summary === "string" && snapshot.summary.trim().length > 0
+    ? snapshot.summary
+    : fallback.summary
+  const nextLikelyStep = snapshot.nextLikelyStep === null
+    ? null
+    : typeof snapshot.nextLikelyStep === "string" && snapshot.nextLikelyStep.trim().length > 0
+      ? snapshot.nextLikelyStep
+      : fallback.nextLikelyStep
+  return {
+    summary: capStructuredRecordString(summary),
+    decisions: cappedArray(isStringArray(snapshot.decisions) ? snapshot.decisions : fallback.decisions),
+    nextLikelyStep: nextLikelyStep === null ? null : capStructuredRecordString(nextLikelyStep),
+  }
+}
+
 function isHabitRunReceipt(value: unknown): value is HabitRunReceipt {
   if (!isPlainRecord(value)) return false
   return value.schemaVersion === 2
@@ -563,9 +631,11 @@ function isHabitRunReceipt(value: unknown): value is HabitRunReceipt {
     && typeof value.pendingLocator === "string"
     && typeof value.runtimeStateLocator === "string"
     && typeof value.receiptLocator === "string"
+    && (value.operationId === undefined || value.operationId === null || typeof value.operationId === "string")
     && (value.nextRunAt === null || typeof value.nextRunAt === "string")
     && isHabitPermissionEnvelope(value.permissionEnvelope)
     && isHabitToolPolicy(value.toolPolicy)
+    && (value.summarySnapshot === undefined || isPlainRecord(value.summarySnapshot))
     && isProducedRefArray(value.producedRefs)
     && isHabitSurfaceAttemptArray(value.surfaceAttempts)
     && isStringArray(value.errors)
@@ -621,6 +691,7 @@ function normalizeLegacyHabitRunReceipt(receipt: LegacyHabitRunReceipt): HabitRu
     pendingLocator: `state/habit-sessions/${receipt.runId}/pending`,
     runtimeStateLocator: `state/habits/${receipt.habitName}.json`,
     receiptLocator: `arc/flight-recorder/habit-receipts/${receipt.runId}.json`,
+    operationId: null,
     nextRunAt: null,
     permissionEnvelope: {
       schemaVersion: 1,
@@ -635,13 +706,15 @@ function normalizeLegacyHabitRunReceipt(receipt: LegacyHabitRunReceipt): HabitRu
       deniedTools: sawSurface ? [] : ["send_message", "surface"],
       outwardMessagingAllowed: sawSurface,
     },
+    summarySnapshot: defaultHabitRunSummarySnapshot(receipt),
     producedRefs: receipt.producedRefs,
     surfaceAttempts: receipt.surfaceAttempts,
     errors: receipt.errors,
   }
 }
 
-function capHabitRunReceipt(receipt: HabitRunReceipt): HabitRunReceipt {
+function capHabitRunReceipt(receipt: Omit<HabitRunReceipt, "summarySnapshot"> & { summarySnapshot?: HabitRunSummarySnapshot }): HabitRunReceipt {
+  const fallbackSnapshot = defaultHabitRunSummarySnapshot(receipt)
   return {
     ...receipt,
     habitName: capStructuredRecordString(receipt.habitName),
@@ -650,6 +723,7 @@ function capHabitRunReceipt(receipt: HabitRunReceipt): HabitRunReceipt {
     pendingLocator: capStructuredRecordString(receipt.pendingLocator),
     runtimeStateLocator: capStructuredRecordString(receipt.runtimeStateLocator),
     receiptLocator: capStructuredRecordString(receipt.receiptLocator),
+    operationId: receipt.operationId ? capStructuredRecordString(receipt.operationId) : null,
     permissionEnvelope: {
       ...receipt.permissionEnvelope,
       returnRoutes: receipt.permissionEnvelope.returnRoutes.map((route) => ({
@@ -669,6 +743,7 @@ function capHabitRunReceipt(receipt: HabitRunReceipt): HabitRunReceipt {
       deniedTools: cappedArray(receipt.toolPolicy.deniedTools),
       outwardMessagingAllowed: receipt.toolPolicy.outwardMessagingAllowed,
     },
+    summarySnapshot: normalizeHabitRunSummarySnapshot(receipt.summarySnapshot, fallbackSnapshot),
     producedRefs: receipt.producedRefs.map((ref) => ({ ...ref, locator: capStructuredRecordString(ref.locator) })),
     surfaceAttempts: receipt.surfaceAttempts.map((attempt) => ({
       ...attempt,
@@ -707,7 +782,7 @@ export function readHabitRunReceipt(agentRoot: string, runId: string): HabitRunR
       message: "flight recorder habit receipt read",
       meta: { agentRoot, runId },
     })
-    return receipt
+    return capHabitRunReceipt(receipt)
   } catch (error) {
     warnMalformedHabitReceipt(
       agentRoot,
@@ -742,7 +817,10 @@ export function writeHabitRunReceipt(agentRoot: string, receipt: WritableHabitRu
     recordedAt: safeReceipt.endedAt,
     summary: `habit ${safeReceipt.habitName} finished with ${safeReceipt.outcome}`,
     producedRefs: safeReceipt.producedRefs,
-    meta: { receiptPath: path.join("arc", "flight-recorder", "habit-receipts", `${safeReceipt.runId}.json`) },
+    meta: {
+      receiptPath: path.join("arc", "flight-recorder", "habit-receipts", `${safeReceipt.runId}.json`),
+      operationId: safeReceipt.operationId ?? null,
+    },
   })
   emitNervesEvent({
     component: "mind",

@@ -470,7 +470,7 @@ export interface InboundTurnInput {
     usage?: UsageData,
     hooks?: PostTurnHooks,
     state?: SessionContinuityState,
-  ) => void
+  ) => void | Promise<unknown>
   accumulateFriendTokens: (
     store: FriendStore,
     friendId: string,
@@ -1015,7 +1015,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         { currentLane },
       )
       input.failoverState.pending = failoverContext
-      input.postTurn(sessionMessages, session.sessionPath, result.usage)
+      await input.postTurn(sessionMessages, session.sessionPath, result.usage)
       try {
         const agentRoot = getAgentRoot()
         const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
@@ -1089,7 +1089,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       ? { lastFriendActivityAt }
       : undefined)
     : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
-  input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
+  await input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   try {
     const agentRoot = getAgentRoot()

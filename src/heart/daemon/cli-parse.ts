@@ -18,6 +18,7 @@ import { suggestCommand } from "./cli-help"
 import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
 import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
+import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -122,6 +123,7 @@ export function usage(): string {
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro habit runs [--agent <name>] [--limit <n>]",
     "  ouro habit inspect [--agent <name>] <runId>",
+    "  ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro friend list [--agent <name>]",
@@ -130,6 +132,7 @@ export function usage(): string {
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     "  ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
+    "  ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
     "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
@@ -272,6 +275,50 @@ function parseHabitCommand(args: string[]): OuroCliCommand {
     const positional = rest.slice(1)
     if (positional.length !== 1 || !positional[0]) throw new Error(`Usage\n${usage()}`)
     return { kind: "habit.inspect", ...(agent ? { agent } : {}), runId: positional[0] }
+  }
+  if (sub === "summary") {
+    let runId: string | undefined
+    let habitName: string | undefined
+    let operationId: string | undefined
+    let which: HabitSummaryWhich | undefined
+    let json = false
+    const options = rest.slice(1)
+    for (let i = 0; i < options.length; i += 1) {
+      const option = options[i]
+      if (option === "--json") {
+        json = true
+        continue
+      }
+      if ((option === "--run-id" || option === "--habit" || option === "--operation-id" || option === "--which") && options[i + 1]) {
+        const value = options[++i]!
+        if (option === "--run-id") runId = value
+        if (option === "--habit") habitName = value
+        if (option === "--operation-id") operationId = value
+        if (option === "--which") {
+          if (!["latest", "previous", "latest-success", "latest-failure"].includes(value)) {
+            throw new Error("--which must be latest, previous, latest-success, or latest-failure")
+          }
+          which = value as HabitSummaryWhich
+        }
+        continue
+      }
+      throw new Error(`Usage\n${usage()}`)
+    }
+    if (runId !== undefined && (habitName !== undefined || operationId !== undefined || which !== undefined)) {
+      throw new Error("--run-id cannot be combined with --habit, --operation-id, or --which")
+    }
+    if (runId === undefined && habitName === undefined && operationId === undefined) {
+      throw new Error("provide --run-id, --habit, or --operation-id")
+    }
+    return {
+      kind: "habit.summary",
+      ...(agent ? { agent } : {}),
+      ...(runId ? { runId } : {}),
+      ...(habitName ? { habitName } : {}),
+      ...(operationId ? { operationId } : {}),
+      ...(which ? { which } : {}),
+      json,
+    }
   }
 
   throw new Error(`Usage\n${usage()}`)
@@ -1573,6 +1620,55 @@ function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
   }
 }
 
+function parseNervesReviewCommand(args: string[]): OuroCliCommand {
+  const { agent, rest } = extractAgentFlag(args)
+  let processName = "daemon"
+  let component: string | undefined
+  let event: string | undefined
+  let level: string | undefined
+  let since: string | undefined
+  let limit: number | undefined
+  let json = false
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    const next = rest[i + 1]
+    if (token === "--json") {
+      json = true
+      continue
+    }
+    if ((token === "--process" || token === "--component" || token === "--event" || token === "--level" || token === "--since" || token === "--limit") && next) {
+      if (token === "--process") processName = next
+      if (token === "--component") component = next
+      if (token === "--event") event = next
+      if (token === "--level") level = next
+      if (token === "--since") since = next
+      if (token === "--limit") {
+        const parsed = Number.parseInt(next, 10)
+        if (!Number.isInteger(parsed) || String(parsed) !== next || parsed < 1 || parsed > 1000) {
+          throw new Error("--limit must be an integer between 1 and 1000")
+        }
+        limit = parsed
+      }
+      i += 1
+      continue
+    }
+    throw new Error(`Usage\n${usage()}`)
+  }
+
+  return {
+    kind: "nerves-review",
+    ...(agent ? { agent } : {}),
+    process: processName,
+    ...(component ? { component } : {}),
+    ...(event ? { event } : {}),
+    ...(level ? { level } : {}),
+    ...(since ? { since } : {}),
+    ...(limit ? { limit } : {}),
+    json,
+  }
+}
+
 // ── Main dispatch ──
 
 export function parseOuroCommand(args: string[]): OuroCliCommand {
@@ -1695,6 +1791,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "msg") return parseMessageCommand(args.slice(1))
   if (head === "poke") return parsePokeCommand(args.slice(1))
+  if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))

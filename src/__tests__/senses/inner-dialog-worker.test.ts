@@ -11,6 +11,8 @@ const {
   mockCreateHabitRunId,
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
+  mockApplyHabitRuntimeState,
+  mockReadHabitSessionSummary,
   mockReadFileSync,
   MockFileFriendStore,
 } = vi.hoisted(() => ({
@@ -24,6 +26,8 @@ const {
   mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
+  mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
+  mockReadHabitSessionSummary: vi.fn(() => null),
   mockReadFileSync: vi.fn(),
   MockFileFriendStore: class {
     get = vi.fn(async () => null)
@@ -61,7 +65,12 @@ vi.mock("../../mind/pending", () => ({
 }))
 
 vi.mock("../../heart/habits/habit-runtime-state", () => ({
+  applyHabitRuntimeState: (...args: any[]) => mockApplyHabitRuntimeState(...args),
   recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
+}))
+
+vi.mock("../../heart/habits/habit-session-summary", () => ({
+  readHabitSessionSummary: (...args: any[]) => mockReadHabitSessionSummary(...args),
 }))
 
 vi.mock("../../mind/friends/store-file", () => ({
@@ -90,6 +99,8 @@ describe("inner-dialog-worker", () => {
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
     mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
+    mockApplyHabitRuntimeState.mockReset().mockImplementation((_agentRoot: string, habit: any) => habit)
+    mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
     mockEmitNervesEvent.mockReset()
   })
 
@@ -172,6 +183,175 @@ describe("inner-dialog-worker", () => {
 
     await worker.handleMessage({ type: "habit", habitName: "daily-reflection" })
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "daily-reflection" }))
+  })
+
+  it("passes a single prepared parsed habit context into habit turns", async () => {
+    mockReadHabitSessionSummary.mockReturnValue({
+      summary: "Prior run asked Ari for deployment input.",
+      sources: {
+        receipt: "arc/flight-recorder/habit-receipts/run-1.json",
+        session: "state/habit-sessions/run-1/session.json",
+      },
+      warnings: ["session file missing"],
+    })
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/stateful.md")) {
+        return [
+          "---",
+          "title: Stateful Check",
+          "cadence: 1h",
+          "continuity:",
+          "  mode: stateful",
+          "tools: [send_message, session_summary]",
+          "---",
+          "",
+          "Keep durable context between fires.",
+        ].join("\n")
+      }
+      return ""
+    })
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
+
+    const habitReads = mockReadFileSync.mock.calls.filter(([filePath]) => String(filePath).includes("/habits/stateful.md"))
+    expect(habitReads).toHaveLength(1)
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "habit",
+      habitName: "stateful",
+      trigger: "poke",
+      preparedHabit: expect.objectContaining({
+        runId: "habit-run-id",
+        trigger: "poke",
+        operationId: "habit:stateful",
+        priorSessionSummary: {
+          mode: "stateful",
+          summary: "Prior run asked Ari for deployment input.",
+          sources: {
+            receipt: "arc/flight-recorder/habit-receipts/run-1.json",
+            session: "state/habit-sessions/run-1/session.json",
+          },
+          warnings: ["session file missing"],
+        },
+        habit: expect.objectContaining({
+          name: "stateful",
+          title: "Stateful Check",
+          continuity: { mode: "stateful" },
+          tools: ["send_message", "session_summary"],
+          body: "Keep durable context between fires.",
+        }),
+      }),
+    }))
+    expect(mockReadHabitSessionSummary).toHaveBeenCalledWith("/bundles/slugger.ouro", {
+      operationId: "habit:stateful",
+      which: "latest",
+    })
+  })
+
+  it("passes an empty prior stateful summary when no matching operation is found", async () => {
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/stateful.md")) {
+        return [
+          "---",
+          "title: Stateful Check",
+          "cadence: 1h",
+          "continuity:",
+          "  mode: stateful",
+          "---",
+          "",
+          "Keep durable context between fires.",
+        ].join("\n")
+      }
+      return ""
+    })
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
+
+    expect(mockReadHabitSessionSummary).toHaveBeenCalledWith("/bundles/slugger.ouro", {
+      operationId: "habit:stateful",
+      which: "latest",
+    })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      preparedHabit: expect.objectContaining({
+        operationId: "habit:stateful",
+        priorSessionSummary: {
+          mode: "stateful",
+          summary: null,
+          sources: {},
+          warnings: [],
+        },
+      }),
+    }))
+  })
+
+  it("degrades prior stateful summary read failures into warnings", async () => {
+    mockReadHabitSessionSummary.mockImplementation(() => {
+      throw new Error("summary index corrupt")
+    })
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/stateful.md")) {
+        return [
+          "---",
+          "title: Stateful Check",
+          "cadence: 1h",
+          "continuity:",
+          "  mode: stateful",
+          "---",
+          "",
+          "Keep durable context between fires.",
+        ].join("\n")
+      }
+      return ""
+    })
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
+
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      preparedHabit: expect.objectContaining({
+        operationId: "habit:stateful",
+        priorSessionSummary: {
+          mode: "stateful",
+          summary: null,
+          sources: {},
+          warnings: ["prior summary read failed: Error: summary index corrupt"],
+        },
+      }),
+    }))
+  })
+
+  it("applies runtime lastRun before passing prepared habit context", async () => {
+    mockReadFileSync.mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/heartbeat.md")) {
+        return "---\ntitle: Heartbeat\ncadence: 30m\ncreated: 2026-06-01T00:00:00.000Z\n---\n\nCheck in."
+      }
+      return ""
+    })
+    mockApplyHabitRuntimeState.mockImplementation((_agentRoot: string, habit: any) => ({
+      ...habit,
+      lastRun: "2026-06-08T11:30:00.000Z",
+    }))
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "heartbeat", trigger: "overdue" })
+
+    expect(mockApplyHabitRuntimeState).toHaveBeenCalledWith(
+      "/bundles/slugger.ouro",
+      expect.objectContaining({ name: "heartbeat", lastRun: null }),
+    )
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      preparedHabit: expect.objectContaining({
+        habit: expect.objectContaining({
+          name: "heartbeat",
+          lastRun: "2026-06-08T11:30:00.000Z",
+        }),
+      }),
+    }))
   })
 
   it("backward compat: heartbeat message maps to habit/heartbeat", async () => {
@@ -404,7 +584,12 @@ describe("inner-dialog-worker", () => {
         "/bundles/slugger.ouro",
         "heartbeat",
         expect.any(String),
-        { definitionPath: "/bundles/slugger.ouro/habits/heartbeat.md" },
+        {
+          definitionPath: "/bundles/slugger.ouro/habits/heartbeat.md",
+          activeOperationId: null,
+          latestRunId: "habit-run-id",
+          latestReceiptLocator: "arc/flight-recorder/habit-receipts/habit-run-id.json",
+        },
       )
 
       const lastRun = mockRecordHabitRun.mock.calls[0]?.[2] as string
@@ -440,6 +625,74 @@ describe("inner-dialog-worker", () => {
         producedRefs: [{ kind: "desk_record", locator: "desk/_record" }],
         surfaceAttempts: [],
         errors: [],
+      }))
+    })
+
+    it("derives the receipt summary snapshot from the latest assistant result", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [
+          { role: "assistant", content: "checkpoint: Asked Ari for the missing production URL." },
+        ],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "stateful-check",
+        summarySnapshot: {
+          summary: "Asked Ari for the missing production URL.",
+          decisions: [],
+          nextLikelyStep: null,
+        },
+      }))
+      expect(mockRecordHabitRun).toHaveBeenCalledTimes(1)
+    })
+
+    it("derives the receipt summary snapshot from multimodal assistant text parts", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "checkpoint: Confirmed the first run summary." },
+              { type: "text", text: "Next, compare the second run." },
+              { type: "image", image_url: "ignored" },
+            ],
+          },
+        ],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        summarySnapshot: {
+          summary: "Confirmed the first run summary.\nNext, compare the second run.",
+          decisions: [],
+          nextLikelyStep: null,
+        },
+      }))
+    })
+
+    it("ignores non-assistant result messages before using assistant checkpoint text", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [
+          { role: "assistant", content: "checkpoint:" },
+          { role: "user", content: "ignore me" },
+          null,
+        ],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        summarySnapshot: {
+          summary: "checkpoint:",
+          decisions: [],
+          nextLikelyStep: null,
+        },
       }))
     })
 
@@ -703,7 +956,7 @@ describe("inner-dialog-worker", () => {
         meta: expect.objectContaining({
           habitName: "heartbeat",
           runId: "habit-run-id",
-          error: "ENOENT: no such file or directory",
+          error: "Error: ENOENT: no such file or directory",
         }),
       }))
     })
@@ -724,7 +977,7 @@ describe("inner-dialog-worker", () => {
         meta: expect.objectContaining({
           habitName: "heartbeat",
           runId: "habit-run-id",
-          error: "disk full",
+          error: "Error: disk full",
         }),
       }))
     })

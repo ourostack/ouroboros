@@ -32,11 +32,11 @@ import type { FriendStore } from "../mind/friends/store"
 import { createBridgeManager } from "../heart/bridges/manager"
 import { listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
-import { buildHabitTurnMessage } from "./habit-turn-message"
+import { buildHabitTurnMessage, type PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import { buildAwaitTurnMessage } from "./await-turn-message"
 import { parseAwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
-import { parseHabitFile, type HabitOrigin, type HabitSurface } from "../heart/habits/habit-parser"
+import { parseHabitFile, type HabitFile, type HabitOrigin, type HabitSurface } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
@@ -72,6 +72,15 @@ export interface RunInnerDialogTurnOptions {
   now?: () => Date
   signal?: AbortSignal
   habitSession?: HabitSessionToolContext
+  preparedHabit?: PreparedHabitContext
+}
+
+export interface PreparedHabitContext {
+  runId: string
+  trigger: string
+  operationId: string | null
+  habit: HabitFile
+  priorSessionSummary?: PriorHabitSessionSummaryInfo
 }
 
 export interface InnerDialogTurnResult {
@@ -751,6 +760,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       const agentRoot = getAgentRoot()
       const habitName = options.habitName
       const habitFilePath = path.join(agentRoot, "habits", `${habitName}.md`)
+      const preparedHabit = options.preparedHabit?.habit.name === habitName ? options.preparedHabit.habit : null
 
       // Read and parse the habit file
       let habitBody: string | undefined
@@ -758,17 +768,26 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       let habitLastRun: string | null = null
       let habitOrigin: HabitOrigin | null = null
       let habitSurface: HabitSurface = { family: true, originator: true, extra: [] }
-      try {
-        const habitContent = fs.readFileSync(habitFilePath, "utf-8")
-        const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
-        habitBody = parsed.body || undefined
-        habitTitle = parsed.title || habitName
-        habitLastRun = parsed.lastRun
-        habitTools = parsed.tools
-        habitOrigin = parsed.origin
-        habitSurface = parsed.surface
-      } catch {
-        // Habit file missing or unreadable
+      if (preparedHabit) {
+        habitBody = preparedHabit.body || undefined
+        habitTitle = preparedHabit.title || habitName
+        habitLastRun = preparedHabit.lastRun
+        habitTools = preparedHabit.tools
+        habitOrigin = preparedHabit.origin
+        habitSurface = preparedHabit.surface
+      } else {
+        try {
+          const habitContent = fs.readFileSync(habitFilePath, "utf-8")
+          const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
+          habitBody = parsed.body || undefined
+          habitTitle = parsed.title || habitName
+          habitLastRun = parsed.lastRun
+          habitTools = parsed.tools
+          habitOrigin = parsed.origin
+          habitSurface = parsed.surface
+        } catch {
+          // Habit file missing or unreadable
+        }
       }
 
       // If the habit file couldn't be read at all (no body, no title parsed), error message
@@ -814,6 +833,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
           arcResume,
           deskOrientation,
           surfacePolicy,
+          priorSessionSummary: options.preparedHabit?.habit.name === habitName ? options.preparedHabit.priorSessionSummary : undefined,
           now,
         })
       }
@@ -941,7 +961,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     runAgent,
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
       const prepared = postTurnTrim(turnMessages, usage, hooks)
-      deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+      return deferPostTurnPersist(sessionPathArg, prepared, usage, state)
     },
     accumulateFriendTokens,
     signal: options?.signal,

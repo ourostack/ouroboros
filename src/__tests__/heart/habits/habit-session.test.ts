@@ -568,6 +568,11 @@ describe("habit-session helpers", () => {
       nextRunAt: "2026-06-11T17:31:00.000Z",
       permissionEnvelope: envelope,
       toolPolicy: policy,
+      summarySnapshot: {
+        summary: "Habit heartbeat surfaced via ari/cli.",
+        decisions: [],
+        nextLikelyStep: null,
+      },
     })
     expect(fs.existsSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", `${receipt.runId}.json`))).toBe(false)
   })
@@ -593,6 +598,11 @@ describe("habit-session helpers", () => {
       producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
       surfaceAttempts: [],
       errors: [],
+      summarySnapshot: {
+        summary: "Reviewed stale work and updated the desk task.",
+        decisions: ["Keep the check-in task open."],
+        nextLikelyStep: "Wait for the next cadence.",
+      },
     })
 
     expect(result).toMatchObject({
@@ -605,6 +615,11 @@ describe("habit-session helpers", () => {
       habitName: "heartbeat",
       outcome: "updated_desk",
       producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
+      summarySnapshot: {
+        summary: "Reviewed stale work and updated the desk task.",
+        decisions: ["Keep the check-in task open."],
+        nextLikelyStep: "Wait for the next cadence.",
+      },
     })
     expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "state", "habits", "heartbeat.json"), "utf-8"))).toMatchObject({
       schemaVersion: 1,
@@ -757,8 +772,186 @@ describe("habit-session helpers", () => {
         name: "heartbeat",
         lastRun: latest.endedAt,
         updatedAt: latest.endedAt,
+        activeOperationId: null,
+        latestRunId: null,
+        latestReceiptLocator: null,
       },
     })
+  })
+
+  it("normalizes runtime cursor snapshots and rejects malformed cursor fields", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+    const receipt = buildHabitRunReceipt({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat" }),
+      runId: "run-cursor",
+      trigger: "poke",
+      startedAt: "2026-06-11T13:00:00.000Z",
+      endedAt: "2026-06-11T13:01:00.000Z",
+      outcome: "no_change",
+      operationId: "op-cursor",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+    writeHabitRunReceipt(agentRoot, receipt)
+    const runtimeStatePath = path.join(agentRoot, "state", "habits", "heartbeat.json")
+    fs.mkdirSync(path.dirname(runtimeStatePath), { recursive: true })
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "heartbeat",
+      lastRun: receipt.endedAt,
+      updatedAt: receipt.endedAt,
+      activeOperationId: " op-cursor ",
+      latestRunId: ` ${receipt.runId} `,
+      latestReceiptLocator: ` ${receipt.receiptLocator} `,
+    }, null, 2), "utf-8")
+
+    expect(readLatestHabitSessionState(agentRoot)).toMatchObject({
+      runtimeState: {
+        activeOperationId: "op-cursor",
+        latestRunId: receipt.runId,
+        latestReceiptLocator: receipt.receiptLocator,
+      },
+    })
+
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "heartbeat",
+      lastRun: receipt.endedAt,
+      updatedAt: receipt.endedAt,
+      activeOperationId: 42,
+      latestRunId: receipt.runId,
+      latestReceiptLocator: receipt.receiptLocator,
+    }), "utf-8")
+
+    expect(readLatestHabitSessionState(agentRoot)).toMatchObject({
+      receipt: { runId: "run-cursor" },
+      runtimeState: null,
+    })
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.habit_runtime_state_malformed",
+    }))
+  })
+
+  it("keeps the receipt when runtime state recording fails after write", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+    const stateDir = path.join(agentRoot, "state", "habits")
+    fs.mkdirSync(path.dirname(stateDir), { recursive: true })
+    fs.writeFileSync(stateDir, "not a directory", "utf-8")
+
+    const result = completeHabitRun({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat", cadence: null }),
+      runId: "run-partial",
+      trigger: "poke",
+      startedAt: "2026-06-11T14:00:00.000Z",
+      endedAt: "2026-06-11T14:01:00.000Z",
+      operationId: "op-partial",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+
+    expect(result).toMatchObject({
+      outcome: "no_change",
+      receiptWritten: true,
+      runtimeStateRecorded: false,
+    })
+    expect(readHabitRunReceipt(agentRoot, "run-partial")).toMatchObject({
+      operationId: "op-partial",
+      receiptLocator: "arc/flight-recorder/habit-receipts/run-partial.json",
+    })
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.habit_runtime_state_record_error",
+    }))
+  })
+
+  it("does not advance runtime state when receipt writing fails", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+
+    const result = completeHabitRun({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat", cadence: null }),
+      runId: "../bad-run",
+      trigger: "poke",
+      startedAt: "2026-06-11T14:10:00.000Z",
+      endedAt: "2026-06-11T14:11:00.000Z",
+      operationId: "op-bad-run",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+
+    expect(result).toMatchObject({
+      outcome: "no_change",
+      receiptWritten: false,
+      runtimeStateRecorded: false,
+    })
+    expect(fs.existsSync(path.join(agentRoot, "state", "habits", "heartbeat.json"))).toBe(false)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.habit_receipt_write_error",
+    }))
+  })
+
+  it("classifies completion outcomes across refs, attempts, and errors", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+    const base = {
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat", cadence: null }),
+      trigger: "poke" as const,
+      startedAt: "2026-06-11T15:00:00.000Z",
+      endedAt: "2026-06-11T15:01:00.000Z",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    }
+
+    expect(completeHabitRun({ ...base, runId: "run-error", errors: ["boom"] }).outcome).toBe("error")
+    expect(completeHabitRun({
+      ...base,
+      runId: "run-surfaced-from-attempt",
+      surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "queued" }],
+    }).outcome).toBe("surfaced")
+    expect(readHabitRunReceipt(agentRoot, "run-surfaced-from-attempt")?.producedRefs)
+      .toEqual([{ kind: "surface", locator: "surface/ari/cli" }])
+    expect(completeHabitRun({ ...base, runId: "run-record", producedRefs: [{ kind: "desk_record", locator: "desk/record" }] }).outcome)
+      .toBe("wrote_record")
+    expect(completeHabitRun({ ...base, runId: "run-arc", producedRefs: [{ kind: "arc", locator: "arc/claim" }] }).outcome)
+      .toBe("wrote_arc")
+    expect(completeHabitRun({ ...base, runId: "run-claim", producedRefs: [{ kind: "claim", locator: "arc/claim-2" }] }).outcome)
+      .toBe("wrote_arc")
+    expect(completeHabitRun({
+      ...base,
+      runId: "run-blocked",
+      surfaceAttempts: [
+        { recipient: "ari", channel: "cli", reason: "blocked", result: "blocked" },
+        { recipient: "ari", channel: "cli", reason: "blocked", result: "failed" },
+        { recipient: "ari", channel: "cli", reason: "blocked", result: "unavailable" },
+      ],
+    }).outcome).toBe("blocked")
   })
 
   it("returns null for no receipts and skips malformed receipts when runtime state is missing", async () => {

@@ -151,7 +151,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     description: "Manage agent habits",
     usage: "ouro habit <subcommand> [--agent <name>]",
     example: "ouro habit list",
-    subcommands: ["list", "create", "poke"],
+    subcommands: ["list", "create", "runs", "inspect", "summary", "poke"],
   },
   desk: {
     category: "Tasks",
@@ -173,6 +173,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
     example: "ouro work sentinel --agent slugger --format json",
     subcommands: ["card", "gauntlet", "sentinel"],
+  },
+  "nerves-review": {
+    category: "Internal",
+    description: "Read-only review of recent nerves events from an agent log stream",
+    usage: "ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
+    example: "ouro nerves-review --agent slugger --component daemon --event habit --since 30m --json",
   },
   "work card": {
     category: "Tasks",
@@ -411,6 +417,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Idempotently prepare an agent's vault-backed work substrate account and private Mailroom mailbox",
     usage: "ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     example: "ouro account ensure --agent <agent> --owner-email you@example.com --source hey",
+  },
+  "habit summary": {
+    description: "Read a habit run summary from receipts and session artifacts without contacting the daemon",
+    usage: "ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
+    example: "ouro habit summary --agent slugger --operation-id habit:standup --which latest --json",
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",

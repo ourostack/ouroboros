@@ -8083,15 +8083,59 @@ describe("ouro habit CLI parsing", () => {
 describe("ouro habit CLI execution", () => {
   function makeHabitReceipt(overrides: Partial<HabitRunReceipt> = {}): HabitRunReceipt {
     const runId = overrides.runId ?? "run-base"
+    const habitName = overrides.habitName ?? "heartbeat"
+    const outcome = overrides.outcome ?? "surfaced"
+    const producedRefs = overrides.producedRefs ?? [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }] satisfies HabitRunReceipt["producedRefs"]
+    const surfaceAttempts = overrides.surfaceAttempts ?? [{
+      recipient: "ari",
+      channel: "cli",
+      reason: "status",
+      result: "delivered_now",
+      rawStatus: "delivered_now",
+      routeKind: "family",
+    }] satisfies HabitRunReceipt["surfaceAttempts"]
+    const errors = overrides.errors ?? []
+    const summarySnapshot = overrides.summarySnapshot ?? (() => {
+      if (errors.length > 0) {
+        return {
+          summary: `Habit ${habitName} finished with errors: ${errors.join("; ")}`,
+          decisions: [],
+          nextLikelyStep: null,
+        }
+      }
+      const surface = surfaceAttempts.find((attempt) =>
+        attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+      if (surface) {
+        return {
+          summary: `Habit ${habitName} surfaced via ${surface.recipient}/${surface.channel}.`,
+          decisions: [],
+          nextLikelyStep: null,
+        }
+      }
+      const produced = producedRefs.find((ref) => ref.kind !== "none")
+      if (produced) {
+        return {
+          summary: `Habit ${habitName} produced ${produced.kind}: ${produced.locator}.`,
+          decisions: [],
+          nextLikelyStep: null,
+        }
+      }
+      return {
+        summary: `Habit ${habitName} finished with ${outcome}.`,
+        decisions: [],
+        nextLikelyStep: null,
+      }
+    })()
     return {
       schemaVersion: 2,
       runId,
       sessionId: runId,
-      habitName: overrides.habitName ?? "heartbeat",
+      habitName,
+      operationId: overrides.operationId ?? null,
       trigger: overrides.trigger ?? "poke",
       startedAt: overrides.startedAt ?? "2026-06-11T10:00:00.000Z",
       endedAt: overrides.endedAt ?? "2026-06-11T10:01:00.000Z",
-      outcome: overrides.outcome ?? "surfaced",
+      outcome,
       definitionLocator: overrides.definitionLocator ?? "habits/heartbeat.md",
       sessionLocator: overrides.sessionLocator ?? `state/habit-sessions/${runId}/session.json`,
       pendingLocator: overrides.pendingLocator ?? `state/habit-sessions/${runId}/pending`,
@@ -8111,16 +8155,10 @@ describe("ouro habit CLI execution", () => {
         deniedTools: [],
         outwardMessagingAllowed: true,
       },
-      producedRefs: overrides.producedRefs ?? [{ kind: "arc", locator: "arc/flight-recorder/latest.json" }],
-      surfaceAttempts: overrides.surfaceAttempts ?? [{
-        recipient: "ari",
-        channel: "cli",
-        reason: "status",
-        result: "delivered_now",
-        rawStatus: "delivered_now",
-        routeKind: "family",
-      }],
-      errors: overrides.errors ?? [],
+      producedRefs,
+      surfaceAttempts,
+      errors,
+      summarySnapshot,
     }
   }
 

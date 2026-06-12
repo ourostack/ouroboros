@@ -283,9 +283,12 @@ describe("Arc flight recorder", () => {
   })
 
   it("falls back to a generic slug when creating habit run ids from punctuation", async () => {
-    const { createHabitRunId } = await import("../../arc/flight-recorder")
+    const { createHabitRunId, isHabitRunTrigger } = await import("../../arc/flight-recorder")
 
     expect(createHabitRunId("!!!", new Date("2026-06-08T12:00:00.000Z"))).toContain("-habit-")
+    expect(["cron", "launchd", "poke", "overdue", "manual"].map((trigger) => isHabitRunTrigger(trigger)))
+      .toEqual([true, true, true, true, true])
+    expect(isHabitRunTrigger("later")).toBe(false)
   })
 
   it("writes habit run receipts and records them in the event log", async () => {
@@ -357,6 +360,7 @@ describe("Arc flight recorder", () => {
       pendingLocator: "state/habit-sessions/2026-06-08T12-00-00-000Z-checkup-11111111/pending",
       runtimeStateLocator: "state/habits/checkup.json",
       receiptLocator: "arc/flight-recorder/habit-receipts/2026-06-08T12-00-00-000Z-checkup-11111111.json",
+      operationId: "op-checkup",
       nextRunAt: "2026-06-08T12:31:00.000Z",
       permissionEnvelope: {
         schemaVersion: 1,
@@ -388,6 +392,7 @@ describe("Arc flight recorder", () => {
       startedAt: "2026-06-08T12:05:00.000Z",
       endedAt: "2026-06-08T12:01:00.000Z",
       receiptLocator: "arc/flight-recorder/habit-receipts/2026-06-08T12-05-00-000Z-checkup-22222222.json",
+      operationId: null,
       surfaceAttempts: [{
         recipient: "ari",
         channel: "cli",
@@ -423,6 +428,8 @@ describe("Arc flight recorder", () => {
     }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-envelope.json"), JSON.stringify({ ...first, runId: "wrong-envelope", permissionEnvelope: [] }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-policy.json"), JSON.stringify({ ...first, runId: "wrong-policy", toolPolicy: [] }), "utf-8")
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-operation-id.json"), JSON.stringify({ ...first, runId: "wrong-operation-id", operationId: 42 }), "utf-8")
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "missing-operation-id.json"), JSON.stringify({ ...first, runId: "missing-operation-id", operationId: undefined }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-attempts.json"), JSON.stringify({ ...first, runId: "wrong-attempts", surfaceAttempts: {} }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-attempt-entry.json"), JSON.stringify({ ...first, runId: "wrong-attempt-entry", surfaceAttempts: [{}] }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-produced-entry.json"), JSON.stringify({ ...first, runId: "wrong-produced-entry", producedRefs: [{}] }), "utf-8")
@@ -430,6 +437,7 @@ describe("Arc flight recorder", () => {
     expect(recorder.readHabitRunReceipt(agentRoot, first.runId)).toMatchObject({
       runId: first.runId,
       schemaVersion: 2,
+      operationId: "op-checkup",
       sessionLocator: first.sessionLocator,
       surfaceAttempts: first.surfaceAttempts,
     })
@@ -443,6 +451,7 @@ describe("Arc flight recorder", () => {
       runId: "old-schema",
       sessionId: "old-schema",
       habitName: "legacy-checkup",
+      operationId: null,
       definitionLocator: "habits/legacy-checkup.md",
       receiptLocator: "arc/flight-recorder/habit-receipts/old-schema.json",
       permissionEnvelope: expect.objectContaining({
@@ -453,17 +462,75 @@ describe("Arc flight recorder", () => {
     })
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-envelope")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-policy")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "wrong-operation-id")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "missing-operation-id")).toMatchObject({
+      runId: "missing-operation-id",
+      operationId: null,
+    })
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-attempts")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-attempt-entry")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-produced-entry")).toBeNull()
 
     const listed = recorder.listHabitRunReceipts(agentRoot, { limit: 10 })
-    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
-    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
-    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
-    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      level: "warn",
-      event: "mind.flight_recorder_habit_receipt_malformed",
+    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual(["missing-operation-id", second.runId, first.runId, "old-schema"])
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "partial-snapshot.json"), JSON.stringify({
+      ...first,
+      runId: "partial-snapshot",
+      sessionId: "partial-snapshot",
+      receiptLocator: "arc/flight-recorder/habit-receipts/partial-snapshot.json",
+      summarySnapshot: {
+        summary: 7,
+        decisions: "bad",
+        nextLikelyStep: 42,
+      },
+    }), "utf-8")
+	    expect(recorder.readHabitRunReceipt(agentRoot, "partial-snapshot")).toMatchObject({
+	      runId: "partial-snapshot",
+	      summarySnapshot: {
+	        summary: "Habit checkup surfaced via ari/cli.",
+	        decisions: [],
+	        nextLikelyStep: null,
+	      },
+	    })
+	    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "error-snapshot.json"), JSON.stringify({
+	      ...first,
+	      runId: "error-snapshot",
+	      sessionId: "error-snapshot",
+	      receiptLocator: "arc/flight-recorder/habit-receipts/error-snapshot.json",
+	      producedRefs: [],
+	      surfaceAttempts: [],
+	      errors: ["boom"],
+	    }), "utf-8")
+	    expect(recorder.readHabitRunReceipt(agentRoot, "error-snapshot")).toMatchObject({
+	      runId: "error-snapshot",
+	      summarySnapshot: {
+	        summary: "Habit checkup finished with errors: boom",
+	        decisions: [],
+	        nextLikelyStep: null,
+	      },
+	    })
+	    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "produced-snapshot.json"), JSON.stringify({
+	      ...first,
+	      runId: "produced-snapshot",
+	      sessionId: "produced-snapshot",
+	      receiptLocator: "arc/flight-recorder/habit-receipts/produced-snapshot.json",
+	      producedRefs: [{ kind: "desk_task", locator: "desk/tasks/follow-up" }],
+	      surfaceAttempts: [],
+	      errors: [],
+	    }), "utf-8")
+	    expect(recorder.readHabitRunReceipt(agentRoot, "produced-snapshot")).toMatchObject({
+	      runId: "produced-snapshot",
+	      summarySnapshot: {
+	        summary: "Habit checkup produced desk_task: desk/tasks/follow-up.",
+	        decisions: [],
+	        nextLikelyStep: null,
+	      },
+	    })
+	    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+	      level: "warn",
+	      event: "mind.flight_recorder_habit_receipt_malformed",
     }))
   })
 

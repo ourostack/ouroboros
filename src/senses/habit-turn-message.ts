@@ -16,6 +16,13 @@ export interface DegradedComponentInfo {
   reason: string
 }
 
+export interface PriorHabitSessionSummaryInfo {
+  mode: "fresh" | "stateful"
+  summary: string | null
+  sources: Partial<Record<"receipt" | "session" | "pending" | "runtimeState", string>>
+  warnings: string[]
+}
+
 export interface HabitTurnMessageOptions {
   habitName: string
   habitTitle: string
@@ -29,8 +36,12 @@ export interface HabitTurnMessageOptions {
   arcResume?: string
   deskOrientation?: string
   surfacePolicy?: string
+  priorSessionSummary?: PriorHabitSessionSummaryInfo
   now: () => Date
 }
+
+const PRIOR_SESSION_SUMMARY_LIMIT = 1600
+const PRIOR_SESSION_TRUNCATION_SUFFIX = "\n[truncated]"
 
 function formatElapsed(ms: number): string {
   const minutes = Math.floor(ms / 60000)
@@ -55,11 +66,12 @@ export function buildHabitTurnMessage(options: HabitTurnMessageOptions): string 
     arcResume,
     deskOrientation,
     surfacePolicy,
+    priorSessionSummary,
     now,
   } = options
 
   const hasBody = habitBody !== undefined && habitBody !== ""
-  const leadingSections = buildLeadingSections(arcResume, deskOrientation, surfacePolicy)
+  const leadingSections = buildLeadingSections(arcResume, deskOrientation, surfacePolicy, priorSessionSummary)
 
   // First beat: lastRun is null
   if (lastRun === null) {
@@ -144,16 +156,56 @@ export function buildHabitTurnMessage(options: HabitTurnMessageOptions): string 
   return joinSections(leadingSections, sections)
 }
 
-function buildLeadingSections(arcResume?: string, deskOrientation?: string, surfacePolicy?: string): string[] {
+function buildLeadingSections(
+  arcResume?: string,
+  deskOrientation?: string,
+  surfacePolicy?: string,
+  priorSessionSummary?: PriorHabitSessionSummaryInfo,
+): string[] {
   const sections: string[] = []
   if (arcResume?.trim()) sections.push(arcResume.trim())
   if (deskOrientation?.trim()) sections.push(deskOrientation.trim())
   if (surfacePolicy?.trim()) sections.push(surfacePolicy.trim())
+  const priorSummary = buildPriorSessionSummarySection(priorSessionSummary)
+  if (priorSummary) sections.push(priorSummary)
   return sections
 }
 
 function joinSections(leadingSections: string[], sections: string[]): string {
   return [...leadingSections, ...sections].filter((section) => section.trim().length > 0).join("\n\n")
+}
+
+function truncatePriorSummary(summary: string): string {
+  if (summary.length <= PRIOR_SESSION_SUMMARY_LIMIT) return summary
+  return `${summary.slice(0, PRIOR_SESSION_SUMMARY_LIMIT - PRIOR_SESSION_TRUNCATION_SUFFIX.length)}${PRIOR_SESSION_TRUNCATION_SUFFIX}`
+}
+
+function buildPriorSessionSummarySection(priorSessionSummary: PriorHabitSessionSummaryInfo | undefined): string | null {
+  if (!priorSessionSummary || priorSessionSummary.mode !== "stateful") return null
+
+  const lines = ["## Prior habit session summary"]
+  const summary = priorSessionSummary.summary?.trim()
+  if (summary) {
+    lines.push(truncatePriorSummary(summary))
+  } else {
+    lines.push("No prior stateful habit summary found for this operation.")
+  }
+
+  const sourceLines = (["receipt", "session", "pending", "runtimeState"] as const)
+    .flatMap((key) => {
+      const value = cleanSourceLocator((priorSessionSummary.sources as Partial<Record<typeof key, unknown>>)[key])
+      return value ? [`${key}: ${value}`] : []
+    })
+  if (sourceLines.length > 0) lines.push(...sourceLines)
+  if (priorSessionSummary.warnings.length > 0) lines.push(`warnings: ${priorSessionSummary.warnings.join("; ")}`)
+
+  return lines.join("\n")
+}
+
+function cleanSourceLocator(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
 function appendTrailingExtras(

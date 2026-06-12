@@ -21,6 +21,7 @@ import type {
   HabitSurfaceAttempt,
   HabitToolPolicy,
 } from "../../arc/flight-recorder"
+import type { HabitSessionSummary, HabitSessionSummarySelector } from "../habits/habit-session-summary"
 
 // Re-export domain types through the observation layer
 export type { UsageData } from "../../nerves/observation"
@@ -832,6 +833,15 @@ export interface MailboxHabitRunView {
 
 export interface MailboxHabitRunDetailView {
   receipt: HabitRunReceipt
+}
+
+export type MailboxHabitSessionSummary = HabitSessionSummary
+export type MailboxHabitSessionSummarySelector = HabitSessionSummarySelector
+
+export interface MailboxHabitSessionSummaryView {
+  totalCount: number
+  limit: number
+  items: MailboxHabitSessionSummary[]
 }
 
 // ---------------------------------------------------------------------------

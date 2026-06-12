@@ -11,7 +11,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
+import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, getAgentDaemonLogsDir, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -79,6 +79,7 @@ import {
 import { discoverMailImportFilePath } from "../mail-import-discovery"
 import { listSessionActivity } from "../session-activity"
 import { listTargetSessionCandidates } from "../target-resolution"
+import type { HabitSessionSummary } from "../habits/habit-session-summary"
 
 import type {
   OuroCliCommand,
@@ -104,6 +105,7 @@ import type {
   WorkGauntletCliCommand,
   WorkSentinelCliCommand,
   InnerStatusCliCommand,
+  NervesReviewCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
   SetupCliCommand,
@@ -130,6 +132,7 @@ import {
 } from "./plugin-cli"
 import { executeDeskCommand } from "./cli-desk"
 import { runMigrateToDesk } from "./migrate-to-desk"
+import { formatNerveEntry, parseDuration, reviewNerveEvents } from "../../nerves/review/core"
 import {
   parseStatusPayload,
   formatDaemonStatusOutput,
@@ -227,6 +230,61 @@ function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string 
 function returnCliFailure(deps: Pick<OuroCliDeps, "setExitCode" | "writeStdout">, message: string, exitCode = 1): string {
   deps.setExitCode?.(exitCode)
   deps.writeStdout(message)
+  return message
+}
+
+function renderHabitSummaryCli(summary: HabitSessionSummary): string {
+  return [
+    `${summary.runId}  habit=${summary.habitName}  outcome=${summary.status}  completedAt=${summary.completedAt}`,
+    summary.operationId ? `operation=${summary.operationId}` : null,
+    `summary=${summary.summary}`,
+    summary.nextLikelyStep ? `next=${summary.nextLikelyStep}` : null,
+    summary.decisions.length > 0 ? `decisions=${summary.decisions.join("; ")}` : null,
+    `pending=${summary.pending.count}${summary.pending.files.length > 0 ? ` (${summary.pending.files.join(", ")})` : ""}`,
+    `messages=${summary.messagesSent.length}`,
+    `tools=${summary.toolsUsed.length > 0 ? summary.toolsUsed.join(",") : "none"}`,
+    summary.producedRefs.length > 0 ? `refs=${summary.producedRefs.map((ref) => `${ref.kind}:${ref.locator}`).join(",")}` : null,
+    summary.errors.length > 0 ? `errors=${summary.errors.join("; ")}` : null,
+    summary.warnings.length > 0 ? `warnings=${summary.warnings.join("; ")}` : null,
+    `receipt=${summary.sources.receipt}`,
+    `session=${summary.sources.session}`,
+    `runtime=${summary.sources.runtimeState}`,
+  ].filter((line): line is string => Boolean(line)).join("\n")
+}
+
+function executeNervesReviewCommand(command: NervesReviewCliCommand, deps: OuroCliDeps): string {
+  let sinceMs: number | undefined
+  if (command.since) {
+    const parsed = parseDuration(command.since)
+    if (parsed === null) {
+      const message = `nerves-review: --since '${command.since}' is not a valid duration (e.g. 5m, 2h, 1d)`
+      deps.setExitCode?.(2)
+      deps.writeStdout(message)
+      return message
+    }
+    sinceMs = parsed
+  }
+
+  const logsDir = getAgentDaemonLogsDir(command.agent)
+  const filePath = path.join(logsDir, `${command.process}.ndjson`)
+  const entries = reviewNerveEvents(filePath, {
+    componentSubstring: command.component,
+    eventSubstring: command.event,
+    level: command.level,
+    sinceMs,
+    limit: command.limit,
+    nowMs: Date.now(),
+  })
+  const message = entries.length === 0
+    ? `(no matching nerves events in ${filePath})`
+    : entries.map((entry) => command.json ? entry.raw : formatNerveEntry(entry)).join("\n")
+  deps.writeStdout(message)
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.nerves_review_cli_read",
+    message: "nerves review CLI read local log events",
+    meta: { agent: command.agent, process: command.process, count: entries.length, json: command.json },
+  })
   return message
 }
 
@@ -533,6 +591,8 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "habit.create":
     case "habit.runs":
     case "habit.inspect":
+    case "habit.summary":
+    case "nerves-review":
     case "thoughts":
     case "attention.list":
     case "attention.show":
@@ -1586,7 +1646,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -6673,6 +6733,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     await refreshHookSentinel(command, deps)
   }
 
+  if (command.kind === "nerves-review") {
+    return executeNervesReviewCommand(command, deps)
+  }
+
   if (args.length === 0) {
     const discovered = await Promise.resolve(
       deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
@@ -7862,10 +7926,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── habit subcommands (local, no daemon socket needed) ──
-  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect") {
+  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
+    const { readHabitSessionSummary } = await import("../habits/habit-session-summary")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
     const bundleRoot = deps.agentBundleRoot ?? path.join(
       deps.bundlesRoot ?? getAgentBundlesRoot(),
@@ -7944,6 +8009,37 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         event: "daemon.habit_run_cli_read",
         message: "habit run receipt read from CLI",
         meta: { agent: command.agent, runId: command.runId },
+      })
+      return message
+    }
+
+    if (command.kind === "habit.summary") {
+      const summary = readHabitSessionSummary(bundleRoot, {
+        ...(command.runId ? { runId: command.runId } : {}),
+        ...(command.habitName ? { habitName: command.habitName } : {}),
+        ...(command.operationId ? { operationId: command.operationId } : {}),
+        ...(command.which ? { which: command.which } : {}),
+      })
+      if (!summary) {
+        const message = "error: habit summary not found"
+        deps.writeStdout(message)
+        deps.setExitCode?.(1)
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.habit_summary_cli_read_missing",
+          message: "habit run summary not found from CLI",
+          meta: { agent: command.agent, runId: command.runId, habitName: command.habitName, operationId: command.operationId, which: command.which },
+        })
+        return message
+      }
+      const message = command.json ? `${JSON.stringify(summary, null, 2)}\n` : renderHabitSummaryCli(summary)
+      deps.writeStdout(message)
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.habit_summary_cli_read",
+        message: "habit run summary read from CLI",
+        meta: { agent: command.agent, runId: summary.runId, habitName: summary.habitName, json: command.json },
       })
       return message
     }

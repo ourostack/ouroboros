@@ -9,6 +9,8 @@ import {
   readDeskPrefs,
   readFriendView,
   readHabitRunReceiptView,
+  readHabitSessionSummaryListView,
+  readHabitSessionSummaryView,
   readHabitRunView,
   readHabitView,
   readLogView,
@@ -36,6 +38,9 @@ import type {
   MailboxDeskPrefs,
   MailboxFriendView,
   MailboxHabitRunDetailView,
+  MailboxHabitSessionSummarySelector,
+  MailboxHabitSessionSummary,
+  MailboxHabitSessionSummaryView,
   MailboxHabitRunView,
   MailboxHabitView,
   MailboxLogView,
@@ -74,6 +79,8 @@ export interface MailboxHttpReadHookOptions {
   readAgentHabits?: (agentName: string) => MailboxHabitView
   readAgentHabitRuns?: (agentName: string, options?: { limit?: number }) => MailboxHabitRunView
   readAgentHabitRun?: (agentName: string, runId: string) => MailboxHabitRunDetailView | null
+  readAgentHabitRunSummaries?: (agentName: string, options?: { limit?: number }) => MailboxHabitSessionSummaryView
+  readAgentHabitRunSummary?: (agentName: string, selector: MailboxHabitSessionSummarySelector) => MailboxHabitSessionSummary | null
   readAgentMail?: (agentName: string) => Promise<MailboxMailView> | MailboxMailView
   readAgentMailMessage?: (agentName: string, messageId: string) => Promise<MailboxMailMessageView> | MailboxMailMessageView
   readDaemonHealth?: () => MailboxDaemonHealthDeep | null
@@ -100,6 +107,8 @@ export interface MailboxHttpReadHooks {
   readAgentHabits(agentName: string): MailboxHabitView
   readAgentHabitRuns(agentName: string, options?: { limit?: number }): MailboxHabitRunView
   readAgentHabitRun(agentName: string, runId: string): MailboxHabitRunDetailView | null
+  readAgentHabitRunSummaries(agentName: string, options?: { limit?: number }): MailboxHabitSessionSummaryView
+  readAgentHabitRunSummary(agentName: string, selector: MailboxHabitSessionSummarySelector): MailboxHabitSessionSummary | null
   readAgentMail(agentName: string): Promise<MailboxMailView> | MailboxMailView
   readAgentMailMessage(agentName: string, messageId: string): Promise<MailboxMailMessageView> | MailboxMailMessageView
   readDaemonHealth(): MailboxDaemonHealthDeep | null
@@ -108,10 +117,34 @@ export interface MailboxHttpReadHooks {
   readNeedsMe(agentName: string): MailboxNeedsMeView
 }
 
+export function isSafeMailboxAgentName(agentName: string): boolean {
+  const trimmed = agentName.trim()
+  return trimmed === agentName
+    && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agentName)
+    && agentName !== "."
+    && agentName !== ".."
+    && !agentName.includes("/")
+    && !agentName.includes("\\")
+}
+
+function resolveAgentRoot(bundlesRoot: string | undefined, agentName: string): string {
+  if (!isSafeMailboxAgentName(agentName)) {
+    throw new Error("mailbox API requires a safe agent name")
+  }
+  if (!bundlesRoot) return path.join(`${agentName}.ouro`)
+  const root = path.resolve(bundlesRoot)
+  const agentRoot = path.resolve(root, `${agentName}.ouro`)
+  /* v8 ignore next -- defensive containment guard after strict safe bundle-name validation @preserve */
+  if (agentRoot !== root && !agentRoot.startsWith(`${root}${path.sep}`)) {
+    throw new Error("mailbox API agent root escaped bundles root")
+  }
+  return agentRoot
+}
+
 export function createMailboxHttpReadHooks(options: MailboxHttpReadHookOptions): MailboxHttpReadHooks {
   const bundlesRoot = options.bundlesRoot
   const readOptions = bundlesRoot ? { bundlesRoot } : undefined
-  const agentRoot = (agentName: string) => path.join(bundlesRoot ?? "", `${agentName}.ouro`)
+  const agentRoot = (agentName: string) => resolveAgentRoot(bundlesRoot, agentName)
 
   return {
     agentRoot,
@@ -133,6 +166,8 @@ export function createMailboxHttpReadHooks(options: MailboxHttpReadHookOptions):
     readAgentHabits: options.readAgentHabits ?? ((agentName: string) => readHabitView(agentRoot(agentName))),
     readAgentHabitRuns: options.readAgentHabitRuns ?? ((agentName: string, habitOptions?: { limit?: number }) => readHabitRunView(agentRoot(agentName), habitOptions)),
     readAgentHabitRun: options.readAgentHabitRun ?? ((agentName: string, runId: string) => readHabitRunReceiptView(agentRoot(agentName), runId)),
+    readAgentHabitRunSummaries: options.readAgentHabitRunSummaries ?? ((agentName: string, habitOptions?: { limit?: number }) => readHabitSessionSummaryListView(agentRoot(agentName), habitOptions)),
+    readAgentHabitRunSummary: options.readAgentHabitRunSummary ?? ((agentName: string, selector: MailboxHabitSessionSummarySelector) => readHabitSessionSummaryView(agentRoot(agentName), selector)),
     readAgentMail: options.readAgentMail ?? ((agentName: string) => readMailView(agentName)),
     readAgentMailMessage: options.readAgentMailMessage ?? ((agentName: string, messageId: string) => readMailMessageView(agentName, messageId)),
     readDaemonHealth: options.readDaemonHealth ?? (() => readDaemonHealthDeep(options.healthPath)),

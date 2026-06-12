@@ -1,10 +1,12 @@
 import * as fs from "fs"
 import * as path from "path"
-import { runInnerDialogTurn } from "./inner-dialog"
+import { runInnerDialogTurn, type PreparedHabitContext } from "./inner-dialog"
+import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
 import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
+import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import {
   completeHabitRun,
   createHabitSessionPaths,
@@ -14,7 +16,9 @@ import {
 import {
   createHabitRunId,
   type HabitRunReceipt,
+  type HabitRunSummarySnapshot,
 } from "../arc/flight-recorder"
+import { readHabitSessionSummary } from "../heart/habits/habit-session-summary"
 import { FileFriendStore } from "../mind/friends/store-file"
 import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition, type ToolRiskProfile } from "../repertoire/tools-base"
 import { surfaceToolDefinition } from "../repertoire/tools-surface"
@@ -37,6 +41,7 @@ export interface InnerDialogWorkerRunOptions {
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
   habitSession?: HabitSessionToolContext
+  preparedHabit?: PreparedHabitContext
 }
 
 export interface InnerDialogWorkerController {
@@ -56,8 +61,10 @@ interface PreparedHabitRun {
   agentRoot: string
   habit: HabitFile
   runId: string
+  operationId: string | null
   trigger: HabitRunReceipt["trigger"]
   startedAt: string
+  priorSessionSummary?: PriorHabitSessionSummaryInfo
   paths: ReturnType<typeof createHabitSessionPaths>
   permissionEnvelope: HabitRunReceipt["permissionEnvelope"]
   toolPolicy: HabitRunReceipt["toolPolicy"]
@@ -110,6 +117,79 @@ function isHeartbeatOkRestResult(result: unknown): boolean {
   return maybeResult.turnOutcome === "rested" && maybeResult.restStatus === "HEARTBEAT_OK"
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content.trim()
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => isRecord(part) && typeof part.text === "string" ? part.text : "")
+    .filter((text) => text.trim().length > 0)
+    .join("\n")
+    .trim()
+}
+
+function resultMessages(result: unknown): unknown[] {
+  if (Array.isArray(result)) return result.flatMap((entry) => resultMessages(entry))
+  return isRecord(result) && Array.isArray(result.messages) ? result.messages : []
+}
+
+function latestAssistantText(results: unknown[]): string | null {
+  for (let resultIndex = results.length - 1; resultIndex >= 0; resultIndex--) {
+    const messages = resultMessages(results[resultIndex])
+    for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
+      const message = messages[messageIndex]
+      if (!isRecord(message) || message.role !== "assistant") continue
+      const text = contentToText(message.content)
+      if (text.length > 0) return text.replace(/^checkpoint\s*:\s*/i, "").trim() || text
+    }
+  }
+  return null
+}
+
+function deriveHabitSummarySnapshot(habitRun: PreparedHabitRun): HabitRunSummarySnapshot {
+  const assistant = latestAssistantText(habitRun.results)
+  if (assistant) return { summary: assistant, decisions: [], nextLikelyStep: null }
+  if (habitRun.errors.length > 0) {
+    return {
+      summary: `Habit ${habitRun.habit.name} finished with errors: ${habitRun.errors.join("; ")}`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const surfaced = habitRun.surfaceAttempts.find((attempt) =>
+    attempt.result !== "blocked" && attempt.result !== "failed" && attempt.result !== "unavailable")
+  if (surfaced) {
+    return {
+      summary: `Habit ${habitRun.habit.name} surfaced via ${surfaced.recipient}/${surfaced.channel}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  const produced = habitRun.producedRefs.find((ref) => ref.kind !== "none")
+  if (produced) {
+    return {
+      summary: `Habit ${habitRun.habit.name} produced ${produced.kind}: ${produced.locator}.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  if (habitRun.results.some(isHeartbeatOkRestResult)) {
+    return {
+      summary: `Habit ${habitRun.habit.name} rested with HEARTBEAT_OK.`,
+      decisions: [],
+      nextLikelyStep: null,
+    }
+  }
+  return {
+    summary: `Habit ${habitRun.habit.name} completed without additional surfaced output.`,
+    decisions: [],
+    nextLikelyStep: null,
+  }
+}
+
 function fallbackHabitFile(habitName: string): HabitFile {
   return {
     name: habitName,
@@ -121,6 +201,7 @@ function fallbackHabitFile(habitName: string): HabitFile {
     tools: [],
     origin: null,
     surface: { family: false, originator: false, extra: [] },
+    continuity: { mode: "fresh" },
     body: "",
   }
 }
@@ -146,8 +227,10 @@ function readHabitForRun(agentRoot: string, habitName: string, errors: string[])
 async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trigger"], startedAt: string): Promise<PreparedHabitRun> {
   const agentRoot = getAgentRoot()
   const errors: string[] = []
-  const habit = readHabitForRun(agentRoot, habitName, errors)
+  const habit = applyHabitRuntimeState(agentRoot, readHabitForRun(agentRoot, habitName, errors))
   const runId = createHabitRunId(habitName, new Date(startedAt))
+  const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
+  const priorSessionSummary = readPriorSessionSummary(agentRoot, operationId)
   const paths = createHabitSessionPaths(agentRoot, runId, habit.name)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
@@ -161,8 +244,10 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     agentRoot,
     habit,
     runId,
+    operationId,
     trigger,
     startedAt,
+    priorSessionSummary,
     paths,
     permissionEnvelope,
     toolPolicy,
@@ -177,6 +262,27 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
 function riskProfileForHabitPolicy(definition: ToolDefinition, name: string): ToolRiskProfile {
   const probeArgs: Record<string, string> = name === "shell" ? { command: "touch /tmp/habit-policy-probe" } : {}
   return riskProfileForTool(definition, name, probeArgs)
+}
+
+function readPriorSessionSummary(agentRoot: string, operationId: string | null): PriorHabitSessionSummaryInfo | undefined {
+  if (operationId === null) return undefined
+  try {
+    const summary = readHabitSessionSummary(agentRoot, { operationId, which: "latest" })
+    if (!summary) return { mode: "stateful", summary: null, sources: {}, warnings: [] }
+    return {
+      mode: "stateful",
+      summary: summary.summary,
+      sources: summary.sources,
+      warnings: summary.warnings,
+    }
+  } catch (error) {
+    return {
+      mode: "stateful",
+      summary: null,
+      sources: {},
+      warnings: [`prior summary read failed: ${String(error)}`],
+    }
+  }
 }
 
 export function createInnerDialogWorker(
@@ -201,11 +307,13 @@ export function createInnerDialogWorker(
       trigger: habitRun.trigger,
       startedAt: habitRun.startedAt,
       endedAt,
+      operationId: habitRun.operationId,
       permissionEnvelope: habitRun.permissionEnvelope,
       toolPolicy: habitRun.toolPolicy,
       producedRefs: habitRun.producedRefs,
       surfaceAttempts: habitRun.surfaceAttempts,
       errors: habitRun.errors,
+      summarySnapshot: deriveHabitSummarySnapshot(habitRun),
     })
   }
 
@@ -327,6 +435,13 @@ export function createInnerDialogWorker(
             ...(currentHabitRun
               ? {
                 trigger: currentHabitRun.trigger,
+                preparedHabit: {
+                  runId: currentHabitRun.runId,
+                  trigger: currentHabitRun.trigger,
+                  operationId: currentHabitRun.operationId,
+                  habit: currentHabitRun.habit,
+                  priorSessionSummary: currentHabitRun.priorSessionSummary,
+                },
                 habitSession: {
                   runId: currentHabitRun.runId,
                   sessionPath: currentHabitRun.paths.sessionPath,

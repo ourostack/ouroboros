@@ -59,6 +59,8 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
     readAgentHabitRuns: vi.fn(() => ({ totalCount: 0, limit: 20, items: [] })),
     readAgentHabitRun: vi.fn(() => null),
+    readAgentHabitRunSummaries: vi.fn(() => ({ totalCount: 0, limit: 20, items: [] })),
+    readAgentHabitRunSummary: vi.fn(() => null),
     readAgentMail: vi.fn(() => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [], messages: [], accessLog: [], error: null })),
     readAgentMailMessage: vi.fn(() => ({ status: "not-found", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", message: null, accessLog: [], error: "missing" })),
     readDaemonHealth: vi.fn(() => null),
@@ -79,6 +81,65 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
 }
 
 describe("mailbox http", () => {
+	  it("rejects unsafe encoded agent names before habit summary readers run", async () => {
+	    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+	    const options = createRouteOptions()
+	    const handler = createMailboxHttpRequestHandler(options)
+
+    for (const url of [
+      "/api/agents/..%2Foutside/habit-run-summaries?limit=5",
+      "/api/agents/..%5Coutside/habit-run-summary?habit=heartbeat",
+      "/api/agents/%2E/habit-run-summary?habit=heartbeat",
+      "/api/agents/%2E%2E/habit-run-summary?habit=heartbeat",
+    ]) {
+      const response = createMockResponse()
+      handler(createMockRequest(url), response)
+      expect(response.statusCode).toBe(400)
+      expect(JSON.parse(response.body.toString("utf-8"))).toEqual(expect.objectContaining({
+        ok: false,
+        error: expect.stringContaining("safe bundle name"),
+      }))
+    }
+
+	    expect(options.hooks.readAgentHabitRunSummaries).not.toHaveBeenCalled()
+	    expect(options.hooks.readAgentHabitRunSummary).not.toHaveBeenCalled()
+	  })
+
+	  it("handles an empty raw request URL through the normal 404 path", async () => {
+	    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+	    const handler = createMailboxHttpRequestHandler(createRouteOptions({
+	      staticFiles: {
+	        resolveSpaDistDir: () => null,
+	        serveStaticFile: () => false,
+	      },
+	    }))
+	    const response = createMockResponse()
+
+	    handler(createMockRequest(""), response)
+
+	    expect(response.statusCode).toBe(404)
+	    expect(JSON.parse(response.body.toString("utf-8"))).toEqual({
+	      ok: false,
+	      error: "not found: /",
+	    })
+	  })
+
+	  it("default mailbox hooks reject unsafe agent roots before path construction", async () => {
+    const { createMailboxHttpReadHooks } = await import("../../../heart/mailbox/mailbox-http-hooks")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mailbox-bundles-"))
+    const hooks = createMailboxHttpReadHooks({ bundlesRoot })
+
+    try {
+      expect(hooks.agentRoot("slugger")).toBe(path.join(bundlesRoot, "slugger.ouro"))
+      expect(() => hooks.agentRoot("../outside")).toThrow(/safe agent name/)
+      expect(() => hooks.agentRoot("..")).toThrow(/safe agent name/)
+      expect(() => hooks.agentRoot("slugger/other")).toThrow(/safe agent name/)
+      expect(() => hooks.agentRoot("slugger\\other")).toThrow(/safe agent name/)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
   it("keeps path normalization and static serving in explicit helper seams", async () => {
     const {
       normalizeMailboxRequestPath,
@@ -233,6 +294,7 @@ describe("mailbox http", () => {
       runId: "run-default-hook",
       sessionId: "run-default-hook",
       habitName: "heartbeat",
+      operationId: null,
       trigger: "poke",
       startedAt: "2026-06-11T10:00:00.000Z",
       endedAt: "2026-06-11T10:01:00.000Z",
@@ -264,7 +326,25 @@ describe("mailbox http", () => {
       limit: 1,
       items: [expect.objectContaining({ runId: "run-default-hook" })],
     })
-    expect(defaultHooks.readAgentHabitRun("nobody", "run-default-hook")).toEqual({ receipt })
+    expect(defaultHooks.readAgentHabitRun("nobody", "run-default-hook")).toEqual({
+      receipt: {
+        ...receipt,
+        summarySnapshot: {
+          summary: "Habit heartbeat finished with surfaced.",
+          decisions: [],
+          nextLikelyStep: null,
+        },
+      },
+    })
+    expect(defaultHooks.readAgentHabitRunSummaries("nobody", { limit: 1 })).toEqual({
+      totalCount: 1,
+      limit: 1,
+      items: [expect.objectContaining({ runId: "run-default-hook", summary: "Habit heartbeat finished with surfaced." })],
+    })
+    expect(defaultHooks.readAgentHabitRunSummary("nobody", { runId: "run-default-hook" })).toEqual(expect.objectContaining({
+      runId: "run-default-hook",
+      sources: expect.objectContaining({ receipt: "arc/flight-recorder/habit-receipts/run-default-hook.json" }),
+    }))
     await expect(defaultHooks.readAgentMail("mailless-default-hooks")).resolves.toEqual(expect.objectContaining({
       status: "auth-required",
     }))
@@ -1307,6 +1387,148 @@ describe("mailbox http", () => {
     expect(detailResponse.statusCode).toBe(200)
     expect(JSON.parse(detailResponse.body.toString("utf8"))).toEqual({ receipt })
     expect(hooks.readAgentHabitRun).toHaveBeenCalledWith("slugger", "run-http")
+  })
+
+  it("serves habit run summary list and selector detail endpoints without shadowing run detail routes", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const summary = {
+      runId: "run-http-summary",
+      habitName: "heartbeat",
+      operationId: "habit:heartbeat",
+      status: "surfaced",
+      startedAt: "2026-06-11T10:00:00.000Z",
+      completedAt: "2026-06-11T10:01:00.000Z",
+      summary: "Queued an iMessage and recorded the route.",
+      decisions: ["keep the route"],
+      pending: { count: 0, files: [] },
+      messagesSent: [{ recipient: "ari", channel: "bluebubbles", result: "queued" }],
+      toolsUsed: ["send_message"],
+      producedRefs: [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
+      errors: [],
+      warnings: [],
+      nextLikelyStep: "inspect iMessage delivery",
+      sources: {
+        receipt: "arc/flight-recorder/habit-receipts/run-http-summary.json",
+        session: "state/habit-sessions/run-http-summary/session.json",
+        pending: "state/habit-sessions/run-http-summary/pending",
+        runtimeState: "state/habits/heartbeat.json",
+      },
+    }
+    const summaries = { totalCount: 1, limit: 5, items: [summary] }
+    const receipt = {
+      schemaVersion: 2,
+      runId: "summary",
+      sessionId: "summary",
+      habitName: "heartbeat",
+      trigger: "poke",
+      startedAt: "2026-06-11T10:00:00.000Z",
+      endedAt: "2026-06-11T10:01:00.000Z",
+      outcome: "surfaced",
+      definitionLocator: "habits/heartbeat.md",
+      sessionLocator: "state/habit-sessions/summary/session.json",
+      pendingLocator: "state/habit-sessions/summary/pending",
+      runtimeStateLocator: "state/habits/heartbeat.json",
+      receiptLocator: "arc/flight-recorder/habit-receipts/summary.json",
+      nextRunAt: null,
+      permissionEnvelope: { schemaVersion: 1, canMessageOutward: false, returnRoutes: [], deniedTools: [], warnings: [] },
+      toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: false },
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: [],
+    }
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentHabitRunSummaries = vi.fn(() => summaries)
+    hooks.readAgentHabitRunSummary = vi.fn((_agent: string, selector: Record<string, string>) => (
+      selector.runId === "run-http-summary" || selector.operationId === "habit:heartbeat" ? summary : null
+    ))
+    hooks.readAgentHabitRun = vi.fn((_agent: string, runId: string) => (
+      runId === "summary" ? { receipt } : null
+    ))
+    const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const defaultListResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summaries"), defaultListResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(defaultListResponse.statusCode).toBe(200)
+    expect(JSON.parse(defaultListResponse.body.toString("utf8"))).toEqual(summaries)
+    expect(hooks.readAgentHabitRunSummaries).toHaveBeenCalledWith("slugger")
+
+    const listResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summaries?limit=5"), listResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(listResponse.statusCode).toBe(200)
+    expect(JSON.parse(listResponse.body.toString("utf8"))).toEqual(summaries)
+    expect(hooks.readAgentHabitRunSummaries).toHaveBeenCalledWith("slugger", { limit: 5 })
+
+    const invalidLimitResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summaries?limit=0"), invalidLimitResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(invalidLimitResponse.statusCode).toBe(400)
+    expect(JSON.parse(invalidLimitResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "limit must be an integer between 1 and 100",
+    })
+
+    const detailResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary?runId=run-http-summary"), detailResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(detailResponse.statusCode).toBe(200)
+    expect(JSON.parse(detailResponse.body.toString("utf8"))).toEqual(summary)
+    expect(hooks.readAgentHabitRunSummary).toHaveBeenCalledWith("slugger", { runId: "run-http-summary" })
+
+    const aliasDetailResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary?habit=heartbeat&operation-id=habit%3Aheartbeat&which=latest-success"), aliasDetailResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(aliasDetailResponse.statusCode).toBe(200)
+    expect(JSON.parse(aliasDetailResponse.body.toString("utf8"))).toEqual(summary)
+    expect(hooks.readAgentHabitRunSummary).toHaveBeenCalledWith("slugger", {
+      habitName: "heartbeat",
+      operationId: "habit:heartbeat",
+      which: "latest-success",
+    })
+
+    const missingResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary?operationId=habit%3Amissing"), missingResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(missingResponse.statusCode).toBe(404)
+    expect(JSON.parse(missingResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "habit summary not found",
+    })
+
+    const missingSelectorResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary"), missingSelectorResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(missingSelectorResponse.statusCode).toBe(400)
+    expect(JSON.parse(missingSelectorResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "provide runId, habitName, or operationId",
+    })
+
+    const invalidWhichResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary?operationId=habit%3Aheartbeat&which=oldest"), invalidWhichResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(invalidWhichResponse.statusCode).toBe(400)
+    expect(JSON.parse(invalidWhichResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "which must be latest, previous, latest-success, or latest-failure",
+    })
+
+    const invalidSelectorResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-run-summary?runId=run-http-summary&which=latest"), invalidSelectorResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(invalidSelectorResponse.statusCode).toBe(400)
+    expect(JSON.parse(invalidSelectorResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "--run-id cannot be combined with --habit, --operation-id, or --which",
+    })
+
+    const runDetailResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs/summary"), runDetailResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(runDetailResponse.statusCode).toBe(200)
+    expect(JSON.parse(runDetailResponse.body.toString("utf8"))).toEqual({ receipt })
+    expect(hooks.readAgentHabitRun).toHaveBeenCalledWith("slugger", "summary")
   })
 
   it("returns 404 for missing unsafe or malformed habit run detail receipts", async () => {
