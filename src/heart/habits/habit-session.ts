@@ -666,7 +666,7 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       meta: {
         habitName: input.habit.name,
         runId: input.runId,
-        error: error instanceof Error ? error.message : String(error),
+        error: String(error),
       },
     })
     return { outcome, producedRefs, receiptWritten: false, runtimeStateRecorded: false }
@@ -688,7 +688,7 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       meta: {
         habitName: input.habit.name,
         runId: input.runId,
-        error: error instanceof Error ? error.message : String(error),
+        error: String(error),
       },
     })
     return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: false }

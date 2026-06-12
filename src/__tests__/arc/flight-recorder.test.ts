@@ -283,9 +283,12 @@ describe("Arc flight recorder", () => {
   })
 
   it("falls back to a generic slug when creating habit run ids from punctuation", async () => {
-    const { createHabitRunId } = await import("../../arc/flight-recorder")
+    const { createHabitRunId, isHabitRunTrigger } = await import("../../arc/flight-recorder")
 
     expect(createHabitRunId("!!!", new Date("2026-06-08T12:00:00.000Z"))).toContain("-habit-")
+    expect(["cron", "launchd", "poke", "overdue", "manual"].map((trigger) => isHabitRunTrigger(trigger)))
+      .toEqual([true, true, true, true, true])
+    expect(isHabitRunTrigger("later")).toBe(false)
   })
 
   it("writes habit run receipts and records them in the event log", async () => {

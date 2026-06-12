@@ -147,6 +147,23 @@ describe("habit-session-summary selector", () => {
     })
   })
 
+  it("breaks duplicate operation ties by endedAt and runId", () => {
+    const receipts = [
+      makeReceipt("run-a", { habitName: "journal", operationId: "op-tied", endedAt: "2026-06-11T12:00:00.000Z" }),
+      makeReceipt("run-c", { habitName: "journal", operationId: "op-tied", endedAt: "2026-06-11T12:00:00.000Z" }),
+      makeReceipt("run-b", { habitName: "journal", operationId: "op-tied", endedAt: "2026-06-11T11:59:00.000Z" }),
+    ]
+
+    expect(selectHabitRunReceipt(receipts, { operationId: "op-tied" })).toMatchObject({
+      ok: true,
+      receipt: { runId: "run-c" },
+    })
+    expect(selectHabitRunReceipt(receipts, { operationId: "op-tied", which: "previous" })).toMatchObject({
+      ok: true,
+      receipt: { runId: "run-a" },
+    })
+  })
+
   it("maps latest-success and latest-failure to explicit outcome sets", () => {
     const successOutcomes: HabitRunOutcome[] = ["no_change", "wrote_arc", "updated_desk", "wrote_record", "surfaced"]
     const failureOutcomes: HabitRunOutcome[] = ["blocked", "error"]
