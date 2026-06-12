@@ -20,6 +20,7 @@ import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import type { AgentReadinessIssue } from "./readiness-repair"
 import type { VaultItemCompatibilityAlias, VaultItemTemplate } from "./vault-items"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
+import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
@@ -99,6 +100,7 @@ export type OuroCliCommand =
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
   | { kind: "habit.runs"; agent?: string; limit: number }
   | { kind: "habit.inspect"; agent?: string; runId: string }
+  | { kind: "habit.summary"; agent?: string; runId?: string; habitName?: string; operationId?: string; which?: HabitSummaryWhich; json: boolean }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
@@ -252,7 +254,7 @@ export type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.statu
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
-export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" } | { kind: "habit.runs" } | { kind: "habit.inspect" }>
+export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" } | { kind: "habit.runs" } | { kind: "habit.inspect" } | { kind: "habit.summary" }>
 export type DeskCliCommand = Extract<OuroCliCommand, { kind: "desk" }>
 export type MigrateToDeskCliCommand = Extract<OuroCliCommand, { kind: "migrate-to-desk" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>

@@ -18,6 +18,7 @@ import { suggestCommand } from "./cli-help"
 import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
 import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
+import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -122,6 +123,7 @@ export function usage(): string {
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro habit runs [--agent <name>] [--limit <n>]",
     "  ouro habit inspect [--agent <name>] <runId>",
+    "  ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro friend list [--agent <name>]",
@@ -272,6 +274,50 @@ function parseHabitCommand(args: string[]): OuroCliCommand {
     const positional = rest.slice(1)
     if (positional.length !== 1 || !positional[0]) throw new Error(`Usage\n${usage()}`)
     return { kind: "habit.inspect", ...(agent ? { agent } : {}), runId: positional[0] }
+  }
+  if (sub === "summary") {
+    let runId: string | undefined
+    let habitName: string | undefined
+    let operationId: string | undefined
+    let which: HabitSummaryWhich | undefined
+    let json = false
+    const options = rest.slice(1)
+    for (let i = 0; i < options.length; i += 1) {
+      const option = options[i]
+      if (option === "--json") {
+        json = true
+        continue
+      }
+      if ((option === "--run-id" || option === "--habit" || option === "--operation-id" || option === "--which") && options[i + 1]) {
+        const value = options[++i]!
+        if (option === "--run-id") runId = value
+        if (option === "--habit") habitName = value
+        if (option === "--operation-id") operationId = value
+        if (option === "--which") {
+          if (!["latest", "previous", "latest-success", "latest-failure"].includes(value)) {
+            throw new Error("--which must be latest, previous, latest-success, or latest-failure")
+          }
+          which = value as HabitSummaryWhich
+        }
+        continue
+      }
+      throw new Error(`Usage\n${usage()}`)
+    }
+    if (runId !== undefined && (habitName !== undefined || operationId !== undefined || which !== undefined)) {
+      throw new Error("--run-id cannot be combined with --habit, --operation-id, or --which")
+    }
+    if (runId === undefined && habitName === undefined && operationId === undefined) {
+      throw new Error("provide --run-id, --habit, or --operation-id")
+    }
+    return {
+      kind: "habit.summary",
+      ...(agent ? { agent } : {}),
+      ...(runId ? { runId } : {}),
+      ...(habitName ? { habitName } : {}),
+      ...(operationId ? { operationId } : {}),
+      ...(which ? { which } : {}),
+      json,
+    }
   }
 
   throw new Error(`Usage\n${usage()}`)

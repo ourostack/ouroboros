@@ -151,7 +151,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     description: "Manage agent habits",
     usage: "ouro habit <subcommand> [--agent <name>]",
     example: "ouro habit list",
-    subcommands: ["list", "create", "poke"],
+    subcommands: ["list", "create", "runs", "inspect", "summary", "poke"],
   },
   desk: {
     category: "Tasks",

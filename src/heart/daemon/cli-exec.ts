@@ -79,6 +79,7 @@ import {
 import { discoverMailImportFilePath } from "../mail-import-discovery"
 import { listSessionActivity } from "../session-activity"
 import { listTargetSessionCandidates } from "../target-resolution"
+import type { HabitSessionSummary } from "../habits/habit-session-summary"
 
 import type {
   OuroCliCommand,
@@ -228,6 +229,25 @@ function returnCliFailure(deps: Pick<OuroCliDeps, "setExitCode" | "writeStdout">
   deps.setExitCode?.(exitCode)
   deps.writeStdout(message)
   return message
+}
+
+function renderHabitSummaryCli(summary: HabitSessionSummary): string {
+  return [
+    `${summary.runId}  habit=${summary.habitName}  outcome=${summary.status}  completedAt=${summary.completedAt}`,
+    summary.operationId ? `operation=${summary.operationId}` : null,
+    `summary=${summary.summary}`,
+    summary.nextLikelyStep ? `next=${summary.nextLikelyStep}` : null,
+    summary.decisions.length > 0 ? `decisions=${summary.decisions.join("; ")}` : null,
+    `pending=${summary.pending.count}${summary.pending.files.length > 0 ? ` (${summary.pending.files.join(", ")})` : ""}`,
+    `messages=${summary.messagesSent.length}`,
+    `tools=${summary.toolsUsed.length > 0 ? summary.toolsUsed.join(",") : "none"}`,
+    summary.producedRefs.length > 0 ? `refs=${summary.producedRefs.map((ref) => `${ref.kind}:${ref.locator}`).join(",")}` : null,
+    summary.errors.length > 0 ? `errors=${summary.errors.join("; ")}` : null,
+    summary.warnings.length > 0 ? `warnings=${summary.warnings.join("; ")}` : null,
+    `receipt=${summary.sources.receipt}`,
+    `session=${summary.sources.session}`,
+    `runtime=${summary.sources.runtimeState}`,
+  ].filter((line): line is string => Boolean(line)).join("\n")
 }
 
 export function summarizeDaemonStartupFailure(result: EnsureDaemonResult): string {
@@ -7862,10 +7882,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── habit subcommands (local, no daemon socket needed) ──
-  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect") {
+  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
+    const { readHabitSessionSummary } = await import("../habits/habit-session-summary")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
     const bundleRoot = deps.agentBundleRoot ?? path.join(
       deps.bundlesRoot ?? getAgentBundlesRoot(),
@@ -7944,6 +7965,37 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         event: "daemon.habit_run_cli_read",
         message: "habit run receipt read from CLI",
         meta: { agent: command.agent, runId: command.runId },
+      })
+      return message
+    }
+
+    if (command.kind === "habit.summary") {
+      const summary = readHabitSessionSummary(bundleRoot, {
+        ...(command.runId ? { runId: command.runId } : {}),
+        ...(command.habitName ? { habitName: command.habitName } : {}),
+        ...(command.operationId ? { operationId: command.operationId } : {}),
+        ...(command.which ? { which: command.which } : {}),
+      })
+      if (!summary) {
+        const message = "error: habit summary not found"
+        deps.writeStdout(message)
+        deps.setExitCode?.(1)
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.habit_summary_cli_read_missing",
+          message: "habit run summary not found from CLI",
+          meta: { agent: command.agent, runId: command.runId, habitName: command.habitName, operationId: command.operationId, which: command.which },
+        })
+        return message
+      }
+      const message = command.json ? `${JSON.stringify(summary, null, 2)}\n` : renderHabitSummaryCli(summary)
+      deps.writeStdout(message)
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.habit_summary_cli_read",
+        message: "habit run summary read from CLI",
+        meta: { agent: command.agent, runId: summary.runId, habitName: summary.habitName, json: command.json },
       })
       return message
     }
