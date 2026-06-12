@@ -294,4 +294,26 @@ describe("diary_write tool handler", () => {
       locator: path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl").split(path.sep).join("/"),
     })
   })
+
+  it("does not record a habit produced ref when diary_write adds no new fact", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-produced-ref-skip-"))
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const diaryWrite = baseToolDefinitions.find((d) => d.tool.function.name === "diary_write")
+    await diaryWrite!.handler({ entry: "duplicate habit receipt fact" }, {
+      signin: async () => undefined,
+      context: { channel: { channel: "inner" } },
+    } as never)
+
+    const recordProducedRef = vi.fn()
+    const result = await diaryWrite!.handler({ entry: "duplicate habit receipt fact" }, {
+      signin: async () => undefined,
+      context: { channel: { channel: "inner" } },
+      habitSession: { recordProducedRef } as never,
+    } as never)
+
+    expect(result).toContain("added=0")
+    expect(recordProducedRef).not.toHaveBeenCalled()
+  })
 })
