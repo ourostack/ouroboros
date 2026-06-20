@@ -87,6 +87,7 @@ export default defineConfig({
         "src/heart/daemon/cli-types.ts",
         "src/heart/daemon/doctor-types.ts",
         "src/heart/daemon/daemon-cli.ts",
+        "src/heart/attachments/sources/adapter.ts",
         // W6 Unit 7: synchronous prompt-assembly module with defensive fallback
         // catches that fire only on transient FS errors. v8 ignore directives
         // didn't stick reliably in this file across local + CI; followup PR can

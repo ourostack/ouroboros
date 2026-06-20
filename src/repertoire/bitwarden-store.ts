@@ -304,7 +304,8 @@ async function acquireFileLock(lockPath: string): Promise<BwLockControl> {
           reapStaleBwLock(lockPath, staleLock)
           continue
         }
-      } catch { /* v8 ignore next -- race: lock file disappeared between openSync and readFileSync @preserve */
+      } catch {
+        /* v8 ignore next -- race: lock file disappeared between openSync and readFileSync @preserve */
         continue
       }
 

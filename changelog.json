@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.669",
+      "changes": [
+        "Clarify agent-specific branch/worktree ownership instructions and update coverage metadata so the full Vitest coverage gate remains green with the refreshed audit lockfile."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.668",
       "changes": [
         "Harden flight-recorder reconciliation so terminal fulfilled-only repairs are not continuable work, unverifiable active obligation ids are preserved and degraded, parseable-invalid obligation records are excluded from verified recovery state, synthesized recovery actions get fresh provenance, reads remain side-effect-free, and legacy obligation records stay visible in Mailbox, Workbench, and Work Card summaries."

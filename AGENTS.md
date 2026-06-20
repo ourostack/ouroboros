@@ -90,14 +90,15 @@ Task docs go in `~/AgentBundles/<agent>.ouro/tasks/one-shots/` with naming schem
 Artifacts for a doing doc live adjacent to that doing doc in the same `one-shots/` directory.
 Task directories belong in the agent bundle, not in this repo.
 
-- Use a dedicated git worktree per active agent task so multiple agents can work in parallel without sharing one checkout.
-- Unless the human explicitly asks to control branch naming or worktree layout, the agent may create its own agent-specific branch/worktree as long as the branch follows `<agent>/<slug>`.
+- Agents own branch/worktree setup. Do not ask the human to switch branches for you.
+- Use a dedicated git worktree per active agent task so multiple agents can work in parallel without sharing one checkout. Clean up the task worktree when the task is done.
+- Unless the human explicitly gives a branch/worktree name, the agent creates its own agent-specific branch/worktree as long as the branch follows `<agent>/<slug>`.
 - Default `<agent>` from the current git branch using this shape: `<agent>[/<slug>]`.
   - The first path segment is always the agent name (e.g., `<agent-a>`, `<agent-b>`).
   - If the branch has no `/`, the entire branch name is the agent.
   - Any segments after the first `/` are the feature slug and are not part of `<agent>`.
   - The old `codex/<agent>` prefix convention is deprecated. All agents use `<agent>/<slug>` directly.
-- Branches must be agent-specific. If the current branch does not clearly encode a single agent and the human has not explicitly asked to control branch/worktree naming, create or switch to an agent-specific branch/worktree yourself before continuing. Only stop and ask when the human wants to control the naming/layout or automatic creation fails.
+- Branches must be agent-specific. If the current branch does not clearly encode a single agent, create or switch to an agent-specific branch/worktree yourself before continuing. If automatic branch/worktree setup fails, report the blocker and the exact command/output; do not ask the human to switch branches for you.
 - Keep instructions agent-agnostic so this workflow supports arbitrary agents.
 
 ### MCP Workflow And Dev Tool Integration
