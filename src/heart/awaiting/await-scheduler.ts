@@ -271,10 +271,11 @@ export class AwaitScheduler {
       // job.taskId is already namespaced as "await.<name>". The bare name is
       // what we pass to `--await` and what shows up in the crontab regex
       // capture, so we strip the prefix for linux verification.
+      /* v8 ignore start -- defensive: buildJobs always namespaces taskId @preserve */
       const bareName = job.taskId.startsWith(`${AWAIT_CRON_LABEL_PREFIX_MARKER}.`)
         ? job.taskId.slice(AWAIT_CRON_LABEL_PREFIX_MARKER.length + 1)
-        : /* v8 ignore next -- defensive: buildJobs always namespaces taskId @preserve */
-          job.taskId
+        : job.taskId
+      /* v8 ignore stop */
       const label = `bot.ouro.${job.agent}.${job.taskId}`
       const isVerified = this.platform === "darwin"
         ? verifiedLabels.has(label)

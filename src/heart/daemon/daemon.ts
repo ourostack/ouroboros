@@ -843,10 +843,12 @@ export class OuroDaemon {
         currentVersion,
         deps: {
           distTag: CLI_UPDATE_DIST_TAG,
-          fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
+          /* v8 ignore start -- integration: real HTTP fetch @preserve */
+          fetchRegistryJson: async () => {
             const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
             return res.json()
           },
+          /* v8 ignore stop */
         },
       })
     }
