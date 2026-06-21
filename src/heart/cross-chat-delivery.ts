@@ -1,5 +1,5 @@
 import type { PendingMessage } from "../mind/pending"
-import { isTrustedLevel, type Channel, type TrustLevel } from "../mind/friends/types"
+import { isTrustedLevel, type Channel, type TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export type CrossChatDeliveryIntent = "generic_outreach" | "explicit_cross_chat"

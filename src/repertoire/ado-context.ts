@@ -3,7 +3,7 @@
 // Re-discovery on 403 naturally handled: scope discovery APIs reflect current access.
 
 import { discoverOrganizations, discoverProjects } from "./ado-client"
-import type { ResolvedContext } from "../mind/friends/types"
+import type { ResolvedContext } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface AdoContextOk {

@@ -16,8 +16,7 @@ import {
   type HabitSurfaceAttempt,
   type HabitToolPolicy,
 } from "../../arc/flight-recorder"
-import type { FriendStore } from "../../mind/friends/store"
-import type { FriendRecord } from "../../mind/friends/types"
+import type { FriendStore, FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ToolDefinition, ToolRiskProfile } from "../../repertoire/tools-base"
 import { parseCadenceToMs } from "../daemon/cadence"

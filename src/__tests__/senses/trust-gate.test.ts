@@ -3,7 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { enforceTrustGate, STRANGER_AUTO_REPLY } from "../../senses/trust-gate"
-import type { FriendRecord, SenseType } from "../../mind/friends/types"
+import type { FriendRecord, SenseType } from "@ouro.bot/friends"
 import type { TrustGateInput, TrustGateResult } from "../../senses/trust-gate"
 
 function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {

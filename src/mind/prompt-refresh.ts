@@ -1,7 +1,7 @@
 import type OpenAI from "openai"
 import { buildSystem, flattenSystemPrompt } from "./prompt"
 import type { BuildSystemOptions, Channel } from "./prompt"
-import type { ResolvedContext } from "./friends/types"
+import type { ResolvedContext } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export async function refreshSystemPrompt(

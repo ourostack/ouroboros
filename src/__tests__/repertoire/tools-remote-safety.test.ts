@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execTool, getToolsForChannel } from "../../repertoire/tools"
 import type { ToolContext } from "../../repertoire/tools"
-import { getChannelCapabilities } from "../../mind/friends/channel"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 
 describe("remote channel tool safety — post-guardrail model", () => {
   it("REMOTE_BLOCKED_LOCAL_TOOLS export no longer exists", async () => {

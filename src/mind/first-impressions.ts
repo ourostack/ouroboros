@@ -3,7 +3,7 @@
 // These drop from the system prompt once cumulative token usage exceeds the threshold.
 
 import { emitNervesEvent } from "../nerves/runtime"
-import type { FriendRecord } from "./friends/types"
+import type { FriendRecord } from "@ouro.bot/friends"
 
 export const ONBOARDING_TOKEN_THRESHOLD = 100_000
 

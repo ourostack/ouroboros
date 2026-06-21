@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
-import { FileFriendStore } from "../../mind/friends/store-file"
-import type { FriendRecord } from "../../mind/friends/types"
+import { FileFriendStore } from "@ouro.bot/friends"
+import type { FriendRecord } from "@ouro.bot/friends"
 import type { ToolContext } from "../../repertoire/tools-base"
 
 let tmp: TmpBundleHandle | null = null
