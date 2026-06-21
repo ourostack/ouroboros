@@ -1,7 +1,7 @@
 import * as crypto from "node:crypto"
 import { simpleParser } from "mailparser"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { TrustLevel } from "../mind/friends/types"
+import type { TrustLevel } from "@ouro.bot/friends"
 
 export type MailPlacement = "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
 export type MailCompartmentKind = "native" | "delegated"

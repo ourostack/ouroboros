@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { getChannelCapabilities } from "../../mind/friends/channel"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 import { execTool, getToolsForChannel } from "../../repertoire/tools"
 
 describe("voice lifecycle tools", () => {

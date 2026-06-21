@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
 import type { ToolDefinition } from "./tools-base"
-import { isTrustedLevel } from "../mind/friends/types"
+import { isTrustedLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   ensureAgentTripLedger,

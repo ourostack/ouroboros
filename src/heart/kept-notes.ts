@@ -1,7 +1,7 @@
 import type OpenAI from "openai"
 
 import { readDiaryEntries, resolveDiaryRoot, type DiaryEntry } from "../mind/diary"
-import type { FriendRecord } from "../mind/friends/types"
+import type { FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface KeptNoteSource {

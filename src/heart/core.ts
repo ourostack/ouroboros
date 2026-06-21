@@ -5,7 +5,7 @@ import {
 import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
-import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
+import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";

@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import { createHash } from "node:crypto"
 import type { ToolDefinition } from "./tools-base"
-import { isTrustedLevel } from "../mind/friends/types"
+import { isTrustedLevel } from "@ouro.bot/friends"
 import { decryptMessages, type MailAccessLogEntry, type MailAccessLogListing, type MailListFilters, type MailMessageIndexRecord, type MailroomStore } from "../mailroom/file-store"
 import { resolveMailroomReaderWithRefresh, readMailroomRegistry, writeMailroomRegistry, type MailroomRuntimeConfig } from "../mailroom/reader"
 import { confirmMailDraftSend, createMailDraft, resolveOutboundProviderClient, resolveOutboundTransport, type MailOutboundTransport } from "../mailroom/outbound"

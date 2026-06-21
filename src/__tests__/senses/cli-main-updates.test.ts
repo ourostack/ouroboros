@@ -108,26 +108,29 @@ vi.mock("../../heart/identity", () => ({
     },
   })),
 }))
-vi.mock("../../mind/friends/store-file", () => {
+// Friends now lives in the @ouro.bot/friends package (a single barrel module).
+// The previously separate store-file/resolver/tokens mocks merge into one package
+// mock that spreads the real barrel and overrides the three used symbols.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
   const MockFileFriendStore = vi.fn(function (this: any) {
     this.get = vi.fn()
     this.put = vi.fn()
     this.delete = vi.fn()
     this.findByExternalId = vi.fn()
   })
-  return { FileFriendStore: MockFileFriendStore }
-})
-vi.mock("../../mind/friends/resolver", () => {
   const MockFriendResolver = vi.fn(function (this: any) {
     this.resolve = (...a: any[]) => mocks.resolveContext(...a)
   })
-  return { FriendResolver: MockFriendResolver }
+  return {
+    ...actual,
+    FileFriendStore: MockFileFriendStore,
+    FriendResolver: MockFriendResolver,
+    accumulateFriendTokens: vi.fn(),
+  }
 })
 vi.mock("../../senses/trust-gate", () => ({
   enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
-}))
-vi.mock("../../mind/friends/tokens", () => ({
-  accumulateFriendTokens: vi.fn(),
 }))
 vi.mock("os", async () => {
   const actual = await vi.importActual<typeof import("os")>("os")

@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
-import { isTrustedLevel, type Channel, type FriendRecord, type IdentityProvider, type SenseType } from "../mind/friends/types"
+import { isTrustedLevel, type Channel, type FriendRecord, type IdentityProvider, type SenseType } from "@ouro.bot/friends"
 import { INNER_DIALOG_PENDING } from "../mind/pending"
 
 // Canned reply; eventually agents should compose their own first-contact message

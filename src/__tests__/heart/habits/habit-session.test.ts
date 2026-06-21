@@ -3,8 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import type { HabitFile } from "../../../heart/habits/habit-parser"
-import type { FriendRecord, TrustLevel } from "../../../mind/friends/types"
-import type { FriendStore } from "../../../mind/friends/store"
+import type { FriendRecord, TrustLevel, FriendStore } from "@ouro.bot/friends"
 import type { ToolDefinition, ToolRiskProfile } from "../../../repertoire/tools-base"
 import {
   buildHabitRunReceipt,
