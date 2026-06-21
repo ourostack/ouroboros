@@ -1,8 +1,7 @@
-import { randomUUID } from "node:crypto"
 import * as path from "node:path"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
-import { FileFriendStore } from "@ouro.bot/friends"
+import { FileFriendStore, upsertAgentPeer } from "@ouro.bot/friends"
 import type { FriendStore, FriendRecord, TrustLevel } from "@ouro.bot/friends"
 import { endpointForCard, fetchA2AAgentCard } from "./client"
 import type { A2AAgentCard } from "./types"
@@ -30,60 +29,35 @@ function agentIdFor(_card: A2AAgentCard, cardUrl: string): string {
 }
 
 export async function onboardA2APeer(options: OnboardA2APeerOptions): Promise<FriendRecord> {
+  // HTTP/URL glue stays harness-side: fetch the agent card, resolve its JSON-RPC
+  // endpoint, and derive the stable agentId. The record-shaping (mint/update the
+  // agent-peer friend) is delegated to @ouro.bot/friends' upsertAgentPeer.
   const card = await fetchA2AAgentCard(options.cardUrl, options.fetchImpl)
   const store = storeFor(options)
-  const now = new Date().toISOString()
   const externalId = agentIdFor(card, options.cardUrl)
   /* v8 ignore next -- fetchA2AAgentCard validates a usable endpoint or legacy url before returning a card @preserve */
   const endpointUrl = endpointForCard(card) ?? options.cardUrl
   const protocolVersion = card.supportedInterfaces?.find((entry) => entry.url === endpointUrl)?.protocolVersion
     ?? card.protocolVersion
-  const existing = await store.findByExternalId("a2a-agent", externalId)
   const name = options.name ?? card.name
-  const trustLevel = options.trustLevel ?? existing?.trustLevel ?? "acquaintance"
-  const baseMeta = existing?.agentMeta ?? {
-    bundleName: name,
-    familiarity: 0,
-    sharedMissions: [],
-    outcomes: [],
-  }
-  const record: FriendRecord = {
-    ...(existing ?? {
-      id: randomUUID(),
-      createdAt: now,
-      externalIds: [],
-      tenantMemberships: [],
-      toolPreferences: {},
-      notes: {},
-      totalTokens: 0,
-      schemaVersion: 1,
-    }),
+
+  const record = await upsertAgentPeer(store, {
     name,
-    role: "agent-peer",
-    trustLevel,
-    kind: "agent",
-    agentMeta: {
-      ...baseMeta,
-      bundleName: baseMeta.bundleName || name,
-      a2a: {
-        cardUrl: options.cardUrl,
-        endpointUrl,
-        agentId: externalId,
-        protocolVersion,
-      },
+    agentId: externalId,
+    ...(options.trustLevel ? { trustLevel: options.trustLevel } : {}),
+    a2a: {
+      cardUrl: options.cardUrl,
+      endpointUrl,
+      agentId: externalId,
+      protocolVersion,
     },
-    externalIds: [
-      ...(existing?.externalIds.filter((id) => !(id.provider === "a2a-agent" && id.externalId === externalId)) ?? []),
-      { provider: "a2a-agent", externalId, linkedAt: now },
-    ],
-    updatedAt: now,
-  }
-  await store.put(record.id, record)
+  })
+
   emitNervesEvent({
     component: "friends",
     event: "friends.a2a_peer_onboarded",
     message: "onboarded A2A peer into friend model",
-    meta: { agentName: options.agentName, friendId: record.id, peerName: record.name, trustLevel },
+    meta: { agentName: options.agentName, friendId: record.id, peerName: record.name, trustLevel: record.trustLevel },
   })
   return record
 }

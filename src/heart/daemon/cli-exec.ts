@@ -13,7 +13,7 @@ import * as path from "path"
 import * as semver from "semver"
 import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, getAgentDaemonLogsDir, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { FileFriendStore } from "@ouro.bot/friends"
+import { FileFriendStore, setFriendTrust, linkExternalId, unlinkExternalId } from "@ouro.bot/friends"
 import type { FriendStore, TrustLevel } from "@ouro.bot/friends"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { getRuntimeMetadata } from "./runtime-metadata"
@@ -6377,16 +6377,6 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
 
 // ── Friend command execution ──
 
-const TRUST_RANK: Record<string, number> = { family: 4, friend: 3, acquaintance: 2, stranger: 1 }
-
-/* v8 ignore start -- defensive: ?? fallbacks are unreachable when inputs are valid TrustLevel values @preserve */
-function higherTrust(a?: TrustLevel, b?: TrustLevel): TrustLevel {
-  const rankA = TRUST_RANK[a ?? "stranger"] ?? 1
-  const rankB = TRUST_RANK[b ?? "stranger"] ?? 1
-  return rankA >= rankB ? (a ?? "stranger") : (b ?? "stranger")
-}
-/* v8 ignore stop */
-
 async function executeFriendCommand(command: FriendCliCommand, store: FriendStore): Promise<string> {
   if (command.kind === "friend.list") {
     const listAll = store.listAll
@@ -6428,76 +6418,29 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
   }
 
   if (command.kind === "friend.update") {
-    const current = await store.get(command.friendId)
-    if (!current) return `friend not found: ${command.friendId}`
-    const now = new Date().toISOString()
-    await store.put(command.friendId, {
-      ...current,
-      trustLevel: command.trustLevel,
-      role: command.trustLevel,
-      updatedAt: now,
-    })
+    const result = await setFriendTrust(store, command.friendId, command.trustLevel)
+    if (result.status === "not_found") return `friend not found: ${command.friendId}`
     return `updated: ${command.friendId} → trust=${command.trustLevel}`
   }
 
   if (command.kind === "friend.link") {
-    const current = await store.get(command.friendId)
-    if (!current) return `friend not found: ${command.friendId}`
-
-    const alreadyLinked = current.externalIds.some(
-      (ext) => ext.provider === command.provider && ext.externalId === command.externalId,
-    )
-    if (alreadyLinked) return `identity already linked: ${command.provider}:${command.externalId}`
-
-    const now = new Date().toISOString()
-    const newExternalIds = [
-      ...current.externalIds,
-      { provider: command.provider, externalId: command.externalId, linkedAt: now },
-    ]
-
-    // Orphan cleanup: check if another friend has this externalId
-    const orphan = await store.findByExternalId(command.provider, command.externalId)
-    let mergeMessage = ""
-    let mergedNotes = { ...current.notes }
-    let mergedTrust = current.trustLevel
-    let orphanExternalIds: typeof current.externalIds = []
-
-    if (orphan && orphan.id !== command.friendId) {
-      // Merge orphan's notes (target's notes take priority)
-      mergedNotes = { ...orphan.notes, ...current.notes }
-      // Keep higher trust level
-      mergedTrust = higherTrust(current.trustLevel, orphan.trustLevel)
-      // Collect orphan's other externalIds (excluding the one being linked)
-      orphanExternalIds = orphan.externalIds.filter(
-        (ext) => !(ext.provider === command.provider && ext.externalId === command.externalId),
-      )
-      await store.delete(orphan.id)
-      mergeMessage = ` (merged orphan ${orphan.id})`
-    }
-
-    await store.put(command.friendId, {
-      ...current,
-      externalIds: [...newExternalIds, ...orphanExternalIds],
-      notes: mergedNotes,
-      trustLevel: mergedTrust,
-      updatedAt: now,
+    const result = await linkExternalId(store, command.friendId, {
+      provider: command.provider,
+      externalId: command.externalId,
     })
-
+    if (result.status === "not_found") return `friend not found: ${command.friendId}`
+    if (result.status === "noop") return `identity already linked: ${command.provider}:${command.externalId}`
+    const mergeMessage = result.status === "merged" ? " (merged orphan)" : ""
     return `linked ${command.provider}:${command.externalId} to ${command.friendId}${mergeMessage}`
   }
 
   // command.kind === "friend.unlink"
-  const current = await store.get(command.friendId)
-  if (!current) return `friend not found: ${command.friendId}`
-
-  const idx = current.externalIds.findIndex(
-    (ext) => ext.provider === command.provider && ext.externalId === command.externalId,
-  )
-  if (idx === -1) return `identity not linked: ${command.provider}:${command.externalId}`
-
-  const now = new Date().toISOString()
-  const filtered = current.externalIds.filter((_, i) => i !== idx)
-  await store.put(command.friendId, { ...current, externalIds: filtered, updatedAt: now })
+  const result = await unlinkExternalId(store, command.friendId, {
+    provider: command.provider,
+    externalId: command.externalId,
+  })
+  if (result.status === "not_found") return `friend not found: ${command.friendId}`
+  if (result.status === "noop") return `identity not linked: ${command.provider}:${command.externalId}`
   return `unlinked ${command.provider}:${command.externalId} from ${command.friendId}`
 }
 
