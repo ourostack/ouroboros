@@ -46,6 +46,31 @@ describe("A2ATransport (direct rung)", () => {
       .rejects.toThrow(/not wired.*friends-relay/i)
   })
 
+  it("retries with SendMessage when the server replies method-not-found to message/send", async () => {
+    const methods: string[] = []
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string }
+      methods.push(body.method)
+      if (body.method === "message/send") {
+        // First attempt: the server doesn't speak message/send → -32601.
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32601, message: "method not found" } }), { status: 200, headers: { "content-type": "application/json" } })
+      }
+      // Fallback SendMessage succeeds.
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { id: "t", contextId: "c", status: { state: "completed", timestamp: "" }, history: [] } }), { status: 200, headers: { "content-type": "application/json" } })
+    }) as unknown as typeof fetch
+
+    const transport = makeA2ATransport({ fetchImpl })
+    await transport.send({ rung: "direct", address: "https://peer.example/a2a" }, dataPartMessage())
+    expect(methods).toEqual(["message/send", "SendMessage"])
+  })
+
+  it("throws when the server returns a JSON-RPC error (not method-not-found)", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32000, message: "boom" } }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch
+    const transport = makeA2ATransport({ fetchImpl })
+    await expect(transport.send({ rung: "direct", address: "https://peer.example/a2a" }, dataPartMessage()))
+      .rejects.toThrow(/boom|-32000/i)
+  })
+
   it("surfaces a transport-level POST failure (non-2xx) as a thrown error", async () => {
     const fetchImpl = (async () => new Response("nope", { status: 503, statusText: "unavailable" })) as typeof fetch
     const transport = makeA2ATransport({ fetchImpl })

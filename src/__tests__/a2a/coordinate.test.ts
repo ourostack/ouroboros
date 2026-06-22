@@ -153,6 +153,50 @@ describe("coordinate (prepare/outbound) + read quarantined importedDelegations",
     expect(entry.summary).toBe("imported task")
   })
 
+  it("coordinate works WITHOUT task_details (the optional-details branch)", async () => {
+    tmpB = createTmpBundle({ agentName: "coord-no-details-B" })
+    const b = seededIdentity()
+    serverB = await startA2AServer({
+      agentName: "coord-no-details-B", agentRoot: tmpB.agentRoot, port: 0,
+      identity: asSelf(b.id, b.seed), turnRunner: async () => ({ response: "ack" }),
+    })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    tmpA = createTmpBundle({ agentName: "coord-no-details-A" })
+    const a = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpA.agentName, { a2a: { identity: { ed25519Seed: a.seed } } })
+    await upsertAgentPeer(bStore, { name: "Agent A", agentId: a.id.did, trustLevel: "family", a2a: { did: a.id.did, agentId: a.id.did, endpointUrl: "https://a.example/a2a" } })
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    await upsertAgentPeer(aStore, { name: "Agent B", agentId: b.id.did, trustLevel: "family", a2a: { did: b.id.did, agentId: b.id.did, endpointUrl: serverB.endpointUrl } })
+    const bRecord = await aStore.findByExternalId("a2a-agent", b.id.did)
+
+    const out = await tool("coordinate")({
+      friend_id: bRecord!.id, mission_key: "nd-mission", mission_title: "No details", task_summary: "just do it",
+    }, localCtx(tmpA.agentRoot, aStore))
+    expect(out).toMatch(/coordinated/i)
+    const bMission = await delegationStoresFor(tmpB.agentRoot).missionStore.findByMissionKey("nd-mission")
+    const imported = Object.values(bMission?.importedDelegations?.[a.id.did] ?? {})[0]
+    expect(imported?.task.summary).toBe("just do it")
+    expect(imported?.task.details).toBeUndefined()
+  })
+
+  it("coordinate errors when the DID-keyed peer is unreachable (no endpoint to seal to)", async () => {
+    tmpA = createTmpBundle({ agentName: "coord-unreachable" })
+    const a = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpA.agentName, { a2a: { identity: { ed25519Seed: a.seed } } })
+    const peer = seededIdentity()
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    // A DID-keyed peer (family) but with NO endpointUrl/relay/mailbox → unreachable.
+    await upsertAgentPeer(aStore, {
+      name: "Unreachable", agentId: peer.id.did, trustLevel: "family",
+      a2a: { did: peer.id.did, agentId: peer.id.did },
+    })
+    const rec = await aStore.findByExternalId("a2a-agent", peer.id.did)
+    const out = await tool("coordinate")({
+      friend_id: rec!.id, mission_key: "mk-unreach", mission_title: "U", task_summary: "do u",
+    }, localCtx(tmpA.agentRoot, aStore))
+    expect(out).toMatch(/coordinate error|unreachable|no reachable/i)
+  })
+
   it("coordinate refuses an untrusted (acquaintance) recipient — no_consent, nothing sealed", async () => {
     tmpA = createTmpBundle({ agentName: "coord-untrusted" })
     const a = seededIdentity()

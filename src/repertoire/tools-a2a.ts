@@ -184,6 +184,7 @@ async function sealEnvelopeToPeer(input: {
     plaintextEnvelope: input.envelope,
     friendsKind: input.friendsKind,
   })
+  /* v8 ignore next 3 -- unreachable behind the resolveReachability pre-check above: sendShare only returns ok:false on the SAME `unreachable` plan we already rejected; a redundant guard. @preserve */
   if (!result.ok) {
     throw new Error(`sealed send failed (${result.reason})`)
   }
@@ -510,6 +511,7 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           selfAgentId: self.did,
           task: { summary: args.task_summary, ...(args.task_details ? { details: args.task_details } : {}) },
         })
+        /* v8 ignore next 3 -- unreachable for a trusted DID-keyed peer: recordMission guarantees the mission exists (no not_found) and the isTrustedLevel guard above guarantees trust≥friend, which the tiered consent default always approves (no no_consent). Defensive only. @preserve */
         if (!prepared.ok) {
           return `coordinate refused (${prepared.status}).`
         }
@@ -633,6 +635,7 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           selfAgentId: self.did,
           result: { summary: args.summary, ...(args.artifact ? { artifact: args.artifact } : {}) },
         })
+        /* v8 ignore next 3 -- unreachable for a trusted DID-keyed delegator: the mission exists (it carried the imported delegation we matched) and the isTrustedLevel guard guarantees trust≥friend, which the tiered consent default approves. Defensive only. @preserve */
         if (!prepared.ok) {
           return `send_result refused (${prepared.status}).`
         }

@@ -116,6 +116,34 @@ describe("send_result tool (B returns a result over the harness-owned wire)", ()
     expect(aReloaded?.importedResults?.[b.id.did]?.["req-1"]?.summary).toBe("built it")
   })
 
+  it("sends a result WITHOUT an artifact (the optional-artifact branch)", async () => {
+    tmpA = createTmpBundle({ agentName: "sr-noart-A" })
+    const a = seededIdentity()
+    serverA = await startA2AServer({
+      agentName: "sr-noart-A", agentRoot: tmpA.agentRoot, port: 0,
+      identity: asSelf(a.id, a.seed), turnRunner: async () => ({ response: "noop" }),
+    })
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    tmpB = createTmpBundle({ agentName: "sr-noart-B" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    await seedImportedDelegation({ agentRoot: tmpB.agentRoot, bStore, aDid: a.id.did, aEndpoint: serverA.endpointUrl, requestId: "req-na", missionKey: "mk-na" })
+    await upsertAgentPeer(aStore, { name: "Agent B", agentId: b.id.did, trustLevel: "family", a2a: { did: b.id.did, agentId: b.id.did, endpointUrl: "https://b.example/a2a" } })
+    const { missionStore: aMissions } = delegationStoresFor(tmpA.agentRoot)
+    const now = new Date().toISOString()
+    const am = await recordMission(aMissions, { missionKey: "mk-na", title: "Shared mission" })
+    await aMissions.put(am.id, {
+      ...am,
+      delegations: { "req-na": { task: { requestId: "req-na", summary: "build the thing" }, assignee: { agentId: b.id.did, displayName: "B" }, provenance: { assertedBy: { agentId: a.id.did, displayName: "A" }, assertedAt: now } } },
+    })
+    const out = await tool("send_result")({ request_id: "req-na", summary: "done, no artifact" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/result sent/i)
+    const aReloaded = await delegationStoresFor(tmpA.agentRoot).missionStore.findByMissionKey("mk-na")
+    expect(aReloaded?.importedResults?.[b.id.did]?.["req-na"]?.summary).toBe("done, no artifact")
+    expect(aReloaded?.importedResults?.[b.id.did]?.["req-na"]?.artifact).toBeUndefined()
+  })
+
   it("refuses when the requestId has no matching imported delegation (unknown)", async () => {
     tmpB = createTmpBundle({ agentName: "sr-unknown-req" })
     const b = seededIdentity()
@@ -123,6 +151,40 @@ describe("send_result tool (B returns a result over the harness-owned wire)", ()
     const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
     const out = await tool("send_result")({ request_id: "nope", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
     expect(out).toMatch(/no.*delegation|unknown|not found/i)
+  })
+
+  it("surfaces A's import rejection (assignee_mismatch) when A's delegation names a different assignee", async () => {
+    // B has an imported delegation from A and sends a result — but A's FIRST-PARTY
+    // delegation records a DIFFERENT assignee (C, not B). A's importMissionResult
+    // refuses (assignee_mismatch) → the server returns a JSON-RPC error → send_result
+    // surfaces it. Covers the server-side mission_result REJECT route.
+    tmpA = createTmpBundle({ agentName: "sr-reject-A" })
+    const a = seededIdentity()
+    const c = seededIdentity() // the assignee A actually recorded
+    serverA = await startA2AServer({
+      agentName: "sr-reject-A", agentRoot: tmpA.agentRoot, port: 0,
+      identity: asSelf(a.id, a.seed), turnRunner: async () => ({ response: "noop" }),
+    })
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    tmpB = createTmpBundle({ agentName: "sr-reject-B" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    await seedImportedDelegation({ agentRoot: tmpB.agentRoot, bStore, aDid: a.id.did, aEndpoint: serverA.endpointUrl, requestId: "req-mm", missionKey: "mk-mm" })
+    // A trusts B (family) but A's first-party delegation names C as assignee (not B).
+    await upsertAgentPeer(aStore, { name: "Agent B", agentId: b.id.did, trustLevel: "family", a2a: { did: b.id.did, agentId: b.id.did, endpointUrl: "https://b.example/a2a" } })
+    const { missionStore: aMissions } = delegationStoresFor(tmpA.agentRoot)
+    const now = new Date().toISOString()
+    const am = await recordMission(aMissions, { missionKey: "mk-mm", title: "Mismatch mission" })
+    await aMissions.put(am.id, {
+      ...am,
+      delegations: { "req-mm": { task: { requestId: "req-mm", summary: "x" }, assignee: { agentId: c.id.did, displayName: "C" }, provenance: { assertedBy: { agentId: a.id.did, displayName: "A" }, assertedAt: now } } },
+    })
+    const out = await tool("send_result")({ request_id: "req-mm", summary: "B's answer" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/error|assignee_mismatch|rejected/i)
+    // Nothing landed under B on A's side.
+    const aReloaded = await delegationStoresFor(tmpA.agentRoot).missionStore.findByMissionKey("mk-mm")
+    expect(aReloaded?.importedResults).toBeUndefined()
   })
 
   it("requires a trusted requester (no friend context → refused)", async () => {
