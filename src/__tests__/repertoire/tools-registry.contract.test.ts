@@ -248,10 +248,12 @@ describe("tool registry contract", () => {
     expect(names).toContain("commerce_receipt_get");
     expect(names).toContain("commerce_access_log");
 
-    // Added in friends-A2A connect+delegation: the owner-only connect_to tool
+    // Added in friends-A2A connect+delegation: connect_to + coordinate + list_delegations
     expect(names).toContain("connect_to");
+    expect(names).toContain("coordinate");
+    expect(names).toContain("list_delegations");
 
-    // Exact count: 110 tools
-    expect(names).toHaveLength(110);
+    // Exact count: 112 tools
+    expect(names).toHaveLength(112);
   });
 });

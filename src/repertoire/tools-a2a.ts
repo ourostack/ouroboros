@@ -1,8 +1,8 @@
 import * as path from "node:path"
 import { getAgentRoot } from "../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { isTrustedLevel, FileFriendStore, authorizeConnect, connectAgents } from "@ouro.bot/friends"
-import type { FriendRecord, FriendStore, SenseType } from "@ouro.bot/friends"
+import { isTrustedLevel, FileFriendStore, authorizeConnect, connectAgents, prepareCoordination, recordMission } from "@ouro.bot/friends"
+import type { FriendRecord, FriendStore, SenseType, MissionRecord } from "@ouro.bot/friends"
 import {
   ready,
   resolveReachability,
@@ -15,6 +15,7 @@ import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage } from "
 import { onboardA2APeer } from "../a2a/onboarding"
 import { loadSelfA2AIdentity } from "../a2a/identity"
 import { makeA2ATransport } from "../a2a/transport"
+import { delegationStoresFor } from "../a2a/delegation-stores"
 import type { A2ATask } from "../a2a/types"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
@@ -132,32 +133,62 @@ function peerDid(peer: FriendRecord): string | undefined {
 }
 
 /**
- * Seal an outbound free-text message to a DID-keyed peer and deliver it over the
- * `direct` rung via friends' `sendShare`. The text rides a minimal `coordination`
- * envelope (`intent:"offer"`, the text as `note`) — the kind the Slice-1 inbound
- * bridge verifies (signed sender DID) and turns into a peer turn. `sendShare` builds
- * the SAME SealedEnvelope regardless of rung, `wrapInDataPart`-wraps it, and calls the
- * transport itself; the recipient X25519 is derived from the peer's pinned did:key.
- * Throws when the peer's DID is unparseable (cannot seal) or the rung is unreachable.
+ * Seal an arbitrary friends plaintext envelope to a DID-keyed peer and deliver it over
+ * the `direct` rung via friends' `sendShare`. `sendShare` builds the SAME SealedEnvelope
+ * regardless of rung, `wrapInDataPart`-wraps it, and calls the transport itself; the
+ * recipient X25519 is derived from the peer's pinned did:key. Throws when the peer's DID
+ * is unparseable (cannot seal) or the rung is unreachable.
+ */
+async function sealEnvelopeToPeer(input: {
+  self: { did: string; keyId: string; ed25519Priv: Uint8Array }
+  sodium: Awaited<ReturnType<typeof ready>>
+  peer: FriendRecord
+  did: string
+  envelope: Record<string, unknown>
+  friendsKind: "coordination" | "profile_share" | "mission_share"
+}): Promise<void> {
+  const parsed = parseDidKey(input.did)
+  if (!parsed) throw new Error(`cannot seal: peer DID is not a parseable did:key (${input.did})`)
+  const reachability = resolveReachability(input.peer.agentMeta?.a2a, input.peer.agentMeta?.mailbox)
+  if (reachability.rung === "unreachable") {
+    throw new Error("cannot seal: peer has no reachable A2A endpoint")
+  }
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.a2a_outbound_seal",
+    message: "sealing outbound A2A envelope to a DID-keyed peer",
+    meta: { selfDid: input.self.did, peerDid: input.did, rung: reachability.rung, friendsKind: input.friendsKind },
+  })
+  const result = await sendShare({
+    sodium: input.sodium,
+    transport: makeA2ATransport(),
+    fromIdentity: input.self,
+    toPeer: { a2a: input.peer.agentMeta?.a2a },
+    recipientDid: input.did,
+    recipientX25519Pub: keyAgreementFromDidKey({ sodium: input.sodium, ed25519Pub: parsed.ed25519Pub }),
+    plaintextEnvelope: input.envelope,
+    friendsKind: input.friendsKind,
+  })
+  if (!result.ok) {
+    throw new Error(`sealed send failed (${result.reason})`)
+  }
+}
+
+/**
+ * Seal an outbound free-text message to a DID-keyed peer over the `direct` rung. The
+ * text rides a minimal `coordination` envelope (`intent:"offer"`, the text as `note`) —
+ * the kind the Slice-1 inbound bridge verifies (signed sender DID) and turns into a
+ * peer turn.
  */
 async function sealAndSendToPeer(input: {
   agentName: string
-  selfAgentId: string
   peer: FriendRecord
   did: string
   message: string
   sessionKey?: string
 }): Promise<void> {
-  const parsed = parseDidKey(input.did)
-  if (!parsed) throw new Error(`cannot seal: peer DID is not a parseable did:key (${input.did})`)
   const sodium = await ready()
   const self = await loadSelfA2AIdentity({ agentName: input.agentName, sodium })
-
-  const reachability = resolveReachability(input.peer.agentMeta?.a2a, input.peer.agentMeta?.mailbox)
-  if (reachability.rung === "unreachable") {
-    throw new Error("cannot seal: peer has no reachable A2A endpoint")
-  }
-
   const envelope: Record<string, unknown> = {
     subject: { missionKey: `dm:${self.did}:${input.did}`, title: "Direct message" },
     fromAgentId: self.did,
@@ -165,27 +196,10 @@ async function sealAndSendToPeer(input: {
     note: input.message,
     issuedAt: new Date().toISOString(),
   }
-
-  emitNervesEvent({
-    component: "channels",
-    event: "channel.a2a_outbound_seal",
-    message: "sealing outbound A2A message to a DID-keyed peer",
-    meta: { selfDid: self.did, peerDid: input.did, rung: reachability.rung },
+  await sealEnvelopeToPeer({
+    self: { did: self.did, keyId: self.keyId, ed25519Priv: self.ed25519Priv },
+    sodium, peer: input.peer, did: input.did, envelope, friendsKind: "coordination",
   })
-
-  const result = await sendShare({
-    sodium,
-    transport: makeA2ATransport(),
-    fromIdentity: { did: self.did, keyId: self.keyId, ed25519Priv: self.ed25519Priv },
-    toPeer: { a2a: input.peer.agentMeta?.a2a },
-    recipientDid: input.did,
-    recipientX25519Pub: keyAgreementFromDidKey({ sodium, ed25519Pub: parsed.ed25519Pub }),
-    plaintextEnvelope: envelope,
-    friendsKind: "coordination",
-  })
-  if (!result.ok) {
-    throw new Error(`sealed send failed (${result.reason})`)
-  }
 }
 
 export const a2aToolDefinitions: ToolDefinition[] = [
@@ -354,7 +368,6 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         try {
           await sealAndSendToPeer({
             agentName: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
-            selfAgentId: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
             peer,
             did,
             message: args.message,
@@ -431,5 +444,119 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["friend_id", "task_id"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "coordinate",
+        description: "Delegate a task to a trusted (friend/family) A2A agent peer over a named shared mission. Mints a correlation requestId, records your first-party delegation, and seals the coordination to the peer over the direct rung. The peer reads it via its quarantined imported delegations and returns a result with send_result.",
+        parameters: {
+          type: "object",
+          properties: {
+            friend_id: { type: "string", description: "Friend record ID for the A2A agent peer to delegate to." },
+            mission_key: { type: "string", description: "The shared mission join key both agents can name (e.g. a stable project key)." },
+            mission_title: { type: "string", description: "Human title for the mission (used when first creating it)." },
+            task_summary: { type: "string", description: "What the peer is being asked to do." },
+            task_details: { type: "string", description: "Optional fuller description of the task." },
+          },
+          required: ["friend_id", "mission_key", "mission_title", "task_summary"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.tool_coordinate",
+        message: "coordinate invoked",
+        meta: { tool: "coordinate", friendId: args.friend_id, missionKey: args.mission_key },
+      })
+      const guard = requireTrustedRequester(ctx)
+      if (guard) return guard
+      const peer = await storeFor(ctx).get(args.friend_id)
+      if (!peer || !isA2APeer(peer)) return `A2A peer not found: ${args.friend_id}`
+      if (!isTrustedLevel(peer.trustLevel)) return "target A2A peer must be friend or family trust before delegating."
+      const did = peerDid(peer)
+      if (!did) return "coordinate requires a DID-keyed peer (connect_to it first to pin its did:key)."
+
+      const agentName = agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent"
+      const store = storeFor(ctx)
+      const { missionStore, grantStore } = delegationStoresFor(ctx?.agentRoot ?? getAgentRoot())
+      try {
+        const sodium = await ready()
+        const self = await loadSelfA2AIdentity({ agentName, sodium })
+        // Ensure the local mission exists (first-party), then prepare the coordination:
+        // mints the requestId + records the first-party delegation (assignee = the peer).
+        const mission = await recordMission(missionStore, { missionKey: args.mission_key, title: args.mission_title })
+        const prepared = await prepareCoordination(missionStore, store, grantStore, {
+          missionId: mission.id,
+          toAgentId: did,
+          intent: "request",
+          selfAgentId: self.did,
+          task: { summary: args.task_summary, ...(args.task_details ? { details: args.task_details } : {}) },
+        })
+        if (!prepared.ok) {
+          return `coordinate refused (${prepared.status}).`
+        }
+        const requestId = prepared.envelope.task?.requestId
+        // Seal + send the coordination envelope to the peer over direct.
+        await sealEnvelopeToPeer({
+          self: { did: self.did, keyId: self.keyId, ed25519Priv: self.ed25519Priv },
+          sodium, peer, did,
+          envelope: prepared.envelope as unknown as Record<string, unknown>,
+          friendsKind: "coordination",
+        })
+        emitNervesEvent({
+          component: "repertoire",
+          event: "repertoire.tool_coordinate_sent",
+          message: "coordination delegated + sealed to peer",
+          meta: { tool: "coordinate", peerDid: did, missionKey: args.mission_key, requestId },
+        })
+        return `coordinated: delegated "${args.task_summary}" to ${peer.name} on mission ${args.mission_key} (requestId ${requestId}).`
+      } catch (error) {
+        return `coordinate error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
+      }
+    },
+    summaryKeys: ["friend_id", "mission_key"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "delegates a task to a remote agent peer" },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "list_delegations",
+        description: "List delegations other agents have sent you (quarantined imported delegations). Each entry names the requesting agent, the mission, the correlation requestId, and the task summary. Use this to see what work peers have asked you to do, then send_result when done.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    handler: async (_args, ctx) => {
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.tool_list_delegations",
+        message: "list_delegations invoked",
+        meta: { tool: "list_delegations" },
+      })
+      const guard = requireTrustedRequester(ctx)
+      if (guard) return guard
+      const { missionStore } = delegationStoresFor(ctx?.agentRoot ?? getAgentRoot())
+      const missions: MissionRecord[] = missionStore.listAll ? await missionStore.listAll() : []
+      const rows: Array<{ requestId: string; fromAgentId: string; missionKey: string; missionTitle: string; summary: string; details?: string }> = []
+      for (const mission of missions) {
+        for (const [fromAgentId, byRequest] of Object.entries(mission.importedDelegations ?? {})) {
+          for (const [requestId, delegation] of Object.entries(byRequest)) {
+            rows.push({
+              requestId,
+              fromAgentId,
+              missionKey: mission.missionKey,
+              missionTitle: mission.title,
+              summary: delegation.task.summary,
+              ...(delegation.task.details ? { details: delegation.task.details } : {}),
+            })
+          }
+        }
+      }
+      return JSON.stringify(rows, null, 2)
+    },
+    summaryKeys: [],
   },
 ]
