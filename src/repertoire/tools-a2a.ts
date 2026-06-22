@@ -1,10 +1,11 @@
 import * as path from "node:path"
 import { getAgentRoot } from "../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { isTrustedLevel, FileFriendStore } from "@ouro.bot/friends"
-import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
+import { isTrustedLevel, FileFriendStore, authorizeConnect, connectAgents } from "@ouro.bot/friends"
+import type { FriendRecord, FriendStore, SenseType } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage } from "../a2a/client"
+import { onboardA2APeer } from "../a2a/onboarding"
 import type { A2ATask } from "../a2a/types"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
@@ -107,7 +108,102 @@ async function resolveA2AEndpoint(friend: FriendRecord): Promise<{ endpointUrl: 
   throw new Error("A2A peer has no endpointUrl or cardUrl in agentMeta.a2a")
 }
 
+/** The management sense the current turn arrived through, defaulting to a non-`local`
+ * value when unknown so the owner-only gate fails CLOSED on an unexpected origin. */
+function senseTypeOf(ctx?: ToolContext): SenseType {
+  /* v8 ignore next -- in-turn tool calls always carry a resolved channel context; the open-default fail-closed fallback is defensive @preserve */
+  return ctx?.context?.channel?.senseType ?? "open"
+}
+
 export const a2aToolDefinitions: ToolDefinition[] = [
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "connect_to",
+        description: "Owner-only: link an A2A agent (by its agent-card URL) into your fleet as a family-trusted, DID-keyed peer. Reachable only from your own local/CLI management sense — not exposed to network peers.",
+        parameters: {
+          type: "object",
+          properties: {
+            card_url: { type: "string", description: "The agent-card URL of the agent to connect to (its /.well-known/agent-card.json)." },
+            name: { type: "string", description: "Optional display name for the linked peer (defaults to the card name)." },
+          },
+          required: ["card_url"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.tool_connect_to",
+        message: "connect_to invoked",
+        meta: { tool: "connect_to" },
+      })
+      const guard = requireTrustedRequester(ctx)
+      if (guard) return guard
+
+      // OWNER-ONLY GATE (fail-closed): authorizeConnect commits ONLY on the `local`
+      // (owner stdio/CLI) management sense. Any network/group/internal sense
+      // downgrades — refused BEFORE any card fetch or record write, so this tool is
+      // never reachable as a general in-turn capability a network peer could exercise.
+      // No `membership` is computed (roster auto-family is OUT of scope), so a `closed`
+      // sense ALSO downgrades — never a blanket-allow without the real roster verifier.
+      const senseType = senseTypeOf(ctx)
+      const authorization = authorizeConnect({ senseType })
+      if (authorization.decision !== "commit") {
+        emitNervesEvent({
+          component: "repertoire",
+          event: "repertoire.tool_connect_to_refused",
+          message: "connect_to refused (non-owner management sense)",
+          meta: { tool: "connect_to", senseType, reason: authorization.reason },
+        })
+        return `connect_to is available only from your own local management sense (the CLI you launched). This sense (${senseType}) is not permitted to link agents.`
+      }
+
+      const agentName = agentNameFromRoot(ctx?.agentRoot)
+      // ONE store for both halves — the DID-keyed onboarding write and the
+      // connectAgents resolve/link MUST point at the same store, or the link can't
+      // resolve the record the onboarding just wrote.
+      const store = storeFor(ctx)
+      try {
+        // 1) DID-keyed onboarding (the footgun fix): fetch the card, verify the
+        //    card↔DID binding, and write the record keyed on the verified DID. This
+        //    is what makes the peer resolvable BY DID for connectAgents below (and for
+        //    the inbound resolve path). A mis-bound card throws here → no link.
+        const onboarded = await onboardA2APeer({
+          /* v8 ignore next -- in-turn connect_to always carries an agentRoot; the ambient-name fallback is defensive @preserve */
+          agentName: agentName ?? "ouro-agent",
+          cardUrl: args.card_url,
+          trustLevel: "family",
+          ...(args.name ? { name: args.name } : {}),
+          store,
+        })
+        const did = onboarded.agentMeta?.a2a?.did
+
+        // 2) The authority-gated link + control-plane audit. connectAgents re-runs the
+        //    `local` gate, resolves the just-written record (by DID when present, else
+        //    by its agent-peer handle), links at family, and records action:"connect".
+        const result = await connectAgents(
+          store,
+          {
+            peer: did ? { did } : { agentId: onboarded.agentMeta?.a2a?.agentId ?? onboarded.id },
+            senseType,
+            trustLevel: "family",
+          },
+          { actor: "owner:local", originSense: senseType },
+        )
+        if (!result.ok) {
+          /* v8 ignore next -- onboardA2APeer wrote a DID/agentId-keyed record, so connectAgents always resolves it; this guards a future store-shape regression @preserve */
+          return `connect_to could not complete the link (${result.status}).`
+        }
+        return `connected ${result.record.name} (${did ?? result.record.id}) at family trust.`
+      } catch (error) {
+        return `connect_to error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
+      }
+    },
+    summaryKeys: ["card_url", "name"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "links a new agent peer into the friend model at family trust" },
+  },
   {
     tool: {
       type: "function",
