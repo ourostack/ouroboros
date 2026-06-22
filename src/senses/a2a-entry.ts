@@ -25,12 +25,49 @@ emitNervesEvent({
   meta: { entry: "a2a", agentName },
 })
 
-import("../a2a/server")
-  .then(async ({ startA2AServer }) => {
+Promise.all([
+  import("../a2a/server"),
+  import("../a2a/identity"),
+  import("../heart/runtime-credentials"),
+  import("../heart/machine-identity"),
+  import("@ouro.bot/friends/a2a-client"),
+])
+  .then(async ([
+    { startA2AServer },
+    { loadOrMintA2AIdentity },
+    { waitForRuntimeCredentialBootstrap, readMachineRuntimeCredentialConfig, upsertMachineRuntimeCredentialConfig },
+    { loadOrCreateMachineIdentity },
+    { ready },
+  ]) => {
+    const os = await import("node:os")
+    // Wait for the daemon to deliver the machine-local runtime config (carrying the
+    // a2a identity seed) into the in-memory cache before we read or mint identity.
+    const bootstrapped = await waitForRuntimeCredentialBootstrap(agentName)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.a2a_bootstrap_waited",
+      message: "awaited runtime-credential bootstrap before A2A identity load",
+      meta: { entry: "a2a", agentName, bootstrapped },
+    })
+
+    const sodium = await ready()
+    const machineId = loadOrCreateMachineIdentity({ homeDir: os.homedir() }).machineId
+    const machineConfigRead = readMachineRuntimeCredentialConfig(agentName)
+    const machineConfig = machineConfigRead.ok ? machineConfigRead.config : {}
+    const identity = await loadOrMintA2AIdentity({
+      agentName,
+      sodium,
+      config: machineConfig,
+      upsert: async (next) => {
+        await upsertMachineRuntimeCredentialConfig(agentName, machineId, next)
+      },
+    })
+
     const rawPort = argValue("--port")
     const port = rawPort ? Number.parseInt(rawPort, 10) : undefined
     await startA2AServer({
       agentName,
+      identity,
       ...(argValue("--host") ? { host: argValue("--host") } : {}),
       ...(Number.isInteger(port) ? { port } : {}),
       ...(argValue("--base-url") ? { baseUrl: argValue("--base-url") } : {}),

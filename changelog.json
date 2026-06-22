@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.672",
+      "changes": [
+        "A2A inbound authentication foundation (friends @ouro.bot/friends alpha.7): the agent mints/loads an Ed25519 did:key self-identity (machine-local vault seed) and serves it on its agent card; an inbound friends sealed DataPart is now unwrapped, unsealed, signature-verified, and replay-checked, and the turn runs keyed on the VERIFIED sender DID at that peer's real trust level (read from the friend store by DID, defaulting to stranger) — replacing the previous unauthenticated-a2a-peer collapse. Adds durable harness-owned PinStore (state/a2a/pins, TOFU + signed-rotation evaluation) and SeenLedger (state/a2a/seen, restart-safe replay defense). The legacy unsigned-text inbound path is behavior-preserved (stranger)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.671",
       "changes": [
         "Consolidate friend-domain record logic into @ouro.bot/friends: re-pin the git dependency and route save_friend_note, the friend update/link/unlink CLI commands, and A2A peer onboarding through the package's applyFriendNote/setFriendTrust/linkExternalId/unlinkExternalId/upsertAgentPeer helpers, removing the duplicated in-harness record-mutation logic while keeping the MCP tool wrappers, CLI framing, and A2A HTTP card-fetch glue."

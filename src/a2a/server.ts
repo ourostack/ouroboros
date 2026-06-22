@@ -1,10 +1,17 @@
 import * as http from "node:http"
 import { createHash, randomUUID } from "node:crypto"
+import { ready } from "@ouro.bot/friends/a2a-client"
+import { FileFriendStore, FileMissionStore, missionsDirFor } from "@ouro.bot/friends"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
 import { buildA2AAgentCard } from "./card"
 import { A2A_DEFAULT_HOST, defaultA2APort, normalizeA2APath } from "./config"
+import type { A2AIdentity } from "./identity"
+import { FileA2APinStore } from "./pin-store"
+import { FileA2ASeenLedger } from "./seen-ledger"
+import { makeDidResolution } from "./did-resolution"
+import { receiveInboundShare, type InboundShareDeps } from "./inbound-share"
 import { FileA2ATaskStore } from "./task-store"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
@@ -35,6 +42,11 @@ export interface StartA2AServerOptions {
   path?: string
   agentRoot?: string
   turnRunner?: A2ATurnRunner
+  /** The agent's self A2A cryptographic identity (did:key over an Ed25519 seed).
+   * When present, the served agent card carries `card.did` and the inbound bridge
+   * can unseal friends DataParts addressed to this DID. Absent in legacy/no-identity
+   * deployments (the card omits `did`; inbound stays on the text-only path). */
+  identity?: A2AIdentity
 }
 
 export interface A2AServerHandle {
@@ -162,6 +174,21 @@ function accessTokenScope(accessToken: string): string {
 
 function untrustedTurnPeerExternalId(): string {
   return "unauthenticated-a2a-peer"
+}
+
+/** Whether an inbound message carries a friends sealed DataPart (`kind:"data"`). */
+function messageHasDataPart(message: A2AMessage): boolean {
+  /* v8 ignore next -- defensive: callers pass a parsed inbound whose `parts` is always an array; guards malformed direct input @preserve */
+  if (!Array.isArray(message.parts)) return false
+  return message.parts.some((part) => part && part.kind === "data")
+}
+
+/** Map a friends `receiveShare` rejection reason → a JSON-RPC error code.
+ * Malformed-shape reasons map to invalid-params (-32602); auth/trust/replay
+ * rejections map to a dedicated A2A "rejected" code (-32003). */
+function rejectionErrorCode(reason: string): number {
+  if (reason === "malformed_message" || reason === "malformed_plaintext") return -32602
+  return -32003
 }
 
 function senderHintFromMessage(req: http.IncomingMessage, inbound: A2AMessage): { idHint?: string; name: string } {
@@ -324,9 +351,27 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   const port = options.port ?? defaultA2APort(options.agentName)
   const a2aPath = normalizeA2APath(options.path)
   /* v8 ignore next -- foreground CLI/default daemon paths own the ambient agent-root fallback; protocol tests inject an isolated root @preserve */
-  const taskStore = new FileA2ATaskStore(options.agentRoot ?? getAgentRoot(options.agentName))
+  const agentRoot = options.agentRoot ?? getAgentRoot(options.agentName)
+  const taskStore = new FileA2ATaskStore(agentRoot)
   /* v8 ignore next -- default runner crosses into the full live agent pipeline; shared-turn covers that pipeline and server tests inject a deterministic runner @preserve */
   const turnRunner = options.turnRunner ?? defaultTurnRunner
+
+  // The inbound friends-DataPart bridge is available only when the agent has a
+  // cryptographic identity (its did:key + X25519 unseal keys). Build its durable
+  // stores once at start; without an identity, inbound stays on the text path.
+  let inboundShareDeps: InboundShareDeps | undefined
+  if (options.identity) {
+    const friendsDir = `${agentRoot}/friends`
+    inboundShareDeps = {
+      sodium: await ready(),
+      store: new FileFriendStore(friendsDir),
+      missionStore: new FileMissionStore(missionsDirFor(friendsDir)),
+      pinStore: new FileA2APinStore(agentRoot),
+      seen: new FileA2ASeenLedger(agentRoot),
+      didResolution: makeDidResolution({ sodium: await ready() }),
+      identity: options.identity,
+    }
+  }
 
   let publicBaseUrl = options.baseUrl
   const server = http.createServer(async (req, res) => {
@@ -336,7 +381,12 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     const currentBaseUrl = publicBaseUrl ?? `http://${req.headers.host ?? `${host}:${port}`}`
 
     if (req.method === "GET" && (requestUrl.pathname === "/.well-known/agent-card.json" || requestUrl.pathname === "/agent-card.json")) {
-      writeJson(res, 200, buildA2AAgentCard({ agentName: options.agentName, baseUrl: currentBaseUrl, path: a2aPath }))
+      writeJson(res, 200, buildA2AAgentCard({
+        agentName: options.agentName,
+        baseUrl: currentBaseUrl,
+        path: a2aPath,
+        ...(options.identity ? { did: options.identity.did } : {}),
+      }))
       return
     }
 
@@ -363,7 +413,32 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
         const parsedInbound = messageFromParams(rpc.params)
         const inbound = parsedInbound ? { ...parsedInbound, kind: parsedInbound.kind ?? "message" } : null
-        const text = textFromMessage(inbound)
+
+        // Inbound friends-DataPart branch (runs BEFORE the legacy text path). A
+        // sealed DataPart is unwrapped + verified through the bridge; the turn is
+        // then keyed on the VERIFIED sender DID (replacing the unauthenticated
+        // sentinel). A non-friends (text) message falls through unchanged.
+        let verifiedPeerAgentId: string | undefined
+        let verifiedPeerName: string | undefined
+        let verifiedShareText: string | undefined
+        if (inbound && inboundShareDeps && messageHasDataPart(inbound)) {
+          const bridged = await receiveInboundShare(inbound, inboundShareDeps)
+          if (bridged.outcome === "rejected") {
+            writeJson(res, 200, errorResponse(rpc.id, rejectionErrorCode(bridged.reason), `A2A share rejected: ${bridged.reason}`))
+            return
+          }
+          // A message with a data part always resolves to completed|rejected — the
+          // bridge only returns "not-a-share" when there is NO data part, which the
+          // `messageHasDataPart` gate above excludes. So this is the completed path.
+          /* v8 ignore next -- "not-a-share" is unreachable here (gated by messageHasDataPart) @preserve */
+          if (bridged.outcome === "completed") {
+            verifiedPeerAgentId = bridged.verifiedDid
+            verifiedPeerName = bridged.verifiedDid
+            verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
+          }
+        }
+
+        const text = verifiedShareText ?? textFromMessage(inbound)
         if (!inbound || !text) {
           writeJson(res, 200, errorResponse(rpc.id, -32602, "SendMessage requires a text message"))
           return
@@ -373,8 +448,10 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           return
         }
         const senderHint = senderHintFromMessage(req, inbound)
-        const peerAgentId = untrustedTurnPeerExternalId()
-        const peerName = senderHint.name
+        // The verified DID wins as the turn's peer identity; otherwise the legacy
+        // unauthenticated sentinel (text path, behavior-preserved).
+        const peerAgentId = verifiedPeerAgentId ?? untrustedTurnPeerExternalId()
+        const peerName = verifiedPeerName ?? senderHint.name
         const continuationToken = accessTokenFromParams(rpc.params)
         const continuationTask = inbound.taskId && continuationToken
           ? taskStore.get(inbound.taskId, accessTokenScope(continuationToken))

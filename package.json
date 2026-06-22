@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.671",
+  "version": "0.1.0-alpha.672",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -50,7 +50,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@ouro.bot/friends": "git+https://github.com/ourostack/friends.git#250d1a4bbbad5cd50687975afc463e60e3ff8366",
     "@azure/identity": "^4.13.0",
     "@azure/storage-blob": "^12.31.0",
     "@microsoft/teams.api": "2.0.11",
@@ -59,6 +58,7 @@
     "@microsoft/teams.common": "2.0.11",
     "@microsoft/teams.dev": "2.0.11",
     "@microsoft/teams.graph": "2.0.11",
+    "@ouro.bot/friends": "0.1.0-alpha.7",
     "@types/react": "^17.0.91",
     "@types/ws": "^8.18.1",
     "fast-glob": "^3.3.3",

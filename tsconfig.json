@@ -10,7 +10,10 @@
     "noUnusedParameters": true,
     "resolveJsonModule": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@ouro.bot/friends/a2a-client": ["./node_modules/@ouro.bot/friends/dist/a2a-client/index.d.ts"]
+    }
   },
   "include": ["src"],
   "exclude": ["src/__tests__"]
