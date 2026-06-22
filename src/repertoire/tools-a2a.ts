@@ -201,7 +201,6 @@ async function sealAndSendToPeer(input: {
   peer: FriendRecord
   did: string
   message: string
-  sessionKey?: string
 }): Promise<void> {
   const sodium = await ready()
   const self = await loadSelfA2AIdentity({ agentName: input.agentName, sodium })
@@ -383,11 +382,11 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       if (did) {
         try {
           await sealAndSendToPeer({
+            /* v8 ignore next -- in-turn a2a_send_message always carries a bundle agentRoot; the ambient-name fallback is defensive @preserve */
             agentName: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
             peer,
             did,
             message: args.message,
-            ...(args.session_key ? { sessionKey: args.session_key } : {}),
           })
           return `sealed message delivered to ${peer.name} (${did}) over the direct rung.`
         } catch (error) {
@@ -495,8 +494,10 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       const did = peerDid(peer)
       if (!did) return "coordinate requires a DID-keyed peer (connect_to it first to pin its did:key)."
 
+      /* v8 ignore next -- in-turn coordinate always carries a bundle agentRoot; the ambient-name fallback is defensive (same pattern as connect_to) @preserve */
       const agentName = agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent"
       const store = storeFor(ctx)
+      /* v8 ignore next -- in-turn tool calls always carry an agentRoot; the getAgentRoot() ambient fallback depends on process argv (same pattern as storeFor) @preserve */
       const { missionStore, grantStore } = delegationStoresFor(ctx?.agentRoot ?? getAgentRoot())
       try {
         const sodium = await ready()
@@ -555,7 +556,9 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       })
       const guard = requireTrustedRequester(ctx)
       if (guard) return guard
+      /* v8 ignore next -- in-turn tool calls always carry an agentRoot; the getAgentRoot() ambient fallback depends on process argv (same pattern as storeFor) @preserve */
       const { missionStore } = delegationStoresFor(ctx?.agentRoot ?? getAgentRoot())
+      /* v8 ignore next -- FileMissionStore always implements listAll; the [] fallback guards a future store-shape regression @preserve */
       const missions: MissionRecord[] = missionStore.listAll ? await missionStore.listAll() : []
       const rows: Array<{ requestId: string; fromAgentId: string; missionKey: string; missionTitle: string; summary: string; details?: string }> = []
       for (const mission of missions) {
@@ -603,9 +606,11 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       const guard = requireTrustedRequester(ctx)
       if (guard) return guard
       const store = storeFor(ctx)
+      /* v8 ignore next -- in-turn tool calls always carry an agentRoot; the getAgentRoot() ambient fallback depends on process argv (same pattern as storeFor) @preserve */
       const { missionStore, grantStore } = delegationStoresFor(ctx?.agentRoot ?? getAgentRoot())
 
       // Find the imported delegation this result answers (who delegated + which mission).
+      /* v8 ignore next -- FileMissionStore always implements listAll; the [] fallback guards a future store-shape regression @preserve */
       const missions: MissionRecord[] = missionStore.listAll ? await missionStore.listAll() : []
       const found = findImportedDelegation(missions, args.request_id)
       if (!found) return `no imported delegation found for requestId ${args.request_id} (check list_delegations).`
@@ -616,12 +621,14 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       if (!delegator || !isA2APeer(delegator)) return `delegating peer not found for ${found.fromAgentId}.`
       if (!isTrustedLevel(delegator.trustLevel)) return "delegating peer must be friend or family trust to return a result."
       const delegatorDid = peerDid(delegator)
+      /* v8 ignore next -- unreachable: findFriendByDid matched this record BY its DID (via resolveAgentIdentity, which omits empty DIDs), so a2a.did is always present here. Defensive. @preserve */
       if (!delegatorDid) return "delegating peer is not DID-keyed (cannot seal the result)."
       const parsedDelegator = parseDidKey(delegatorDid)
       if (!parsedDelegator) return `cannot seal: delegating peer DID is unparseable (${delegatorDid}).`
       const endpointUrl = delegator.agentMeta?.a2a?.endpointUrl
       if (!endpointUrl) return "delegating peer has no reachable A2A endpoint to return the result to."
 
+      /* v8 ignore next -- in-turn send_result always carries a bundle agentRoot; the ambient-name fallback is defensive (same pattern as connect_to) @preserve */
       const agentName = agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent"
       try {
         const sodium = await ready()

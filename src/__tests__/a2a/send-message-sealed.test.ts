@@ -119,7 +119,7 @@ describe("a2a_send_message — sealed via sendShare for DID-keyed peers", () => 
     })
     const bRecord = await store.findByExternalId("a2a-agent", recipient.did)
 
-    const out = await tool("a2a_send_message")({ friend_id: bRecord!.id, message: "hello peer" }, localCtx(tmp.agentRoot, store))
+    const out = await tool("a2a_send_message")({ friend_id: bRecord!.id, message: "hello peer", session_key: "conv-1" }, localCtx(tmp.agentRoot, store))
 
     // The seal path returns a sent acknowledgement (not the legacy task JSON).
     expect(out).toMatch(/sealed|sent|delivered/i)

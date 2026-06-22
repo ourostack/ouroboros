@@ -136,6 +136,8 @@ describe("coordinate (prepare/outbound) + read quarantined importedDelegations",
     const now = new Date().toISOString()
     // recordMission then add an imported delegation.
     const { recordMission } = await import("@ouro.bot/friends")
+    // A mission with NO imported delegations (exercises the `?? {}` branch in the read).
+    await recordMission(missionStore, { missionKey: "mk-empty", title: "Empty" })
     const m = await recordMission(missionStore, { missionKey: "mk-list", title: "Listed" })
     await missionStore.put(m.id, {
       ...m,
@@ -177,6 +179,39 @@ describe("coordinate (prepare/outbound) + read quarantined importedDelegations",
     const imported = Object.values(bMission?.importedDelegations?.[a.id.did] ?? {})[0]
     expect(imported?.task.summary).toBe("just do it")
     expect(imported?.task.details).toBeUndefined()
+  })
+
+  it("coordinate refuses a missing peer + requires a trusted requester", async () => {
+    tmpA = createTmpBundle({ agentName: "coord-guards" })
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    // Missing friend_id.
+    const missing = await tool("coordinate")({ friend_id: "nope", mission_key: "k", mission_title: "T", task_summary: "s" }, localCtx(tmpA.agentRoot, aStore))
+    expect(missing).toMatch(/A2A peer not found/i)
+    // No friend context.
+    const noCtx = await tool("coordinate")({ friend_id: "x", mission_key: "k", mission_title: "T", task_summary: "s" }, undefined)
+    expect(noCtx).toMatch(/no friend context|require/i)
+  })
+
+  it("list_delegations requires a trusted requester (no friend context)", async () => {
+    const out = await tool("list_delegations")({}, undefined)
+    expect(out).toMatch(/no friend context|require/i)
+  })
+
+  it("coordinate refuses a legacy (non-DID-keyed) peer — requires connect_to to pin a did:key", async () => {
+    tmpA = createTmpBundle({ agentName: "coord-legacy-peer" })
+    const a = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpA.agentName, { a2a: { identity: { ed25519Seed: a.seed } } })
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    // A trusted (family) peer with NO a2a.did (legacy, URL-keyed).
+    await upsertAgentPeer(aStore, {
+      name: "Legacy", agentId: "https://legacy.example/card", trustLevel: "family",
+      a2a: { cardUrl: "https://legacy.example/card", endpointUrl: "https://legacy.example/a2a", agentId: "https://legacy.example/card" },
+    })
+    const rec = await aStore.findByExternalId("a2a-agent", "https://legacy.example/card")
+    const out = await tool("coordinate")({
+      friend_id: rec!.id, mission_key: "mk-legacy", mission_title: "L", task_summary: "do l",
+    }, localCtx(tmpA.agentRoot, aStore))
+    expect(out).toMatch(/DID-keyed peer|connect_to/i)
   })
 
   it("coordinate errors when the DID-keyed peer is unreachable (no endpoint to seal to)", async () => {

@@ -149,6 +149,9 @@ describe("send_result tool (B returns a result over the harness-owned wire)", ()
     const b = seededIdentity()
     cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
     const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    // A mission WITHOUT importedDelegations exists → the scan must skip it (`?? {}`)
+    // and still report not-found for the requestId.
+    await recordMission(delegationStoresFor(tmpB.agentRoot).missionStore, { missionKey: "empty-mk", title: "Empty" })
     const out = await tool("send_result")({ request_id: "nope", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
     expect(out).toMatch(/no.*delegation|unknown|not found/i)
   })
@@ -191,5 +194,65 @@ describe("send_result tool (B returns a result over the harness-owned wire)", ()
     tmpB = createTmpBundle({ agentName: "sr-no-ctx" })
     const out = await tool("send_result")({ request_id: "r", summary: "x" }, undefined)
     expect(out).toMatch(/no friend context|require/i)
+  })
+
+  // ── send_result delegator-resolution guards (the delegation exists but the delegator
+  // record is missing / untrusted / did-less / unparseable / endpoint-less) ───────────
+  async function seedDelegationWithDelegator(opts: { agentRoot: string; bStore: FileFriendStore; requestId: string; delegator?: Partial<FriendRecord> & { did?: string } }): Promise<string> {
+    const x = seededIdentity()
+    const did = opts.delegator?.did ?? x.id.did
+    const { missionStore } = delegationStoresFor(opts.agentRoot)
+    const now = new Date().toISOString()
+    const m = await recordMission(missionStore, { missionKey: `mk-${opts.requestId}`, title: "M" })
+    await missionStore.put(m.id, {
+      ...m,
+      importedDelegations: { [did]: { [opts.requestId]: { task: { requestId: opts.requestId, summary: "x" }, provenance: { assertedBy: { agentId: did, displayName: "X" }, assertedAt: now, origin: "imported" } } } },
+    })
+    return did
+  }
+
+  it("refuses when the delegator is not a known peer (delegation orphaned)", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-orphan" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "orphan" })
+    // No delegator record put into bStore → findFriendByDid misses.
+    const out = await tool("send_result")({ request_id: "orphan", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/delegating peer not found/i)
+  })
+
+  it("refuses when the delegator is below friend trust", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-untrusted-delegator" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    const did = await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "untrusted" })
+    await upsertAgentPeer(bStore, { name: "Acq", agentId: did, trustLevel: "acquaintance", a2a: { did, agentId: did, endpointUrl: "https://x.example/a2a" } })
+    const out = await tool("send_result")({ request_id: "untrusted", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/friend or family/i)
+  })
+
+  it("refuses when the delegator's DID is unparseable", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-badidkey-delegator" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    const badDid = "did:key:not-real"
+    await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "badkey", delegator: { did: badDid } })
+    await upsertAgentPeer(bStore, { name: "Bad", agentId: badDid, trustLevel: "family", a2a: { did: badDid, agentId: badDid, endpointUrl: "https://x.example/a2a" } })
+    const out = await tool("send_result")({ request_id: "badkey", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/unparseable/i)
+  })
+
+  it("refuses when the delegator has no reachable endpoint", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-noendpoint-delegator" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    const did = await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "noendpoint" })
+    await upsertAgentPeer(bStore, { name: "NoEp", agentId: did, trustLevel: "family", a2a: { did, agentId: did } })
+    const out = await tool("send_result")({ request_id: "noendpoint", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/no reachable A2A endpoint/i)
   })
 })
