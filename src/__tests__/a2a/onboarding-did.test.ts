@@ -87,15 +87,13 @@ describe("DID-keyed A2A onboarding (the footgun fix)", () => {
     expect(found?.agentMeta?.a2a?.did).toBe(peer.did)
   })
 
-  it("refuses a card whose DID binding fails verifyCardDidBinding (no record written)", async () => {
+  it("refuses a card whose served did:key is malformed/unparseable (no record written)", async () => {
     tmp = createTmpBundle({ agentName: "onboard-did-binding-fail" })
     const peer = mintIdentity()
-    const other = mintIdentity()
-    // The card claims `peer.did` but the onboarding is told (out of band) to verify
-    // against `other.did` — binding mismatch. We simulate the mismatch by serving a
-    // card whose `did` field disagrees with itself is impossible for did:key (the
-    // binding is `card.did === did`), so we serve a malformed did:key that fails the
-    // binding: a card.did that is NOT a parseable did:key string.
+    // For did:key, verifyCardDidBinding only checks `card.did === did` (self-contained),
+    // so the genuine refusal case is a card serving a DID that can never key/verify an
+    // inbound envelope: a malformed did:key (parseDidKey returns null). Onboarding it
+    // would silently break the later inbound resolve, so it is refused at link time.
     const card = { ...cardWithDid(peer.did), did: "did:key:not-a-real-key" }
 
     await expect(onboardA2APeer({
