@@ -1,99 +1,68 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash } from "node:crypto"
 import {
   base58btcDecode,
   base58btcEncode,
   type PinStore,
   type PinnedDid,
 } from "@ouro.bot/friends/a2a-client"
-import {
-  resolveAgentIdentity,
-  type FriendRecord,
-  type FriendStore,
-} from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 /**
- * A durable friends `PinStore` backed by the friend record's
- * `AgentMeta.identity.pinnedKey` (the library's defined home for a TOFU pin).
+ * A durable, harness-owned friends `PinStore` backed by a file home under
+ * `<agentRoot>/state/a2a/pins`, keyed `did → pinnedKey`. Mirrors the
+ * `FileA2ATaskStore` `state/a2a/tasks` precedent (`task-store.ts`).
  *
- * The friends `PinStore` interface is SYNCHRONOUS (`get`/`set`), but durability
- * requires the on-disk friend store. We reconcile this with a write-through cache:
- * an in-memory snapshot loaded once at construction (the restart-reload), served
- * synchronously, with `set` writing through to the record file synchronously so a
- * marked pin survives a restart. Single-writer: the a2a sense process.
+ * WHY HARNESS-OWNED (not `AgentMeta.identity.pinnedKey`): friends alpha.7's
+ * `FileFriendStore.normalizeAgentMeta` silently drops `AgentMeta.identity`
+ * (including `pinnedKey`) on every read AND write — only `a2a.did` round-trips.
+ * The library's `PinStore` is an injectable, host-provided interface and the
+ * library never touches the filesystem itself; the host owns storage. So the
+ * pinned KEY BYTES live here, in a harness-owned file, while the friend record
+ * keeps `a2a.did` for the DID-lookup. (The dropped-`identity` behavior is a known
+ * latent library gap, logged as a separate follow-up — NOT this store's concern.)
+ *
+ * The friends `PinStore` interface is SYNCHRONOUS (`get`/`set`). Durability is
+ * reconciled with a write-through cache: pins are loaded once at construction
+ * (the restart-reload) into an in-memory map served synchronously, and `set`
+ * writes through to disk synchronously so a marked pin survives a restart.
+ * Single-writer: the a2a sense process.
  *
  * `fromAgentId` is the peer's verified DID (the cross-agent primary key). An
- * empty-string DID is never a matchable key (it can never index a pin).
+ * empty-string DID is never a matchable key — it can never index a pin.
  */
 export interface DurablePinStore extends PinStore {
   /** The number of pins currently loaded (diagnostics/tests). */
   readonly size: number
 }
 
-interface CacheEntry {
-  pinned: PinnedDid
-  recordId: string
+/** On-disk shape of a single persisted pin (one file per DID). */
+interface StoredPin {
+  did: string
+  /** The pinned Ed25519 public key, base58btc-encoded. */
+  pinnedKey: string
 }
 
-/**
- * The friend-store directory layout we write through to. `FileFriendStore` stores
- * each record as `<friendsPath>/<id>.json`; we read+mutate+write that file directly
- * for the synchronous durable `set`, preserving every other (already-normalized)
- * field verbatim so the async store reads it back identically.
- */
-export interface LoadPinStoreInput {
-  store: FriendStore
-  /**
-   * The absolute friends directory the `store` persists to. Required for the
-   * synchronous durable write-through. Defaults are not inferred — the caller
-   * (the a2a sense) owns the path.
-   */
-  friendsDir: string
+function pinFileName(did: string): string {
+  return `${createHash("sha256").update(did).digest("hex")}.json`
 }
 
-function decodePinnedKey(pinnedKey: string): Uint8Array | null {
-  return base58btcDecode(pinnedKey)
-}
+export class FileA2APinStore implements DurablePinStore {
+  private readonly dir: string
+  private readonly cache = new Map<string, PinnedDid>()
 
-export async function loadPinStore(input: { store: FriendStore } & Partial<Pick<LoadPinStoreInput, "friendsDir">>): Promise<DurablePinStore> {
-  const store = input.store
-  // The friends dir: the store's own path when it exposes one (FileFriendStore),
-  // else the explicit override. FileFriendStore keeps `friendsPath` public.
-  const friendsDir = input.friendsDir
-    ?? (store as { friendsPath?: unknown }).friendsPath as string | undefined
-  /* v8 ignore next -- the a2a sense always constructs a FileFriendStore (friendsPath present) or passes friendsDir explicitly @preserve */
-  if (typeof friendsDir !== "string" || friendsDir.length === 0) {
-    throw new Error("loadPinStore requires a friends directory (store.friendsPath or input.friendsDir)")
+  constructor(agentRoot: string) {
+    this.dir = path.join(agentRoot, "state", "a2a", "pins")
+    fs.mkdirSync(this.dir, { recursive: true })
+    this.loadExisting()
+    emitNervesEvent({
+      component: "channels",
+      event: "channel.a2a_pin_store_init",
+      message: "initialized durable A2A pin store",
+      meta: { dir: this.dir, pins: this.cache.size },
+    })
   }
-
-  const cache = new Map<string, CacheEntry>()
-  const all = (typeof store.listAll === "function" ? await store.listAll() : []) as FriendRecord[]
-  for (const record of all) {
-    const identity = resolveAgentIdentity(record.agentMeta)
-    if (!identity.did || !identity.pinnedKey) continue
-    const ed25519Pub = decodePinnedKey(identity.pinnedKey)
-    /* v8 ignore next -- a persisted pinnedKey is always valid base58btc (we wrote it); guard protects hand-edited records @preserve */
-    if (!ed25519Pub) continue
-    cache.set(identity.did, { pinned: { did: identity.did, ed25519Pub }, recordId: record.id })
-  }
-
-  emitNervesEvent({
-    component: "channels",
-    event: "channel.a2a_pin_store_loaded",
-    message: "loaded durable A2A pin store",
-    meta: { pins: cache.size, friendsDir },
-  })
-
-  return new FileBackedPinStore(cache, friendsDir)
-}
-
-class FileBackedPinStore implements DurablePinStore {
-  constructor(
-    private readonly cache: Map<string, CacheEntry>,
-    private readonly friendsDir: string,
-  ) {}
 
   get size(): number {
     return this.cache.size
@@ -101,92 +70,60 @@ class FileBackedPinStore implements DurablePinStore {
 
   get(fromAgentId: string): PinnedDid | undefined {
     if (!fromAgentId) return undefined
-    const entry = this.cache.get(fromAgentId)
-    if (!entry) return undefined
+    const pinned = this.cache.get(fromAgentId)
+    if (!pinned) return undefined
     emitNervesEvent({
       component: "channels",
       event: "channel.a2a_pin_hit",
       message: "A2A pin hit",
       meta: { did: fromAgentId },
     })
-    return entry.pinned
+    return pinned
   }
 
   set(fromAgentId: string, pinned: PinnedDid): void {
     // An empty-string DID is never a matchable key (security: it can never index a
-    // pin). Stay inert rather than minting an unkeyed record.
+    // pin). Stay inert rather than writing an unkeyed pin file.
     if (!fromAgentId) return
-    const pinnedKey = base58btcEncode(pinned.ed25519Pub)
-    const existing = this.cache.get(fromAgentId)
-    const recordId = existing?.recordId ?? this.writeNewRecord(fromAgentId, pinnedKey)
-    if (existing) this.writePinOntoRecord(recordId, fromAgentId, pinnedKey)
-    this.cache.set(fromAgentId, { pinned: { did: fromAgentId, ed25519Pub: pinned.ed25519Pub }, recordId })
+    const existed = this.cache.has(fromAgentId)
+    const stored: StoredPin = { did: fromAgentId, pinnedKey: base58btcEncode(pinned.ed25519Pub) }
+    fs.writeFileSync(
+      path.join(this.dir, pinFileName(fromAgentId)),
+      `${JSON.stringify(stored, null, 2)}\n`,
+      "utf-8",
+    )
+    this.cache.set(fromAgentId, { did: fromAgentId, ed25519Pub: pinned.ed25519Pub })
     emitNervesEvent({
       component: "channels",
       event: "channel.a2a_pin_set",
-      message: "set durable A2A pin (first-contact)",
-      meta: { did: fromAgentId, newRecord: !existing },
+      message: "set durable A2A pin",
+      meta: { did: fromAgentId, rotated: existed },
     })
   }
 
-  private recordPath(recordId: string): string {
-    return path.join(this.friendsDir, `${recordId}.json`)
-  }
-
-  /** Merge the pin onto an EXISTING record's `agentMeta.identity`, preserving all
-   * other (already-normalized) fields verbatim. Synchronous + durable. */
-  private writePinOntoRecord(recordId: string, did: string, pinnedKey: string): void {
-    const file = this.recordPath(recordId)
-    const raw = JSON.parse(fs.readFileSync(file, "utf-8")) as FriendRecord
-    const now = new Date().toISOString()
-    const agentMeta = raw.agentMeta ?? {
-      bundleName: raw.name,
-      familiarity: 0,
-      sharedMissions: [],
-      outcomes: [],
+  /** Reload every persisted pin from disk into the in-memory cache (the restart
+   * replay). Corrupt/undecodable files are skipped so one bad file can never
+   * wedge the store. */
+  private loadExisting(): void {
+    let entries: string[]
+    try {
+      entries = fs.readdirSync(this.dir)
+    } catch {
+      /* v8 ignore next -- the constructor mkdirSync's the dir before this runs; unreadable dir is unreachable in practice @preserve */
+      return
     }
-    const next: FriendRecord = {
-      ...raw,
-      agentMeta: {
-        ...agentMeta,
-        identity: { ...(agentMeta.identity ?? {}), did, pinnedKey, pinnedAt: agentMeta.identity?.pinnedAt ?? now },
-      },
-      updatedAt: now,
+    for (const name of entries) {
+      if (!name.endsWith(".json")) continue
+      let stored: StoredPin
+      try {
+        stored = JSON.parse(fs.readFileSync(path.join(this.dir, name), "utf-8")) as StoredPin
+      } catch {
+        continue
+      }
+      if (!stored.did || !stored.pinnedKey) continue
+      const ed25519Pub = base58btcDecode(stored.pinnedKey)
+      if (!ed25519Pub) continue
+      this.cache.set(stored.did, { did: stored.did, ed25519Pub })
     }
-    fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, "utf-8")
-  }
-
-  /** Mint a minimal safe-by-default `agent` friend record carrying the pin, when no
-   * record exists for this DID yet. Mirrors `upsertAgentPeer`'s record shape at
-   * `stranger` trust (the cold-contact default). Synchronous + durable. */
-  private writeNewRecord(did: string, pinnedKey: string): string {
-    const id = randomUUID()
-    const now = new Date().toISOString()
-    const record: FriendRecord = {
-      id,
-      name: did,
-      role: "agent-peer",
-      trustLevel: "stranger",
-      kind: "agent",
-      externalIds: [{ provider: "a2a-agent", externalId: did, linkedAt: now }],
-      tenantMemberships: [],
-      toolPreferences: {},
-      notes: {},
-      totalTokens: 0,
-      createdAt: now,
-      updatedAt: now,
-      schemaVersion: 1,
-      agentMeta: {
-        bundleName: did,
-        familiarity: 0,
-        sharedMissions: [],
-        outcomes: [],
-        identity: { did, pinnedKey, pinnedAt: now },
-        a2a: { agentId: did, did },
-      },
-    }
-    fs.mkdirSync(this.friendsDir, { recursive: true })
-    fs.writeFileSync(this.recordPath(id), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
-    return id
   }
 }
