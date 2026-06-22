@@ -3,9 +3,18 @@ import { getAgentRoot } from "../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { isTrustedLevel, FileFriendStore, authorizeConnect, connectAgents } from "@ouro.bot/friends"
 import type { FriendRecord, FriendStore, SenseType } from "@ouro.bot/friends"
+import {
+  ready,
+  resolveReachability,
+  sendShare,
+  keyAgreementFromDidKey,
+  parseDidKey,
+} from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
 import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage } from "../a2a/client"
 import { onboardA2APeer } from "../a2a/onboarding"
+import { loadSelfA2AIdentity } from "../a2a/identity"
+import { makeA2ATransport } from "../a2a/transport"
 import type { A2ATask } from "../a2a/types"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
@@ -113,6 +122,70 @@ async function resolveA2AEndpoint(friend: FriendRecord): Promise<{ endpointUrl: 
 function senseTypeOf(ctx?: ToolContext): SenseType {
   /* v8 ignore next -- in-turn tool calls always carry a resolved channel context; the open-default fail-closed fallback is defensive @preserve */
   return ctx?.context?.channel?.senseType ?? "open"
+}
+
+/** The pinned DID a peer record carries (its durable A2A identity), or undefined for a
+ * legacy (non-DID-keyed) peer. */
+function peerDid(peer: FriendRecord): string | undefined {
+  const did = peer.agentMeta?.a2a?.did
+  return typeof did === "string" && did.trim() ? did.trim() : undefined
+}
+
+/**
+ * Seal an outbound free-text message to a DID-keyed peer and deliver it over the
+ * `direct` rung via friends' `sendShare`. The text rides a minimal `coordination`
+ * envelope (`intent:"offer"`, the text as `note`) — the kind the Slice-1 inbound
+ * bridge verifies (signed sender DID) and turns into a peer turn. `sendShare` builds
+ * the SAME SealedEnvelope regardless of rung, `wrapInDataPart`-wraps it, and calls the
+ * transport itself; the recipient X25519 is derived from the peer's pinned did:key.
+ * Throws when the peer's DID is unparseable (cannot seal) or the rung is unreachable.
+ */
+async function sealAndSendToPeer(input: {
+  agentName: string
+  selfAgentId: string
+  peer: FriendRecord
+  did: string
+  message: string
+  sessionKey?: string
+}): Promise<void> {
+  const parsed = parseDidKey(input.did)
+  if (!parsed) throw new Error(`cannot seal: peer DID is not a parseable did:key (${input.did})`)
+  const sodium = await ready()
+  const self = await loadSelfA2AIdentity({ agentName: input.agentName, sodium })
+
+  const reachability = resolveReachability(input.peer.agentMeta?.a2a, input.peer.agentMeta?.mailbox)
+  if (reachability.rung === "unreachable") {
+    throw new Error("cannot seal: peer has no reachable A2A endpoint")
+  }
+
+  const envelope: Record<string, unknown> = {
+    subject: { missionKey: `dm:${self.did}:${input.did}`, title: "Direct message" },
+    fromAgentId: self.did,
+    intent: "offer",
+    note: input.message,
+    issuedAt: new Date().toISOString(),
+  }
+
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.a2a_outbound_seal",
+    message: "sealing outbound A2A message to a DID-keyed peer",
+    meta: { selfDid: self.did, peerDid: input.did, rung: reachability.rung },
+  })
+
+  const result = await sendShare({
+    sodium,
+    transport: makeA2ATransport(),
+    fromIdentity: { did: self.did, keyId: self.keyId, ed25519Priv: self.ed25519Priv },
+    toPeer: { a2a: input.peer.agentMeta?.a2a },
+    recipientDid: input.did,
+    recipientX25519Pub: keyAgreementFromDidKey({ sodium, ed25519Pub: parsed.ed25519Pub }),
+    plaintextEnvelope: envelope,
+    friendsKind: "coordination",
+  })
+  if (!result.ok) {
+    throw new Error(`sealed send failed (${result.reason})`)
+  }
 }
 
 export const a2aToolDefinitions: ToolDefinition[] = [
@@ -272,6 +345,27 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       const peer = await storeFor(ctx).get(args.friend_id)
       if (!peer || !isA2APeer(peer)) return `A2A peer not found: ${args.friend_id}`
       if (!isTrustedLevel(peer.trustLevel)) return "target A2A peer must be friend or family trust before outbound messages."
+
+      // ROUTING (explicit, no impl judgment): a DID-keyed peer → seal+sign via
+      // sendShare over the direct rung (E2E, verified-DID inbound). A legacy peer
+      // with no pinned DID → the existing text send, byte-for-byte unchanged.
+      const did = peerDid(peer)
+      if (did) {
+        try {
+          await sealAndSendToPeer({
+            agentName: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
+            selfAgentId: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
+            peer,
+            did,
+            message: args.message,
+            ...(args.session_key ? { sessionKey: args.session_key } : {}),
+          })
+          return `sealed message delivered to ${peer.name} (${did}) over the direct rung.`
+        } catch (error) {
+          return `A2A sealed send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures @preserve */ String(error)}`
+        }
+      }
+
       try {
         const endpoint = await resolveA2AEndpoint(peer)
         const task = await sendA2AMessage({

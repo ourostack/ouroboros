@@ -1,7 +1,13 @@
 import * as crypto from "node:crypto"
-import { didKeyIdentityFromEd25519, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
+import * as os from "node:os"
+import { didKeyIdentityFromEd25519, ready, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { RuntimeCredentialConfig } from "../heart/runtime-credentials"
+import {
+  readMachineRuntimeCredentialConfig,
+  upsertMachineRuntimeCredentialConfig,
+  type RuntimeCredentialConfig,
+} from "../heart/runtime-credentials"
+import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 
 /**
  * The agent's self A2A cryptographic identity: a did:key over an Ed25519 seed.
@@ -124,4 +130,27 @@ export async function loadOrMintA2AIdentity(input: LoadOrMintA2AIdentityInput): 
     meta: { agentName: input.agentName, did: identity.did },
   })
   return identity
+}
+
+/**
+ * Load (or mint-on-first-use) THIS agent's own A2A identity from the machine-local
+ * runtime config — the convenience entry the main-process tools use to obtain the
+ * self identity that signs outbound sealed envelopes. Mirrors the a2a sense
+ * entrypoint's load (read machine config → `loadOrMintA2AIdentity` → persist a fresh
+ * seed under the right machine id). Reads the in-memory machine-config cache (no
+ * remote vault round-trip per call). `sodium` is optional (defaults to `ready()`).
+ */
+export async function loadSelfA2AIdentity(input: { agentName: string; sodium?: Sodium }): Promise<A2AIdentity> {
+  const sodium = input.sodium ?? await ready()
+  const machineId = loadOrCreateMachineIdentity({ homeDir: os.homedir() }).machineId
+  const read = readMachineRuntimeCredentialConfig(input.agentName)
+  const config = read.ok ? read.config : {}
+  return loadOrMintA2AIdentity({
+    agentName: input.agentName,
+    sodium,
+    config,
+    upsert: async (next) => {
+      await upsertMachineRuntimeCredentialConfig(input.agentName, machineId, next)
+    },
+  })
 }
