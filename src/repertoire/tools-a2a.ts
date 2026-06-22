@@ -1,21 +1,23 @@
 import * as path from "node:path"
 import { getAgentRoot } from "../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { isTrustedLevel, FileFriendStore, authorizeConnect, connectAgents, prepareCoordination, recordMission } from "@ouro.bot/friends"
+import { isTrustedLevel, FileFriendStore, authorizeConnect, connectAgents, prepareCoordination, prepareMissionResult, recordMission, findFriendByDid } from "@ouro.bot/friends"
 import type { FriendRecord, FriendStore, SenseType, MissionRecord } from "@ouro.bot/friends"
 import {
   ready,
   resolveReachability,
   sendShare,
+  sealEnvelope,
   keyAgreementFromDidKey,
   parseDidKey,
 } from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
-import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage } from "../a2a/client"
+import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage, postA2AMessageEnvelope } from "../a2a/client"
 import { onboardA2APeer } from "../a2a/onboarding"
 import { loadSelfA2AIdentity } from "../a2a/identity"
 import { makeA2ATransport } from "../a2a/transport"
 import { delegationStoresFor } from "../a2a/delegation-stores"
+import { wrapMissionResultDataPart } from "../a2a/mission-result-wire"
 import type { A2ATask } from "../a2a/types"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
@@ -130,6 +132,19 @@ function senseTypeOf(ctx?: ToolContext): SenseType {
 function peerDid(peer: FriendRecord): string | undefined {
   const did = peer.agentMeta?.a2a?.did
   return typeof did === "string" && did.trim() ? did.trim() : undefined
+}
+
+/** Locate an imported delegation by its correlation `requestId` across all missions:
+ * who delegated it (`fromAgentId`) + which local mission (`missionId`). The delegation
+ * lives under `importedDelegations[fromAgentId][requestId]` — what the inbound bridge
+ * quarantined. Returns undefined when no mission carries that requestId. */
+function findImportedDelegation(missions: MissionRecord[], requestId: string): { fromAgentId: string; missionId: string } | undefined {
+  for (const mission of missions) {
+    for (const [fromAgentId, byRequest] of Object.entries(mission.importedDelegations ?? {})) {
+      if (byRequest[requestId]) return { fromAgentId, missionId: mission.id }
+    }
+  }
+  return undefined
 }
 
 /**
@@ -558,5 +573,95 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       return JSON.stringify(rows, null, 2)
     },
     summaryKeys: [],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "send_result",
+        description: "Return a result for a delegation another agent sent you (by its requestId, from list_delegations). Seals the result and delivers it back to the delegating agent over the direct rung; they import it (assignee/correlation-gated). Deliver-back is explicit — do the work in your turn, then call this.",
+        parameters: {
+          type: "object",
+          properties: {
+            request_id: { type: "string", description: "The delegation correlation requestId (from list_delegations)." },
+            summary: { type: "string", description: "A summary of the result/deliverable." },
+            artifact: { type: "string", description: "Optional artifact reference (e.g. a PR or document URL)." },
+          },
+          required: ["request_id", "summary"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.tool_send_result",
+        message: "send_result invoked",
+        meta: { tool: "send_result", requestId: args.request_id },
+      })
+      const guard = requireTrustedRequester(ctx)
+      if (guard) return guard
+      const store = storeFor(ctx)
+      const { missionStore, grantStore } = delegationStoresFor(ctx?.agentRoot ?? getAgentRoot())
+
+      // Find the imported delegation this result answers (who delegated + which mission).
+      const missions: MissionRecord[] = missionStore.listAll ? await missionStore.listAll() : []
+      const found = findImportedDelegation(missions, args.request_id)
+      if (!found) return `no imported delegation found for requestId ${args.request_id} (check list_delegations).`
+
+      // The delegator (the recipient of the result) must be a trusted, reachable,
+      // DID-keyed peer in our store.
+      const delegator = await findFriendByDid(store, found.fromAgentId)
+      if (!delegator || !isA2APeer(delegator)) return `delegating peer not found for ${found.fromAgentId}.`
+      if (!isTrustedLevel(delegator.trustLevel)) return "delegating peer must be friend or family trust to return a result."
+      const delegatorDid = peerDid(delegator)
+      if (!delegatorDid) return "delegating peer is not DID-keyed (cannot seal the result)."
+      const parsedDelegator = parseDidKey(delegatorDid)
+      if (!parsedDelegator) return `cannot seal: delegating peer DID is unparseable (${delegatorDid}).`
+      const endpointUrl = delegator.agentMeta?.a2a?.endpointUrl
+      if (!endpointUrl) return "delegating peer has no reachable A2A endpoint to return the result to."
+
+      const agentName = agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent"
+      try {
+        const sodium = await ready()
+        const self = await loadSelfA2AIdentity({ agentName, sodium })
+        // prepareMissionResult records the result first-party (results[requestId]) +
+        // returns the MissionResultEnvelope (consent-gated: trust ≥ friend recipient).
+        const prepared = await prepareMissionResult(missionStore, store, grantStore, {
+          missionId: found.missionId,
+          toAgentId: delegatorDid,
+          requestId: args.request_id,
+          selfAgentId: self.did,
+          result: { summary: args.summary, ...(args.artifact ? { artifact: args.artifact } : {}) },
+        })
+        if (!prepared.ok) {
+          return `send_result refused (${prepared.status}).`
+        }
+
+        // HARNESS-OWNED RESULT WIRE: seal the envelope (reusing the seal crypto), wrap
+        // it in the mission_result-tagged DataPart, and POST it to the delegator over
+        // direct. The inbound side routes it to importMissionResult (NOT receiveShare).
+        const sealed = sealEnvelope({
+          sodium,
+          envelope: prepared.envelope as unknown as Record<string, unknown>,
+          friendsKind: "coordination",
+          fromIdentity: { did: self.did, keyId: self.keyId, ed25519Priv: self.ed25519Priv },
+          recipientDid: delegatorDid,
+          recipientX25519Pub: keyAgreementFromDidKey({ sodium, ed25519Pub: parsedDelegator.ed25519Pub }),
+        })
+        const message = wrapMissionResultDataPart({ sealedEnvelope: sealed, recipientDid: delegatorDid })
+        emitNervesEvent({
+          component: "channels",
+          event: "channel.a2a_result_send",
+          message: "delivering sealed mission result over the direct rung",
+          meta: { selfDid: self.did, toDid: delegatorDid, requestId: args.request_id },
+        })
+        await postA2AMessageEnvelope({ endpointUrl, message })
+        return `result sent to ${delegator.name} (${delegatorDid}) for requestId ${args.request_id}.`
+      } catch (error) {
+        return `send_result error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
+      }
+    },
+    summaryKeys: ["request_id"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "returns a result to a remote agent peer" },
   },
 ]
