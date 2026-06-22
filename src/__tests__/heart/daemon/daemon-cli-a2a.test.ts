@@ -201,7 +201,10 @@ describe("ouro A2A CLI execution", () => {
         }) as Response,
       }))
       expect(result).toContain("onboarded A2A peer: Display Remote")
-      expect(result).toContain("trust: acquaintance")
+      // @ouro.bot/friends alpha.7 hardened cold contact: a brand-new peer onboarded
+      // with no explicit --trust now lands at `stranger` (safe-by-default), not
+      // `acquaintance`. The owner raises trust explicitly via --trust or connect_to.
+      expect(result).toContain("trust: stranger")
     } finally {
       rmSync(bundlesRoot, { recursive: true, force: true })
     }

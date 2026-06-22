@@ -715,7 +715,9 @@ describe("A2A core substrate", () => {
       })) as typeof fetch,
     })
     expect(spoofed.id).not.toBe(record.id)
-    expect(spoofed.trustLevel).toBe("acquaintance")
+    // @ouro.bot/friends alpha.7 hardened cold contact: a brand-new (spoofed) peer with
+    // no explicit trustLevel lands at `stranger` (safe-by-default), not `acquaintance`.
+    expect(spoofed.trustLevel).toBe("stranger")
     expect((await store.get(record.id))?.agentMeta?.a2a?.endpointUrl).toBe("https://remote.example/a2a")
 
     await store.put(record.id, {
