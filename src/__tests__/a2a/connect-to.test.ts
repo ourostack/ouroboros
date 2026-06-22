@@ -135,6 +135,44 @@ describe("connect_to tool (owner/local sense, DID-keyed)", () => {
     expect(out).toMatch(/no friend context|require/i)
   })
 
+  it("honors an explicit display name for the linked peer", async () => {
+    tmp = createTmpBundle({ agentName: "connect-named" })
+    const peer = mintIdentity()
+    const cardUrl = await startPeer(tmp.agentRoot, peer)
+    const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    const ctx = ctxAt("local", { agentRoot: tmp.agentRoot, store })
+
+    const out = await tool("connect_to")({ card_url: cardUrl, name: "My Other Self" }, ctx)
+    expect(out).toMatch(/connected/i)
+    const found = await findFriendByDid(store, peer.did)
+    expect(found?.name).toBe("My Other Self")
+  })
+
+  it("links a did-less (legacy) card via its URL handle at family", async () => {
+    tmp = createTmpBundle({ agentName: "connect-legacy-url" })
+    // A peer server WITHOUT an identity serves a did-less card.
+    peerServer = await startA2AServer({
+      agentName: "legacy-peer",
+      agentRoot: tmp.agentRoot,
+      port: 0,
+      turnRunner: async ({ message }) => ({ response: `legacy:${message}` }),
+    })
+    const cardUrl = `${peerServer.url}/.well-known/agent-card.json`
+    const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    const ctx = ctxAt("local", { agentRoot: tmp.agentRoot, store })
+
+    const out = await tool("connect_to")({ card_url: cardUrl }, ctx)
+    expect(out).toMatch(/connected/i)
+    expect(out).toMatch(/family/i)
+    // The record is URL-keyed (no DID on the card) and linked at family.
+    const all = store.listAll ? await store.listAll.call(store) : []
+    expect(all).toHaveLength(1)
+    expect(all[0].trustLevel).toBe("family")
+    const a2aExternal = all[0].externalIds.find((id) => id.provider === "a2a-agent")
+    expect(a2aExternal?.externalId).toBe(cardUrl)
+    expect(all[0].agentMeta?.a2a?.did).toBeUndefined()
+  })
+
   it("returns an error when the peer card cannot be fetched (no link)", async () => {
     tmp = createTmpBundle({ agentName: "connect-fetch-fail" })
     const store = new FileFriendStore(`${tmp.agentRoot}/friends`)

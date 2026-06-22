@@ -179,6 +179,10 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           store,
         })
         const did = onboarded.agentMeta?.a2a?.did
+        // onboardA2APeer always sets a2a.agentId (== the DID when DID-keyed, else the
+        // card URL), so this is the resolvable handle connectAgents disambiguates on.
+        /* v8 ignore next -- upsertAgentPeer always writes a2a.agentId; the record-id fallback guards a future store-shape regression @preserve */
+        const peerHandle = onboarded.agentMeta?.a2a?.agentId ?? onboarded.id
 
         // 2) The authority-gated link + control-plane audit. connectAgents re-runs the
         //    `local` gate, resolves the just-written record (by DID when present, else
@@ -186,14 +190,14 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         const result = await connectAgents(
           store,
           {
-            peer: did ? { did } : { agentId: onboarded.agentMeta?.a2a?.agentId ?? onboarded.id },
+            peer: did ? { did } : { agentId: peerHandle },
             senseType,
             trustLevel: "family",
           },
           { actor: "owner:local", originSense: senseType },
         )
+        /* v8 ignore next 3 -- onboardA2APeer wrote a DID/agentId-keyed record, so connectAgents always resolves it (ok:true); this guards a future store-shape regression @preserve */
         if (!result.ok) {
-          /* v8 ignore next -- onboardA2APeer wrote a DID/agentId-keyed record, so connectAgents always resolves it; this guards a future store-shape regression @preserve */
           return `connect_to could not complete the link (${result.status}).`
         }
         return `connected ${result.record.name} (${did ?? result.record.id}) at family trust.`

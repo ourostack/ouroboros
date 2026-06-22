@@ -20,6 +20,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "commerce_checkout_commit",
   "commerce_checkout_preview",
   "commerce_receipt_get",
+  "connect_to",
   "consult_diary",
   "consult_notes",
   "credential_delete",
