@@ -177,8 +177,9 @@ function untrustedTurnPeerExternalId(): string {
 }
 
 /** Whether an inbound message carries a friends sealed DataPart (`kind:"data"`). */
-function messageHasDataPart(message: A2AMessage | null): boolean {
-  if (!message || !Array.isArray(message.parts)) return false
+function messageHasDataPart(message: A2AMessage): boolean {
+  /* v8 ignore next -- defensive: callers pass a parsed inbound whose `parts` is always an array; guards malformed direct input @preserve */
+  if (!Array.isArray(message.parts)) return false
   return message.parts.some((part) => part && part.kind === "data")
 }
 
@@ -426,12 +427,15 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
             writeJson(res, 200, errorResponse(rpc.id, rejectionErrorCode(bridged.reason), `A2A share rejected: ${bridged.reason}`))
             return
           }
+          // A message with a data part always resolves to completed|rejected — the
+          // bridge only returns "not-a-share" when there is NO data part, which the
+          // `messageHasDataPart` gate above excludes. So this is the completed path.
+          /* v8 ignore next -- "not-a-share" is unreachable here (gated by messageHasDataPart) @preserve */
           if (bridged.outcome === "completed") {
             verifiedPeerAgentId = bridged.verifiedDid
             verifiedPeerName = bridged.verifiedDid
             verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
           }
-          // outcome "not-a-share" ⇒ fall through to the text path below.
         }
 
         const text = verifiedShareText ?? textFromMessage(inbound)

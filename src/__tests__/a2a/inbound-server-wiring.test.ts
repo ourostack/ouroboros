@@ -177,4 +177,43 @@ describe("server inbound DataPart wiring (verified-DID → turn keying)", () => 
     expect("error" in response).toBe(true)
     expect(seen.length).toBe(0)
   })
+
+  it("a malformed DataPart (valid kind:'data' but bad sealed payload) → -32602 invalid-params, no turn", async () => {
+    tmp = createTmpBundle({ agentName: "wiring-malformed" })
+    const recipient = mintIdentity()
+    const seen: A2ATurnRunnerInput[] = []
+    server = await startA2AServer({
+      agentName: tmp.agentName,
+      agentRoot: tmp.agentRoot,
+      port: 0,
+      identity: asSelf(recipient),
+      turnRunner: async (input) => {
+        seen.push(input)
+        return { response: "x" }
+      },
+    })
+
+    // A data part whose payload is not a valid sealed envelope → the bridge returns
+    // `malformed_message`, which the server maps to -32602 (invalid params).
+    const response = await postMessage({ role: "agent", parts: [{ kind: "data", data: { bogus: true } }] })
+    expect("error" in response).toBe(true)
+    if ("error" in response) expect(response.error.code).toBe(-32602)
+    expect(seen.length).toBe(0)
+  })
+
+  it("the served agent card carries the agent's did:key when the server has an identity", async () => {
+    tmp = createTmpBundle({ agentName: "wiring-card" })
+    const recipient = mintIdentity()
+    server = await startA2AServer({
+      agentName: tmp.agentName,
+      agentRoot: tmp.agentRoot,
+      port: 0,
+      identity: asSelf(recipient),
+      turnRunner: async () => ({ response: "x" }),
+    })
+
+    const res = await fetch(`${server.url}/.well-known/agent-card.json`)
+    const card = (await res.json()) as { did?: string }
+    expect(card.did).toBe(recipient.did)
+  })
 })

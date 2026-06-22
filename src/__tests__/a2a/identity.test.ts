@@ -62,6 +62,27 @@ describe("a2a Ed25519 identity mint/load", () => {
     expect((seed ?? "").length).toBeGreaterThan(0)
   })
 
+  it("mints into an EXISTING a2a.identity block (no seed yet), preserving the block's other keys", async () => {
+    // A pre-existing a2a.identity block WITHOUT a seed → the mint path must merge
+    // the new seed onto the existing block (not clobber it).
+    const harness = makeConfigHarness({ a2a: { identity: { label: "primary" } } } as RuntimeCredentialConfig)
+
+    const identity = await loadOrMintA2AIdentity({
+      agentName: "mint-merge",
+      sodium,
+      config: harness.read(),
+      upsert: harness.upsert,
+    })
+    expect(identity.did.startsWith("did:key:z")).toBe(true)
+    expect(harness.upsertCalls).toBe(1)
+
+    // The seed was added AND the pre-existing identity-block key survived.
+    const after = harness.read()
+    const a2a = after.a2a as { identity?: Record<string, unknown> } | undefined
+    expect(a2a?.identity?.ed25519Seed).toBeDefined()
+    expect(a2a?.identity?.label).toBe("primary")
+  })
+
   it("loads the existing identity from a stored seed WITHOUT re-minting (no upsert)", async () => {
     const harness = makeConfigHarness()
     // First mint to populate the seed.
