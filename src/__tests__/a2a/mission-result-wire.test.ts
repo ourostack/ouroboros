@@ -105,6 +105,29 @@ describe("mission_result wire (harness-owned, NOT a FriendsKind)", () => {
     expect(isMissionResultDataPart(plain)).toBe(false)
     // A text message is not a result part either.
     expect(isMissionResultDataPart({ role: "user", parts: [{ text: "hi" }] })).toBe(false)
+    // A message with no parts array at all is not a result part (the !Array.isArray guard).
+    expect(isMissionResultDataPart({ role: "user" } as unknown as A2AMessage)).toBe(false)
+  })
+
+  it("malformed mission_result carriers are ignored by the wire (unwrap guards → not-a-result)", async () => {
+    // Each of these reaches receiveInboundMissionResult and must unwrap to null
+    // (not-a-result), exercising the carrier-shape guards before any crypto runs.
+    tmp = createTmpBundle({ agentName: "result-malformed-carrier" })
+    const a = mintIdentity()
+    const aStore = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    const deps = depsFor(tmp.agentRoot, a, aStore)
+
+    // (a) not exactly one part (length !== 1) — zero parts.
+    const zeroParts: A2AMessage = { role: "agent", parts: [] }
+    expect((await receiveInboundMissionResult(zeroParts, deps)).outcome).toBe("not-a-result")
+
+    // (b) a single data part whose ouroKind is NOT mission_result.
+    const wrongKind: A2AMessage = { role: "agent", parts: [{ kind: "data", data: { v: 1, sealed: { n: "x", ct: "y" }, recipientDid: a.did, ouroKind: "something_else" } }] }
+    expect((await receiveInboundMissionResult(wrongKind, deps)).outcome).toBe("not-a-result")
+
+    // (c) a tagged mission_result part with a malformed `v` (not a number).
+    const badV: A2AMessage = { role: "agent", parts: [{ kind: "data", data: { v: "nope", sealed: { n: "x", ct: "y" }, recipientDid: a.did, ouroKind: "mission_result" } }] }
+    expect((await receiveInboundMissionResult(badV, deps)).outcome).toBe("not-a-result")
   })
 
   it("happy path: A imports B's result → importedResults[B][requestId] (transport-supplied fromAgentId)", async () => {
@@ -183,12 +206,45 @@ describe("mission_result wire (harness-owned, NOT a FriendsKind)", () => {
     const message = sealedResultFrom(m /* attacker signs */, a, forged)
 
     const out = await receiveInboundMissionResult(message, deps)
-    // MUST be rejected — the signer (M) is not the claimed sender (B).
+    // MUST be rejected — the signer (M) is not the claimed sender (B). The binding
+    // check (signerDid !== fromAgentId) catches this BEFORE any import gate.
     expect(out.outcome).toBe("rejected")
+    if (out.outcome === "rejected") expect(out.reason).toBe("sender_binding_mismatch")
 
     // And NOTHING must be written under B — the forgery did not land as if B delivered it.
     const reloaded = await delegationStoresFor(tmp.agentRoot).missionStore.findByMissionKey("mk-forge")
     expect(reloaded?.importedResults?.[b.did]?.["req-1"]).toBeUndefined()
+    expect(reloaded?.importedResults).toBeUndefined()
+  })
+
+  it("SECURITY: the sender DID fails to resolve/pin (unparseable did:key) → resolve_failed", async () => {
+    // The binding check passes (signerDid === fromAgentId, non-empty) but the claimed
+    // DID is not a parseable did:key, so resolveAndPin returns null → the verifier can
+    // never be built → reject as resolve_failed (the verify-and-pin gate, BEFORE import).
+    tmp = createTmpBundle({ agentName: "result-resolve-failed" })
+    const a = mintIdentity()
+    const signer = mintIdentity() // real signing keypair...
+    const badDid = "did:key:not-a-real-key" // ...but an unparseable DID string
+    const aStore = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    const { missionStore } = delegationStoresFor(tmp.agentRoot)
+    const now = new Date().toISOString()
+    const m = await recordMission(missionStore, { missionKey: "mk-rf", title: "Mrf" })
+    await missionStore.put(m.id, {
+      ...m,
+      delegations: { "req-rf": { task: { requestId: "req-rf", summary: "x" }, assignee: { agentId: badDid, displayName: "X" }, provenance: { assertedBy: { agentId: a.did, displayName: "A" }, assertedAt: now } } },
+    })
+    // Sign with a real key, but make BOTH the signerDid and the claimed fromAgentId the
+    // unparseable DID (so the binding check passes and resolveAndPin is the failing step).
+    const signerWithBadDid: DidKeyIdentity = { ...signer, did: badDid }
+    const envelope: MissionResultEnvelope = {
+      subject: { missionKey: "mk-rf", title: "Mrf" }, fromAgentId: badDid, requestId: "req-rf",
+      result: { requestId: "req-rf", summary: "x", provenance: { assertedBy: { agentId: badDid, displayName: "X" }, assertedAt: now } },
+      issuedAt: now,
+    }
+    const out = await receiveInboundMissionResult(sealedResultFrom(signerWithBadDid, a, envelope), depsFor(tmp.agentRoot, a, aStore))
+    expect(out.outcome).toBe("rejected")
+    if (out.outcome === "rejected") expect(out.reason).toBe("resolve_failed")
+    const reloaded = await delegationStoresFor(tmp.agentRoot).missionStore.findByMissionKey("mk-rf")
     expect(reloaded?.importedResults).toBeUndefined()
   })
 
