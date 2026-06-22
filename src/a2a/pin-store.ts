@@ -37,15 +37,21 @@ export interface DurablePinStore extends PinStore {
   readonly size: number
 }
 
-/** On-disk shape of a single persisted pin (one file per DID). */
+/** On-disk shape of a single persisted pin (one file per `fromAgentId`). The pin
+ * is KEYED by the stable `fromAgentId`, while `did` is the pinned identity's DID —
+ * these are equal on first contact but DIVERGE across a key rotation (same
+ * `fromAgentId`, new `did`), so both are stored faithfully. */
 interface StoredPin {
+  /** The stable peer key this pin is filed under. */
+  fromAgentId: string
+  /** The pinned identity's DID (may differ from `fromAgentId` after a rotation). */
   did: string
   /** The pinned Ed25519 public key, base58btc-encoded. */
   pinnedKey: string
 }
 
-function pinFileName(did: string): string {
-  return `${createHash("sha256").update(did).digest("hex")}.json`
+function pinFileName(fromAgentId: string): string {
+  return `${createHash("sha256").update(fromAgentId).digest("hex")}.json`
 }
 
 export class FileA2APinStore implements DurablePinStore {
@@ -76,7 +82,7 @@ export class FileA2APinStore implements DurablePinStore {
       component: "channels",
       event: "channel.a2a_pin_hit",
       message: "A2A pin hit",
-      meta: { did: fromAgentId },
+      meta: { fromAgentId, did: pinned.did },
     })
     return pinned
   }
@@ -86,18 +92,24 @@ export class FileA2APinStore implements DurablePinStore {
     // pin). Stay inert rather than writing an unkeyed pin file.
     if (!fromAgentId) return
     const existed = this.cache.has(fromAgentId)
-    const stored: StoredPin = { did: fromAgentId, pinnedKey: base58btcEncode(pinned.ed25519Pub) }
+    // Faithfully persist the pinned identity's DID (which may differ from
+    // fromAgentId after a rotation), not fromAgentId itself.
+    const stored: StoredPin = {
+      fromAgentId,
+      did: pinned.did,
+      pinnedKey: base58btcEncode(pinned.ed25519Pub),
+    }
     fs.writeFileSync(
       path.join(this.dir, pinFileName(fromAgentId)),
       `${JSON.stringify(stored, null, 2)}\n`,
       "utf-8",
     )
-    this.cache.set(fromAgentId, { did: fromAgentId, ed25519Pub: pinned.ed25519Pub })
+    this.cache.set(fromAgentId, { did: pinned.did, ed25519Pub: pinned.ed25519Pub })
     emitNervesEvent({
       component: "channels",
       event: "channel.a2a_pin_set",
       message: "set durable A2A pin",
-      meta: { did: fromAgentId, rotated: existed },
+      meta: { fromAgentId, did: pinned.did, rotated: existed },
     })
   }
 
@@ -120,10 +132,13 @@ export class FileA2APinStore implements DurablePinStore {
       } catch {
         continue
       }
-      if (!stored.did || !stored.pinnedKey) continue
+      // `fromAgentId` is the cache key; fall back to `did` for any pre-rotation
+      // file written before the key/did split (back-compat).
+      const key = stored.fromAgentId ?? stored.did
+      if (!key || !stored.did || !stored.pinnedKey) continue
       const ed25519Pub = base58btcDecode(stored.pinnedKey)
       if (!ed25519Pub) continue
-      this.cache.set(stored.did, { did: stored.did, ed25519Pub })
+      this.cache.set(key, { did: stored.did, ed25519Pub })
     }
   }
 }
