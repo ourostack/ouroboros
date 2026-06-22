@@ -125,8 +125,10 @@ export async function receiveInboundShare(
 
   const verifiedDid = opened.fromAgentId
   // Read trust from the friend store BY the verified DID — never defaulted, never
-  // from the envelope. Unknown DID ⇒ stranger.
-  const record = verifiedDid ? await findFriendByDid(deps.store, verifiedDid) : null
+  // from the envelope. Unknown (or empty) DID ⇒ stranger. `findFriendByDid` itself
+  // refuses a falsy did (never matches a did-less record), so this is safe to call
+  // unconditionally.
+  const record = await findFriendByDid(deps.store, verifiedDid)
   const trust: TrustLevel = record?.trustLevel ?? "stranger"
 
   const result = await receiveShare({

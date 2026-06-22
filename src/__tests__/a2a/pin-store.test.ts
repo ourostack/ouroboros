@@ -43,12 +43,14 @@ describe("durable a2a PinStore (harness-owned, backed by state/a2a/pins)", () =>
 
     const did = "did:key:zPinSetGetAAAAAAAAAAAAAAAAAAAAAAAAA"
     expect(pinStore.get(did)).toBeUndefined()
+    expect(pinStore.size).toBe(0)
     const pinned = makePinned(did)
     pinStore.set(did, pinned)
 
     const read = pinStore.get(did)
     expect(read?.did).toBe(did)
     expect(Buffer.from(read!.ed25519Pub).equals(Buffer.from(pinned.ed25519Pub))).toBe(true)
+    expect(pinStore.size).toBe(1)
   })
 
   it("persists the pin durably under state/a2a/pins (the harness-owned home)", () => {
@@ -165,5 +167,43 @@ describe("durable a2a PinStore (harness-owned, backed by state/a2a/pins)", () =>
 
     const pinStore = new FileA2APinStore(tmp.agentRoot)
     expect(pinStore.get(did)).toBeUndefined()
+  })
+
+  it("skips non-.json files and files missing did/pinnedKey on load", () => {
+    tmp = createTmpBundle({ agentName: "pin-skips" })
+    const pinsDir = path.join(tmp.agentRoot, "state", "a2a", "pins")
+    fs.mkdirSync(pinsDir, { recursive: true })
+    // A stray non-json file (e.g. an editor temp) is ignored.
+    fs.writeFileSync(path.join(pinsDir, "README.txt"), "not a pin", "utf-8")
+    // A json file missing the pinnedKey is skipped.
+    fs.writeFileSync(
+      path.join(pinsDir, "nokey.json"),
+      JSON.stringify({ fromAgentId: "did:key:zNoKey", did: "did:key:zNoKey" }),
+      "utf-8",
+    )
+
+    const pinStore = new FileA2APinStore(tmp.agentRoot)
+    expect(pinStore.size).toBe(0)
+    expect(pinStore.get("did:key:zNoKey")).toBeUndefined()
+  })
+
+  it("loads a pre-split pin file (only `did`, no `fromAgentId`) via the back-compat fallback", () => {
+    tmp = createTmpBundle({ agentName: "pin-presplit" })
+    const pinsDir = path.join(tmp.agentRoot, "state", "a2a", "pins")
+    fs.mkdirSync(pinsDir, { recursive: true })
+    const did = "did:key:zPinPreSplitJJJJJJJJJJJJJJJJJJJJJJJJ"
+    const pinned = makePinned(did)
+    // The OLD on-disk shape: `{ did, pinnedKey }` with no `fromAgentId`. The loader
+    // must fall back to `did` as the cache key (so the pin is still readable).
+    fs.writeFileSync(
+      path.join(pinsDir, "legacy.json"),
+      JSON.stringify({ did, pinnedKey: base58btcEncode(pinned.ed25519Pub) }),
+      "utf-8",
+    )
+
+    const pinStore = new FileA2APinStore(tmp.agentRoot)
+    const read = pinStore.get(did)
+    expect(read?.did).toBe(did)
+    expect(Buffer.from(read!.ed25519Pub).equals(Buffer.from(pinned.ed25519Pub))).toBe(true)
   })
 })

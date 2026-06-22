@@ -23,8 +23,10 @@ describe("durable a2a SeenLedger (replay defense, restart-safe)", () => {
     const ledger = new FileA2ASeenLedger(tmp.agentRoot)
     const nonce = "nonce-basic-AAAA"
     expect(ledger.isSeen(nonce)).toBe(false)
+    expect(ledger.size).toBe(0)
     ledger.markSeen(nonce)
     expect(ledger.isSeen(nonce)).toBe(true)
+    expect(ledger.size).toBe(1)
   })
 
   it("persists the seen-set durably under state/a2a/seen (the durable home)", () => {
@@ -107,5 +109,19 @@ describe("durable a2a SeenLedger (replay defense, restart-safe)", () => {
     // No seen dir pre-created; the constructor must tolerate it.
     const ledger = new FileA2ASeenLedger(tmp.agentRoot)
     expect(ledger.isSeen("anything")).toBe(false)
+  })
+
+  it("skips non-.json files and entries with no/blank nonce on load", () => {
+    tmp = createTmpBundle({ agentName: "seen-skips" })
+    const seenDir = path.join(tmp.agentRoot, "state", "a2a", "seen")
+    fs.mkdirSync(seenDir, { recursive: true })
+    // A stray non-json artifact is ignored.
+    fs.writeFileSync(path.join(seenDir, "notes.txt"), "stray", "utf-8")
+    // A json artifact whose nonce is blank is not loaded as a seen nonce.
+    fs.writeFileSync(path.join(seenDir, "blank.json"), JSON.stringify({ nonce: "" }), "utf-8")
+
+    const ledger = new FileA2ASeenLedger(tmp.agentRoot)
+    expect(ledger.size).toBe(0)
+    expect(ledger.isSeen("")).toBe(false)
   })
 })
