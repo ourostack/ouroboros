@@ -342,7 +342,12 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     const currentBaseUrl = publicBaseUrl ?? `http://${req.headers.host ?? `${host}:${port}`}`
 
     if (req.method === "GET" && (requestUrl.pathname === "/.well-known/agent-card.json" || requestUrl.pathname === "/agent-card.json")) {
-      writeJson(res, 200, buildA2AAgentCard({ agentName: options.agentName, baseUrl: currentBaseUrl, path: a2aPath }))
+      writeJson(res, 200, buildA2AAgentCard({
+        agentName: options.agentName,
+        baseUrl: currentBaseUrl,
+        path: a2aPath,
+        ...(options.identity ? { did: options.identity.did } : {}),
+      }))
       return
     }
 

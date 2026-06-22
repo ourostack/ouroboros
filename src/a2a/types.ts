@@ -35,6 +35,10 @@ export interface A2AAgentCard {
   }>
   metadata?: Record<string, unknown>
   protocolVersion?: string
+  /** The agent's pinned `did:key` (friends A2A identity). Top-level so friends'
+   * `verifyCardDidBinding` reads `card.did`. Absent on legacy/no-identity cards;
+   * non-friends consumers ignore the unknown field. */
+  did?: string
   url?: string
   preferredTransport?: "JSONRPC" | string
   additionalInterfaces?: Array<{

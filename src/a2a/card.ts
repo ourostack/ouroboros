@@ -7,6 +7,10 @@ export interface BuildA2AAgentCardOptions {
   baseUrl: string
   description?: string
   path?: string
+  /** The agent's `did:key`. When present, served as top-level `card.did` so a
+   * friends peer can verify the card↔DID binding (`verifyCardDidBinding`). Absent
+   * ⇒ the card omits `did` (legacy/no-identity, backward-compatible). */
+  did?: string
 }
 
 export function buildA2AAgentCard(options: BuildA2AAgentCardOptions): A2AAgentCard {
@@ -15,6 +19,7 @@ export function buildA2AAgentCard(options: BuildA2AAgentCardOptions): A2AAgentCa
     name: options.agentName,
     description: options.description ?? `Ouroboros agent ${options.agentName}`,
     protocolVersion: A2A_DEFAULT_PROTOCOL_VERSION,
+    ...(options.did ? { did: options.did } : {}),
     url: endpoint,
     preferredTransport: "JSONRPC",
     supportedInterfaces: [{
@@ -57,7 +62,7 @@ export function buildA2AAgentCard(options: BuildA2AAgentCardOptions): A2AAgentCa
     component: "channels",
     event: "channel.a2a_card_built",
     message: "built A2A agent card",
-    meta: { agentName: options.agentName, endpoint },
+    meta: { agentName: options.agentName, endpoint, ...(options.did ? { did: options.did } : {}) },
   })
 
   return card
