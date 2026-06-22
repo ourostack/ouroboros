@@ -427,6 +427,11 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
             sodium: inboundShareDeps.sodium,
             store: inboundShareDeps.store,
             missionStore: inboundShareDeps.missionStore,
+            // The SAME authentication seam the share bridge uses — so a forged-sender
+            // result is rejected by the DidVerifier exactly like a forged share.
+            pinStore: inboundShareDeps.pinStore,
+            seen: inboundShareDeps.seen,
+            didResolution: inboundShareDeps.didResolution,
             identity: inboundShareDeps.identity,
           })
           if (imported.outcome === "rejected") {
