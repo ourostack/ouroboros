@@ -1,7 +1,7 @@
 import * as http from "node:http"
 import { createHash, randomUUID } from "node:crypto"
 import { ready } from "@ouro.bot/friends/a2a-client"
-import { FileFriendStore, FileMissionStore, missionsDirFor } from "@ouro.bot/friends"
+import { FileFriendStore } from "@ouro.bot/friends"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
@@ -12,6 +12,7 @@ import { FileA2APinStore } from "./pin-store"
 import { FileA2ASeenLedger } from "./seen-ledger"
 import { makeDidResolution } from "./did-resolution"
 import { receiveInboundShare, type InboundShareDeps } from "./inbound-share"
+import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
@@ -365,7 +366,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     inboundShareDeps = {
       sodium: await ready(),
       store: new FileFriendStore(friendsDir),
-      missionStore: new FileMissionStore(missionsDirFor(friendsDir)),
+      // The SAME canonical mission store the Slice-4 delegation tools use, so an
+      // inbound `importCoordination` write lands where the read/prepare surface reads.
+      missionStore: delegationStoresFor(agentRoot).missionStore,
       pinStore: new FileA2APinStore(agentRoot),
       seen: new FileA2ASeenLedger(agentRoot),
       didResolution: makeDidResolution({ sodium: await ready() }),
