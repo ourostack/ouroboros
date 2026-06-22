@@ -129,6 +129,47 @@ export async function sendA2AMessage(input: {
   return task
 }
 
+/**
+ * POST a pre-built friends A2A message (a `wrapInDataPart` sealed-envelope message)
+ * to a peer endpoint as a JSON-RPC `message/send`. This is the `direct`-rung wire
+ * the harness `A2ATransport` uses: friends' `sendShare` builds the sealed message and
+ * hands it to the transport, which delivers it here. Unlike `sendA2AMessage` (which
+ * builds a text part), this carries the caller's exact `message` (the sealed DataPart)
+ * untouched. Throws on a non-2xx response (transport failure).
+ */
+export async function postA2AMessageEnvelope(input: {
+  endpointUrl: string
+  message: { messageId?: string; role?: string; parts: unknown[] }
+  fetchImpl?: typeof fetch
+}): Promise<void> {
+  const fetchImpl = input.fetchImpl ?? fetch
+  const request: A2AJsonRpcRequest = {
+    jsonrpc: "2.0",
+    id: randomUUID(),
+    method: "message/send",
+    params: { message: input.message },
+  }
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.a2a_envelope_post_start",
+    message: "posting sealed A2A message envelope (direct rung)",
+    meta: { endpointUrl: input.endpointUrl },
+  })
+  let rpc = await postJsonRpc(input.endpointUrl, request, fetchImpl, "0.3")
+  if (methodNotFound(rpc)) {
+    rpc = await postJsonRpc(input.endpointUrl, { ...request, method: "SendMessage" }, fetchImpl)
+  }
+  if ("error" in rpc) {
+    throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
+  }
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.a2a_envelope_post_end",
+    message: "posted sealed A2A message envelope",
+    meta: { endpointUrl: input.endpointUrl },
+  })
+}
+
 export async function getA2ATask(input: {
   endpointUrl: string
   taskId: string
