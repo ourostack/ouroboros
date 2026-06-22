@@ -5,6 +5,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
 import { buildA2AAgentCard } from "./card"
 import { A2A_DEFAULT_HOST, defaultA2APort, normalizeA2APath } from "./config"
+import type { A2AIdentity } from "./identity"
 import { FileA2ATaskStore } from "./task-store"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
@@ -35,6 +36,11 @@ export interface StartA2AServerOptions {
   path?: string
   agentRoot?: string
   turnRunner?: A2ATurnRunner
+  /** The agent's self A2A cryptographic identity (did:key over an Ed25519 seed).
+   * When present, the served agent card carries `card.did` and the inbound bridge
+   * can unseal friends DataParts addressed to this DID. Absent in legacy/no-identity
+   * deployments (the card omits `did`; inbound stays on the text-only path). */
+  identity?: A2AIdentity
 }
 
 export interface A2AServerHandle {
