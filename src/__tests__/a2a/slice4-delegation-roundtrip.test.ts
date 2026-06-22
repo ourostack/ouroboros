@@ -2,15 +2,18 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest"
 import {
   ready,
   didKeyIdentityFromEd25519,
+  sealEnvelope,
   type DidKeyIdentity,
   type Sodium,
 } from "@ouro.bot/friends/a2a-client"
-import { FileFriendStore, upsertAgentPeer, type FriendRecord, type SenseType } from "@ouro.bot/friends"
+import { FileFriendStore, upsertAgentPeer, type FriendRecord, type MissionResultEnvelope, type SenseType } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
 import { cacheMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { delegationStoresFor } from "../../a2a/delegation-stores"
 import { a2aToolDefinitions } from "../../repertoire/tools-a2a"
+import { wrapMissionResultDataPart } from "../../a2a/mission-result-wire"
+import { postA2AMessageEnvelope } from "../../a2a/client"
 import type { ToolContext } from "../../repertoire/tools-base"
 import type { A2AIdentity } from "../../a2a/identity"
 
@@ -143,12 +146,46 @@ describe("Slice-4 NORTH STAR: connect_to → coordinate → import → send_resu
     const badCorr = await tool("send_result")({ request_id: "never-delegated", summary: "x" }, bCtx)
     expect(badCorr).toMatch(/no imported delegation/i)
 
-    // ── NEGATIVE CONTROL (assignee mismatch): A's first-party delegation names B as the
-    // ONLY valid assignee, so A's importMissionResult refuses a result from any non-B
-    // signer (`assignee_mismatch`) — the assignee-honesty gate. (The full sealed
-    // wrong-signer → assignee_mismatch path is proven in mission-result-wire.test.ts;
-    // here we assert the round-trip invariant that pins the gate's correctness.) ────────
-    expect(aFinal?.delegations?.[requestId]?.assignee?.agentId).toBe(b.id.did)
+    // ── NEGATIVE CONTROL (FORGED SENDER — the security gate, over the wire): a malicious
+    // peer M seals a result for the SAME requestId but CLAIMS to be B (fromAgentId =
+    // B.did), signing with M's OWN key. M is trusted by A at `family` (so the trust cap
+    // is NOT what stops it) and the recipient X25519 pubkey is public (derived from A's
+    // published DID), so M can seal to A unaided — authentication is the only barrier.
+    // A's server MUST reject it (the signer ≠ the claimed sender), the POST returns a
+    // JSON-RPC error, and NOTHING from M lands: importedResults[B][requestId] stays the
+    // genuine "API shipped" result B delivered. (A previous version of this control only
+    // re-read the recorded assignee and never exercised a forgery — it could not catch a
+    // regression. This one drives a real signer≠claimed forgery end-to-end.) ────────────
+    const m = seededIdentity()
+    await upsertAgentPeer(aStore, {
+      name: "Malicious M", agentId: m.id.did, trustLevel: "family",
+      a2a: { did: m.id.did, agentId: m.id.did, endpointUrl: "https://m.example/a2a" },
+    })
+    const now = new Date().toISOString()
+    const forged: MissionResultEnvelope = {
+      subject: { missionKey: "ship-v2", title: "Ship v2" },
+      fromAgentId: b.id.did, requestId,
+      result: { requestId, summary: "MALICIOUS — forged by M claiming B", provenance: { assertedBy: { agentId: b.id.did, displayName: "B" }, assertedAt: now } },
+      issuedAt: now,
+    }
+    const forgedSealed = sealEnvelope({
+      sodium,
+      envelope: forged as unknown as Record<string, unknown>,
+      friendsKind: "coordination",
+      fromIdentity: { did: m.id.did, keyId: m.id.keyId, ed25519Priv: m.id.ed25519Priv }, // M signs
+      recipientDid: a.id.did,
+      recipientX25519Pub: a.id.x25519Pub,
+    })
+    const forgedMessage = wrapMissionResultDataPart({ sealedEnvelope: forgedSealed, recipientDid: a.id.did })
+    await expect(
+      postA2AMessageEnvelope({ endpointUrl: serverA.endpointUrl, message: forgedMessage }),
+    ).rejects.toThrow(/result rejected|sender_binding_mismatch/i)
+
+    // The forgery did not overwrite or shadow B's genuine result — A still has exactly
+    // B's "API shipped" under importedResults[B][requestId], and nothing under any other key.
+    const aAfterForgery = await delegationStoresFor(tmpA.agentRoot).missionStore.findByMissionKey("ship-v2")
+    expect(aAfterForgery?.importedResults?.[b.id.did]?.[requestId]?.summary).toBe("API shipped")
+    expect(Object.keys(aAfterForgery?.importedResults ?? {})).toEqual([b.id.did])
   })
 
   it("deliver-back is EXPLICIT and autonomy is a non-goal (no autonomous worker runs send_result)", async () => {
