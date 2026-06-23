@@ -1,0 +1,258 @@
+import { afterEach, beforeAll, describe, expect, it } from "vitest"
+import {
+  ready,
+  didKeyIdentityFromEd25519,
+  type DidKeyIdentity,
+  type Sodium,
+} from "@ouro.bot/friends/a2a-client"
+import { FileFriendStore, upsertAgentPeer, recordMission, type FriendRecord, type SenseType } from "@ouro.bot/friends"
+import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
+import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
+import { cacheMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
+import { delegationStoresFor } from "../../a2a/delegation-stores"
+import { a2aToolDefinitions } from "../../repertoire/tools-a2a"
+import type { ToolContext } from "../../repertoire/tools-base"
+import type { A2AIdentity } from "../../a2a/identity"
+
+let sodium: Sodium
+let tmpB: TmpBundleHandle | null = null
+let tmpA: TmpBundleHandle | null = null
+let serverA: A2AServerHandle | null = null
+
+beforeAll(async () => { sodium = await ready() })
+
+afterEach(async () => {
+  if (serverA) { await serverA.close(); serverA = null }
+  tmpA?.cleanup(); tmpA = null
+  tmpB?.cleanup(); tmpB = null
+})
+
+function tool(name: string) {
+  const def = a2aToolDefinitions.find((entry) => entry.tool.function.name === name)
+  if (!def) throw new Error(`missing tool ${name}`)
+  return def.handler
+}
+
+function seededIdentity(): { id: DidKeyIdentity; seed: string } {
+  const seedBytes = sodium.randombytes_buf(32)
+  const kp = sodium.crypto_sign_seed_keypair(seedBytes)
+  return { id: didKeyIdentityFromEd25519({ sodium, ed25519Pub: kp.publicKey, ed25519Priv: kp.privateKey }), seed: Buffer.from(seedBytes).toString("base64url") }
+}
+
+function asSelf(id: DidKeyIdentity, seed: string): A2AIdentity { return { ...id, seed } }
+
+type CtxFriendStore = NonNullable<ToolContext["friendStore"]>
+
+function localCtx(agentRoot: string, store: CtxFriendStore): ToolContext {
+  const requester: FriendRecord = {
+    id: "owner", name: "Owner", trustLevel: "family", role: "human", kind: "human",
+    agentMeta: { bundleName: "owner", familiarity: 0, sharedMissions: [], outcomes: [] },
+    externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {},
+    totalTokens: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), schemaVersion: 1,
+  }
+  const senseType: SenseType = "local"
+  return {
+    signin: async () => undefined, agentRoot, friendStore: store,
+    context: {
+      friend: requester,
+      channel: { channel: "cli", senseType, availableIntegrations: [], supportsMarkdown: false, supportsStreaming: false, supportsRichCards: false, maxMessageLength: Infinity },
+    },
+  }
+}
+
+/** Seed B's side with a quarantined imported delegation from A (as the inbound bridge
+ * would have written it), plus A as a trusted DID-keyed peer with a reachable endpoint. */
+async function seedImportedDelegation(opts: {
+  agentRoot: string; bStore: FileFriendStore; aDid: string; aEndpoint: string; requestId: string; missionKey: string
+}): Promise<void> {
+  await upsertAgentPeer(opts.bStore, {
+    name: "Agent A", agentId: opts.aDid, trustLevel: "family",
+    a2a: { did: opts.aDid, agentId: opts.aDid, endpointUrl: opts.aEndpoint },
+  })
+  const { missionStore } = delegationStoresFor(opts.agentRoot)
+  const now = new Date().toISOString()
+  const m = await recordMission(missionStore, { missionKey: opts.missionKey, title: "Shared mission" })
+  await missionStore.put(m.id, {
+    ...m,
+    importedDelegations: { [opts.aDid]: { [opts.requestId]: { task: { requestId: opts.requestId, summary: "build the thing" }, provenance: { assertedBy: { agentId: opts.aDid, displayName: "A" }, assertedAt: now, origin: "imported" } } } },
+  })
+}
+
+describe("send_result tool (B returns a result over the harness-owned wire)", () => {
+  it("sends B's result for an imported delegation; A imports it (importedResults[B][requestId])", async () => {
+    // A: the delegator — a real server with identity + inbound result wire.
+    tmpA = createTmpBundle({ agentName: "sr-A" })
+    const a = seededIdentity()
+    serverA = await startA2AServer({
+      agentName: "sr-A", agentRoot: tmpA.agentRoot, port: 0,
+      identity: asSelf(a.id, a.seed),
+      turnRunner: async () => ({ response: "noop" }),
+    })
+    // A's first-party delegation to B (so A's importMissionResult correlates + assignee-checks).
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+
+    // B: the assignee. Seed B's identity + the imported delegation from A.
+    tmpB = createTmpBundle({ agentName: "sr-B" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    await seedImportedDelegation({ agentRoot: tmpB.agentRoot, bStore, aDid: a.id.did, aEndpoint: serverA.endpointUrl, requestId: "req-1", missionKey: "mk-1" })
+
+    // A's side: record the first-party delegation to B (assignee = B) so the import gates pass.
+    await upsertAgentPeer(aStore, { name: "Agent B", agentId: b.id.did, trustLevel: "family", a2a: { did: b.id.did, agentId: b.id.did, endpointUrl: "https://b.example/a2a" } })
+    const { missionStore: aMissions } = delegationStoresFor(tmpA.agentRoot)
+    const now = new Date().toISOString()
+    const am = await recordMission(aMissions, { missionKey: "mk-1", title: "Shared mission" })
+    await aMissions.put(am.id, {
+      ...am,
+      delegations: { "req-1": { task: { requestId: "req-1", summary: "build the thing" }, assignee: { agentId: b.id.did, displayName: "B" }, provenance: { assertedBy: { agentId: a.id.did, displayName: "A" }, assertedAt: now } } },
+    })
+
+    const out = await tool("send_result")({ request_id: "req-1", summary: "built it", artifact: "https://pr/1" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/result sent|delivered/i)
+
+    // A received + imported the result under importedResults[B][req-1].
+    const aReloaded = await delegationStoresFor(tmpA.agentRoot).missionStore.findByMissionKey("mk-1")
+    expect(aReloaded?.importedResults?.[b.id.did]?.["req-1"]?.summary).toBe("built it")
+  })
+
+  it("sends a result WITHOUT an artifact (the optional-artifact branch)", async () => {
+    tmpA = createTmpBundle({ agentName: "sr-noart-A" })
+    const a = seededIdentity()
+    serverA = await startA2AServer({
+      agentName: "sr-noart-A", agentRoot: tmpA.agentRoot, port: 0,
+      identity: asSelf(a.id, a.seed), turnRunner: async () => ({ response: "noop" }),
+    })
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    tmpB = createTmpBundle({ agentName: "sr-noart-B" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    await seedImportedDelegation({ agentRoot: tmpB.agentRoot, bStore, aDid: a.id.did, aEndpoint: serverA.endpointUrl, requestId: "req-na", missionKey: "mk-na" })
+    await upsertAgentPeer(aStore, { name: "Agent B", agentId: b.id.did, trustLevel: "family", a2a: { did: b.id.did, agentId: b.id.did, endpointUrl: "https://b.example/a2a" } })
+    const { missionStore: aMissions } = delegationStoresFor(tmpA.agentRoot)
+    const now = new Date().toISOString()
+    const am = await recordMission(aMissions, { missionKey: "mk-na", title: "Shared mission" })
+    await aMissions.put(am.id, {
+      ...am,
+      delegations: { "req-na": { task: { requestId: "req-na", summary: "build the thing" }, assignee: { agentId: b.id.did, displayName: "B" }, provenance: { assertedBy: { agentId: a.id.did, displayName: "A" }, assertedAt: now } } },
+    })
+    const out = await tool("send_result")({ request_id: "req-na", summary: "done, no artifact" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/result sent/i)
+    const aReloaded = await delegationStoresFor(tmpA.agentRoot).missionStore.findByMissionKey("mk-na")
+    expect(aReloaded?.importedResults?.[b.id.did]?.["req-na"]?.summary).toBe("done, no artifact")
+    expect(aReloaded?.importedResults?.[b.id.did]?.["req-na"]?.artifact).toBeUndefined()
+  })
+
+  it("refuses when the requestId has no matching imported delegation (unknown)", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-unknown-req" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    // A mission WITHOUT importedDelegations exists → the scan must skip it (`?? {}`)
+    // and still report not-found for the requestId.
+    await recordMission(delegationStoresFor(tmpB.agentRoot).missionStore, { missionKey: "empty-mk", title: "Empty" })
+    const out = await tool("send_result")({ request_id: "nope", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/no.*delegation|unknown|not found/i)
+  })
+
+  it("surfaces A's import rejection (assignee_mismatch) when A's delegation names a different assignee", async () => {
+    // B has an imported delegation from A and sends a result — but A's FIRST-PARTY
+    // delegation records a DIFFERENT assignee (C, not B). A's importMissionResult
+    // refuses (assignee_mismatch) → the server returns a JSON-RPC error → send_result
+    // surfaces it. Covers the server-side mission_result REJECT route.
+    tmpA = createTmpBundle({ agentName: "sr-reject-A" })
+    const a = seededIdentity()
+    const c = seededIdentity() // the assignee A actually recorded
+    serverA = await startA2AServer({
+      agentName: "sr-reject-A", agentRoot: tmpA.agentRoot, port: 0,
+      identity: asSelf(a.id, a.seed), turnRunner: async () => ({ response: "noop" }),
+    })
+    const aStore = new FileFriendStore(`${tmpA.agentRoot}/friends`)
+    tmpB = createTmpBundle({ agentName: "sr-reject-B" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    await seedImportedDelegation({ agentRoot: tmpB.agentRoot, bStore, aDid: a.id.did, aEndpoint: serverA.endpointUrl, requestId: "req-mm", missionKey: "mk-mm" })
+    // A trusts B (family) but A's first-party delegation names C as assignee (not B).
+    await upsertAgentPeer(aStore, { name: "Agent B", agentId: b.id.did, trustLevel: "family", a2a: { did: b.id.did, agentId: b.id.did, endpointUrl: "https://b.example/a2a" } })
+    const { missionStore: aMissions } = delegationStoresFor(tmpA.agentRoot)
+    const now = new Date().toISOString()
+    const am = await recordMission(aMissions, { missionKey: "mk-mm", title: "Mismatch mission" })
+    await aMissions.put(am.id, {
+      ...am,
+      delegations: { "req-mm": { task: { requestId: "req-mm", summary: "x" }, assignee: { agentId: c.id.did, displayName: "C" }, provenance: { assertedBy: { agentId: a.id.did, displayName: "A" }, assertedAt: now } } },
+    })
+    const out = await tool("send_result")({ request_id: "req-mm", summary: "B's answer" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/error|assignee_mismatch|rejected/i)
+    // Nothing landed under B on A's side.
+    const aReloaded = await delegationStoresFor(tmpA.agentRoot).missionStore.findByMissionKey("mk-mm")
+    expect(aReloaded?.importedResults).toBeUndefined()
+  })
+
+  it("requires a trusted requester (no friend context → refused)", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-no-ctx" })
+    const out = await tool("send_result")({ request_id: "r", summary: "x" }, undefined)
+    expect(out).toMatch(/no friend context|require/i)
+  })
+
+  // ── send_result delegator-resolution guards (the delegation exists but the delegator
+  // record is missing / untrusted / did-less / unparseable / endpoint-less) ───────────
+  async function seedDelegationWithDelegator(opts: { agentRoot: string; bStore: FileFriendStore; requestId: string; delegator?: Partial<FriendRecord> & { did?: string } }): Promise<string> {
+    const x = seededIdentity()
+    const did = opts.delegator?.did ?? x.id.did
+    const { missionStore } = delegationStoresFor(opts.agentRoot)
+    const now = new Date().toISOString()
+    const m = await recordMission(missionStore, { missionKey: `mk-${opts.requestId}`, title: "M" })
+    await missionStore.put(m.id, {
+      ...m,
+      importedDelegations: { [did]: { [opts.requestId]: { task: { requestId: opts.requestId, summary: "x" }, provenance: { assertedBy: { agentId: did, displayName: "X" }, assertedAt: now, origin: "imported" } } } },
+    })
+    return did
+  }
+
+  it("refuses when the delegator is not a known peer (delegation orphaned)", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-orphan" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "orphan" })
+    // No delegator record put into bStore → findFriendByDid misses.
+    const out = await tool("send_result")({ request_id: "orphan", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/delegating peer not found/i)
+  })
+
+  it("refuses when the delegator is below friend trust", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-untrusted-delegator" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    const did = await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "untrusted" })
+    await upsertAgentPeer(bStore, { name: "Acq", agentId: did, trustLevel: "acquaintance", a2a: { did, agentId: did, endpointUrl: "https://x.example/a2a" } })
+    const out = await tool("send_result")({ request_id: "untrusted", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/friend or family/i)
+  })
+
+  it("refuses when the delegator's DID is unparseable", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-badidkey-delegator" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    const badDid = "did:key:not-real"
+    await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "badkey", delegator: { did: badDid } })
+    await upsertAgentPeer(bStore, { name: "Bad", agentId: badDid, trustLevel: "family", a2a: { did: badDid, agentId: badDid, endpointUrl: "https://x.example/a2a" } })
+    const out = await tool("send_result")({ request_id: "badkey", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/unparseable/i)
+  })
+
+  it("refuses when the delegator has no reachable endpoint", async () => {
+    tmpB = createTmpBundle({ agentName: "sr-noendpoint-delegator" })
+    const b = seededIdentity()
+    cacheMachineRuntimeCredentialConfig(tmpB.agentName, { a2a: { identity: { ed25519Seed: b.seed } } })
+    const bStore = new FileFriendStore(`${tmpB.agentRoot}/friends`)
+    const did = await seedDelegationWithDelegator({ agentRoot: tmpB.agentRoot, bStore, requestId: "noendpoint" })
+    await upsertAgentPeer(bStore, { name: "NoEp", agentId: did, trustLevel: "family", a2a: { did, agentId: did } })
+    const out = await tool("send_result")({ request_id: "noendpoint", summary: "x" }, localCtx(tmpB.agentRoot, bStore))
+    expect(out).toMatch(/no reachable A2A endpoint/i)
+  })
+})

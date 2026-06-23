@@ -1,7 +1,7 @@
 import * as http from "node:http"
 import { createHash, randomUUID } from "node:crypto"
 import { ready } from "@ouro.bot/friends/a2a-client"
-import { FileFriendStore, FileMissionStore, missionsDirFor } from "@ouro.bot/friends"
+import { FileFriendStore } from "@ouro.bot/friends"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
@@ -12,6 +12,8 @@ import { FileA2APinStore } from "./pin-store"
 import { FileA2ASeenLedger } from "./seen-ledger"
 import { makeDidResolution } from "./did-resolution"
 import { receiveInboundShare, type InboundShareDeps } from "./inbound-share"
+import { isMissionResultDataPart, receiveInboundMissionResult } from "./mission-result-wire"
+import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
@@ -365,7 +367,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     inboundShareDeps = {
       sodium: await ready(),
       store: new FileFriendStore(friendsDir),
-      missionStore: new FileMissionStore(missionsDirFor(friendsDir)),
+      // The SAME canonical mission store the Slice-4 delegation tools use, so an
+      // inbound `importCoordination` write lands where the read/prepare surface reads.
+      missionStore: delegationStoresFor(agentRoot).missionStore,
       pinStore: new FileA2APinStore(agentRoot),
       seen: new FileA2ASeenLedger(agentRoot),
       didResolution: makeDidResolution({ sodium: await ready() }),
@@ -413,6 +417,41 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
         const parsedInbound = messageFromParams(rpc.params)
         const inbound = parsedInbound ? { ...parsedInbound, kind: parsedInbound.kind ?? "message" } : null
+
+        // HARNESS-OWNED RESULT WIRE (runs BEFORE the friends-share branch). A
+        // `mission_result`-tagged DataPart is NOT a FriendsKind — it routes to
+        // `importMissionResult` (assignee/correlation-gated, store-only, NO turn), never
+        // to `receiveShare`. Recognized by the `ouroKind` discriminator.
+        if (inbound && inboundShareDeps && isMissionResultDataPart(inbound)) {
+          const imported = await receiveInboundMissionResult(inbound, {
+            sodium: inboundShareDeps.sodium,
+            store: inboundShareDeps.store,
+            missionStore: inboundShareDeps.missionStore,
+            // The SAME authentication seam the share bridge uses — so a forged-sender
+            // result is rejected by the DidVerifier exactly like a forged share.
+            pinStore: inboundShareDeps.pinStore,
+            seen: inboundShareDeps.seen,
+            didResolution: inboundShareDeps.didResolution,
+            identity: inboundShareDeps.identity,
+          })
+          if (imported.outcome === "rejected") {
+            writeJson(res, 200, errorResponse(rpc.id, rejectionErrorCode(imported.reason), `A2A result rejected: ${imported.reason}`))
+            return
+          }
+          // imported (store-only, no turn): acknowledge with a minimal completed task.
+          /* v8 ignore next -- "not-a-result" is unreachable here (gated by isMissionResultDataPart) @preserve */
+          const ackText = imported.outcome === "imported"
+            ? `[a2a] imported mission result from ${imported.verifiedDid}`
+            /* v8 ignore next -- defensive: the gate above guarantees imported|rejected @preserve */
+            : "[a2a] mission result"
+          const contextId = inbound.contextId ?? "default"
+          const taskId = randomUUID()
+          const accessToken = randomUUID()
+          const ackTask = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: ackText })
+          taskStore.put(ackTask, accessTokenScope(accessToken))
+          writeJson(res, 200, jsonResponse(rpc.id, publicTask(ackTask, accessToken, responseStyle, true)))
+          return
+        }
 
         // Inbound friends-DataPart branch (runs BEFORE the legacy text path). A
         // sealed DataPart is unwrapped + verified through the bridge; the turn is
