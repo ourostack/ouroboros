@@ -914,6 +914,10 @@ describe("daemon process manager", () => {
 
     await manager.startAgent("slugger")
     expect(manager.listAgentSnapshots().map((snapshot) => snapshot.name)).toEqual(["slugger", "ouroboros"])
+    expect(manager.listAgentSnapshots().map((snapshot) => [snapshot.name, snapshot.autoStart])).toEqual([
+      ["slugger", true],
+      ["ouroboros", false],
+    ])
 
     await manager.stopAll()
     expect(child.kill).toHaveBeenCalledWith("SIGTERM")

@@ -46,6 +46,7 @@ const { registerGlobalLogSinkMock, registeredHealthSinks, capturedHealthStates }
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
+  isInnerDialogAutoStartEnabled: vi.fn(() => true),
 }))
 
 vi.mock("../../../heart/habits/habit-scheduler", () => ({
@@ -156,6 +157,7 @@ describe("daemon entry health state wiring", () => {
   function setupDaemonMocks(snapshots: Array<{
     name: string
     channel: string
+    autoStart?: boolean
     status: string
     pid: number | null
     restartCount: number
@@ -358,5 +360,40 @@ describe("daemon entry health state wiring", () => {
         reason: "inner-dialog is stopped",
       }),
     ])
+  })
+
+  it("does not degrade daemon health for parked non-autostart agents", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    setupDaemonMocks([{
+      name: "slugger",
+      channel: "inner-dialog",
+      autoStart: false,
+      status: "stopped",
+      pid: null,
+      restartCount: 0,
+      lastCrashAt: null,
+      errorReason: null,
+      fixHint: null,
+    }])
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    registeredHealthSinks[0]!({ event: "daemon.agent_exit" })
+
+    expect(capturedHealthStates[0]).toMatchObject({
+      status: "healthy",
+      degraded: [],
+      agents: {
+        slugger: {
+          status: "stopped",
+          pid: null,
+          crashes: 0,
+        },
+      },
+    })
   })
 })

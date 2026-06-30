@@ -12,6 +12,7 @@ export interface HealthMonitorOptions {
     listAgentSnapshots: () => Array<{
       name: string
       status: string
+      autoStart?: boolean
       errorReason?: string | null
       fixHint?: string | null
     }>
@@ -97,7 +98,8 @@ export class HealthMonitor {
     const results: DaemonHealthResult[] = []
 
     const snapshots = this.processManager.listAgentSnapshots()
-    const unhealthy = snapshots.filter((snapshot) => snapshot.status !== "running")
+    const unhealthy = snapshots.filter((snapshot) => snapshot.status !== "running" && snapshot.autoStart !== false)
+    const parked = snapshots.filter((snapshot) => snapshot.status !== "running" && snapshot.autoStart === false)
     if (unhealthy.length > 0) {
       const unhealthySummary = unhealthy.map((item) => {
         const detail = [
@@ -131,7 +133,10 @@ export class HealthMonitor {
         }
       }
     } else {
-      results.push({ name: "agent-processes", status: "ok", message: "all managed agents running" })
+      const message = parked.length > 0
+        ? `all auto-start managed agents running; parked agents: ${parked.map((item) => item.name).join(", ")}`
+        : "all managed agents running"
+      results.push({ name: "agent-processes", status: "ok", message })
     }
 
     const jobs = this.scheduler.listJobs()

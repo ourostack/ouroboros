@@ -252,7 +252,7 @@ const degradedComponents: DegradedComponent[] = []
 function buildDaemonHealthState(): DaemonHealthState {
   const snapshots = processManager.listAgentSnapshots()
   const agentDegradedComponents: DegradedComponent[] = snapshots
-    .filter((snapshot) => snapshot.status !== "running")
+    .filter((snapshot) => snapshot.status !== "running" && snapshot.autoStart !== false)
     .map((snapshot) => {
       const reasonParts = [
         snapshot.errorReason ?? `${snapshot.channel} is ${snapshot.status}`,
@@ -292,7 +292,9 @@ function buildDaemonHealthState(): DaemonHealthState {
   const rollupStatus = computeDaemonRollup({
     enabledAgents: snapshots.map((snapshot) => ({
       name: snapshot.name,
-      status: snapshot.status,
+      // A parked non-autostart worker is intentionally not serving; it should
+      // remain visible in worker status but should not degrade daemon health.
+      status: snapshot.autoStart === false ? "running" : snapshot.status,
     })),
     bootstrapDegraded: degradedComponents,
     safeMode: false,
