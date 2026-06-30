@@ -239,6 +239,22 @@ describe("isInnerDialogAutoStartEnabled", () => {
       }),
     }))
   })
+
+  it("stringifies non-Error inner-dialog policy read failures", async () => {
+    readFileSyncMock.mockImplementation(() => {
+      throw "raw permission denied" // eslint-disable-line no-throw-literal
+    })
+
+    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(false)
+    expect(emitNervesEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.inner_dialog_policy_read_failed",
+      meta: expect.objectContaining({
+        error: "raw permission denied",
+      }),
+    }))
+  })
 })
 
 describe("listBundleSyncRows", () => {
