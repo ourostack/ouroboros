@@ -321,7 +321,7 @@ async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFr
   const currentSession = ctx?.currentSession
     ? {
         friendId: ctx.currentSession.friendId,
-        channel: ctx.currentSession.channel as import("../mind/friends/types").Channel,
+        channel: ctx.currentSession.channel as import("@ouro.bot/friends").Channel,
         key: ctx.currentSession.key,
         sessionPath: resolveSessionPath(ctx.currentSession.friendId, ctx.currentSession.channel, ctx.currentSession.key),
       }

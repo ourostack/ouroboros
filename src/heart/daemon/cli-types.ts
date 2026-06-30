@@ -7,13 +7,11 @@
 
 import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-lanes"
-import type { Facing } from "../../mind/friends/channel"
-import type { TrustLevel } from "../../mind/friends/types"
+import type { Facing, TrustLevel, FriendStore } from "@ouro.bot/friends"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import type { HatchCredentialsInput, HatchFlowInput, HatchFlowResult } from "../hatch/hatch-flow"
 import type { RuntimeAuthInput, RuntimeAuthResult } from "../auth/auth-flow"
 import type { OuroPathInstallResult } from "../versioning/ouro-path-installer"
-import type { FriendStore } from "../../mind/friends/store"
 import type { CheckForUpdateResult } from "../versioning/update-checker"
 import type { DaemonHealthState } from "./daemon-health"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
@@ -67,8 +65,8 @@ export type OuroCliCommand =
   | { kind: "friend.show"; friendId: string; agent?: string }
   | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
   | { kind: "friend.update"; friendId: string; trustLevel: TrustLevel; agent?: string }
-  | { kind: "friend.link"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
-  | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
+  | { kind: "friend.link"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
+  | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
   | { kind: "a2a.card"; agent?: string; baseUrl?: string; json?: boolean }
   | { kind: "a2a.onboard"; agent?: string; cardUrl: string; trustLevel?: TrustLevel; name?: string }
   | { kind: "a2a.serve"; agent?: string; host?: string; port?: number; baseUrl?: string; path?: string }

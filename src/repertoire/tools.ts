@@ -6,7 +6,7 @@ import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions } from "./tools-github";
 import { bundleToolDefinitions } from "./tools-bundle";
-import type { ChannelCapabilities, ResolvedContext } from "../mind/friends/types";
+import type { ChannelCapabilities, ResolvedContext } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";

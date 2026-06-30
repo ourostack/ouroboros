@@ -22,7 +22,7 @@ import {
   handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchFacts,
   handleAgentStatus,
 } from "./agent-service"
-import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
+import { getAlwaysOnSenseNames } from "@ouro.bot/friends"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
 import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { startMailboxHttpServer, type MailboxHttpServerHandle } from "../mailbox/mailbox-http"
@@ -647,7 +647,7 @@ export async function handleAgentSenseTurn(
     const { runSenseTurn } = await import("../../senses/shared-turn")
     const result = await runSenseTurn({
       agentName: command.agent,
-      channel: command.channel as import("../../mind/friends/types").Channel,
+      channel: command.channel as import("@ouro.bot/friends").Channel,
       sessionKey: command.sessionKey,
       friendId: command.friendId,
       userMessage: command.message,

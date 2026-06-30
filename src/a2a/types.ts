@@ -35,6 +35,10 @@ export interface A2AAgentCard {
   }>
   metadata?: Record<string, unknown>
   protocolVersion?: string
+  /** The agent's pinned `did:key` (friends A2A identity). Top-level so friends'
+   * `verifyCardDidBinding` reads `card.did`. Absent on legacy/no-identity cards;
+   * non-friends consumers ignore the unknown field. */
+  did?: string
   url?: string
   preferredTransport?: "JSONRPC" | string
   additionalInterfaces?: Array<{
@@ -62,9 +66,21 @@ export type A2ATaskState =
   | "input-required"
   | "unknown"
 
+/**
+ * An A2A message part. Minimal widening (per plan): `kind` broadened to admit a
+ * friends `"data"` part, `text` made optional, and an optional `data` carrier
+ * added. This keeps the legacy text path intact — existing code that spreads or
+ * maps parts and reads `part.text` still typechecks (no discriminated-union
+ * narrowing forced on the unchanged code) — while letting `unwrapDataPart` receive
+ * a typed friends DataPart. `data` is the relay-blind `FriendsDataPartPayload`
+ * (`{ v, sealed, recipientDid }`); typed loosely here (friends `unwrapDataPart`
+ * validates the exact shape) to avoid a dependency cycle on the friends payload
+ * type in this protocol module.
+ */
 export interface A2AMessagePart {
-  kind?: "text"
-  text: string
+  kind?: "text" | "data"
+  text?: string
+  data?: Record<string, unknown>
 }
 
 export interface A2AMessage {

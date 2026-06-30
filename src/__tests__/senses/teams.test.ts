@@ -39,22 +39,27 @@ vi.mock("../../heart/identity", () => ({
     },
   })),
 }))
-vi.mock("../../mind/friends/store-file", () => ({
-  FileFriendStore: vi.fn(function (this: any) {
-    this.get = vi.fn()
-    this.put = vi.fn()
-    this.delete = vi.fn()
-    this.findByExternalId = vi.fn()
-  }),
-}))
-vi.mock("../../mind/friends/resolver", () => ({
-  FriendResolver: vi.fn(function (this: any) {
-    this.resolve = vi.fn().mockResolvedValue({
-      friend: { id: "mock-uuid", name: "Test User", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1 },
-      channel: { channel: "teams", availableIntegrations: ["graph", "ado"], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
-    })
-  }),
-}))
+// Friends now lives in the @ouro.bot/friends package (a single barrel module).
+// The previously separate store-file/resolver mocks merge into one package mock
+// that spreads the real barrel and overrides FileFriendStore + FriendResolver.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+  return {
+    ...actual,
+    FileFriendStore: vi.fn(function (this: any) {
+      this.get = vi.fn()
+      this.put = vi.fn()
+      this.delete = vi.fn()
+      this.findByExternalId = vi.fn()
+    }),
+    FriendResolver: vi.fn(function (this: any) {
+      this.resolve = vi.fn().mockResolvedValue({
+        friend: { id: "mock-uuid", name: "Test User", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1 },
+        channel: { channel: "teams", availableIntegrations: ["graph", "ado"], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
+      })
+    }),
+  }
+})
 
 import { getPhrases } from "../../mind/phrases"
 
@@ -3231,9 +3236,14 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
         channel: { channel: "teams", availableIntegrations: ["graph", "ado"], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
       })
     })
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: MockFriendResolver,
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FriendResolver: MockFriendResolver,
+      }
+    })
 
     vi.spyOn(console, "log").mockImplementation(() => {})
 
@@ -3316,9 +3326,14 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
         channel: { channel: "teams", availableIntegrations: ["graph", "ado"], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
       })
     })
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: MockFriendResolver,
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FriendResolver: MockFriendResolver,
+      }
+    })
 
     vi.spyOn(console, "log").mockImplementation(() => {})
 
@@ -3909,9 +3924,6 @@ describe("Teams adapter - session persistence", () => {
       this.delete = vi.fn()
       this.findByExternalId = vi.fn()
     })
-    vi.doMock("../../mind/friends/store-file", () => ({
-      FileFriendStore: MockFileFriendStore,
-    }))
     const mockResolve = vi.fn().mockResolvedValue({
       friend: {
         id: "mock-uuid",
@@ -3936,9 +3948,15 @@ describe("Teams adapter - session persistence", () => {
     const MockFriendResolver = vi.fn(function (this: any) {
       this.resolve = mockResolve
     })
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: MockFriendResolver,
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FileFriendStore: MockFileFriendStore,
+        FriendResolver: MockFriendResolver,
+      }
+    })
   }
 
   it("handleTeamsMessage accepts conversationId parameter", async () => {
@@ -4821,9 +4839,6 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
       this.delete = vi.fn()
       this.findByExternalId = vi.fn()
     })
-    vi.doMock("../../mind/friends/store-file", () => ({
-      FileFriendStore: MockFileFriendStore,
-    }))
     const mockResolve = vi.fn().mockResolvedValue({
       friend: {
         id: "mock-uuid",
@@ -4848,9 +4863,15 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
     const MockFriendResolver = vi.fn(function (this: any) {
       this.resolve = mockResolve
     })
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: MockFriendResolver,
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FileFriendStore: MockFileFriendStore,
+        FriendResolver: MockFriendResolver,
+      }
+    })
   }
 
   it("handleTeamsMessage does not accept disableStreaming parameter -- text always accumulated", async () => {
@@ -5064,9 +5085,6 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       this.delete = vi.fn()
       this.findByExternalId = vi.fn()
     })
-    vi.doMock("../../mind/friends/store-file", () => ({
-      FileFriendStore: MockFileFriendStore,
-    }))
     const mockResolve = vi.fn().mockResolvedValue({
       friend: {
         id: "mock-uuid",
@@ -5091,9 +5109,15 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     const MockFriendResolver = vi.fn(function (this: any) {
       this.resolve = mockResolve
     })
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: MockFriendResolver,
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FileFriendStore: MockFileFriendStore,
+        FriendResolver: MockFriendResolver,
+      }
+    })
   }
 
   it("handleTeamsMessage accepts sendMessage parameter and passes it to createTeamsCallbacks", async () => {
@@ -5294,15 +5318,18 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
       this.delete = vi.fn()
       this.findByExternalId = vi.fn()
     })
-    vi.doMock("../../mind/friends/store-file", () => ({
-      FileFriendStore: MockFileFriendStore,
-    }))
     const MockFriendResolver = vi.fn(function (this: any) {
       this.resolve = mockResolve
     })
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: MockFriendResolver,
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FileFriendStore: MockFileFriendStore,
+        FriendResolver: MockFriendResolver,
+      }
+    })
 
     return { runAgentFn, mockResolve }
   }
@@ -5341,7 +5368,7 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
     vi.resetModules()
     const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
     mockTeamsDepsForContext({ runAgentFn })
-    const FriendResolver = (await import("../../mind/friends/resolver")).FriendResolver
+    const FriendResolver = (await import("@ouro.bot/friends")).FriendResolver
     const teams = await import("../../senses/teams")
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
 
@@ -5373,7 +5400,7 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
     vi.resetModules()
     const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
     mockTeamsDepsForContext({ runAgentFn })
-    const FriendResolver = (await import("../../mind/friends/resolver")).FriendResolver
+    const FriendResolver = (await import("@ouro.bot/friends")).FriendResolver
     const teams = await import("../../senses/teams")
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
 
@@ -5400,7 +5427,7 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
     vi.resetModules()
     const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
     mockTeamsDepsForContext({ runAgentFn })
-    const FriendResolver = (await import("../../mind/friends/resolver")).FriendResolver
+    const FriendResolver = (await import("@ouro.bot/friends")).FriendResolver
     const teams = await import("../../senses/teams")
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
 
@@ -5436,7 +5463,7 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
     vi.resetModules()
     const runAgentFn = vi.fn().mockResolvedValue({ usage: undefined })
     mockTeamsDepsForContext({ runAgentFn })
-    const FileFriendStore = (await import("../../mind/friends/store-file")).FileFriendStore
+    const FileFriendStore = (await import("@ouro.bot/friends")).FileFriendStore
     const teams = await import("../../senses/teams")
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
 
@@ -5801,20 +5828,21 @@ describe("Teams adapter - GitHub token handling", () => {
       this.delete = vi.fn()
       this.findByExternalId = vi.fn()
     })
-    vi.doMock("../../mind/friends/store-file", () => ({
-      FileFriendStore: MockFileFriendStore,
-    }))
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: vi.fn(function (this: any) {
-        this.resolve = vi.fn().mockResolvedValue({
-          friend: { id: "mock-uuid", name: "Test", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1 },
-          channel: { channel: "teams", availableIntegrations: ["graph", "ado", "github"], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
-        })
-      }),
-    }))
-    vi.doMock("../../mind/friends/tokens", () => ({
-      accumulateFriendTokens: vi.fn(),
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FileFriendStore: MockFileFriendStore,
+        FriendResolver: vi.fn(function (this: any) {
+                this.resolve = vi.fn().mockResolvedValue({
+                  friend: { id: "mock-uuid", name: "Test", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1 },
+                  channel: { channel: "teams", availableIntegrations: ["graph", "ado", "github"], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
+                })
+              }),
+        accumulateFriendTokens: vi.fn(),
+      }
+    })
     vi.doMock("../../nerves", async () => {
       const actual = await vi.importActual<typeof import("../../nerves")>("../../nerves")
       return { ...actual, createTraceId: vi.fn().mockReturnValue("trace-gh") }
@@ -6001,9 +6029,6 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       this.delete = vi.fn()
       this.findByExternalId = vi.fn()
     })
-    vi.doMock("../../mind/friends/store-file", () => ({
-      FileFriendStore: MockFileFriendStore,
-    }))
     const mockResolve = vi.fn().mockResolvedValue({
       friend: {
         id: "mock-uuid",
@@ -6028,9 +6053,15 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     const MockFriendResolver = vi.fn(function (this: any) {
       this.resolve = mockResolve
     })
-    vi.doMock("../../mind/friends/resolver", () => ({
-      FriendResolver: MockFriendResolver,
-    }))
+    // Friends is the @ouro.bot/friends package barrel; merged per-test doMock.
+    vi.doMock("@ouro.bot/friends", async () => {
+      const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+      return {
+        ...actual,
+        FileFriendStore: MockFileFriendStore,
+        FriendResolver: MockFriendResolver,
+      }
+    })
 
     return { mockHandleInboundTurn, runAgentFn, mockResolve, mockDrainDeferredReturns }
   }

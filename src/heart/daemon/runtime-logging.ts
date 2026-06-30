@@ -8,6 +8,8 @@ import {
   type LogLevel,
   type LogSink,
 } from "../../nerves"
+import { setNervesEmitter } from "@ouro.bot/friends"
+
 import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
 import { getAgentDaemonLoggingConfigPath, getAgentDaemonLogsDir, getAgentName } from "../identity"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
@@ -162,6 +164,12 @@ export function configureDaemonRuntimeLogger(
     sinks,
   })
   setRuntimeLogger(logger)
+
+  // Wire the @ouro.bot/friends package's observability seam to the harness's real
+  // nerves emitter. The package ships a no-op emitNervesEvent by default; this
+  // injection forwards the extracted friend model's events into harness nerves so
+  // observability isn't lost when friends moved out of the tree. Idempotent.
+  setNervesEmitter(emitNervesEvent)
 
   emitNervesEvent({
     component: "daemon",

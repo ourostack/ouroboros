@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import type { FriendRecord } from "../../mind/friends/types"
+import type { FriendRecord } from "@ouro.bot/friends"
 
 const mockTaskModule = {
   getBoard: vi.fn(),

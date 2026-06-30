@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import type { DiaryEntry, DiaryEntryProvenance } from "../../mind/diary"
 import type { ToolContext } from "../../repertoire/tools-base"
-import type { ResolvedContext, ChannelCapabilities, FriendRecord } from "../../mind/friends/types"
+import type { ResolvedContext, ChannelCapabilities, FriendRecord } from "@ouro.bot/friends"
 
 let agentRoot = ""
 

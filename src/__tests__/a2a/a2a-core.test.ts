@@ -9,8 +9,7 @@ import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
 import { onboardA2APeer } from "../../a2a/onboarding"
 import { FileA2ATaskStore } from "../../a2a/task-store"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2ATask } from "../../a2a/types"
-import { FriendResolver } from "../../mind/friends/resolver"
-import { FileFriendStore } from "../../mind/friends/store-file"
+import { FriendResolver, FileFriendStore } from "@ouro.bot/friends"
 
 let tmp: TmpBundleHandle | null = null
 let server: A2AServerHandle | null = null
@@ -716,7 +715,9 @@ describe("A2A core substrate", () => {
       })) as typeof fetch,
     })
     expect(spoofed.id).not.toBe(record.id)
-    expect(spoofed.trustLevel).toBe("acquaintance")
+    // @ouro.bot/friends alpha.7 hardened cold contact: a brand-new (spoofed) peer with
+    // no explicit trustLevel lands at `stranger` (safe-by-default), not `acquaintance`.
+    expect(spoofed.trustLevel).toBe("stranger")
     expect((await store.get(record.id))?.agentMeta?.a2a?.endpointUrl).toBe("https://remote.example/a2a")
 
     await store.put(record.id, {

@@ -4,7 +4,8 @@ import { listSkills, loadSkill } from "./skills";
 import { getIntegrationsConfig } from "../heart/config";
 import { emitNervesEvent } from "../nerves/runtime";
 import { getAgentRoot } from "../heart/identity";
-import type { FriendRecord } from "../mind/friends/types";
+import { applyFriendNote } from "@ouro.bot/friends"
+import type { FriendRecord, ApplyFriendNoteInput } from "@ouro.bot/friends"
 import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryProvenance } from "../mind/diary";
 import { resolveRecordDiaryRoot } from "../mind/record-paths";
 import { classifyProvenanceTrust } from "../mind/provenance-trust";
@@ -379,52 +380,39 @@ export const notesToolDefinitions: ToolDefinition[] = [
       const friendId = ctx.context.friend?.id;
       if (!friendId) return "i can't save notes -- no friend identity available";
 
-      // Validate parameters
+      // Validate parameters (input-shape guards stay harness-side so we keep the
+      // first-person tool wording; applyFriendNote does the record mutation).
       if (!a.content) return "i need a content value to save";
       const validTypes = ["name", "tool_preference", "note"];
       if (!validTypes.includes(a.type)) return `i don't recognize type '${a.type}' -- use name, tool_preference, or note`;
       if ((a.type === "tool_preference" || a.type === "note") && !a.key) return "i need a key for tool_preference or note type";
 
-      try {
-        // Read fresh record from disk
-        const record = await ctx.friendStore.get(friendId);
-        if (!record) return "i can't find the friend record on disk";
-        const isOverride = a.override === "true";
+      // Record-domain logic lives in @ouro.bot/friends; this wrapper maps the
+      // structured FriendOpResult back to the tool's first-person strings.
+      const result = await applyFriendNote(ctx.friendStore, friendId, {
+        type: a.type as ApplyFriendNoteInput["type"],
+        ...(a.key !== undefined ? { key: a.key } : {}),
+        content: a.content,
+        override: a.override === "true",
+      });
 
-        if (a.type === "name") {
-          const updated: FriendRecord = { ...record, name: a.content, updatedAt: new Date().toISOString() };
-          await ctx.friendStore.put(friendId, updated);
-          return `saved: name = ${a.content}`;
-        }
-
-        if (a.type === "tool_preference") {
-          const existing = record.toolPreferences[a.key];
-          if (existing && !isOverride) {
-            return `i already have a preference for '${a.key}': "${existing}". if you want to replace it, call again with override: true. or merge both values into content and override.`;
-          }
-          const updated: FriendRecord = { ...record, toolPreferences: { ...record.toolPreferences, [a.key]: a.content }, updatedAt: new Date().toISOString() };
-          await ctx.friendStore.put(friendId, updated);
-          return `saved: toolPreference ${a.key} = ${a.content}`;
-        }
-
-        // type === "note"
-        // Redirect "name" key to name field
-        if (a.key === "name") {
-          const updated: FriendRecord = { ...record, name: a.content, updatedAt: new Date().toISOString() };
-          await ctx.friendStore.put(friendId, updated);
+      switch (result.status) {
+        case "saved":
+          if (a.type === "name") return `saved: name = ${a.content}`;
+          if (a.type === "tool_preference") return `saved: toolPreference ${a.key} = ${a.content}`;
+          return `saved: note ${a.key} = ${a.content}`;
+        case "redirected_to_name":
           return `updated friend's name to '${a.content}' (stored as name, not a note)`;
-        }
-
-        const existing = record.notes[a.key];
-        if (existing && !isOverride) {
-          return `i already have a note for '${a.key}': "${existing.value}". if you want to replace it, call again with override: true. or merge both values into content and override.`;
-        }
-        const updated: FriendRecord = { ...record, notes: { ...record.notes, [a.key]: { value: a.content, savedAt: new Date().toISOString() } }, updatedAt: new Date().toISOString() };
-        await ctx.friendStore.put(friendId, updated);
-        return `saved: note ${a.key} = ${a.content}`;
-      } catch (err) {
-        /* v8 ignore next -- defensive: non-Error branch for String(err) @preserve */
-        return `error saving note: ${err instanceof Error ? err.message : String(err)}`;
+        case "override_required":
+          // result.message embeds the existing value; append the harness merge instruction.
+          return `${result.message}. if you want to replace it, call again with override: true. or merge both values into content and override.`;
+        case "not_found":
+          return "i can't find the friend record on disk";
+        /* v8 ignore next 2 -- invalid is pre-empted by the harness validation above; kept for exhaustiveness @preserve */
+        case "invalid":
+          return result.message ?? "i can't save that note";
+        default:
+          return `error saving note: ${result.message}`;
       }
     },
     summaryKeys: ["type", "key", "content"],

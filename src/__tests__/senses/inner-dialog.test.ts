@@ -72,16 +72,20 @@ vi.mock("../../senses/pipeline", () => ({
   handleInboundTurn: (...args: any[]) => mockHandleInboundTurn(...args),
 }))
 
-vi.mock("../../mind/friends/channel", () => ({
-  getChannelCapabilities: (...args: any[]) => mockGetChannelCapabilities(...args),
-}))
+// Friends now lives in the @ouro.bot/friends package (a single barrel module).
+// The previously separate channel/tokens mocks merge into one package mock that
+// spreads the real barrel and overrides getChannelCapabilities + accumulateFriendTokens.
+vi.mock("@ouro.bot/friends", async () => {
+  const actual = await vi.importActual<typeof import("@ouro.bot/friends")>("@ouro.bot/friends")
+  return {
+    ...actual,
+    getChannelCapabilities: (...args: any[]) => mockGetChannelCapabilities(...args),
+    accumulateFriendTokens: (...args: any[]) => mockAccumulateFriendTokens(...args),
+  }
+})
 
 vi.mock("../../senses/trust-gate", () => ({
   enforceTrustGate: (...args: any[]) => mockEnforceTrustGate(...args),
-}))
-
-vi.mock("../../mind/friends/tokens", () => ({
-  accumulateFriendTokens: (...args: any[]) => mockAccumulateFriendTokens(...args),
 }))
 
 vi.mock("../../heart/session-activity", () => ({
