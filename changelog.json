@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.674",
+      "changes": [
+        "Add an inner-dialog auto-start guard so enabled agents can stay online without autonomous model-spending boot turns."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.673",
       "changes": [
         "A2A connect + delegation layer (friends @ouro.bot/friends alpha.7), on the merged inbound-auth foundation. DID-keyed onboarding: a DID-bearing agent card keys the friend record on its verified did:key (externalId == DID, a2a.did == DID) after verifyCardDidBinding + parseDidKey, so an inbound sealed envelope resolves to that same record (the owner's own agent no longer collapses to stranger); a did-less legacy card stays URL-keyed (backward compatible). New owner-only connect_to tool, gated to the local management sense via authorizeConnect (network/group/internal senses are refused before any card fetch; closed-sense membership fails closed without the roster verifier) and linking at family via connectAgents. Outbound becomes signed+sealed over the direct rung: a new A2ATransport (relay/mailbox are a typed-but-stubbed seam naming ourostack/friends-relay), a2a_send_message seals via sendShare for DID-keyed peers (legacy text send preserved), and a full delegation round-trip — connect_to → coordinate(request, task) (prepareCoordination mints the requestId + first-party delegation, sealed to the peer; the recipient's receiveShare quarantines it under importedDelegations) → list_delegations → send_result (prepareMissionResult over the harness-owned mission_result DataPart wire, which routes to importMissionResult, NOT receiveShare, since mission-result is not a FriendsKind) → importMissionResult lands importedResults[B][requestId], assignee/correlation-gated (assignee_mismatch / no_delegation / no_mission / untrusted_source, fail-closed on a legacy assignee-less delegation). Imported delegations and results land quarantined + attributed, never seed trust, never overwrite first-party; deliver-back is explicit (autonomy is a non-goal).",
