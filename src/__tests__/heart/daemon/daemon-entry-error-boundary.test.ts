@@ -9,6 +9,7 @@ const { listEnabledBundleAgentsMock } = vi.hoisted(() => ({
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
+  isInnerDialogAutoStartEnabled: vi.fn(() => true),
 }))
 
 const {
