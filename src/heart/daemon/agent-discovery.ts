@@ -106,6 +106,45 @@ export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): st
     .map((row) => row.name)
 }
 
+/**
+ * Per-agent runtime policy for the always-on inner-dialog worker. Agents
+ * default to the historic behavior (auto-start on daemon boot), but a bundle
+ * can opt out with:
+ *
+ *   "innerDialog": { "autoStart": false }
+ *
+ * This keeps the agent enabled for sync/status/senses while preventing an
+ * autonomous boot turn from spending model credits.
+ */
+export function isInnerDialogAutoStartEnabled(agent: string, options: AgentDiscoveryOptions = {}): boolean {
+  const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
+  const readFileSync = options.readFileSync ?? fs.readFileSync
+  const configPath = path.join(bundlesRoot, `${agent}.ouro`, "agent.json")
+
+  try {
+    const raw = readFileSync(configPath, "utf-8")
+    const parsed = JSON.parse(raw) as { innerDialog?: unknown }
+    const innerDialog = parsed.innerDialog
+    if (innerDialog && typeof innerDialog === "object" && !Array.isArray(innerDialog)) {
+      return (innerDialog as { autoStart?: unknown }).autoStart !== false
+    }
+    return true
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.inner_dialog_policy_read_failed",
+      message: "failed to read inner-dialog auto-start policy; refusing autonomous worker start",
+      meta: {
+        agent,
+        configPath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return false
+  }
+}
+
 export interface BundleSyncRow {
   agent: string
   enabled: boolean

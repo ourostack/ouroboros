@@ -18,7 +18,7 @@ import { computeDaemonRollup } from "./daemon-rollup"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
-import { listEnabledBundleAgents } from "./agent-discovery"
+import { isInnerDialogAutoStartEnabled, listEnabledBundleAgents } from "./agent-discovery"
 import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -104,11 +104,19 @@ const processManager = new DaemonProcessManager({
     name: agent,
     entry: "heart/agent-entry.js",
     channel: "inner-dialog",
-    autoStart: true,
+    autoStart: isInnerDialogAutoStartEnabled(agent),
   })),
   existsSync: fs.existsSync,
   /* v8 ignore next 4 -- wiring: delegates to checkAgentConfigWithProviderHealth which has full unit tests @preserve */
   configCheck: async (agent) => {
+    if (!isInnerDialogAutoStartEnabled(agent)) {
+      return {
+        ok: true,
+        skip: true,
+        error: "inner-dialog auto-start is disabled in agent.json",
+        fix: "Set innerDialog.autoStart to true and rerun `ouro up` to resume autonomous inner-dialog turns.",
+      }
+    }
     const bundlesRoot = getAgentBundlesRoot()
     return checkAgentConfigWithProviderHealth(agent, bundlesRoot)
   },
