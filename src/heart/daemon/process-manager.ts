@@ -28,6 +28,10 @@ export interface DaemonManagedAgent {
 export interface DaemonAgentSnapshot {
   name: string
   channel: string
+  /** Whether this managed process is expected to be running automatically.
+   *  False means the process is intentionally parked and health checks should
+   *  not page or trigger recovery just because the status is stopped. */
+  autoStart: boolean
   status: "starting" | "running" | "stopped" | "crashed"
   pid: number | null
   restartCount: number
@@ -257,6 +261,7 @@ export class DaemonProcessManager {
         snapshot: {
           name: agent.name,
           channel: agent.channel,
+          autoStart: agent.autoStart,
           status: "stopped",
           pid: null,
           restartCount: 0,

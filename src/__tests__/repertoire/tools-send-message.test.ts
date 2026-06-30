@@ -21,6 +21,7 @@ vi.mock("../../repertoire/skills", () => ({
 
 const mockRunInnerDialogTurn = vi.fn()
 const mockRequestInnerWake = vi.fn()
+const mockIsInnerDialogAutoStartEnabled = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockSendProactiveTeamsMessageToSession = vi.fn()
 const mockPlaceConfiguredTwilioPhoneCall = vi.fn()
@@ -31,6 +32,10 @@ vi.mock("../../senses/inner-dialog", () => ({
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
+}))
+
+vi.mock("../../heart/daemon/agent-discovery", () => ({
+  isInnerDialogAutoStartEnabled: (...args: any[]) => mockIsInnerDialogAutoStartEnabled(...args),
 }))
 
 vi.mock("../../senses/bluebubbles", () => ({
@@ -82,6 +87,8 @@ beforeEach(() => {
   vi.mocked(fs.mkdirSync).mockReset()
   mockRunInnerDialogTurn.mockReset()
   mockRequestInnerWake.mockReset()
+  mockIsInnerDialogAutoStartEnabled.mockReset()
+  mockIsInnerDialogAutoStartEnabled.mockReturnValue(true)
   mockSendProactiveBlueBubblesMessageToSession.mockReset()
   mockSendProactiveTeamsMessageToSession.mockReset()
   mockPlaceConfiguredTwilioPhoneCall.mockReset()
@@ -1157,6 +1164,23 @@ describe("send_message tool", () => {
         "wake: inline fallback",
         "penguins surfaced.",
       ].join("\n"))
+    })
+
+    it("keeps parked inner dialog queued when no daemon wake path is available", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockIsInnerDialogAutoStartEnabled.mockReturnValue(false)
+
+      const result = await tool.handler({
+        friendId: "self",
+        channel: "cli",
+        content: "hold this without spending",
+      })
+
+      expect(mockIsInnerDialogAutoStartEnabled).toHaveBeenCalledWith("testagent")
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
 
     it("uses daemon-managed wake when available and skips the inline fallback", async () => {

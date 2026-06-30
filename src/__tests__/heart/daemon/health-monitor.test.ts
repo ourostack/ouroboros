@@ -304,6 +304,34 @@ describe("HealthMonitor", () => {
       expect(onCriticalAgent).not.toHaveBeenCalled()
     })
 
+    it("does not call onCriticalAgent for parked non-autostart agents", async () => {
+      const onCriticalAgent = vi.fn()
+      const alertSink = vi.fn(async () => undefined)
+      const monitor = new HealthMonitor({
+        processManager: {
+          listAgentSnapshots: () => [
+            { name: "slugger", status: "stopped", autoStart: false },
+            { name: "helper", status: "running", autoStart: true },
+          ],
+        },
+        scheduler: {
+          listJobs: () => [{ id: "daily", lastRun: "2026-01-01T00:00:00Z" }],
+        },
+        onCriticalAgent,
+        alertSink,
+      })
+
+      const results = await monitor.runChecks()
+
+      expect(results[0]).toEqual({
+        name: "agent-processes",
+        status: "ok",
+        message: "all auto-start managed agents running; parked agents: slugger",
+      })
+      expect(onCriticalAgent).not.toHaveBeenCalled()
+      expect(alertSink).not.toHaveBeenCalled()
+    })
+
     it("does not call onCriticalAgent for non-agent-process critical results like disk-space", async () => {
       const onCriticalAgent = vi.fn()
       const monitor = new HealthMonitor({

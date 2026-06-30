@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.674",
       "changes": [
-        "Add an inner-dialog auto-start guard so enabled agents can stay online without autonomous model-spending boot turns."
+        "Add an inner-dialog auto-start guard so enabled agents can stay online without autonomous model-spending boot turns, including client-side self-message fallback paths and daemon health/status surfaces that respect intentionally parked agents."
       ]
     },
     {

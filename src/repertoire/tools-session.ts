@@ -5,6 +5,7 @@ import { getAgentRoot, getAgentName } from "../heart/identity";
 import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
 import { requestInnerWake } from "../heart/daemon/socket-client";
+import { isInnerDialogAutoStartEnabled } from "../heart/daemon/agent-discovery";
 import {
   deriveInnerDialogStatus,
   deriveInnerJob,
@@ -756,6 +757,14 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         }
 
         if (!wakeResponse?.ok) {
+          if (!isInnerDialogAutoStartEnabled(agentName)) {
+            return renderInnerProgressStatus({
+              queue: "queued to inner/dialog",
+              wake: "parked by innerDialog.autoStart=false",
+              processing: "pending",
+              surfaced: "nothing yet",
+            })
+          }
           const { runInnerDialogTurn } = await import("../senses/inner-dialog")
           if (ctx?.context?.channel?.channel === "inner") {
             queueMicrotask(() => {
