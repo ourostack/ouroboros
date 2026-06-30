@@ -192,6 +192,55 @@ describe("listAllBundleAgents", () => {
   })
 })
 
+describe("isInnerDialogAutoStartEnabled", () => {
+  afterEach(() => {
+    getAgentBundlesRootMock.mockReset()
+    getAgentBundlesRootMock.mockReturnValue("/mock/AgentBundles")
+    emitNervesEventMock.mockReset()
+    readFileSyncMock.mockReset()
+  })
+
+  it("defaults to auto-start when no inner-dialog policy is configured", async () => {
+    readFileSyncMock.mockReturnValue(JSON.stringify({ enabled: true }))
+
+    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(true)
+    expect(readFileSyncMock).toHaveBeenCalledWith("/mock/AgentBundles/slugger.ouro/agent.json", "utf-8")
+  })
+
+  it("honors innerDialog.autoStart false without disabling the agent bundle", async () => {
+    readFileSyncMock.mockReturnValue(JSON.stringify({
+      enabled: true,
+      innerDialog: { autoStart: false },
+    }))
+
+    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(false)
+  })
+
+  it("fails closed when the inner-dialog policy cannot be read", async () => {
+    readFileSyncMock.mockImplementation(() => {
+      throw new Error("permission denied")
+    })
+
+    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(false)
+    expect(emitNervesEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.inner_dialog_policy_read_failed",
+      meta: expect.objectContaining({
+        agent: "slugger",
+        configPath: "/mock/AgentBundles/slugger.ouro/agent.json",
+        error: "permission denied",
+      }),
+    }))
+  })
+})
+
 describe("listBundleSyncRows", () => {
   beforeEach(() => {
     getAgentBundlesRootMock.mockReset()
