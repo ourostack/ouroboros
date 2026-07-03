@@ -163,6 +163,28 @@ describe("checkAgentConfig", () => {
       "utf-8",
     )
   })
+
+  it.each([
+    ["provider only", { provider: "minimax" }],
+    ["model only", { model: "abab6.5s-chat" }],
+    ["provider and model", { provider: "minimax", model: "abab6.5s-chat" }],
+  ])("rejects %s selection inside privateRuntime config", (_label, privateRuntime) => {
+    mockReadFileSync.mockReturnValueOnce(agentJson({
+      privateRuntime: {
+        autoStart: true,
+        ...privateRuntime,
+      },
+    }))
+
+    const result = checkAgentConfig("myagent", BUNDLES)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("privateRuntime")
+    expect(result.error).toMatch(/provider|model/)
+    expect(result.fix).toContain("ouro use --agent myagent --lane inner")
+    expect(refreshProviderCredentialPoolMock).not.toHaveBeenCalled()
+    expect(providerPingMock).not.toHaveBeenCalled()
+  })
 })
 
 describe("checkAgentConfigWithProviderHealth", () => {

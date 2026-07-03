@@ -3,13 +3,15 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-const { listEnabledBundleAgentsMock } = vi.hoisted(() => ({
+const { listEnabledBundleAgentsMock, readPrivateRuntimeConfigMock } = vi.hoisted(() => ({
   listEnabledBundleAgentsMock: vi.fn(() => [] as string[]),
+  readPrivateRuntimeConfigMock: vi.fn(() => ({ autoStart: false, source: "default" })),
 }))
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
   isInnerDialogAutoStartEnabled: vi.fn(() => true),
+  readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
 }))
 
 const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock, habitSchedulerListJobsMock, habitSchedulerTriggerJobMock } = vi.hoisted(() => ({
@@ -101,6 +103,8 @@ describe("daemon entrypoint", () => {
   afterEach(() => {
     listEnabledBundleAgentsMock.mockReset()
     listEnabledBundleAgentsMock.mockReturnValue([])
+    readPrivateRuntimeConfigMock.mockReset()
+    readPrivateRuntimeConfigMock.mockReturnValue({ autoStart: false, source: "default" })
     habitSchedulerStartMock.mockReset()
     habitSchedulerStopMock.mockReset()
     habitSchedulerWatchMock.mockReset()
@@ -121,6 +125,82 @@ describe("daemon entrypoint", () => {
       process.env.HOME = originalHome
     }
   })
+
+  async function importDaemonEntryWithPrivateRuntimeConfig(privateRuntimeConfig: { autoStart: boolean; source: string }) {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    readPrivateRuntimeConfigMock.mockReturnValue(privateRuntimeConfig)
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const daemonCtor = vi.fn()
+    const processManagerCtor = vi.fn()
+    const checkAgentConfig = vi.fn(() => ({ ok: true }))
+    const checkAgentConfigWithProviderHealth = vi.fn(async () => {
+      throw new Error("passive daemon startup must not run live provider health checks")
+    })
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        constructor(_opts: unknown) {
+          daemonCtor(_opts)
+        }
+        start = start
+        stop = stop
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+        constructor(_opts: unknown) {
+          processManagerCtor(_opts)
+        }
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
+    vi.doMock("../../../heart/daemon/agent-config-check", () => ({
+      checkAgentConfig,
+      checkAgentConfigWithProviderHealth,
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(daemonCtor).toHaveBeenCalledTimes(1)
+    expect(processManagerCtor).toHaveBeenCalledTimes(1)
+
+    return {
+      checkAgentConfig,
+      checkAgentConfigWithProviderHealth,
+      processManagerOptions: processManagerCtor.mock.calls[0]?.[0] as {
+        agents: Array<{ name: string; entry: string; channel: string; autoStart: boolean }>
+        configCheck: (agent: string) => Promise<{ ok: boolean }>
+      },
+    }
+  }
 
   it("boots daemon with default socket and wires signal handlers", async () => {
     vi.resetModules()
@@ -307,6 +387,34 @@ describe("daemon entrypoint", () => {
 
     argvSpy.mockRestore()
   }, 10_000)
+
+  it("wires private-runtime workers as passive by default and uses offline config validation", async () => {
+    const { checkAgentConfig, checkAgentConfigWithProviderHealth, processManagerOptions } =
+      await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: false, source: "default" })
+
+    expect(processManagerOptions.agents).toEqual([{
+      name: "slugger",
+      entry: "heart/agent-entry.js",
+      channel: "private-runtime",
+      autoStart: false,
+    }])
+
+    await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
+    expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
+  })
+
+  it("lets privateRuntime explicitly allow autonomous private-runtime startup", async () => {
+    const { processManagerOptions } =
+      await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: true, source: "privateRuntime" })
+
+    expect(processManagerOptions.agents).toEqual([{
+      name: "slugger",
+      entry: "heart/agent-entry.js",
+      channel: "private-runtime",
+      autoStart: true,
+    }])
+  })
 
   it("wires daemon.stop command cleanup to stop entrypoint timers before exiting", async () => {
     vi.resetModules()
