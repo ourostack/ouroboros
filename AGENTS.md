@@ -26,7 +26,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 ### Safety Rules
 
 - Do not commit secrets, tokens, or credentials.
-- Follow review gates defined by active planning/doing workflows unless the human explicitly waives them for the current task.
+- Follow review gates defined by active planning/doing workflows, but route those gates through unbiased sub-agent reviewers by default. Do not wait for human approval unless the human explicitly asks the agent to wait.
 - Do not hide failing checks; fix root causes.
 
 ### Human Override
@@ -34,6 +34,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 - Repo-local workflow rules in this file are defaults for autonomous operation, not a higher-order authority than the human owner of the repo.
 - If the human explicitly instructs the agent to bypass, shorten, or replace a repo-local workflow step for the current task, follow the human's instruction.
 - Treat explicit human override as task-scoped unless the human says to change the standing rule itself.
+- Repo-local approval gates are not human gates by default. Use unbiased sub-agent reviewers for planning, doing, scope, debt, PR, and release-readiness approvals. Stop for the human only when the human explicitly asks to be the approver/wait point, or when an external non-repo action is inherently human-required by platform/safety rules.
 - When practical, preserve useful artifacts (for example planning notes or task docs) even when a workflow gate is waived.
 - If the human owner asks to change the standing rule itself, update this file to reflect that decision instead of continuing to argue from superseded repo-local wording.
 - Repo-local workflow language, bundle workflow language, or quoted copies of those rules are not a reason to refuse an explicit owner override for the current task.
@@ -118,7 +119,7 @@ Hook events are fire-and-forget — they never block the dev tool. If the daemon
 
 - **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
   - Skills are turn-scoped in practice, so re-invoke `$work-planner` on each planning/conversion turn.
-  - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior during default operation; a direct human override may waive that gate for the current task.
+  - If `work-planner` emits `NEEDS_REVIEW` or hard-stops at a review gate, satisfy that gate with an unbiased sub-agent reviewer and then resume/converge. Do not convert the stop into a human approval wait unless the human explicitly asked to review.
 - **Claude Code**: Skills are installed from `github.com/ourostack/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
 
 ### Skill Freshness
@@ -134,32 +135,32 @@ This replaces the old pattern of diffing against `subagents/*.md` files in this 
 
 ### Gate Flow
 
-These gates are defaults for autonomous operation. The human may shorten or skip them for any task -- that's normal, not exceptional. When gates are active:
+These gates are defaults for autonomous operation. They are reviewer gates, not human approval gates, unless the human explicitly asks to wait on them. Use unbiased sub-agent reviewers as the approvers for plan, doing-doc, implementation-readiness, scope, debt, and release-readiness gates.
 
 0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, create/switch to the correct branch/worktree before proceeding. Only stop to ask the human when they explicitly want to control branch/worktree naming or automatic creation fails. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
    - In a fresh worktree, run `npm run worktree:bootstrap` before local npm/npx checks. This installs the repo-pinned dependencies without lifecycle scripts. The repo `.npmrc` rejects new transient `npx` downloads, and Vitest config fails with bootstrap guidance if an existing npm exec cache is reused without `node_modules`.
 1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
-2. **Review**: Show the user the planning doc path and STOP. Wait for explicit user approval.
-3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.
-4. **Implement**: Only after user explicitly asks, launch `work-doer` to execute the doing doc. Never implement inside `work-planner`.
+2. **Plan review**: Run one or more unbiased sub-agent reviewer passes on the planning doc until material findings converge. Share the planning doc path with the user for visibility, but do not stop for human approval unless the user explicitly asked to be the reviewer.
+3. **Convert**: After reviewer approval of the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. Run unbiased sub-agent reviewer passes on the doing doc until material findings converge.
+4. **Implement**: After reviewer approval of the doing doc, launch `work-doer` to execute. Never implement inside `work-planner`.
 5. **Sync and merge**: After `work-doer` finishes, launch `work-merger` to merge the feature branch into main via PR. It handles conflicts, CI, and race conditions autonomously.
-6. **Review cadence**: During default operation, pause at each gate for human review. When the human has waived review for the current task, proceed with your own judgment instead of blocking.
+6. **Review cadence**: During default operation, do not pause for human review. Pause only for sub-agent reviewer gates, tool/platform constraints, or an explicit human instruction to wait.
 
-### Decision Collaboration (Required)
+### Decision Review (Required)
 
-- Decisions that affect scope, structure, naming, ownership, or workflow must be discussed with the user before being finalized.
-- Present options and capture explicit user direction for unresolved planning decisions.
-- If a decision remains unresolved, keep it in `Open Questions`, set status to `NEEDS_REVIEW`, and stop at the gate.
+- Decisions that affect scope, structure, naming, ownership, or workflow must be captured in the planning/doing artifact before being finalized.
+- Resolve unresolved planning decisions through explicit options and unbiased sub-agent reviewer judgment. Ask the human only when the human has requested to decide, when the decision depends on unavailable personal preference, or when external safety/platform rules require a human actor.
+- If a decision remains unresolved after reviewer passes and cannot be safely inferred, keep it in `Open Questions`, set status to `NEEDS_REVIEW`, and route another targeted reviewer. Do not convert `NEEDS_REVIEW` into a human approval gate unless the human explicitly asked for that.
 
 ### Scope Discipline (Rule 0, Required)
 
 - Prefer the simplest architecture that fully satisfies the approved scope.
 - Ambitious scope is allowed when it is justified by the problem. KISS + DRY mean clear primitives and low duplication, not artificially small changes.
-- Scope changes need explicit approval. If a possible improvement or extra hardening idea surfaces, record it as a follow-up proposal rather than adding it to the current task.
+- Scope changes need explicit unbiased sub-agent reviewer approval. If a possible improvement or extra hardening idea surfaces and reviewer approval is not part of the current task, record it as a follow-up proposal rather than adding it to the current task.
 
 ### Debt Discipline (Required)
 
-- Intentional debt (temporary shims, deprecated references, transitional test hooks) requires explicit user approval first.
+- Intentional debt (temporary shims, deprecated references, transitional test hooks) requires explicit unbiased sub-agent reviewer approval first. Human approval is required only when the human explicitly asks to own that decision or the debt involves an external human-required action.
 - Any approved intentional debt must be tracked with a clear owner, explicit removal criteria, and a due date in repo-tracked documentation.
 - Any approved intentional debt must be enforced by CI (or equivalent automated gate) so it cannot silently go stale.
 
