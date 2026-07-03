@@ -15,6 +15,27 @@ function tempLedgerPath(): string {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-")), "decisions.jsonl")
 }
 
+function tempBundlesRoot(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-bundles-"))
+}
+
+function writeAgentBundle(
+  bundlesRoot: string,
+  agent = "slugger",
+  overrides: Record<string, unknown> = {},
+): void {
+  const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
+  fs.mkdirSync(agentRoot, { recursive: true })
+  fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({
+    version: 2,
+    enabled: true,
+    humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
+    agentFacing: { provider: "openai-codex", model: "gpt-5.5" },
+    senses: {},
+    ...overrides,
+  }, null, 2)}\n`, "utf-8")
+}
+
 function readLedger(pathname: string): Array<Record<string, unknown>> {
   if (!fs.existsSync(pathname)) return []
   return fs.readFileSync(pathname, "utf-8")
@@ -103,6 +124,7 @@ describe("private-runtime request identity", () => {
     expect(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest({ idempotencyKey: "habit:slugger:other" }))).not.toBe(fingerprint)
     expect(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest({ budgetClass: "background" }))).not.toBe(fingerprint)
     expect(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest({ originRefs: [{ kind: "habit", id: "other" }] }))).not.toBe(fingerprint)
+    expect(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest({ idempotencyKey: undefined }))).toMatch(/^ptr_[0-9a-f]{64}$/)
   })
 
   it("derives a stable idempotency key when one is not supplied", async () => {
@@ -172,6 +194,188 @@ describe("private-runtime policy and ledger", () => {
     expect(deps.pingProvider).not.toHaveBeenCalled()
   })
 
+  it("resolves lane metadata from agent.json without provider credential or ping probes", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const bundlesRoot = tempBundlesRoot()
+    writeAgentBundle(bundlesRoot)
+    const deps = policyDeps({
+      bundlesRoot,
+      resolveProviderLane: undefined,
+      evaluatePolicy: vi.fn(async () => ({ result: "deny", deniedReason: "coverage deny" })),
+      now: () => new Date("2026-07-03T20:00:00.000Z"),
+    })
+
+    const inner = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "configured-inner",
+      originRefs: undefined,
+    }), deps)
+    const outward = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "configured-outward",
+      providerLane: "outward",
+    }), deps)
+
+    expect(inner).toMatchObject({
+      result: "deny",
+      reason: "manual habit poke",
+      deniedReason: "coverage deny",
+      providerLane: {
+        lane: "inner",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+      },
+      originRefs: [],
+    })
+    expect(outward.providerLane).toMatchObject({
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+    })
+    expect(deps.readProviderCredentialPool).not.toHaveBeenCalled()
+    expect(deps.pingProvider).not.toHaveBeenCalled()
+  })
+
+  it("fails closed when provider lane resolution fails", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps({
+      resolveProviderLane: vi.fn(async () => Promise.reject("agent.json missing provider lane")),
+      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "should not run" })),
+    })
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      reason: "agent.json missing provider lane",
+      deniedReason: "provider lane resolution failed",
+      providerLane: {
+        lane: "inner",
+        provider: "unconfigured",
+        model: "-",
+        source: "agent.json",
+      },
+    })
+    expect(deps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
+  })
+
+  it("uses the implicit bundle root when no bundlesRoot override is supplied", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-home-"))
+    const previousHome = process.env.HOME
+    process.env.HOME = homeDir
+    try {
+      const bundlesRoot = path.join(homeDir, "AgentBundles")
+      writeAgentBundle(bundlesRoot)
+
+      expect(privateRuntime.privateTurnLedgerPath("slugger")).toBe(
+        path.join(bundlesRoot, "slugger.ouro", "state", "private-runtime", "decisions.jsonl"),
+      )
+
+      const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+        idempotencyKey: "implicit-bundle-root",
+      }), {
+        ledgerPath: tempLedgerPath(),
+        now: () => "2026-07-03T20:00:00.000Z",
+        evaluatePolicy: vi.fn(async () => ({ result: "deny", deniedReason: "implicit root deny" })),
+        emitNervesEvent: vi.fn(),
+      })
+
+      expect(decision.providerLane).toMatchObject({
+        lane: "inner",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+      })
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = previousHome
+      }
+    }
+  })
+
+  it("keeps provider resolution failures closed for ordinary Error objects", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps({
+      resolveProviderLane: vi.fn(async () => Promise.reject(new Error("provider lane boom"))),
+      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "should not run" })),
+    })
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "error-provider-lane",
+    }), deps)
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      reason: "provider lane boom",
+      deniedReason: "provider lane resolution failed",
+      executable: false,
+    })
+  })
+
+  it("derives idempotency and fallback denied reasons without test event doubles", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const { idempotencyKey: _omitted, ...requestWithoutKey } = privateTurnRequest({
+      originRefs: undefined,
+    })
+    const deps = {
+      ledgerPath: tempLedgerPath(),
+      resolveProviderLane: vi.fn(async () => ({
+        lane: "inner",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        source: "agent.json",
+      })),
+      evaluatePolicy: vi.fn(async () => ({ result: "deny", reason: "policy denied without explicit deniedReason" })),
+    }
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(requestWithoutKey, deps)
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      reason: "policy denied without explicit deniedReason",
+      deniedReason: "policy denied without explicit deniedReason",
+      executable: false,
+      originRefs: [],
+    })
+    expect(decision.idempotencyKey).toMatch(/^ptk_[0-9a-f]{64}$/)
+    expect(decision.decidedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it("uses the built-in event emitter and default ledger path when no test doubles are supplied", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const bundlesRoot = tempBundlesRoot()
+    const expectedLedgerPath = path.join(bundlesRoot, "slugger.ouro", "state", "private-runtime", "decisions.jsonl")
+    const deps = {
+      bundlesRoot,
+      now: () => new Date("2026-07-03T20:00:00.000Z"),
+      resolveProviderLane: vi.fn(async () => ({
+        lane: "inner",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        source: "agent.json",
+      })),
+      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "default ledger path coverage" })),
+    }
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "default-ledger-path",
+    }), deps)
+
+    expect(decision).toMatchObject({
+      result: "allow",
+      executable: true,
+      ledgerLocator: { path: expectedLedgerPath, line: 1 },
+    })
+    expect(readLedger(expectedLedgerPath)).toMatchObject([
+      {
+        receiptId: decision.receiptId,
+        ledgerLocator: { path: expectedLedgerPath, line: 1 },
+      },
+    ])
+  })
+
   it("records explicit allow decisions before returning an executable receipt", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({
@@ -211,6 +415,52 @@ describe("private-runtime policy and ledger", () => {
     }))
   })
 
+  it("reads empty ledgers and preserves supplied direct-record receipts", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const ledgerPath = tempLedgerPath()
+    fs.writeFileSync(ledgerPath, "", "utf-8")
+    const directDecision = {
+      schemaVersion: 1,
+      receiptId: "ptrr_supplied",
+      agent: "slugger",
+      origin: "habit.poke",
+      reason: "direct record coverage",
+      providerLane: {
+        lane: "inner",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        source: "agent.json",
+      },
+      triggerSource: "manual",
+      idempotencyKey: "direct-record",
+      budgetClass: "interactive",
+      originRefs: [],
+      requestFingerprint: "ptr_direct",
+      result: "deny",
+      executable: false,
+      decidedAt: "2026-07-03T20:00:00.000Z",
+      ledgerLocator: { path: "" },
+      deniedReason: "direct deny",
+    }
+
+    expect(privateRuntime.readPrivateTurnLedger(ledgerPath)).toEqual([])
+    const recorded = privateRuntime.recordPrivateTurnDecision(directDecision, {
+      ledgerPath,
+      emitNervesEvent: vi.fn(),
+    })
+
+    expect(recorded).toMatchObject({
+      receiptId: "ptrr_supplied",
+      ledgerLocator: { path: ledgerPath, line: 1 },
+    })
+    expect(privateRuntime.readPrivateTurnLedger(ledgerPath)).toMatchObject([
+      {
+        receiptId: "ptrr_supplied",
+        ledgerLocator: { path: ledgerPath, line: 1 },
+      },
+    ])
+  })
+
   it("fails closed when an allow decision cannot be written to the durable ledger", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({
@@ -233,6 +483,54 @@ describe("private-runtime policy and ledger", () => {
       event: "private_runtime.decision_record_failed",
       level: "error",
     }))
+  })
+
+  it("fails closed with the built-in event emitter when ledger write fails", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = {
+      ledgerPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-readonly-")), "missing", "decisions.jsonl"),
+      now: () => "2026-07-03T20:00:00.000Z",
+      resolveProviderLane: vi.fn(async () => ({
+        lane: "inner",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+        source: "agent.json",
+      })),
+      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "manual operator-approved habit poke" })),
+    }
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "built-in-failed-write",
+    }), deps)
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      deniedReason: "ledger write failed",
+      executable: false,
+    })
+    expect(readLedger(deps.ledgerPath)).toHaveLength(0)
+  })
+
+  it("fails closed when existing ledger state is malformed", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const ledgerPath = tempLedgerPath()
+    fs.writeFileSync(ledgerPath, "{not-json}\n", "utf-8")
+    const deps = policyDeps({
+      ledgerPath,
+      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "manual operator-approved habit poke" })),
+    })
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "malformed-ledger-row",
+    }), deps)
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      deniedReason: "ledger write failed",
+      executable: false,
+    })
+    expect(decision.error).toContain("JSON")
+    expect(fs.readFileSync(ledgerPath, "utf-8")).toBe("{not-json}\n")
   })
 
   it("collapses concurrent same-key same-fingerprint decisions into one ledger receipt", async () => {

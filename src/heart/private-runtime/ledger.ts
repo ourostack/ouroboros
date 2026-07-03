@@ -52,7 +52,7 @@ function emitDecisionRecordFailed(
       origin: input.decision.origin,
       idempotencyKey: input.decision.idempotencyKey,
       requestFingerprint: input.decision.requestFingerprint,
-      error: input.decision.error ?? "unknown error",
+      error: input.decision.error,
     },
   } as const
   if (deps?.emitNervesEvent) {
@@ -92,10 +92,10 @@ function writeRow(ledgerPath: string, row: PrivateTurnDecision): PrivateTurnDeci
   return rowWithLocator
 }
 
-function receiptIdFor(input: { idempotencyKey: string; requestFingerprint: string; result?: string }): string {
+function receiptIdFor(input: { idempotencyKey: string; requestFingerprint: string; result: string }): string {
   const hash = crypto
     .createHash("sha256")
-    .update(`${input.idempotencyKey}\n${input.requestFingerprint}\n${input.result ?? ""}`)
+    .update(`${input.idempotencyKey}\n${input.requestFingerprint}\n${input.result}`)
     .digest("hex")
   return `ptrr_${hash}`
 }
@@ -131,7 +131,7 @@ function ledgerWriteFailedDecision(
     executable: false,
     deniedReason: "ledger write failed",
     ledgerLocator: { path: ledgerPath },
-    error: error instanceof Error ? error.message : String(error),
+    error: String(error),
   }
 }
 
