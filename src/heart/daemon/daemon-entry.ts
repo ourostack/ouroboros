@@ -18,7 +18,7 @@ import { computeDaemonRollup } from "./daemon-rollup"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
-import { isInnerDialogAutoStartEnabled, listEnabledBundleAgents } from "./agent-discovery"
+import { listEnabledBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -28,7 +28,7 @@ import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
-import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
+import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -70,6 +70,10 @@ if (mode === "dev") {
 }
 
 const managedAgents = listEnabledBundleAgents()
+const managedPrivateRuntimes = managedAgents.map((agent) => ({
+  agent,
+  config: readPrivateRuntimeConfig(agent),
+}))
 
 function sentinelHealthStatus(receipt: Pick<ContextLossSentinelReceipt, "verdict">): DaemonHealthResult["status"] {
   if (receipt.verdict === "ready") return "ok"
@@ -100,25 +104,17 @@ async function refreshDaemonSentinel(
 }
 
 const processManager = new DaemonProcessManager({
-  agents: managedAgents.map((agent) => ({
+  agents: managedPrivateRuntimes.map(({ agent, config }) => ({
     name: agent,
     entry: "heart/agent-entry.js",
-    channel: "inner-dialog",
-    autoStart: isInnerDialogAutoStartEnabled(agent),
+    channel: "private-runtime",
+    autoStart: config.autoStart,
   })),
   existsSync: fs.existsSync,
-  /* v8 ignore next 4 -- wiring: delegates to checkAgentConfigWithProviderHealth which has full unit tests @preserve */
+  /* v8 ignore next 4 -- wiring: delegates to checkAgentConfig which has full unit tests @preserve */
   configCheck: async (agent) => {
-    if (!isInnerDialogAutoStartEnabled(agent)) {
-      return {
-        ok: true,
-        skip: true,
-        error: "inner-dialog auto-start is disabled in agent.json",
-        fix: "Set innerDialog.autoStart to true and rerun `ouro up` to resume autonomous inner-dialog turns.",
-      }
-    }
     const bundlesRoot = getAgentBundlesRoot()
-    return checkAgentConfigWithProviderHealth(agent, bundlesRoot)
+    return checkAgentConfig(agent, bundlesRoot)
   },
   /* v8 ignore start -- pulse flush wiring: integration code; flushPulse itself has full unit tests @preserve */
   onSnapshotChange: () => {

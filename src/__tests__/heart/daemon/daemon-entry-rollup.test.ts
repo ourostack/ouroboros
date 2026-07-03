@@ -60,6 +60,7 @@ const { registerGlobalLogSinkMock, registeredHealthSinks, capturedHealthStates }
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
   isInnerDialogAutoStartEnabled: vi.fn(() => true),
+  readPrivateRuntimeConfig: vi.fn(() => ({ autoStart: true, source: "privateRuntime" })),
 }))
 
 vi.mock("../../../heart/habits/habit-scheduler", () => ({

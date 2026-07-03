@@ -9,7 +9,7 @@ import type { HarnessToolCall } from "../../heart/harness"
 describe("harness primitives contract", () => {
   it("exports bootstrap scaffolding constants", () => {
     expect(HARNESS_PRIMITIVES_ENTRYPOINT).toBe("harness/primitives")
-    expect(HARNESS_BOOTSTRAP_PHASES).toEqual(["bundle", "psyche", "inner-dialog"])
+    expect(HARNESS_BOOTSTRAP_PHASES).toEqual(["bundle", "psyche", "private-runtime"])
   })
 
   it("provides a typed tool-call surface", () => {

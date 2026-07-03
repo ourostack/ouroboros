@@ -164,6 +164,32 @@ describe("checkAgentConfig", () => {
     )
   })
 
+  it("allows policy-only privateRuntime config", () => {
+    mockReadFileSync.mockReturnValueOnce(agentJson({
+      privateRuntime: { autoStart: false },
+    }))
+
+    expect(checkAgentConfig("myagent", BUNDLES)).toEqual({ ok: true })
+    expect(refreshProviderCredentialPoolMock).not.toHaveBeenCalled()
+    expect(providerPingMock).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["null", null],
+    ["boolean", true],
+    ["array", []],
+  ])("rejects %s privateRuntime config", (_label, privateRuntime) => {
+    mockReadFileSync.mockReturnValueOnce(agentJson({ privateRuntime }))
+
+    const result = checkAgentConfig("myagent", BUNDLES)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("privateRuntime must be an object")
+    expect(result.fix).toContain("ouro use --agent myagent --lane inner")
+    expect(refreshProviderCredentialPoolMock).not.toHaveBeenCalled()
+    expect(providerPingMock).not.toHaveBeenCalled()
+  })
+
   it.each([
     ["provider only", { provider: "minimax" }],
     ["model only", { model: "abab6.5s-chat" }],

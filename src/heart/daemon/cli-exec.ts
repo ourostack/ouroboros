@@ -142,7 +142,7 @@ import {
   type StatusPayload,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
-import { checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
+import { checkAgentConfig, checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
@@ -694,11 +694,64 @@ function managedAgentsSignature(agentNames: string[]): string {
   return unique.length > 0 ? unique.join(",") : "(none)"
 }
 
-async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<DegradedAgent[]> {
+type StartupProviderCheckResult = {
+  degraded: DegradedAgent[]
+  source: "daemon-status" | "offline-config"
+}
+
+async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<StartupProviderCheckResult> {
   const agents = await listCliAgents(deps)
   const statusResult = await checkAgentProvidersFromDaemonStatus(deps, agents, onProgress)
-  if (statusResult) return statusResult
-  return checkAgentProviders(deps, agents, onProgress)
+  if (statusResult) {
+    const configResult = await checkAgentConfigsOffline(deps, agents)
+    return { degraded: [...statusResult, ...configResult], source: "daemon-status" }
+  }
+  return { degraded: await checkAgentConfigsOffline(deps, agents, onProgress), source: "offline-config" }
+}
+
+async function checkAgentConfigsOffline(
+  deps: OuroCliDeps,
+  agents: string[],
+  onProgress?: (message: string) => void,
+): Promise<DegradedAgent[]> {
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const degraded: DegradedAgent[] = []
+
+  for (const agent of [...new Set(agents)]) {
+    try {
+      const result = checkAgentConfig(agent, bundlesRoot)
+      if (result.ok) continue
+      const errorReason = result.error ?? "agent config validation failed"
+      const fixHint = result.fix ?? ""
+      degraded.push({ agent, errorReason, fixHint, ...(result.issue ? { issue: result.issue } : {}) })
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_config_invalid",
+        message: errorReason,
+        meta: { agent, fixProvided: fixHint.length > 0, source: "already-running-offline-config-check" },
+      })
+    } catch (error) {
+      const errorReason = error instanceof Error ? error.message : String(error)
+      degraded.push({
+        agent,
+        errorReason,
+        fixHint: "Run 'ouro doctor' for diagnostics, then retry 'ouro up'.",
+      })
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_config_invalid",
+        message: errorReason,
+        meta: { agent, fixProvided: true, source: "already-running-offline-config-check" },
+      })
+    }
+  }
+
+  onProgress?.(degraded.length === 0
+    ? "agent config validated offline; provider readiness will refresh on explicit provider commands"
+    : "agent config validation reported by offline startup check")
+  return degraded
 }
 
 function readinessIssueFromDegraded(entry: DegradedAgent): AgentReadinessIssue {
@@ -738,6 +791,21 @@ function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: 
 function providerRepairCountSummary(count: number): string {
   if (count === 0) return "selected providers answered live checks"
   return `${count} ${count === 1 ? "needs" : "need"} attention`
+}
+
+function startupConfigCheckSummary(count: number): string {
+  if (count === 0) return "agent config validated offline"
+  return `${count} ${count === 1 ? "needs" : "need"} attention`
+}
+
+function startupProviderCheckSummary(result: StartupProviderCheckResult): string {
+  if (result.source === "daemon-status" && result.degraded.length === 0) {
+    return "provider readiness confirmed by daemon status"
+  }
+  if (result.source === "daemon-status") {
+    return providerRepairCountSummary(result.degraded.length)
+  }
+  return startupConfigCheckSummary(result.degraded.length)
 }
 
 /**
@@ -7150,9 +7218,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
     }
     progress.startPhase("provider checks")
-    const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
+    const providerCheck = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
+    const providerDegraded = providerCheck.degraded
     daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
-    progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
+    progress.completePhase("provider checks", startupProviderCheckSummary(providerCheck))
     progress.startPhase("final daemon check")
     const finalDaemonCheck = await verifyDaemonReadyForHandoff(deps, {
       allowDegradedHealth: Boolean(

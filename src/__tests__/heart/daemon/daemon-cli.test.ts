@@ -49,6 +49,7 @@ vi.mock("../../../heart/daemon/startup-tui", () => ({
 
 // Mock agent-config-check so chat health checks don't hit real filesystem
 vi.mock("../../../heart/daemon/agent-config-check", () => ({
+  checkAgentConfig: vi.fn().mockReturnValue({ ok: true }),
   checkAgentConfigWithProviderHealth: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
@@ -84,7 +85,7 @@ import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
 import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
-import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
+import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 import {
   writeHabitRunReceipt,
   type HabitRunReceipt,
@@ -8643,6 +8644,7 @@ describe("ouro up per-agent progress threading", () => {
   it("uses daemon provider readiness during ouro up provider checks without rereading the vault", async () => {
     mockHealthCheck.mockClear()
     let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
@@ -8666,7 +8668,7 @@ describe("ouro up per-agent progress threading", () => {
         },
       ])),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
-      writeStdout: vi.fn(),
+      writeStdout,
       checkSocketAlive: vi.fn().mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
@@ -8692,6 +8694,144 @@ describe("ouro up per-agent progress threading", () => {
     await runOuroCli(["up"], deps)
 
     expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("provider readiness confirmed by daemon status")
+    expect(output).not.toContain("agent config validated offline")
+  })
+
+  it("still validates privateRuntime config when daemon provider readiness rows are available", async () => {
+    mockHealthCheck.mockClear()
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValueOnce({
+      ok: false,
+      error: "agent.json for 'slugger' cannot set privateRuntime.provider; privateRuntime cannot select providers or models.",
+      fix: "Remove privateRuntime.provider from /bundles/slugger.ouro/agent.json. Provider/model selection belongs to the inner lane: ouro use --agent slugger --lane inner --provider <provider> --model <model>.",
+    })
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("privateRuntime.provider")
+    expect(output).toContain("ouro use --agent slugger --lane inner")
+  })
+
+  it("preserves privateRuntime config guidance over degraded daemon provider rows for the same agent", async () => {
+    mockHealthCheck.mockClear()
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValueOnce({
+      ok: false,
+      error: "agent.json for 'slugger' cannot set privateRuntime.provider; privateRuntime cannot select providers or models.",
+      fix: "Remove privateRuntime.provider from /bundles/slugger.ouro/agent.json. Provider/model selection belongs to the inner lane: ouro use --agent slugger --lane inner --provider <provider> --model <model>.",
+    })
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("privateRuntime.provider")
+    expect(output).toContain("ouro use --agent slugger --lane inner")
+    expect(output).not.toContain("bad token")
   })
 
   it("uses daemon provider readiness to report degraded providers without starting a foreground vault read", async () => {
@@ -8749,6 +8889,83 @@ describe("ouro up per-agent progress threading", () => {
 
     expect(mockHealthCheck).not.toHaveBeenCalled()
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("outward provider openai-codex / gpt-5.5 readiness is failed: bad token"))
+  })
+
+  it("uses plural progress summary when daemon status reports multiple degraded agents", async () => {
+    mockHealthCheck.mockClear()
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+        {
+          agent: "ouroboros",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+        {
+          agent: "ouroboros",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger", "ouroboros"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("2 need attention")
   })
 
   it("renders daemon status provider failures that do not include details", async () => {
@@ -8865,9 +9082,11 @@ describe("ouro up per-agent progress threading", () => {
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("Run `ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.5`."))
   }, 10_000)
 
-  it("falls back to foreground provider checks when daemon status cannot be read", async () => {
+  it("falls back to offline agent config checks when daemon status cannot be read", async () => {
     mockHealthCheck.mockClear()
-    mockHealthCheck.mockResolvedValueOnce({ ok: true })
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValueOnce({ ok: true })
     let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     let statusCalls = 0
     const sendCommand = vi.fn(async (_socketPath, command) => {
@@ -8909,11 +9128,15 @@ describe("ouro up per-agent progress threading", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mockHealthCheck).toHaveBeenCalled()
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
   }, 10_000)
 
-  it("passes onProgress callback to checkAgentConfigWithProviderHealth during ouro up provider checks", async () => {
-    mockHealthCheck.mockResolvedValue({ ok: true })
+  it("does not run live provider health checks during ouro up provider checks when daemon status is unavailable", async () => {
+    mockHealthCheck.mockClear()
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValue({ ok: true })
     let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -8947,31 +9170,69 @@ describe("ouro up per-agent progress threading", () => {
 
     await runOuroCli(["up"], deps)
 
-    // checkAgentConfigWithProviderHealth should have been called for slugger
-    // with deps that include onProgress callback
-    expect(mockHealthCheck).toHaveBeenCalled()
-    const healthCheckCalls = mockHealthCheck.mock.calls
-    const callWithOnProgress = healthCheckCalls.find(
-      (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
-    )
-    expect(callWithOnProgress).toBeDefined()
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
   })
 })
 
 describe("ouro up post-repair progress phase", () => {
   const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
 
+  function postRepairDeps(writeStdout = vi.fn()): OuroCliDeps {
+    const nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "ouro auth --agent slugger --provider openai-codex",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async () => {}),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+  }
+
   it("threads onProgress to checkAgentProviders during post-repair re-check", async () => {
-    // First call (post-daemon provider checks): return degraded with vault-locked
-    // error so interactive repair is triggered. Second call (post-repair re-check):
-    // return ok.
-    mockHealthCheck
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "credential vault is locked",
-        fix: "Run 'ouro vault unlock --agent slugger'",
-      })
-      .mockResolvedValue({ ok: true })
+    // The daemon status rows provide the initial provider degradation without
+    // a foreground live check. The only live check in this flow is the
+    // post-repair re-check, which returns ok.
+    mockHealthCheck.mockResolvedValue({ ok: true })
 
     // Mock agentic repair to simulate successful repair
     mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
@@ -8982,7 +9243,27 @@ describe("ouro up post-repair progress phase", () => {
     const nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "ouro auth --agent slugger --provider openai-codex",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
       writeStdout: vi.fn(),
       // Daemon already alive: skip preflight, go straight to post-daemon checks
@@ -9010,27 +9291,17 @@ describe("ouro up post-repair progress phase", () => {
 
     await runOuroCli(["up"], deps)
 
-    // checkAgentConfigWithProviderHealth should be called at least twice:
-    // once during post-daemon provider checks, once during post-repair re-check
-    expect(mockHealthCheck.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(mockHealthCheck).toHaveBeenCalledTimes(1)
 
     // The post-repair re-check call should have onProgress in deps
-    const postRepairCalls = mockHealthCheck.mock.calls.slice(1)
-    const postRepairCallWithOnProgress = postRepairCalls.find(
+    const postRepairCallWithOnProgress = mockHealthCheck.mock.calls.find(
       (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
     )
     expect(postRepairCallWithOnProgress).toBeDefined()
   }, 10_000)
 
   it("wraps post-repair re-check in a progress phase (non-TTY output)", async () => {
-    // First call: return degraded. Post-repair: return ok.
-    mockHealthCheck
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "credential vault is locked",
-        fix: "Run 'ouro vault unlock --agent slugger'",
-      })
-      .mockResolvedValue({ ok: true })
+    mockHealthCheck.mockResolvedValue({ ok: true })
 
     mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
       repairsAttempted: true,
@@ -9041,7 +9312,27 @@ describe("ouro up post-repair progress phase", () => {
     const writeStdout = vi.fn()
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: sendCommandWithRunningStatus(),
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "ouro auth --agent slugger --provider openai-codex",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
       writeStdout,
       checkSocketAlive: vi.fn().mockResolvedValue(true),
@@ -9073,5 +9364,42 @@ describe("ouro up post-repair progress phase", () => {
     const lines = writeStdout.mock.calls.map((call: unknown[]) => String(call[0]))
     const postRepairPhaseLine = lines.find((line) => line.includes("post-repair check"))
     expect(postRepairPhaseLine).toBeDefined()
+  })
+
+  it("reports post-repair live check failures without explicit error text", async () => {
+    mockHealthCheck.mockReset()
+    mockHealthCheck.mockResolvedValueOnce({ ok: false })
+    mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
+      repairsAttempted: true,
+      usedAgentic: false,
+    })
+    const writeStdout = vi.fn()
+
+    await runOuroCli(["up"], postRepairDeps(writeStdout))
+
+    const output = writeStdout.mock.calls.map((call: unknown[]) => String(call[0])).join("\n")
+    expect(output).toContain("Still needs attention")
+    expect(output).toContain("agent provider health check failed")
+    expect(output).toContain("Run `ouro up` again after these are fixed.")
+  })
+
+  it.each([
+    ["Error", new Error("vault exploded"), "vault exploded"],
+    ["string", "vault exploded", "vault exploded"],
+  ])("reports post-repair live check exceptions from %s rejections", async (_label, rejection, expectedReason) => {
+    mockHealthCheck.mockReset()
+    mockHealthCheck.mockRejectedValueOnce(rejection)
+    mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
+      repairsAttempted: true,
+      usedAgentic: false,
+    })
+    const writeStdout = vi.fn()
+
+    await runOuroCli(["up"], postRepairDeps(writeStdout))
+
+    const output = writeStdout.mock.calls.map((call: unknown[]) => String(call[0])).join("\n")
+    expect(output).toContain("Still needs attention")
+    expect(output).toContain(expectedReason)
+    expect(output).toContain("Run 'ouro doctor' for diagnostics, then retry 'ouro up'.")
   })
 })

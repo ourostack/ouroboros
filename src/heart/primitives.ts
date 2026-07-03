@@ -1,4 +1,4 @@
-export const HARNESS_BOOTSTRAP_PHASES = ["bundle", "psyche", "inner-dialog"] as const
+export const HARNESS_BOOTSTRAP_PHASES = ["bundle", "psyche", "private-runtime"] as const
 
 export type HarnessBootstrapPhase = (typeof HARNESS_BOOTSTRAP_PHASES)[number]
 
@@ -29,4 +29,3 @@ export interface HarnessBootstrapStep {
 export interface HarnessBootstrapPlan {
   steps: HarnessBootstrapStep[]
 }
-
