@@ -140,6 +140,20 @@ describe("private-runtime decision read surface", () => {
     })
   })
 
+  it("rejects malformed CLI private decision reader arguments", () => {
+    emitTestEvent("parse private decisions cli errors")
+
+    expect(() => parseOuroCommand(["private"])).toThrow(
+      "Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json]",
+    )
+    expect(() => parseOuroCommand(["private", "decisions", "--limit", "0"])).toThrow(
+      "private decisions --limit must be an integer between 1 and 1000",
+    )
+    expect(() => parseOuroCommand(["private", "decisions", "--unknown"])).toThrow(
+      "Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json]",
+    )
+  })
+
   it("routes CLI private decision reads through the daemon command and renders bounded text", async () => {
     emitTestEvent("cli private decisions text")
     const rows = [
@@ -227,6 +241,189 @@ describe("private-runtime decision read surface", () => {
     expect(JSON.stringify(parsed)).not.toContain("privateTranscriptPath")
   })
 
+  it("renders empty daemon decision payloads with explicit guidance", async () => {
+    emitTestEvent("cli private decisions empty")
+    const sendCommand = vi.fn(async () => ({
+      ok: true,
+      summary: "0 private-runtime decisions",
+      data: {
+        guidance: "No private-runtime decision ledger exists for slugger",
+        ledgerPath: "/tmp/slugger.ouro/state/private-runtime/decisions.jsonl",
+        decisions: "not-an-array",
+      },
+    }))
+    const deps = makeDeps({ sendCommand })
+
+    const result = await runOuroCli(["private", "decisions", "--agent", "slugger"], deps)
+
+    expect(result).toContain("private decisions: slugger")
+    expect(result).toContain("ledger: /tmp/slugger.ouro/state/private-runtime/decisions.jsonl")
+    expect(result).toContain("guidance: No private-runtime decision ledger exists for slugger")
+    expect(result).toContain("no private-runtime decisions found")
+  })
+
+  it("sanitizes daemon decision rows before JSON rendering", async () => {
+    emitTestEvent("cli private decisions sanitize")
+    const sendCommand = vi.fn(async () => ({
+      ok: true,
+      summary: "1 private-runtime decision",
+      data: {
+        agent: "slugger",
+        decisions: [
+          decision({
+            providerLane: {
+              lane: 42,
+              provider: null,
+              model: [],
+              source: "vault",
+              credentialRevision: "rev-1",
+              secret: "provider secret must not render",
+            },
+            originRefs: [
+              { kind: "habit", id: "heartbeat", turn: { prompt: "nested private transcript" } },
+              { kind: "broken" },
+              null,
+              ["bad"],
+            ],
+            ledgerLocator: {
+              path: 42,
+              line: "two",
+            },
+            result: "banana",
+            executable: "yes",
+            turn: { prompt: "private transcript content must not render" },
+            privateTranscriptPath: "state/sessions/self/private/session.json",
+          }),
+        ],
+      },
+    }))
+    const deps = makeDeps({ sendCommand })
+
+    const result = await runOuroCli(["private", "decisions", "--agent", "slugger", "--json"], deps)
+    const parsed = JSON.parse(result)
+
+    expect(parsed.decisions[0]).toMatchObject({
+      providerLane: {
+        lane: "inner",
+        provider: "unknown",
+        model: "unknown",
+        source: "agent.json",
+        credentialRevision: "rev-1",
+      },
+      originRefs: [{ kind: "habit", id: "heartbeat" }],
+      ledgerLocator: { path: "" },
+      result: "deny",
+      executable: false,
+    })
+    expect(JSON.stringify(parsed)).not.toContain("provider secret must not render")
+    expect(JSON.stringify(parsed)).not.toContain("nested private transcript")
+    expect(JSON.stringify(parsed)).not.toContain("private transcript content")
+    expect(JSON.stringify(parsed)).not.toContain("privateTranscriptPath")
+  })
+
+  it("renders sparse sanitized decision rows with safe text fallbacks", async () => {
+    emitTestEvent("cli private decisions sparse text")
+    const sendCommand = vi.fn(async () => ({
+      ok: true,
+      summary: "1 private-runtime decision",
+      data: {
+        agent: "slugger",
+        decisions: [
+          {
+            schemaVersion: 1,
+            receiptId: "ptrr_sparse",
+            agent: "slugger",
+            originRefs: ["broken", { kind: "habit" }, ["bad"]],
+            providerLane: {},
+            result: "deny",
+            executable: false,
+            ledgerLocator: {
+              path: "/tmp/slugger.ouro/state/private-runtime/decisions.jsonl",
+            },
+          },
+        ],
+      },
+    }))
+    const deps = makeDeps({ sendCommand })
+
+    const result = await runOuroCli(["private", "decisions", "--agent", "slugger"], deps)
+
+    expect(result).toContain("- undated deny")
+    expect(result).toContain("lane=inner")
+    expect(result).toContain("receipt=ptrr_sparse")
+    expect(result).toContain("reason=(no reason recorded)")
+    expect(result).toContain("locator=/tmp/slugger.ouro/state/private-runtime/decisions.jsonl")
+  })
+
+  it("normalizes non-object daemon payloads and duplicate metadata", async () => {
+    emitTestEvent("cli private decisions defensive payload")
+    const emptySendCommand = vi.fn(async () => ({
+      ok: true,
+      summary: "0 private-runtime decisions",
+      data: "not-an-object",
+    }))
+    const emptyDeps = makeDeps({ sendCommand: emptySendCommand })
+
+    const emptyResult = await runOuroCli(["private", "decisions", "--agent", "slugger", "--json"], emptyDeps)
+
+    expect(JSON.parse(emptyResult)).toEqual({
+      agent: "slugger",
+      decisions: [],
+    })
+
+    const duplicateSendCommand = vi.fn(async () => ({
+      ok: true,
+      summary: "2 private-runtime decisions",
+      data: {
+        agent: "slugger",
+        ledgerPath: "/tmp/slugger.ouro/state/private-runtime/decisions.jsonl",
+        decisions: [
+          "not-a-decision-row",
+          {
+            schemaVersion: 1,
+            receiptId: "ptrr_duplicate",
+            agent: "slugger",
+            origin: "habit.poke",
+            providerLane: {
+              lane: "inner",
+              provider: "openai-codex",
+              model: "gpt-5.5",
+            },
+            idempotencyKey: "ptk_duplicate",
+            result: "deny",
+            executable: false,
+            ledgerLocator: {
+              path: "/tmp/slugger.ouro/state/private-runtime/decisions.jsonl",
+              line: 7,
+            },
+            duplicateOf: "ptrr_original",
+            error: "duplicate collapse note",
+          },
+        ],
+      },
+    }))
+    const duplicateDeps = makeDeps({ sendCommand: duplicateSendCommand })
+
+    const duplicateResult = await runOuroCli(["private", "decisions", "--agent", "slugger", "--json"], duplicateDeps)
+    const duplicatePayload = JSON.parse(duplicateResult)
+
+    expect(duplicatePayload.decisions[0]).toMatchObject({
+      receiptId: "ptrr_duplicate",
+      duplicateOf: "ptrr_original",
+      error: "duplicate collapse note",
+      ledgerLocator: {
+        line: 7,
+      },
+    })
+    expect(duplicatePayload.decisions[1]).toMatchObject({
+      receiptId: "",
+      agent: "",
+      ledgerLocator: {
+        path: "/tmp/slugger.ouro/state/private-runtime/decisions.jsonl",
+      },
+    })
+  })
+
   it("daemon private.decisions reads recent ledger rows without provider secrets or transcript files", async () => {
     emitTestEvent("daemon private decisions")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "private-decisions-bundles-"))
@@ -285,5 +482,66 @@ describe("private-runtime decision read surface", () => {
     expect(JSON.stringify(response.data)).not.toContain("private transcript content")
     expect(JSON.stringify(response.data)).not.toContain("privateTranscriptPath")
     expect(readFileSync).not.toHaveBeenCalledWith(transcriptPath, expect.anything())
+    readFileSync.mockRestore()
+  })
+
+  it("daemon private.decisions reports missing ledgers with repair guidance", async () => {
+    emitTestEvent("daemon private decisions missing ledger")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "private-decisions-missing-"))
+    const ledgerPath = path.join(bundlesRoot, "slugger.ouro", "state", "private-runtime", "decisions.jsonl")
+    const daemon = makeDaemon(bundlesRoot)
+
+    const response = await daemon.handleCommand({ kind: "private.decisions", agent: "slugger" } as any)
+
+    expect(response).toMatchObject({
+      ok: true,
+      summary: "0 private-runtime decisions",
+      message: `No private-runtime decision ledger exists for slugger; run an explicit private-runtime trigger or check ${path.dirname(ledgerPath)}.`,
+      data: {
+        agent: "slugger",
+        ledgerPath,
+        guidance: `No private-runtime decision ledger exists for slugger; run an explicit private-runtime trigger or check ${path.dirname(ledgerPath)}.`,
+        decisions: [],
+      },
+    })
+  })
+
+  it("daemon private.decisions caps direct daemon callers at 1000 recent rows", async () => {
+    emitTestEvent("daemon private decisions limit cap")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "private-decisions-cap-"))
+    const rows = Array.from({ length: 1001 }, (_value, index) => decision({
+      receiptId: `ptrr_${String(index).padStart(4, "0")}`,
+      idempotencyKey: `ptk_${String(index).padStart(4, "0")}`,
+      decidedAt: new Date(Date.UTC(2026, 6, 3, 20, 0, index)).toISOString(),
+      ledgerLocator: { line: index + 1 },
+    }))
+    writeDecisionLedger(bundlesRoot, "slugger", rows)
+    const daemon = makeDaemon(bundlesRoot)
+
+    const response = await daemon.handleCommand({ kind: "private.decisions", agent: "slugger", limit: 2000 } as any)
+
+    expect(response.ok).toBe(true)
+    expect(response.summary).toBe("1000 private-runtime decisions")
+    expect((response.data as { decisions: Array<{ receiptId: string }> }).decisions).toHaveLength(1000)
+    expect((response.data as { decisions: Array<{ receiptId: string }> }).decisions[0]?.receiptId).toBe("ptrr_1000")
+    expect(JSON.stringify(response.data)).not.toContain("ptrr_0000")
+  })
+
+  it("daemon private.decisions fails explicitly on malformed ledger rows", async () => {
+    emitTestEvent("daemon private decisions malformed ledger")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "private-decisions-malformed-"))
+    const ledgerPath = path.join(bundlesRoot, "slugger.ouro", "state", "private-runtime", "decisions.jsonl")
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true })
+    fs.writeFileSync(ledgerPath, "sk_live_private_transcript_content providerSecret\n", "utf-8")
+    const daemon = makeDaemon(bundlesRoot)
+
+    const response = await daemon.handleCommand({ kind: "private.decisions", agent: "slugger" } as any)
+
+    expect(response.ok).toBe(false)
+    expect(response.error).toContain("private-runtime decision ledger is malformed")
+    expect(response.error).toContain(ledgerPath)
+    expect(response.error).not.toContain("sk_live")
+    expect(response.error).not.toContain("private_transcript_content")
+    expect(response.error).not.toContain("providerSecret")
   })
 })

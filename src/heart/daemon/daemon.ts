@@ -1509,7 +1509,15 @@ export class OuroDaemon {
         const limit = Math.min(requestedLimit, 1000)
         const ledgerPath = privateTurnLedgerPath(command.agent, { bundlesRoot: this.bundlesRoot })
         const ledgerExists = fs.existsSync(ledgerPath)
-        const decisions = ledgerExists ? readPrivateTurnLedger(ledgerPath) : []
+        let decisions
+        try {
+          decisions = ledgerExists ? readPrivateTurnLedger(ledgerPath) : []
+        } catch {
+          return {
+            ok: false,
+            error: `private-runtime decision ledger is malformed: ${ledgerPath}; repair or remove malformed JSONL rows before reading decisions`,
+          }
+        }
         const guidance = ledgerExists
           ? undefined
           : `No private-runtime decision ledger exists for ${command.agent}; run an explicit private-runtime trigger or check ${path.dirname(ledgerPath)}.`
