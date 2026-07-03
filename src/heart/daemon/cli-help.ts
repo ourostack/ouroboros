@@ -293,6 +293,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     example: "ouro thoughts --last 5 --follow",
   },
+  private: {
+    category: "Internal",
+    description: "Inspect private-runtime policy decisions without reading transcripts or provider secrets",
+    usage: "ouro private decisions [--agent <name>] [--limit <n>] [--json]",
+    example: "ouro private decisions --agent ouroboros --limit 10",
+    subcommands: ["decisions"],
+  },
   inner: {
     category: "Internal",
     description: "Show inner dialog status",
@@ -348,6 +355,11 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
 }
 
 const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
+  "private decisions": {
+    description: "Read recent private-runtime allow/deny decisions from the policy ledger",
+    usage: "ouro private decisions [--agent <name>] [--limit <n>] [--json]",
+    example: "ouro private decisions --agent ouroboros --json",
+  },
   "auth verify": {
     description: "Verify agent provider credentials without changing provider/model lanes",
     usage: "ouro auth verify [--agent <name>] [--provider <provider>]",

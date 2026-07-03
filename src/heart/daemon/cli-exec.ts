@@ -100,6 +100,7 @@ import type {
   RollbackCliCommand,
   VersionsCliCommand,
   AttentionCliCommand,
+  PrivateDecisionsCliCommand,
   WorkCardCliCommand,
   WorkGauntletCliCommand,
   WorkSentinelCliCommand,
@@ -143,6 +144,11 @@ import {
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
 import { checkAgentConfig, checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
+import {
+  formatPrivateDecisionReadJson,
+  formatPrivateDecisionReadText,
+  privateDecisionReadPayloadFromDaemonData,
+} from "../private-runtime"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
@@ -518,6 +524,7 @@ type MissingAgentResolvableKind =
   | "attention.list"
   | "attention.show"
   | "attention.history"
+  | "private.decisions"
   | "inner.status"
   | "session.list"
   | "a2a.card"
@@ -596,6 +603,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "attention.list":
     case "attention.show":
     case "attention.history":
+    case "private.decisions":
     case "work.card":
     case "work.gauntlet":
     case "work.sentinel":
@@ -1713,7 +1721,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -7893,6 +7901,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return ""
   }
   /* v8 ignore stop */
+
+  if (command.kind === "private.decisions") {
+    let response: DaemonResponse
+    try {
+      response = await deps.sendCommand(deps.socketPath, {
+        kind: "private.decisions",
+        agent: command.agent,
+        limit: command.limit,
+      } as DaemonCommand)
+    } catch {
+      const message = "daemon unavailable — start with `ouro up` first"
+      deps.writeStdout(message)
+      return message
+    }
+    if (!response.ok) {
+      const message = response.error ?? "unknown error"
+      deps.writeStdout(message)
+      return message
+    }
+    const payload = privateDecisionReadPayloadFromDaemonData(response.data, command.agent)
+    const message = command.json
+      ? formatPrivateDecisionReadJson(payload)
+      : formatPrivateDecisionReadText(payload)
+    deps.writeStdout(message)
+    return message
+  }
+
   // ── mcp subcommands (routed through daemon socket) ──
   if (command.kind === "mcp.list" || command.kind === "mcp.call") {
     const daemonCommand = toDaemonCommand(command)

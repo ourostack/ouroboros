@@ -30,6 +30,12 @@ import { MAILBOX_DEFAULT_PORT } from "../mailbox/mailbox-types"
 import { readMailboxAgentState, readMailboxMachineState } from "../mailbox/mailbox-read"
 import { buildMailboxAgentView, buildMailboxMachineView } from "../mailbox/mailbox-view"
 import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
+import {
+  buildPrivateDecisionReadPayload,
+  privateDecisionCountSummary,
+  privateTurnLedgerPath,
+  readPrivateTurnLedger,
+} from "../private-runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 
@@ -427,6 +433,7 @@ export type DaemonCommand =
   | { kind: "agent.reportComplete"; agent: string; friendId: string; summary?: string; [key: string]: unknown }
   | { kind: "cron.list" }
   | { kind: "cron.trigger"; jobId: string }
+  | { kind: "private.decisions"; agent: string; limit?: number }
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
@@ -1495,6 +1502,29 @@ export class OuroDaemon {
           ok: true,
           summary: `${messages.length} messages`,
           data: messages,
+        }
+      }
+      case "private.decisions": {
+        const requestedLimit = Number.isInteger(command.limit) && command.limit && command.limit > 0 ? command.limit : 20
+        const limit = Math.min(requestedLimit, 1000)
+        const ledgerPath = privateTurnLedgerPath(command.agent, { bundlesRoot: this.bundlesRoot })
+        const ledgerExists = fs.existsSync(ledgerPath)
+        const decisions = ledgerExists ? readPrivateTurnLedger(ledgerPath) : []
+        const guidance = ledgerExists
+          ? undefined
+          : `No private-runtime decision ledger exists for ${command.agent}; run an explicit private-runtime trigger or check ${path.dirname(ledgerPath)}.`
+        const payload = buildPrivateDecisionReadPayload({
+          agent: command.agent,
+          ledgerPath,
+          decisions,
+          limit,
+          ...(guidance ? { guidance } : {}),
+        })
+        return {
+          ok: true,
+          summary: privateDecisionCountSummary(payload.decisions.length),
+          ...(guidance ? { message: guidance } : {}),
+          data: payload,
         }
       }
       case "inner.wake":

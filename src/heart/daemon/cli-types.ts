@@ -83,6 +83,7 @@ export type OuroCliCommand =
   | { kind: "attention.list"; agent?: string }
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
+  | { kind: "private.decisions"; agent?: string; limit: number; json: boolean }
   | { kind: "work.card"; agent?: string; format?: "text" | "json" }
   | { kind: "work.gauntlet"; agent?: string; format?: "text" | "json" }
   | { kind: "work.sentinel"; agent?: string; format?: "text" | "json" }
@@ -246,6 +247,7 @@ export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.mod
 export type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 export type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 export type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
+export type PrivateDecisionsCliCommand = Extract<OuroCliCommand, { kind: "private.decisions" }>
 export type WorkCardCliCommand = Extract<OuroCliCommand, { kind: "work.card" }>
 export type WorkGauntletCliCommand = Extract<OuroCliCommand, { kind: "work.gauntlet" }>
 export type WorkSentinelCliCommand = Extract<OuroCliCommand, { kind: "work.sentinel" } | { kind: "work.sentinel.refresh" }>
