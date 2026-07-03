@@ -547,34 +547,17 @@ describe("inner-dialog-worker", () => {
     expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: undefined, habitName: undefined })
   })
 
-  it("starts worker listeners and triggers boot + event cycles", async () => {
+  it("creates a controller without a boot turn and handles event cycles", async () => {
     mockRunInnerDialogTurn.mockReset().mockResolvedValue(undefined)
-    const listeners: Record<string, (...args: any[]) => void> = {}
-    const onSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: any[]) => void) => {
-      listeners[event] = handler
-      return process
-    }) as any)
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+    const worker = createInnerDialogWorker()
 
-    try {
-      await startInnerDialogWorker()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "boot", taskId: undefined, habitName: undefined })
+    expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
 
-      listeners.message?.({ type: "heartbeat" })
-      await new Promise((resolve) => setImmediate(resolve))
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
+    await worker.handleMessage({ type: "heartbeat" })
+    expect(mockRunInnerDialogTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
 
-      listeners.message?.({ type: "poke", taskId: "check-in" })
-      await new Promise((resolve) => setImmediate(resolve))
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "check-in", habitName: undefined })
-
-      expect(() => listeners.disconnect?.()).toThrow("process.exit called")
-    } finally {
-      onSpy.mockRestore()
-      mockExit.mockRestore()
-    }
+    await worker.handleMessage({ type: "poke", taskId: "check-in" })
+    expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "check-in", habitName: undefined })
   })
 
   // ── lastRun runtime-state tests ───────────────────────────────────
