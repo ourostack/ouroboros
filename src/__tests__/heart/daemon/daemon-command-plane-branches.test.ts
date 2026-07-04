@@ -5,6 +5,7 @@ import * as os from "os"
 import * as path from "path"
 
 import { OuroDaemon, handleAgentSenseTurn } from "../../../heart/daemon/daemon"
+import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -870,6 +871,17 @@ describe("daemon command plane branches", () => {
       },
     })
     expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
+    const ledgerRows = readPrivateTurnLedger(ledgerPath)
+    expect(ledgerRows).toHaveLength(1)
+    expect(ledgerRows[0]).toMatchObject({
+      agent: "slugger",
+      origin: "daemon.private.wake",
+      result: "allow",
+      executable: true,
+      idempotencyKey: "manual-private-wake",
+      requestFingerprint: expect.stringMatching(/^ptr_[0-9a-f]{64}$/),
+      ledgerLocator: { path: ledgerPath, line: 1 },
+    })
     expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
       type: "message",
