@@ -497,6 +497,18 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("parses canonical private status and legacy inner status as an alias", () => {
+    expect(parseOuroCommand(["private", "status", "--agent", "slugger"])).toEqual({
+      kind: "private.status",
+      agent: "slugger",
+    })
+    expect(parseOuroCommand(["inner", "--agent", "slugger"])).toEqual({
+      kind: "private.status",
+      agent: "slugger",
+      legacyAlias: "inner",
+    })
+  })
+
   it("parses attention command (list)", () => {
     expect(parseOuroCommand(["attention"])).toEqual({ kind: "attention.list" })
   })
@@ -2772,7 +2784,16 @@ describe("ouro CLI execution", () => {
   it("routes msg command through daemon socket", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(async () => ({ ok: true, message: "queued" })),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return {
+            ok: true,
+            message: "queued",
+            data: { id: "msg-cli-123", queuedAt: "2026-04-10T05:02:36.000Z" },
+          }
+        }
+        return { ok: true, message: "awake" }
+      }),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
       checkSocketAlive: vi.fn(async () => true),
@@ -2792,6 +2813,20 @@ describe("ouro CLI execution", () => {
         content: "hi",
       }),
     )
+    const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
+    expect(sentCommands).toContainEqual(expect.objectContaining({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "operator CLI message",
+      triggerSource: "operator-cli",
+      budgetClass: "interactive",
+      idempotencyKey: "cli:message:slugger:msg-cli-123",
+      originRefs: expect.arrayContaining([
+        expect.objectContaining({ kind: "cli-command", id: "ouro msg" }),
+        expect.objectContaining({ kind: "daemon-receipt", id: "msg-cli-123" }),
+      ]),
+    }))
+    expect(sentCommands).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
   })
 
   it("routes link command through friend store instead of daemon socket", async () => {
@@ -7249,7 +7284,7 @@ describe("ouro thoughts CLI execution", () => {
   })
 })
 
-describe("ouro inner CLI execution", () => {
+describe("ouro private status CLI execution", () => {
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     return {
       socketPath: "/tmp/ouro-test.sock",
@@ -7273,7 +7308,7 @@ describe("ouro inner CLI execution", () => {
     }
   })
 
-  it("reads runtime state from the canonical self/inner/dialog session path", async () => {
+  it("reads runtime state from the canonical private status command", async () => {
     const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "inner-status-bundle-"))
     cleanup.push(tempBundle)
 
@@ -7296,11 +7331,34 @@ describe("ouro inner CLI execution", () => {
     )
 
     const deps = makeDeps({ agentBundleRoot: tempBundle })
-    const result = await runOuroCli(["inner", "--agent", "test"], deps)
+    const result = await runOuroCli(["private", "status", "--agent", "test"], deps)
 
+    expect(result).toContain("private runtime status: test")
     expect(result).toContain("status: idle")
     expect(result).toContain("last turn:")
     expect(result).not.toContain("status: unknown")
+    expect(result).not.toContain("inner dialog")
+  })
+
+  it("keeps ouro inner as a compatibility alias that points to private status", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "inner-status-bundle-"))
+    cleanup.push(tempBundle)
+
+    fs.mkdirSync(path.join(tempBundle, "state", "sessions", "self", "inner"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "habits"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "desk", "_record", "notes"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tempBundle, "state", "sessions", "self", "inner", "runtime.json"),
+      JSON.stringify({ status: "idle" }, null, 2),
+      "utf-8",
+    )
+
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+    const result = await runOuroCli(["inner", "--agent", "test"], deps)
+
+    expect(result).toContain("legacy alias: use `ouro private status --agent test`")
+    expect(result).toContain("private runtime status: test")
+    expect(result).not.toContain("inner dialog")
   })
 })
 

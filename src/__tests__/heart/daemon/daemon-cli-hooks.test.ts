@@ -226,10 +226,18 @@ describe("daemon CLI hook execution", () => {
         socketPath,
         expect.objectContaining({ kind: "message.send", to: "slugger" }),
       )
-      expect(deps.sendCommand).toHaveBeenCalledWith(
-        socketPath,
-        { kind: "inner.wake", agent: "slugger" },
-      )
+      const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
+      expect(sentCommands).toContainEqual(expect.objectContaining({
+        kind: "private.wake",
+        agent: "slugger",
+        triggerSource: "dev-tool-hook",
+        budgetClass: "interactive",
+        reason: expect.stringContaining("stop"),
+        originRefs: expect.arrayContaining([
+          expect.objectContaining({ kind: "dev-tool-hook", id: "stop" }),
+        ]),
+      }))
+      expect(sentCommands).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
     } finally {
       fs.rmSync(homeRoot, { recursive: true, force: true })
     }

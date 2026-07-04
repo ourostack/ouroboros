@@ -6,7 +6,7 @@ vi.mock("../../../nerves/runtime", () => ({
 
 import { emitNervesEvent } from "../../../nerves/runtime"
 
-describe("ouro inner status", () => {
+describe("ouro private status", () => {
   let buildInnerStatusOutput: typeof import("../../../heart/daemon/inner-status").buildInnerStatusOutput
 
   beforeEach(async () => {
@@ -39,14 +39,15 @@ describe("ouro inner status", () => {
       now,
     })
 
-    expect(result).toContain("inner dialog status: slugger")
+    expect(result).toContain("private runtime status: slugger")
+    expect(result).not.toContain("inner dialog")
     expect(result).toContain("last turn: 12 minutes ago (heartbeat)")
     expect(result).toContain("status: idle")
     expect(result).toContain("heartbeat: healthy")
     expect(result).toContain("Desk record: 12 diary facts, 2 notes")
     expect(result).toContain("attention: 0 held thoughts")
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "daemon.inner_status_read",
+      event: "daemon.private_runtime_status_read",
       component: "daemon",
     }))
   })
@@ -81,7 +82,8 @@ describe("ouro inner status", () => {
       now,
     })
 
-    expect(result).toContain("inner dialog status: slugger")
+    expect(result).toContain("private runtime status: slugger")
+    expect(result).not.toContain("inner dialog")
     expect(result).toContain("last turn: unknown")
     expect(result).toContain("status: unknown")
   })
@@ -309,7 +311,7 @@ describe("ouro inner status", () => {
   })
 })
 
-describe("ouro inner CLI parsing", () => {
+describe("ouro private status CLI parsing", () => {
   let parseOuroCommand: typeof import("../../../heart/daemon/daemon-cli").parseOuroCommand
 
   beforeEach(async () => {
@@ -318,20 +320,30 @@ describe("ouro inner CLI parsing", () => {
     parseOuroCommand = mod.parseOuroCommand
   })
 
-  it("parses 'inner' command with default agent", () => {
+  it("parses canonical private status with default agent", () => {
+    const result = parseOuroCommand(["private", "status"])
+    expect(result).toEqual({ kind: "private.status" })
+  })
+
+  it("parses legacy 'inner' command as a private status alias", () => {
     const result = parseOuroCommand(["inner"])
-    expect(result).toEqual({ kind: "inner.status" })
+    expect(result).toEqual({ kind: "private.status", legacyAlias: "inner" })
   })
 
-  it("parses 'inner' with --agent flag", () => {
+  it("parses private status with --agent flag", () => {
+    const result = parseOuroCommand(["private", "status", "--agent", "slugger"])
+    expect(result).toEqual({ kind: "private.status", agent: "slugger" })
+  })
+
+  it("parses legacy 'inner' with --agent flag", () => {
     const result = parseOuroCommand(["inner", "--agent", "slugger"])
-    expect(result).toEqual({ kind: "inner.status", agent: "slugger" })
+    expect(result).toEqual({ kind: "private.status", agent: "slugger", legacyAlias: "inner" })
   })
 
-  it("parses 'inner' when global --agent flag is consumed by recursive parse", () => {
+  it("parses legacy 'inner' when global --agent flag is consumed by recursive parse", () => {
     // Global --agent is consumed at the top of parseOuroCommand and recurses
     // without passing the agent down — per existing pattern (same as whoami, changelog)
     const result = parseOuroCommand(["--agent", "slugger", "inner"])
-    expect(result).toEqual({ kind: "inner.status" })
+    expect(result).toEqual({ kind: "private.status", legacyAlias: "inner" })
   })
 })
