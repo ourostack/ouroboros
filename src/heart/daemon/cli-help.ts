@@ -305,6 +305,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     description: "Legacy alias for `ouro private status`",
     usage: "ouro inner [--agent <name>]",
     example: "ouro inner",
+    hidden: true,
   },
   attention: {
     category: "Internal",

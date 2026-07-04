@@ -121,7 +121,15 @@ describe("getGroupedHelp()", () => {
   it("keeps deprecated aliases out of grouped help", () => {
     const result = getGroupedHelp()
     expect(COMMAND_REGISTRY["outlook"].hidden).toBe(true)
+    expect(COMMAND_REGISTRY["inner"].hidden).toBe(true)
     expect(result).not.toContain("outlook")
+    expect(result).not.toContain("inner")
+  })
+
+  it("documents the inner command only as a private-status legacy alias", () => {
+    const result = getCommandHelp("inner")!
+    expect(result).toContain("Legacy alias for `ouro private status`")
+    expect(result).toContain("ouro inner [--agent <name>]")
   })
 
   it("includes a Usage header line", () => {

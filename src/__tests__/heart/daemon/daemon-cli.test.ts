@@ -509,6 +509,12 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("labels the generic inner command usage as a private-status legacy alias", () => {
+    expect(() => parseOuroCommand(["definitely-not-a-command"])).toThrow(
+      "ouro inner [--agent <name>]  # legacy alias for: ouro private status",
+    )
+  })
+
   it("parses attention command (list)", () => {
     expect(parseOuroCommand(["attention"])).toEqual({ kind: "attention.list" })
   })

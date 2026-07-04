@@ -134,7 +134,7 @@ export function usage(): string {
     "  ouro private status [--agent <name>]",
     "  ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
     "  ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
-    "  ouro inner [--agent <name>]",
+    "  ouro inner [--agent <name>]  # legacy alias for: ouro private status",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro a2a card [--agent <name>] [--base-url <url>] [--json]",

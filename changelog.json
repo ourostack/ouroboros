@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.675",
       "changes": [
-        "Render private-runtime prompt metadata without current inner channel/sense labels: private-runtime turns now show channel private-runtime and current sense private runtime (agent-facing runtime, not a sense), with tests and guards preventing channel/current-sense inner labels from returning."
+        "Render private-runtime prompt metadata without current inner channel/sense labels: private-runtime turns now show channel private-runtime and current sense private runtime (agent-facing runtime, not a sense), with tests and guards preventing channel/current-sense inner labels from returning.",
+        "Render canonical private-runtime CLI commands in prompt and usage surfaces: normal command lists now show ouro private status/decisions, ouro inner is labeled as a legacy alias only, and vocabulary guards reject unqualified ouro inner outside explicit compatibility fixtures."
       ]
     },
     {

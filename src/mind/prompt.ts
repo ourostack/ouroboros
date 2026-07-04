@@ -299,7 +299,8 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro session list --agent ${agentName}
   ouro habit list --agent ${agentName}
   ouro habit create --agent ${agentName} <name> --cadence <interval>
-  ouro inner --agent ${agentName}
+  ouro private status --agent ${agentName}
+  ouro private decisions --agent ${agentName}
   ouro attention --agent ${agentName}
   ouro auth --agent ${agentName} --provider <provider>
   ouro auth verify --agent ${agentName} [--provider <provider>]

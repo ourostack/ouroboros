@@ -49,6 +49,7 @@ const OLD_VOCABULARY: OldVocabularyPattern[] = [
   { id: "my inner life", regex: /# my inner life/gi },
   { id: "channel inner label", regex: /["'`]channel: inner/gi },
   { id: "current sense inner label", regex: /["'`]current sense: inner/gi },
+  { id: "ouro inner command", regex: /ouro inner/gi },
 ]
 
 const ALLOWED_FINDINGS: AllowedFinding[] = [
@@ -124,6 +125,42 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     textIncludes: ["not.toContain(\"channel: inner\")", "not.toContain(\"current sense: inner\")"],
     classification: "safety-guard",
     reason: "verifies private-runtime prompt metadata does not render inner as current channel/sense vocabulary",
+  },
+  {
+    path: "src/__tests__/mind/prompt.test.ts",
+    textIncludes: ["not.toContain(\"ouro inner --agent testagent\")"],
+    classification: "safety-guard",
+    reason: "verifies the system prompt renders canonical private-runtime CLI commands instead of the legacy alias",
+  },
+  {
+    path: "src/heart/daemon/cli-help.ts",
+    textIncludes: ["Legacy alias for `ouro private status`", "ouro inner"],
+    classification: "compat-alias",
+    reason: "explicitly documented legacy CLI alias for canonical private status command",
+  },
+  {
+    path: "src/heart/daemon/cli-parse.ts",
+    textIncludes: ["legacy alias for: ouro private status"],
+    classification: "compat-alias",
+    reason: "generic CLI usage labels ouro inner as a legacy alias instead of current command vocabulary",
+  },
+  {
+    path: "src/__tests__/heart/daemon/inner-status.test.ts",
+    textIncludes: ["legacy 'inner' command", "legacy alias"],
+    classification: "compat-alias",
+    reason: "tests legacy CLI alias parsing",
+  },
+  {
+    path: "src/__tests__/heart/daemon/daemon-cli.test.ts",
+    textIncludes: ["legacy inner status as an alias", "ouro inner", "legacy alias: use `ouro private status"],
+    classification: "compat-alias",
+    reason: "tests legacy CLI alias execution points users to canonical private status",
+  },
+  {
+    path: "src/__tests__/heart/daemon/cli-help.test.ts",
+    textIncludes: ["documents the inner command only as a private-status legacy alias", "ouro inner"],
+    classification: "compat-alias",
+    reason: "tests direct legacy CLI help stays explicit about the canonical private status command",
   },
   {
     path: "src/__tests__/senses/surface-tool.test.ts",

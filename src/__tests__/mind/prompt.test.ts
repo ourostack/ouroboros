@@ -233,6 +233,19 @@ describe("buildSystem", () => {
     expect(result).toContain("**engineering discipline**")
   })
 
+  it("renders canonical private-runtime CLI commands instead of the legacy inner alias", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+    expect(result).toContain("ouro private status --agent testagent")
+    expect(result).toContain("ouro private decisions --agent testagent")
+    expect(result).not.toContain("ouro inner --agent testagent")
+  })
+
   it("includes active bridge work when bridge context is present", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
