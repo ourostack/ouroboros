@@ -654,6 +654,9 @@ describe("daemon command plane branches", () => {
     const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
     const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
     processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    processManager.startAgent.mockImplementationOnce(async () => {
+      expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+    })
 
     const poke = await daemon.handleCommand({ kind: "task.poke", agent: "slugger", taskId: "habit-heartbeat" })
 
@@ -686,6 +689,8 @@ describe("daemon command plane branches", () => {
       ledgerLocator: { path: ledgerPath, line: 1 },
     })
     expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("slugger", { type: "poke", taskId: "habit-heartbeat" })
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
       type: "message",
       privateTurnDecision: expect.objectContaining({
