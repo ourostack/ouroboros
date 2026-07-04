@@ -6,7 +6,9 @@ the outside world.
 ## Shape
 
 - A sense owns the durable channel concept: `voice`, `mail`, `bluebubbles`,
-  `teams`, `cli`, `inner`.
+  `teams`, `cli`.
+- Private runtime is not a durable sense/channel. It is a policy-gated
+  agent-facing runtime that may use the `inner` provider/model lane.
 - A transport adapts a specific medium into that sense: Twilio phone is a
   Voice transport; a browser-driven Riverside/meeting joiner should also be a
   Voice transport.

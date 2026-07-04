@@ -34,10 +34,17 @@ describe("private-runtime documentation contract", () => {
   it("keeps provider lane names distinct from the private-runtime system name", () => {
     const architecture = readRepoFile("ARCHITECTURE.md")
     const authGuide = readRepoFile("docs", "auth-and-providers.md")
+    const senseGuide = readRepoFile("docs", "sense-development.md")
 
     for (const content of [architecture, authGuide]) {
       expect(content).toContain("The `inner` lane is a provider/model lane, not the private-runtime system name.")
       expect(content).toContain("Provider/model selection belongs to `agent.json` lanes; `privateRuntime` cannot select providers or models.")
     }
+
+    expect(senseGuide).toContain("Private runtime is not a durable sense/channel.")
+    expect(senseGuide).toContain("policy-gated")
+    expect(senseGuide).toContain("agent-facing runtime")
+    expect(senseGuide).toContain("`inner` provider/model lane")
+    expect(senseGuide).not.toContain("`teams`, `cli`, `inner`")
   })
 })
