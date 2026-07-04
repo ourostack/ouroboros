@@ -433,6 +433,37 @@ describe("mail sense runtime", () => {
     })
   })
 
+  it("keeps discovery attention queued when default policy denies private wake execution", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const repoRoot = path.join(homeRoot, "repo")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
+    mockRequestPrivateWake.mockResolvedValueOnce({
+      ok: true,
+      message: "private-runtime wake denied for slugger: default policy",
+      data: {
+        decision: {
+          executable: false,
+          deniedReason: "default policy",
+        },
+      },
+    })
+
+    const result = await scanMailImportDiscoveryAttention({ agentName: "slugger" })
+
+    expect(result.queued).toBe(true)
+    expect(pendingBodies(agentRoot)[0]).toContain("[Mail Import Ready]")
+    expect(pendingBodies(agentRoot)[0]).toContain(mboxPath)
+    expectMailImportDiscoveryPrivateWake({
+      fingerprint: result.fingerprint ?? "",
+      candidatePaths: [mboxPath],
+    })
+  })
+
   it("keeps the process alive when mail import discovery scanning throws an Error instance", async () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot

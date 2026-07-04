@@ -197,6 +197,7 @@ function expectMailOperationPrivateWake(
       { kind: "mail-operation-status", id: status },
     ],
   })
+  expect(sendCommand.mock.calls.map((call) => call[1])).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
 }
 
 function recentIso(minutesAgo: number): string {
@@ -3985,7 +3986,7 @@ describe("provider CLI command execution", () => {
     expect(record.error).toEqual({ message: "spawn broke" })
   })
 
-  it("wakes the agent when a tracked foreground MBOX import finishes", async () => {
+  it("queues private attention when a tracked foreground MBOX import finishes under default-deny policy", async () => {
     emitTestEvent("provider cli mail import completion wake")
     const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-bundles")
     const homeDir = makeTempDir("provider-cli-mail-import-operation-home")
@@ -4039,7 +4040,16 @@ describe("provider CLI command execution", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const sendCommand = vi.fn(async () => ({
+      ok: true,
+      message: "private-runtime wake denied for Slugger: default policy",
+      data: {
+        decision: {
+          executable: false,
+          deniedReason: "default policy",
+        },
+      },
+    }))
     const result = await runOuroCli([
       "mail",
       "import-mbox",
