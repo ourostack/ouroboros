@@ -113,10 +113,29 @@ export class FileMessageRouter {
 
   private trimInbox(inboxPath: string): void {
     const raw = fs.readFileSync(inboxPath, "utf-8")
-    const lines = raw.split("\n").filter((line) => line.trim().length > 0)
-    if (lines.length <= this.maxMessagesPerInbox) return
+    const entries = raw
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        try {
+          JSON.parse(line) as RoutedMessage
+          return { line, valid: true }
+        } catch {
+          return { line, valid: false }
+        }
+      })
+    const validCount = entries.filter((entry) => entry.valid).length
+    if (validCount <= this.maxMessagesPerInbox) return
 
-    const kept = lines.slice(lines.length - this.maxMessagesPerInbox)
+    let validSeen = 0
+    const keepAfterValidIndex = validCount - this.maxMessagesPerInbox
+    const kept = entries
+      .filter((entry) => {
+        if (!entry.valid) return true
+        validSeen += 1
+        return validSeen > keepAfterValidIndex
+      })
+      .map((entry) => entry.line)
     fs.writeFileSync(inboxPath, `${kept.join("\n")}\n`, "utf-8")
   }
 }

@@ -190,4 +190,31 @@ describe("FileMessageRouter", () => {
     // The corrupt line should still be in the inbox for inspection.
     expect(fs.readFileSync(inboxPath, "utf-8")).toContain("{corrupt")
   })
+
+  it("does not drop corrupt inbox lines when trimming storm backlogs", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-10T00:00:00.000Z",
+      maxMessagesPerInbox: 2,
+    })
+    const inboxPath = path.join(baseDir, "agent-inbox.jsonl")
+    fs.writeFileSync(inboxPath, "{corrupt\n", "utf-8")
+
+    for (let index = 1; index <= 3; index += 1) {
+      await router.send({
+        from: "storm",
+        to: "agent",
+        content: `valid ${index}`,
+      })
+    }
+
+    expect(router.pollInbox("agent")).toEqual([
+      expect.objectContaining({ content: "valid 2" }),
+      expect.objectContaining({ content: "valid 3" }),
+    ])
+    expect(fs.readFileSync(inboxPath, "utf-8")).toContain("{corrupt")
+  })
 })
