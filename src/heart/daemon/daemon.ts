@@ -652,6 +652,23 @@ function isValidSenseReviveCommand(command: Extract<DaemonCommand, { kind: "daem
     && typeof command.reason === "string"
 }
 
+function isValidTaskPokeCommand(command: Extract<DaemonCommand, { kind: "task.poke" }>): boolean {
+  return typeof command.agent === "string"
+    && command.agent.trim().length > 0
+    && typeof command.taskId === "string"
+    && command.taskId.trim().length > 0
+}
+
+function taskIdFromTaskPokePrivateWakeCommand(
+  command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+): string | null {
+  if (command.kind !== "private.wake" || command.triggerSource !== "task-poke") return null
+  const taskRef = command.originRefs?.find((ref) => ref.kind === "task" && typeof ref.id === "string")
+  if (!taskRef || typeof taskRef.id !== "string") return null
+  const trimmed = taskRef.id.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
 /**
  * Handle agent.senseTurn command: runs a full agent turn via the daemon process.
  * Dynamic import lazy-loads shared-turn. Hot-reload works because ouro dev
@@ -1356,16 +1373,20 @@ export class OuroDaemon {
     })
   }
 
-  private buildTaskPokePrivateWakeCommand(command: Extract<DaemonCommand, { kind: "task.poke" }>): Extract<DaemonCommand, { kind: "private.wake" }> {
+  private buildTaskPokePrivateWakeCommand(
+    command: Extract<DaemonCommand, { kind: "task.poke" }>,
+    receiptId: string,
+  ): Extract<DaemonCommand, { kind: "private.wake" }> {
     return {
       kind: "private.wake",
       agent: command.agent,
       reason: `task poke ${command.taskId}`,
       triggerSource: "task-poke",
       budgetClass: "scheduled",
-      idempotencyKey: `task-poke:${command.agent}:${command.taskId}`,
+      idempotencyKey: `task-poke:${command.agent}:${command.taskId}:${receiptId}`,
       originRefs: [
         { kind: "task", id: command.taskId },
+        { kind: "queue-receipt", id: receiptId },
         { kind: "daemon-command", id: "task.poke" },
       ],
     }
@@ -1380,6 +1401,14 @@ export class OuroDaemon {
       return {
         type: "await",
         awaitName,
+        privateTurnDecision: decision,
+      }
+    }
+    const taskId = taskIdFromTaskPokePrivateWakeCommand(command)
+    if (taskId) {
+      return {
+        type: "poke",
+        taskId,
         privateTurnDecision: decision,
       }
     }
@@ -1664,6 +1693,13 @@ export class OuroDaemon {
           message: `connected to ${command.agent}`,
         }
       case "task.poke": {
+        if (!isValidTaskPokeCommand(command)) {
+          return {
+            ok: false,
+            error: "Invalid task.poke payload: expected non-empty string fields 'agent' and 'taskId'.",
+          }
+        }
+
         const receipt = await this.router.send({
           from: "ouro-poke",
           to: command.agent,
@@ -1672,7 +1708,7 @@ export class OuroDaemon {
           taskRef: command.taskId,
         })
         await this.scheduler.recordTaskRun?.(command.agent, command.taskId)
-        await this.handlePrivateRuntimeWake(this.buildTaskPokePrivateWakeCommand(command))
+        await this.handlePrivateRuntimeWake(this.buildTaskPokePrivateWakeCommand(command, receipt.id))
         return {
           ok: true,
           message: `queued poke ${receipt.id}`,

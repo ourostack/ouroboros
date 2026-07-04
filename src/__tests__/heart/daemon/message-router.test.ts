@@ -74,6 +74,40 @@ describe("FileMessageRouter", () => {
     expect(fs.readFileSync(inboxPath, "utf-8")).toBe("")
   })
 
+  it("keeps same-millisecond message receipts distinct", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-07T01:02:03.004Z",
+    })
+
+    const first = await router.send({
+      from: "slugger",
+      to: "ouroboros",
+      content: "first",
+    })
+    const second = await router.send({
+      from: "slugger",
+      to: "ouroboros",
+      content: "second",
+    })
+
+    expect(first).toEqual({
+      id: "msg-20260307010203004",
+      queuedAt: "2026-03-07T01:02:03.004Z",
+    })
+    expect(second).toEqual({
+      id: "msg-20260307010203004-2",
+      queuedAt: "2026-03-07T01:02:03.004Z",
+    })
+    expect(router.pollInbox("ouroboros").map((message) => message.id)).toEqual([
+      "msg-20260307010203004",
+      "msg-20260307010203004-2",
+    ])
+  })
+
   it("returns no messages when the inbox file does not exist and preserves explicit priority", async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
     tempDirs.push(baseDir)

@@ -24,13 +24,15 @@ export function getDaemonMessageRouterDir(homeDir?: string): string {
   return path.join(getOuroCliHome(homeDir), "daemon", "messages")
 }
 
-function messageId(nowIso: string): string {
-  return `msg-${nowIso.replace(/[^0-9]/g, "")}`
+function messageId(nowIso: string, sequence: number): string {
+  const base = `msg-${nowIso.replace(/[^0-9]/g, "")}`
+  return sequence === 1 ? base : `${base}-${sequence}`
 }
 
 export class FileMessageRouter {
   private readonly baseDir: string
   private readonly now: () => string
+  private readonly messageIdSequences = new Map<string, number>()
 
   constructor(options: FileMessageRouterOptions = {}) {
     this.baseDir = options.baseDir ?? getDaemonMessageRouterDir(options.homeDir)
@@ -47,7 +49,9 @@ export class FileMessageRouter {
     taskRef?: string
   }): Promise<{ id: string; queuedAt: string }> {
     const queuedAt = this.now()
-    const id = messageId(queuedAt)
+    const sequence = (this.messageIdSequences.get(queuedAt) ?? 0) + 1
+    this.messageIdSequences.set(queuedAt, sequence)
+    const id = messageId(queuedAt, sequence)
     const message: RoutedMessage = {
       id,
       from: input.from,
