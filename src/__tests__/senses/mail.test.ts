@@ -39,6 +39,10 @@ function readJson<T>(filePath: string): T {
 
 function pendingBodies(agentRoot: string): string[] {
   const pendingDir = path.join(agentRoot, "state", "pending", "self", "inner", "dialog")
+  return pendingBodiesFromDir(pendingDir)
+}
+
+function pendingBodiesFromDir(pendingDir: string): string[] {
   return fs.readdirSync(pendingDir)
     .filter((name) => name.endsWith(".json"))
     .map((name) => readJson<{ content?: string }>(path.join(pendingDir, name)).content ?? "")
@@ -458,6 +462,31 @@ describe("mail sense runtime", () => {
     expect(result.queued).toBe(true)
     expect(pendingBodies(agentRoot)[0]).toContain("[Mail Import Ready]")
     expect(pendingBodies(agentRoot)[0]).toContain(mboxPath)
+    expectMailImportDiscoveryPrivateWake({
+      fingerprint: result.fingerprint ?? "",
+      candidatePaths: [mboxPath],
+    })
+  })
+
+  it("writes import discovery attention to a custom pending dir when the daemon socket is unavailable", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const repoRoot = path.join(homeRoot, "repo")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const customPendingDir = path.join(homeRoot, "custom", "pending", "mail-import")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
+    mockRequestPrivateWake.mockResolvedValueOnce(null)
+
+    const result = await scanMailImportDiscoveryAttention({
+      agentName: "slugger",
+      pendingDir: customPendingDir,
+    })
+
+    expect(result.queued).toBe(true)
+    expect(pendingBodiesFromDir(customPendingDir)[0]).toContain("[Mail Import Ready]")
+    expect(pendingBodiesFromDir(customPendingDir)[0]).toContain(mboxPath)
     expectMailImportDiscoveryPrivateWake({
       fingerprint: result.fingerprint ?? "",
       candidatePaths: [mboxPath],
