@@ -137,7 +137,7 @@ ouro repair --agent <agent>
 ouro up
 ```
 
-The daemon discovers your agent bundle, starts the private runtime worker, and begins sync. You can now talk to your agent:
+The daemon discovers your agent bundle, starts the private runtime worker, and begins sync. Starting the private runtime worker is process supervision, not a model turn. Denied/default private-runtime policy records or queues work with zero provider calls. Provider-readiness pings are explicit readiness checks, not private turns. You can now talk to your agent:
 
 If `ouro up` has to replace an older or drifted daemon, it now says that plainly and keeps showing replacement progress until the new background service is actually answering.
 

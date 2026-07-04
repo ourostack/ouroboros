@@ -28,6 +28,10 @@ Expected:
   - daemon boot waits keep narrating real startup progress instead of leaving a blinking cursor while the service is still warming up
   - startup does not claim success unless the daemon survives the final handoff check
   - if startup fails, the command exits non-zero and `ouro logs` shows the live daemon log tail that the diagnosis points to
+- Starting the private runtime worker is process supervision, not a model turn.
+- Denied/default private-runtime policy records or queues work with zero provider calls.
+- Provider-readiness pings are explicit readiness checks, not private turns.
+- Passive startup/reload/restart must assert zero provider pings and zero private-turn executions.
 - `ouro status` shows:
   - daemon overview
   - version

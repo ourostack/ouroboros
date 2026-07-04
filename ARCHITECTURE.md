@@ -91,7 +91,7 @@ This is for machine-level artifacts, not bundle-owned identity.
 - vault coordinates
 - provider/model lane selection
 
-Provider/model selection is part of `agent.json`: `outward` powers CLI and human-facing senses, while `inner` powers private runtime and agent-facing model calls. There is no second local provider-selection file.
+Provider/model selection is part of `agent.json`: `outward` powers CLI and human-facing senses, while `inner` powers private agent-facing model calls. The `inner` lane is a provider/model lane, not the private-runtime system name. Provider/model selection belongs to `agent.json` lanes; `privateRuntime` cannot select providers or models. There is no second local provider-selection file.
 
 `bundle-meta.json` tracks the runtime version that last touched the bundle and supports version-aware behavior on startup.
 
@@ -219,13 +219,19 @@ Habits are the agent's autonomous rhythms — recurring patterns that fire indep
 - The agent sees their own habit body as the private session prompt, with per-run `state/habit-sessions/<runId>/` paths, permission policy, return routes, and an Arc receipt.
 - Runtime timestamps such as `lastRun` live in `state/habits/<habit>.json`; auditable run history lives in `arc/flight-recorder/habit-receipts/`.
 - `fs.watch` + CLI notifications provide event-driven discovery (no polling).
-- On daemon startup, the scheduler auto-migrates any old `tasks/habits/` files and fires overdue habits.
+- Daemon startup reconciles overdue habits through private-runtime policy; it does not spend merely because a habit is due.
+- Denied/default private-runtime policy records or queues work with zero provider calls.
+- Provider-readiness pings are explicit readiness checks, not private turns.
 
 The heartbeat is just one habit among many — the agent's breathing. But agents can create any rhythm they want.
 
 ## Private Runtime
 
 The private runtime is the agent's private thinking space.
+
+Starting the private runtime worker is process supervision, not a model turn.
+Denied/default private-runtime policy records or queues work with zero provider calls.
+Provider-readiness pings are explicit readiness checks, not private turns.
 
 - **ponder**: From any conversation, the agent can *ponder* something — it goes to private runtime with the thought as context. From private runtime, *ponder* triggers another turn (the wheel keeps turning).
 - **rest**: When thinking is done, the agent *rests*. The wheel stops until the next habit fires.
@@ -332,7 +338,7 @@ Lifecycle hooks give agents passive awareness of activity in developer tools.
 - Hooks fire via `ouro hook <event> --agent <name>`, which forwards the event to the daemon over the Unix socket.
 - Hooks are designed to never block the dev tool — they always exit 0, even if the daemon is unavailable.
 - PostToolUse hooks fire on Bash, Edit, and Write tool calls, giving the agent awareness of file changes happening in their codebase.
-- The daemon records hook events so private agent-facing turns can include them in the next checkpoint without forcing an private-runtime wake.
+- The daemon records hook events so private agent-facing turns can include them in the next checkpoint without forcing a private-runtime wake.
 
 ## Harness-Level Skills
 
