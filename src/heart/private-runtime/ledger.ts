@@ -154,10 +154,16 @@ export function recordPrivateTurnDecision(
   }
 
   try {
-    const existing = readRows(ledgerPath).find((row) => row.idempotencyKey === candidate.idempotencyKey)
+    const matchingRows = readRows(ledgerPath).filter((row) => row.idempotencyKey === candidate.idempotencyKey)
+    const existing = matchingRows[matchingRows.length - 1]
     if (existing) {
       if (existing.requestFingerprint === candidate.requestFingerprint) {
-        return existing
+        if (existing.result === candidate.result && existing.executable === candidate.executable && existing.deniedReason === candidate.deniedReason) {
+          return existing
+        }
+        const written = writeRow(ledgerPath, candidate)
+        emitDecisionRecorded(deps, { level: written.result === "allow" ? "info" : "warn", decision: written })
+        return written
       }
       const mismatch = mismatchDecision(candidate, existing)
       const writtenMismatch = writeRow(ledgerPath, mismatch)
