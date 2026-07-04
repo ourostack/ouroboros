@@ -25,10 +25,14 @@ export interface HabitSchedulerOptions {
   agent: string
   habitsDir: string
   osCronManager: OsCronManager
-  onHabitFire: (habitName: string, trigger: HabitRunTrigger) => void
+  onHabitFire: (habitName: string, trigger: HabitRunTrigger, context?: HabitFireContext) => void
   deps: HabitSchedulerDeps
   execForVerify?: (cmd: string) => string
   platform?: string
+}
+
+export interface HabitFireContext {
+  occurrenceId: string
 }
 
 export interface OverdueHabit {
@@ -52,7 +56,7 @@ export class HabitScheduler {
   private readonly agent: string
   private readonly habitsDir: string
   private readonly osCronManager: OsCronManager
-  private readonly onHabitFire: (habitName: string, trigger: HabitRunTrigger) => void
+  private readonly onHabitFire: (habitName: string, trigger: HabitRunTrigger, context?: HabitFireContext) => void
   private readonly deps: HabitSchedulerDeps
   private readonly execForVerify?: (cmd: string) => string
   private readonly platform: string
@@ -123,7 +127,9 @@ export class HabitScheduler {
           message: "firing overdue habit (never run)",
           meta: { habitName: habit.name, agent: this.agent },
         })
-        this.onHabitFire(habit.name, "overdue")
+        this.onHabitFire(habit.name, "overdue", {
+          occurrenceId: this.overdueOccurrenceId(habit),
+        })
         continue
       }
 
@@ -136,7 +142,9 @@ export class HabitScheduler {
           message: "firing overdue habit",
           meta: { habitName: habit.name, agent: this.agent, elapsedMs: elapsed },
         })
-        this.onHabitFire(habit.name, "overdue")
+        this.onHabitFire(habit.name, "overdue", {
+          occurrenceId: this.overdueOccurrenceId(habit),
+        })
       }
     }
   }
@@ -208,7 +216,9 @@ export class HabitScheduler {
     if (!job) {
       return { ok: false, message: `unknown habit job: ${jobId}` }
     }
-    this.onHabitFire(job.taskId, trigger)
+    this.onHabitFire(job.taskId, trigger, {
+      occurrenceId: this.jobOccurrenceId(job, trigger),
+    })
     emitNervesEvent({
       component: "daemon",
       event: "daemon.habit_job_triggered",
@@ -350,7 +360,9 @@ export class HabitScheduler {
   private createTimerFallback(habitName: string, cadenceMs: number): void {
     const schedule = (): void => {
       const timer = setTimeout(() => {
-        this.onHabitFire(habitName, "overdue")
+        this.onHabitFire(habitName, "overdue", {
+          occurrenceId: this.timerOccurrenceId(habitName, cadenceMs),
+        })
         schedule()
       }, cadenceMs)
       this.timerFallbacks.set(habitName, timer)
@@ -428,5 +440,19 @@ export class HabitScheduler {
     }
 
     return jobs
+  }
+
+  private overdueOccurrenceId(habit: HabitFile): string {
+    if (habit.lastRun === null) return `overdue:first-run:${habit.cadence}`
+    return `overdue:last-run:${habit.lastRun}:cadence:${habit.cadence}`
+  }
+
+  private jobOccurrenceId(job: ScheduledTaskJob, trigger: HabitRunTrigger): string {
+    return `job:${job.id}:${trigger}:last-run:${job.lastRun ?? "never"}`
+  }
+
+  private timerOccurrenceId(habitName: string, cadenceMs: number): string {
+    const slot = Math.floor(this.deps.now() / cadenceMs)
+    return `timer:${habitName}:cadence-ms:${cadenceMs}:slot:${slot}`
   }
 }

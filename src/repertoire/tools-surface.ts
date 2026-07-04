@@ -59,7 +59,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "surface",
     description:
-      "return a ready thought to a friend or active session without publishing private inner work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
+      "return a ready thought to a friend or active session without publishing private-runtime work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
     parameters: {
       type: "object",
       properties: {
@@ -145,7 +145,7 @@ export const surfaceToolDefinition: ToolDefinition = {
     const agentName = (() => { try { return getAgentName() } catch { return "unknown" } })()
 
     const routeToFriend = async (friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> => {
-      /* v8 ignore start -- routing: integration path tested via inner-dialog routing tests @preserve */
+      /* v8 ignore start -- routing: integration path tested via private-runtime routing tests @preserve */
       try {
         const agentRoot = getAgentRoot()
         const sessionsDir = path.join(agentRoot, "state", "sessions")
@@ -233,7 +233,7 @@ export const surfaceToolDefinition: ToolDefinition = {
         const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
           .filter((s) => s.friendId === friendId && s.channel !== "inner")
 
-        // Priority 2: Queue to freshest non-inner session
+        // Priority 2: Queue to freshest non-private-runtime session
         const freshest = allFriendSessions[0]
         if (freshest) {
           const { queuePendingMessage, getPendingDir } = await import("../mind/pending")

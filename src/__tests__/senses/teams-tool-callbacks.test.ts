@@ -400,7 +400,7 @@ describe("Teams: rejected settle args do NOT leak into visible chat (regression:
     }
   })
 
-  it("rejected settle from inner-dialog attention-queue gate does NOT leak via update/emit", async () => {
+  it("rejected settle from private-runtime attention-queue gate does NOT leak via update/emit", async () => {
     const teams = await import("../../senses/teams")
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock cast
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)

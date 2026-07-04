@@ -28,8 +28,8 @@ import { createBridgeManager } from "./bridges/manager"
 import { getAgentName, getAgentRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "./identity"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "./session-activity"
-import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "./daemon/thoughts"
-import { getInnerDialogPendingDir } from "../mind/pending"
+import { readPrivateRuntimeRawData, derivePrivateRuntimeStatus, deriveInnerJob, getPrivateRuntimeSessionPath } from "./daemon/thoughts"
+import { getPrivateRuntimePendingDir } from "../mind/pending"
 import { readPendingObligations, listActiveReturnObligations } from "../arc/obligations"
 import { listTargetSessionCandidates } from "./target-resolution"
 import { readRecentEpisodes, type EpisodeRecord } from "../arc/episodes"
@@ -69,7 +69,7 @@ export interface TurnContext {
   otherCodingSessions: CodingSession[]
   /** Visible background operations, including ambient import readiness. */
   backgroundOperations: BackgroundOperationRecord[]
-  /** Inner dialog work state. */
+  /** Private-runtime work state. */
   innerWorkState: InnerWorkState
   /** Active return obligations. */
   returnObligations: ReturnObligation[]
@@ -138,10 +138,10 @@ function readInnerWorkState(): InnerWorkState {
   }
   try {
     const agentRoot = getAgentRoot()
-    const pendingDir = getInnerDialogPendingDir(getAgentName())
-    const sessionPath = getInnerDialogSessionPath(agentRoot)
-    const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
-    const dialogStatus = deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
+    const pendingDir = getPrivateRuntimePendingDir(getAgentName())
+    const sessionPath = getPrivateRuntimeSessionPath(agentRoot)
+    const { pendingMessages, turns, runtimeState } = readPrivateRuntimeRawData(sessionPath, pendingDir)
+    const dialogStatus = derivePrivateRuntimeStatus(pendingMessages, turns, runtimeState)
     const job = deriveInnerJob(pendingMessages, turns, runtimeState)
     const storeObligationPending = readPendingObligations(agentRoot).length > 0
     return {
@@ -436,7 +436,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     limit: 5,
   })
 
-  // Inner work state
+  // Private-runtime work state
   const innerWorkState = readInnerWorkState()
 
   // Return obligations

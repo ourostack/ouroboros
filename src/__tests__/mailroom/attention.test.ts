@@ -70,7 +70,7 @@ describe("mail screener attention", () => {
     }
   })
 
-  it("queues each new screener candidate for inner attention without exposing the mail body", async () => {
+  it("queues each new screener candidate for private-runtime attention without exposing the mail body", async () => {
     const root = tempDir()
     const storePath = path.join(root, "mailroom")
     const pendingDir = path.join(root, "pending", "self", "inner", "dialog")

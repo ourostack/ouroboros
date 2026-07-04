@@ -3,6 +3,12 @@
 A short runbook for bugs we've encountered and how to recognize / recover
 from them. Add to this when you find a new one.
 
+## Private Runtime Spend Boundaries
+
+Starting the private runtime worker is process supervision, not a model turn.
+Denied/default private-runtime policy records or queues work with zero provider calls.
+Provider-readiness pings are explicit readiness checks, not private turns.
+
 ## "Agent only produces `<think>` content with no answer" — MiniMax replay rejection
 
 **Symptom**: agent sends MCP / CLI / BB messages but the operator sees
@@ -65,7 +71,7 @@ missed.
 
 ## "Heartbeat keeps firing 'fresh work arrived' even after rest + HEARTBEAT_OK"
 
-**Symptom**: the agent's inner-dialog heartbeat appears to be in a
+**Symptom**: the agent's private-runtime heartbeat appears to be in a
 self-sustaining loop; rest is repeatedly rejected with "fresh work
 arrived for me this turn — inspect the pending messages above and
 take the next concrete action before you rest" even though the

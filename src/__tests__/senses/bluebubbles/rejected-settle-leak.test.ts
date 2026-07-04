@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 
 // Regression test for Blocker D from PR #642 live demo:
 // When the agent's settle call is rejected (sole-call check, mustResolveBeforeHandoff
-// gate, or inner-dialog attention-queue gate), core.ts calls
+// gate, or private-runtime attention-queue gate), core.ts calls
 // `callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)`. The
 // previous BB sense forwarded that to the shared tool-activity callbacks, which
 // rendered "✗ <previous visible tool's description> — answer=... intent=..." and
@@ -99,7 +99,7 @@ describe("BlueBubbles: rejected settle args do NOT leak into visible chat", () =
     expect(sendText).not.toHaveBeenCalled()
   }, 15000)
 
-  it("rejected settle from the inner-dialog attention-queue gate does NOT leak args via client.sendText", async () => {
+  it("rejected settle from the private-runtime attention-queue gate does NOT leak args via client.sendText", async () => {
     // Same shape as above — core.ts calls callbacks.onToolEnd("settle", summary, false)
     // with the summary built from settleArgs regardless of which gate rejected
     // the settle. We exercise the same surface.

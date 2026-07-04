@@ -26,7 +26,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "sessions", label: "Sessions" },
   { id: "work", label: "Work" },
   { id: "connections", label: "Connections" },
-  { id: "inner", label: "Inner" },
+  { id: "inner", label: "Private Runtime" },
   { id: "notes", label: "Desk Record" },
   { id: "runtime", label: "Runtime" },
 ]

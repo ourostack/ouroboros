@@ -130,9 +130,10 @@ export function usage(): string {
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
+    "  ouro private decisions [--agent <name>] [--limit <n>] [--json]",
+    "  ouro private status [--agent <name>]",
     "  ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
     "  ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
-    "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro a2a card [--agent <name>] [--base-url <url>] [--json]",
@@ -1668,6 +1669,50 @@ function parseNervesReviewCommand(args: string[]): OuroCliCommand {
   }
 }
 
+function parsePrivateCommand(args: string[]): OuroCliCommand {
+  const [subcommand] = args
+  if (subcommand === "status") {
+    const { agent, rest } = extractAgentFlag(args.slice(1))
+    if (rest.length > 0) {
+      throw new Error("Usage: ouro private status [--agent <name>]")
+    }
+    return { kind: "private.status", ...(agent ? { agent } : {}) }
+  }
+  if (subcommand !== "decisions") {
+    throw new Error("Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json] OR ouro private status [--agent <name>]")
+  }
+
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  let limit = 20
+  let json = false
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    const next = rest[i + 1]
+    if (token === "--json") {
+      json = true
+      continue
+    }
+    if (token === "--limit" && next) {
+      const parsed = Number.parseInt(next, 10)
+      if (!Number.isInteger(parsed) || String(parsed) !== next || parsed < 1 || parsed > 1000) {
+        throw new Error("private decisions --limit must be an integer between 1 and 1000")
+      }
+      limit = parsed
+      i += 1
+      continue
+    }
+    throw new Error("Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json]")
+  }
+
+  return {
+    kind: "private.decisions",
+    ...(agent ? { agent } : {}),
+    limit,
+    json,
+  }
+}
+
 // ── Main dispatch ──
 
 export function parseOuroCommand(args: string[]): OuroCliCommand {
@@ -1778,11 +1823,12 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return { kind: "changelog", ...(from ? { from } : {}), ...(agent ? { agent } : {}) }
   }
   if (head === "thoughts") return parseThoughtsCommand(args.slice(1))
+  if (head === "private") return parsePrivateCommand(args.slice(1))
   if (head === "attention") return parseAttentionCommand(args.slice(1))
   if (head === "work") return parseWorkCommand(args.slice(1))
   if (head === "inner") {
     const { agent } = extractAgentFlag(args.slice(1))
-    return { kind: "inner.status", ...(agent ? { agent } : {}) }
+    return { kind: "private.status", ...(agent ? { agent } : {}), legacyAlias: "inner" }
   }
   if (head === "chat") {
     if (!second) return { kind: "chat.connect", agent: "" }

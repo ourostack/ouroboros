@@ -16,6 +16,7 @@ function makePayload(workers: Array<{
   agent: string
   status: string
   startedAt: string | null
+  autoStart?: boolean
   errorReason?: string | null
   fixHint?: string | null
 }>): StatusPayload {
@@ -38,6 +39,7 @@ function makePayload(workers: Array<{
     workers: workers.map((w) => ({
       agent: w.agent,
       worker: "cli",
+      autoStart: w.autoStart ?? true,
       status: w.status,
       pid: w.status === "crashed" ? null : 1234,
       restartCount: w.status === "crashed" ? 3 : 0,
@@ -139,6 +141,17 @@ describe("startup-tui", () => {
       ])
       const result = assessStability(payload, now)
       expect(result.resolved).toBe(false)
+    })
+
+    it("treats non-autostart stopped workers as already parked", () => {
+      const now = new Date("2026-04-09T12:00:10.000Z").getTime()
+      const payload = makePayload([
+        { agent: "alpha", status: "stopped", startedAt: null, autoStart: false },
+      ])
+      const result = assessStability(payload, now)
+      expect(result.resolved).toBe(true)
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toEqual([])
     })
 
     it("empty workers returns immediately resolved", () => {
@@ -908,6 +921,37 @@ describe("startup-tui", () => {
         fixHint: "check daemon logs or run `ouro doctor`",
       }])
       expect(deps.writeRaw).not.toHaveBeenCalled()
+    })
+
+    it("does not report parked passive workers as degraded when other workers time out", async () => {
+      let calls = 0
+      const payload = makePayload([
+        { agent: "parked", status: "stopped", startedAt: null, autoStart: false },
+        { agent: "active", status: "starting", startedAt: null, autoStart: true },
+      ])
+      const deps = {
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 99999,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? 0 : 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
+        maxWaitMs: 1_000,
+        render: false,
+      }
+
+      const result = await pollDaemonStartup(deps)
+
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toEqual([{
+        agent: "active",
+        errorReason: "startup timed out after 1s while worker was starting",
+        fixHint: "run `ouro status` or `ouro doctor` for current worker details; the daemon is still answering",
+      }])
     })
 
     it("continues polling when daemon pid is null (unknown)", async () => {

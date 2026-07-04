@@ -396,8 +396,8 @@ describe("tools-awaiting", () => {
         { currentSession: { friendId: "ari", channel: "bluebubbles", key: "x", sessionPath: "" } } as any,
       )
       // mock identity for default deps
-      const { getInnerDialogPendingDir } = await import("../../mind/pending")
-      const pendingDir = getInnerDialogPendingDir("slugger")
+      const { getPrivateRuntimePendingDir } = await import("../../mind/pending")
+      const pendingDir = getPrivateRuntimePendingDir("slugger")
       cleanup.push(path.dirname(path.dirname(pendingDir))) // catch parent dirs
 
       // make alert path go through buildAwaitDeliveryDeps -> default
@@ -430,8 +430,8 @@ describe("tools-awaiting", () => {
         { name: "hey_export", condition: "c", cadence: "5m", alert: "bluebubbles" },
         { currentSession: { friendId: "ari", channel: "bluebubbles", key: "x", sessionPath: "" } } as any,
       )
-      const { getInnerDialogPendingDir } = await import("../../mind/pending")
-      const pendingDir = getInnerDialogPendingDir("slugger")
+      const { getPrivateRuntimePendingDir } = await import("../../mind/pending")
+      const pendingDir = getPrivateRuntimePendingDir("slugger")
       cleanup.push(path.dirname(path.dirname(pendingDir)))
       const oversized = makeOversizedAgentContent("await fallback pending ")
 

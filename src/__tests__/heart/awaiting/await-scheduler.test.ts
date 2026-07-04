@@ -517,6 +517,34 @@ describe("AwaitScheduler", () => {
       scheduler.reconcile()
       expect((cronManager.sync as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(2)
     })
+
+    it("fires overdue and expired await callbacks during reconcile", () => {
+      const nowMs = 10_000_000
+      const readdir = vi.fn(() => ["due.md", "expired.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile, now: () => nowMs })
+      mockParseAwaitFile
+        .mockReturnValueOnce(makePending({ name: "due_await", last_checked: null }))
+        .mockReturnValueOnce(makePending({
+          name: "expired_await",
+          max_age: "1h",
+          created_at: new Date(nowMs - 2 * 60 * 60 * 1000).toISOString(),
+          last_checked: new Date(nowMs).toISOString(),
+        }))
+      const scheduler = new AwaitScheduler({
+        agent: "slugger",
+        awaitsDir: "/x",
+        osCronManager: cronManager,
+        onAwaitFire,
+        onAwaitExpire,
+        deps,
+      })
+
+      scheduler.reconcile()
+
+      expect(onAwaitFire).toHaveBeenCalledWith("due_await")
+      expect(onAwaitExpire).toHaveBeenCalledWith("expired_await")
+    })
   })
 
   describe("stop()", () => {

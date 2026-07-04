@@ -74,6 +74,74 @@ describe("FileMessageRouter", () => {
     expect(fs.readFileSync(inboxPath, "utf-8")).toBe("")
   })
 
+  it("keeps same-millisecond message receipts distinct", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-07T01:02:03.004Z",
+    })
+
+    const first = await router.send({
+      from: "slugger",
+      to: "ouroboros",
+      content: "first",
+    })
+    const second = await router.send({
+      from: "slugger",
+      to: "ouroboros",
+      content: "second",
+    })
+
+    expect(first).toEqual({
+      id: "msg-20260307010203004",
+      queuedAt: "2026-03-07T01:02:03.004Z",
+    })
+    expect(second).toEqual({
+      id: "msg-20260307010203004-2",
+      queuedAt: "2026-03-07T01:02:03.004Z",
+    })
+    expect(router.pollInbox("ouroboros").map((message) => message.id)).toEqual([
+      "msg-20260307010203004",
+      "msg-20260307010203004-2",
+    ])
+  })
+
+  it("caps storm backlogs to the newest queued messages while keeping receipts distinct", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-07T01:02:03.004Z",
+      maxMessagesPerInbox: 3,
+    })
+
+    for (let index = 1; index <= 5; index += 1) {
+      await router.send({
+        from: "claude-code:storm-session",
+        to: "slugger",
+        content: `post-tool-use ${index}`,
+      })
+    }
+
+    expect(router.pollInbox("slugger")).toEqual([
+      expect.objectContaining({
+        id: "msg-20260307010203004-3",
+        content: "post-tool-use 3",
+      }),
+      expect.objectContaining({
+        id: "msg-20260307010203004-4",
+        content: "post-tool-use 4",
+      }),
+      expect.objectContaining({
+        id: "msg-20260307010203004-5",
+        content: "post-tool-use 5",
+      }),
+    ])
+  })
+
   it("returns no messages when the inbox file does not exist and preserves explicit priority", async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
     tempDirs.push(baseDir)
@@ -120,6 +188,33 @@ describe("FileMessageRouter", () => {
     expect(messages[0].content).toBe("ok")
 
     // The corrupt line should still be in the inbox for inspection.
+    expect(fs.readFileSync(inboxPath, "utf-8")).toContain("{corrupt")
+  })
+
+  it("does not drop corrupt inbox lines when trimming storm backlogs", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-10T00:00:00.000Z",
+      maxMessagesPerInbox: 2,
+    })
+    const inboxPath = path.join(baseDir, "agent-inbox.jsonl")
+    fs.writeFileSync(inboxPath, "{corrupt\n", "utf-8")
+
+    for (let index = 1; index <= 3; index += 1) {
+      await router.send({
+        from: "storm",
+        to: "agent",
+        content: `valid ${index}`,
+      })
+    }
+
+    expect(router.pollInbox("agent")).toEqual([
+      expect.objectContaining({ content: "valid 2" }),
+      expect.objectContaining({ content: "valid 3" }),
+    ])
     expect(fs.readFileSync(inboxPath, "utf-8")).toContain("{corrupt")
   })
 })

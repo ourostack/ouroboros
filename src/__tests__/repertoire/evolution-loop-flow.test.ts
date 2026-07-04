@@ -144,8 +144,8 @@ describe("local evolution loop flow", () => {
       reason: "local implementation is allowed one delegated coding pass",
     })
     setEvolutionAuthority(mockRuntime.agentRoot, evolutionCaseId, {
-      actions: { spawn_coding: "allowed", merge_pr: "ask_before_action", mutate_identity: "human_required" },
-      reason: "delegate implementation, keep merge and sensitive surfaces gated",
+      actions: { spawn_coding: "allowed", merge_pr: "reviewer_required", mutate_identity: "reviewer_required" },
+      reason: "delegate implementation, keep merge and sensitive surfaces reviewer-gated",
     })
 
     const decision = await invokeEvolutionTool("evolution_decide", {
@@ -246,7 +246,7 @@ describe("local evolution loop flow", () => {
     const evolutionCaseId = createHarnessFrictionCase(mockRuntime.agentRoot, "evolution-loop:no-coding-budget")
     setEvolutionBudget(mockRuntime.agentRoot, evolutionCaseId, {
       profile: "capture",
-      reason: "capture evidence only until a human grants coding budget",
+      reason: "capture evidence only until reviewer authority grants coding budget",
     })
 
     const result = await invokeCodingSpawn({

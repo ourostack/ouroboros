@@ -233,6 +233,19 @@ describe("buildSystem", () => {
     expect(result).toContain("**engineering discipline**")
   })
 
+  it("renders canonical private-runtime CLI commands instead of the legacy inner alias", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+    expect(result).toContain("ouro private status --agent testagent")
+    expect(result).toContain("ouro private decisions --agent testagent")
+    expect(result).not.toContain("ouro inner --agent testagent")
+  })
+
   it("includes active bridge work when bridge context is present", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -1528,7 +1541,7 @@ describe("buildSystem", () => {
     expect(result).toContain("- settle:")
   })
 
-  it("inner dialog tool behavior guides agent to use rest/ponder for internal state, not surface", async () => {
+  it("private runtime tool behavior guides agent to use rest/ponder for internal state, not surface", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1818,7 +1831,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("process type: cli session")
   })
 
-  it("inner channel includes process type: inner session", async () => {
+  it("inner channel includes process type: private-runtime turn", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1826,7 +1839,11 @@ describe("runtimeInfoSection", () => {
     const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = runtimeInfoSection("inner")
-    expect(result).toContain("process type: inner session")
+    expect(result).toContain("channel: private-runtime")
+    expect(result).toContain("current sense: private runtime (agent-facing runtime, not a sense)")
+    expect(result).toContain("process type: private-runtime turn")
+    expect(result).not.toContain("channel: inner")
+    expect(result).not.toContain("current sense: inner")
   })
 
   it("teams channel includes process type: teams handler", async () => {
@@ -3108,9 +3125,9 @@ describe("buildSystem with context", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    expect(result).toContain("this is my inner session. there is no one else here.")
+    expect(result).toContain("this is my private-runtime turn. there is no one else here.")
     expect(result).toContain("the messages that appear here are my own awareness surfacing")
-    expect(result).toContain("i can think freely here")
+    expect(result).toContain("i can work privately here")
   })
 
   it("buildSystem includes delegation hints with explicit reasons and closure state", async () => {
@@ -3155,7 +3172,7 @@ describe("buildSystem with context", () => {
     expect(result).not.toContain("delegation hint")
   })
 
-  it("buildSystem('inner') includes inner session loop orientation", async () => {
+  it("buildSystem('inner') includes private-runtime turn loop orientation", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3192,8 +3209,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("When I am returning a held thought or session-linked work, I call `surface`")
     expect(result).toContain("When I intentionally want to contact a person or sibling directly, I call `send_message`")
     expect(result).toContain("I do not use `surface` as a substitute for intentional live contact")
-    expect(result).not.toContain("I do not call `send_message` or `settle` from an inner-lane turn")
-    expect(result).toContain("I do not call `settle` from an inner-lane turn")
+    expect(result).not.toContain("I do not call `send_message` or `settle` from a private-runtime turn")
+    expect(result).toContain("I do not call `settle` from a private-runtime turn")
     expect(result).not.toContain("my outward delivery tool is `surface`, not `send_message`")
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
 
@@ -3212,7 +3229,7 @@ describe("buildSystem with context", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).not.toContain("this is my inner session. there is no one else here.")
+    expect(result).not.toContain("this is my private-runtime turn. there is no one else here.")
   })
 
   // --- A: Body map + self-evolution orientation ---
@@ -3298,7 +3315,7 @@ describe("buildSystem with context", () => {
     expect(result).not.toMatch(/GEPA[^\n.]*before[^\n.]*trace quality/i)
   })
 
-  it("buildSystem keeps sensitive evolution surfaces human-gated and desk non-authoritative", async () => {
+  it("buildSystem keeps sensitive evolution surfaces reviewer-gated and desk non-authoritative", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3307,7 +3324,8 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
-    expect(result).toContain("identity, voice, credentials, provider config, outbound messages, and hosted infrastructure require human authority")
+    expect(result).toContain("identity, voice, provider config, outbound messages, and hosted infrastructure require reviewer-gated authority")
+    expect(result).toContain("credential mutation remains human-required")
     expect(result).toContain("desk is the cockpit and mirror, not runtime authority")
     expect(result).toContain("runtime truth lives in the evolution case and trace")
   })
@@ -3456,15 +3474,15 @@ describe("loopOrientationSection", () => {
     setAgentProvider("minimax")
   })
 
-  it("inner dialog returns empty string (already has loop text in metacognitive framing)", async () => {
+  it("private runtime returns empty string (already has loop text in metacognitive framing)", async () => {
     const { loopOrientationSection } = await import("../../mind/prompt")
     expect(loopOrientationSection("inner")).toBe("")
   })
 
-  it("CLI includes inner thought syntax reference", async () => {
+  it("CLI includes private-runtime note syntax reference", async () => {
     const { loopOrientationSection } = await import("../../mind/prompt")
     const result = loopOrientationSection("cli")
-    expect(result).toContain("[inner thought:")
+    expect(result).toContain("[private-runtime note:")
   })
 
   it("external channels mention deferring thought", async () => {
@@ -3488,7 +3506,7 @@ describe("loopOrientationSection", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("sometimes a thought of mine surfaces")
+    expect(result).toContain("sometimes a private-runtime note surfaces")
   })
 
   it("buildSystem('inner') does NOT include external loop orientation", async () => {
@@ -3499,7 +3517,7 @@ describe("loopOrientationSection", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    // Inner dialog has metacognitive framing with its own loop text
+    // Private runtime has metacognitive framing with its own loop text
     expect(result).toContain("think. record. share. rest.")
     // But not the external channel version
     expect(result).not.toContain("sometimes a thought of mine surfaces")
@@ -3561,7 +3579,7 @@ describe("channelNatureSection", () => {
     expect(channelNatureSection(caps)).toBe("")
   })
 
-  it("returns empty string for inner dialog (senseType internal)", async () => {
+  it("returns empty string for private runtime (senseType internal)", async () => {
     const { channelNatureSection } = await import("../../mind/prompt")
     const caps = {
       channel: "inner" as const,
@@ -4196,7 +4214,7 @@ describe("feedbackSignalSection", () => {
     expect(result).toBe("")
   })
 
-  it("returns empty for inner dialog", async () => {
+  it("returns empty for private runtime", async () => {
     const { feedbackSignalSection } = await import("../../mind/prompt")
     const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("inner", "internal") } as any)
     expect(result).toBe("")
@@ -4454,7 +4472,7 @@ describe("system prompt group headers", () => {
     }
   })
 
-  it("inner channel output contains '# my inner life' group header", async () => {
+  it("inner channel output contains private-runtime '# my private runtime' group header", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -4465,7 +4483,7 @@ describe("system prompt group headers", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    expect(result).toContain("# my inner life")
+    expect(result).toContain("# my private runtime")
   })
 
   it("teams channel with remote context contains '# social context' group header", async () => {
@@ -4485,7 +4503,7 @@ describe("system prompt group headers", () => {
     expect(result).toContain("# social context")
   })
 
-  it("cli channel does NOT contain '# my inner life' or '# social context'", async () => {
+  it("cli channel does NOT contain '# my private runtime' or '# social context'", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -4496,7 +4514,7 @@ describe("system prompt group headers", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).not.toContain("# my inner life")
+    expect(result).not.toContain("# my private runtime")
     expect(result).not.toContain("# social context")
   })
 
@@ -4730,7 +4748,7 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
 
     const result = flattenSystemPrompt(await buildSystem("cli", {
       pendingMessages: [
-        { from: "inner-dialog", content: "heads up: coding session finished" },
+        { from: "private-runtime", content: "heads up: coding session finished" },
       ],
     } as any))
     expect(result).toContain("## pending messages")
@@ -4748,11 +4766,11 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
 
     const result = flattenSystemPrompt(await buildSystem("cli", {
       pendingMessages: [
-        { from: "inner-dialog", content: "coding session finished" },
+        { from: "private-runtime", content: "coding session finished" },
         { from: "bridge-1", content: "Ari says hi" },
       ],
     } as any))
-    expect(result).toContain("- from inner-dialog: coding session finished")
+    expect(result).toContain("- from private-runtime: coding session finished")
     expect(result).toContain("- from bridge-1: Ari says hi")
   })
 

@@ -162,13 +162,13 @@ const BYPASS_USE_ALLOWLIST = new Set<string>([
   "src/__tests__/heart/daemon/daemon-cli-defaults.test.ts",
 ])
 
-// Files allowed to construct `new OuroDaemon(...)`. The 11 files below all
+// Files allowed to construct `new OuroDaemon(...)`. These files all
 // rely on the runtime guards added in #346 (killOrphanProcesses() and
 // writePidfile() are no-ops under vitest) so they don't touch the real
-// production pidfile at ~/.ouro-cli/daemon.pids. Adding a 12th file should
+// production pidfile at ~/.ouro-cli/daemon.pids. Adding a new file should
 // be a deliberate, reviewed choice — there's a non-trivial risk that a
 // future change to OuroDaemon.start() introduces a NEW production-state
-// side-effect that the existing 11 tests would silently exercise. Forcing
+// side-effect that existing daemon-instantiating tests would silently exercise. Forcing
 // allowlist edits gives that change a reviewer who can spot the drift.
 const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   "src/__tests__/heart/daemon/daemon-stop-deadlock.test.ts",
@@ -194,6 +194,15 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   // stub and cover the try/catch/stop branches that were previously
   // v8-ignored.
   "src/__tests__/heart/daemon/daemon-mailbox-lifecycle.test.ts",
+  // Exercises the read-only private.decisions command handler directly
+  // against an isolated temp bundle ledger. Does not call start(), bind
+  // sockets, or touch the production pidfile.
+  "src/__tests__/heart/private-runtime/decision-read-surface.test.ts",
+  // Spend-invariant matrix constructs OuroDaemon to exercise real daemon
+  // private.wake/message/start/restart command handling with injected temp
+  // bundle roots, temp socket paths, fake process/router deps, and explicit
+  // daemon.stop cleanup around lifecycle rows.
+  "src/__tests__/heart/private-runtime/spend-invariant-matrix.test.ts",
 ])
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")

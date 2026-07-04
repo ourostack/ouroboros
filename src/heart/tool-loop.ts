@@ -215,8 +215,8 @@ export function recordToolOutcome(
 
 // Tools that must never be blocked by the circuit breaker.
 // settle = end the turn, surface = deliver results outward.
-// ponder = continue thinking (inner dialog) or hand off to inner dialog (outer).
-// rest = end inner dialog turn (added in Unit 8b).
+// ponder = continue thinking (private runtime) or hand off to private runtime (outer).
+// rest = end private runtime turn (added in Unit 8b).
 // Blocking these traps the agent: it can think all it wants but can never speak or stop.
 const CIRCUIT_BREAKER_EXEMPT = new Set(["settle", "surface", "ponder", "rest"])
 

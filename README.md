@@ -97,7 +97,12 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 ## Runtime Truths
 
 - `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, BlueBubbles, Mail, and Voice turns, and `inner` for private agent-facing turns.
+- The `inner` lane is a provider/model lane, not the private-runtime system name.
+- Provider/model selection belongs to `agent.json` lanes; `privateRuntime` cannot select providers or models.
 - Legacy `humanFacing`/`agentFacing` provider fields are read only as compatibility aliases for `outward`/`inner`; they are not a second config surface.
+- Starting the private runtime worker is process supervision, not a model turn.
+- Denied/default private-runtime policy records or queues work with zero provider calls.
+- Provider-readiness pings are explicit readiness checks, not private turns.
 - Each agent has one credential vault for provider, runtime, sense, integration, travel, and tool credentials. There is no machine-wide credential pool.
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
 - New vault unlock secrets are confirmed before use and rejected if they do not meet the minimum strength requirements.
@@ -134,7 +139,7 @@ When you want this machine to use a provider/model for a lane, use:
 ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <model>
 ```
 
-The outward lane handles user-facing senses. The inner lane handles the agent's private thinking. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
+The outward lane selects the provider/model for user-facing senses. The `inner` lane selects the provider/model for private agent-facing turns; private-runtime policy decides whether those turns may run. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
 
 For the full locked auth/provider contract, including refresh, repair actors, caching, and SerpentGuide hatch bootstrap, see `docs/auth-and-providers.md`.
 
@@ -207,7 +212,8 @@ ouro poke <agent> --task <task-id>
 ouro poke <agent> --habit <habit-name>
 ouro habit list --agent <agent>
 ouro habit create --agent <agent> <name> --cadence <interval>
-ouro inner --agent <agent>           # private turn status
+ouro private status --agent <agent>
+ouro private decisions --agent <agent>
 ouro attention --agent <agent>       # attention queue
 ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>
 ouro setup --tool <tool> --agent <name>   # register MCP server + hooks with a dev tool
@@ -221,13 +227,13 @@ The generic secret primitive is a vault item / credential in the owning agent va
 
 To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot@latest`, open the home deck, choose clone, enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
 
-## The Agent's Inner Life
+## The Agent's Private Runtime And Rhythms
 
-Agents in Ouroboros aren't just responders — they have an autonomous inner life.
+Agents in Ouroboros aren't just responders — they have private agent-facing turns, recurring rhythms, durable records, and explicit spend policy.
 
 **Habits** are the agent's rhythms. A habit is an Ouro-native cron wrapper: it fires a private agent-facing session, can surface to family or the habit originator when it needs help or needs to report back, and leaves an audit receipt.
 
-**The inner lane** is where private sessions run. Habit runs, private returns, awaits, and self-maintenance can happen there, but the lane is not a record substrate. Anything durable leaves the lane: live continuity and audit go to Arc; work goes to Desk; learned facts and reference notes go to the Desk record.
+**The private runtime** is where private agent-facing turns run. It uses the `inner` provider/model lane, but the lane is only provider selection; the runtime is governed by private-runtime policy, receipts, and attention queues. Habit runs, private returns, awaits, and self-maintenance can happen privately, but private context is not a record substrate. Anything durable leaves the turn: live continuity and audit go to Arc; work goes to Desk; learned facts and reference notes go to the Desk record.
 
 **Desk and Arc** are the durable orientation pair. Arc owns live continuity, claims, obligations, and habit run receipts. Desk owns durable work and the maintained record. The target substrate is captured in [Agent Orientation Substrate](docs/agent-orientation-substrate.md).
 

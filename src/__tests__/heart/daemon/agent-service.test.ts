@@ -73,7 +73,7 @@ describe("agent-service handlers", () => {
       expect(r.data).toMatchObject({ hasDiaryEntries: true, factCount: 1 })
     })
 
-    it("reads inner dialog status", async () => {
+    it("reads private-runtime status", async () => {
       vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes("runtime.json"))
       vi.mocked(fs.readFileSync).mockImplementation((p) => {
         if (String(p).includes("runtime.json")) return JSON.stringify({ status: "thinking", lastCompletedAt: "2026-03-26T01:00:00Z" })
@@ -90,8 +90,8 @@ describe("agent-service handlers", () => {
         data: {
           overview: { daemon: "running", health: "ok", version: "0.1.0-alpha.528", mode: "production" },
           workers: [
-            { agent: "test", worker: "inner-dialog", status: "running" },
-            { agent: "other", worker: "inner-dialog", status: "crashed" },
+            { agent: "test", worker: "private-runtime", status: "running" },
+            { agent: "other", worker: "private-runtime", status: "crashed" },
           ],
           senses: [
             {
@@ -122,7 +122,7 @@ describe("agent-service handlers", () => {
       expect(mockSendDaemonCommand).toHaveBeenCalledWith("/tmp/test-daemon.sock", { kind: "daemon.status" })
       expect(r.message).toContain("daemon=running")
       expect(r.message).toContain("health=ok")
-      expect(r.message).toContain("worker=inner-dialog:running")
+      expect(r.message).toContain("worker=private-runtime:running")
       expect(r.message).toContain("sense=bluebubbles:running")
       expect(r.message).toContain("proof=bluebubbles.checkHealth")
       expect(r.message).toContain("proofAgeMs=7382")
@@ -198,7 +198,7 @@ describe("agent-service handlers", () => {
         data: {
           overview: { daemon: "running", health: "degraded" },
           workers: [
-            { agent: "test", worker: "inner-dialog", status: "running" },
+            { agent: "test", worker: "private-runtime", status: "running" },
             { agent: "test", worker: "ignored-missing-status" },
             "not a worker row",
           ],
@@ -228,7 +228,7 @@ describe("agent-service handlers", () => {
       const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
 
       expect(r.message).toContain("daemon=running\thealth=degraded")
-      expect(r.message).toContain("worker=inner-dialog:running")
+      expect(r.message).toContain("worker=private-runtime:running")
       expect(r.message).not.toContain("ignored-missing-status")
       expect(r.message).toContain("sense=bluebubbles:disabled")
       expect(r.message).toContain("failureLayer=probe")
@@ -486,7 +486,7 @@ describe("agent-service handlers", () => {
       expect(data.recentSessions[0].lastUsage).toBe("")
     })
 
-    it("includes inner dialog status", async () => {
+    it("includes private-runtime status", async () => {
       vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes("runtime.json"))
       vi.mocked(fs.readFileSync).mockImplementation((p) => {
         if (String(p).includes("runtime.json")) return JSON.stringify({ status: "idle", lastCompletedAt: "2026-03-26T10:00:00Z" })
@@ -494,7 +494,7 @@ describe("agent-service handlers", () => {
       })
       const { handleAgentCatchup } = await import("../../../heart/daemon/agent-service")
       const r = await handleAgentCatchup({ agent: "test", friendId: "f1" })
-      expect(r.message).toContain("Inner dialog: idle")
+      expect(r.message).toContain("Private runtime: idle")
     })
   })
 

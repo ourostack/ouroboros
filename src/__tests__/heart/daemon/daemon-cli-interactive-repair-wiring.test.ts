@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   pruneStaleEphemeralBundles: vi.fn(() => [] as string[]),
   pollDaemonStartup: vi.fn(async () => ({ stable: [] as string[], degraded: [] as any[] })),
   runInteractiveRepair: vi.fn(async () => ({ repairsAttempted: false })),
+  checkAgentConfig: vi.fn(() => ({ ok: true }) as const),
   checkAgentConfigWithProviderHealth: vi.fn(async () => ({ ok: true }) as const),
   readAgentConfigForAgent: vi.fn(() => ({
     config: { humanFacing: { provider: "anthropic" as const } },
@@ -61,6 +62,7 @@ vi.mock("../../../heart/daemon/interactive-repair", () => ({
 }))
 
 vi.mock("../../../heart/daemon/agent-config-check", () => ({
+  checkAgentConfig: (...a: any[]) => mocks.checkAgentConfig(...a),
   checkAgentConfigWithProviderHealth: (...a: any[]) => mocks.checkAgentConfigWithProviderHealth(...a),
 }))
 
@@ -162,6 +164,8 @@ describe("ouro up: interactive repair wiring", () => {
     mocks.pollDaemonStartup.mockResolvedValue({ stable: [], degraded: [] })
     mocks.runInteractiveRepair.mockReset()
     mocks.runInteractiveRepair.mockResolvedValue({ repairsAttempted: false })
+    mocks.checkAgentConfig.mockReset()
+    mocks.checkAgentConfig.mockReturnValue({ ok: true })
     mocks.checkAgentConfigWithProviderHealth.mockReset()
     mocks.checkAgentConfigWithProviderHealth.mockResolvedValue({ ok: true })
     mocks.readAgentConfigForAgent.mockReset()
@@ -292,7 +296,7 @@ describe("ouro up: interactive repair wiring", () => {
   })
 
   it("starts a stopped daemon before running typed provider repair", async () => {
-    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+    mocks.checkAgentConfig.mockReturnValueOnce({
       ok: false,
       error: "outward provider anthropic model claude-opus-4-6 cannot read provider credentials because test-agent's credential vault is locked on this machine.",
       fix: "Run 'ouro vault unlock --agent test-agent' if you have the saved vault unlock secret.",
@@ -323,7 +327,7 @@ describe("ouro up: interactive repair wiring", () => {
   })
 
   it("starts a stopped daemon before reporting provider damage with --no-repair", async () => {
-    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+    mocks.checkAgentConfig.mockReturnValueOnce({
       ok: false,
       error: "outward provider anthropic model claude-opus-4-6 cannot read provider credentials because test-agent's credential vault is locked on this machine.",
       fix: "Run 'ouro vault unlock --agent test-agent' if you have the saved vault unlock secret.",
@@ -360,7 +364,7 @@ describe("ouro up: interactive repair wiring", () => {
   })
 
   it("keeps post-start --no-repair output tidy without a fix", async () => {
-    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+    mocks.checkAgentConfig.mockReturnValueOnce({
       ok: false,
       error: "provider failed without a repair hint",
     })
@@ -388,13 +392,13 @@ describe("ouro up: interactive repair wiring", () => {
   })
 
   it("checks selected providers after starting a stopped daemon and continues into the next runnable repair", async () => {
+    mocks.checkAgentConfig.mockReturnValueOnce({
+      ok: false,
+      error: "outward provider anthropic model claude-opus-4-6 cannot read provider credentials because test-agent's credential vault is locked on this machine.",
+      fix: "Run 'ouro vault unlock --agent test-agent' if you have the saved vault unlock secret.",
+      issue: vaultLockedIssue("test-agent"),
+    })
     mocks.checkAgentConfigWithProviderHealth
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "outward provider anthropic model claude-opus-4-6 cannot read provider credentials because test-agent's credential vault is locked on this machine.",
-        fix: "Run 'ouro vault unlock --agent test-agent' if you have the saved vault unlock secret.",
-        issue: vaultLockedIssue("test-agent"),
-      })
       .mockResolvedValueOnce({
         ok: false,
         error: "outward provider anthropic model claude-opus-4-6 still cannot read provider credentials.",
@@ -465,13 +469,13 @@ describe("ouro up: interactive repair wiring", () => {
   })
 
   it("renders generic post-start readiness guidance with and without fix hints", async () => {
-    mocks.checkAgentConfigWithProviderHealth
-      .mockResolvedValueOnce({
+    mocks.checkAgentConfig
+      .mockReturnValueOnce({
         ok: false,
         error: "provider failed with a manual fix",
         fix: "run manual repair",
       })
-      .mockResolvedValueOnce({
+      .mockReturnValueOnce({
         ok: false,
         error: "provider failed without a repair hint",
       })
@@ -514,14 +518,13 @@ describe("ouro up: interactive repair wiring", () => {
         actor: "human-choice",
       }],
     }
-    mocks.checkAgentConfigWithProviderHealth
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "provider failed",
-        fix: "choose another provider",
-        issue: manualIssue,
-      })
-      .mockResolvedValueOnce({ ok: true })
+    mocks.checkAgentConfig.mockReturnValueOnce({
+      ok: false,
+      error: "provider failed",
+      fix: "choose another provider",
+      issue: manualIssue,
+    })
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: true })
     mocks.runInteractiveRepair.mockClear()
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["test-agent"], degraded: [] })
 
@@ -545,19 +548,19 @@ describe("ouro up: interactive repair wiring", () => {
   })
 
   it("stops after an attempted preflight repair when the remaining issue is unchanged", async () => {
+    mocks.checkAgentConfig.mockReturnValueOnce({
+      ok: false,
+      error: "outward provider anthropic model claude-opus-4-6 has no credentials in test-agent's vault.",
+      fix: "Run 'ouro auth --agent test-agent --provider anthropic' to authenticate this machine.",
+      issue: providerCredentialMissingIssue({
+        agentName: "test-agent",
+        lane: "outward",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        credentialPath: "vault:test-agent:providers/*",
+      }),
+    })
     mocks.checkAgentConfigWithProviderHealth
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "outward provider anthropic model claude-opus-4-6 has no credentials in test-agent's vault.",
-        fix: "Run 'ouro auth --agent test-agent --provider anthropic' to authenticate this machine.",
-        issue: providerCredentialMissingIssue({
-          agentName: "test-agent",
-          lane: "outward",
-          provider: "anthropic",
-          model: "claude-opus-4-6",
-          credentialPath: "vault:test-agent:providers/*",
-        }),
-      })
       .mockResolvedValueOnce({
         ok: false,
         error: "outward provider anthropic model claude-opus-4-6 has no credentials in test-agent's vault.",
@@ -612,8 +615,8 @@ describe("ouro up: interactive repair wiring", () => {
   })
 
   it("keeps untouched degraded agents in the blocked summary after repairing another agent", async () => {
-    mocks.checkAgentConfigWithProviderHealth
-      .mockResolvedValueOnce({
+    mocks.checkAgentConfig
+      .mockReturnValueOnce({
         ok: false,
         error: "outward provider anthropic model claude-opus-4-6 has no credentials in test-agent's vault.",
         fix: "Run 'ouro auth --agent test-agent --provider anthropic' to authenticate this machine.",
@@ -625,7 +628,7 @@ describe("ouro up: interactive repair wiring", () => {
           credentialPath: "vault:test-agent:providers/*",
         }),
       })
-      .mockResolvedValueOnce({
+      .mockReturnValueOnce({
         ok: false,
         error: "outward provider openai-codex model gpt-5.5 has no credentials in other-agent's vault.",
         fix: "Run 'ouro auth --agent other-agent --provider openai-codex' to authenticate this machine.",
@@ -637,6 +640,7 @@ describe("ouro up: interactive repair wiring", () => {
           credentialPath: "vault:other-agent:providers/*",
         }),
       })
+    mocks.checkAgentConfigWithProviderHealth
       .mockResolvedValueOnce({ ok: true })
     providerCredentialMocks.refreshProviderCredentialPool.mockResolvedValue({
       ok: true,
@@ -902,9 +906,9 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
   })
 
-  it("checks selected providers even when ouro up finds the daemon already running", async () => {
+  it("checks offline agent config when ouro up finds the daemon already running", async () => {
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["test-agent", "healthy-agent"], degraded: [] })
-    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+    mocks.checkAgentConfig.mockReturnValueOnce({
       ok: false,
       error: "selected provider github-copilot for agentFacing failed health check: token expired",
       fix: "Run 'ouro auth --agent test-agent --provider github-copilot' to refresh credentials.",
@@ -926,11 +930,11 @@ describe("ouro up: interactive repair wiring", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith(
+    expect(mocks.checkAgentConfig).toHaveBeenCalledWith(
       "test-agent",
       "/tmp/bundles",
-      expect.objectContaining({ onProgress: expect.any(Function) }),
     )
+    expect(mocks.checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).toHaveBeenCalledWith(
       [{
         agent: "test-agent",
@@ -1033,9 +1037,9 @@ describe("ouro up: interactive repair wiring", () => {
     expect(output).not.toContain("    next:")
   })
 
-  it("keeps already-running daemons healthy when selected provider checks pass", async () => {
+  it("keeps already-running daemons healthy when offline agent config checks pass", async () => {
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["healthy-agent"], degraded: [] })
-    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: true })
+    mocks.checkAgentConfig.mockReturnValueOnce({ ok: true })
     mocks.runInteractiveRepair.mockClear()
 
     const deps = makeDeps({
@@ -1053,17 +1057,19 @@ describe("ouro up: interactive repair wiring", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith(
+    expect(mocks.checkAgentConfig).toHaveBeenCalledWith(
       "healthy-agent",
       "/tmp/bundles",
-      expect.objectContaining({ onProgress: expect.any(Function) }),
     )
+    expect(mocks.checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
   })
 
-  it("reports provider-check exceptions for already-running daemons", async () => {
+  it("reports offline config-check exceptions for already-running daemons", async () => {
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["test-agent"], degraded: [] })
-    mocks.checkAgentConfigWithProviderHealth.mockRejectedValueOnce(new Error("config check exploded"))
+    mocks.checkAgentConfig.mockImplementationOnce(() => {
+      throw new Error("config check exploded")
+    })
     mocks.runInteractiveRepair.mockClear()
 
     const writeStdout = vi.fn()
@@ -1088,9 +1094,9 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
   })
 
-  it("uses generic degraded details when provider checks fail without an error or fix", async () => {
+  it("uses generic degraded details when offline config checks fail without an error or fix", async () => {
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["test-agent"], degraded: [] })
-    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: false })
+    mocks.checkAgentConfig.mockReturnValueOnce({ ok: false })
     mocks.runInteractiveRepair.mockClear()
 
     const writeStdout = vi.fn()
@@ -1110,13 +1116,15 @@ describe("ouro up: interactive repair wiring", () => {
     await runOuroCli(["up", "--no-repair"], deps)
 
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("test-agent: agent provider health check failed")
+    expect(output).toContain("test-agent: agent config validation failed")
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
   })
 
-  it("stringifies non-Error provider-check exceptions for already-running daemons", async () => {
+  it("stringifies non-Error offline config-check exceptions for already-running daemons", async () => {
     mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["test-agent"], degraded: [] })
-    mocks.checkAgentConfigWithProviderHealth.mockRejectedValueOnce("string failure")
+    mocks.checkAgentConfig.mockImplementationOnce(() => {
+      throw "string failure" // eslint-disable-line no-throw-literal
+    })
     mocks.runInteractiveRepair.mockClear()
 
     const writeStdout = vi.fn()

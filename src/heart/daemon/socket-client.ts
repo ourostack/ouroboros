@@ -303,7 +303,7 @@ export async function requestInnerWake(
       level: "warn",
       component: "daemon",
       event: "daemon.inner_wake_test_blocked",
-      message: "blocked inner wake from leaking into real daemon under vitest",
+      message: "blocked legacy private-runtime wake alias from leaking into real daemon under vitest",
       meta: { agent, socketPath, isProductionSocket: isProductionDaemonSocket(socketPath) },
     })
     return null
@@ -314,7 +314,7 @@ export async function requestInnerWake(
   emitNervesEvent({
     component: "daemon",
     event: "daemon.inner_wake_request",
-    message: "requesting daemon-managed inner wake",
+    message: "requesting daemon-managed legacy private-runtime wake alias",
     meta: {
       agent,
       socketPath,
@@ -327,4 +327,20 @@ export async function requestInnerWake(
   }
 
   return sendDaemonCommand(socketPath, { kind: "inner.wake", agent })
+}
+
+export async function requestPrivateWake(
+  agent: string,
+  socketPath = DEFAULT_DAEMON_SOCKET_PATH,
+  options: Omit<Extract<DaemonCommand, { kind: "private.wake" }>, "kind" | "agent"> = {},
+): Promise<DaemonResponse | null> {
+  if (shouldSuppressSocketCall(socketPath)) return null
+
+  if (!fs.existsSync(socketPath)) return null
+
+  return sendDaemonCommand(socketPath, {
+    kind: "private.wake",
+    agent,
+    ...options,
+  })
 }

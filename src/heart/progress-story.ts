@@ -18,7 +18,7 @@ export interface ProgressStory {
 }
 
 function labelForScope(scope: ProgressScope): string {
-  return scope === "inner-delegation" ? "inner work" : "shared work"
+  return scope === "inner-delegation" ? "private-runtime work" : "shared work"
 }
 
 function compactDetail(text: string | null | undefined): string | null {

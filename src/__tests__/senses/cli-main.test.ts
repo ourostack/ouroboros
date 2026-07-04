@@ -1641,12 +1641,12 @@ describe("agent.ts main() - pipeline integration", () => {
 import { formatPendingPrefix } from "../../senses/cli"
 
 describe("formatPendingPrefix", () => {
-  it("formats self-messages as [inner thought: {content}]", () => {
+  it("formats self-messages as [private-runtime note: {content}]", () => {
     const result = formatPendingPrefix(
       [{ from: "testagent", content: "i should check on that task", timestamp: Date.now() }],
       "testagent",
     )
-    expect(result).toBe("[inner thought: i should check on that task]")
+    expect(result).toBe("[private-runtime note: i should check on that task]")
   })
 
   it("formats inter-agent messages as [message from {name}: {content}]", () => {
@@ -1667,7 +1667,7 @@ describe("formatPendingPrefix", () => {
       "testagent",
     )
     expect(result).toBe(
-      "[inner thought: noted something]\n[message from friend-agent: build done]\n[inner thought: another thought]",
+      "[private-runtime note: noted something]\n[message from friend-agent: build done]\n[private-runtime note: another thought]",
     )
   })
 

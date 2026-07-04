@@ -49,6 +49,7 @@ vi.mock("../../../heart/daemon/startup-tui", () => ({
 
 // Mock agent-config-check so chat health checks don't hit real filesystem
 vi.mock("../../../heart/daemon/agent-config-check", () => ({
+  checkAgentConfig: vi.fn().mockReturnValue({ ok: true }),
   checkAgentConfigWithProviderHealth: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
@@ -84,7 +85,7 @@ import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
 import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
-import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
+import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 import {
   writeHabitRunReceipt,
   type HabitRunReceipt,
@@ -496,6 +497,29 @@ describe("ouro CLI parsing", () => {
     })
   })
 
+  it("parses canonical private status and legacy inner status as an alias", () => {
+    expect(parseOuroCommand(["private", "status", "--agent", "slugger"])).toEqual({
+      kind: "private.status",
+      agent: "slugger",
+    })
+    expect(parseOuroCommand(["inner", "--agent", "slugger"])).toEqual({
+      kind: "private.status",
+      agent: "slugger",
+      legacyAlias: "inner",
+    })
+  })
+
+  it("keeps the legacy inner alias out of generic usage", () => {
+    let error: Error | null = null
+    try {
+      parseOuroCommand(["definitely-not-a-command"])
+    } catch (caught) {
+      error = caught as Error
+    }
+    expect(error?.message).toContain("ouro private status [--agent <name>]")
+    expect(error?.message).not.toContain("ouro inner")
+  })
+
   it("parses attention command (list)", () => {
     expect(parseOuroCommand(["attention"])).toEqual({ kind: "attention.list" })
   })
@@ -834,7 +858,7 @@ describe("ouro CLI execution", () => {
               senses: [],
               workers: [{
                 agent: "slugger",
-                worker: "inner-dialog",
+                worker: "private-runtime",
                 status: "running",
                 pid: 7777,
                 restartCount: 0,
@@ -893,7 +917,7 @@ describe("ouro CLI execution", () => {
               workers: [
                 {
                   agent: "slugger",
-                  worker: "inner-dialog",
+                  worker: "private-runtime",
                   status: "running",
                   pid: 7777,
                   restartCount: 0,
@@ -905,7 +929,7 @@ describe("ouro CLI execution", () => {
                 },
                 {
                   agent: "ouroboros",
-                  worker: "inner-dialog",
+                  worker: "private-runtime",
                   status: "running",
                   pid: 8888,
                   restartCount: 0,
@@ -1767,7 +1791,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               pid: null,
               restartCount: 0,
@@ -1789,7 +1813,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("ouroboros daemon")
     expect(result).toContain("Socket")
     expect(result).toContain("Workers")
-    expect(result).toContain("inner-dialog")
+    expect(result).toContain("private-runtime")
     expect(result).not.toContain("Ouro status")
     expect(result).not.toContain("What is running, what is stopped, and what needs attention.")
     expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("ouroboros daemon"))
@@ -1898,7 +1922,7 @@ describe("ouro CLI execution", () => {
       workers: [
         {
           agent: "slugger",
-          worker: "inner-dialog",
+          worker: "private-runtime",
           status: "running",
           pid: 1234,
           restarts: 0,
@@ -2185,7 +2209,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               pid: null,
               restartCount: 0,
@@ -2227,7 +2251,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("failureLayer=recovery_quarantine")
     expect(result).toContain("lastFailure=previous recovery timeout")
     expect(result).toContain("recovery=inspect quarantined recovery logs")
-    expect(result).toContain("inner-dialog")
+    expect(result).toContain("private-runtime")
     expect(result).toContain("restarts: 0")
     expect(result).toContain("sense-probe:mcp-canary:slugger")
     expect(result).toContain("mcp canary failed: transport closed")
@@ -2383,7 +2407,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               pid: 12345,
               restartCount: 2,
@@ -2581,7 +2605,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               restartCount: 0,
             },
@@ -2771,7 +2795,16 @@ describe("ouro CLI execution", () => {
   it("routes msg command through daemon socket", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(async () => ({ ok: true, message: "queued" })),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return {
+            ok: true,
+            message: "queued",
+            data: { id: "msg-cli-123", queuedAt: "2026-04-10T05:02:36.000Z" },
+          }
+        }
+        return { ok: true, message: "awake" }
+      }),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
       checkSocketAlive: vi.fn(async () => true),
@@ -2791,6 +2824,135 @@ describe("ouro CLI execution", () => {
         content: "hi",
       }),
     )
+    const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
+    expect(sentCommands).toContainEqual(expect.objectContaining({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "operator CLI message",
+      triggerSource: "operator-cli",
+      budgetClass: "interactive",
+      idempotencyKey: "cli:message:slugger:msg-cli-123",
+      originRefs: expect.arrayContaining([
+        expect.objectContaining({ kind: "cli-command", id: "ouro msg" }),
+        expect.objectContaining({ kind: "daemon-receipt", id: "msg-cli-123" }),
+      ]),
+    }))
+    expect(sentCommands).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
+  })
+
+  it("does not retry legacy wake when an operator CLI message is default-denied by private policy", async () => {
+    let privateWakeResponses = 0
+    let legacyWakeAttempts = 0
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return {
+            ok: true,
+            message: "queued",
+            data: { id: "msg-denied-456", queuedAt: "2026-04-10T05:02:36.000Z" },
+          }
+        }
+        if (command.kind === "private.wake") {
+          privateWakeResponses += 1
+          return {
+            ok: true,
+            message: "private-runtime wake denied by policy",
+            data: { decision: { result: "deny", executable: false } },
+          }
+        }
+        if (command.kind === "inner.wake") {
+          legacyWakeAttempts += 1
+          throw new Error("legacy wake would bypass canonical default-deny accounting")
+        }
+        return { ok: true, message: "unexpected command" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+
+    }
+
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
+
+    const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
+    expect(sentCommands).toEqual([
+      expect.objectContaining({
+        kind: "message.send",
+        from: "ouro-cli",
+        to: "slugger",
+        content: "hi",
+      }),
+      expect.objectContaining({
+        kind: "private.wake",
+        agent: "slugger",
+        idempotencyKey: "cli:message:slugger:msg-denied-456",
+      }),
+    ])
+    expect(privateWakeResponses).toBe(1)
+    expect(legacyWakeAttempts).toBe(0)
+  })
+
+  it("uses an unreceipted CLI private wake idempotency key when daemon message data has no id", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return { ok: true, message: "queued", data: { queuedAt: "2026-04-10T05:02:36.000Z" } }
+        }
+        return { ok: true, message: "awake" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
+
+    const privateWake = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, payload]) => payload)
+      .find((payload) => payload.kind === "private.wake")
+
+    expect(privateWake).toEqual(expect.objectContaining({
+      kind: "private.wake",
+      agent: "slugger",
+      idempotencyKey: "cli:message:slugger:unreceipted",
+      originRefs: [expect.objectContaining({ kind: "cli-command", id: "ouro msg" })],
+    }))
+  })
+
+  it("uses an unreceipted CLI private wake idempotency key when daemon message data is absent", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return { ok: true, message: "queued" }
+        }
+        return { ok: true, message: "awake" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
+
+    const privateWake = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, payload]) => payload)
+      .find((payload) => payload.kind === "private.wake")
+
+    expect(privateWake).toEqual(expect.objectContaining({
+      kind: "private.wake",
+      agent: "slugger",
+      idempotencyKey: "cli:message:slugger:unreceipted",
+      originRefs: [expect.objectContaining({ kind: "cli-command", id: "ouro msg" })],
+    }))
   })
 
   it("routes link command through friend store instead of daemon socket", async () => {
@@ -4464,6 +4626,52 @@ describe("ensureDaemonRunning", () => {
     expect(deps.cleanupStaleSocket).not.toHaveBeenCalled()
   })
 
+  it("honors an explicit initialAlive false result when starting a fresh daemon", async () => {
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      now: vi.fn(() => Date.now()),
+      sleep: vi.fn(async () => {}),
+    }
+
+    const result = await ensureDaemonRunning(deps, { initialAlive: false })
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(result.message).toContain("daemon started")
+    expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.checkSocketAlive).toHaveBeenCalledTimes(1)
+  })
+
+  it("honors an explicit initialAlive true result without probing the socket first", async () => {
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await ensureDaemonRunning(deps, { initialAlive: true })
+
+    expect(result.alreadyRunning).toBe(true)
+    expect(result.message).toContain("already running")
+    expect(deps.checkSocketAlive).not.toHaveBeenCalled()
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+    expect(deps.cleanupStaleSocket).not.toHaveBeenCalled()
+  })
+
   it("replaces a running daemon when its version is older than the local runtime", async () => {
     vi.resetModules()
     vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
@@ -4572,7 +4780,7 @@ describe("ensureDaemonRunning", () => {
               senseCount: 0,
             },
             senses: [],
-            workers: [{ agent: "slugger", worker: "inner-dialog", status: "running", pid: 123, restartCount: 0, lastExitCode: null, lastSignal: null, startedAt: null, errorReason: null, fixHint: null }],
+            workers: [{ agent: "slugger", worker: "private-runtime", status: "running", pid: 123, restartCount: 0, lastExitCode: null, lastSignal: null, startedAt: null, errorReason: null, fixHint: null }],
           },
         })),
         startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
@@ -7111,13 +7319,13 @@ describe("ouro thoughts CLI execution", () => {
     writeSessionFile([
       { role: "system", content: "system prompt" },
       { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-      { role: "assistant", content: "hello from inner dialog." },
+      { role: "assistant", content: "hello from private runtime." },
     ])
     const deps = makeDeps()
     const result = await runOuroCli(["thoughts", "--agent", testAgentName, "--json"], deps)
 
     expect(result).toContain("\"version\":1")
-    expect(result).toContain("hello from inner dialog.")
+    expect(result).toContain("hello from private runtime.")
   })
 
   it("limits turns with --last flag", async () => {
@@ -7142,14 +7350,14 @@ describe("ouro thoughts CLI execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["thoughts", "--agent", "nonexistent-agent-xyzzy"], deps)
 
-    expect(result).toContain("no inner dialog activity")
+    expect(result).toContain("no private-runtime activity")
   })
 
   it("returns no-session message for --json with nonexistent agent", async () => {
     const deps = makeDeps()
     const result = await runOuroCli(["thoughts", "--agent", "nonexistent-agent-xyzzy", "--json"], deps)
 
-    expect(result).toContain("no inner dialog session found")
+    expect(result).toContain("no private-runtime session found")
   })
 
   it("returns a clear no-agents message when thoughts has no target to use", async () => {
@@ -7214,7 +7422,7 @@ describe("ouro thoughts CLI execution", () => {
   })
 
   it("returns the defensive no-agent-context message when thought parsing throws unexpectedly", async () => {
-    const parseSpy = vi.spyOn(daemonThoughts, "parseInnerDialogSession").mockImplementation(() => {
+    const parseSpy = vi.spyOn(daemonThoughts, "parsePrivateRuntimeSession").mockImplementation(() => {
       throw new Error("unexpected parse failure")
     })
     try {
@@ -7248,7 +7456,7 @@ describe("ouro thoughts CLI execution", () => {
   })
 })
 
-describe("ouro inner CLI execution", () => {
+describe("ouro private status CLI execution", () => {
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     return {
       socketPath: "/tmp/ouro-test.sock",
@@ -7272,7 +7480,7 @@ describe("ouro inner CLI execution", () => {
     }
   })
 
-  it("reads runtime state from the canonical self/inner/dialog session path", async () => {
+  it("reads runtime state from the canonical private status command", async () => {
     const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "inner-status-bundle-"))
     cleanup.push(tempBundle)
 
@@ -7295,11 +7503,34 @@ describe("ouro inner CLI execution", () => {
     )
 
     const deps = makeDeps({ agentBundleRoot: tempBundle })
-    const result = await runOuroCli(["inner", "--agent", "test"], deps)
+    const result = await runOuroCli(["private", "status", "--agent", "test"], deps)
 
+    expect(result).toContain("private runtime status: test")
     expect(result).toContain("status: idle")
     expect(result).toContain("last turn:")
     expect(result).not.toContain("status: unknown")
+    expect(result).not.toContain(["inner", "dialog"].join(" "))
+  })
+
+  it("keeps the compatibility alias pointing to private status", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "inner-status-bundle-"))
+    cleanup.push(tempBundle)
+
+    fs.mkdirSync(path.join(tempBundle, "state", "sessions", "self", "inner"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "habits"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "desk", "_record", "notes"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tempBundle, "state", "sessions", "self", "inner", "runtime.json"),
+      JSON.stringify({ status: "idle" }, null, 2),
+      "utf-8",
+    )
+
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+    const result = await runOuroCli(["inner", "--agent", "test"], deps)
+
+    expect(result).toContain("legacy alias: use `ouro private status --agent test`")
+    expect(result).toContain("private runtime status: test")
+    expect(result).not.toContain(["inner", "dialog"].join(" "))
   })
 })
 
@@ -8643,6 +8874,7 @@ describe("ouro up per-agent progress threading", () => {
   it("uses daemon provider readiness during ouro up provider checks without rereading the vault", async () => {
     mockHealthCheck.mockClear()
     let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
@@ -8666,7 +8898,7 @@ describe("ouro up per-agent progress threading", () => {
         },
       ])),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
-      writeStdout: vi.fn(),
+      writeStdout,
       checkSocketAlive: vi.fn().mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
@@ -8692,6 +8924,203 @@ describe("ouro up per-agent progress threading", () => {
     await runOuroCli(["up"], deps)
 
     expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("provider readiness confirmed by daemon status")
+    expect(output).not.toContain("agent config validated offline")
+  })
+
+  it("runs a bounded live provider check when daemon status has configured providers with unknown readiness", async () => {
+    mockHealthCheck.mockClear()
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "unknown",
+          credential: "auth-flow",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "unknown",
+          credential: "auth-flow",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    expect(mockHealthCheck).toHaveBeenCalledWith("slugger", expect.any(String), expect.objectContaining({
+      onProgress: expect.any(Function),
+    }))
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("selected providers answered live checks")
+  })
+
+  it("still validates privateRuntime config when daemon provider readiness rows are available", async () => {
+    mockHealthCheck.mockClear()
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValueOnce({
+      ok: false,
+      error: "agent.json for 'slugger' cannot set privateRuntime.provider; privateRuntime cannot select providers or models.",
+      fix: "Remove privateRuntime.provider from /bundles/slugger.ouro/agent.json. Provider/model selection belongs to the inner lane: ouro use --agent slugger --lane inner --provider <provider> --model <model>.",
+    })
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("privateRuntime.provider")
+    expect(output).toContain("ouro use --agent slugger --lane inner")
+  })
+
+  it("preserves privateRuntime config guidance over degraded daemon provider rows for the same agent", async () => {
+    mockHealthCheck.mockClear()
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValueOnce({
+      ok: false,
+      error: "agent.json for 'slugger' cannot set privateRuntime.provider; privateRuntime cannot select providers or models.",
+      fix: "Remove privateRuntime.provider from /bundles/slugger.ouro/agent.json. Provider/model selection belongs to the inner lane: ouro use --agent slugger --lane inner --provider <provider> --model <model>.",
+    })
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("privateRuntime.provider")
+    expect(output).toContain("ouro use --agent slugger --lane inner")
+    expect(output).not.toContain("bad token")
   })
 
   it("uses daemon provider readiness to report degraded providers without starting a foreground vault read", async () => {
@@ -8749,6 +9178,83 @@ describe("ouro up per-agent progress threading", () => {
 
     expect(mockHealthCheck).not.toHaveBeenCalled()
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("outward provider openai-codex / gpt-5.5 readiness is failed: bad token"))
+  })
+
+  it("uses plural progress summary when daemon status reports multiple degraded agents", async () => {
+    mockHealthCheck.mockClear()
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+        {
+          agent: "ouroboros",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "bad token",
+        },
+        {
+          agent: "ouroboros",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger", "ouroboros"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    expect(mockHealthCheck).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("2 need attention")
   })
 
   it("renders daemon status provider failures that do not include details", async () => {
@@ -8865,9 +9371,11 @@ describe("ouro up per-agent progress threading", () => {
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("Run `ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.5`."))
   }, 10_000)
 
-  it("falls back to foreground provider checks when daemon status cannot be read", async () => {
+  it("falls back to offline agent config checks when daemon status cannot be read", async () => {
     mockHealthCheck.mockClear()
-    mockHealthCheck.mockResolvedValueOnce({ ok: true })
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValueOnce({ ok: true })
     let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     let statusCalls = 0
     const sendCommand = vi.fn(async (_socketPath, command) => {
@@ -8909,11 +9417,15 @@ describe("ouro up per-agent progress threading", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mockHealthCheck).toHaveBeenCalled()
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
   }, 10_000)
 
-  it("passes onProgress callback to checkAgentConfigWithProviderHealth during ouro up provider checks", async () => {
-    mockHealthCheck.mockResolvedValue({ ok: true })
+  it("does not run live provider health checks during ouro up provider checks when daemon status is unavailable", async () => {
+    mockHealthCheck.mockClear()
+    const mockConfigCheck = checkAgentConfig as ReturnType<typeof vi.fn>
+    mockConfigCheck.mockClear()
+    mockConfigCheck.mockReturnValue({ ok: true })
     let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -8947,31 +9459,69 @@ describe("ouro up per-agent progress threading", () => {
 
     await runOuroCli(["up"], deps)
 
-    // checkAgentConfigWithProviderHealth should have been called for slugger
-    // with deps that include onProgress callback
-    expect(mockHealthCheck).toHaveBeenCalled()
-    const healthCheckCalls = mockHealthCheck.mock.calls
-    const callWithOnProgress = healthCheckCalls.find(
-      (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
-    )
-    expect(callWithOnProgress).toBeDefined()
+    expect(mockConfigCheck).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(mockHealthCheck).not.toHaveBeenCalled()
   })
 })
 
 describe("ouro up post-repair progress phase", () => {
   const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
 
+  function postRepairDeps(writeStdout = vi.fn()): OuroCliDeps {
+    const nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "ouro auth --agent slugger --provider openai-codex",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async () => {}),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+  }
+
   it("threads onProgress to checkAgentProviders during post-repair re-check", async () => {
-    // First call (post-daemon provider checks): return degraded with vault-locked
-    // error so interactive repair is triggered. Second call (post-repair re-check):
-    // return ok.
-    mockHealthCheck
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "credential vault is locked",
-        fix: "Run 'ouro vault unlock --agent slugger'",
-      })
-      .mockResolvedValue({ ok: true })
+    // The daemon status rows provide the initial provider degradation without
+    // a foreground live check. The only live check in this flow is the
+    // post-repair re-check, which returns ok.
+    mockHealthCheck.mockResolvedValue({ ok: true })
 
     // Mock agentic repair to simulate successful repair
     mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
@@ -8982,7 +9532,27 @@ describe("ouro up post-repair progress phase", () => {
     const nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "ouro auth --agent slugger --provider openai-codex",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
       writeStdout: vi.fn(),
       // Daemon already alive: skip preflight, go straight to post-daemon checks
@@ -9010,27 +9580,17 @@ describe("ouro up post-repair progress phase", () => {
 
     await runOuroCli(["up"], deps)
 
-    // checkAgentConfigWithProviderHealth should be called at least twice:
-    // once during post-daemon provider checks, once during post-repair re-check
-    expect(mockHealthCheck.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(mockHealthCheck).toHaveBeenCalledTimes(1)
 
     // The post-repair re-check call should have onProgress in deps
-    const postRepairCalls = mockHealthCheck.mock.calls.slice(1)
-    const postRepairCallWithOnProgress = postRepairCalls.find(
+    const postRepairCallWithOnProgress = mockHealthCheck.mock.calls.find(
       (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
     )
     expect(postRepairCallWithOnProgress).toBeDefined()
   }, 10_000)
 
   it("wraps post-repair re-check in a progress phase (non-TTY output)", async () => {
-    // First call: return degraded. Post-repair: return ok.
-    mockHealthCheck
-      .mockResolvedValueOnce({
-        ok: false,
-        error: "credential vault is locked",
-        fix: "Run 'ouro vault unlock --agent slugger'",
-      })
-      .mockResolvedValue({ ok: true })
+    mockHealthCheck.mockResolvedValue({ ok: true })
 
     mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
       repairsAttempted: true,
@@ -9041,7 +9601,27 @@ describe("ouro up post-repair progress phase", () => {
     const writeStdout = vi.fn()
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: sendCommandWithRunningStatus(),
+      sendCommand: sendCommandWithRunningStatus(runningDaemonStatusWithProviders([
+        {
+          agent: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "failed",
+          credential: "checked previously",
+          detail: "ouro auth --agent slugger --provider openai-codex",
+        },
+        {
+          agent: "slugger",
+          lane: "inner",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          readiness: "ready",
+          credential: "checked previously",
+        },
+      ])),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
       writeStdout,
       checkSocketAlive: vi.fn().mockResolvedValue(true),
@@ -9073,5 +9653,42 @@ describe("ouro up post-repair progress phase", () => {
     const lines = writeStdout.mock.calls.map((call: unknown[]) => String(call[0]))
     const postRepairPhaseLine = lines.find((line) => line.includes("post-repair check"))
     expect(postRepairPhaseLine).toBeDefined()
+  })
+
+  it("reports post-repair live check failures without explicit error text", async () => {
+    mockHealthCheck.mockReset()
+    mockHealthCheck.mockResolvedValueOnce({ ok: false })
+    mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
+      repairsAttempted: true,
+      usedAgentic: false,
+    })
+    const writeStdout = vi.fn()
+
+    await runOuroCli(["up"], postRepairDeps(writeStdout))
+
+    const output = writeStdout.mock.calls.map((call: unknown[]) => String(call[0])).join("\n")
+    expect(output).toContain("Still needs attention")
+    expect(output).toContain("agent provider health check failed")
+    expect(output).toContain("Run `ouro up` again after these are fixed.")
+  })
+
+  it.each([
+    ["Error", new Error("vault exploded"), "vault exploded"],
+    ["string", "vault exploded", "vault exploded"],
+  ])("reports post-repair live check exceptions from %s rejections", async (_label, rejection, expectedReason) => {
+    mockHealthCheck.mockReset()
+    mockHealthCheck.mockRejectedValueOnce(rejection)
+    mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
+      repairsAttempted: true,
+      usedAgentic: false,
+    })
+    const writeStdout = vi.fn()
+
+    await runOuroCli(["up"], postRepairDeps(writeStdout))
+
+    const output = writeStdout.mock.calls.map((call: unknown[]) => String(call[0])).join("\n")
+    expect(output).toContain("Still needs attention")
+    expect(output).toContain(expectedReason)
+    expect(output).toContain("Run 'ouro doctor' for diagnostics, then retry 'ouro up'.")
   })
 })

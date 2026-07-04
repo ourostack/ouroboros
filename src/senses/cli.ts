@@ -36,14 +36,14 @@ export { formatEchoedInputSummary, wrapCliText, StreamingWordWrapper } from "./c
 /**
  * Format pending messages as content-prefix strings for injection into
  * the next user message. Self-messages (from === agentName) become
- * `[inner thought: {content}]`, inter-agent messages become
+ * `[private-runtime note: {content}]`, inter-agent messages become
  * `[message from {name}: {content}]`.
  */
 export function formatPendingPrefix(messages: PendingMessage[], agentName: string): string {
   return messages
     .map((msg) =>
       msg.from === agentName
-        ? `[inner thought: ${msg.content}]`
+        ? `[private-runtime note: ${msg.content}]`
         : `[message from ${msg.from}: ${msg.content}]`,
     )
     .join("\n")

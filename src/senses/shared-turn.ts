@@ -142,7 +142,7 @@ function outwardDeliveryTextFromAssistantTools(
  * - `(delivered)` for `settle.answer`
  * - `(spoken)` for `speak.message`
  *
- * Inner-dialog `(settled)`, malformed tool arguments, rejected tools, and
+ * Private-runtime `(settled)`, malformed tool arguments, rejected tools, and
  * interrupted tool-call sequences are not outward speech. Sense transports
  * that need to replay the turn later (Voice/Twilio TTS, future meeting audio)
  * should use this helper instead of reading `assistant.content` directly.

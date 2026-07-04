@@ -84,7 +84,7 @@ vi.mock("../../mind/pending", async () => {
   return {
     ...actual,
     queuePendingMessage: (...args: any[]) => mockQueuePendingMessage(...args),
-    getInnerDialogPendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
+    getPrivateRuntimePendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
   }
 })
 
@@ -192,9 +192,9 @@ describe("rest tool in runAgent", () => {
     runAgent = core.runAgent
   })
 
-  // ── Basic rest behavior (inner dialog) ──────────────────────
+  // ── Basic rest behavior (private runtime) ──────────────────────
 
-  it("rest from inner dialog with empty attention queue succeeds", async () => {
+  it("rest from private runtime with empty attention queue succeeds", async () => {
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
 
     const callbacks = makeCallbacks()
@@ -214,7 +214,7 @@ describe("rest tool in runAgent", () => {
     expect(result.outcome).toBe("rested")
   })
 
-  it("rest from inner dialog without delegatedOrigins succeeds", async () => {
+  it("rest from private runtime without delegatedOrigins succeeds", async () => {
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
 
     const callbacks = makeCallbacks()
@@ -413,7 +413,7 @@ describe("rest tool in runAgent", () => {
 
   // ── Tool filtering ──────────────────────────────────
 
-  it("rest is available in inner dialog tool set", async () => {
+  it("rest is available in private runtime tool set", async () => {
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
 
     const callbacks = makeCallbacks()
@@ -433,8 +433,8 @@ describe("rest tool in runAgent", () => {
     expect(result.outcome).toBe("rested")
   })
 
-  it("settle is NOT available in inner dialog tool set (replaced by rest)", async () => {
-    // Settle in inner dialog should be rejected -- it's not in the tool set
+  it("settle is NOT available in private runtime tool set (replaced by rest)", async () => {
+    // Settle in private runtime should be rejected -- it's not in the tool set
     // The model may still call it but it should not be in activeTools
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
 
@@ -451,7 +451,7 @@ describe("rest tool in runAgent", () => {
       },
     )
 
-    // Check that the tools sent to the model don't include "settle" for inner dialog
+    // Check that the tools sent to the model don't include "settle" for private runtime
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
     expect(toolNames).not.toContain("settle")
@@ -500,7 +500,7 @@ describe("rest tool in runAgent", () => {
     expect(result.outcome).toBe("rested")
   })
 
-  it("rest from inner dialog with no toolContext succeeds (no attention queue)", async () => {
+  it("rest from private runtime with no toolContext succeeds (no attention queue)", async () => {
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
 
     const callbacks = makeCallbacks()
@@ -580,7 +580,7 @@ describe("rest tool in runAgent", () => {
     expect(retryEvents).toHaveLength(0)
   })
 
-  it("retries with the inner-dialog corrective when channel is inner", async () => {
+  it("retries with the private-runtime corrective when channel is inner", async () => {
     mockCreate.mockReturnValueOnce(makeStream([
       makeChunk("<think>thinking, no tool call</think>", undefined),
     ]))
@@ -603,7 +603,7 @@ describe("rest tool in runAgent", () => {
     expect(mockCreate).toHaveBeenCalledTimes(2)
     const retryEvents = vi.mocked(emitNervesEvent).mock.calls.filter(([e]) => (e as any).event === "engine.no_tool_call_retry")
     expect(retryEvents).toHaveLength(1)
-    // The pushed corrective message should reference rest (inner-dialog wording),
+    // The pushed corrective message should reference rest (private-runtime wording),
     // not settle. Inspect the messages array indirectly via the last mockCreate call's params.
     const lastCallParams = mockCreate.mock.calls[1]?.[0] as any
     const userMessages = (lastCallParams.messages as any[]).filter((m) => m.role === "user")

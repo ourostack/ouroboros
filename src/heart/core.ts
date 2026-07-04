@@ -29,7 +29,7 @@ import type { OrientationFrame } from "./orientation-frame";
 import type { DelegationDecision } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
 import { getAgentName, getAgentRoot } from "./identity";
-import { requestInnerWake } from "./daemon/socket-client";
+import { requestPrivateWake } from "./daemon/socket-client";
 import { createObligation, createReturnObligation, generateObligationId, readReturnObligation } from "../arc/obligations";
 import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
 import { advancePonderPacket, createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
@@ -359,7 +359,7 @@ export interface RunAgentOptions {
   /** When true, the observe tool is available in 1:1 chats (normally group-only).
    *  Used for reaction/feedback signals where silence is natural even in DMs. */
   isReactionSignal?: boolean;
-  /** Pending messages from other sessions/inner dialog, rendered in system prompt. */
+  /** Pending messages from other sessions/private runtime, rendered in system prompt. */
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
@@ -508,7 +508,7 @@ export type RunAgentOutcome =
   | "rested";
 
 /** Chat-style channels expose the `speak` tool — outer human-conversation channels
- *  where mid-turn delivery is meaningful. Inner dialog has `ponder`. MCP returns
+ *  where mid-turn delivery is meaningful. The private runtime has `ponder`. MCP returns
  *  synchronously. Mail is batch. Anything else (unknown channel) treats as non-chat. */
 export function isChatStyleChannel(channel: string): boolean {
   return channel === "cli" || channel === "teams" || channel === "bluebubbles" || channel === "voice";
@@ -680,7 +680,7 @@ function privateReturnAckLeakError(answer: string | undefined, heldTokens: Reado
 function claimsPrivateReturnQueued(answer: string | undefined): boolean {
   if (!answer) return false
   const normalized = answer.toLowerCase()
-  return /\b(queued|queue|will return|return when|when .*complete|when .*completes|private pass|inner dialog completes|later)\b/.test(normalized)
+  return /\b(queued|queue|will return|return when|when .*complete|when .*completes|private pass|private runtime completes|inner dialog completes|later)\b/.test(normalized)
     && /\b(private|inner|return|queued|later)\b/.test(normalized)
 }
 
@@ -692,13 +692,39 @@ function privateReturnMissingPonderError(input: {
   if (input.sawPonder) return null
   if (!looksLikePrivateReturnRequest(input.latestUserRequest)) return null
   if (!claimsPrivateReturnQueued(input.answer)) return null
-  return "private-return acknowledgement claimed work was queued, but no ponder packet was created this turn. Call ponder(action=create, ...) first so the return has a packet, return obligation, and inner wake; then settle with only a queued acknowledgement. If you cannot create the packet, ask a blocking clarification without saying it is queued."
+  return "private-return acknowledgement claimed work was queued, but no ponder packet was created this turn. Call ponder(action=create, ...) first so the return has a packet, return obligation, and private-runtime wake; then settle with only a queued acknowledgement. If you cannot create the packet, ask a blocking clarification without saying it is queued."
 }
 
 function activeReturnObligationId(agentName: string, obligationId: string | undefined): string | null {
   if (!obligationId) return null
   const obligation = readReturnObligation(agentName, obligationId)
   return obligation?.status === "queued" || obligation?.status === "running" ? obligationId : null
+}
+
+function ponderReturnSessionId(packet: PonderPacket): string {
+  const origin = packet.origin
+  if (!origin) return "unknown/unknown/unknown"
+  return `${origin.friendId}/${origin.channel}/${origin.key}`
+}
+
+function buildPonderReturnPrivateWakeOptions(input: {
+  agentName: string
+  packet: PonderPacket
+  returnObligationId: string
+}) {
+  const sessionId = ponderReturnSessionId(input.packet)
+  return {
+    reason: "ponder return obligation private attention",
+    triggerSource: "ponder-return-obligation",
+    budgetClass: "interactive",
+    idempotencyKey: `ponder-return:${input.agentName}:${input.returnObligationId}:${input.packet.id}:${sessionId}`,
+    originRefs: [
+      { kind: "tool", id: "ponder" },
+      { kind: "ponder-packet", id: input.packet.id },
+      { kind: "return-obligation", id: input.returnObligationId },
+      { kind: "session", id: sessionId },
+    ],
+  }
 }
 
 export function buildPonderResult(
@@ -713,7 +739,7 @@ export function buildPonderResult(
     status: packet.status,
     return_obligation_id: returnObligationId,
     private_return_contract: returnObligationId
-      ? "queued for inner attention; do not present the requested private answer as complete in this same outward turn. if you answer now, only say the private pass is queued and will return when ready."
+      ? "queued for private-runtime attention; do not present the requested private answer as complete in this same outward turn. if you answer now, only say the private pass is queued and will return when ready."
       : null,
   }, null, 2)
 }
@@ -1144,30 +1170,30 @@ export async function runAgent(
 
   while (!done) {
     // Channel-based tool filtering:
-    // - Inner dialog: exclude send_message (delivery via surface), observe (no one to observe)
+    // - Private runtime: exclude send_message (delivery via surface), observe (no one to observe)
     // - All outward channels (1:1, group, reaction): observe available
     //
     // ponder, settle/rest, surface, and observe are always assembled based on channel context.
     // ponder is available in ALL channels (outer: think privately, inner: keep turning).
-    // Inner dialog gets restTool instead of settleTool (rest = end turn, gated by attention queue).
+    // Private runtime gets restTool instead of settleTool (rest = end turn, gated by attention queue).
     // toolChoiceRequired only controls whether tool_choice: "required" is set in the API call.
-    const isInnerDialog = channel === "inner";
-    const innerHabitCanSendMessage = isInnerDialog
+    const isPrivateRuntimeChannel = channel === "inner";
+    const privateRuntimeHabitCanSendMessage = isPrivateRuntimeChannel
       && habitSession?.toolPolicy.outwardMessagingAllowed === true
       && habitSession.toolPolicy.grantedTools.includes("send_message");
-    const innerHabitCanSurface = isInnerDialog
+    const privateRuntimeHabitCanSurface = isPrivateRuntimeChannel
       && (!habitSession || (habitSession.toolPolicy.outwardMessagingAllowed === true
         && habitSession.toolPolicy.grantedTools.includes("surface")));
-    const filteredBaseTools = isInnerDialog
-      ? baseTools.filter((t) => innerHabitCanSendMessage || t.function.name !== "send_message")
+    const filteredBaseTools = isPrivateRuntimeChannel
+      ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
     const activeTools = [
       ...filteredBaseTools,
       ponderTool,
-      ...(isInnerDialog && innerHabitCanSurface ? [surfaceToolDef] : []),
-      ...(isInnerDialog ? [restTool] : []),
-      ...(!isInnerDialog ? [observeTool] : []),
-      ...(!isInnerDialog ? [settleTool] : []),
+      ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
+      ...(isPrivateRuntimeChannel ? [restTool] : []),
+      ...(!isPrivateRuntimeChannel ? [observeTool] : []),
+      ...(!isPrivateRuntimeChannel ? [settleTool] : []),
       ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
     ];
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
@@ -1442,7 +1468,7 @@ export async function runAgent(
           messages.push(msg);
           messages.push({
             role: "user",
-            content: isInnerDialog
+            content: isPrivateRuntimeChannel
               ? "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
               : "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now.",
           });
@@ -1479,9 +1505,9 @@ export async function runAgent(
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
           const settleArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           callbacks.onToolStart("settle", settleArgs);
-          // Inner dialog attention queue gate: reject settle if items remain
+          // Private-runtime attention queue gate: reject settle if items remain
           const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
-          if (isInnerDialog && attentionQueue && attentionQueue.length > 0) {
+          if (isPrivateRuntimeChannel && attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
@@ -1495,8 +1521,8 @@ export async function runAgent(
           // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
           const { answer, intent } = parseSettlePayload(result.toolCalls[0].arguments);
 
-          // Inner dialog settle: no CompletionMetadata, "(settled)" ack
-          if (isInnerDialog) {
+          // Private-runtime settle: no CompletionMetadata, "(settled)" ack
+          if (isPrivateRuntimeChannel) {
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
             messages.push(msg);
             const settled = "(settled)";
@@ -1671,7 +1697,7 @@ export async function runAgent(
           }
           if (tc.name === "send_message" && args.friendId === "self") {
             const latestUserText = latestUserMessageText(messages)
-            if (!isInnerDialog && looksLikePrivateReturnRequest(latestUserText)) {
+            if (!isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserText)) {
               const argSummary = summarizeArgs(tc.name, args);
               const rejection = "private-return requests must use ponder, not send_message(friendId=self). Create a typed ponder packet with the marker/source request preserved, then only acknowledge that the private pass is queued.";
               callbacks.onToolStart(tc.name, args);
@@ -1761,7 +1787,7 @@ export async function runAgent(
 
               if (action === "create") {
                 if (isInnerChannel && attentionQueue.length > 0) {
-                  throw new Error("inner dialog already has held return work in the attention queue; surface the existing delegationId instead of creating a replacement ponder packet.")
+                  throw new Error("private runtime already has held return work in the attention queue; surface the existing delegationId instead of creating a replacement ponder packet.")
                 }
                 const kind = parsedArgs.kind;
                 const objective = typeof parsedArgs.objective === "string" ? parsedArgs.objective.trim() : "";
@@ -1873,7 +1899,12 @@ export async function runAgent(
                 for (const token of extractPrivateReturnHeldTokens(privateReturnSourceRequest)) {
                   privateReturnHeldTokens.add(token)
                 }
-                await requestInnerWake(getAgentName(), augmentedToolContext?.daemonSocketPath).catch(() => undefined)
+                const agentName = getAgentName()
+                await requestPrivateWake(
+                  agentName,
+                  augmentedToolContext?.daemonSocketPath,
+                  buildPonderReturnPrivateWakeOptions({ agentName, packet, returnObligationId }),
+                ).catch(() => undefined)
               }
               sawPonder = true;
               toolResult = buildPonderResult(packet, resultAction, returnObligationId);

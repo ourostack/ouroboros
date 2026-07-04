@@ -99,6 +99,7 @@ describe("voice audio routing readiness", () => {
 
     const ok = await runner(process.execPath, ["-e", "process.stdout.write('routing-ok')"], { timeoutMs: 5_000 })
     const stderr = await runner(process.execPath, ["-e", "process.stderr.write('routing-err')"], { timeoutMs: 5_000 })
+    const signaled = await runner(process.execPath, ["-e", "process.kill(process.pid, 'SIGTERM')"], { timeoutMs: 5_000 })
     await expect(runner(process.execPath, ["-e", "setTimeout(() => undefined, 50)"], { timeoutMs: 1 }))
       .rejects.toThrow("command timed out")
     await expect(runner("/definitely/not-a-real-ouro-command", [], { timeoutMs: 5_000 }))
@@ -106,5 +107,6 @@ describe("voice audio routing readiness", () => {
 
     expect(ok).toMatchObject({ stdout: "routing-ok", stderr: "", exitCode: 0 })
     expect(stderr).toMatchObject({ stdout: "", stderr: "routing-err", exitCode: 0 })
+    expect(signaled).toMatchObject({ stdout: "", stderr: "", exitCode: 0 })
   })
 })

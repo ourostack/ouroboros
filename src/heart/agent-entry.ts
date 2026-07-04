@@ -16,11 +16,11 @@ configureCliRuntimeLogger("self")
 emitNervesEvent({
   component: "senses",
   event: "senses.entry_boot",
-  message: "booting inner-dialog entrypoint",
-  meta: { entry: "inner-dialog", agentName },
+  message: "starting private-runtime process entrypoint",
+  meta: { entry: "private-runtime", agentName },
 })
 
-// Dynamic import: agent-entry is boot-time wiring that starts a sense process.
+// Dynamic import: agent-entry is process-start wiring that starts a sense process.
 // Using dynamic import avoids a static heart/ -> senses/ dependency.
 import("./runtime-credentials")
   .then(async ({
@@ -34,7 +34,7 @@ import("./runtime-credentials")
     if (!readRuntimeCredentialConfig(agentName).ok) {
       void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
-    /* v8 ignore next 7 -- boot-time best-effort machine credential refresh runs in a child entrypoint and is covered operationally by daemon startup tests @preserve */
+    /* v8 ignore next 7 -- process-start best-effort machine credential refresh runs in a child entrypoint and is covered operationally by daemon startup tests @preserve */
     if (!readMachineRuntimeCredentialConfig(agentName).ok) {
       void import("./machine-identity")
         .then(({ loadOrCreateMachineIdentity }) => {
@@ -43,16 +43,16 @@ import("./runtime-credentials")
         })
         .catch(() => undefined)
     }
-    const { startInnerDialogWorker } = await import("../senses/inner-dialog-worker")
-    await startInnerDialogWorker()
+    const { startPrivateRuntimeWorker } = await import("../senses/private-runtime-worker")
+    await startPrivateRuntimeWorker()
   })
   .catch((error) => {
     emitNervesEvent({
       level: "error",
       component: "senses",
       event: "senses.entry_error",
-      message: "inner-dialog entrypoint failed",
-      meta: { entry: "inner-dialog", agentName, error: error instanceof Error ? error.message : String(error) },
+      message: "private-runtime entrypoint failed",
+      meta: { entry: "private-runtime", agentName, error: error instanceof Error ? error.message : String(error) },
     })
     // eslint-disable-next-line no-console -- fatal startup guard for worker process
     console.error(error instanceof Error ? error.message : String(error))

@@ -44,7 +44,7 @@ function makeReturnObligation(overrides: Partial<ReturnObligation> = {}): Return
     id: "1775976317954-s5pno43r",
     origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
     status: "queued",
-    delegatedContent: "stale: investigate inner-dialog leak",
+    delegatedContent: "stale: investigate private-runtime leak",
     createdAt: 1775976317954,
     ...overrides,
   }
@@ -54,7 +54,7 @@ function makeObligation(overrides: Partial<Obligation> = {}): Obligation {
   return {
     id: "1775976317954-2gkm4pz0",
     origin: { friendId: "ari", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
-    content: "investigate inner-dialog leak",
+    content: "investigate private-runtime leak",
     status: "pending",
     createdAt: "2026-04-12T06:45:17.954Z",
     ...overrides,

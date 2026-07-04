@@ -174,6 +174,32 @@ function readPendingMessages(
     .map((entry) => JSON.parse(fs.readFileSync(path.join(pendingDir, entry), "utf-8")) as { content: string })
 }
 
+function expectMailOperationPrivateWake(
+  sendCommand: ReturnType<typeof vi.fn>,
+  input: {
+    operationId: string
+    kind?: "mail.import-mbox" | "mail.backfill-indexes"
+    status?: "succeeded" | "failed"
+  },
+): void {
+  const operationKind = input.kind ?? "mail.import-mbox"
+  const status = input.status ?? "succeeded"
+  expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", {
+    kind: "private.wake",
+    agent: "Slugger",
+    reason: "mail background operation private attention",
+    triggerSource: "mail-background-operation",
+    budgetClass: "interactive",
+    idempotencyKey: `mail-operation:Slugger:${input.operationId}:${status}`,
+    originRefs: [
+      { kind: "background-operation", id: input.operationId },
+      { kind: "mail-operation", id: operationKind },
+      { kind: "mail-operation-status", id: status },
+    ],
+  })
+  expect(sendCommand.mock.calls.map((call) => call[1])).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
+}
+
 function recentIso(minutesAgo: number): string {
   return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
 }
@@ -555,7 +581,7 @@ function daemonStatusData(
     },
     workers: [{
       agent: agentName,
-      worker: overrides.worker ?? "inner-dialog",
+      worker: overrides.worker ?? "private-runtime",
       status,
       pid: overrides.pid ?? 4242,
       restartCount: 0,
@@ -3960,7 +3986,7 @@ describe("provider CLI command execution", () => {
     expect(record.error).toEqual({ message: "spawn broke" })
   })
 
-  it("wakes the agent when a tracked foreground MBOX import finishes", async () => {
+  it("queues private attention when a tracked foreground MBOX import finishes under default-deny policy", async () => {
     emitTestEvent("provider cli mail import completion wake")
     const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-bundles")
     const homeDir = makeTempDir("provider-cli-mail-import-operation-home")
@@ -4014,7 +4040,16 @@ describe("provider CLI command execution", () => {
       "",
     ].join("\n"), "utf-8")
 
-    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const sendCommand = vi.fn(async () => ({
+      ok: true,
+      message: "private-runtime wake denied for Slugger: default policy",
+      data: {
+        decision: {
+          executable: false,
+          deniedReason: "default policy",
+        },
+      },
+    }))
     const result = await runOuroCli([
       "mail",
       "import-mbox",
@@ -4038,7 +4073,7 @@ describe("provider CLI command execution", () => {
     )) as { status: string; result?: Record<string, unknown> }
     expect(record.status).toBe("succeeded")
     expect(record.result).toMatchObject({ imported: 1, duplicates: 0, scanned: 1 })
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete" })
     const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-1")
     expect(mcpPending).toHaveLength(1)
     expect(mcpPending[0]?.content).toContain("[Background Operation]")
@@ -4110,14 +4145,14 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
 
     expect(result).toContain("Imported MBOX for Slugger")
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete_fallback" })
     const phonePending = readPendingMessages(sluggerRoot, "friend-phone", "bluebubbles", "chat-any")
     expect(phonePending).toHaveLength(1)
     expect(phonePending[0]?.content).toContain("mail import finished.")
     expect(phonePending[0]?.content).toContain("operation: op_mail_import_complete_fallback")
   })
 
-  it("still completes a tracked foreground MBOX import when the inner wake send fails", async () => {
+  it("still completes a tracked foreground MBOX import when the legacy wake alias send fails", async () => {
     emitTestEvent("provider cli mail import completion wake degraded")
     const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-degraded-bundles")
     const homeDir = makeTempDir("provider-cli-mail-import-operation-degraded-home")
@@ -4177,7 +4212,7 @@ describe("provider CLI command execution", () => {
       "utf-8",
     )) as { status: string }
     expect(record.status).toBe("succeeded")
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete_degraded" })
   })
 
   it("still completes a tracked foreground MBOX import when outward notification resolution fails", async () => {
@@ -4241,7 +4276,7 @@ describe("provider CLI command execution", () => {
       "utf-8",
     )) as { status: string }
     expect(record.status).toBe("succeeded")
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete_target_resolution_degraded" })
 
     activitySpy.mockRestore()
   })
@@ -4308,7 +4343,11 @@ describe("provider CLI command execution", () => {
     expect(record.error).toEqual({
       message: "hosted message index backfill incomplete after indexing 16583 message(s)",
     })
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_backfill_fail",
+      kind: "mail.backfill-indexes",
+      status: "failed",
+    })
     const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-2")
     expect(mcpPending).toHaveLength(1)
     expect(mcpPending[0]?.content).toContain("mail index repair failed.")
@@ -4425,7 +4464,10 @@ describe("provider CLI command execution", () => {
         indexed: 12,
         store: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
       })
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_backfill_complete",
+        kind: "mail.backfill-indexes",
+      })
     } finally {
       refreshSpy.mockRestore()
       readerSpy.mockRestore()
@@ -4488,7 +4530,10 @@ describe("provider CLI command execution", () => {
       expect(record.detail).toBe(`file: ${mboxPath}`)
       expect(record.progress).toEqual({ current: 0, unit: "messages" })
       expect(record.error).toEqual({ message: "reader exploded" })
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_import_fail_string",
+        status: "failed",
+      })
     } finally {
       readerSpy.mockRestore()
     }
@@ -4551,7 +4596,10 @@ describe("provider CLI command execution", () => {
       "rerun with --file <path> or narrower owner/source hints so the archive choice is unambiguous",
       "retry after confirming which archive is the intended one",
     ])
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_import_fail_ambiguity",
+      status: "failed",
+    })
   })
 
   it("keeps tracked discovery failure detail compact when no owner/source hints were supplied", async () => {
@@ -4659,7 +4707,10 @@ describe("provider CLI command execution", () => {
         "repair filesystem access to the archive or backing store, then rerun the import",
         "retry after confirming the path is readable by Ouro",
       ])
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_import_fail_access",
+        status: "failed",
+      })
     } finally {
       registrySpy.mockRestore()
     }
@@ -4725,7 +4776,10 @@ describe("provider CLI command execution", () => {
       "create or repair the delegated source grant for the intended owner/source, then rerun the import",
       "confirm the import is pointed at the intended owner/source before retrying",
     ])
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_import_fail_source_grant_missing",
+      status: "failed",
+    })
   })
 
   it("classifies tracked source-grant ambiguity failures when imports need narrower owner/source hints", async () => {
@@ -4799,7 +4853,10 @@ describe("provider CLI command execution", () => {
       "rerun the import with explicit --owner-email and/or --source hints",
       "confirm which delegated lane should receive this archive before retrying",
     ])
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_import_fail_source_grant_ambiguity",
+      status: "failed",
+    })
   })
 
   it("classifies tracked transient import failures as retry-safe", async () => {
@@ -4865,7 +4922,10 @@ describe("provider CLI command execution", () => {
         "retry the import from the same archive after the transient storage/network issue clears",
         "use query_active_work to confirm the failed operation has settled before retrying",
       ])
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_import_fail_transient",
+        status: "failed",
+      })
     } finally {
       readerSpy.mockRestore()
     }
@@ -7560,7 +7620,7 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("... applying change to running Slugger")
     expect(output).toContain("checking whether Ouro is already running")
     expect(output).toContain("asking Ouro to reload Slugger")
-    expect(output).toContain("- daemon reports Slugger/inner-dialog running")
+    expect(output).toContain("- daemon reports Slugger/private-runtime running")
     expect(output).not.toContain("pplx-secret")
     expect(sentCommands).toContainEqual({ kind: "agent.restart", agent: "Slugger" })
     expect(sentCommands).not.toContainEqual({ kind: "agent.restart", agent: "Slugger", skipConfigCheck: true })
@@ -7742,7 +7802,7 @@ describe("provider CLI command execution", () => {
               overview: { daemon: "running", health: "ok", workerCount: 1, senseCount: 1 },
               workers: [{
                 agent: "Slugger",
-                worker: "inner-dialog",
+                worker: "private-runtime",
                 status: "running",
                 pid: 42,
                 restartCount: 0,
@@ -9770,7 +9830,7 @@ describe("provider CLI command execution", () => {
     expect(restartOutput).toContain("asking Ouro to reload Slugger")
     expect(restartOutput).toContain("waiting for Slugger to come back")
     expect(restartOutput).toContain("- reload request accepted")
-    expect(restartOutput).toContain("- daemon reports Slugger/inner-dialog running")
+    expect(restartOutput).toContain("- daemon reports Slugger/private-runtime running")
     expect(restartOutput).toContain("✓ applying change to running Slugger")
     expect(sentCommands).toContainEqual({ kind: "agent.restart", agent: "Slugger", skipConfigCheck: true })
 
@@ -9909,7 +9969,7 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
-    expect(result).toContain("running agent: restart requested, but Slugger/inner-dialog crashed before reporting running: check logs")
+    expect(result).toContain("running agent: restart requested, but Slugger/private-runtime crashed before reporting running: check logs")
     expect(output).toContain("... applying change to running Slugger")
   })
 
@@ -9933,7 +9993,7 @@ describe("provider CLI command execution", () => {
 
     const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
 
-    expect(result).toContain("running agent: restart requested, but Slugger/inner-dialog crashed before reporting running: bad config")
+    expect(result).toContain("running agent: restart requested, but Slugger/private-runtime crashed before reporting running: bad config")
   })
 
   it("provider refresh still summarizes a crashed worker when no extra reason is available", async () => {
@@ -9956,7 +10016,7 @@ describe("provider CLI command execution", () => {
 
     const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
 
-    expect(result).toContain("running agent: restart requested, but Slugger/inner-dialog crashed before reporting running")
+    expect(result).toContain("running agent: restart requested, but Slugger/private-runtime crashed before reporting running")
     expect(result).not.toContain(": undefined")
   })
 

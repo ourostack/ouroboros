@@ -9293,7 +9293,7 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     )
   })
 
-  it("allows proactive send for normal prose mentioning inner-dialog concepts in plain text", async () => {
+  it("allows proactive send for normal prose mentioning private-runtime concepts in plain text", async () => {
     const friendStore = {
       get: vi.fn().mockResolvedValue(makeFriend()),
       put: vi.fn(),

@@ -4,7 +4,7 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "ponder",
-    description: "create or revise a typed ponder packet so i don't lose the plot while i keep working. use this for harness friction, research, or reflection that should survive the current turn. if the user asked me to think privately and return later from an outward session, preserve literal return tokens and constraints in payload_json fields or success_criteria; the runtime records the latest user request as sourceRequest. then do not settle with the final private answer in the same outward turn; only acknowledge that the private pass is queued. in inner dialog, ponder only preserves state; it does not create a new self-return obligation, so surface any existing held item instead of pondering a replacement. ponder does not end the turn by itself and may be followed by more tools before i settle or rest. Don't ponder trivial questions.",
+    description: "create or revise a typed ponder packet so i don't lose the plot while i keep working. use this for harness friction, research, or reflection that should survive the current turn. if the user asked me to think privately and return later from an outward session, preserve literal return tokens and constraints in payload_json fields or success_criteria; the runtime records the latest user request as sourceRequest. then do not settle with the final private answer in the same outward turn; only acknowledge that the private pass is queued. in private runtime, ponder only preserves state; it does not create a new self-return obligation, so surface any existing held item instead of pondering a replacement. ponder does not end the turn by itself and may be followed by more tools before i settle or rest. Don't ponder trivial questions.",
     parameters: {
       type: "object",
       properties: {
@@ -16,7 +16,7 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
         kind: {
           type: "string",
           enum: ["harness_friction", "research", "reflection"],
-          description: "the packet kind. determines the SOP the inner session should follow.",
+          description: "the packet kind. determines the SOP the private-runtime turn should follow.",
         },
         packet_id: {
           type: "string",
@@ -40,7 +40,7 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
         },
         payload_json: {
           type: "string",
-          description: "JSON object string with packet-specific structured details. include exact markers, return wording fragments, or constraints the inner pass must preserve; sourceRequest is owned by the runtime from the latest user request. use {} only when there are no such details.",
+          description: "JSON object string with packet-specific structured details. include exact markers, return wording fragments, or constraints the private-runtime pass must preserve; sourceRequest is owned by the runtime from the latest user request. use {} only when there are no such details.",
         },
         thought: {
           type: "string",
@@ -105,7 +105,7 @@ export const restTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "rest",
-    description: "end an inner-session turn when i'm done thinking. rest remains the explicit terminal move for the inner session and must be the only tool call in the turn. on idle heartbeat turns, use status=HEARTBEAT_OK.",
+    description: "end a private-runtime turn when private work is complete. rest remains the explicit terminal move for the private-runtime turn and must be the only tool call in the turn. on idle heartbeat turns, use status=HEARTBEAT_OK.",
     parameters: {
       type: "object",
       properties: {

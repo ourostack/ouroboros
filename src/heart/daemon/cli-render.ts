@@ -59,6 +59,7 @@ interface StatusSenseRow {
 interface StatusWorkerRow {
   agent: string
   worker: string
+  autoStart: boolean
   status: string
   pid: number | null
   restartCount: number
@@ -258,6 +259,7 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     return {
       agent,
       worker,
+      autoStart: booleanField(row.autoStart) ?? true,
       status,
       pid,
       restartCount,

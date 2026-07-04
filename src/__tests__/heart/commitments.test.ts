@@ -54,7 +54,7 @@ describe("deriveCommitments", () => {
     const result = deriveCommitments(makeFrame(), makeIdleJob())
     expect(result.committedTo).toEqual([])
     expect(result.completionCriteria).toEqual(["just be present in this conversation"])
-    expect(result.safeToIgnore).toContain("no private thinking in progress")
+    expect(result.safeToIgnore).toContain("no private-runtime work in progress")
     expect(result.safeToIgnore).toContain("no shared work to coordinate")
   })
 
@@ -301,7 +301,7 @@ describe("formatCommitments", () => {
     const result = formatCommitments({
       committedTo: [],
       completionCriteria: ["just be present"],
-      safeToIgnore: ["no private thinking"],
+      safeToIgnore: ["no private-runtime work"],
     })
     expect(result).toContain("free to be present")
     expect(result).not.toContain("## what i'm holding right now")

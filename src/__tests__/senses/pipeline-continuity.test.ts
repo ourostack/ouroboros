@@ -264,11 +264,11 @@ describe("pipeline continuity integration", () => {
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       context: {},
     } as ReturnType<typeof identity.loadAgentConfig>)
-    vi.spyOn(daemonThoughts, "readInnerDialogRawData").mockReturnValue(null)
-    vi.spyOn(daemonThoughts, "deriveInnerDialogStatus").mockReturnValue("idle")
+    vi.spyOn(daemonThoughts, "readPrivateRuntimeRawData").mockReturnValue(null)
+    vi.spyOn(daemonThoughts, "derivePrivateRuntimeStatus").mockReturnValue("idle")
     vi.spyOn(daemonThoughts, "deriveInnerJob").mockReturnValue(null)
-    vi.spyOn(daemonThoughts, "getInnerDialogSessionPath").mockReturnValue(null)
-    vi.spyOn(pending, "getInnerDialogPendingDir").mockReturnValue("/tmp/inner-pending")
+    vi.spyOn(daemonThoughts, "getPrivateRuntimeSessionPath").mockReturnValue(null)
+    vi.spyOn(pending, "getPrivateRuntimePendingDir").mockReturnValue("/tmp/inner-pending")
 
     // Default continuity mock returns
     mockListSessionActivity.mockReturnValue([])

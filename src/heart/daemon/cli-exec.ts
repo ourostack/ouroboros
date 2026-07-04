@@ -28,7 +28,7 @@ import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } 
 import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
-import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
+import { parsePrivateRuntimeSession, formatThoughtTurns, getPrivateRuntimeSessionPath, followThoughts } from "./thoughts"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import {
   resolveHatchCredentials,
@@ -100,10 +100,11 @@ import type {
   RollbackCliCommand,
   VersionsCliCommand,
   AttentionCliCommand,
+  PrivateDecisionsCliCommand,
+  PrivateStatusCliCommand,
   WorkCardCliCommand,
   WorkGauntletCliCommand,
   WorkSentinelCliCommand,
-  InnerStatusCliCommand,
   NervesReviewCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
@@ -142,7 +143,12 @@ import {
   type StatusPayload,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
-import { checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
+import { checkAgentConfig, checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
+import {
+  formatPrivateDecisionReadJson,
+  formatPrivateDecisionReadText,
+  privateDecisionReadPayloadFromDaemonData,
+} from "../private-runtime"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
@@ -392,6 +398,11 @@ async function checkAgentProviders(
 
 type StatusProviderRow = StatusPayload["providers"][number]
 
+interface DaemonStatusProviderCheckResult {
+  degraded: DegradedAgent[]
+  needsLiveReadinessRefresh: boolean
+}
+
 function degradedFromStatusProviderRow(row: StatusProviderRow): DegradedAgent {
   const binding = row.provider === "unconfigured" ? row.provider : `${row.provider} / ${row.model}`
   const detail = row.detail ? `: ${row.detail}` : ""
@@ -413,13 +424,17 @@ function providerStatusRowsCoverAgents(rows: StatusProviderRow[], agents: string
   return true
 }
 
+function providerRowNeedsLiveReadinessRefresh(row: StatusProviderRow): boolean {
+  return row.provider !== "unconfigured" && row.readiness === "unknown"
+}
+
 async function checkAgentProvidersFromDaemonStatus(
   deps: OuroCliDeps,
   agents: string[],
   onProgress?: (message: string) => void,
-): Promise<DegradedAgent[] | null> {
+): Promise<DaemonStatusProviderCheckResult | null> {
   const uniqueAgents = [...new Set(agents)]
-  if (uniqueAgents.length === 0) return []
+  if (uniqueAgents.length === 0) return { degraded: [], needsLiveReadinessRefresh: false }
   let response
   try {
     response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
@@ -442,7 +457,10 @@ async function checkAgentProvidersFromDaemonStatus(
   onProgress?.(degraded.length === 0
     ? "provider readiness confirmed by daemon status"
     : "provider readiness reported by daemon status")
-  return degraded
+  return {
+    degraded,
+    needsLiveReadinessRefresh: rows.some(providerRowNeedsLiveReadinessRefresh),
+  }
 }
 
 async function checkAgentProviderHealth(
@@ -518,7 +536,8 @@ type MissingAgentResolvableKind =
   | "attention.list"
   | "attention.show"
   | "attention.history"
-  | "inner.status"
+  | "private.decisions"
+  | "private.status"
   | "session.list"
   | "a2a.card"
   | "a2a.onboard"
@@ -596,11 +615,12 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "attention.list":
     case "attention.show":
     case "attention.history":
+    case "private.decisions":
+    case "private.status":
     case "work.card":
     case "work.gauntlet":
     case "work.sentinel":
     case "work.sentinel.refresh":
-    case "inner.status":
     case "session.list":
       return "return-message"
     case "a2a.card":
@@ -694,11 +714,70 @@ function managedAgentsSignature(agentNames: string[]): string {
   return unique.length > 0 ? unique.join(",") : "(none)"
 }
 
-async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<DegradedAgent[]> {
+type StartupProviderCheckResult = {
+  degraded: DegradedAgent[]
+  source: "daemon-status" | "live-provider-check" | "offline-config"
+}
+
+async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<StartupProviderCheckResult> {
   const agents = await listCliAgents(deps)
   const statusResult = await checkAgentProvidersFromDaemonStatus(deps, agents, onProgress)
-  if (statusResult) return statusResult
-  return checkAgentProviders(deps, agents, onProgress)
+  if (statusResult) {
+    const configResult = await checkAgentConfigsOffline(deps, agents)
+    if (configResult.length > 0) {
+      return { degraded: [...statusResult.degraded, ...configResult], source: "daemon-status" }
+    }
+    if (statusResult.needsLiveReadinessRefresh) {
+      return { degraded: await checkAgentProviders(deps, agents, onProgress), source: "live-provider-check" }
+    }
+    return { degraded: statusResult.degraded, source: "daemon-status" }
+  }
+  return { degraded: await checkAgentConfigsOffline(deps, agents, onProgress), source: "offline-config" }
+}
+
+async function checkAgentConfigsOffline(
+  deps: OuroCliDeps,
+  agents: string[],
+  onProgress?: (message: string) => void,
+): Promise<DegradedAgent[]> {
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const degraded: DegradedAgent[] = []
+
+  for (const agent of [...new Set(agents)]) {
+    try {
+      const result = checkAgentConfig(agent, bundlesRoot)
+      if (result.ok) continue
+      const errorReason = result.error ?? "agent config validation failed"
+      const fixHint = result.fix ?? ""
+      degraded.push({ agent, errorReason, fixHint, ...(result.issue ? { issue: result.issue } : {}) })
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_config_invalid",
+        message: errorReason,
+        meta: { agent, fixProvided: fixHint.length > 0, source: "already-running-offline-config-check" },
+      })
+    } catch (error) {
+      const errorReason = error instanceof Error ? error.message : String(error)
+      degraded.push({
+        agent,
+        errorReason,
+        fixHint: "Run 'ouro doctor' for diagnostics, then retry 'ouro up'.",
+      })
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_config_invalid",
+        message: errorReason,
+        meta: { agent, fixProvided: true, source: "already-running-offline-config-check" },
+      })
+    }
+  }
+
+  onProgress?.(degraded.length === 0
+    ? "agent config validated offline; provider readiness will refresh on explicit provider commands"
+    : "agent config validation reported by offline startup check")
+  return degraded
 }
 
 function readinessIssueFromDegraded(entry: DegradedAgent): AgentReadinessIssue {
@@ -738,6 +817,24 @@ function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: 
 function providerRepairCountSummary(count: number): string {
   if (count === 0) return "selected providers answered live checks"
   return `${count} ${count === 1 ? "needs" : "need"} attention`
+}
+
+function startupConfigCheckSummary(count: number): string {
+  if (count === 0) return "agent config validated offline"
+  return `${count} ${count === 1 ? "needs" : "need"} attention`
+}
+
+function startupProviderCheckSummary(result: StartupProviderCheckResult): string {
+  if (result.source === "daemon-status" && result.degraded.length === 0) {
+    return "provider readiness confirmed by daemon status"
+  }
+  if (result.source === "daemon-status") {
+    return providerRepairCountSummary(result.degraded.length)
+  }
+  if (result.source === "live-provider-check") {
+    return providerRepairCountSummary(result.degraded.length)
+  }
+  return startupConfigCheckSummary(result.degraded.length)
 }
 
 /**
@@ -1211,7 +1308,12 @@ export async function ensureDaemonRunning(
     return null
   }
 
-  const alive = options.initialAlive ?? await deps.checkSocketAlive(deps.socketPath)
+  let alive: boolean
+  if (typeof options.initialAlive === "boolean") {
+    alive = options.initialAlive
+  } else {
+    alive = await deps.checkSocketAlive(deps.socketPath)
+  }
   if (alive) {
     const localRuntime = getRuntimeMetadata()
     const localManagedAgents = managedAgentsSignature(listEnabledBundleAgents({
@@ -1645,7 +1747,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -1765,6 +1867,12 @@ interface VaultRecoverSourceImport {
 
 function isJsonRecord(value: unknown): value is JsonRecord {
   return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function daemonMessageReceiptId(response: DaemonResponse): string | undefined {
+  if (!isJsonRecord(response.data)) return undefined
+  const id = response.data.id
+  return typeof id === "string" && id.trim().length > 0 ? id : undefined
 }
 
 function cloneJsonRecord(value: JsonRecord): JsonRecord {
@@ -4603,6 +4711,26 @@ function makeBackgroundOperationId(kind: "mail.import-mbox" | "mail.backfill-ind
   return `${prefix}_${randomUUID().slice(0, 8)}`
 }
 
+function buildMailOperationPrivateWakeCommand(
+  agentName: string,
+  record: BackgroundOperationRecord,
+): Extract<DaemonCommand, { kind: "private.wake" }> {
+  const status = record.status === "failed" ? "failed" : "succeeded"
+  return {
+    kind: "private.wake",
+    agent: agentName,
+    reason: "mail background operation private attention",
+    triggerSource: "mail-background-operation",
+    budgetClass: "interactive",
+    idempotencyKey: `mail-operation:${agentName}:${record.id}:${status}`,
+    originRefs: [
+      { kind: "background-operation", id: record.id },
+      { kind: "mail-operation", id: record.kind },
+      { kind: "mail-operation-status", id: status },
+    ],
+  }
+}
+
 async function notifyMailOperation(
   agentName: string,
   record: BackgroundOperationRecord & { detail: string },
@@ -4638,7 +4766,7 @@ async function notifyMailOperation(
     mode: "reflect",
   })
   await queueMailOperationTargetNotification(agentName, content, deps).catch(() => undefined)
-  await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agentName } as DaemonCommand)
+  await deps.sendCommand(deps.socketPath, buildMailOperationPrivateWakeCommand(agentName, record))
     .then(() => undefined)
     .catch(() => undefined)
 }
@@ -7150,9 +7278,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
     }
     progress.startPhase("provider checks")
-    const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
+    const providerCheck = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
+    const providerDegraded = providerCheck.degraded
     daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
-    progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
+    progress.completePhase("provider checks", startupProviderCheckSummary(providerCheck))
     progress.startPhase("final daemon check")
     const finalDaemonCheck = await verifyDaemonReadyForHandoff(deps, {
       allowDegradedHealth: Boolean(
@@ -7612,7 +7741,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // when the daemon socket file doesn't exist — otherwise every
     // Claude Code lifecycle event during a daemon-down window logs two
     // ENOENT errors in ouro.ndjson (one for message.send, one for
-    // inner.wake) which makes it hard to read the log around outages.
+    // private.wake) which makes it hard to read the log around outages.
     // The hook is best-effort: dropping notifications when the daemon
     // is down is the correct behavior; we just don't want to log spam
     // about it.
@@ -7623,14 +7752,25 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         // single tool use. A long Claude Code working session can fire
         // dozens of post-tool-use hooks per minute; waking the agent
         // synchronously on each one creates a feedback storm where the
-        // inner loop is re-prompted faster than it can rest, the
+        // private runtime is re-prompted faster than it can rest, the
         // "...time passing. anything stirring?" probe fires back-to-back,
         // and the agent burns its attention budget responding to wakes
         // instead of doing actual work. The message is still delivered
         // either way (above); the agent picks it up on its next natural
         // turn.
         if (eventType === "session-start" || eventType === "stop") {
-          await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
+          await deps.sendCommand(deps.socketPath, {
+            kind: "private.wake",
+            agent: command.agent,
+            reason: `Claude Code ${eventType} hook`,
+            triggerSource: "dev-tool-hook",
+            budgetClass: "interactive",
+            idempotencyKey: `dev-tool-hook:${command.agent}:${eventType}:${sessionId}`,
+            originRefs: [
+              { kind: "dev-tool-hook", id: eventType },
+              { kind: "session", id: sessionId },
+            ],
+          } as DaemonCommand).catch(() => {})
         }
       } catch { /* daemon not running — silent */ }
     } else {
@@ -7824,6 +7964,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return ""
   }
   /* v8 ignore stop */
+
+  if (command.kind === "private.decisions") {
+    let response: DaemonResponse
+    try {
+      response = await deps.sendCommand(deps.socketPath, {
+        kind: "private.decisions",
+        agent: command.agent,
+        limit: command.limit,
+      } as DaemonCommand)
+    } catch {
+      const message = "daemon unavailable — start with `ouro up` first"
+      deps.writeStdout(message)
+      return message
+    }
+    if (!response.ok) {
+      const message = response.error ?? "unknown error"
+      deps.writeStdout(message)
+      return message
+    }
+    const payload = privateDecisionReadPayloadFromDaemonData(response.data, command.agent)
+    const message = command.json
+      ? formatPrivateDecisionReadJson(payload)
+      : formatPrivateDecisionReadText(payload)
+    deps.writeStdout(message)
+    return message
+  }
+
   // ── mcp subcommands (routed through daemon socket) ──
   if (command.kind === "mcp.list" || command.kind === "mcp.call") {
     const daemonCommand = toDaemonCommand(command)
@@ -8419,19 +8586,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore next -- production fallback: tests always inject bundlesRoot via createTmpBundle @preserve */
       const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
       const agentRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
-      const sessionFilePath = getInnerDialogSessionPath(agentRoot)
+      const sessionFilePath = getPrivateRuntimeSessionPath(agentRoot)
       if (command.json) {
         try {
           const raw = fs.readFileSync(sessionFilePath, "utf-8")
           deps.writeStdout(raw)
           return raw
         } catch {
-          const message = "no inner dialog session found"
+          const message = "no private-runtime session found"
           deps.writeStdout(message)
           return message
         }
       }
-      const turns = parseInnerDialogSession(sessionFilePath)
+      const turns = parsePrivateRuntimeSession(sessionFilePath)
       const message = formatThoughtTurns(turns, command.last ?? 10)
       deps.writeStdout(message)
       if (command.follow) {
@@ -8565,9 +8732,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  // ── inner dialog status (local, no daemon socket needed) ──
-  /* v8 ignore start -- inner status handler: requires real agent state on disk @preserve */
-  if (command.kind === "inner.status") {
+  // ── private runtime status (local, no daemon socket needed) ──
+  /* v8 ignore start -- private status handler: requires real agent state on disk @preserve */
+  if (command.kind === "private.status") {
     try {
       const agentRoot = deps.agentBundleRoot ?? getAgentRoot(command.agent)
       const { buildInnerStatusOutput } = await import("./inner-status")
@@ -8576,8 +8743,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const { listActiveReturnObligations } = await import("../../arc/obligations")
       const { resolveDeskRecordPaths } = await import("../../mind/record-paths")
 
-      // Read runtime state
-      const innerSessionPath = getInnerDialogSessionPath(agentRoot)
+      // Read runtime state from the persisted historical session location.
+      const innerSessionPath = getPrivateRuntimeSessionPath(agentRoot)
       const runtimeJsonPath = path.join(path.dirname(innerSessionPath), "runtime.json")
       let runtimeState: import("./inner-status").InnerRuntimeState | null = null
       try {
@@ -8628,7 +8795,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Attention count
       const activeObligations = listActiveReturnObligations(command.agent)
 
-      const message = buildInnerStatusOutput({
+      const statusOutput = buildInnerStatusOutput({
         agentName: command.agent,
         runtimeState,
         recordSummary,
@@ -8636,6 +8803,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         attentionCount: activeObligations.length,
         now: Date.now(),
       })
+      const message = command.legacyAlias === "inner"
+        ? [`legacy alias: use \`ouro private status --agent ${command.agent}\``, statusOutput].join("\n")
+        : statusOutput
       deps.writeStdout(message)
       return message
     } catch {
@@ -8970,11 +9140,25 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     response = await deps.sendCommand(deps.socketPath, daemonCommand)
     // `ouro msg` is operator-driven and expects the recipient to process the
     // message now (vs. on next natural turn). message.send is queue-only as
-    // of the 2026-05-11 fix; we explicitly fire inner.wake to preserve the
+    // of the 2026-05-11 fix; we explicitly fire private.wake to preserve the
     // historical CLI UX. Background callers (hooks, API) deliberately omit
     // this and let the agent pick up notifications on its next turn.
     if (command.kind === "message.send" && command.from === "ouro-cli") {
-      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.to } as DaemonCommand).catch(() => {})
+      const receiptId = daemonMessageReceiptId(response)
+      await deps.sendCommand(deps.socketPath, {
+        kind: "private.wake",
+        agent: command.to,
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: receiptId
+          ? `cli:message:${command.to}:${receiptId}`
+          : `cli:message:${command.to}:unreceipted`,
+        originRefs: [
+          { kind: "cli-command", id: "ouro msg" },
+          ...(receiptId ? [{ kind: "daemon-receipt", id: receiptId }] : []),
+        ],
+      } as DaemonCommand).catch(() => {})
     }
   } catch (error) {
     if (command.kind === "message.send") {

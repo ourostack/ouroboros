@@ -135,7 +135,7 @@ function makeCallbacks(overrides: Partial<ChannelCallbacks> = {}): ChannelCallba
   }
 }
 
-describe("settle gate in inner dialog", () => {
+describe("settle gate in private runtime", () => {
   let runAgent: (
     messages: any[],
     callbacks: ChannelCallbacks,
@@ -154,7 +154,7 @@ describe("settle gate in inner dialog", () => {
     runAgent = core.runAgent
   })
 
-  it("rejects settle when attention queue is non-empty in inner dialog", async () => {
+  it("rejects settle when attention queue is non-empty in private runtime", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -236,7 +236,7 @@ describe("settle gate in inner dialog", () => {
     expect(result.outcome).toBe("settled")
   })
 
-  it("settle in inner dialog does NOT produce CompletionMetadata", async () => {
+  it("settle in private runtime does NOT produce CompletionMetadata", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
@@ -262,7 +262,7 @@ describe("settle gate in inner dialog", () => {
     expect(result.completion).toBeUndefined()
   })
 
-  it("settle tool result in inner dialog is '(settled)' not '(delivered)'", async () => {
+  it("settle tool result in private runtime is '(settled)' not '(delivered)'", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [

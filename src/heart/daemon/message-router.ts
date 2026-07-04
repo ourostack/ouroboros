@@ -18,23 +18,28 @@ export interface FileMessageRouterOptions {
   baseDir?: string
   homeDir?: string
   now?: () => string
+  maxMessagesPerInbox?: number
 }
 
 export function getDaemonMessageRouterDir(homeDir?: string): string {
   return path.join(getOuroCliHome(homeDir), "daemon", "messages")
 }
 
-function messageId(nowIso: string): string {
-  return `msg-${nowIso.replace(/[^0-9]/g, "")}`
+function messageId(nowIso: string, sequence: number): string {
+  const base = `msg-${nowIso.replace(/[^0-9]/g, "")}`
+  return sequence === 1 ? base : `${base}-${sequence}`
 }
 
 export class FileMessageRouter {
   private readonly baseDir: string
   private readonly now: () => string
+  private readonly maxMessagesPerInbox: number
+  private readonly messageIdSequences = new Map<string, number>()
 
   constructor(options: FileMessageRouterOptions = {}) {
     this.baseDir = options.baseDir ?? getDaemonMessageRouterDir(options.homeDir)
     this.now = options.now ?? (() => new Date().toISOString())
+    this.maxMessagesPerInbox = Math.max(1, Math.floor(options.maxMessagesPerInbox ?? 1000))
     fs.mkdirSync(this.baseDir, { recursive: true })
   }
 
@@ -47,7 +52,9 @@ export class FileMessageRouter {
     taskRef?: string
   }): Promise<{ id: string; queuedAt: string }> {
     const queuedAt = this.now()
-    const id = messageId(queuedAt)
+    const sequence = (this.messageIdSequences.get(queuedAt) ?? 0) + 1
+    this.messageIdSequences.set(queuedAt, sequence)
+    const id = messageId(queuedAt, sequence)
     const message: RoutedMessage = {
       id,
       from: input.from,
@@ -61,6 +68,7 @@ export class FileMessageRouter {
 
     const inboxPath = this.inboxPath(input.to)
     fs.appendFileSync(inboxPath, `${JSON.stringify(message)}\n`, "utf-8")
+    this.trimInbox(inboxPath)
     emitNervesEvent({
       component: "daemon",
       event: "daemon.message_queued",
@@ -101,5 +109,33 @@ export class FileMessageRouter {
 
   private inboxPath(agent: string): string {
     return path.join(this.baseDir, `${agent}-inbox.jsonl`)
+  }
+
+  private trimInbox(inboxPath: string): void {
+    const raw = fs.readFileSync(inboxPath, "utf-8")
+    const entries = raw
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        try {
+          JSON.parse(line) as RoutedMessage
+          return { line, valid: true }
+        } catch {
+          return { line, valid: false }
+        }
+      })
+    const validCount = entries.filter((entry) => entry.valid).length
+    if (validCount <= this.maxMessagesPerInbox) return
+
+    let validSeen = 0
+    const keepAfterValidIndex = validCount - this.maxMessagesPerInbox
+    const kept = entries
+      .filter((entry) => {
+        if (!entry.valid) return true
+        validSeen += 1
+        return validSeen > keepAfterValidIndex
+      })
+      .map((entry) => entry.line)
+    fs.writeFileSync(inboxPath, `${kept.join("\n")}\n`, "utf-8")
   }
 }

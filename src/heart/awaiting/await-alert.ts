@@ -147,7 +147,7 @@ export async function deliverAwaitAlert(options: AwaitAlertOptions): Promise<Awa
 /**
  * Build a `CrossChatDeliveryDeps` from a minimal set of values needed by the
  * await alert path. Consumers in the daemon and tools both want the same
- * shape: write to inner-dialog pending dir as the queueing strategy, and
+ * shape: write to private-runtime pending dir as the queueing strategy, and
  * provide a `bluebubbles` deliverer that routes through the existing
  * proactive-send path.
  *

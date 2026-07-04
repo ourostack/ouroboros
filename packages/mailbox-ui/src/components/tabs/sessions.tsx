@@ -395,7 +395,7 @@ function AgentBubble({ msg, toolResults, surface }: { msg: TranscriptMessage; to
             )}
             {call.delegatedThought && (
               <div className="mt-2 rounded bg-black/10 px-2.5 py-1.5 ring-1 ring-current/10">
-                <p className="font-mono text-[9px] uppercase tracking-wider opacity-70">→ inner dialog</p>
+                <p className="font-mono text-[9px] uppercase tracking-wider opacity-70">→ private runtime</p>
                 <p className="mt-0.5 text-xs opacity-80">{call.delegatedThought}</p>
               </div>
             )}

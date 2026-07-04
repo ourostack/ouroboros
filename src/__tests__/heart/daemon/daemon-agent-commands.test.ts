@@ -37,7 +37,13 @@ function sendRaw(socketPath: string, payload: string): Promise<string> {
 }
 
 describe("daemon agent service command routing", () => {
+  let originalHome: string | undefined
+  let testHomeRoot: string
+
   beforeEach(() => {
+    originalHome = process.env.HOME
+    testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-agent-commands-home-"))
+    process.env.HOME = testHomeRoot
     mockRunSenseTurn.mockClear()
     mockRunSenseTurn.mockResolvedValue({
       response: "full turn response",
@@ -45,7 +51,7 @@ describe("daemon agent service command routing", () => {
     })
   })
 
-  const make = (socketPath: string) => {
+  const make = (socketPath: string, options?: { privatePolicyResult?: "allow" | "deny"; bundlesRoot?: string }) => {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
       startAutoStartAgents: vi.fn(async () => undefined),
@@ -86,14 +92,41 @@ describe("daemon agent service command routing", () => {
       healthMonitor,
       router,
       senseManager,
+      bundlesRoot: options?.bundlesRoot,
       mailboxServerFactory,
       mode: "dev",
+      privateRuntimePolicyDeps: {
+        ledgerPath: path.join(os.tmpdir(), `agent-command-private-decisions-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`),
+        now: () => "2026-07-03T00:00:00.000Z",
+        resolveProviderLane: vi.fn(() => ({
+          lane: "inner",
+          provider: "minimax",
+          model: "minimax-text-01",
+          source: "agent.json",
+        })),
+        evaluatePolicy: vi.fn(() => options?.privatePolicyResult === "allow"
+          ? {
+              result: "allow",
+              reason: "test policy allow",
+            }
+          : {
+              result: "deny",
+              reason: "private runtime policy denies by default",
+              deniedReason: "default policy deny",
+            }),
+      },
     } as any)
     return { daemon, processManager, scheduler }
   }
 
   afterEach(() => {
     vi.restoreAllMocks()
+    fs.rmSync(testHomeRoot, { recursive: true, force: true })
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
   })
 
   it("routes agent.status command through to agent service", async () => {
@@ -211,7 +244,17 @@ describe("daemon agent service command routing", () => {
 
   it("routes all 13 agent command kinds", async () => {
     const socketPath = tmpSocketPath("agent-all-commands")
-    const { daemon } = make(socketPath)
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([{
+      name: "a",
+      channel: "private-runtime",
+      status: "running",
+      pid: 1234,
+      restartCount: 0,
+      startedAt: "2026-07-03T00:00:00.000Z",
+      lastCrashAt: null,
+      backoffMs: 0,
+    }])
     await daemon.start()
 
     emitNervesEvent({
@@ -257,7 +300,36 @@ describe("daemon agent service command routing", () => {
 
   it("preserves explicit habit trigger provenance on daemon habit pokes", async () => {
     const socketPath = tmpSocketPath("agent-habit-poke-trigger")
-    const { daemon, processManager } = make(socketPath)
+    const bundlesRoot = fs.mkdtempSync(path.join(testHomeRoot, "agent-habit-poke-bundles-"))
+    fs.mkdirSync(path.join(bundlesRoot, "a.ouro", "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(bundlesRoot, "a.ouro", "habits", "heartbeat.md"),
+      [
+        "---",
+        "title: heartbeat",
+        "cadence: 30m",
+        "status: active",
+        "lastRun: 2026-07-03T23:30:00.000Z",
+        "---",
+        "",
+        "Run the habit.",
+      ].join("\n"),
+      "utf-8",
+    )
+    const { daemon, processManager } = make(socketPath, {
+      privatePolicyResult: "allow",
+      bundlesRoot,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([{
+      name: "a",
+      channel: "private-runtime",
+      status: "running",
+      pid: 1234,
+      restartCount: 0,
+      startedAt: "2026-07-03T00:00:00.000Z",
+      lastCrashAt: null,
+      backoffMs: 0,
+    }])
     await daemon.start()
     try {
       const raw = await sendRaw(socketPath, JSON.stringify({
@@ -268,10 +340,19 @@ describe("daemon agent service command routing", () => {
       }))
       const response = JSON.parse(raw)
       expect(response.ok).toBe(true)
+      expect(processManager.sendToAgent).not.toHaveBeenCalledWith("a", {
+        type: "habit",
+        habitName: "heartbeat",
+        trigger: "launchd",
+      })
       expect(processManager.sendToAgent).toHaveBeenCalledWith("a", {
         type: "habit",
         habitName: "heartbeat",
         trigger: "launchd",
+        privateTurnDecision: expect.objectContaining({
+          result: "allow",
+          triggerSource: "habit-launchd",
+        }),
       })
     } finally {
       await daemon.stop()
@@ -304,7 +385,6 @@ describe("daemon agent service command routing", () => {
     const socketPath = tmpSocketPath("agent-habit-cron-trigger")
     const { daemon, processManager, scheduler } = make(socketPath)
     const triggerHabitJob = vi.fn(async (jobId: string) => {
-      processManager.sendToAgent("a", { type: "habit", habitName: "heartbeat", trigger: "cron" })
       return { ok: true, message: `triggered habit ${jobId}` }
     })
     ;(scheduler as typeof scheduler & { triggerHabitJob: typeof triggerHabitJob }).triggerHabitJob = triggerHabitJob
@@ -318,11 +398,7 @@ describe("daemon agent service command routing", () => {
       expect(response).toMatchObject({ ok: true, message: "triggered habit a:heartbeat:cadence" })
       expect(triggerHabitJob).toHaveBeenCalledWith("a:heartbeat:cadence")
       expect(scheduler.triggerJob).not.toHaveBeenCalled()
-      expect(processManager.sendToAgent).toHaveBeenCalledWith("a", {
-        type: "habit",
-        habitName: "heartbeat",
-        trigger: "cron",
-      })
+      expect(processManager.sendToAgent).not.toHaveBeenCalledWith("a", expect.objectContaining({ type: "habit" }))
     } finally {
       await daemon.stop()
     }

@@ -34,12 +34,20 @@ export function getDeferredReturnDir(agentName: string, friendId: string): strin
   return path.join(getAgentRoot(agentName), "state", "pending-returns", friendId)
 }
 
-/** Canonical inner-dialog pending path segments. */
-export const INNER_DIALOG_PENDING = { friendId: "self", channel: "inner", key: "dialog" } as const
+/** Canonical private-runtime pending path segments. The path is historical durable state. */
+export const PRIVATE_RUNTIME_PENDING = { friendId: "self", channel: "inner", key: "dialog" } as const
 
-/** Returns the pending dir for this agent's inner dialog. */
+/** Returns the pending dir for this agent's private runtime. */
+export function getPrivateRuntimePendingDir(agentName: string): string {
+  return getPendingDir(agentName, PRIVATE_RUNTIME_PENDING.friendId, PRIVATE_RUNTIME_PENDING.channel, PRIVATE_RUNTIME_PENDING.key)
+}
+
+/** Legacy alias for readers and callers that still reference the historical path name. */
+export const INNER_DIALOG_PENDING = PRIVATE_RUNTIME_PENDING
+
+/** Legacy alias for readers and callers that still reference the historical path name. */
 export function getInnerDialogPendingDir(agentName: string): string {
-  return getPendingDir(agentName, INNER_DIALOG_PENDING.friendId, INNER_DIALOG_PENDING.channel, INNER_DIALOG_PENDING.key)
+  return getPrivateRuntimePendingDir(agentName)
 }
 
 export function hasPendingMessages(pendingDir: string): boolean {

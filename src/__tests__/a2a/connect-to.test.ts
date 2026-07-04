@@ -116,7 +116,7 @@ describe("connect_to tool (owner/local sense, DID-keyed)", () => {
     expect(await findFriendByDid(store, peer.did)).toBeNull()
   })
 
-  it("refuses (downgrades) from the internal (inner-dialog) sense — no link", async () => {
+  it("refuses (downgrades) from the internal (private-runtime) sense — no link", async () => {
     tmp = createTmpBundle({ agentName: "connect-internal-refuse" })
     const peer = mintIdentity()
     const cardUrl = await startPeer(tmp.agentRoot, peer)

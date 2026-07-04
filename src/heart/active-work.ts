@@ -330,7 +330,7 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null)
     return "this same thread"
   }
   if (frame.inner?.job?.status === "running") {
-    return "inner lane"
+    return "private runtime"
   }
   return null
 }
@@ -870,7 +870,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 
 export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obligationDetailsRenderedElsewhere?: boolean }): string {
   const lines = ["## what i'm holding"]
-  lines.push("this is my top-level live world-state right now. inner work, coding lanes, other sessions, and return obligations all belong inside this picture.")
+  lines.push("this is my top-level live world-state right now. private-runtime work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
   const primaryObligation = findPrimaryOpenObligation(frame)
   const currentSessionObligation = findCurrentSessionOpenObligation(frame)
@@ -1044,7 +1044,7 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
 
   if (frame.innerReturnObligations && frame.innerReturnObligations.length > 0) {
     lines.push("")
-    lines.push("## inner return obligations")
+    lines.push("## private-runtime return obligations")
     for (const ob of frame.innerReturnObligations) {
       const preview = ob.delegatedContent.length > 60
         ? `${ob.delegatedContent.slice(0, 57)}...`

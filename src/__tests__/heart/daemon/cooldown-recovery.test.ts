@@ -28,7 +28,7 @@ describe("cooldown recovery", () => {
   })
   const clearTimeoutFn = vi.fn()
   const agents: DaemonManagedAgent[] = [
-    { name: "test-agent", entry: "heart/agent-entry.js", channel: "inner-dialog", autoStart: true },
+    { name: "test-agent", entry: "heart/agent-entry.js", channel: "private-runtime", autoStart: true },
   ]
 
   // Existing cooldown tests need run duration > 5s to avoid triggering fast-crash detection.

@@ -31,7 +31,7 @@ export function createToolActivityCallbacks(options: ToolActivityOptions): ToolA
   // Track in-flight hidden tools so onToolEnd can SYMMETRICALLY suppress
   // emission for the same tools that onToolStart already suppresses.
   // Without this, a rejected hidden tool (e.g. settle blocked by the
-  // mustResolveBeforeHandoff gate or the inner-dialog attention-queue gate)
+  // mustResolveBeforeHandoff gate or the private-runtime attention-queue gate)
   // would emit "✗ <previous visible tool's description> — <hidden tool's args summary>"
   // because lastDescription persists across calls and the hidden tool's summary
   // (built via summarizeArgs) leaks args like settle's `answer`/`intent` into

@@ -18,7 +18,7 @@ import { computeDaemonRollup } from "./daemon-rollup"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
-import { isInnerDialogAutoStartEnabled, listEnabledBundleAgents } from "./agent-discovery"
+import { listEnabledBundleAgents, readPrivateRuntimeConfig } from "./agent-discovery"
 import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
@@ -28,12 +28,16 @@ import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
-import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
-import { flushPulse } from "./pulse"
+import { checkAgentConfig } from "./agent-config-check"
+import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
+import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
+import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from "./habit-private-wake"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
+import { refreshProviderCredentialPool } from "../provider-credentials"
+import type { HabitRunTrigger } from "../../arc/flight-recorder"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -70,6 +74,10 @@ if (mode === "dev") {
 }
 
 const managedAgents = listEnabledBundleAgents()
+const managedPrivateRuntimes = managedAgents.map((agent) => ({
+  agent,
+  config: readPrivateRuntimeConfig(agent),
+}))
 
 function sentinelHealthStatus(receipt: Pick<ContextLossSentinelReceipt, "verdict">): DaemonHealthResult["status"] {
   if (receipt.verdict === "ready") return "ok"
@@ -99,26 +107,85 @@ async function refreshDaemonSentinel(
   }
 }
 
+function emitAwaitPrivateWakeDispatchError(options: {
+  agent: string
+  awaitName: string
+  triggerSource: AwaitPrivateWakeTriggerSource
+  socketPath: string
+  error: unknown
+}): void {
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.await_private_wake_dispatch_error",
+    message: "failed to dispatch await private-runtime wake",
+    meta: {
+      agent: options.agent,
+      awaitName: options.awaitName,
+      triggerSource: options.triggerSource,
+      socketPath: options.socketPath,
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+  })
+}
+
+function emitPulsePrivateWakeDispatchError(options: {
+  request: PulsePrivateWakeRequest
+  socketPath: string
+  error: unknown
+}): void {
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.pulse_private_wake_dispatch_error",
+    message: "failed to dispatch pulse private-runtime wake",
+    meta: {
+      agent: options.request.agent,
+      triggerSource: options.request.triggerSource,
+      idempotencyKey: options.request.idempotencyKey,
+      originRefs: options.request.originRefs,
+      socketPath: options.socketPath,
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+  })
+}
+
+function emitHabitPrivateWakeDispatchError(options: {
+  agent: string
+  habitName: string
+  trigger: HabitRunTrigger
+  triggerSource: HabitPrivateWakeTriggerSource
+  socketPath: string
+  error: unknown
+}): void {
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.habit_private_wake_dispatch_error",
+    message: "failed to dispatch habit private-runtime wake",
+    meta: {
+      agent: options.agent,
+      habitName: options.habitName,
+      trigger: options.trigger,
+      triggerSource: options.triggerSource,
+      socketPath: options.socketPath,
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+  })
+}
+
 const processManager = new DaemonProcessManager({
-  agents: managedAgents.map((agent) => ({
+  agents: managedPrivateRuntimes.map(({ agent, config }) => ({
     name: agent,
     entry: "heart/agent-entry.js",
-    channel: "inner-dialog",
-    autoStart: isInnerDialogAutoStartEnabled(agent),
+    channel: "private-runtime",
+    autoStart: config.autoStart,
   })),
   existsSync: fs.existsSync,
-  /* v8 ignore next 4 -- wiring: delegates to checkAgentConfigWithProviderHealth which has full unit tests @preserve */
+  /* v8 ignore next 4 -- wiring: delegates to checkAgentConfig which has full unit tests @preserve */
   configCheck: async (agent) => {
-    if (!isInnerDialogAutoStartEnabled(agent)) {
-      return {
-        ok: true,
-        skip: true,
-        error: "inner-dialog auto-start is disabled in agent.json",
-        fix: "Set innerDialog.autoStart to true and rerun `ouro up` to resume autonomous inner-dialog turns.",
-      }
-    }
     const bundlesRoot = getAgentBundlesRoot()
-    return checkAgentConfigWithProviderHealth(agent, bundlesRoot)
+    return checkAgentConfig(agent, bundlesRoot)
   },
   /* v8 ignore start -- pulse flush wiring: integration code; flushPulse itself has full unit tests @preserve */
   onSnapshotChange: () => {
@@ -127,12 +194,20 @@ const processManager = new DaemonProcessManager({
       bundlesRoot: getAgentBundlesRoot(),
       daemonVersion: getPackageVersion(),
       now: new Date(),
-      // Default I/O wired into pulse.ts (writePulse, readPulse, etc.)
-      // Wake recipient: send inner.wake over the daemon's own socket so
-      // the recipient agent runs an inner-dialog turn that picks up the
-      // pulse alert. Catch errors silently — pulse is best-effort.
-      fireInnerWake: (agent: string) => {
-        sendDaemonCommand(socketPath, { kind: "inner.wake", agent }).catch(() => {})
+      // Default I/O wired into pulse.ts (writePulse, readPulse, etc.).
+      // Pulse alerts queue canonical private-runtime wakes so policy decides
+      // whether a model-backed notification turn may run.
+      firePrivateWake: (request) => {
+        sendDaemonCommand(socketPath, {
+          kind: "private.wake",
+          ...request,
+        }).catch((error) => {
+          emitPulsePrivateWakeDispatchError({
+            request,
+            socketPath,
+            error,
+          })
+        })
       },
     })
   },
@@ -396,8 +471,14 @@ function writeStopCommandHealthState(): void {
   }
 }
 
+async function preloadProviderCredentialPools(): Promise<void> {
+  await Promise.all(managedAgents.map((agent) =>
+    refreshProviderCredentialPool(agent, { preserveCachedOnFailure: true }),
+  ))
+}
+
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
-void daemon.start().then(async () => {
+void preloadProviderCredentialPools().then(() => daemon.start()).then(async () => {
   const bundlesRoot = getAgentBundlesRoot()
   const ouroPath = resolveOuroBinaryPath()
   const osCronDeps = createRealOsCronDeps()
@@ -417,8 +498,24 @@ void daemon.start().then(async () => {
         agent,
         habitsDir,
         osCronManager,
-        onHabitFire: (habitName, trigger) => {
-          processManager.sendToAgent(agent, { type: "habit", habitName, trigger })
+        onHabitFire: (habitName, trigger, context) => {
+          const command = buildHabitPrivateWakeCommand({
+            agent,
+            habitName,
+            trigger,
+            sourceRef: { kind: "daemon-entry", id: "habit-scheduler" },
+            occurrenceId: context?.occurrenceId,
+          })
+          sendDaemonCommand(socketPath, command).catch((error) => {
+            emitHabitPrivateWakeDispatchError({
+              agent,
+              habitName,
+              trigger,
+              triggerSource: command.triggerSource as HabitPrivateWakeTriggerSource,
+              socketPath,
+              error,
+            })
+          })
         },
         deps: {
           readdir: (dir) => fs.readdirSync(dir),
@@ -476,7 +573,19 @@ void daemon.start().then(async () => {
         awaitsDir,
         osCronManager: awaitOsCronManager,
         onAwaitFire: (awaitName) => {
-          processManager.sendToAgent(agent, { type: "await", awaitName })
+          sendDaemonCommand(socketPath, buildAwaitPrivateWakeCommand({
+            agent,
+            awaitName,
+            triggerSource: "await-scheduler",
+          })).catch((error) => {
+            emitAwaitPrivateWakeDispatchError({
+              agent,
+              awaitName,
+              triggerSource: "await-scheduler",
+              socketPath,
+              error,
+            })
+          })
         },
         onAwaitExpire: (awaitName) => {
           void archiveAndAlertExpiredAwait({
@@ -486,8 +595,20 @@ void daemon.start().then(async () => {
             deliveryDeps: {
               agentName: agent,
               queuePending: () => {
-                // Best-effort: queue inner-dialog wake so the agent processes the alert path
-                sendDaemonCommand(socketPath, { kind: "inner.wake", agent }).catch(() => {})
+                // Best-effort: queue private-runtime wake so the agent processes the alert path.
+                sendDaemonCommand(socketPath, buildAwaitPrivateWakeCommand({
+                  agent,
+                  awaitName,
+                  triggerSource: "await-expiry",
+                })).catch((error) => {
+                  emitAwaitPrivateWakeDispatchError({
+                    agent,
+                    awaitName,
+                    triggerSource: "await-expiry",
+                    socketPath,
+                    error,
+                  })
+                })
               },
             },
           }).catch((err) => {

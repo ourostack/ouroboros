@@ -122,6 +122,28 @@ type AgentConfigReadResult =
   | { ok: true; disabled: true; agentJsonPath: string; parsed: Record<string, unknown> }
   | { ok: false; result: ConfigCheckResult }
 
+function validatePrivateRuntimeConfig(agentName: string, agentJsonPath: string, parsed: Record<string, unknown>): ConfigCheckResult | null {
+  const privateRuntime = parsed.privateRuntime
+  if (privateRuntime === undefined) return null
+  if (!privateRuntime || typeof privateRuntime !== "object" || Array.isArray(privateRuntime)) {
+    return {
+      ok: false,
+      error: `agent.json for '${agentName}' has invalid privateRuntime config; privateRuntime must be an object.`,
+      fix: `Use privateRuntime only for private-runtime policy such as { autoStart: false } in ${agentJsonPath}. Provider/model selection belongs to the inner lane: ouro use --agent ${agentName} --lane inner --provider <provider> --model <model>.`,
+    }
+  }
+
+  const privateRuntimeRecord = privateRuntime as Record<string, unknown>
+  const forbidden = ["provider", "model"].filter((key) => Object.prototype.hasOwnProperty.call(privateRuntimeRecord, key))
+  if (forbidden.length === 0) return null
+
+  return {
+    ok: false,
+    error: `agent.json for '${agentName}' cannot set ${forbidden.map((key) => `privateRuntime.${key}`).join(" or ")}; privateRuntime cannot select providers or models.`,
+    fix: `Remove ${forbidden.map((key) => `privateRuntime.${key}`).join(" and ")} from ${agentJsonPath}. Provider/model selection belongs to the inner lane: ouro use --agent ${agentName} --lane inner --provider <provider> --model <model>.`,
+  }
+}
+
 function readAgentConfigForProviderCheck(
   agentName: string,
   bundlesRoot: string,
@@ -158,6 +180,9 @@ function readAgentConfigForProviderCheck(
   if (parsed.enabled === false) {
     return { ok: true, disabled: true, agentJsonPath, parsed }
   }
+
+  const privateRuntimeError = validatePrivateRuntimeConfig(agentName, agentJsonPath, parsed)
+  if (privateRuntimeError) return { ok: false, result: privateRuntimeError }
 
   return { ok: true, disabled: false, agentJsonPath, parsed }
 }

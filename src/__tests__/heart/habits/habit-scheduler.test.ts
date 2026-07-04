@@ -336,7 +336,9 @@ describe("HabitScheduler", () => {
 
       scheduler.start()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", {
+        occurrenceId: "overdue:last-run:2026-03-27T10:00:00.000Z:cadence:30m",
+      })
     })
 
     it("does not fire habits that are not overdue", () => {
@@ -387,7 +389,9 @@ describe("HabitScheduler", () => {
 
       scheduler.start()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", {
+        occurrenceId: "overdue:first-run:30m",
+      })
     })
 
     it("does not fire paused habits even if overdue", () => {
@@ -514,7 +518,9 @@ describe("HabitScheduler", () => {
 
       scheduler.reconcile()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", {
+        occurrenceId: "overdue:first-run:30m",
+      })
     })
 
     it("fires overdue habits on reconcile (elapsed > cadence)", () => {
@@ -539,7 +545,9 @@ describe("HabitScheduler", () => {
 
       scheduler.reconcile()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", {
+        occurrenceId: "overdue:last-run:2026-03-27T10:00:00.000Z:cadence:30m",
+      })
     })
 
     it("does not re-fire recently-fired habits on reconcile", () => {
@@ -911,7 +919,9 @@ describe("HabitScheduler", () => {
         ok: true,
         message: "triggered habit slugger:heartbeat:cadence",
       })
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "cron")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "cron", {
+        occurrenceId: "job:slugger:heartbeat:cadence:cron:last-run:2026-03-27T10:00:00.000Z",
+      })
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         event: "daemon.habit_job_triggered",
       }))
@@ -921,6 +931,33 @@ describe("HabitScheduler", () => {
         message: "unknown habit job: slugger:missing:cadence",
       })
       expect(onHabitFire).toHaveBeenCalledTimes(1)
+    })
+
+    it("uses a never occurrence label for cron jobs without lastRun", async () => {
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile })
+
+      mockParseHabitFile.mockReturnValueOnce({
+        ...makeHeartbeatHabit(),
+        lastRun: null,
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      await expect(scheduler.triggerJob("slugger:heartbeat:cadence")).resolves.toEqual({
+        ok: true,
+        message: "triggered habit slugger:heartbeat:cadence",
+      })
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "cron", {
+        occurrenceId: "job:slugger:heartbeat:cadence:cron:last-run:never",
+      })
     })
 
     it("uses cadence with unparseable cron: skips habit", () => {
@@ -1500,7 +1537,9 @@ describe("HabitScheduler", () => {
       // Advance by cadence (30m = 1800000ms)
       vi.advanceTimersByTime(30 * 60 * 1000)
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", expect.objectContaining({
+        occurrenceId: expect.stringMatching(/^timer:heartbeat:cadence-ms:1800000:slot:/),
+      }))
     })
 
     it("timer fires repeatedly at cadence interval", () => {
@@ -1513,11 +1552,15 @@ describe("HabitScheduler", () => {
 
       // Advance by 2 cadence intervals
       vi.advanceTimersByTime(30 * 60 * 1000)
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", expect.objectContaining({
+        occurrenceId: expect.stringMatching(/^timer:heartbeat:cadence-ms:1800000:slot:/),
+      }))
 
       vi.advanceTimersByTime(30 * 60 * 1000)
       expect(onHabitFire).toHaveBeenCalledTimes(2)
-      expect(onHabitFire).toHaveBeenLastCalledWith("heartbeat", "overdue")
+      expect(onHabitFire).toHaveBeenLastCalledWith("heartbeat", "overdue", expect.objectContaining({
+        occurrenceId: expect.stringMatching(/^timer:heartbeat:cadence-ms:1800000:slot:/),
+      }))
     })
 
     it("getDegradedHabits returns habits on timer fallback", () => {

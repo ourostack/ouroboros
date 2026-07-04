@@ -17,9 +17,9 @@ vi.mock("../../../nerves/runtime", () => ({
 }))
 
 import {
-  parseInnerDialogSession,
+  parsePrivateRuntimeSession,
   formatThoughtTurns,
-  getInnerDialogSessionPath,
+  getPrivateRuntimeSessionPath,
   followThoughts,
   extractThoughtResponseFromMessages,
 } from "../../../heart/daemon/thoughts"
@@ -55,7 +55,7 @@ describe("thoughts", () => {
     return filePath
   }
 
-  describe("parseInnerDialogSession", () => {
+  describe("parsePrivateRuntimeSession", () => {
     it("parses boot + heartbeat turns", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
@@ -65,7 +65,7 @@ describe("thoughts", () => {
         { role: "assistant", content: "nothing new. resting." },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
 
       expect(turns).toHaveLength(2)
       expect(turns[0].type).toBe("boot")
@@ -81,7 +81,7 @@ describe("thoughts", () => {
         { role: "assistant", content: "sent standup summary." },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
 
       expect(turns).toHaveLength(1)
       expect(turns[0].type).toBe("task")
@@ -106,7 +106,7 @@ describe("thoughts", () => {
         { role: "assistant", content: "found something interesting." },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
 
       expect(turns).toHaveLength(1)
       expect(turns[0].tools).toEqual(["search_facts", "shell"])
@@ -134,7 +134,7 @@ describe("thoughts", () => {
         },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
 
       expect(turns).toHaveLength(1)
       expect(turns[0].response).toBe("checked the files. all good.")
@@ -162,7 +162,7 @@ describe("thoughts", () => {
         },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].tools).toEqual(["search_facts"])
       expect(turns[0].tools).not.toContain("settle")
     })
@@ -181,7 +181,7 @@ describe("thoughts", () => {
         },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].response).toBe("saved and done.")
       expect(turns[0].tools).toEqual(["diary_write"])
     })
@@ -199,7 +199,7 @@ describe("thoughts", () => {
         },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].response).toBe("")
     })
 
@@ -216,7 +216,7 @@ describe("thoughts", () => {
         },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].response).toBe("")
     })
 
@@ -235,7 +235,7 @@ describe("thoughts", () => {
         { role: "assistant", content: "still here." },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
 
       expect(turns).toHaveLength(1)
       expect(turns[0].tools).toEqual([])
@@ -243,7 +243,7 @@ describe("thoughts", () => {
     })
 
     it("returns empty array for nonexistent file", () => {
-      expect(parseInnerDialogSession("/tmp/nonexistent-dialog.json")).toEqual([])
+      expect(parsePrivateRuntimeSession("/tmp/nonexistent-dialog.json")).toEqual([])
     })
 
     it("returns empty array for invalid JSON", () => {
@@ -251,7 +251,7 @@ describe("thoughts", () => {
       const filePath = path.join(dir, "dialog.json")
       fs.writeFileSync(filePath, "not json")
 
-      expect(parseInnerDialogSession(filePath)).toEqual([])
+      expect(parsePrivateRuntimeSession(filePath)).toEqual([])
     })
 
     it("returns empty array when session JSON parses to a primitive", () => {
@@ -259,14 +259,14 @@ describe("thoughts", () => {
       const filePath = path.join(dir, "dialog.json")
       fs.writeFileSync(filePath, "42")
 
-      expect(parseInnerDialogSession(filePath)).toEqual([])
+      expect(parsePrivateRuntimeSession(filePath)).toEqual([])
     })
 
     it("returns empty array for wrong version", () => {
       const filePath = tmpSessionFile([])
       fs.writeFileSync(filePath, JSON.stringify({ version: 99, messages: [] }))
 
-      expect(parseInnerDialogSession(filePath)).toEqual([])
+      expect(parsePrivateRuntimeSession(filePath)).toEqual([])
     })
 
     it("parses live v2 event-envelope sessions", () => {
@@ -363,7 +363,7 @@ describe("thoughts", () => {
         },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
 
       expect(turns).toHaveLength(1)
       expect(turns[0]).toMatchObject({
@@ -380,7 +380,7 @@ describe("thoughts", () => {
         { role: "assistant", content: [{ type: "text", text: "structured response" }] },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].response).toBe("structured response")
     })
 
@@ -391,7 +391,7 @@ describe("thoughts", () => {
         { role: "assistant", content: [{ type: "image", url: "http://example.com" }, { type: "text", text: "after image" }] },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].response).toContain("after image")
     })
 
@@ -403,7 +403,7 @@ describe("thoughts", () => {
         { role: "assistant", content: "real response." },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns).toHaveLength(1)
       expect(turns[0].response).toBe("real response.")
     })
@@ -415,7 +415,7 @@ describe("thoughts", () => {
         { role: "assistant", content: null },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns).toHaveLength(1)
       expect(turns[0].response).toBe("")
     })
@@ -427,7 +427,7 @@ describe("thoughts", () => {
         { role: "assistant", content: ["plain text", { type: "text", text: "structured" }] },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].response).toContain("plain text")
       expect(turns[0].response).toContain("structured")
     })
@@ -449,7 +449,7 @@ describe("thoughts", () => {
         { role: "assistant", content: "done." },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns[0].tools).toEqual(["real_tool"])
     })
 
@@ -486,7 +486,7 @@ describe("thoughts", () => {
         { role: "tool", tool_call_id: "call_rest", content: "(resting)" },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
 
       expect(turns).toHaveLength(1)
       expect(turns[0].tools).toEqual(["surface", "rest"])
@@ -499,7 +499,7 @@ describe("thoughts", () => {
         { role: "user", content: "waking up.\n\nwhat needs my attention?" },
       ])
 
-      const turns = parseInnerDialogSession(sessionPath)
+      const turns = parsePrivateRuntimeSession(sessionPath)
       expect(turns).toHaveLength(1)
       expect(turns[0].response).toBe("")
     })
@@ -555,7 +555,7 @@ describe("thoughts", () => {
     })
 
     it("returns fallback message for empty turns", () => {
-      expect(formatThoughtTurns([], 10)).toBe("no inner dialog activity")
+      expect(formatThoughtTurns([], 10)).toBe("no private-runtime activity")
     })
 
     it("shows (no response) for empty response", () => {
@@ -690,9 +690,9 @@ describe("thoughts", () => {
     })
   })
 
-  describe("getInnerDialogSessionPath", () => {
+  describe("getPrivateRuntimeSessionPath", () => {
     it("returns correct path", () => {
-      const result = getInnerDialogSessionPath("/home/agent/slugger.ouro")
+      const result = getPrivateRuntimeSessionPath("/home/agent/slugger.ouro")
       expect(result).toBe("/home/agent/slugger.ouro/state/sessions/self/inner/dialog.json")
     })
   })
@@ -821,17 +821,17 @@ describe("thoughts", () => {
     })
   })
 
-  describe("deriveInnerDialogStatus", () => {
+  describe("derivePrivateRuntimeStatus", () => {
     it("derives pending status from queued self-messages", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      expect(typeof thoughts.deriveInnerDialogStatus).toBe("function")
-      expect(thoughts.deriveInnerDialogStatus(
+      expect(typeof thoughts.derivePrivateRuntimeStatus).toBe("function")
+      expect(thoughts.derivePrivateRuntimeStatus(
         [{ from: "slugger", content: "think about penguins", timestamp: 1 }],
         [],
       )).toEqual({
-        queue: "queued to inner/dialog",
-        wake: "awaiting inner session",
+        queue: "queued to private runtime",
+        wake: "awaiting private-runtime turn",
         processing: "pending",
         surfaced: "nothing yet",
       })
@@ -840,8 +840,8 @@ describe("thoughts", () => {
     it("derives surfaced preview from the latest processed pending turn", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      expect(typeof thoughts.deriveInnerDialogStatus).toBe("function")
-      expect(thoughts.deriveInnerDialogStatus(
+      expect(typeof thoughts.derivePrivateRuntimeStatus).toBe("function")
+      expect(thoughts.derivePrivateRuntimeStatus(
         [],
         [{
           type: "heartbeat",
@@ -857,10 +857,10 @@ describe("thoughts", () => {
       })
     })
 
-    it("reports processing started when runtime state says the inner turn is still active", async () => {
+    it("reports processing started when runtime state says the private-runtime turn is still active", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      expect(thoughts.deriveInnerDialogStatus(
+      expect(thoughts.derivePrivateRuntimeStatus(
         [],
         [{
           type: "heartbeat",
@@ -884,7 +884,7 @@ describe("thoughts", () => {
     it("keeps queued state visible while runtime state is active and pending remains", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      expect(thoughts.deriveInnerDialogStatus(
+      expect(thoughts.derivePrivateRuntimeStatus(
         [{ from: "slugger", content: "think about penguins", timestamp: 1 }],
         [],
         {
@@ -893,7 +893,7 @@ describe("thoughts", () => {
           startedAt: "2026-03-12T00:00:00.000Z",
         },
       )).toEqual({
-        queue: "queued to inner/dialog",
+        queue: "queued to private runtime",
         wake: "queued behind active turn",
         processing: "pending",
         surfaced: "nothing yet",
@@ -903,7 +903,7 @@ describe("thoughts", () => {
     it("returns idle status when nothing is queued or recently surfaced", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      expect(thoughts.deriveInnerDialogStatus(
+      expect(thoughts.derivePrivateRuntimeStatus(
         [],
         [{
           type: "heartbeat",
@@ -926,16 +926,16 @@ describe("thoughts", () => {
       expect(thoughts.formatSurfacedValue("a".repeat(140), 20)).toBe('"aaaaaaaaaaaaaaaaa..."')
     })
 
-    it("formats full inner-dialog status lines for terminal output", async () => {
+    it("formats full private-runtime status lines for terminal output", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      expect(thoughts.formatInnerDialogStatus({
-        queue: "queued to inner/dialog",
+      expect(thoughts.formatPrivateRuntimeStatus({
+        queue: "queued to private runtime",
         wake: "in progress",
         processing: "started",
         surfaced: '"formal little blokes"',
       })).toBe([
-        "queue: queued to inner/dialog",
+        "queue: queued to private runtime",
         "wake: in progress",
         "processing: started",
         'surfaced: "formal little blokes"',
@@ -952,7 +952,7 @@ describe("thoughts", () => {
         timestamp: 1,
       }))
 
-      expect(thoughts.readInnerDialogStatus("/tmp/nonexistent-dialog.json", pendingDir)).toEqual({
+      expect(thoughts.readPrivateRuntimeStatus("/tmp/nonexistent-dialog.json", pendingDir)).toEqual({
         queue: "clear",
         wake: "idle",
         processing: "idle",
@@ -962,7 +962,7 @@ describe("thoughts", () => {
       const notADirectoryPath = path.join(os.tmpdir(), `thoughts-pending-file-${Date.now()}.json`)
       fs.writeFileSync(notADirectoryPath, "{}")
 
-      expect(thoughts.readInnerDialogStatus("/tmp/nonexistent-dialog.json", notADirectoryPath)).toEqual({
+      expect(thoughts.readPrivateRuntimeStatus("/tmp/nonexistent-dialog.json", notADirectoryPath)).toEqual({
         queue: "clear",
         wake: "idle",
         processing: "idle",
@@ -995,7 +995,7 @@ describe("thoughts", () => {
         startedAt: "2026-03-12T00:00:00.000Z",
       }))
 
-      expect(thoughts.readInnerDialogStatus(sessionPath, path.join(dir, "pending"), runtimePath)).toEqual({
+      expect(thoughts.readPrivateRuntimeStatus(sessionPath, path.join(dir, "pending"), runtimePath)).toEqual({
         queue: "clear",
         wake: "in progress",
         processing: "started",
@@ -1021,7 +1021,7 @@ describe("thoughts", () => {
         lastCompletedAt: false,
       }))
 
-      expect(thoughts.readInnerDialogStatus(sessionPath, pendingDir, runtimePath)).toEqual({
+      expect(thoughts.readPrivateRuntimeStatus(sessionPath, pendingDir, runtimePath)).toEqual({
         queue: "clear",
         wake: "idle",
         processing: "idle",
@@ -1034,7 +1034,7 @@ describe("thoughts", () => {
     it("includes origin info when pending messages have delegatedFrom", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      const status = thoughts.deriveInnerDialogStatus(
+      const status = thoughts.derivePrivateRuntimeStatus(
         [{
           from: "testagent",
           content: "think about penguins",
@@ -1053,7 +1053,7 @@ describe("thoughts", () => {
     it("includes contentSnippet from first pending message", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      const status = thoughts.deriveInnerDialogStatus(
+      const status = thoughts.derivePrivateRuntimeStatus(
         [{
           from: "testagent",
           content: "think about penguins and their formal attire",
@@ -1069,7 +1069,7 @@ describe("thoughts", () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
       const longContent = "a".repeat(100)
-      const status = thoughts.deriveInnerDialogStatus(
+      const status = thoughts.derivePrivateRuntimeStatus(
         [{
           from: "testagent",
           content: longContent,
@@ -1084,7 +1084,7 @@ describe("thoughts", () => {
     it("sets obligationPending when pending messages have obligationStatus 'pending'", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      const status = thoughts.deriveInnerDialogStatus(
+      const status = thoughts.derivePrivateRuntimeStatus(
         [{
           from: "testagent",
           content: "think about penguins",
@@ -1100,7 +1100,7 @@ describe("thoughts", () => {
     it("does not set origin or obligationPending when pending messages lack delegatedFrom", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      const status = thoughts.deriveInnerDialogStatus(
+      const status = thoughts.derivePrivateRuntimeStatus(
         [{ from: "testagent", content: "plain thought", timestamp: 1 }],
         [],
       )
@@ -1108,12 +1108,12 @@ describe("thoughts", () => {
       expect(status.obligationPending).toBeUndefined()
     })
 
-    it("renders origin info in formatInnerDialogStatus", async () => {
+    it("renders origin info in formatPrivateRuntimeStatus", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      const formatted = thoughts.formatInnerDialogStatus({
-        queue: "queued to inner/dialog",
-        wake: "awaiting inner session",
+      const formatted = thoughts.formatPrivateRuntimeStatus({
+        queue: "queued to private runtime",
+        wake: "awaiting private-runtime turn",
         processing: "pending",
         surfaced: "nothing yet",
         origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
@@ -1125,10 +1125,10 @@ describe("thoughts", () => {
       expect(formatted).toContain("obligation: pending")
     })
 
-    it("omits origin line from formatInnerDialogStatus when origin is absent", async () => {
+    it("omits origin line from formatPrivateRuntimeStatus when origin is absent", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
-      const formatted = thoughts.formatInnerDialogStatus({
+      const formatted = thoughts.formatPrivateRuntimeStatus({
         queue: "clear",
         wake: "idle",
         processing: "idle",
@@ -1152,7 +1152,7 @@ describe("thoughts", () => {
         lastCompletedAt: "2026-03-12T00:00:00.000Z",
       }))
 
-      expect(thoughts.readInnerDialogStatus(sessionPath, pendingDir, runtimePath)).toEqual({
+      expect(thoughts.readPrivateRuntimeStatus(sessionPath, pendingDir, runtimePath)).toEqual({
         queue: "clear",
         wake: "idle",
         processing: "idle",

@@ -96,7 +96,12 @@ export type EvolutionActionClass =
   | "change_hosted_infra"
   | "ratify"
 
-export type EvolutionAuthorityMode = "allowed" | "ask_before_action" | "human_required" | "blocked"
+export type EvolutionAuthorityMode =
+  | "allowed"
+  | "reviewer_required"
+  | "ask_before_action"
+  | "human_required"
+  | "blocked"
 
 export interface EvolutionAuthority {
   actions: Partial<Record<EvolutionActionClass, EvolutionAuthorityMode>>
@@ -262,19 +267,19 @@ const ALL_ACTIONS: readonly EvolutionActionClass[] = [
 ]
 
 const HUMAN_REQUIRED_ACTIONS: ReadonlySet<EvolutionActionClass> = new Set([
+  "mutate_credentials",
+])
+
+const REVIEWER_REQUIRED_ACTIONS: ReadonlySet<EvolutionActionClass> = new Set([
+  "merge_pr",
   "release_publish",
+  "install_local",
+  "mutate_shared_skill",
   "mutate_identity",
   "mutate_voice",
-  "mutate_credentials",
   "mutate_provider_config",
   "send_external_message",
   "change_hosted_infra",
-])
-
-const ASK_BEFORE_ACTIONS: ReadonlySet<EvolutionActionClass> = new Set([
-  "merge_pr",
-  "install_local",
-  "mutate_shared_skill",
 ])
 
 function nowIso(): string {
@@ -323,14 +328,14 @@ function defaultAuthority(updatedAt: string): EvolutionAuthority {
   for (const action of ALL_ACTIONS) {
     actions[action] = HUMAN_REQUIRED_ACTIONS.has(action)
       ? "human_required"
-      : ASK_BEFORE_ACTIONS.has(action)
-        ? "ask_before_action"
+      : REVIEWER_REQUIRED_ACTIONS.has(action)
+        ? "reviewer_required"
         : "allowed"
   }
   return {
     actions,
     updatedAt,
-    reason: "default conservative evolution authority",
+    reason: "default conservative evolution authority with reviewer gates",
   }
 }
 
@@ -418,6 +423,10 @@ function budgetExhausted(item: EvolutionCase, action: EvolutionActionClass): boo
     return item.budget.spent.releaseInstallAttempts >= item.budget.limits.releaseInstallAttempts
   }
   return false
+}
+
+function fallbackAuthorityForAction(action: EvolutionActionClass): EvolutionAuthorityMode {
+  return HUMAN_REQUIRED_ACTIONS.has(action) ? "human_required" : "reviewer_required"
 }
 
 function spendBudget(item: EvolutionCase, action: EvolutionActionClass): EvolutionBudget {
@@ -587,7 +596,7 @@ export function evaluateEvolutionAction(
   const item = readEvolutionCase(agentRoot, caseId)
   if (!item) return { allowed: false, code: "case_not_found", reason: `Evolution case not found: ${caseId}` }
   if (isTerminal(item)) return { allowed: false, code: "terminal_case", reason: `Evolution case is ${item.status}` }
-  const authority = item.authority.actions[action] ?? "human_required"
+  const authority = item.authority.actions[action] ?? fallbackAuthorityForAction(action)
   if (authority !== "allowed") return { allowed: false, code: authority, reason: `${action} is ${authority}` }
   if (budgetExhausted(item, action)) return { allowed: false, code: "budget_exhausted", reason: `${action} budget is exhausted` }
   return { allowed: true, code: "allowed", reason: `${action} allowed` }

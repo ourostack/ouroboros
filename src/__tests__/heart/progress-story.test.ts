@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest"
 
 describe("progress story", () => {
-  it("renders queued and completed inner work with truthful phases while preserving authored outcome text", async () => {
+  it("renders queued and completed private-runtime work with truthful phases while preserving authored outcome text", async () => {
     const { buildProgressStory, renderProgressStory } = await import("../../heart/progress-story")
 
     expect(renderProgressStory(buildProgressStory({
       scope: "inner-delegation",
       phase: "queued",
-      objective: "queued to inner/dialog",
-      outcomeText: "wake: awaiting inner session",
+      objective: "queued to private runtime",
+      outcomeText: "wake: awaiting private-runtime turn",
     }))).toBe([
-      "inner work: queued",
-      "queued to inner/dialog",
-      "wake: awaiting inner session",
+      "private-runtime work: queued",
+      "queued to private runtime",
+      "wake: awaiting private-runtime turn",
     ].join("\n"))
 
     expect(renderProgressStory(buildProgressStory({
@@ -20,7 +20,7 @@ describe("progress story", () => {
       phase: "completed",
       outcomeText: "formal little blokes",
     }))).toBe([
-      "inner work: completed",
+      "private-runtime work: completed",
       "formal little blokes",
     ].join("\n"))
   })
@@ -72,6 +72,6 @@ describe("progress story", () => {
       phase: "processing",
       objective: "   ",
       outcomeText: "\n  ",
-    }))).toBe("inner work: processing")
+    }))).toBe("private-runtime work: processing")
   })
 })

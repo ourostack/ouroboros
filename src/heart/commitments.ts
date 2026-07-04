@@ -98,7 +98,7 @@ export function deriveCommitments(
 
   // Safe to ignore
   if (innerJob.status === "idle" && !(activeWorkFrame.inner?.hasPending)) {
-    safeToIgnore.push("no private thinking in progress")
+    safeToIgnore.push("no private-runtime work in progress")
   }
   if (activeWorkFrame.bridges.length === 0) {
     safeToIgnore.push("no shared work to coordinate")

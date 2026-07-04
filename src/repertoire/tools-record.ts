@@ -358,7 +358,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
       function: {
         name: "note",
         description:
-          "Write a durable self note as canonical markdown in my Desk record notes. Only available to my self/inner context, not external callers.",
+          "Write a durable self note as canonical markdown in my Desk record notes. Only available to my self/private-runtime context, not external callers.",
         parameters: {
           type: "object",
           properties: {

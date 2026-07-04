@@ -174,7 +174,7 @@ function compactIdleRestOnlyTurns(
   emitNervesEvent({
     component: "mind",
     event: "mind.session_idle_rest_compaction",
-    message: "compacted old idle rest-only inner turns",
+    message: "compacted old idle rest-only private-runtime turns",
     meta: {
       removedTurns: blocks.length - keepTurns,
       keptTurns: keepTurns,
@@ -458,7 +458,7 @@ export function postTurnPersist(
 /**
  * Per-sessPath serialization queue. Without this, two concurrent
  * `deferPostTurnPersist` calls (e.g. two BlueBubbles webhooks for the same
- * chat firing back-to-back, or a CLI postTurn racing the inner-dialog turn
+ * chat firing back-to-back, or a CLI postTurn racing the private-runtime turn
  * for the same MCP session) would each load the envelope, both compute the
  * same "next sequence", and write events with colliding ids. The session
  * file would silently accumulate duplicates and replay would diverge from

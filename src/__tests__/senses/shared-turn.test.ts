@@ -236,7 +236,7 @@ describe("extractOutwardSenseDeliveryText", () => {
     expect(extractOutwardSenseDeliveryText(messages)).toBe("quick update\nfinal answer")
   })
 
-  it("does not treat inner-dialog settle ack as outward delivery", async () => {
+  it("does not treat private-runtime settle ack as outward delivery", async () => {
     const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
     const messages: ChatCompletionMessageParam[] = [
       {
@@ -955,7 +955,7 @@ describe("runSenseTurn", () => {
     expect(result.response).toBe("I can say this out loud.")
   })
 
-  it("does not recover rejected or inner-dialog settle text as outward speech", async () => {
+  it("does not recover rejected or private-runtime settle text as outward speech", async () => {
     mockHandleInboundTurn.mockResolvedValue({
       resolvedContext: makeResolvedContext(),
       gateResult: { allowed: true },

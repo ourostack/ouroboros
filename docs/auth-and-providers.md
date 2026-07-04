@@ -524,3 +524,6 @@ ouro use --agent <agent> --lane outward|inner --provider <provider> --model <mod
 ```
 
 Deprecated or compatibility command paths should not become new architecture. This harness is still alpha; prefer the simple contract over legacy shims.
+
+The `inner` lane is a provider/model lane, not the private-runtime system name.
+Provider/model selection belongs to `agent.json` lanes; `privateRuntime` cannot select providers or models.

@@ -385,7 +385,7 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Mail
         <Meter label="Tasks" value={tasks.liveCount} sub={`${tasks.blockedCount} blocked`} onClick={() => nav({ tab: "work" })} />
         <Meter label="Obligations" value={obligations.openCount} sub={`${sessions.liveCount} sessions`} onClick={() => nav({ tab: "work" })} />
         <Meter label="Coding" value={coding.activeCount} sub={`${coding.blockedCount} blocked`} onClick={() => nav({ tab: "work" })} />
-        <Meter label="Inner" value={inner.status} sub={truncate(inner.summary ?? "", 30)} onClick={() => nav({ tab: "inner" })} />
+        <Meter label="Private Runtime" value={inner.status} sub={truncate(inner.summary ?? "", 30)} onClick={() => nav({ tab: "inner" })} />
       </div>
 
       {/* Active coding sessions — visible from overview */}

@@ -20,7 +20,7 @@ describe("daemon socket client", () => {
     vi.resetModules()
   })
 
-  it("returns null for inner wake when the daemon socket does not exist", async () => {
+  it("returns null for the legacy wake alias when the daemon socket does not exist", async () => {
     const createConnection = vi.fn()
 
     vi.doMock("fs", () => ({
@@ -40,7 +40,7 @@ describe("daemon socket client", () => {
     class MockConnection extends EventEmitter {
       write = vi.fn(() => {
         queueMicrotask(() => {
-          this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke inner dialog for slugger\"}", "utf-8"))
+          this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke private runtime for slugger\"}", "utf-8"))
           this.emit("end")
         })
       })
@@ -63,9 +63,77 @@ describe("daemon socket client", () => {
     const response = await requestInnerWake("slugger", "/tmp/daemon.sock")
 
     expect(createConnection).toHaveBeenCalledWith("/tmp/daemon.sock")
-    expect(response).toEqual({ ok: true, message: "woke inner dialog for slugger" })
+    expect(response).toEqual({ ok: true, message: "woke private runtime for slugger" })
     const connection = createConnection.mock.results[0]?.value as MockConnection
     expect(connection.write).toHaveBeenCalledWith(JSON.stringify({ kind: "inner.wake", agent: "slugger" }) + "\n")
+  })
+
+  it("sends a private.wake command through the canonical private-runtime wake helper", async () => {
+    class MockConnection extends EventEmitter {
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke private runtime for slugger\"}", "utf-8"))
+          this.emit("end")
+        })
+      })
+      end = vi.fn()
+    }
+
+    const createConnection = vi.fn(() => {
+      const connection = new MockConnection()
+      queueMicrotask(() => connection.emit("connect"))
+      return connection
+    })
+
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => true),
+    }))
+    vi.doMock("net", () => ({ createConnection }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+    const { requestPrivateWake } = await import("../../../heart/daemon/socket-client") as {
+      requestPrivateWake?: (
+        agent: string,
+        socketPath: string,
+        options: { reason: string; triggerSource: string; budgetClass: string; idempotencyKey: string },
+      ) => Promise<unknown>
+    }
+    expect(requestPrivateWake).toEqual(expect.any(Function))
+
+    const response = await requestPrivateWake!("slugger", "/tmp/daemon.sock", {
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+    })
+
+    expect(createConnection).toHaveBeenCalledWith("/tmp/daemon.sock")
+    expect(response).toEqual({ ok: true, message: "woke private runtime for slugger" })
+    const connection = createConnection.mock.results[0]?.value as MockConnection
+    expect(connection.write).toHaveBeenCalledWith(JSON.stringify({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+    }) + "\n")
+  })
+
+  it("returns null for private wake when the daemon socket does not exist", async () => {
+    const createConnection = vi.fn()
+
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => false),
+    }))
+    vi.doMock("net", () => ({ createConnection }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+    const { requestPrivateWake } = await import("../../../heart/daemon/socket-client")
+    const response = await requestPrivateWake("slugger", "/tmp/daemon.sock")
+
+    expect(response).toBeNull()
+    expect(createConnection).not.toHaveBeenCalled()
   })
 
   it("rejects socket commands when the connection emits an error", async () => {
@@ -172,6 +240,21 @@ describe("vitest guard (defense in depth)", () => {
 
     const { requestInnerWake } = await import("../../../heart/daemon/socket-client")
     const result = await requestInnerWake("testagent", "/tmp/some-real-daemon.sock")
+
+    expect(result).toBeNull()
+    expect(createConnection).not.toHaveBeenCalled()
+    expect(existsSync).not.toHaveBeenCalled()
+  })
+
+  it("requestPrivateWake returns null without touching net or fs when guard is active", async () => {
+    const createConnection = vi.fn()
+    const existsSync = vi.fn()
+    vi.doMock("net", () => ({ createConnection }))
+    vi.doMock("fs", () => ({ existsSync }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+    const { requestPrivateWake } = await import("../../../heart/daemon/socket-client")
+    const result = await requestPrivateWake("testagent", "/tmp/some-real-daemon.sock")
 
     expect(result).toBeNull()
     expect(createConnection).not.toHaveBeenCalled()

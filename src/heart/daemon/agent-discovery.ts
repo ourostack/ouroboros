@@ -30,6 +30,15 @@ export interface BundleAgentRow {
   kind?: string
 }
 
+export type PrivateRuntimeConfigSource = "default" | "privateRuntime" | "legacy-innerDialog" | "unreadable"
+
+export interface PrivateRuntimeConfig {
+  autoStart: boolean
+  source: PrivateRuntimeConfigSource
+  compatibilityNote?: string
+  error?: string
+}
+
 /**
  * True when the value is the string `"library"`. Library bundles are
  * content-only resources — never run as agents, never appear in sync surfaces.
@@ -106,43 +115,55 @@ export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): st
     .map((row) => row.name)
 }
 
-/**
- * Per-agent runtime policy for the always-on inner-dialog worker. Agents
- * default to the historic behavior (auto-start on daemon boot), but a bundle
- * can opt out with:
- *
- *   "innerDialog": { "autoStart": false }
- *
- * This keeps the agent enabled for sync/status/senses while preventing an
- * autonomous boot turn from spending model credits.
- */
-export function isInnerDialogAutoStartEnabled(agent: string, options: AgentDiscoveryOptions = {}): boolean {
+export function readPrivateRuntimeConfig(agent: string, options: AgentDiscoveryOptions = {}): PrivateRuntimeConfig {
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
   const readFileSync = options.readFileSync ?? fs.readFileSync
   const configPath = path.join(bundlesRoot, `${agent}.ouro`, "agent.json")
 
   try {
     const raw = readFileSync(configPath, "utf-8")
-    const parsed = JSON.parse(raw) as { innerDialog?: unknown }
+    const parsed = JSON.parse(raw) as { privateRuntime?: unknown; innerDialog?: unknown }
+    const privateRuntime = parsed.privateRuntime
+    if (privateRuntime && typeof privateRuntime === "object" && !Array.isArray(privateRuntime)) {
+      return {
+        autoStart: (privateRuntime as { autoStart?: unknown }).autoStart === true,
+        source: "privateRuntime",
+      }
+    }
+
     const innerDialog = parsed.innerDialog
     if (innerDialog && typeof innerDialog === "object" && !Array.isArray(innerDialog)) {
-      return (innerDialog as { autoStart?: unknown }).autoStart !== false
+      return {
+        autoStart: (innerDialog as { autoStart?: unknown }).autoStart === true,
+        source: "legacy-innerDialog",
+        compatibilityNote: "innerDialog.autoStart is a legacy migration input; use privateRuntime.autoStart.",
+      }
     }
-    return true
+    return { autoStart: false, source: "default" }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     emitNervesEvent({
       level: "warn",
       component: "daemon",
-      event: "daemon.inner_dialog_policy_read_failed",
-      message: "failed to read inner-dialog auto-start policy; refusing autonomous worker start",
+      event: "daemon.private_runtime_policy_read_failed",
+      message: "failed to read private-runtime auto-start policy; refusing autonomous private-runtime start",
       meta: {
         agent,
         configPath,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       },
     })
-    return false
+    return { autoStart: false, source: "unreadable", error: message }
   }
+}
+
+/**
+ * Legacy compatibility shim for older call sites. New code should use
+ * readPrivateRuntimeConfig() so compatibility notes and failure provenance are
+ * preserved.
+ */
+export function isInnerDialogAutoStartEnabled(agent: string, options: AgentDiscoveryOptions = {}): boolean {
+  return readPrivateRuntimeConfig(agent, options).autoStart
 }
 
 export interface BundleSyncRow {

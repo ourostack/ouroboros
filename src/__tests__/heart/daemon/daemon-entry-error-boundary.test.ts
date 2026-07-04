@@ -9,7 +9,7 @@ const { listEnabledBundleAgentsMock } = vi.hoisted(() => ({
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
-  isInnerDialogAutoStartEnabled: vi.fn(() => true),
+  readPrivateRuntimeConfig: vi.fn(() => ({ autoStart: true, source: "privateRuntime" })),
 }))
 
 const {
@@ -50,6 +50,18 @@ vi.mock("../../../heart/habits/habit-migration", () => ({
   migrateHabitsFromTaskSystem: migrateHabitsFromTaskSystemMock,
 }))
 
+const { sendDaemonCommandMock } = vi.hoisted(() => ({
+  sendDaemonCommandMock: vi.fn(async () => ({ ok: true })),
+}))
+
+vi.mock("../../../heart/daemon/socket-client", () => ({
+  sendDaemonCommand: sendDaemonCommandMock,
+}))
+
+const { daemonProcessManagerSendToAgentMock } = vi.hoisted(() => ({
+  daemonProcessManagerSendToAgentMock: vi.fn(),
+}))
+
 const {
   awaitSchedulerStartMock,
   awaitSchedulerStopMock,
@@ -79,8 +91,12 @@ vi.mock("../../../heart/awaiting/await-scheduler", () => ({
   },
 }))
 
+const { archiveAndAlertExpiredAwaitMock } = vi.hoisted(() => ({
+  archiveAndAlertExpiredAwaitMock: vi.fn(async () => ({ archived: false, alerted: false })),
+}))
+
 vi.mock("../../../heart/awaiting/await-expiry", () => ({
-  archiveAndAlertExpiredAwait: vi.fn(async () => ({ archived: false, alerted: false })),
+  archiveAndAlertExpiredAwait: archiveAndAlertExpiredAwaitMock,
 }))
 
 vi.mock("../../../heart/daemon/os-cron-deps", () => ({
@@ -120,6 +136,8 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     originalHome = process.env.HOME
     testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-error-home-"))
     process.env.HOME = testHomeRoot
+    sendDaemonCommandMock.mockResolvedValue({ ok: true })
+    archiveAndAlertExpiredAwaitMock.mockResolvedValue({ archived: false, alerted: false })
   })
 
   afterEach(() => {
@@ -137,6 +155,9 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     awaitSchedulerStopWatchMock.mockReset()
     awaitSchedulerStartPeriodicReconciliationMock.mockReset()
     awaitSchedulerCtorHook.mockReset()
+    sendDaemonCommandMock.mockReset()
+    daemonProcessManagerSendToAgentMock.mockReset()
+    archiveAndAlertExpiredAwaitMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     vi.restoreAllMocks()
@@ -161,6 +182,8 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
 
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as never)
     vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as never)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as never)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as never)
 
     vi.doMock("../../../heart/daemon/daemon", () => ({
       OuroDaemon: class {
@@ -171,7 +194,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.doMock("../../../heart/daemon/process-manager", () => ({
       DaemonProcessManager: class {
         listAgentSnapshots = vi.fn(() => [])
-        sendToAgent = vi.fn()
+        sendToAgent = daemonProcessManagerSendToAgentMock
       },
     }))
     vi.doMock("../../../heart/daemon/sense-manager", () => ({
@@ -425,6 +448,276 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
         }),
       }),
     )
+  })
+
+  it("wires scheduled await checks through private wake instead of direct await messages", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    let awaitOptions: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    } | null = null
+    awaitSchedulerCtorHook.mockImplementation((options: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    }) => {
+      awaitOptions = options
+    })
+
+    setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-await-test.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
+    })
+
+    awaitOptions?.onAwaitFire("hey_export")
+
+    expect(sendDaemonCommandMock).toHaveBeenCalledWith(
+      "/tmp/ouro-await-test.sock",
+      expect.objectContaining({
+        kind: "private.wake",
+        agent: "alpha",
+        reason: "scheduled await condition check for hey_export",
+        triggerSource: "await-scheduler",
+        budgetClass: "scheduled",
+        originRefs: [
+          { kind: "await", id: "hey_export" },
+          { kind: "scheduler", id: "await-scheduler" },
+        ],
+      }),
+    )
+    expect(sendDaemonCommandMock).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "inner.wake" }),
+    )
+    expect(daemonProcessManagerSendToAgentMock).not.toHaveBeenCalledWith("alpha", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
+  })
+
+  it("records failed scheduled await private wake dispatch and continues", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    let awaitOptions: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    } | null = null
+    awaitSchedulerCtorHook.mockImplementation((options: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    }) => {
+      awaitOptions = options
+    })
+    sendDaemonCommandMock.mockRejectedValueOnce(new Error("socket write failed"))
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-await-failed-wake.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
+    })
+
+    expect(() => awaitOptions?.onAwaitFire("hey_export")).not.toThrow()
+    await Promise.resolve()
+    expect(sendDaemonCommandMock).toHaveBeenCalledWith(
+      "/tmp/ouro-await-failed-wake.sock",
+      expect.objectContaining({
+        kind: "private.wake",
+        agent: "alpha",
+        triggerSource: "await-scheduler",
+        originRefs: [
+          { kind: "await", id: "hey_export" },
+          { kind: "scheduler", id: "await-scheduler" },
+        ],
+      }),
+    )
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        component: "daemon",
+        event: "daemon.await_private_wake_dispatch_error",
+        meta: {
+          agent: "alpha",
+          awaitName: "hey_export",
+          triggerSource: "await-scheduler",
+          socketPath: "/tmp/ouro-await-failed-wake.sock",
+          error: "socket write failed",
+        },
+      }))
+    })
+    expect(daemonProcessManagerSendToAgentMock).not.toHaveBeenCalledWith("alpha", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
+  })
+
+  it("records raw failed scheduled await private wake dispatch values", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    let awaitOptions: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    } | null = null
+    awaitSchedulerCtorHook.mockImplementation((options: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    }) => {
+      awaitOptions = options
+    })
+    sendDaemonCommandMock.mockRejectedValueOnce("raw socket failure")
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-await-raw-failed-wake.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
+    })
+
+    expect(() => awaitOptions?.onAwaitFire("hey_export")).not.toThrow()
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        component: "daemon",
+        event: "daemon.await_private_wake_dispatch_error",
+        meta: {
+          agent: "alpha",
+          awaitName: "hey_export",
+          triggerSource: "await-scheduler",
+          socketPath: "/tmp/ouro-await-raw-failed-wake.sock",
+          error: "raw socket failure",
+        },
+      }))
+    })
+  })
+
+  it("records failed await-expiry private wake dispatch and continues", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    let awaitOptions: {
+      agent: string
+      onAwaitExpire: (awaitName: string) => void
+    } | null = null
+    awaitSchedulerCtorHook.mockImplementation((options: {
+      agent: string
+      onAwaitExpire: (awaitName: string) => void
+    }) => {
+      awaitOptions = options
+    })
+    archiveAndAlertExpiredAwaitMock.mockImplementationOnce(async (options: {
+      deliveryDeps: { queuePending: (message: unknown) => void }
+    }) => {
+      options.deliveryDeps.queuePending({ id: "pending-await-alert" })
+      return { archived: true, alerted: true }
+    })
+    sendDaemonCommandMock.mockRejectedValueOnce(new Error("expiry socket write failed"))
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-await-expire-failed-wake.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
+    })
+
+    expect(() => awaitOptions?.onAwaitExpire("hey_export")).not.toThrow()
+    await vi.waitFor(() => {
+      expect(sendDaemonCommandMock).toHaveBeenCalledWith(
+        "/tmp/ouro-await-expire-failed-wake.sock",
+        expect.objectContaining({
+          kind: "private.wake",
+          agent: "alpha",
+          triggerSource: "await-expiry",
+          originRefs: [
+            { kind: "await", id: "hey_export" },
+            { kind: "await-alert", id: "expired" },
+          ],
+        }),
+      )
+    })
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        component: "daemon",
+        event: "daemon.await_private_wake_dispatch_error",
+        meta: {
+          agent: "alpha",
+          awaitName: "hey_export",
+          triggerSource: "await-expiry",
+          socketPath: "/tmp/ouro-await-expire-failed-wake.sock",
+          error: "expiry socket write failed",
+        },
+      }))
+    })
+    expect(daemonProcessManagerSendToAgentMock).not.toHaveBeenCalledWith("alpha", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
+  })
+
+  it("wires queued await-expiry alerts through private wake instead of the legacy wake alias", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    let awaitOptions: {
+      agent: string
+      onAwaitExpire: (awaitName: string) => void
+    } | null = null
+    awaitSchedulerCtorHook.mockImplementation((options: {
+      agent: string
+      onAwaitExpire: (awaitName: string) => void
+    }) => {
+      awaitOptions = options
+    })
+    archiveAndAlertExpiredAwaitMock.mockImplementationOnce(async (options: {
+      deliveryDeps: { queuePending: (message: unknown) => void }
+    }) => {
+      options.deliveryDeps.queuePending({ id: "pending-await-alert" })
+      return { archived: true, alerted: true }
+    })
+
+    setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-await-expire-test.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
+    })
+
+    awaitOptions?.onAwaitExpire("hey_export")
+
+    await vi.waitFor(() => {
+      expect(sendDaemonCommandMock).toHaveBeenCalled()
+    })
+    expect(archiveAndAlertExpiredAwaitMock).toHaveBeenCalledWith(expect.objectContaining({
+      agentName: "alpha",
+      awaitName: "hey_export",
+    }))
+    expect(sendDaemonCommandMock).toHaveBeenCalledWith(
+      "/tmp/ouro-await-expire-test.sock",
+      expect.objectContaining({
+        kind: "private.wake",
+        agent: "alpha",
+        reason: "queued await expiry alert for hey_export",
+        triggerSource: "await-expiry",
+        budgetClass: "scheduled",
+        originRefs: [
+          { kind: "await", id: "hey_export" },
+          { kind: "await-alert", id: "expired" },
+        ],
+      }),
+    )
+    expect(sendDaemonCommandMock).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "inner.wake" }),
+    )
+    expect(daemonProcessManagerSendToAgentMock).not.toHaveBeenCalledWith("alpha", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
   })
 
   it("emits daemon.await_setup_error when AwaitScheduler constructor throws (Error)", async () => {

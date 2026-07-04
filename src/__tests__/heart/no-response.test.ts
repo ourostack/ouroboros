@@ -389,7 +389,7 @@ describe("observe tool in runAgent", () => {
     expect(toolResult.content).toBe("(silenced)")
   })
 
-  it("inner dialog excludes send_message, observe, and settle; includes ponder, rest, surface", async () => {
+  it("private runtime excludes send_message, observe, and settle; includes ponder, rest, surface", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
@@ -521,7 +521,7 @@ describe("observe tool in runAgent", () => {
     expect(toolNames).toContain("observe")
   })
 
-  it("does NOT include observe when isReactionSignal:true + inner dialog", async () => {
+  it("does NOT include observe when isReactionSignal:true + private runtime", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [

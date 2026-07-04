@@ -1,5 +1,5 @@
 import { getAgentName, getAgentRoot } from "../../heart/identity"
-import { requestInnerWake } from "../../heart/daemon/socket-client"
+import { requestPrivateWake } from "../../heart/daemon/socket-client"
 import { advanceObligation } from "../../arc/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingSession, CodingSessionUpdate } from "./types"
@@ -67,6 +67,31 @@ function formatSessionLabel(session: CodingSession): string {
     ? ` for ${session.originSession.channel}/${session.originSession.key}`
     : ""
   return `${session.runner} ${session.id}${origin}`
+}
+
+function codingFeedbackOriginSessionId(session: CodingSession): string {
+  return session.originSession
+    ? `${session.originSession.friendId}/${session.originSession.channel}/${session.originSession.key}`
+    : "detached"
+}
+
+function buildCodingFeedbackPrivateWakeOptions(input: {
+  agentName: string
+  obligationId: string
+  update: CodingSessionUpdate
+}): NonNullable<Parameters<typeof requestPrivateWake>[2]> {
+  return {
+    reason: "coding feedback private attention",
+    triggerSource: "coding-feedback",
+    budgetClass: "interactive",
+    idempotencyKey: `coding-feedback:${input.agentName}:${input.obligationId}:${input.update.session.id}:${input.update.kind}`,
+    originRefs: [
+      { kind: "coding-session", id: input.update.session.id },
+      { kind: "coding-update", id: input.update.kind },
+      { kind: "obligation", id: input.obligationId },
+      { kind: "session", id: codingFeedbackOriginSessionId(input.update.session) },
+    ],
+  }
 }
 
 function extractPullRequestLabel(snippet: string | null): string | null {
@@ -274,13 +299,15 @@ function syncObligationFromUpdate(update: CodingSessionUpdate): void {
   }
 }
 
-async function wakeInnerDialogForObligation(update: CodingSessionUpdate): Promise<void> {
-  if (!update.session.obligationId || !OBLIGATION_WAKE_UPDATE_KINDS.has(update.kind)) {
+async function requestPrivateWakeForObligation(update: CodingSessionUpdate): Promise<void> {
+  const obligationId = update.session.obligationId
+  if (!obligationId || !OBLIGATION_WAKE_UPDATE_KINDS.has(update.kind)) {
     return
   }
 
   try {
-    await requestInnerWake(getAgentName())
+    const agentName = getAgentName()
+    await requestPrivateWake(agentName, undefined, buildCodingFeedbackPrivateWakeOptions({ agentName, obligationId, update }))
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -330,7 +357,7 @@ export function attachCodingSessionFeedback(
   unsubscribe = manager.subscribe(session.id, async (update) => {
     syncObligationFromUpdate(update)
     sendMessage(formatReportBackMessage(update, formatUpdateMessage(update)))
-    await wakeInnerDialogForObligation(update)
+    await requestPrivateWakeForObligation(update)
     if (TERMINAL_UPDATE_KINDS.has(update.kind)) {
       closed = true
       unsubscribe?.()

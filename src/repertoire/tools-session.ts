@@ -4,16 +4,13 @@ import { resolveSessionPath } from "../heart/config";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
-import { requestInnerWake } from "../heart/daemon/socket-client";
-import { isInnerDialogAutoStartEnabled } from "../heart/daemon/agent-discovery";
+import { requestPrivateWake } from "../heart/daemon/socket-client";
 import {
-  deriveInnerDialogStatus,
+  derivePrivateRuntimeStatus,
   deriveInnerJob,
-  extractThoughtResponseFromMessages,
-  formatSurfacedValue,
-  getInnerDialogSessionPath,
-  readInnerDialogRawData,
-  readInnerDialogStatus,
+  getPrivateRuntimeSessionPath,
+  readPrivateRuntimeRawData,
+  readPrivateRuntimeStatus,
 } from "../heart/daemon/thoughts";
 import { createBridgeManager } from "../heart/bridges/manager";
 import {
@@ -24,7 +21,7 @@ import {
 import { listSessionActivity } from "../heart/session-activity";
 import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
-import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
+import { getPendingDir, getPrivateRuntimePendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../arc/obligations";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
@@ -81,18 +78,6 @@ async function summarizeSessionTailSafely(options: SessionTailOptions): Promise<
     }
     return { kind: "missing" }
   }
-}
-
-function normalizeProgressOutcome(text: string): string | null {
-  const trimmed = text.trim()
-  /* v8 ignore next -- defensive: normalizeProgressOutcome null branch @preserve */
-  if (!trimmed || trimmed === "nothing yet" || trimmed === "nothing recent") {
-    return null
-  }
-  if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length >= 2) {
-    return trimmed.slice(1, -1)
-  }
-  return trimmed
 }
 
 function optionalArg(args: Record<string, unknown>, key: string): string | undefined | null {
@@ -174,11 +159,12 @@ function renderSessionSummaryText(summary: HabitSessionSummary): string {
   return lines.filter((line): line is string => Boolean(line)).join("\n")
 }
 
-function writePendingEnvelope(queueDir: string, message: PendingMessage): void {
+function writePendingEnvelope(queueDir: string, message: PendingMessage): string {
   fs.mkdirSync(queueDir, { recursive: true })
   const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
   const filePath = path.join(queueDir, fileName)
   fs.writeFileSync(filePath, JSON.stringify({ ...message, content: capStructuredRecordString(message.content) }, null, 2))
+  return fileName.replace(/\.json$/, "")
 }
 
 function renderCrossChatDeliveryStatus(
@@ -295,10 +281,10 @@ function readActiveWorkInnerState(): ActiveWorkFrame["inner"] {
   }
   try {
     const agentRoot = getAgentRoot()
-    const pendingDir = getInnerDialogPendingDir(getAgentName())
-    const sessionPath = getInnerDialogSessionPath(agentRoot)
-    const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
-    const dialogStatus = deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
+    const pendingDir = getPrivateRuntimePendingDir(getAgentName())
+    const sessionPath = getPrivateRuntimeSessionPath(agentRoot)
+    const { pendingMessages, turns, runtimeState } = readPrivateRuntimeRawData(sessionPath, pendingDir)
+    const dialogStatus = derivePrivateRuntimeStatus(pendingMessages, turns, runtimeState)
     const job = deriveInnerJob(pendingMessages, turns, runtimeState)
     const storeObligationPending = readPendingObligations(agentRoot).length > 0
     return {
@@ -435,7 +421,7 @@ function sendMessageRiskProfile(args: Record<string, string>) {
     return {
       mutates: "private_attention_write",
       risk: "high",
-      reason: "queues private inner-dialog attention without contacting an external session",
+      reason: "queues private-runtime attention without contacting an external session",
     } as const
   }
   return {
@@ -449,7 +435,7 @@ export function renderInnerProgressStatus(
   status: { queue: string; wake: string; processing: string; surfaced: string },
 ): string {
   if (status.processing === "pending") {
-    return "i've queued this thought for private attention. it'll come up when my inner dialog is free."
+    return "i've queued this thought for private attention. it'll come up when my private runtime is free."
   }
 
   if (status.processing === "started") {
@@ -470,7 +456,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_active_work",
-        description: "read the current live world-state across visible sessions, coding lanes, inner work, and return obligations. use this instead of piecing status together from separate session and coding tools.",
+        description: "read the current live world-state across visible sessions, coding lanes, private-runtime work, and return obligations. use this instead of piecing status together from separate session and coding tools.",
         parameters: {
           type: "object",
           properties: {},
@@ -538,18 +524,18 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_session",
-        description: "inspect another session. use transcript for recent context or status for self/inner progress. deprecated search invocations should use search_facts, consult_diary, or consult_notes instead.",
+        description: "inspect another session. use transcript for recent context or status for self/private-runtime progress. deprecated search invocations should use search_facts, consult_diary, or consult_notes instead.",
         parameters: {
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, inner, or mcp" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, mcp, or legacy inner for private-runtime compatibility" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
             mode: {
               type: "string",
               enum: ["transcript", "status", "search"],
-              description: "transcript (default), lightweight status for self/inner checks, or deprecated search; use search_facts, consult_diary, or consult_notes instead",
+              description: "transcript (default), lightweight status for self/private-runtime checks, or deprecated search; use search_facts, consult_diary, or consult_notes instead",
             },
             query: { type: "string", description: "deprecated when mode=search; use search_facts, consult_diary, or consult_notes instead" },
           },
@@ -575,12 +561,12 @@ export const sessionToolDefinitions: ToolDefinition[] = [
 
       if (mode === "status") {
         if (friendId !== "self" || channel !== "inner") {
-          return "status mode is only available for self/inner dialog."
+          return "status mode is only available for self/private runtime."
         }
 
-        const sessionPath = getInnerDialogSessionPath(getAgentRoot())
-        const pendingDir = getInnerDialogPendingDir(getAgentName())
-        return renderInnerProgressStatus(readInnerDialogStatus(sessionPath, pendingDir))
+        const sessionPath = getPrivateRuntimeSessionPath(getAgentRoot())
+        const pendingDir = getPrivateRuntimePendingDir(getAgentName())
+        return renderInnerProgressStatus(readPrivateRuntimeStatus(sessionPath, pendingDir))
       }
 
       if (mode === "search") {
@@ -622,7 +608,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, inner, or mcp. channel=voice intentionally starts a live phone call to a trusted friend through the Voice sense." },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, mcp, or legacy inner for private-runtime compatibility. channel=voice intentionally starts a live phone call to a trusted friend through the Voice sense." },
             key: { type: "string", description: "session key (defaults to 'session')" },
             content: { type: "string", description: "the message content to send" },
             voiceAudioSource: { type: "string", enum: ["tone", "url", "file"], description: "optional initial non-speech audio to play after the opening greeting when channel=voice" },
@@ -683,11 +669,11 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       }
       /* v8 ignore stop */
 
-      // Self-routing: messages to "self" always go to inner dialog pending dir,
+      // Self-routing: messages to "self" always go to the private-runtime pending dir,
       // regardless of the channel or key the agent specified.
       const isSelf = friendId === "self"
       const pendingDir = isSelf
-        ? getInnerDialogPendingDir(agentName)
+        ? getPrivateRuntimePendingDir(agentName)
         : getPendingDir(agentName, friendId, channel, key)
       const delegatingBridgeId = findDelegatingBridgeId(ctx)
       const delegatedFrom = isSelf
@@ -713,7 +699,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       }
 
       if (isSelf) {
-        writePendingEnvelope(pendingDir, envelope)
+        const pendingMessageId = writePendingEnvelope(pendingDir, envelope)
         if (delegatedFrom) {
           try {
             createObligation(getAgentRoot(), {
@@ -741,7 +727,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           emitNervesEvent({
             event: "repertoire.obligation_created",
             component: "repertoire",
-            message: "obligation created for inner dialog delegation",
+            message: "obligation created for private-runtime delegation",
             meta: {
               friendId: delegatedFrom.friendId,
               channel: delegatedFrom.channel,
@@ -749,49 +735,24 @@ export const sessionToolDefinitions: ToolDefinition[] = [
             },
           })
         }
-        let wakeResponse: { ok: boolean } | null = null
         try {
-          wakeResponse = await requestInnerWake(agentName, ctx?.daemonSocketPath)
+          await requestPrivateWake(agentName, ctx?.daemonSocketPath, {
+            reason: "send_message self-route private attention",
+            triggerSource: "send-message-self-route",
+            budgetClass: "interactive",
+            idempotencyKey: `send-message-self-route:${agentName}:${pendingMessageId}`,
+            originRefs: [
+              { kind: "tool", id: "send_message" },
+              { kind: "pending-queue", id: "self/inner/dialog" },
+              { kind: "pending-message", id: pendingMessageId },
+            ],
+          })
         } catch {
-          wakeResponse = null
-        }
-
-        if (!wakeResponse?.ok) {
-          if (!isInnerDialogAutoStartEnabled(agentName)) {
-            return renderInnerProgressStatus({
-              queue: "queued to inner/dialog",
-              wake: "parked by innerDialog.autoStart=false",
-              processing: "pending",
-              surfaced: "nothing yet",
-            })
-          }
-          const { runInnerDialogTurn } = await import("../senses/inner-dialog")
-          if (ctx?.context?.channel?.channel === "inner") {
-            queueMicrotask(() => {
-              void runInnerDialogTurn({ reason: "instinct" })
-            })
-            return renderInnerProgressStatus({
-              queue: "queued to inner/dialog",
-              wake: "inline scheduled",
-              processing: "pending",
-              surfaced: "nothing yet",
-            })
-          } else {
-            const turnResult = await runInnerDialogTurn({ reason: "instinct" })
-            const surfacedPreview = normalizeProgressOutcome(
-              formatSurfacedValue(extractThoughtResponseFromMessages(turnResult?.messages ?? [])),
-            )
-            return renderProgressStory(buildProgressStory({
-              scope: "inner-delegation",
-              phase: "completed",
-              objective: "queued to inner/dialog",
-              outcomeText: `wake: inline fallback\n${surfacedPreview}`,
-            }))
-          }
+          // Queue-first self routing must not inline-run private work when the daemon is unavailable.
         }
 
         return renderInnerProgressStatus({
-          queue: "queued to inner/dialog",
+          queue: "queued to private runtime",
           wake: "daemon requested",
           processing: "pending",
           surfaced: "nothing yet",

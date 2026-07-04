@@ -30,8 +30,20 @@ import { MAILBOX_DEFAULT_PORT } from "../mailbox/mailbox-types"
 import { readMailboxAgentState, readMailboxMachineState } from "../mailbox/mailbox-read"
 import { buildMailboxAgentView, buildMailboxMachineView } from "../mailbox/mailbox-view"
 import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
+import {
+  buildPrivateDecisionReadPayload,
+  privateDecisionCountSummary,
+  privateTurnLedgerPath,
+  requestPrivateTurnDecision,
+  readPrivateTurnLedger,
+} from "../private-runtime"
+import type { PrivateTurnDecision, PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
+import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from "./await-private-wake"
+import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
+import { parseHabitFile } from "../habits/habit-parser"
+import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -360,6 +372,7 @@ export interface DaemonProcessManagerLike {
   listAgentSnapshots(): Array<{
     name: string
     channel: string
+    autoStart?: boolean
     status: string
     pid: number | null
     restartCount: number
@@ -427,6 +440,16 @@ export type DaemonCommand =
   | { kind: "agent.reportComplete"; agent: string; friendId: string; summary?: string; [key: string]: unknown }
   | { kind: "cron.list" }
   | { kind: "cron.trigger"; jobId: string }
+  | { kind: "private.decisions"; agent: string; limit?: number }
+  | {
+    kind: "private.wake"
+    agent: string
+    reason?: string
+    triggerSource?: string
+    budgetClass?: string
+    idempotencyKey?: string
+    originRefs?: PrivateTurnOriginRef[]
+  }
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
@@ -464,6 +487,7 @@ export interface OuroDaemonOptions {
    * wired with the daemon's bundlesRoot and view builders.
    */
   mailboxServerFactory?: () => Promise<MailboxHttpServerHandle>
+  privateRuntimePolicyDeps?: PrivateTurnPolicyDeps
   /**
    * Runs after a daemon.stop command has completed daemon-owned cleanup but
    * before the JSON response is returned to the command socket. Entrypoints
@@ -476,6 +500,7 @@ export interface OuroDaemonOptions {
 interface DaemonWorkerRow {
   agent: string
   worker: string
+  autoStart: boolean
   status: string
   pid: number | null
   restartCount: number
@@ -547,6 +572,7 @@ function buildWorkerRows(
   return snapshots.map((snapshot) => ({
     agent: snapshot.name,
     worker: snapshot.channel,
+    autoStart: snapshot.autoStart ?? true,
     status: snapshot.status,
     pid: snapshot.pid,
     restartCount: snapshot.restartCount,
@@ -567,12 +593,20 @@ function unhealthySenseRows(senses: DaemonSenseRow[]): DaemonSenseRow[] {
   })
 }
 
+function isParkedWorker(row: DaemonWorkerRow): boolean {
+  return row.autoStart === false && row.status === "stopped"
+}
+
+function unhealthyWorkerRows(workers: DaemonWorkerRow[]): DaemonWorkerRow[] {
+  return workers.filter((row) => !isParkedWorker(row) && row.status !== "running")
+}
+
 function unhealthyHealthChecks(healthChecks: DaemonHealthResult[]): DaemonHealthResult[] {
   return healthChecks.filter((row) => row.status !== "ok")
 }
 
 function overviewHealth(workers: DaemonWorkerRow[], senses: DaemonSenseRow[], healthChecks: DaemonHealthResult[] = []): "ok" | "warn" {
-  if (!workers.every((worker) => worker.status === "running")) return "warn"
+  if (unhealthyWorkerRows(workers).length > 0) return "warn"
   if (unhealthySenseRows(senses).length > 0) return "warn"
   if (unhealthyHealthChecks(healthChecks).length > 0) return "warn"
   return "ok"
@@ -583,8 +617,7 @@ function formatStatusSummary(payload: DaemonStatusPayload): string {
     return "no managed agents"
   }
   const degraded = [
-    ...payload.workers
-      .filter((row) => row.status !== "running")
+    ...unhealthyWorkerRows(payload.workers)
       .map((row) => `worker:${row.agent}/${row.worker}:${row.status}`),
     ...unhealthySenseRows(payload.senses)
       .map((row) => `sense:${row.agent}/${row.sense}:${row.status}`),
@@ -630,6 +663,30 @@ function isValidSenseReviveCommand(command: Extract<DaemonCommand, { kind: "daem
   return typeof command.agent === "string"
     && typeof command.sense === "string"
     && typeof command.reason === "string"
+}
+
+function isValidTaskPokeCommand(command: Extract<DaemonCommand, { kind: "task.poke" }>): boolean {
+  return typeof command.agent === "string"
+    && command.agent.trim().length > 0
+    && typeof command.taskId === "string"
+    && command.taskId.trim().length > 0
+}
+
+function isValidHabitPokeCommand(command: Extract<DaemonCommand, { kind: "habit.poke" }>): boolean {
+  return typeof command.agent === "string"
+    && command.agent.trim().length > 0
+    && typeof command.habitName === "string"
+    && command.habitName.trim().length > 0
+}
+
+function taskIdFromTaskPokePrivateWakeCommand(
+  command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+): string | null {
+  if (command.kind !== "private.wake" || command.triggerSource !== "task-poke") return null
+  const taskRef = command.originRefs?.find((ref) => ref.kind === "task" && typeof ref.id === "string")
+  if (!taskRef || typeof taskRef.id !== "string") return null
+  const trimmed = taskRef.id.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
 /**
@@ -705,6 +762,7 @@ export class OuroDaemon {
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
+  private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void) | null
 
   constructor(options: OuroDaemonOptions) {
@@ -717,6 +775,7 @@ export class OuroDaemon {
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
+    this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
   }
 
@@ -1293,6 +1352,147 @@ export class OuroDaemon {
     /* v8 ignore stop */
   }
 
+  private hasManagedPrivateRuntime(agent: string): boolean {
+    return this.processManager.listAgentSnapshots().some((snapshot) =>
+      snapshot.name === agent && snapshot.channel === "private-runtime",
+    )
+  }
+
+  private buildPrivateRuntimeWakeRequest(
+    command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+  ): PrivateTurnRequest {
+    if (command.kind === "inner.wake") {
+      return {
+        agent: command.agent,
+        origin: "daemon.private.wake",
+        reason: "legacy inner.wake compatibility alias",
+        providerLane: "inner",
+        triggerSource: "legacy",
+        budgetClass: "interactive",
+        originRefs: [{ kind: "daemon-command", id: "inner.wake" }],
+      }
+    }
+
+    return {
+      agent: command.agent,
+      origin: "daemon.private.wake",
+      reason: command.reason ?? "manual private-runtime wake",
+      providerLane: "inner",
+      triggerSource: command.triggerSource ?? "manual",
+      budgetClass: command.budgetClass ?? "interactive",
+      ...(command.idempotencyKey ? { idempotencyKey: command.idempotencyKey } : {}),
+      originRefs: command.originRefs ?? [{ kind: "daemon-command", id: "private.wake" }],
+    }
+  }
+
+  private buildAwaitPrivateWakeCommand(command: Extract<DaemonCommand, { kind: "await.poke" }>): Extract<DaemonCommand, { kind: "private.wake" }> {
+    return buildAwaitPrivateWakeCommand({
+      agent: command.agent,
+      awaitName: command.awaitName,
+      triggerSource: "await-poke",
+    })
+  }
+
+  private buildTaskPokePrivateWakeCommand(
+    command: Extract<DaemonCommand, { kind: "task.poke" }>,
+    receiptId: string,
+  ): Extract<DaemonCommand, { kind: "private.wake" }> {
+    return {
+      kind: "private.wake",
+      agent: command.agent,
+      reason: `task poke ${command.taskId}`,
+      triggerSource: "task-poke",
+      budgetClass: "scheduled",
+      idempotencyKey: `task-poke:${command.agent}:${command.taskId}:${receiptId}`,
+      originRefs: [
+        { kind: "task", id: command.taskId },
+        { kind: "queue-receipt", id: receiptId },
+        { kind: "daemon-command", id: "task.poke" },
+      ],
+    }
+  }
+
+  private resolveHabitPokeOccurrenceId(
+    command: Extract<DaemonCommand, { kind: "habit.poke" }>,
+    trigger: HabitRunTrigger,
+  ): string | { skipReason: string } | undefined {
+    if (trigger === "poke" || trigger === "manual") return undefined
+
+    const agentRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
+    const habitPath = path.join(agentRoot, "habits", `${command.habitName}.md`)
+    if (!fs.existsSync(habitPath)) return { skipReason: "habit file not found" }
+
+    const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+    if (habit.cadence === null) return { skipReason: "habit has no cadence" }
+    const cadence = habit.cadence
+    if (habit.lastRun === null) return `${trigger}:first-run:${cadence}`
+    return `${trigger}:last-run:${habit.lastRun}:cadence:${cadence}`
+  }
+
+  private buildPrivateRuntimeWorkerWakeMessage(
+    command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+    decision: PrivateTurnDecision,
+  ): Record<string, unknown> {
+    const awaitName = awaitNameFromPrivateWakeCommand(command)
+    if (awaitName) {
+      return {
+        type: "await",
+        awaitName,
+        privateTurnDecision: decision,
+      }
+    }
+    const taskId = taskIdFromTaskPokePrivateWakeCommand(command)
+    if (taskId) {
+      return {
+        type: "poke",
+        taskId,
+        privateTurnDecision: decision,
+      }
+    }
+    const habitMessage = habitMessageFromPrivateWakeCommand(command)
+    if (habitMessage) {
+      return {
+        type: "habit",
+        habitName: habitMessage.habitName,
+        trigger: habitMessage.trigger,
+        privateTurnDecision: decision,
+      }
+    }
+    return { type: "message", privateTurnDecision: decision }
+  }
+
+  private async handlePrivateRuntimeWake(
+    command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+  ): Promise<DaemonResponse> {
+    if (!this.hasManagedPrivateRuntime(command.agent)) {
+      return {
+        ok: false,
+        error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
+      }
+    }
+
+    const decision = await requestPrivateTurnDecision(this.buildPrivateRuntimeWakeRequest(command), {
+      bundlesRoot: this.bundlesRoot,
+      ...this.privateRuntimePolicyDeps,
+    })
+
+    if (!decision.executable) {
+      return {
+        ok: true,
+        message: `private-runtime wake denied for ${command.agent}: ${decision.deniedReason}`,
+        data: { decision },
+      }
+    }
+
+    await this.processManager.startAgent(command.agent)
+    this.processManager.sendToAgent?.(command.agent, this.buildPrivateRuntimeWorkerWakeMessage(command, decision))
+    return {
+      ok: true,
+      message: `woke private runtime for ${command.agent}`,
+      data: { decision },
+    }
+  }
+
   private async handleCommandInner(command: DaemonCommand): Promise<DaemonResponse> {
     switch (command.kind) {
       case "daemon.start":
@@ -1470,11 +1670,11 @@ export class OuroDaemon {
         // (cli-exec.ts) intentionally sends only message.send for tool-use
         // events to avoid waking the agent on every tool call. The hook's
         // intent was completely defeated by this handler calling
-        // `sendToAgent({type: "message"})`, which woke the inner-dialog
+        // `sendToAgent({type: "message"})`, which woke the private runtime
         // worker on EVERY message.send anyway. ~30 message.send/min × the
         // 3-turn instinct-loop cap = ~90 turns/min sustained for hours.
         //
-        // Callers that want immediate processing must send `inner.wake`
+        // Callers that want immediate processing must send `private.wake`
         // explicitly after message.send. The CLI `ouro msg` does so
         // (lifecycle-boundary delivery should wake); the hook does so
         // only on session-start / stop, not per tool-use; the API does
@@ -1497,13 +1697,41 @@ export class OuroDaemon {
           data: messages,
         }
       }
-      case "inner.wake":
-        await this.processManager.startAgent(command.agent)
-        this.processManager.sendToAgent?.(command.agent, { type: "message" })
+      case "private.decisions": {
+        const requestedLimit = Number.isInteger(command.limit) && command.limit && command.limit > 0 ? command.limit : 20
+        const limit = Math.min(requestedLimit, 1000)
+        const ledgerPath = privateTurnLedgerPath(command.agent, { bundlesRoot: this.bundlesRoot })
+        const ledgerExists = fs.existsSync(ledgerPath)
+        let decisions
+        try {
+          decisions = ledgerExists ? readPrivateTurnLedger(ledgerPath) : []
+        } catch {
+          return {
+            ok: false,
+            error: `private-runtime decision ledger is malformed: ${ledgerPath}; repair or remove malformed JSONL rows before reading decisions`,
+          }
+        }
+        const guidance = ledgerExists
+          ? undefined
+          : `No private-runtime decision ledger exists for ${command.agent}; run an explicit private-runtime trigger or check ${path.dirname(ledgerPath)}.`
+        const payload = buildPrivateDecisionReadPayload({
+          agent: command.agent,
+          ledgerPath,
+          decisions,
+          limit,
+          ...(guidance ? { guidance } : {}),
+        })
         return {
           ok: true,
-          message: `woke inner dialog for ${command.agent}`,
+          summary: privateDecisionCountSummary(payload.decisions.length),
+          ...(guidance ? { message: guidance } : {}),
+          data: payload,
         }
+      }
+      case "inner.wake":
+        return this.handlePrivateRuntimeWake(command)
+      case "private.wake":
+        return this.handlePrivateRuntimeWake(command)
       case "chat.connect":
         await this.processManager.startAgent(command.agent)
         return {
@@ -1511,6 +1739,13 @@ export class OuroDaemon {
           message: `connected to ${command.agent}`,
         }
       case "task.poke": {
+        if (!isValidTaskPokeCommand(command)) {
+          return {
+            ok: false,
+            error: "Invalid task.poke payload: expected non-empty string fields 'agent' and 'taskId'.",
+          }
+        }
+
         const receipt = await this.router.send({
           from: "ouro-poke",
           to: command.agent,
@@ -1519,7 +1754,7 @@ export class OuroDaemon {
           taskRef: command.taskId,
         })
         await this.scheduler.recordTaskRun?.(command.agent, command.taskId)
-        this.processManager.sendToAgent?.(command.agent, { type: "poke", taskId: command.taskId })
+        await this.handlePrivateRuntimeWake(this.buildTaskPokePrivateWakeCommand(command, receipt.id))
         return {
           ok: true,
           message: `queued poke ${receipt.id}`,
@@ -1527,22 +1762,40 @@ export class OuroDaemon {
         }
       }
       case "habit.poke": {
+        if (!isValidHabitPokeCommand(command)) {
+          return {
+            ok: false,
+            error: "Invalid habit.poke payload: expected non-empty string fields 'agent' and 'habitName'.",
+          }
+        }
+
         const trigger = command.trigger ?? "poke"
         if (!isHabitRunTrigger(trigger)) {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
         }
-        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName, trigger })
-        return {
-          ok: true,
-          message: `poked habit ${command.habitName} for ${command.agent}`,
+        if (!this.hasManagedPrivateRuntime(command.agent)) {
+          return {
+            ok: false,
+            error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
+          }
         }
+        const occurrenceId = this.resolveHabitPokeOccurrenceId(command, trigger)
+        if (typeof occurrenceId === "object") {
+          return {
+            ok: true,
+            message: `skipped scheduled habit ${command.habitName} for ${command.agent}: ${occurrenceId.skipReason}`,
+          }
+        }
+        return this.handlePrivateRuntimeWake(buildHabitPrivateWakeCommand({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          sourceRef: { kind: "daemon-command", id: "habit.poke" },
+          occurrenceId,
+        }))
       }
       case "await.poke": {
-        this.processManager.sendToAgent?.(command.agent, { type: "await", awaitName: command.awaitName })
-        return {
-          ok: true,
-          message: `poked await ${command.awaitName} for ${command.agent}`,
-        }
+        return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))
       }
       case "mcp.list": {
         setAgentName(command.agent ?? "default")

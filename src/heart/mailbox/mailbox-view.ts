@@ -185,7 +185,7 @@ function buildRecentActivity(agent: MailboxAgentState): MailboxRecentActivityIte
       kind: "inner",
       at: agent.inner.latestActivityAt,
       label: agent.inner.surfacedSummary ?? agent.inner.status,
-      detail: agent.inner.hasPending ? "pending inner work" : agent.inner.obligationStatus ?? "no linked obligation",
+      detail: agent.inner.hasPending ? "pending private-runtime work" : agent.inner.obligationStatus ?? "no linked obligation",
     })
   }
 

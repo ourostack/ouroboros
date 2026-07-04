@@ -38,6 +38,7 @@ vi.mock("../../nerves/runtime", async () => {
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: vi.fn(async () => null),
+  requestPrivateWake: vi.fn(async () => null),
   sendDaemonCommand: vi.fn(),
   checkDaemonSocketAlive: vi.fn(),
   DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
@@ -384,9 +385,11 @@ describe("handleInboundTurn", () => {
     mockEmitNervesEvent.mockReset()
     mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
     vi.mocked(daemonSocketClient.requestInnerWake).mockClear()
+    vi.mocked(daemonSocketClient.requestPrivateWake).mockClear()
+    vi.mocked(daemonSocketClient.sendDaemonCommand).mockClear()
   })
 
-  it("does not wake inner dialog solely for ordinary non-inner turn awareness", async () => {
+  it("does not wake private runtime solely for ordinary non-private turn awareness", async () => {
     const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
     const input = makeInput({
       channel: "cli",
@@ -397,6 +400,11 @@ describe("handleInboundTurn", () => {
       await handleInboundTurn(input)
 
       expect(daemonSocketClient.requestInnerWake).not.toHaveBeenCalled()
+      expect(daemonSocketClient.requestPrivateWake).not.toHaveBeenCalled()
+      expect(daemonSocketClient.sendDaemonCommand).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ kind: "private.wake" }),
+      )
     } finally {
       agentNameSpy.mockRestore()
     }
@@ -538,7 +546,7 @@ describe("handleInboundTurn", () => {
     it("includes pending messages in runAgent options when present", async () => {
       const pendingMsgs: PendingMessage[] = [
         { from: "trust-gate", content: "someone tried to reach you", timestamp: 1000 },
-        { from: "inner-dialog", content: "thought about something", timestamp: 1001 },
+        { from: "private-runtime", content: "thought about something", timestamp: 1001 },
       ]
       const input = makeInput({
         drainPending: vi.fn().mockReturnValue(pendingMsgs),
@@ -552,7 +560,7 @@ describe("handleInboundTurn", () => {
       // Pending messages now flow through runAgentOptions.pendingMessages
       expect(options.pendingMessages).toEqual([
         { from: "trust-gate", content: "someone tried to reach you" },
-        { from: "inner-dialog", content: "thought about something" },
+        { from: "private-runtime", content: "thought about something" },
       ])
       // Messages should NOT contain pending content directly
       const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
@@ -617,7 +625,7 @@ describe("handleInboundTurn", () => {
         { from: "testagent", content: "penguins surfaced", timestamp: 999 },
       ]
       const sessionPending: PendingMessage[] = [
-        { from: "inner-dialog", content: "a local pending note", timestamp: 1000 },
+        { from: "private-runtime", content: "a local pending note", timestamp: 1000 },
       ]
       const input = makeInput({
         drainPending: vi.fn().mockReturnValue(sessionPending),
@@ -637,7 +645,7 @@ describe("handleInboundTurn", () => {
       // Deferred returns should come before session pending in the pendingMessages array
       expect(options.pendingMessages).toEqual([
         { from: "testagent", content: "penguins surfaced" },
-        { from: "inner-dialog", content: "a local pending note" },
+        { from: "private-runtime", content: "a local pending note" },
       ])
     })
 
@@ -1794,7 +1802,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("does not stamp a fresh friend-facing activity time for inner turns", async () => {
+    it("does not stamp a fresh friend-facing activity time for private-runtime turns", async () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
@@ -1819,7 +1827,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("keeps inner turns without saved friend activity from inventing state", async () => {
+    it("keeps private-runtime turns without saved friend activity from inventing state", async () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
@@ -1837,7 +1845,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("clears terminal inner turns with no saved friend activity to undefined state", async () => {
+    it("clears terminal private-runtime turns with no saved friend activity to undefined state", async () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
@@ -3207,12 +3215,12 @@ describe("handleInboundTurn", () => {
   describe("onPendingDrained extra prefix sections", () => {
     it("prepends extra sections to first user message when onPendingDrained returns non-empty array", async () => {
       const pendingMsgs: PendingMessage[] = [
-        { from: "inner-dialog", content: "woke up", timestamp: 1000 },
+        { from: "private-runtime", content: "woke up", timestamp: 1000 },
       ]
       const input = makeInput({
         drainPending: vi.fn().mockReturnValue(pendingMsgs),
         messages: [{ role: "user", content: "hi there" }] as ChatCompletionMessageParam[],
-        onPendingDrained: vi.fn().mockReturnValue(["## Wake context", "Inner dialog surfaced a thought"]),
+        onPendingDrained: vi.fn().mockReturnValue(["## Wake context", "Private runtime surfaced a thought"]),
       } as any)
 
       await handleInboundTurn(input)
@@ -3223,7 +3231,7 @@ describe("handleInboundTurn", () => {
       const userMsg = msgs.find(m => m.role === "user" && typeof m.content === "string")
       expect(userMsg).toBeTruthy()
       expect((userMsg as any).content).toContain("## Wake context")
-      expect((userMsg as any).content).toContain("Inner dialog surfaced a thought")
+      expect((userMsg as any).content).toContain("Private runtime surfaced a thought")
       expect((userMsg as any).content).toContain("hi there")
     })
 

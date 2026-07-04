@@ -6,7 +6,9 @@ the outside world.
 ## Shape
 
 - A sense owns the durable channel concept: `voice`, `mail`, `bluebubbles`,
-  `teams`, `cli`, `inner`.
+  `teams`, `cli`.
+- Private runtime is not a durable sense/channel. It is a policy-gated
+  agent-facing runtime that may use the `inner` provider/model lane.
 - A transport adapts a specific medium into that sense: Twilio phone is a
   Voice transport; a browser-driven Riverside/meeting joiner should also be a
   Voice transport.
@@ -37,7 +39,7 @@ Authoritative outward delivery is:
 
 These are not outward delivery:
 
-- inner-dialog `settle` followed by `(settled)`
+- private-runtime `settle` followed by `(settled)`
 - malformed or blank tool arguments
 - tool calls without a matching ack
 - tool acks after another non-tool message has started

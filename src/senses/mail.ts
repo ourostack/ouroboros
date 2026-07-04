@@ -4,8 +4,8 @@ import type { AddressInfo } from "node:net"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot, getRepoRoot } from "../heart/identity"
 import { refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending"
-import { requestInnerWake } from "../heart/daemon/socket-client"
+import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
+import { requestPrivateWake } from "../heart/daemon/socket-client"
 import { listBackgroundOperations } from "../heart/background-operations"
 import { listAmbientMailImportOperations } from "../heart/mail-import-discovery"
 import { scanMailScreenerAttention } from "../mailroom/attention"
@@ -188,6 +188,23 @@ function renderImportDiscoveryContent(
   ].join("\n")
 }
 
+function buildMailImportDiscoveryPrivateWakeOptions(input: {
+  agentName: string
+  fingerprint: string
+  candidatePaths: string[]
+}): NonNullable<Parameters<typeof requestPrivateWake>[2]> {
+  return {
+    reason: "mail import discovery private attention",
+    triggerSource: "mail-import-discovery",
+    budgetClass: "interactive",
+    idempotencyKey: `mail-import-discovery:${input.agentName}:${input.fingerprint}`,
+    originRefs: [
+      { kind: "mail-import-discovery", id: input.fingerprint },
+      ...input.candidatePaths.map((candidatePath) => ({ kind: "mail-import-candidate", id: candidatePath })),
+    ],
+  }
+}
+
 export async function scanMailImportDiscoveryAttention(input: {
   agentName: string
   pendingDir?: string
@@ -197,7 +214,7 @@ export async function scanMailImportDiscoveryAttention(input: {
   const nowMs = input.now?.() ?? Date.now()
   const updatedAt = new Date(nowMs).toISOString()
   const statePath = input.statePath ?? importDiscoveryStatePath(input.agentName)
-  const pendingDir = input.pendingDir ?? getInnerDialogPendingDir(input.agentName)
+  const pendingDir = input.pendingDir ?? getPrivateRuntimePendingDir(input.agentName)
   const state = readImportDiscoveryState(statePath, updatedAt)
   const existingOperations = listBackgroundOperations({
     agentName: input.agentName,
@@ -219,7 +236,7 @@ export async function scanMailImportDiscoveryAttention(input: {
   const descriptors = candidateDescriptors(discovered?.spec?.candidateDescriptors)
   const shouldQueue = Boolean(discovered && fingerprint && fingerprint !== state.lastNotifiedFingerprint)
 
-  if (shouldQueue) {
+  if (shouldQueue && fingerprint) {
     queuePendingMessage(pendingDir, {
       from: "mailroom",
       friendId: "self",
@@ -229,7 +246,11 @@ export async function scanMailImportDiscoveryAttention(input: {
       timestamp: nowMs,
       mode: "reflect",
     })
-    await requestInnerWake(input.agentName).catch(() => undefined)
+    await requestPrivateWake(input.agentName, undefined, buildMailImportDiscoveryPrivateWakeOptions({
+      agentName: input.agentName,
+      fingerprint,
+      candidatePaths,
+    })).catch(() => undefined)
   }
 
   writeImportDiscoveryState(statePath, {
@@ -311,7 +332,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
       const screener = await scanMailScreenerAttention({
         agentName: options.agentName,
         store: resolved.store,
-        pendingDir: getInnerDialogPendingDir(options.agentName),
+        pendingDir: getPrivateRuntimePendingDir(options.agentName),
         statePath: attentionPath,
         now,
       })
@@ -329,7 +350,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
     try {
       const importDiscovery = await scanMailImportDiscoveryAttention({
         agentName: options.agentName,
-        pendingDir: getInnerDialogPendingDir(options.agentName),
+        pendingDir: getPrivateRuntimePendingDir(options.agentName),
         statePath: importDiscoveryPath,
         now,
       })

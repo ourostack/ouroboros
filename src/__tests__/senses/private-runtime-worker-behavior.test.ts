@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const {
-  mockRunInnerDialogTurn,
+  mockRunPrivateRuntimeTurn,
   mockEmitNervesEvent,
   mockGetAgentName,
   mockGetAgentRoot,
-  mockGetInnerDialogPendingDir,
+  mockGetPrivateRuntimePendingDir,
   mockHasPendingMessages,
   mockRecordHabitRun,
   mockCreateHabitRunId,
@@ -16,11 +16,11 @@ const {
   mockReadFileSync,
   MockFileFriendStore,
 } = vi.hoisted(() => ({
-  mockRunInnerDialogTurn: vi.fn(),
+  mockRunPrivateRuntimeTurn: vi.fn(),
   mockEmitNervesEvent: vi.fn(),
   mockGetAgentName: vi.fn(() => "slugger"),
   mockGetAgentRoot: vi.fn(() => "/bundles/slugger.ouro"),
-  mockGetInnerDialogPendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
+  mockGetPrivateRuntimePendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
   mockHasPendingMessages: vi.fn(() => false),
   mockRecordHabitRun: vi.fn(),
   mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
@@ -46,8 +46,8 @@ vi.mock("fs", async (importOriginal) => {
   }
 })
 
-vi.mock("../../senses/inner-dialog", () => ({
-  runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
+vi.mock("../../senses/private-runtime", () => ({
+  runPrivateRuntimeTurn: (...args: any[]) => mockRunPrivateRuntimeTurn(...args),
 }))
 
 vi.mock("../../nerves/runtime", () => ({
@@ -60,7 +60,7 @@ vi.mock("../../heart/identity", () => ({
 }))
 
 vi.mock("../../mind/pending", () => ({
-  getInnerDialogPendingDir: (...args: any[]) => mockGetInnerDialogPendingDir(...args),
+  getPrivateRuntimePendingDir: (...args: any[]) => mockGetPrivateRuntimePendingDir(...args),
   hasPendingMessages: (...args: any[]) => mockHasPendingMessages(...args),
 }))
 
@@ -89,9 +89,9 @@ vi.mock("../../arc/flight-recorder", () => ({
   writeHabitRunReceipt: (...args: any[]) => mockWriteHabitRunReceipt(...args),
 }))
 
-import { createInnerDialogWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startInnerDialogWorker } from "../../senses/inner-dialog-worker"
+import { createPrivateRuntimeWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startPrivateRuntimeWorker } from "../../senses/private-runtime-worker"
 
-describe("inner-dialog-worker", () => {
+describe("private-runtime-worker", () => {
   beforeEach(() => {
     mockReadFileSync.mockReset().mockImplementation((filePath: any) => {
       if (String(filePath).includes("/habits/")) return "habit body"
@@ -100,7 +100,7 @@ describe("inner-dialog-worker", () => {
     mockHasPendingMessages.mockReset().mockReturnValue(false)
     mockGetAgentName.mockReset().mockReturnValue("slugger")
     mockGetAgentRoot.mockReset().mockReturnValue("/bundles/slugger.ouro")
-    mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
+    mockGetPrivateRuntimePendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
     mockRecordHabitRun.mockReset()
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
     mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
@@ -112,7 +112,7 @@ describe("inner-dialog-worker", () => {
 
   it("runs boot/habit/instinct cycles and ignores unknown messages", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.run("boot")
     await worker.handleMessage({ type: "heartbeat" }) // backward compat -> habit/heartbeat
@@ -132,7 +132,7 @@ describe("inner-dialog-worker", () => {
 
   it("forwards taskId from poke messages to runTurn", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "poke", taskId: "daily-standup" })
 
@@ -141,7 +141,7 @@ describe("inner-dialog-worker", () => {
 
   it("passes undefined taskId when poke has no taskId", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "poke" })
 
@@ -150,7 +150,7 @@ describe("inner-dialog-worker", () => {
 
   it("does not forward taskId from chat or message types", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "chat", taskId: "should-be-ignored" })
     await worker.handleMessage({ type: "message", taskId: "should-be-ignored" })
@@ -161,7 +161,7 @@ describe("inner-dialog-worker", () => {
 
   it("handles habit messages with habitName", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat", awaitName: undefined }))
@@ -169,7 +169,7 @@ describe("inner-dialog-worker", () => {
 
   it("handles await messages with awaitName", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "await", awaitName: "hey_export" })
     expect(runTurn).toHaveBeenCalledWith({ reason: "await", taskId: undefined, habitName: undefined, awaitName: "hey_export" })
@@ -177,7 +177,7 @@ describe("inner-dialog-worker", () => {
 
   it("await message with no awaitName defaults to (unnamed) but still runs", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "await" })
     expect(runTurn).toHaveBeenCalledWith({ reason: "await", taskId: undefined, habitName: undefined, awaitName: undefined })
@@ -185,7 +185,7 @@ describe("inner-dialog-worker", () => {
 
   it("handles habit messages with custom habitName", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "habit", habitName: "daily-reflection" })
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "daily-reflection" }))
@@ -217,7 +217,7 @@ describe("inner-dialog-worker", () => {
       return ""
     })
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
     await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
 
@@ -272,7 +272,7 @@ describe("inner-dialog-worker", () => {
       return ""
     })
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
     await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
 
@@ -313,7 +313,7 @@ describe("inner-dialog-worker", () => {
       return ""
     })
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
     await worker.handleMessage({ type: "habit", habitName: "stateful", trigger: "poke" })
 
@@ -342,7 +342,7 @@ describe("inner-dialog-worker", () => {
       lastRun: "2026-06-08T11:30:00.000Z",
     }))
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
     await worker.handleMessage({ type: "habit", habitName: "heartbeat", trigger: "overdue" })
 
@@ -362,7 +362,7 @@ describe("inner-dialog-worker", () => {
 
   it("backward compat: heartbeat message maps to habit/heartbeat", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.handleMessage({ type: "heartbeat" })
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
@@ -374,7 +374,7 @@ describe("inner-dialog-worker", () => {
       release = resolve
     })
     const runTurn = vi.fn().mockImplementationOnce(() => gate).mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     const first = worker.run("boot")
     // While first turn runs, queue multiple pokes
@@ -402,7 +402,7 @@ describe("inner-dialog-worker", () => {
       if (callOrder.length === 0) await gate
       callOrder.push(`${opts.reason}:${opts.taskId ?? "none"}:${opts.habitName ?? "none"}`)
     })
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     const first = worker.run("boot")
     const poke = worker.handleMessage({ type: "poke", taskId: "task-a" })
@@ -424,7 +424,7 @@ describe("inner-dialog-worker", () => {
     const hasPendingWork = vi.fn()
       .mockReturnValueOnce(true) // checked after first turn, queue empty
       .mockReturnValueOnce(false) // checked after second turn
-    const worker = createInnerDialogWorker(runTurn, hasPendingWork as any)
+    const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork as any)
 
     await worker.run("instinct")
 
@@ -440,7 +440,7 @@ describe("inner-dialog-worker", () => {
       release = resolve
     })
     const runTurn = vi.fn().mockImplementationOnce(() => gate).mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     const first = worker.run("boot")
     const habit1 = worker.handleMessage({ type: "habit", habitName: "heartbeat" })
@@ -460,13 +460,13 @@ describe("inner-dialog-worker", () => {
 
   it("emits an error event when a turn fails", async () => {
     const runTurn = vi.fn().mockRejectedValue(new Error("explode"))
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.run("habit", undefined, "heartbeat")
 
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "senses.inner_dialog_worker_error",
+        event: "senses.private_runtime_worker_error",
       }),
     )
   })
@@ -474,7 +474,7 @@ describe("inner-dialog-worker", () => {
   it("stringifies non-Error failures in worker error metadata", async () => {
     mockEmitNervesEvent.mockReset()
     const runTurn = vi.fn().mockRejectedValue("explode-string")
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     await worker.run("habit", undefined, "heartbeat")
 
@@ -486,7 +486,7 @@ describe("inner-dialog-worker", () => {
   })
 
   it("handles shutdown messages by exiting the process", async () => {
-    const worker = createInnerDialogWorker(vi.fn().mockResolvedValue(undefined))
+    const worker = createPrivateRuntimeWorker(vi.fn().mockResolvedValue(undefined))
     const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit called")
     }) as any)
@@ -503,7 +503,7 @@ describe("inner-dialog-worker", () => {
       release = resolve
     })
     const runTurn = vi.fn().mockImplementationOnce(() => gate).mockResolvedValue(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     const first = worker.run("habit", undefined, "heartbeat")
     const second = worker.run("habit", undefined, "heartbeat")
@@ -521,7 +521,7 @@ describe("inner-dialog-worker", () => {
       release = resolve
     })
     const runTurn = vi.fn().mockImplementationOnce(() => gate).mockResolvedValueOnce(undefined)
-    const worker = createInnerDialogWorker(runTurn)
+    const worker = createPrivateRuntimeWorker(runTurn)
 
     const first = worker.run("habit", undefined, "heartbeat")
     const second = worker.handleMessage({ type: "poke", taskId: "daily-standup" })
@@ -538,7 +538,7 @@ describe("inner-dialog-worker", () => {
     const hasPendingWork = vi.fn()
       .mockReturnValueOnce(true)
       .mockReturnValueOnce(false)
-    const worker = createInnerDialogWorker(runTurn, hasPendingWork as any)
+    const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork as any)
 
     await worker.run("instinct")
 
@@ -547,34 +547,17 @@ describe("inner-dialog-worker", () => {
     expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: undefined, habitName: undefined })
   })
 
-  it("starts worker listeners and triggers boot + event cycles", async () => {
-    mockRunInnerDialogTurn.mockReset().mockResolvedValue(undefined)
-    const listeners: Record<string, (...args: any[]) => void> = {}
-    const onSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: any[]) => void) => {
-      listeners[event] = handler
-      return process
-    }) as any)
-    const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called")
-    }) as any)
+  it("creates a controller without a boot turn and handles event cycles", async () => {
+    mockRunPrivateRuntimeTurn.mockReset().mockResolvedValue(undefined)
+    const worker = createPrivateRuntimeWorker()
 
-    try {
-      await startInnerDialogWorker()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "boot", taskId: undefined, habitName: undefined })
+    expect(mockRunPrivateRuntimeTurn).not.toHaveBeenCalled()
 
-      listeners.message?.({ type: "heartbeat" })
-      await new Promise((resolve) => setImmediate(resolve))
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
+    await worker.handleMessage({ type: "heartbeat" })
+    expect(mockRunPrivateRuntimeTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
 
-      listeners.message?.({ type: "poke", taskId: "check-in" })
-      await new Promise((resolve) => setImmediate(resolve))
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "check-in", habitName: undefined })
-
-      expect(() => listeners.disconnect?.()).toThrow("process.exit called")
-    } finally {
-      onSpy.mockRestore()
-      mockExit.mockRestore()
-    }
+    await worker.handleMessage({ type: "poke", taskId: "check-in" })
+    expect(mockRunPrivateRuntimeTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "check-in", habitName: undefined })
   })
 
   // ── lastRun runtime-state tests ───────────────────────────────────
@@ -582,7 +565,7 @@ describe("inner-dialog-worker", () => {
   describe("lastRun update after habit turn", () => {
     it("records habit lastRun in runtime state after a habit turn", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const worker = createInnerDialogWorker(runTurn)
+      const worker = createPrivateRuntimeWorker(runTurn)
 
       await worker.run("habit", undefined, "heartbeat")
 
@@ -607,7 +590,7 @@ describe("inner-dialog-worker", () => {
         options.habitSession.recordProducedRef({ kind: "desk_record", locator: "desk/_record" })
         return { messages: [] }
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "daily-record", trigger: "poke" })
 
@@ -640,7 +623,7 @@ describe("inner-dialog-worker", () => {
           { role: "assistant", content: "checkpoint: Asked Ari for the missing production URL." },
         ],
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
 
@@ -668,7 +651,7 @@ describe("inner-dialog-worker", () => {
           },
         ],
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
 
@@ -689,7 +672,7 @@ describe("inner-dialog-worker", () => {
           null,
         ],
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "stateful-check", trigger: "poke" })
 
@@ -713,7 +696,7 @@ describe("inner-dialog-worker", () => {
         })
         return { messages: [] }
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "surface-check", trigger: "poke" })
 
@@ -735,7 +718,7 @@ describe("inner-dialog-worker", () => {
           }],
         },
       ])
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "array-result", trigger: "poke" })
 
@@ -757,7 +740,7 @@ describe("inner-dialog-worker", () => {
         })
         return { messages: [] }
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "blocked-surface", trigger: "poke" })
 
@@ -772,7 +755,7 @@ describe("inner-dialog-worker", () => {
         options.habitSession.recordProducedRef({ kind: "desk_task", locator: "desk/main/task" })
         return { messages: [] }
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "desk-check", trigger: "poke" })
 
@@ -789,7 +772,7 @@ describe("inner-dialog-worker", () => {
           { role: "assistant", tool_calls: [{ id: "tc-1", type: "function", function: { name: 7 } }] },
         ],
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "malformed-tools", trigger: "poke" })
 
@@ -814,7 +797,7 @@ describe("inner-dialog-worker", () => {
         options.habitSession.recordSurfaceAttempt(surfaceAttempt)
         return { messages: [] }
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "structured", trigger: "poke" })
 
@@ -833,7 +816,7 @@ describe("inner-dialog-worker", () => {
         return ""
       })
       const runTurn = vi.fn().mockResolvedValue({ messages: [] })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "missing", trigger: "poke" })
 
@@ -873,7 +856,7 @@ describe("inner-dialog-worker", () => {
         return ""
       })
       const runTurn = vi.fn().mockResolvedValue({ messages: [] })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "shell-probe", trigger: "poke" })
 
@@ -901,7 +884,7 @@ describe("inner-dialog-worker", () => {
         return ""
       })
       const runTurn = vi.fn().mockResolvedValue({ messages: [] })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "string-missing", trigger: "poke" })
 
@@ -917,7 +900,7 @@ describe("inner-dialog-worker", () => {
         options.habitSession.recordError("tool metadata failed")
         return { messages: [] }
       })
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.handleMessage({ type: "habit", habitName: "error-recorder", trigger: "poke" })
 
@@ -938,7 +921,7 @@ describe("inner-dialog-worker", () => {
         callOrder.push("recordHabitRun")
       })
 
-      const worker = createInnerDialogWorker(runTurn)
+      const worker = createPrivateRuntimeWorker(runTurn)
       await worker.run("habit", undefined, "heartbeat")
 
       expect(callOrder).toEqual(["runTurn", "recordHabitRun"])
@@ -950,7 +933,7 @@ describe("inner-dialog-worker", () => {
       })
 
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const worker = createInnerDialogWorker(runTurn)
+      const worker = createPrivateRuntimeWorker(runTurn)
 
       // Should not throw
       await worker.run("habit", undefined, "heartbeat")
@@ -972,7 +955,7 @@ describe("inner-dialog-worker", () => {
         throw new Error("disk full")
       })
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.run("habit", undefined, "heartbeat")
 
@@ -993,7 +976,7 @@ describe("inner-dialog-worker", () => {
         throw "disk full as string"
       })
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.run("habit", undefined, "heartbeat")
 
@@ -1014,7 +997,7 @@ describe("inner-dialog-worker", () => {
         throw "runtime state unavailable"
       })
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
 
       await worker.run("habit", undefined, "heartbeat")
 
@@ -1032,7 +1015,7 @@ describe("inner-dialog-worker", () => {
 
     it("does not update lastRun for non-habit turns", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const worker = createInnerDialogWorker(runTurn)
+      const worker = createPrivateRuntimeWorker(runTurn)
 
       await worker.run("instinct")
       await worker.run("boot")
@@ -1042,7 +1025,7 @@ describe("inner-dialog-worker", () => {
 
     it("updates lastRun with ISO timestamp from current time", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
-      const worker = createInnerDialogWorker(runTurn)
+      const worker = createPrivateRuntimeWorker(runTurn)
 
       await worker.run("habit", undefined, "daily-reflection")
 
@@ -1053,7 +1036,7 @@ describe("inner-dialog-worker", () => {
   })
 
   describe("instinct-loop cap (rest-detection backstop)", () => {
-    // Real harness friction: a tool that writes to the inner-dialog pending
+    // Real harness friction: a tool that writes to the private-runtime pending
     // dir during a turn (e.g. a surface tool routing a response) puts the
     // worker into a self-sustaining loop where the next turn's drain produces
     // another write, ad infinitum. The cap breaks the loop after a small
@@ -1062,7 +1045,7 @@ describe("inner-dialog-worker", () => {
       // Always say "fresh work arrived" — simulates the self-sustaining write.
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const hasPendingWork = vi.fn().mockReturnValue(true)
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
 
       await worker.run("habit", undefined, "heartbeat")
 
@@ -1073,7 +1056,7 @@ describe("inner-dialog-worker", () => {
         expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
       }
       // Cap event was emitted exactly once
-      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
+      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.private_runtime_worker_instinct_loop_capped")
       expect(capEvents).toHaveLength(1)
       expect(capEvents[0]?.[0]).toEqual(expect.objectContaining({
         level: "warn",
@@ -1093,7 +1076,7 @@ describe("inner-dialog-worker", () => {
       const hasPendingWork = vi.fn()
         .mockReturnValueOnce(true)
         .mockReturnValueOnce(false)
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
 
       await worker.run("habit", undefined, "heartbeat", undefined, "poke")
 
@@ -1122,7 +1105,7 @@ describe("inner-dialog-worker", () => {
     it("counts the initial instinct entry against the cap", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const hasPendingWork = vi.fn().mockReturnValue(true)
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
 
       await worker.run("instinct")
 
@@ -1138,7 +1121,7 @@ describe("inner-dialog-worker", () => {
         }
       })
       const hasPendingWork = vi.fn().mockReturnValue(true)
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
 
       await worker.run("habit", undefined, "heartbeat")
 
@@ -1153,12 +1136,12 @@ describe("inner-dialog-worker", () => {
     it("does not cap when no follow-on work is detected (single happy-path turn)", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const hasPendingWork = vi.fn().mockReturnValue(false)
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
 
       await worker.run("habit", undefined, "heartbeat")
 
       expect(runTurn).toHaveBeenCalledTimes(1)
-      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
+      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.private_runtime_worker_instinct_loop_capped")
       expect(capEvents).toHaveLength(0)
     })
   })
@@ -1169,7 +1152,7 @@ describe("inner-dialog-worker", () => {
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 1_000_000
       const nowSource = () => now
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, nowSource)
 
       await worker.handleMessage({ type: "heartbeat" })
       now += 1_500
@@ -1188,7 +1171,7 @@ describe("inner-dialog-worker", () => {
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 2_000_000
       const nowSource = () => now
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, nowSource)
 
       await worker.handleMessage({ type: "heartbeat" })
       now += 30_000
@@ -1203,7 +1186,7 @@ describe("inner-dialog-worker", () => {
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 3_000_000
       const nowSource = () => now
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, nowSource)
 
       for (let i = 0; i < 5; i++) {
         await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
@@ -1223,7 +1206,7 @@ describe("inner-dialog-worker", () => {
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 4_000_000
       const nowSource = () => now
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, nowSource)
 
       for (let i = 0; i < 4; i++) {
         await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
@@ -1241,7 +1224,7 @@ describe("inner-dialog-worker", () => {
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 5_000_000
       const nowSource = () => now
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, nowSource)
 
       await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
       now += 1_000
@@ -1257,7 +1240,7 @@ describe("inner-dialog-worker", () => {
       const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 10_000_000
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
 
       await worker.handleMessage({ type: "heartbeat" })
       now += 60_000
@@ -1285,7 +1268,7 @@ describe("inner-dialog-worker", () => {
         .mockReturnValueOnce(true)
         .mockReturnValue(false)
       let now = 11_000_000
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
 
       await worker.handleMessage({ type: "heartbeat" })
       now += 60_000
@@ -1301,7 +1284,7 @@ describe("inner-dialog-worker", () => {
       const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 11_500_000
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
 
       await worker.handleMessage({ type: "heartbeat" })
       now += 60_000
@@ -1316,7 +1299,7 @@ describe("inner-dialog-worker", () => {
 
     it("accepts queued heartbeat fires without another model turn after clean HEARTBEAT_OK", async () => {
       let now = 11_750_000
-      let worker!: ReturnType<typeof createInnerDialogWorker>
+      let worker!: ReturnType<typeof createPrivateRuntimeWorker>
       const runTurn = vi.fn().mockImplementation(async () => {
         if (runTurn.mock.calls.length === 1) {
           now += 60_000
@@ -1325,7 +1308,7 @@ describe("inner-dialog-worker", () => {
         return { turnOutcome: "rested", restStatus: "HEARTBEAT_OK" }
       })
       const hasPendingWork = vi.fn().mockReturnValue(false)
-      worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+      worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
 
       await worker.handleMessage({ type: "heartbeat" })
 
@@ -1340,7 +1323,7 @@ describe("inner-dialog-worker", () => {
       const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 12_000_000
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
 
       await worker.handleMessage({ type: "heartbeat" })
       now += HEARTBEAT_OK_REST_SUPPRESSION_MS + 1
@@ -1353,7 +1336,7 @@ describe("inner-dialog-worker", () => {
       const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "thinking" })
       const hasPendingWork = vi.fn().mockReturnValue(false)
       let now = 13_000_000
-      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
 
       await worker.handleMessage({ type: "heartbeat" })
       now += 60_000

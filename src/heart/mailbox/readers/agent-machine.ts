@@ -11,8 +11,8 @@ import { buildAgentProviderVisibility } from "../../provider-visibility"
 import {
   deriveInnerJob,
   formatSurfacedValue,
-  getInnerDialogSessionPath,
-  readInnerDialogRawData,
+  getPrivateRuntimeSessionPath,
+  readPrivateRuntimeRawData,
 } from "../../daemon/thoughts"
 import {
   MAILBOX_DEFAULT_INNER_VISIBILITY,
@@ -196,9 +196,9 @@ function readInnerSummary(agentRoot: string): {
   issues: MailboxIssue[]
   latestActivityAt: string | null
 } {
-  const sessionPath = getInnerDialogSessionPath(agentRoot)
+  const sessionPath = getPrivateRuntimeSessionPath(agentRoot)
   const pendingDir = path.join(agentRoot, "state", "pending", "self", "inner", "dialog")
-  const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
+  const { pendingMessages, turns, runtimeState } = readPrivateRuntimeRawData(sessionPath, pendingDir)
   const job = deriveInnerJob(pendingMessages, turns, runtimeState)
   const surfacedSummary = job.surfacedResult ? formatSurfacedValue(job.surfacedResult) : null
   const latestPendingTimestamp = pendingMessages.length > 0
@@ -209,11 +209,11 @@ function readInnerSummary(agentRoot: string): {
     ?? runtimeState?.lastCompletedAt
     ?? null
 
-  // Read the return-obligation queue so the Inner tab can show what the
-  // agent is actually holding right now. Before this, the "Inner work"
-  // panel only consulted the pending-messages dir (inbox-style); it
-  // reported "No pending inner work" even when dozens of held items were
-  // sitting in arc/obligations/inner/ waiting to be reinjected next turn.
+  // Read the return-obligation queue so the Private Runtime tab can show what the
+  // agent is actually holding right now. Before this, the private-runtime work
+  // panel only consulted the pending-messages dir (inbox-style), so it
+  // looked empty even when dozens of held items were sitting in
+  // arc/obligations/inner/ waiting to be reinjected next turn.
   const returnObligationQueue = readReturnObligationQueueSummary(agentRoot)
 
   return {

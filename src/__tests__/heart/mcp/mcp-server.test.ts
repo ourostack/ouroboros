@@ -810,6 +810,26 @@ describe("MCP server protocol layer", () => {
     expect(response.id).toBe(61)
     expect(response.result.isError).toBe(false)
     expect(response.result.content[0].text).toContain("hello from agent")
+    expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        kind: "agent.senseTurn",
+        agent: "test-agent",
+        friendId: "test-friend",
+        channel: "mcp",
+        sessionKey: "test-session-id",
+        message: "hello agent",
+      }),
+    )
+    expect(mockSendDaemonCommand).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "private.wake" }),
+    )
+    expect(mockSendDaemonCommand).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "inner.wake" }),
+    )
 
     localStdin.destroy()
     localStdout.destroy()
@@ -930,8 +950,8 @@ describe("MCP server protocol layer", () => {
   it("handles check_response tool with pending messages", async () => {
     const { drainPending } = await import("../../../mind/pending")
     vi.mocked(drainPending).mockReturnValueOnce([
-      { content: "pending message 1", source: "inner-dialog", timestamp: "2026-03-27T00:00:00Z" },
-      { content: "pending message 2", source: "inner-dialog", timestamp: "2026-03-27T00:01:00Z" },
+      { content: "pending message 1", source: "private-runtime", timestamp: "2026-03-27T00:00:00Z" },
+      { content: "pending message 2", source: "private-runtime", timestamp: "2026-03-27T00:01:00Z" },
     ] as any)
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")

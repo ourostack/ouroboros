@@ -5,10 +5,10 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { InnerDialogStatus } from "../../heart/daemon/thoughts"
+import type { PrivateRuntimeStatus } from "../../heart/daemon/thoughts"
 
 describe("renderInnerProgressStatus (selfhood framing)", () => {
-  let renderInnerProgressStatus: (status: InnerDialogStatus) => string
+  let renderInnerProgressStatus: (status: PrivateRuntimeStatus) => string
 
   beforeAll(async () => {
     const mod = await import("../../repertoire/tools-base")
@@ -17,8 +17,8 @@ describe("renderInnerProgressStatus (selfhood framing)", () => {
 
   it("returns queued message for pending processing", () => {
     const result = renderInnerProgressStatus({
-      queue: "queued to inner/dialog",
-      wake: "awaiting inner session",
+      queue: "queued to private runtime",
+      wake: "awaiting private-runtime turn",
       processing: "pending",
       surfaced: "nothing yet",
     })
