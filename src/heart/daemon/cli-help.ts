@@ -289,20 +289,20 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   thoughts: {
     category: "Internal",
-    description: "View agent inner dialog thoughts",
+    description: "View private runtime transcript turns",
     usage: "ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     example: "ouro thoughts --last 5 --follow",
   },
   private: {
     category: "Internal",
-    description: "Inspect private-runtime policy decisions without reading transcripts or provider secrets",
-    usage: "ouro private decisions [--agent <name>] [--limit <n>] [--json]",
-    example: "ouro private decisions --agent ouroboros --limit 10",
-    subcommands: ["decisions"],
+    description: "Inspect private-runtime status and policy decisions",
+    usage: "ouro private status|decisions [--agent <name>] [--limit <n>] [--json]",
+    example: "ouro private status --agent ouroboros",
+    subcommands: ["status", "decisions"],
   },
   inner: {
     category: "Internal",
-    description: "Show inner dialog status",
+    description: "Legacy alias for `ouro private status`",
     usage: "ouro inner [--agent <name>]",
     example: "ouro inner",
   },
@@ -359,6 +359,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Read recent private-runtime allow/deny decisions from the policy ledger",
     usage: "ouro private decisions [--agent <name>] [--limit <n>] [--json]",
     example: "ouro private decisions --agent ouroboros --json",
+  },
+  "private status": {
+    description: "Show private-runtime status from local agent state",
+    usage: "ouro private status [--agent <name>]",
+    example: "ouro private status --agent ouroboros",
   },
   "auth verify": {
     description: "Verify agent provider credentials without changing provider/model lanes",

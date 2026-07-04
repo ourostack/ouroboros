@@ -30,7 +30,7 @@ describe("COMMAND_REGISTRY", () => {
     const expectedCommands = [
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
       "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg",
-      "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
+      "habit", "poke", "friend", "link", "auth", "thoughts", "private", "inner",
       "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
       // desk umbrella CLI + task alias
       "desk", "task",

@@ -84,11 +84,11 @@ export type OuroCliCommand =
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
   | { kind: "private.decisions"; agent?: string; limit: number; json: boolean }
+  | { kind: "private.status"; agent?: string; legacyAlias?: "inner" }
   | { kind: "work.card"; agent?: string; format?: "text" | "json" }
   | { kind: "work.gauntlet"; agent?: string; format?: "text" | "json" }
   | { kind: "work.sentinel"; agent?: string; format?: "text" | "json" }
   | { kind: "work.sentinel.refresh"; agent?: string; format?: "text" | "json" }
-  | { kind: "inner.status"; agent?: string }
   | { kind: "nerves-review"; agent?: string; process: string; component?: string; event?: string; level?: string; since?: string; limit?: number; json: boolean }
   | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
@@ -248,10 +248,10 @@ export type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 export type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 export type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
 export type PrivateDecisionsCliCommand = Extract<OuroCliCommand, { kind: "private.decisions" }>
+export type PrivateStatusCliCommand = Extract<OuroCliCommand, { kind: "private.status" }>
 export type WorkCardCliCommand = Extract<OuroCliCommand, { kind: "work.card" }>
 export type WorkGauntletCliCommand = Extract<OuroCliCommand, { kind: "work.gauntlet" }>
 export type WorkSentinelCliCommand = Extract<OuroCliCommand, { kind: "work.sentinel" } | { kind: "work.sentinel.refresh" }>
-export type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.status" }>
 export type NervesReviewCliCommand = Extract<OuroCliCommand, { kind: "nerves-review" }>
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>

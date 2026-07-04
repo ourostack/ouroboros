@@ -49,7 +49,7 @@ export function buildInnerStatusOutput(input: BuildInnerStatusInput): string {
   const { agentName, runtimeState, recordSummary, heartbeat, attentionCount, now } = input
   const lines: string[] = []
 
-  lines.push(`inner dialog status: ${agentName}`)
+  lines.push(`private runtime status: ${agentName}`)
 
   // Last turn
   if (runtimeState?.lastCompletedAt) {
@@ -90,8 +90,8 @@ export function buildInnerStatusOutput(input: BuildInnerStatusInput): string {
 
   emitNervesEvent({
     component: "daemon",
-    event: "daemon.inner_status_read",
-    message: "inner dialog status read",
+    event: "daemon.private_runtime_status_read",
+    message: "private runtime status read",
     meta: {
       agentName,
       status: runtimeState?.status ?? "unknown",

@@ -131,6 +131,7 @@ export function usage(): string {
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     "  ouro private decisions [--agent <name>] [--limit <n>] [--json]",
+    "  ouro private status [--agent <name>]",
     "  ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
     "  ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
     "  ouro inner [--agent <name>]",
@@ -1671,8 +1672,15 @@ function parseNervesReviewCommand(args: string[]): OuroCliCommand {
 
 function parsePrivateCommand(args: string[]): OuroCliCommand {
   const [subcommand] = args
+  if (subcommand === "status") {
+    const { agent, rest } = extractAgentFlag(args.slice(1))
+    if (rest.length > 0) {
+      throw new Error("Usage: ouro private status [--agent <name>]")
+    }
+    return { kind: "private.status", ...(agent ? { agent } : {}) }
+  }
   if (subcommand !== "decisions") {
-    throw new Error("Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json]")
+    throw new Error("Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json] OR ouro private status [--agent <name>]")
   }
 
   const { agent, rest } = extractAgentFlag(args.slice(1))
@@ -1821,7 +1829,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "work") return parseWorkCommand(args.slice(1))
   if (head === "inner") {
     const { agent } = extractAgentFlag(args.slice(1))
-    return { kind: "inner.status", ...(agent ? { agent } : {}) }
+    return { kind: "private.status", ...(agent ? { agent } : {}), legacyAlias: "inner" }
   }
   if (head === "chat") {
     if (!second) return { kind: "chat.connect", agent: "" }

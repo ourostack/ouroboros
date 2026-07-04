@@ -101,10 +101,10 @@ import type {
   VersionsCliCommand,
   AttentionCliCommand,
   PrivateDecisionsCliCommand,
+  PrivateStatusCliCommand,
   WorkCardCliCommand,
   WorkGauntletCliCommand,
   WorkSentinelCliCommand,
-  InnerStatusCliCommand,
   NervesReviewCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
@@ -525,7 +525,7 @@ type MissingAgentResolvableKind =
   | "attention.show"
   | "attention.history"
   | "private.decisions"
-  | "inner.status"
+  | "private.status"
   | "session.list"
   | "a2a.card"
   | "a2a.onboard"
@@ -604,11 +604,11 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "attention.show":
     case "attention.history":
     case "private.decisions":
+    case "private.status":
     case "work.card":
     case "work.gauntlet":
     case "work.sentinel":
     case "work.sentinel.refresh":
-    case "inner.status":
     case "session.list":
       return "return-message"
     case "a2a.card":
@@ -1721,7 +1721,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -1841,6 +1841,12 @@ interface VaultRecoverSourceImport {
 
 function isJsonRecord(value: unknown): value is JsonRecord {
   return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function daemonMessageReceiptId(response: DaemonResponse): string | undefined {
+  if (!isJsonRecord(response.data)) return undefined
+  const id = response.data.id
+  return typeof id === "string" && id.trim().length > 0 ? id : undefined
 }
 
 function cloneJsonRecord(value: JsonRecord): JsonRecord {
@@ -7689,7 +7695,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // when the daemon socket file doesn't exist — otherwise every
     // Claude Code lifecycle event during a daemon-down window logs two
     // ENOENT errors in ouro.ndjson (one for message.send, one for
-    // inner.wake) which makes it hard to read the log around outages.
+    // private.wake) which makes it hard to read the log around outages.
     // The hook is best-effort: dropping notifications when the daemon
     // is down is the correct behavior; we just don't want to log spam
     // about it.
@@ -7700,14 +7706,25 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         // single tool use. A long Claude Code working session can fire
         // dozens of post-tool-use hooks per minute; waking the agent
         // synchronously on each one creates a feedback storm where the
-        // inner loop is re-prompted faster than it can rest, the
+        // private runtime is re-prompted faster than it can rest, the
         // "...time passing. anything stirring?" probe fires back-to-back,
         // and the agent burns its attention budget responding to wakes
         // instead of doing actual work. The message is still delivered
         // either way (above); the agent picks it up on its next natural
         // turn.
         if (eventType === "session-start" || eventType === "stop") {
-          await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
+          await deps.sendCommand(deps.socketPath, {
+            kind: "private.wake",
+            agent: command.agent,
+            reason: `Claude Code ${eventType} hook`,
+            triggerSource: "dev-tool-hook",
+            budgetClass: "interactive",
+            idempotencyKey: `dev-tool-hook:${command.agent}:${eventType}:${sessionId}`,
+            originRefs: [
+              { kind: "dev-tool-hook", id: eventType },
+              { kind: "session", id: sessionId },
+            ],
+          } as DaemonCommand).catch(() => {})
         }
       } catch { /* daemon not running — silent */ }
     } else {
@@ -8669,9 +8686,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  // ── inner dialog status (local, no daemon socket needed) ──
-  /* v8 ignore start -- inner status handler: requires real agent state on disk @preserve */
-  if (command.kind === "inner.status") {
+  // ── private runtime status (local, no daemon socket needed) ──
+  /* v8 ignore start -- private status handler: requires real agent state on disk @preserve */
+  if (command.kind === "private.status") {
     try {
       const agentRoot = deps.agentBundleRoot ?? getAgentRoot(command.agent)
       const { buildInnerStatusOutput } = await import("./inner-status")
@@ -8680,7 +8697,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const { listActiveReturnObligations } = await import("../../arc/obligations")
       const { resolveDeskRecordPaths } = await import("../../mind/record-paths")
 
-      // Read runtime state
+      // Read runtime state from the persisted historical session location.
       const innerSessionPath = getInnerDialogSessionPath(agentRoot)
       const runtimeJsonPath = path.join(path.dirname(innerSessionPath), "runtime.json")
       let runtimeState: import("./inner-status").InnerRuntimeState | null = null
@@ -8732,7 +8749,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Attention count
       const activeObligations = listActiveReturnObligations(command.agent)
 
-      const message = buildInnerStatusOutput({
+      const statusOutput = buildInnerStatusOutput({
         agentName: command.agent,
         runtimeState,
         recordSummary,
@@ -8740,6 +8757,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         attentionCount: activeObligations.length,
         now: Date.now(),
       })
+      const message = command.legacyAlias === "inner"
+        ? [`legacy alias: use \`ouro private status --agent ${command.agent}\``, statusOutput].join("\n")
+        : statusOutput
       deps.writeStdout(message)
       return message
     } catch {
@@ -9074,11 +9094,25 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     response = await deps.sendCommand(deps.socketPath, daemonCommand)
     // `ouro msg` is operator-driven and expects the recipient to process the
     // message now (vs. on next natural turn). message.send is queue-only as
-    // of the 2026-05-11 fix; we explicitly fire inner.wake to preserve the
+    // of the 2026-05-11 fix; we explicitly fire private.wake to preserve the
     // historical CLI UX. Background callers (hooks, API) deliberately omit
     // this and let the agent pick up notifications on its next turn.
     if (command.kind === "message.send" && command.from === "ouro-cli") {
-      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.to } as DaemonCommand).catch(() => {})
+      const receiptId = daemonMessageReceiptId(response)
+      await deps.sendCommand(deps.socketPath, {
+        kind: "private.wake",
+        agent: command.to,
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: receiptId
+          ? `cli:message:${command.to}:${receiptId}`
+          : `cli:message:${command.to}:unreceipted`,
+        originRefs: [
+          { kind: "cli-command", id: "ouro msg" },
+          ...(receiptId ? [{ kind: "daemon-receipt", id: receiptId }] : []),
+        ],
+      } as DaemonCommand).catch(() => {})
     }
   } catch (error) {
     if (command.kind === "message.send") {
