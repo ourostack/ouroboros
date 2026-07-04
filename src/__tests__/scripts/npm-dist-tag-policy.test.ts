@@ -26,7 +26,7 @@ describe("npm dist-tag policy", () => {
     })).toEqual({
       action: "publish",
       tag: "latest",
-      reason: "latest dist-tag points at prerelease 0.1.0-alpha.531; keeping prerelease as the supported default channel",
+      reason: "latest dist-tag points at prerelease 0.1.0-alpha.531; advancing latest as the selected prerelease consumption tag",
     })
   })
 
@@ -37,7 +37,7 @@ describe("npm dist-tag policy", () => {
     })).toEqual({
       action: "publish",
       tag: "latest",
-      reason: "latest dist-tag is missing; prerelease is the current supported default channel",
+      reason: "latest dist-tag is missing; publishing prerelease on the selected consumption tag",
     })
   })
 
@@ -66,7 +66,7 @@ describe("npm dist-tag policy", () => {
       action: "publish",
       tag: "latest",
       latestVersion: "0.1.0-alpha.531",
-      reason: "latest dist-tag points at prerelease 0.1.0-alpha.531; keeping prerelease as the supported default channel",
+      reason: "latest dist-tag points at prerelease 0.1.0-alpha.531; advancing latest as the selected prerelease consumption tag",
     })
     expect(execFileSyncImpl).toHaveBeenCalledWith(
       "npm",
@@ -129,7 +129,7 @@ describe("npm dist-tag policy", () => {
       action: "publish",
       tag: "latest",
       latestVersion: "",
-      reason: "latest dist-tag is missing; prerelease is the current supported default channel",
+      reason: "latest dist-tag is missing; publishing prerelease on the selected consumption tag",
     })
     expect(execFileSyncImpl).toHaveBeenCalledOnce()
     expect(execFileSyncImpl).toHaveBeenCalledWith(

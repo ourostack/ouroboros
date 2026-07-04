@@ -196,7 +196,7 @@ jobs:
           cd packages/ouro.bot
           npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"
 
-      - name: Verify supported npm dist-tags
+      - name: Verify selected npm dist-tags
         run: |
           LOCAL=$(node -p "require('./package.json').version")
           CLI_TAG="${{ steps.cli-publish-tag.outputs.tag }}"
@@ -226,7 +226,7 @@ jobs:
           verify_tag "@ouro.bot/cli@${CLI_TAG}" "$LOCAL"
           verify_tag "ouro.bot@${WRAPPER_TAG}" "$LOCAL"
 
-          echo "supported npm dist-tags verified for ${LOCAL} (cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
+          echo "selected npm dist-tags verified for ${LOCAL} (cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
 
       - name: Smoke published package binaries
         run: npm run release:smoke
