@@ -115,6 +115,15 @@ function mismatchDecision(candidate: PrivateTurnDecision, existing: PrivateTurnD
   }
 }
 
+function duplicateDecision(existing: PrivateTurnDecision): PrivateTurnDecision {
+  return {
+    ...existing,
+    executable: false,
+    deniedReason: "duplicate private-turn decision already recorded",
+    duplicateOf: existing.receiptId,
+  }
+}
+
 function ledgerWriteFailedDecision(
   candidate: PrivateTurnDecision,
   ledgerPath: string,
@@ -159,7 +168,7 @@ export function recordPrivateTurnDecision(
     if (existing) {
       if (existing.requestFingerprint === candidate.requestFingerprint) {
         if (existing.result === candidate.result && existing.executable === candidate.executable && existing.deniedReason === candidate.deniedReason) {
-          return existing
+          return duplicateDecision(existing)
         }
         const written = writeRow(ledgerPath, candidate)
         emitDecisionRecorded(deps, { level: written.result === "allow" ? "info" : "warn", decision: written })
