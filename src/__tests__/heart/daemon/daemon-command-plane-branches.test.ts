@@ -892,6 +892,44 @@ describe("daemon command plane branches", () => {
     })
   })
 
+  it.each(["stopped", "crashed"])("wakes a %s registered private-runtime worker only after allow", async (status) => {
+    const socketPath = tmpSocketPath(`daemon-private-wake-${status}`)
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-${status}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([{ ...registeredSnapshot(), status }])
+
+    const wake = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: `manual wake for ${status} worker`,
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: `manual-private-wake-${status}`,
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: {
+        decision: expect.objectContaining({
+          result: "allow",
+          executable: true,
+          idempotencyKey: `manual-private-wake-${status}`,
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
+      type: "message",
+      privateTurnDecision: expect.objectContaining({
+        result: "allow",
+        idempotencyKey: `manual-private-wake-${status}`,
+      }),
+    })
+  })
+
   it("does not replay a previous allow when the current wake policy denies the same request", async () => {
     const socketPath = tmpSocketPath("daemon-private-wake-replay-denied")
     const ledgerPath = path.join(os.tmpdir(), `private-wake-replay-denied-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
