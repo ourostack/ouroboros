@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.676",
+      "changes": [
+        "Make npm release-channel authority explicit: current clients consume the selected latest dist-tag under trusted publishing, legacy alpha is not treated as a supported pre-stable client channel, and tests guard install surfaces from teaching stale alpha usage."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.675",
       "changes": [
         "Render private-runtime prompt metadata without current inner channel/sense labels: private-runtime turns now show channel private-runtime and current sense private runtime (agent-facing runtime, not a sense), with tests and guards preventing channel/current-sense inner labels from returning.",

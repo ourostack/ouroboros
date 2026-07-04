@@ -52,6 +52,8 @@ function validateTrustedPublisherLocalContract(options = {}) {
     "package-manager-cache: false",
     'npm publish --access public --tag "$TAG"',
     'npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"',
+    "Verify selected npm dist-tags",
+    "selected npm dist-tags verified",
   ]
 
   for (const fragment of requiredWorkflowFragments) {
@@ -62,6 +64,10 @@ function validateTrustedPublisherLocalContract(options = {}) {
 
   if (!workflow.includes("trusted publishing requires npm >=11.5.1 on Node >=22.14")) {
     errors.push("coverage publish workflow must document the npm trusted publishing runtime floor")
+  }
+
+  if (workflow.includes("Verify supported npm dist-tags") || workflow.includes("supported npm dist-tags verified")) {
+    errors.push("coverage publish workflow must verify selected npm dist-tags, not imply every legacy channel is supported")
   }
 
   if (errors.length === 0) {

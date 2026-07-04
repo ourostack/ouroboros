@@ -58,6 +58,8 @@ publish:
       run: npm install -g npm@latest
     - run: npm publish --access public --tag "$TAG"
     - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+    - name: Verify selected npm dist-tags
+      run: echo "selected npm dist-tags verified"
 `)
 
   return root

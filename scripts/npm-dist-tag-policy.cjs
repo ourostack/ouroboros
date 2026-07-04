@@ -24,7 +24,7 @@ function planPublishTag({ localVersion, latestVersion }) {
     return {
       action: "publish",
       tag: "latest",
-      reason: "latest dist-tag is missing; prerelease is the current supported default channel",
+      reason: "latest dist-tag is missing; publishing prerelease on the selected consumption tag",
     };
   }
 
@@ -43,7 +43,7 @@ function planPublishTag({ localVersion, latestVersion }) {
   return {
     action: "publish",
     tag: "latest",
-    reason: `latest dist-tag points at prerelease ${normalizedLatest}; keeping prerelease as the supported default channel`,
+    reason: `latest dist-tag points at prerelease ${normalizedLatest}; advancing latest as the selected prerelease consumption tag`,
   };
 }
 

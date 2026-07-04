@@ -137,6 +137,8 @@ publish:
       run: npm publish --access public --tag "$TAG"
     - name: Publish ouro.bot
       run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+    - name: Verify selected npm dist-tags
+      run: echo "selected npm dist-tags verified"
 `
     }
 

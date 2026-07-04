@@ -50,6 +50,12 @@ trusted publishing sets `latest` directly when publishing prerelease builds.
 After `latest` points at a stable release, future prereleases publish to their
 prerelease channel instead of replacing stable `latest`.
 
+The legacy `alpha` dist-tag may exist on npm for historical packages, but it is
+not a supported consumption channel while prereleases are the default runtime.
+The trusted-publishing workflow advances one selected consumption tag per
+package, so current clients, docs, launchers, and update checks must consume
+`latest` until a stable `latest` release exists.
+
 The launcher should always converge on the same runtime channel as the bootstrap path. `ouro up` repairs stale launcher contents if needed.
 
 ## 4. Bootstrap Wrapper
