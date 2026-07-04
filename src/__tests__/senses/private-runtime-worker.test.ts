@@ -68,6 +68,31 @@ describe("private-runtime worker", () => {
     expect(runPrivateRuntimeTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "manual-check", habitName: undefined })
   })
 
+  it("runs approved await messages through the await turn path", async () => {
+    vi.resetModules()
+    const runPrivateRuntimeTurn = vi.fn(async () => undefined)
+    vi.doMock(runtimeModulePath, () => ({ runPrivateRuntimeTurn }))
+    const { createPrivateRuntimeWorker } = await import(workerModulePath) as {
+      createPrivateRuntimeWorker: () => {
+        handleMessage(message: unknown): Promise<void>
+      }
+    }
+    const worker = createPrivateRuntimeWorker()
+
+    await worker.handleMessage({
+      type: "await",
+      awaitName: "hey_export",
+      privateTurnDecision: { result: "allow", triggerSource: "await-poke" },
+    })
+
+    expect(runPrivateRuntimeTurn).toHaveBeenCalledWith({
+      reason: "await",
+      taskId: undefined,
+      habitName: undefined,
+      awaitName: "hey_export",
+    })
+  })
+
   it("checks the default pending directory from the explicit agent argv", async () => {
     vi.resetModules()
     const runPrivateRuntimeTurn = vi.fn(async () => undefined)

@@ -1239,16 +1239,59 @@ describe("daemon command plane branches", () => {
     expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
     expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
-      type: "message",
+      type: "await",
+      awaitName: "hey_export",
       privateTurnDecision: expect.objectContaining({
         result: "allow",
         triggerSource: "await-poke",
       }),
     })
-    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("slugger", expect.objectContaining({
+    const sentMessage = processManager.sendToAgent.mock.calls[0]?.[1] as Record<string, unknown>
+    expect(sentMessage.privateTurnDecision).toBeDefined()
+  })
+
+  it("preserves await context on allowed scheduled private wakes", async () => {
+    const socketPath = tmpSocketPath("daemon-await-scheduled-allowed")
+    const ledgerPath = path.join(os.tmpdir(), `await-scheduled-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const wake = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "scheduled await condition check for hey_export",
+      triggerSource: "await-scheduler",
+      budgetClass: "scheduled",
+      idempotencyKey: "await:slugger:hey_export:await-scheduler:2026-07-03T20:00:00.000Z",
+      originRefs: [
+        { kind: "await", id: "hey_export" },
+        { kind: "scheduler", id: "await-scheduler" },
+      ],
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: {
+        decision: expect.objectContaining({
+          result: "allow",
+          executable: true,
+          triggerSource: "await-scheduler",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
       type: "await",
       awaitName: "hey_export",
-    }))
+      privateTurnDecision: expect.objectContaining({
+        result: "allow",
+        triggerSource: "await-scheduler",
+      }),
+    })
   })
 
   it("treats legacy inner.wake as a compatibility alias for private wake", async () => {

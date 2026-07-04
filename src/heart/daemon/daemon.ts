@@ -37,7 +37,7 @@ import {
   requestPrivateTurnDecision,
   readPrivateTurnLedger,
 } from "../private-runtime"
-import type { PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
+import type { PrivateTurnDecision, PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 
@@ -1363,6 +1363,29 @@ export class OuroDaemon {
     }
   }
 
+  private awaitNameFromPrivateWakeCommand(command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>): string | null {
+    if (command.kind !== "private.wake") return null
+    const awaitRef = command.originRefs?.find((ref) => ref.kind === "await" && typeof ref.id === "string")
+    if (!awaitRef || typeof awaitRef.id !== "string") return null
+    const trimmed = awaitRef.id.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+
+  private buildPrivateRuntimeWorkerWakeMessage(
+    command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+    decision: PrivateTurnDecision,
+  ): Record<string, unknown> {
+    const awaitName = this.awaitNameFromPrivateWakeCommand(command)
+    if (awaitName) {
+      return {
+        type: "await",
+        awaitName,
+        privateTurnDecision: decision,
+      }
+    }
+    return { type: "message", privateTurnDecision: decision }
+  }
+
   private async handlePrivateRuntimeWake(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
   ): Promise<DaemonResponse> {
@@ -1387,7 +1410,7 @@ export class OuroDaemon {
     }
 
     await this.processManager.startAgent(command.agent)
-    this.processManager.sendToAgent?.(command.agent, { type: "message", privateTurnDecision: decision })
+    this.processManager.sendToAgent?.(command.agent, this.buildPrivateRuntimeWorkerWakeMessage(command, decision))
     return {
       ok: true,
       message: `woke private runtime for ${command.agent}`,

@@ -32,6 +32,7 @@ export interface PrivateRuntimeWorkerMessage {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
+  privateTurnDecision?: unknown
 }
 
 export interface PrivateRuntimeWorkerRunOptions {
