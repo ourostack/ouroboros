@@ -34,8 +34,10 @@ import {
   buildPrivateDecisionReadPayload,
   privateDecisionCountSummary,
   privateTurnLedgerPath,
+  requestPrivateTurnDecision,
   readPrivateTurnLedger,
 } from "../private-runtime"
+import type { PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 
@@ -434,6 +436,15 @@ export type DaemonCommand =
   | { kind: "cron.list" }
   | { kind: "cron.trigger"; jobId: string }
   | { kind: "private.decisions"; agent: string; limit?: number }
+  | {
+    kind: "private.wake"
+    agent: string
+    reason?: string
+    triggerSource?: string
+    budgetClass?: string
+    idempotencyKey?: string
+    originRefs?: PrivateTurnOriginRef[]
+  }
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
@@ -471,6 +482,7 @@ export interface OuroDaemonOptions {
    * wired with the daemon's bundlesRoot and view builders.
    */
   mailboxServerFactory?: () => Promise<MailboxHttpServerHandle>
+  privateRuntimePolicyDeps?: PrivateTurnPolicyDeps
   /**
    * Runs after a daemon.stop command has completed daemon-owned cleanup but
    * before the JSON response is returned to the command socket. Entrypoints
@@ -712,6 +724,7 @@ export class OuroDaemon {
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
+  private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void) | null
 
   constructor(options: OuroDaemonOptions) {
@@ -724,6 +737,7 @@ export class OuroDaemon {
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
+    this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
   }
 
@@ -1300,6 +1314,71 @@ export class OuroDaemon {
     /* v8 ignore stop */
   }
 
+  private hasManagedPrivateRuntime(agent: string): boolean {
+    return this.processManager.listAgentSnapshots().some((snapshot) =>
+      snapshot.name === agent && snapshot.channel === "private-runtime",
+    )
+  }
+
+  private buildPrivateRuntimeWakeRequest(
+    command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+  ): PrivateTurnRequest {
+    if (command.kind === "inner.wake") {
+      return {
+        agent: command.agent,
+        origin: "daemon.private.wake",
+        reason: "legacy inner.wake compatibility alias",
+        providerLane: "inner",
+        triggerSource: "legacy",
+        budgetClass: "interactive",
+        originRefs: [{ kind: "daemon-command", id: "inner.wake" }],
+      }
+    }
+
+    return {
+      agent: command.agent,
+      origin: "daemon.private.wake",
+      reason: command.reason ?? "manual private-runtime wake",
+      providerLane: "inner",
+      triggerSource: command.triggerSource ?? "manual",
+      budgetClass: command.budgetClass ?? "interactive",
+      ...(command.idempotencyKey ? { idempotencyKey: command.idempotencyKey } : {}),
+      originRefs: command.originRefs ?? [{ kind: "daemon-command", id: "private.wake" }],
+    }
+  }
+
+  private async handlePrivateRuntimeWake(
+    command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+  ): Promise<DaemonResponse> {
+    if (!this.hasManagedPrivateRuntime(command.agent)) {
+      return {
+        ok: false,
+        error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
+      }
+    }
+
+    const decision = await requestPrivateTurnDecision(this.buildPrivateRuntimeWakeRequest(command), {
+      bundlesRoot: this.bundlesRoot,
+      ...this.privateRuntimePolicyDeps,
+    })
+
+    if (!decision.executable) {
+      return {
+        ok: true,
+        message: `private-runtime wake denied for ${command.agent}: ${decision.deniedReason ?? decision.reason}`,
+        data: { decision },
+      }
+    }
+
+    await this.processManager.startAgent(command.agent)
+    this.processManager.sendToAgent?.(command.agent, { type: "message", privateTurnDecision: decision })
+    return {
+      ok: true,
+      message: `woke private runtime for ${command.agent}`,
+      data: { decision },
+    }
+  }
+
   private async handleCommandInner(command: DaemonCommand): Promise<DaemonResponse> {
     switch (command.kind) {
       case "daemon.start":
@@ -1536,12 +1615,9 @@ export class OuroDaemon {
         }
       }
       case "inner.wake":
-        await this.processManager.startAgent(command.agent)
-        this.processManager.sendToAgent?.(command.agent, { type: "message" })
-        return {
-          ok: true,
-          message: `woke inner dialog for ${command.agent}`,
-        }
+        return this.handlePrivateRuntimeWake(command)
+      case "private.wake":
+        return this.handlePrivateRuntimeWake(command)
       case "chat.connect":
         await this.processManager.startAgent(command.agent)
         return {

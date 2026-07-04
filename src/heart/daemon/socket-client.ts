@@ -328,3 +328,19 @@ export async function requestInnerWake(
 
   return sendDaemonCommand(socketPath, { kind: "inner.wake", agent })
 }
+
+export async function requestPrivateWake(
+  agent: string,
+  socketPath = DEFAULT_DAEMON_SOCKET_PATH,
+  options: Omit<Extract<DaemonCommand, { kind: "private.wake" }>, "kind" | "agent"> = {},
+): Promise<DaemonResponse | null> {
+  if (shouldSuppressSocketCall(socketPath)) return null
+
+  if (!fs.existsSync(socketPath)) return null
+
+  return sendDaemonCommand(socketPath, {
+    kind: "private.wake",
+    agent,
+    ...options,
+  })
+}
