@@ -68,6 +68,58 @@ describe("daemon socket client", () => {
     expect(connection.write).toHaveBeenCalledWith(JSON.stringify({ kind: "inner.wake", agent: "slugger" }) + "\n")
   })
 
+  it("sends a private.wake command through the canonical private-runtime wake helper", async () => {
+    class MockConnection extends EventEmitter {
+      write = vi.fn(() => {
+        queueMicrotask(() => {
+          this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke private runtime for slugger\"}", "utf-8"))
+          this.emit("end")
+        })
+      })
+      end = vi.fn()
+    }
+
+    const createConnection = vi.fn(() => {
+      const connection = new MockConnection()
+      queueMicrotask(() => connection.emit("connect"))
+      return connection
+    })
+
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => true),
+    }))
+    vi.doMock("net", () => ({ createConnection }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+    const { requestPrivateWake } = await import("../../../heart/daemon/socket-client") as {
+      requestPrivateWake?: (
+        agent: string,
+        socketPath: string,
+        options: { reason: string; triggerSource: string; budgetClass: string; idempotencyKey: string },
+      ) => Promise<unknown>
+    }
+    expect(requestPrivateWake).toEqual(expect.any(Function))
+
+    const response = await requestPrivateWake!("slugger", "/tmp/daemon.sock", {
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+    })
+
+    expect(createConnection).toHaveBeenCalledWith("/tmp/daemon.sock")
+    expect(response).toEqual({ ok: true, message: "woke private runtime for slugger" })
+    const connection = createConnection.mock.results[0]?.value as MockConnection
+    expect(connection.write).toHaveBeenCalledWith(JSON.stringify({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+    }) + "\n")
+  })
+
   it("rejects socket commands when the connection emits an error", async () => {
     class MockConnection extends EventEmitter {}
 

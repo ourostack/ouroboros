@@ -30,7 +30,7 @@ describe("daemon command plane branches", () => {
   const make = (
     socketPath: string,
     bundlesRoot?: string,
-    options?: { onStopCommandComplete?: () => void },
+    options?: { onStopCommandComplete?: () => void; privateRuntimePolicyDeps?: unknown },
   ) => {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
@@ -74,6 +74,7 @@ describe("daemon command plane branches", () => {
       router,
       bundlesRoot,
       senseManager,
+      privateRuntimePolicyDeps: options?.privateRuntimePolicyDeps,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
@@ -81,6 +82,36 @@ describe("daemon command plane branches", () => {
       onStopCommandComplete: options?.onStopCommandComplete,
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
+  }
+
+  function registeredSnapshot(name = "slugger") {
+    return {
+      name,
+      channel: "private-runtime",
+      status: "running",
+      pid: 1234,
+      restartCount: 0,
+      startedAt: "2026-07-03T00:00:00.000Z",
+      lastCrashAt: null,
+      backoffMs: 0,
+    }
+  }
+
+  function privateRuntimePolicyDeps(ledgerPath: string, result: "allow" | "deny") {
+    return {
+      ledgerPath,
+      now: () => "2026-07-03T00:00:00.000Z",
+      resolveProviderLane: vi.fn(() => ({
+        lane: "inner",
+        provider: "minimax",
+        model: "minimax-text-01",
+        source: "agent.json",
+        credentialRevision: "test-rev",
+      })),
+      evaluatePolicy: vi.fn(() => result === "allow"
+        ? { result: "allow", reason: "test policy allow" }
+        : { result: "deny", reason: "private runtime policy denies by default", deniedReason: "default policy deny" }),
+    }
   }
 
   afterEach(() => {
@@ -762,15 +793,148 @@ describe("daemon command plane branches", () => {
     expect(processManager.startAgent).not.toHaveBeenCalled()
   })
 
-  it("starts the managed agent and wakes inner dialog via direct IPC", async () => {
+  it("denies canonical private wake by default without starting the worker", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-denied")
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-denied-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const wake = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+      originRefs: [{ kind: "cli", id: "manual" }],
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: default policy deny",
+      data: {
+        decision: expect.objectContaining({
+          agent: "slugger",
+          origin: "daemon.private.wake",
+          result: "deny",
+          executable: false,
+          deniedReason: "default policy deny",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "slugger",
+        origin: "daemon.private.wake",
+        reason: "manual wake",
+        triggerSource: "manual",
+        budgetClass: "interactive",
+        idempotencyKey: "manual-private-wake",
+        originRefs: [{ kind: "cli", id: "manual" }],
+      }),
+      expect.any(Object),
+    )
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("allows canonical private wake only after recording one policy decision", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-allowed")
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const wake = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+      originRefs: [{ kind: "cli", id: "manual" }],
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: {
+        decision: expect.objectContaining({
+          agent: "slugger",
+          origin: "daemon.private.wake",
+          result: "allow",
+          executable: true,
+          idempotencyKey: "manual-private-wake",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
+      type: "message",
+      privateTurnDecision: expect.objectContaining({
+        result: "allow",
+        idempotencyKey: "manual-private-wake",
+      }),
+    })
+  })
+
+  it("fails canonical private wake cleanly for unknown agents before policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-unknown")
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-unknown-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("slugger")])
+
+    const wake = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "ghost",
+      reason: "manual wake",
+    } as unknown as never)
+
+    expect(wake).toEqual({
+      ok: false,
+      error: "No managed agent 'ghost' is registered with daemon-managed private runtime.",
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("treats legacy inner.wake as a compatibility alias for private wake", async () => {
     const socketPath = tmpSocketPath("daemon-inner-wake")
-    const { daemon, processManager } = make(socketPath)
+    const ledgerPath = path.join(os.tmpdir(), `inner-wake-alias-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
 
     const wake = await daemon.handleCommand({ kind: "inner.wake", agent: "slugger" } as unknown as never)
 
-    expect(wake).toEqual({ ok: true, message: "woke inner dialog for slugger" })
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: {
+        decision: expect.objectContaining({
+          agent: "slugger",
+          origin: "daemon.private.wake",
+          result: "allow",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "daemon.private.wake",
+        reason: "legacy inner.wake compatibility alias",
+        originRefs: [{ kind: "daemon-command", id: "inner.wake" }],
+      }),
+      expect.any(Object),
+    )
     expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
-    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", { type: "message" })
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
+      type: "message",
+      privateTurnDecision: expect.objectContaining({ result: "allow" }),
+    })
   })
 
   it("returns protocol errors for malformed payloads", async () => {
