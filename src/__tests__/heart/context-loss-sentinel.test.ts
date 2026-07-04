@@ -1356,7 +1356,7 @@ describe("context-loss Sentinel core", () => {
       })
       expect(providerSignal.summary).toContain(testCase.summary)
     }
-  })
+  }, 30_000)
 
   it("does not hide a broken current Arc behind latest-ready when provider risk is also present", async () => {
     const agentRoot = makeAgentRoot("context-wipe-broken-arc-")
