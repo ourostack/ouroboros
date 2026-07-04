@@ -659,7 +659,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     }))
   })
 
-  it("wires queued await-expiry alerts through private wake instead of inner wake", async () => {
+  it("wires queued await-expiry alerts through private wake instead of the legacy wake alias", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
     let awaitOptions: {

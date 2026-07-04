@@ -667,7 +667,7 @@ describe("ponder packets in runAgent", () => {
       updatedAt: 1,
     }, "created", "ret-test"))
 
-    expect(result.private_return_contract).toContain("queued for inner attention")
+    expect(result.private_return_contract).toContain("queued for private-runtime attention")
     expect(result.private_return_contract).toContain("do not present the requested private answer as complete")
   })
 

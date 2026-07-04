@@ -46,6 +46,7 @@ import {
   readPrivateTurnLedger,
   type PrivateTurnDecision,
   type PrivateTurnOriginRef,
+  type PrivateTurnProviderLaneMetadata,
   type PrivateTurnRequest,
 } from "../heart/private-runtime"
 
@@ -321,6 +322,48 @@ function privateTurnRequestFromDecision(decision: PrivateTurnDecision): PrivateT
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function configuredProviderLaneMetadata(agentName: string, lane: PrivateTurnProviderLaneMetadata["lane"]): PrivateTurnProviderLaneMetadata {
+  const configPath = path.join(getAgentRoot(agentName), "agent.json")
+  const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as unknown
+  if (!isRecord(parsed)) {
+    throw new Error("private-runtime provider lane mismatch: agent.json is not an object")
+  }
+  const facingKey = lane === "inner" ? "agentFacing" : "humanFacing"
+  const facing = parsed[facingKey]
+  if (!isRecord(facing)) {
+    throw new Error(`private-runtime provider lane mismatch: missing ${facingKey}`)
+  }
+  const provider = facing.provider
+  const model = facing.model
+  if (typeof provider !== "string" || provider.trim().length === 0 || typeof model !== "string" || model.trim().length === 0) {
+    throw new Error(`private-runtime provider lane mismatch: incomplete ${facingKey}`)
+  }
+  return {
+    lane,
+    provider,
+    model,
+    source: "agent.json",
+  }
+}
+
+function assertProviderLaneStillMatches(decision: PrivateTurnDecision, agentName: string): void {
+  const current = configuredProviderLaneMetadata(agentName, decision.providerLane.lane)
+  if (
+    current.lane !== decision.providerLane.lane
+    || current.provider !== decision.providerLane.provider
+    || current.model !== decision.providerLane.model
+    || current.source !== decision.providerLane.source
+  ) {
+    throw new Error(
+      `private-runtime provider lane mismatch: receipt was for ${decision.providerLane.provider}/${decision.providerLane.model}, current ${decision.providerLane.lane} lane is ${current.provider}/${current.model}`,
+    )
+  }
+}
+
 function findOriginRef(refs: PrivateTurnOriginRef[], kind: string, id: string): PrivateTurnOriginRef | undefined {
   return refs.find((ref) => ref.kind === kind && ref.id === id)
 }
@@ -386,7 +429,8 @@ function assertPrivateTurnDecisionAllowed(input: {
   if (decision.result !== "allow" || decision.executable !== true) {
     throw new Error(`private-runtime decision denied: ${decision.deniedReason ?? decision.result}`)
   }
-  const expectedFingerprint = createPrivateTurnRequestFingerprint(privateTurnRequestFromDecision(decision))
+  assertProviderLaneStillMatches(decision, agentName)
+  const expectedFingerprint = createPrivateTurnRequestFingerprint(privateTurnRequestFromDecision(decision), decision.providerLane)
   if (decision.requestFingerprint !== expectedFingerprint) {
     throw new Error("private-runtime decision fingerprint mismatch")
   }

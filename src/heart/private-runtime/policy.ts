@@ -29,12 +29,25 @@ function normalizeOriginRefs(refs: PrivateTurnOriginRef[]): PrivateTurnOriginRef
   return [...refs].sort((a, b) => stableJson(a).localeCompare(stableJson(b)))
 }
 
-function spendIdentity(request: PrivateTurnRequest, options: { includeIdempotencyKey: boolean }): Record<string, unknown> {
+function providerLaneSpendIdentity(providerLane: PrivateTurnProviderLaneMetadata): Record<string, unknown> {
+  return {
+    lane: providerLane.lane,
+    provider: providerLane.provider,
+    model: providerLane.model,
+    source: providerLane.source,
+    ...(providerLane.credentialRevision ? { credentialRevision: providerLane.credentialRevision } : {}),
+  }
+}
+
+function spendIdentity(
+  request: PrivateTurnRequest,
+  options: { includeIdempotencyKey: boolean; providerLane?: PrivateTurnProviderLaneMetadata },
+): Record<string, unknown> {
   return {
     agent: request.agent,
     origin: request.origin,
     reason: request.reason,
-    providerLane: request.providerLane,
+    providerLane: options.providerLane ? providerLaneSpendIdentity(options.providerLane) : request.providerLane,
     triggerSource: request.triggerSource,
     ...(options.includeIdempotencyKey ? { idempotencyKey: request.idempotencyKey ?? "" } : {}),
     budgetClass: request.budgetClass,
@@ -128,8 +141,11 @@ function emptyReceiptId(): string {
   return ""
 }
 
-export function createPrivateTurnRequestFingerprint(request: PrivateTurnRequest): string {
-  return sha256Prefix("ptr", spendIdentity(request, { includeIdempotencyKey: true }))
+export function createPrivateTurnRequestFingerprint(
+  request: PrivateTurnRequest,
+  providerLane?: PrivateTurnProviderLaneMetadata,
+): string {
+  return sha256Prefix("ptr", spendIdentity(request, { includeIdempotencyKey: true, providerLane }))
 }
 
 export function createPrivateTurnIdempotencyKey(request: Omit<PrivateTurnRequest, "idempotencyKey"> | PrivateTurnRequest): string {
@@ -142,11 +158,12 @@ export async function requestPrivateTurnDecision(
 ): Promise<PrivateTurnDecision> {
   const idempotencyKey = request.idempotencyKey ?? createPrivateTurnIdempotencyKey(request)
   const normalizedRequest: PrivateTurnRequest = { ...request, idempotencyKey }
-  const requestFingerprint = createPrivateTurnRequestFingerprint(normalizedRequest)
   let providerLane: PrivateTurnProviderLaneMetadata
+  let requestFingerprint: string
   let evaluation: PrivateTurnPolicyEvaluation
   try {
     providerLane = await resolveProviderLaneMetadata(normalizedRequest, deps)
+    requestFingerprint = createPrivateTurnRequestFingerprint(normalizedRequest, providerLane)
     evaluation = await evaluatePolicy(normalizedRequest, {
       requestFingerprint,
       idempotencyKey,
@@ -159,6 +176,7 @@ export async function requestPrivateTurnDecision(
       model: "-",
       source: "agent.json",
     }
+    requestFingerprint = createPrivateTurnRequestFingerprint(normalizedRequest, providerLane)
     evaluation = {
       result: "deny",
       reason: error instanceof Error ? error.message : String(error),

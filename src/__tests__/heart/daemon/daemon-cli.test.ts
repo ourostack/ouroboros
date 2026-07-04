@@ -509,10 +509,15 @@ describe("ouro CLI parsing", () => {
     })
   })
 
-  it("labels the generic inner command usage as a private-status legacy alias", () => {
-    expect(() => parseOuroCommand(["definitely-not-a-command"])).toThrow(
-      "ouro inner [--agent <name>]  # legacy alias for: ouro private status",
-    )
+  it("keeps the legacy inner alias out of generic usage", () => {
+    let error: Error | null = null
+    try {
+      parseOuroCommand(["definitely-not-a-command"])
+    } catch (caught) {
+      error = caught as Error
+    }
+    expect(error?.message).toContain("ouro private status [--agent <name>]")
+    expect(error?.message).not.toContain("ouro inner")
   })
 
   it("parses attention command (list)", () => {
@@ -7461,7 +7466,7 @@ describe("ouro private status CLI execution", () => {
     expect(result).not.toContain(["inner", "dialog"].join(" "))
   })
 
-  it("keeps ouro inner as a compatibility alias that points to private status", async () => {
+  it("keeps the compatibility alias pointing to private status", async () => {
     const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "inner-status-bundle-"))
     cleanup.push(tempBundle)
 

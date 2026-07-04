@@ -164,6 +164,13 @@ describe("private runtime", () => {
     agentRoot = path.join(tmp, "agent-root")
     fs.mkdirSync(path.join(agentRoot, "psyche"), { recursive: true })
     fs.writeFileSync(path.join(agentRoot, "psyche", "ASPIRATIONS.md"), "Keep improving the harness.", "utf8")
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "minimax", model: "minimax-test" },
+      agentFacing: { provider: "minimax", model: "minimax-test" },
+      senses: {},
+    }, null, 2)}\n`, "utf-8")
 
     mockBuildSystem.mockReset().mockResolvedValue({ stable: "system prompt", volatile: "" })
     mockRunAgent.mockReset().mockImplementation(async (_messages: any, callbacks: any) => {
@@ -282,7 +289,13 @@ describe("private runtime", () => {
       idempotencyKey: request.idempotencyKey!,
       budgetClass: request.budgetClass,
       originRefs: request.originRefs,
-      requestFingerprint: createPrivateTurnRequestFingerprint(request),
+      requestFingerprint: createPrivateTurnRequestFingerprint(request, {
+        lane: request.providerLane,
+        provider: "minimax",
+        model: "minimax-test",
+        source: "agent.json",
+        credentialRevision: "test-rev",
+      }),
       result: "allow",
       executable: true,
       decidedAt: input.decidedAt ?? "2026-03-06T11:59:00.000Z",
@@ -922,6 +935,113 @@ describe("private runtime", () => {
         instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
         now: () => new Date("2026-03-06T12:00:00.000Z"),
       })).rejects.toThrow(/fingerprint|decision/i)
+
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockRunAgent).not.toHaveBeenCalled()
+    })
+
+    it("fails closed when the configured provider lane changes after approval", async () => {
+      const decision = writeLedgeredPrivateTurnDecision()
+      fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "minimax", model: "minimax-test" },
+        agentFacing: { provider: "openai-codex", model: "gpt-5.5" },
+        senses: {},
+      }, null, 2)}\n`, "utf-8")
+
+      await expect((runPrivateRuntimeTurn as any)({
+        reason: "instinct",
+        privateTurnDecision: decision,
+        instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+        now: () => new Date("2026-03-06T12:00:00.000Z"),
+      })).rejects.toThrow(/provider lane mismatch|receipt was for/i)
+
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockRunAgent).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      {
+        name: "non-object config",
+        config: [] as unknown,
+        error: /not an object/i,
+      },
+      {
+        name: "missing agent-facing lane",
+        config: {
+          version: 2,
+          enabled: true,
+          humanFacing: { provider: "minimax", model: "minimax-test" },
+          senses: {},
+        },
+        error: /missing agentFacing/i,
+      },
+      {
+        name: "missing human-facing lane",
+        request: { providerLane: "outward" },
+        config: {
+          version: 2,
+          enabled: true,
+          agentFacing: { provider: "minimax", model: "minimax-test" },
+          senses: {},
+        },
+        error: /missing humanFacing/i,
+      },
+      {
+        name: "missing provider",
+        config: {
+          version: 2,
+          enabled: true,
+          humanFacing: { provider: "minimax", model: "minimax-test" },
+          agentFacing: { model: "minimax-test" },
+          senses: {},
+        },
+        error: /incomplete agentFacing/i,
+      },
+      {
+        name: "blank provider",
+        config: {
+          version: 2,
+          enabled: true,
+          humanFacing: { provider: "minimax", model: "minimax-test" },
+          agentFacing: { provider: " ", model: "minimax-test" },
+          senses: {},
+        },
+        error: /incomplete agentFacing/i,
+      },
+      {
+        name: "missing model",
+        config: {
+          version: 2,
+          enabled: true,
+          humanFacing: { provider: "minimax", model: "minimax-test" },
+          agentFacing: { provider: "minimax" },
+          senses: {},
+        },
+        error: /incomplete agentFacing/i,
+      },
+      {
+        name: "blank model",
+        config: {
+          version: 2,
+          enabled: true,
+          humanFacing: { provider: "minimax", model: "minimax-test" },
+          agentFacing: { provider: "minimax", model: " " },
+          senses: {},
+        },
+        error: /incomplete agentFacing/i,
+      },
+    ])("fails closed when agent.json has $name", async ({ config, error, request }) => {
+      const decision = writeLedgeredPrivateTurnDecision({ request })
+      fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify(config, null, 2)}\n`, "utf-8")
+
+      await expect((runPrivateRuntimeTurn as any)({
+        reason: "instinct",
+        privateTurnDecision: decision,
+        instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+        now: () => new Date("2026-03-06T12:00:00.000Z"),
+      })).rejects.toThrow(error)
 
       expect(mockHandleInboundTurn).not.toHaveBeenCalled()
       expect(mockRunAgent).not.toHaveBeenCalled()

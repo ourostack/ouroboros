@@ -20,7 +20,7 @@ describe("daemon socket client", () => {
     vi.resetModules()
   })
 
-  it("returns null for inner wake when the daemon socket does not exist", async () => {
+  it("returns null for the legacy wake alias when the daemon socket does not exist", async () => {
     const createConnection = vi.fn()
 
     vi.doMock("fs", () => ({

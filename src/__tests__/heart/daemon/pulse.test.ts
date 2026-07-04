@@ -767,7 +767,7 @@ describe("flushPulse", () => {
     expect(writtenDeliveredRef.delivered?.size).toBe(1)
   })
 
-  it("queues private-runtime wake metadata instead of legacy inner wake when an agent newly breaks", () => {
+  it("queues private-runtime wake metadata instead of the legacy wake alias when an agent newly breaks", () => {
     const privateWake = vi.fn()
     const legacyWake = vi.fn()
     const writtenDeliveredRef: { delivered: Set<string> | null } = { delivered: null }

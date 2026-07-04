@@ -127,6 +127,33 @@ describe("private-runtime request identity", () => {
     expect(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest({ idempotencyKey: undefined }))).toMatch(/^ptr_[0-9a-f]{64}$/)
   })
 
+  it("binds resolved provider metadata into executable request fingerprints", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const request = privateTurnRequest()
+    const openaiLane = {
+      lane: "inner",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      source: "agent.json",
+      credentialRevision: "cred-openai",
+    }
+    const minimaxLane = {
+      lane: "inner",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      source: "agent.json",
+      credentialRevision: "cred-minimax",
+    }
+
+    const fingerprint = privateRuntime.createPrivateTurnRequestFingerprint(request, openaiLane)
+
+    expect(fingerprint).toMatch(/^ptr_[0-9a-f]{64}$/)
+    expect(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest(), openaiLane)).toBe(fingerprint)
+    expect(privateRuntime.createPrivateTurnRequestFingerprint(request, minimaxLane)).not.toBe(fingerprint)
+    expect(privateRuntime.createPrivateTurnRequestFingerprint(request, { ...openaiLane, model: "gpt-5.4" })).not.toBe(fingerprint)
+    expect(privateRuntime.createPrivateTurnRequestFingerprint(request, { ...openaiLane, credentialRevision: "cred-openai-2" })).not.toBe(fingerprint)
+  })
+
   it("derives a stable idempotency key when one is not supplied", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const { idempotencyKey: _omitted, ...request } = privateTurnRequest()
@@ -156,7 +183,13 @@ describe("private-runtime policy and ledger", () => {
         source: "agent.json",
       },
     })
-    expect(decision.requestFingerprint).toBe(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest()))
+    expect(decision.requestFingerprint).toBe(privateRuntime.createPrivateTurnRequestFingerprint(privateTurnRequest(), {
+      lane: "inner",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      source: "agent.json",
+      credentialRevision: "cred_openai_codex",
+    }))
     expect(deps.resolveProviderLane).toHaveBeenCalledWith("slugger", "inner")
     expect(deps.readProviderCredentialPool).not.toHaveBeenCalled()
     expect(deps.pingProvider).not.toHaveBeenCalled()

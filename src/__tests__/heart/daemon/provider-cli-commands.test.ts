@@ -4152,7 +4152,7 @@ describe("provider CLI command execution", () => {
     expect(phonePending[0]?.content).toContain("operation: op_mail_import_complete_fallback")
   })
 
-  it("still completes a tracked foreground MBOX import when the inner wake send fails", async () => {
+  it("still completes a tracked foreground MBOX import when the legacy wake alias send fails", async () => {
     emitTestEvent("provider cli mail import completion wake degraded")
     const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-degraded-bundles")
     const homeDir = makeTempDir("provider-cli-mail-import-operation-degraded-home")

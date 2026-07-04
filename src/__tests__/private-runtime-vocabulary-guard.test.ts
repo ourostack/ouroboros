@@ -46,6 +46,9 @@ const OLD_VOCABULARY: OldVocabularyPattern[] = [
   { id: "self/inner context", regex: /self\/inner context/gi },
   { id: "self/inner checks", regex: /self\/inner checks/gi },
   { id: "inner thought marker", regex: /\[inner thought/gi },
+  { id: "inner attention", regex: /inner attention/gi },
+  { id: "inner wake", regex: /inner wake/gi },
+  { id: "old inner transcript", regex: /old inner transcript/gi },
   { id: "my inner life", regex: /# my inner life/gi },
   { id: "channel inner label", regex: /["'`]channel: inner/gi },
   { id: "current sense inner label", regex: /["'`]current sense: inner/gi },
@@ -139,12 +142,6 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     reason: "explicitly documented legacy CLI alias for canonical private status command",
   },
   {
-    path: "src/heart/daemon/cli-parse.ts",
-    textIncludes: ["legacy alias for: ouro private status"],
-    classification: "compat-alias",
-    reason: "generic CLI usage labels ouro inner as a legacy alias instead of current command vocabulary",
-  },
-  {
     path: "src/__tests__/heart/daemon/inner-status.test.ts",
     textIncludes: ["legacy 'inner' command", "legacy alias"],
     classification: "compat-alias",
@@ -152,9 +149,19 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
   },
   {
     path: "src/__tests__/heart/daemon/daemon-cli.test.ts",
-    textIncludes: ["legacy inner status as an alias", "ouro inner", "legacy alias: use `ouro private status"],
+    textIncludes: [
+      "legacy inner status as an alias",
+      "keeps the legacy inner alias out of generic usage",
+      "legacy alias: use `ouro private status",
+    ],
     classification: "compat-alias",
     reason: "tests legacy CLI alias execution points users to canonical private status",
+  },
+  {
+    path: "src/__tests__/heart/daemon/daemon-cli.test.ts",
+    textIncludes: ["not.toContain(\"ouro inner\")"],
+    classification: "safety-guard",
+    reason: "verifies generic CLI usage does not advertise the legacy alias",
   },
   {
     path: "src/__tests__/heart/daemon/cli-help.test.ts",

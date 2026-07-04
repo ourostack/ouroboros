@@ -692,7 +692,7 @@ function privateReturnMissingPonderError(input: {
   if (input.sawPonder) return null
   if (!looksLikePrivateReturnRequest(input.latestUserRequest)) return null
   if (!claimsPrivateReturnQueued(input.answer)) return null
-  return "private-return acknowledgement claimed work was queued, but no ponder packet was created this turn. Call ponder(action=create, ...) first so the return has a packet, return obligation, and inner wake; then settle with only a queued acknowledgement. If you cannot create the packet, ask a blocking clarification without saying it is queued."
+  return "private-return acknowledgement claimed work was queued, but no ponder packet was created this turn. Call ponder(action=create, ...) first so the return has a packet, return obligation, and private-runtime wake; then settle with only a queued acknowledgement. If you cannot create the packet, ask a blocking clarification without saying it is queued."
 }
 
 function activeReturnObligationId(agentName: string, obligationId: string | undefined): string | null {
@@ -739,7 +739,7 @@ export function buildPonderResult(
     status: packet.status,
     return_obligation_id: returnObligationId,
     private_return_contract: returnObligationId
-      ? "queued for inner attention; do not present the requested private answer as complete in this same outward turn. if you answer now, only say the private pass is queued and will return when ready."
+      ? "queued for private-runtime attention; do not present the requested private answer as complete in this same outward turn. if you answer now, only say the private pass is queued and will return when ready."
       : null,
   }, null, 2)
 }

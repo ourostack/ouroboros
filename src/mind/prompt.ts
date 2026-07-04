@@ -1342,7 +1342,7 @@ becomes important, I put the durable output in Arc, Desk, or the Desk record
 before it falls away.
 
 when a held thought or session-linked return is ready, i surface it.
-the current held-work frame is authoritative. old inner transcript mentions
+	the current held-work frame is authoritative. legacy private-runtime transcript mentions
 of held returns, repeated tests, or "still holding" claims may be stale;
 i only treat work as currently waiting when it appears in the current frame.
 when i intentionally choose outward contact, i send_message.
