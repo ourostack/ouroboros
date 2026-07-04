@@ -135,6 +135,10 @@ const processManager = new DaemonProcessManager({
   /* v8 ignore stop */
 })
 
+function awaitWakeIdempotencyKey(agent: string, awaitName: string, triggerSource: "await-scheduler" | "await-expiry"): string {
+  return `await:${agent}:${awaitName}:${triggerSource}:${new Date().toISOString()}`
+}
+
 const taskScheduler = new TaskDrivenScheduler({
   agents: [...managedAgents],
 })
@@ -472,7 +476,18 @@ void daemon.start().then(async () => {
         awaitsDir,
         osCronManager: awaitOsCronManager,
         onAwaitFire: (awaitName) => {
-          processManager.sendToAgent(agent, { type: "await", awaitName })
+          sendDaemonCommand(socketPath, {
+            kind: "private.wake",
+            agent,
+            reason: `scheduled await condition check for ${awaitName}`,
+            triggerSource: "await-scheduler",
+            budgetClass: "scheduled",
+            idempotencyKey: awaitWakeIdempotencyKey(agent, awaitName, "await-scheduler"),
+            originRefs: [
+              { kind: "await", id: awaitName },
+              { kind: "scheduler", id: "await-scheduler" },
+            ],
+          }).catch(() => {})
         },
         onAwaitExpire: (awaitName) => {
           void archiveAndAlertExpiredAwait({
@@ -482,8 +497,19 @@ void daemon.start().then(async () => {
             deliveryDeps: {
               agentName: agent,
               queuePending: () => {
-                // Best-effort: queue inner-dialog wake so the agent processes the alert path
-                sendDaemonCommand(socketPath, { kind: "inner.wake", agent }).catch(() => {})
+                // Best-effort: queue private-runtime wake so the agent processes the alert path.
+                sendDaemonCommand(socketPath, {
+                  kind: "private.wake",
+                  agent,
+                  reason: `queued await expiry alert for ${awaitName}`,
+                  triggerSource: "await-expiry",
+                  budgetClass: "scheduled",
+                  idempotencyKey: awaitWakeIdempotencyKey(agent, awaitName, "await-expiry"),
+                  originRefs: [
+                    { kind: "await", id: awaitName },
+                    { kind: "await-alert", id: "expired" },
+                  ],
+                }).catch(() => {})
               },
             },
           }).catch((err) => {

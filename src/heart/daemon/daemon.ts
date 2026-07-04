@@ -1347,6 +1347,22 @@ export class OuroDaemon {
     }
   }
 
+  private buildAwaitPrivateWakeCommand(command: Extract<DaemonCommand, { kind: "await.poke" }>): Extract<DaemonCommand, { kind: "private.wake" }> {
+    const firedAt = new Date().toISOString()
+    return {
+      kind: "private.wake",
+      agent: command.agent,
+      reason: `manual await condition check for ${command.awaitName}`,
+      triggerSource: "await-poke",
+      budgetClass: "scheduled",
+      idempotencyKey: `await:${command.agent}:${command.awaitName}:await-poke:${firedAt}`,
+      originRefs: [
+        { kind: "await", id: command.awaitName },
+        { kind: "daemon-command", id: "await.poke" },
+      ],
+    }
+  }
+
   private async handlePrivateRuntimeWake(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
   ): Promise<DaemonResponse> {
@@ -1652,11 +1668,7 @@ export class OuroDaemon {
         }
       }
       case "await.poke": {
-        this.processManager.sendToAgent?.(command.agent, { type: "await", awaitName: command.awaitName })
-        return {
-          ok: true,
-          message: `poked await ${command.awaitName} for ${command.agent}`,
-        }
+        return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))
       }
       case "mcp.list": {
         setAgentName(command.agent ?? "default")

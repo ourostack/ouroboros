@@ -1237,6 +1237,7 @@ describe("daemon command plane branches", () => {
       ledgerLocator: { path: ledgerPath, line: 1 },
     })
     expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
       type: "message",
       privateTurnDecision: expect.objectContaining({
@@ -1244,10 +1245,10 @@ describe("daemon command plane branches", () => {
         triggerSource: "await-poke",
       }),
     })
-    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("slugger", {
+    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("slugger", expect.objectContaining({
       type: "await",
       awaitName: "hey_export",
-    })
+    }))
   })
 
   it("treats legacy inner.wake as a compatibility alias for private wake", async () => {

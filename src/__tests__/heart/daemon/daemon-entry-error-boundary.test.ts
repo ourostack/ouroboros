@@ -59,6 +59,10 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
   sendDaemonCommand: sendDaemonCommandMock,
 }))
 
+const { daemonProcessManagerSendToAgentMock } = vi.hoisted(() => ({
+  daemonProcessManagerSendToAgentMock: vi.fn(),
+}))
+
 const {
   awaitSchedulerStartMock,
   awaitSchedulerStopMock,
@@ -153,6 +157,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     awaitSchedulerStartPeriodicReconciliationMock.mockReset()
     awaitSchedulerCtorHook.mockReset()
     sendDaemonCommandMock.mockReset()
+    daemonProcessManagerSendToAgentMock.mockReset()
     archiveAndAlertExpiredAwaitMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
@@ -188,7 +193,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.doMock("../../../heart/daemon/process-manager", () => ({
       DaemonProcessManager: class {
         listAgentSnapshots = vi.fn(() => [])
-        sendToAgent = vi.fn()
+        sendToAgent = daemonProcessManagerSendToAgentMock
       },
     }))
     vi.doMock("../../../heart/daemon/sense-manager", () => ({
@@ -486,6 +491,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
       expect.any(String),
       expect.objectContaining({ kind: "inner.wake" }),
     )
+    expect(daemonProcessManagerSendToAgentMock).not.toHaveBeenCalledWith("alpha", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
   })
 
   it("wires queued await-expiry alerts through private wake instead of inner wake", async () => {
@@ -543,6 +552,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
       expect.any(String),
       expect.objectContaining({ kind: "inner.wake" }),
     )
+    expect(daemonProcessManagerSendToAgentMock).not.toHaveBeenCalledWith("alpha", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
   })
 
   it("emits daemon.await_setup_error when AwaitScheduler constructor throws (Error)", async () => {

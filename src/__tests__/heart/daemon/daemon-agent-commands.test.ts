@@ -37,7 +37,13 @@ function sendRaw(socketPath: string, payload: string): Promise<string> {
 }
 
 describe("daemon agent service command routing", () => {
+  let originalHome: string | undefined
+  let testHomeRoot: string
+
   beforeEach(() => {
+    originalHome = process.env.HOME
+    testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-agent-commands-home-"))
+    process.env.HOME = testHomeRoot
     mockRunSenseTurn.mockClear()
     mockRunSenseTurn.mockResolvedValue({
       response: "full turn response",
@@ -88,12 +94,33 @@ describe("daemon agent service command routing", () => {
       senseManager,
       mailboxServerFactory,
       mode: "dev",
+      privateRuntimePolicyDeps: {
+        ledgerPath: path.join(os.tmpdir(), `agent-command-private-decisions-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`),
+        now: () => "2026-07-03T00:00:00.000Z",
+        resolveProviderLane: vi.fn(() => ({
+          lane: "inner",
+          provider: "minimax",
+          model: "minimax-text-01",
+          source: "agent.json",
+        })),
+        evaluatePolicy: vi.fn(() => ({
+          result: "deny",
+          reason: "private runtime policy denies by default",
+          deniedReason: "default policy deny",
+        })),
+      },
     } as any)
     return { daemon, processManager, scheduler }
   }
 
   afterEach(() => {
     vi.restoreAllMocks()
+    fs.rmSync(testHomeRoot, { recursive: true, force: true })
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
   })
 
   it("routes agent.status command through to agent service", async () => {
@@ -211,7 +238,17 @@ describe("daemon agent service command routing", () => {
 
   it("routes all 13 agent command kinds", async () => {
     const socketPath = tmpSocketPath("agent-all-commands")
-    const { daemon } = make(socketPath)
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([{
+      name: "a",
+      channel: "private-runtime",
+      status: "running",
+      pid: 1234,
+      restartCount: 0,
+      startedAt: "2026-07-03T00:00:00.000Z",
+      lastCrashAt: null,
+      backoffMs: 0,
+    }])
     await daemon.start()
 
     emitNervesEvent({
