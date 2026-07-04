@@ -43,8 +43,8 @@ import("./runtime-credentials")
         })
         .catch(() => undefined)
     }
-    const { startInnerDialogWorker } = await import("../senses/inner-dialog-worker")
-    await startInnerDialogWorker()
+    const { startPrivateRuntimeWorker } = await import("../senses/private-runtime-worker")
+    await startPrivateRuntimeWorker()
   })
   .catch((error) => {
     emitNervesEvent({

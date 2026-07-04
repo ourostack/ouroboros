@@ -41,6 +41,8 @@ describe("private-runtime worker", () => {
 
       expect(runPrivateRuntimeTurn).not.toHaveBeenCalled()
       expect(listeners.message).toEqual(expect.any(Function))
+      await listeners.message?.({ type: "poke", taskId: "manual-check" })
+      expect(runPrivateRuntimeTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "manual-check", habitName: undefined })
       expect(() => listeners.disconnect?.()).toThrow("process.exit called")
     } finally {
       onSpy.mockRestore()
@@ -64,5 +66,38 @@ describe("private-runtime worker", () => {
     await worker.run("instinct", "manual-check")
 
     expect(runPrivateRuntimeTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "manual-check", habitName: undefined })
+  })
+
+  it("checks the default pending directory from the explicit agent argv", async () => {
+    vi.resetModules()
+    const runPrivateRuntimeTurn = vi.fn(async () => undefined)
+    const getInnerDialogPendingDir = vi.fn((agentName: string) => `/pending/${agentName}`)
+    const hasPendingMessages = vi.fn(() => false)
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "private-runtime-worker.js",
+      "--agent",
+      "slugger",
+    ])
+    vi.doMock(runtimeModulePath, () => ({ runPrivateRuntimeTurn }))
+    vi.doMock("../../mind/pending", () => ({
+      getInnerDialogPendingDir,
+      hasPendingMessages,
+    }))
+    const { createPrivateRuntimeWorker } = await import(workerModulePath) as {
+      createPrivateRuntimeWorker: () => {
+        run(reason: "instinct", taskId?: string): Promise<void>
+      }
+    }
+    const worker = createPrivateRuntimeWorker()
+
+    try {
+      await worker.run("instinct", "manual-check")
+    } finally {
+      argvSpy.mockRestore()
+    }
+
+    expect(getInnerDialogPendingDir).toHaveBeenCalledWith("slugger")
+    expect(hasPendingMessages).toHaveBeenCalledWith("/pending/slugger")
   })
 })
