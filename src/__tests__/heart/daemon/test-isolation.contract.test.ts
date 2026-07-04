@@ -198,6 +198,11 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   // against an isolated temp bundle ledger. Does not call start(), bind
   // sockets, or touch the production pidfile.
   "src/__tests__/heart/private-runtime/decision-read-surface.test.ts",
+  // Spend-invariant matrix constructs OuroDaemon to exercise real daemon
+  // private.wake/message/start/restart command handling with injected temp
+  // bundle roots, temp socket paths, fake process/router deps, and explicit
+  // daemon.stop cleanup around lifecycle rows.
+  "src/__tests__/heart/private-runtime/spend-invariant-matrix.test.ts",
 ])
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")
