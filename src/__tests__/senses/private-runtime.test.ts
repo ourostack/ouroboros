@@ -984,6 +984,38 @@ describe("private runtime", () => {
       expect(mockRunAgent).not.toHaveBeenCalled()
     })
 
+    it("fails closed when an executable receipt is missing a credential revision", async () => {
+      const decision = writeLedgeredPrivateTurnDecision()
+      const providerLane = { ...decision.providerLane }
+      delete providerLane.credentialRevision
+      const request: PrivateTurnRequest = {
+        agent: decision.agent,
+        origin: decision.origin,
+        reason: decision.requestReason ?? decision.reason,
+        providerLane: providerLane.lane,
+        triggerSource: decision.triggerSource,
+        idempotencyKey: decision.idempotencyKey,
+        budgetClass: decision.budgetClass,
+        originRefs: decision.originRefs,
+      }
+      const missingRevisionDecision: PrivateTurnDecision = {
+        ...decision,
+        providerLane,
+        requestFingerprint: createPrivateTurnRequestFingerprint(request, providerLane),
+      }
+      fs.writeFileSync(decision.ledgerLocator.path, `${JSON.stringify(missingRevisionDecision)}\n`, "utf-8")
+
+      await expect((runPrivateRuntimeTurn as any)({
+        reason: "instinct",
+        privateTurnDecision: missingRevisionDecision,
+        instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+        now: () => new Date("2026-03-06T12:00:00.000Z"),
+      })).rejects.toThrow(/missing credential revision/i)
+
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockRunAgent).not.toHaveBeenCalled()
+    })
+
     it.each([
       {
         name: "non-object config",
@@ -1089,6 +1121,7 @@ describe("private runtime", () => {
           provider: "minimax",
           model: "minimax-test",
           source: "agent.json",
+          credentialRevision: minimaxCredentialRevision,
         }),
         evaluatePolicy: () => ({ result: "allow", reason: "operator-approved spend" }),
         now: () => "2026-03-06T11:59:00.000Z",

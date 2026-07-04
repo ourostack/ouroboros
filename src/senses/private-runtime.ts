@@ -358,15 +358,17 @@ function configuredProviderLaneMetadata(agentName: string, lane: PrivateTurnProv
 
 function assertProviderLaneStillMatches(decision: PrivateTurnDecision, agentName: string): void {
   const current = configuredProviderLaneMetadata(agentName, decision.providerLane.lane)
+  if (typeof decision.providerLane.credentialRevision !== "string" || decision.providerLane.credentialRevision.trim().length === 0) {
+    throw new Error(
+      `private-runtime provider lane mismatch: receipt for ${decision.providerLane.provider}/${decision.providerLane.model} is missing credential revision`,
+    )
+  }
   if (
     current.lane !== decision.providerLane.lane
     || current.provider !== decision.providerLane.provider
     || current.model !== decision.providerLane.model
     || current.source !== decision.providerLane.source
-    || (
-      typeof decision.providerLane.credentialRevision === "string"
-      && current.credentialRevision !== decision.providerLane.credentialRevision
-    )
+    || current.credentialRevision !== decision.providerLane.credentialRevision
   ) {
     throw new Error(
       `private-runtime provider lane mismatch: receipt was for ${decision.providerLane.provider}/${decision.providerLane.model}, current ${decision.providerLane.lane} lane is ${current.provider}/${current.model}`,
