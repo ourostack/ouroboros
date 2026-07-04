@@ -415,17 +415,25 @@ describe("evolution case store", () => {
     })
     const withoutExplicitAction = readEvolutionCase(agentRoot, created.id)
     if (!withoutExplicitAction) throw new Error("expected evolution case fixture to exist")
-    const { write_diary: _writeDiary, ...actionsWithoutWriteDiary } = withoutExplicitAction.authority.actions
+    const {
+      write_diary: _writeDiary,
+      mutate_credentials: _mutateCredentials,
+      ...actionsWithoutExplicitFallbacks
+    } = withoutExplicitAction.authority.actions
     fs.writeFileSync(casePath(agentRoot, created.id), JSON.stringify({
       ...withoutExplicitAction,
       authority: {
         ...withoutExplicitAction.authority,
-        actions: actionsWithoutWriteDiary,
+        actions: actionsWithoutExplicitFallbacks,
       },
     }, null, 2), "utf-8")
     expect(evaluateEvolutionAction(agentRoot, created.id, "write_diary")).toMatchObject({
       allowed: false,
       code: "reviewer_required",
+    })
+    expect(evaluateEvolutionAction(agentRoot, created.id, "mutate_credentials")).toMatchObject({
+      allowed: false,
+      code: "human_required",
     })
 
     setEvolutionAuthority(agentRoot, created.id, {

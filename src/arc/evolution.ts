@@ -425,6 +425,10 @@ function budgetExhausted(item: EvolutionCase, action: EvolutionActionClass): boo
   return false
 }
 
+function fallbackAuthorityForAction(action: EvolutionActionClass): EvolutionAuthorityMode {
+  return HUMAN_REQUIRED_ACTIONS.has(action) ? "human_required" : "reviewer_required"
+}
+
 function spendBudget(item: EvolutionCase, action: EvolutionActionClass): EvolutionBudget {
   const budget: EvolutionBudget = {
     ...item.budget,
@@ -592,7 +596,7 @@ export function evaluateEvolutionAction(
   const item = readEvolutionCase(agentRoot, caseId)
   if (!item) return { allowed: false, code: "case_not_found", reason: `Evolution case not found: ${caseId}` }
   if (isTerminal(item)) return { allowed: false, code: "terminal_case", reason: `Evolution case is ${item.status}` }
-  const authority = item.authority.actions[action] ?? "reviewer_required"
+  const authority = item.authority.actions[action] ?? fallbackAuthorityForAction(action)
   if (authority !== "allowed") return { allowed: false, code: authority, reason: `${action} is ${authority}` }
   if (budgetExhausted(item, action)) return { allowed: false, code: "budget_exhausted", reason: `${action} budget is exhausted` }
   return { allowed: true, code: "allowed", reason: `${action} allowed` }
