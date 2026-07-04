@@ -1356,6 +1356,21 @@ export class OuroDaemon {
     })
   }
 
+  private buildTaskPokePrivateWakeCommand(command: Extract<DaemonCommand, { kind: "task.poke" }>): Extract<DaemonCommand, { kind: "private.wake" }> {
+    return {
+      kind: "private.wake",
+      agent: command.agent,
+      reason: `task poke ${command.taskId}`,
+      triggerSource: "task-poke",
+      budgetClass: "scheduled",
+      idempotencyKey: `task-poke:${command.agent}:${command.taskId}`,
+      originRefs: [
+        { kind: "task", id: command.taskId },
+        { kind: "daemon-command", id: "task.poke" },
+      ],
+    }
+  }
+
   private buildPrivateRuntimeWorkerWakeMessage(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
     decision: PrivateTurnDecision,
@@ -1657,7 +1672,7 @@ export class OuroDaemon {
           taskRef: command.taskId,
         })
         await this.scheduler.recordTaskRun?.(command.agent, command.taskId)
-        this.processManager.sendToAgent?.(command.agent, { type: "poke", taskId: command.taskId })
+        await this.handlePrivateRuntimeWake(this.buildTaskPokePrivateWakeCommand(command))
         return {
           ok: true,
           message: `queued poke ${receipt.id}`,
