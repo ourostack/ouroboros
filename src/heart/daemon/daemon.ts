@@ -41,6 +41,9 @@ import type { PrivateTurnDecision, PrivateTurnOriginRef, PrivateTurnPolicyDeps, 
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from "./await-private-wake"
+import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
+import { parseHabitFile } from "../habits/habit-parser"
+import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -657,6 +660,13 @@ function isValidTaskPokeCommand(command: Extract<DaemonCommand, { kind: "task.po
     && command.agent.trim().length > 0
     && typeof command.taskId === "string"
     && command.taskId.trim().length > 0
+}
+
+function isValidHabitPokeCommand(command: Extract<DaemonCommand, { kind: "habit.poke" }>): boolean {
+  return typeof command.agent === "string"
+    && command.agent.trim().length > 0
+    && typeof command.habitName === "string"
+    && command.habitName.trim().length > 0
 }
 
 function taskIdFromTaskPokePrivateWakeCommand(
@@ -1392,6 +1402,23 @@ export class OuroDaemon {
     }
   }
 
+  private resolveHabitPokeOccurrenceId(
+    command: Extract<DaemonCommand, { kind: "habit.poke" }>,
+    trigger: HabitRunTrigger,
+  ): string | { skipReason: string } | undefined {
+    if (trigger === "poke" || trigger === "manual") return undefined
+
+    const agentRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
+    const habitPath = path.join(agentRoot, "habits", `${command.habitName}.md`)
+    if (!fs.existsSync(habitPath)) return { skipReason: "habit file not found" }
+
+    const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+    if (habit.cadence === null) return { skipReason: "habit has no cadence" }
+    const cadence = habit.cadence
+    if (habit.lastRun === null) return `${trigger}:first-run:${cadence}`
+    return `${trigger}:last-run:${habit.lastRun}:cadence:${cadence}`
+  }
+
   private buildPrivateRuntimeWorkerWakeMessage(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
     decision: PrivateTurnDecision,
@@ -1409,6 +1436,15 @@ export class OuroDaemon {
       return {
         type: "poke",
         taskId,
+        privateTurnDecision: decision,
+      }
+    }
+    const habitMessage = habitMessageFromPrivateWakeCommand(command)
+    if (habitMessage) {
+      return {
+        type: "habit",
+        habitName: habitMessage.habitName,
+        trigger: habitMessage.trigger,
         privateTurnDecision: decision,
       }
     }
@@ -1716,15 +1752,37 @@ export class OuroDaemon {
         }
       }
       case "habit.poke": {
+        if (!isValidHabitPokeCommand(command)) {
+          return {
+            ok: false,
+            error: "Invalid habit.poke payload: expected non-empty string fields 'agent' and 'habitName'.",
+          }
+        }
+
         const trigger = command.trigger ?? "poke"
         if (!isHabitRunTrigger(trigger)) {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
         }
-        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName, trigger })
-        return {
-          ok: true,
-          message: `poked habit ${command.habitName} for ${command.agent}`,
+        if (!this.hasManagedPrivateRuntime(command.agent)) {
+          return {
+            ok: false,
+            error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
+          }
         }
+        const occurrenceId = this.resolveHabitPokeOccurrenceId(command, trigger)
+        if (typeof occurrenceId === "object") {
+          return {
+            ok: true,
+            message: `skipped scheduled habit ${command.habitName} for ${command.agent}: ${occurrenceId.skipReason}`,
+          }
+        }
+        return this.handlePrivateRuntimeWake(buildHabitPrivateWakeCommand({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          sourceRef: { kind: "daemon-command", id: "habit.poke" },
+          occurrenceId,
+        }))
       }
       case "await.poke": {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))

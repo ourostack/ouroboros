@@ -32,9 +32,11 @@ import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
+import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from "./habit-private-wake"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
+import type { HabitRunTrigger } from "../../arc/flight-recorder"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -141,6 +143,30 @@ function emitPulsePrivateWakeDispatchError(options: {
       triggerSource: options.request.triggerSource,
       idempotencyKey: options.request.idempotencyKey,
       originRefs: options.request.originRefs,
+      socketPath: options.socketPath,
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+  })
+}
+
+function emitHabitPrivateWakeDispatchError(options: {
+  agent: string
+  habitName: string
+  trigger: HabitRunTrigger
+  triggerSource: HabitPrivateWakeTriggerSource
+  socketPath: string
+  error: unknown
+}): void {
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.habit_private_wake_dispatch_error",
+    message: "failed to dispatch habit private-runtime wake",
+    meta: {
+      agent: options.agent,
+      habitName: options.habitName,
+      trigger: options.trigger,
+      triggerSource: options.triggerSource,
       socketPath: options.socketPath,
       error: options.error instanceof Error ? options.error.message : String(options.error),
     },
@@ -465,8 +491,24 @@ void daemon.start().then(async () => {
         agent,
         habitsDir,
         osCronManager,
-        onHabitFire: (habitName, trigger) => {
-          processManager.sendToAgent(agent, { type: "habit", habitName, trigger })
+        onHabitFire: (habitName, trigger, context) => {
+          const command = buildHabitPrivateWakeCommand({
+            agent,
+            habitName,
+            trigger,
+            sourceRef: { kind: "daemon-entry", id: "habit-scheduler" },
+            occurrenceId: context?.occurrenceId,
+          })
+          sendDaemonCommand(socketPath, command).catch((error) => {
+            emitHabitPrivateWakeDispatchError({
+              agent,
+              habitName,
+              trigger,
+              triggerSource: command.triggerSource as HabitPrivateWakeTriggerSource,
+              socketPath,
+              error,
+            })
+          })
         },
         deps: {
           readdir: (dir) => fs.readdirSync(dir),

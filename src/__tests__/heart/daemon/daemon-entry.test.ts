@@ -15,7 +15,8 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
 }))
 
-const { habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock, habitSchedulerListJobsMock, habitSchedulerTriggerJobMock } = vi.hoisted(() => ({
+const { habitSchedulerOptionsMock, habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock, habitSchedulerListJobsMock, habitSchedulerTriggerJobMock } = vi.hoisted(() => ({
+  habitSchedulerOptionsMock: vi.fn(),
   habitSchedulerStartMock: vi.fn(),
   habitSchedulerStopMock: vi.fn(),
   habitSchedulerWatchMock: vi.fn(),
@@ -31,7 +32,9 @@ const { migrateHabitsFromTaskSystemMock } = vi.hoisted(() => ({
 
 vi.mock("../../../heart/habits/habit-scheduler", () => ({
   HabitScheduler: class MockHabitScheduler {
-    constructor(public options: unknown) {}
+    constructor(public options: unknown) {
+      habitSchedulerOptionsMock(options)
+    }
     start = habitSchedulerStartMock
     stop = habitSchedulerStopMock
     watchForChanges = habitSchedulerWatchMock
@@ -108,6 +111,7 @@ describe("daemon entrypoint", () => {
     readPrivateRuntimeConfigMock.mockReturnValue({ autoStart: false, source: "default" })
     habitSchedulerStartMock.mockReset()
     habitSchedulerStopMock.mockReset()
+    habitSchedulerOptionsMock.mockReset()
     habitSchedulerWatchMock.mockReset()
     habitSchedulerStopWatchMock.mockReset()
     habitSchedulerStartPeriodicReconciliationMock.mockReset()
@@ -299,6 +303,82 @@ describe("daemon entrypoint", () => {
     processManagerOptions.onSnapshotChange()
 
     return { emitNervesEvent, expectedAlertId, sendDaemonCommand }
+  }
+
+  async function importDaemonEntryWithHabitDispatch(options: {
+    socketPath: string
+    sendDaemonCommand?: ReturnType<typeof vi.fn>
+  }) {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const processManagerSendToAgent = vi.fn()
+    const sendDaemonCommand = options.sendDaemonCommand ?? vi.fn(async () => ({ ok: true }))
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        start = start
+        stop = stop
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [{
+          name: "slugger",
+          channel: "private-runtime",
+          autoStart: false,
+          status: "running",
+          pid: 123,
+          restartCount: 0,
+          startedAt: "2026-07-04T00:00:00.000Z",
+          lastCrashAt: null,
+          backoffMs: 1000,
+          lastExitCode: null,
+          lastSignal: null,
+          errorReason: null,
+          fixHint: null,
+        }])
+        sendToAgent = processManagerSendToAgent
+      },
+    }))
+    vi.doMock("../../../heart/daemon/socket-client", () => ({
+      sendDaemonCommand,
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", options.socketPath])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => expect(habitSchedulerOptionsMock).toHaveBeenCalled())
+
+    const schedulerOptions = habitSchedulerOptionsMock.mock.calls[0]?.[0] as {
+      onHabitFire: (habitName: string, trigger: string, context?: { occurrenceId: string }) => void
+    }
+    return { emitNervesEvent, processManagerSendToAgent, schedulerOptions, sendDaemonCommand }
   }
 
   it("boots daemon with default socket and wires signal handlers", async () => {
@@ -585,6 +665,109 @@ describe("daemon entrypoint", () => {
           socketPath: "/tmp/ouro-pulse-raw-failed-wake.sock",
           error: "raw pulse socket failure",
         },
+      }))
+    })
+  })
+
+  it("routes habit scheduler fires through canonical private wake commands", async () => {
+    const { processManagerSendToAgent, schedulerOptions, sendDaemonCommand } = await importDaemonEntryWithHabitDispatch({
+      socketPath: "/tmp/ouro-habit-private-wake.sock",
+    })
+
+    schedulerOptions.onHabitFire("heartbeat", "overdue", {
+      occurrenceId: "overdue:first-run:30m",
+    })
+
+    expect(sendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/ouro-habit-private-wake.sock",
+      expect.objectContaining({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "habit heartbeat fired by overdue",
+        triggerSource: "habit-overdue",
+        budgetClass: "scheduled",
+        originRefs: [
+          { kind: "habit", id: "heartbeat" },
+          { kind: "habit-trigger", id: "overdue" },
+          { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+          { kind: "daemon-entry", id: "habit-scheduler" },
+        ],
+      }),
+    )
+    expect(sendDaemonCommand).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        idempotencyKey: "habit:slugger:heartbeat:overdue:overdue:first-run:30m",
+      }),
+    )
+    expect(sendDaemonCommand).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "inner.wake" }),
+    )
+    expect(processManagerSendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("records failed habit private wake dispatches", async () => {
+    const { emitNervesEvent, processManagerSendToAgent, schedulerOptions, sendDaemonCommand } =
+      await importDaemonEntryWithHabitDispatch({
+        socketPath: "/tmp/ouro-habit-failed-wake.sock",
+        sendDaemonCommand: vi.fn(async () => {
+          throw new Error("habit socket write failed")
+        }),
+      })
+
+    schedulerOptions.onHabitFire("heartbeat", "overdue", {
+      occurrenceId: "overdue:first-run:30m",
+    })
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        component: "daemon",
+        event: "daemon.habit_private_wake_dispatch_error",
+        meta: expect.objectContaining({
+          agent: "slugger",
+          habitName: "heartbeat",
+          trigger: "overdue",
+          triggerSource: "habit-overdue",
+          socketPath: "/tmp/ouro-habit-failed-wake.sock",
+          error: "habit socket write failed",
+        }),
+      }))
+    })
+    expect(sendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/ouro-habit-failed-wake.sock",
+      expect.objectContaining({ kind: "private.wake" }),
+    )
+    expect(processManagerSendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("records raw failed habit private wake dispatch values", async () => {
+    const { emitNervesEvent, schedulerOptions } =
+      await importDaemonEntryWithHabitDispatch({
+        socketPath: "/tmp/ouro-habit-raw-failed-wake.sock",
+        sendDaemonCommand: vi.fn(async () => {
+          throw "raw habit socket failure"
+        }),
+      })
+
+    schedulerOptions.onHabitFire("heartbeat", "overdue", {
+      occurrenceId: "overdue:first-run:30m",
+    })
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        component: "daemon",
+        event: "daemon.habit_private_wake_dispatch_error",
+        meta: expect.objectContaining({
+          agent: "slugger",
+          habitName: "heartbeat",
+          trigger: "overdue",
+          triggerSource: "habit-overdue",
+          socketPath: "/tmp/ouro-habit-raw-failed-wake.sock",
+          error: "raw habit socket failure",
+        }),
       }))
     })
   })

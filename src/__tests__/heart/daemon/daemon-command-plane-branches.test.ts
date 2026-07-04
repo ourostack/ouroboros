@@ -115,6 +115,31 @@ describe("daemon command plane branches", () => {
     }
   }
 
+  function writeHabitFile(options: {
+    bundlesRoot: string
+    agent: string
+    habitName: string
+    cadence: string | null
+    lastRun: string | null
+  }): void {
+    const habitsDir = path.join(options.bundlesRoot, `${options.agent}.ouro`, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, `${options.habitName}.md`),
+      [
+        "---",
+        `title: ${options.habitName}`,
+        `cadence: ${options.cadence ?? "null"}`,
+        "status: active",
+        `lastRun: ${options.lastRun ?? "null"}`,
+        "---",
+        "",
+        "Run the habit.",
+      ].join("\n"),
+      "utf-8",
+    )
+  }
+
   afterEach(() => {
     vi.restoreAllMocks()
   })
@@ -837,6 +862,242 @@ describe("daemon command plane branches", () => {
     expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
     expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
     expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("routes habit pokes through private-runtime policy and denies without direct habit delivery", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-poke-denied")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-denied-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-poke-denied-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
+    writeHabitFile({
+      bundlesRoot,
+      agent: "slugger",
+      habitName: "heartbeat",
+      cadence: "30m",
+      lastRun: null,
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "overdue",
+    })
+
+    expect(poke).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: default policy deny",
+      data: {
+        decision: expect.objectContaining({
+          agent: "slugger",
+          origin: "daemon.private.wake",
+          result: "deny",
+          executable: false,
+          triggerSource: "habit-overdue",
+          budgetClass: "scheduled",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "slugger",
+        origin: "daemon.private.wake",
+        reason: "habit heartbeat fired by overdue",
+        triggerSource: "habit-overdue",
+        budgetClass: "scheduled",
+        idempotencyKey: "habit:slugger:heartbeat:overdue:overdue:first-run:30m",
+        originRefs: [
+          { kind: "habit", id: "heartbeat" },
+          { kind: "habit-trigger", id: "overdue" },
+          { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+          { kind: "daemon-command", id: "habit.poke" },
+        ],
+      }),
+      expect.any(Object),
+    )
+    expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("deduplicates repeated scheduled habit pokes while lastRun has not advanced", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-poke-stable-occurrence")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-stable-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-poke-stable-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeHabitFile({
+      bundlesRoot,
+      agent: "slugger",
+      habitName: "heartbeat",
+      cadence: "30m",
+      lastRun: "2026-07-03T23:30:00.000Z",
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const command = {
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "launchd",
+    } as const
+
+    const firstPoke = await daemon.handleCommand(command)
+    const duplicatePoke = await daemon.handleCommand(command)
+
+    expect(firstPoke).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: {
+        decision: expect.objectContaining({
+          result: "allow",
+          executable: true,
+          idempotencyKey: "habit:slugger:heartbeat:launchd:launchd:last-run:2026-07-03T23:30:00.000Z:cadence:30m",
+        }),
+      },
+    })
+    expect(duplicatePoke).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: duplicate private-turn decision already recorded",
+      data: {
+        decision: expect.objectContaining({
+          result: "allow",
+          executable: false,
+          deniedReason: "duplicate private-turn decision already recorded",
+          idempotencyKey: "habit:slugger:heartbeat:launchd:launchd:last-run:2026-07-03T23:30:00.000Z:cadence:30m",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(2)
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: "habit:slugger:heartbeat:launchd:launchd:last-run:2026-07-03T23:30:00.000Z:cadence:30m",
+        originRefs: [
+          { kind: "habit", id: "heartbeat" },
+          { kind: "habit-trigger", id: "launchd" },
+          { kind: "habit-occurrence", id: "launchd:last-run:2026-07-03T23:30:00.000Z:cadence:30m" },
+          { kind: "daemon-command", id: "habit.poke" },
+        ],
+      }),
+      expect.any(Object),
+    )
+    expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+    expect(processManager.startAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
+      type: "habit",
+      habitName: "heartbeat",
+      trigger: "launchd",
+      privateTurnDecision: expect.objectContaining({
+        result: "allow",
+        triggerSource: "habit-launchd",
+      }),
+    })
+  })
+
+  it("skips scheduled habit pokes with missing habit files before policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-poke-missing")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-missing-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-poke-missing-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const command = {
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "cron",
+    } as const
+
+    const poke = await daemon.handleCommand(command)
+    const duplicatePoke = await daemon.handleCommand(command)
+
+    expect(poke).toEqual({
+      ok: true,
+      message: "skipped scheduled habit heartbeat for slugger: habit file not found",
+    })
+    expect(duplicatePoke).toEqual({
+      ok: true,
+      message: "skipped scheduled habit heartbeat for slugger: habit file not found",
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("skips scheduled habit pokes without cadence before policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-poke-no-cadence")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-no-cadence-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-poke-no-cadence-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeHabitFile({
+      bundlesRoot,
+      agent: "slugger",
+      habitName: "heartbeat",
+      cadence: null,
+      lastRun: null,
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "launchd",
+    })
+
+    expect(poke).toEqual({
+      ok: true,
+      message: "skipped scheduled habit heartbeat for slugger: habit has no cadence",
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("rejects malformed habit-poke payloads before policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-poke-invalid")
+    const ledgerPath = path.join(os.tmpdir(), `habit-poke-invalid-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({ kind: "habit.poke", agent: "slugger", habitName: " " } as never)
+
+    expect(poke).toEqual({
+      ok: false,
+      error: "Invalid habit.poke payload: expected non-empty string fields 'agent' and 'habitName'.",
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("rejects habit pokes for unknown private-runtime agents before policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-poke-unknown")
+    const ledgerPath = path.join(os.tmpdir(), `habit-poke-unknown-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("slugger")])
+
+    const poke = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "ghost",
+      habitName: "heartbeat",
+      trigger: "overdue",
+    })
+
+    expect(poke).toEqual({
+      ok: false,
+      error: "No managed agent 'ghost' is registered with daemon-managed private runtime.",
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
