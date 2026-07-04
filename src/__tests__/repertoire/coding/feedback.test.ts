@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../../heart/identity", () => ({
   getAgentName: vi.fn(() => "slugger"),
@@ -17,7 +17,13 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 import { attachCodingSessionFeedback, formatCodingTail } from "../../../repertoire/coding/feedback"
 import { advanceObligation } from "../../../arc/obligations"
 import { requestInnerWake, requestPrivateWake } from "../../../heart/daemon/socket-client"
+import { createLogger, type LogEvent } from "../../../nerves"
+import { setRuntimeLogger } from "../../../nerves/runtime"
 import type { CodingSession, CodingSessionUpdate } from "../../../repertoire/coding/types"
+
+afterEach(() => {
+  setRuntimeLogger(null)
+})
 
 function makeSession(overrides: Partial<CodingSession> = {}): CodingSession {
   return {
@@ -987,6 +993,42 @@ describe("coding feedback relay", () => {
     expectCodingFeedbackPrivateWake({ kind: "waiting_input", session: waitingUpdate.session })
   })
 
+  it("uses the same private wake idempotency key for duplicate obligation feedback updates", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession({
+      originSession: { friendId: "ari", channel: "cli", key: "session" },
+      obligationId: "ob-11",
+    })
+
+    vi.mocked(requestInnerWake).mockClear()
+    vi.mocked(requestPrivateWake).mockClear()
+    attachCodingSessionFeedback(manager, session, target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    const waitingUpdate = {
+      kind: "waiting_input",
+      session: { ...session, status: "waiting_input" },
+    } satisfies CodingSessionUpdate
+    await listener?.(waitingUpdate)
+    await listener?.(waitingUpdate)
+    await Promise.resolve()
+
+    expect(requestPrivateWake).toHaveBeenCalledTimes(2)
+    expectCodingFeedbackPrivateWake({ callNumber: 1, kind: "waiting_input", session: waitingUpdate.session })
+    expectCodingFeedbackPrivateWake({ callNumber: 2, kind: "waiting_input", session: waitingUpdate.session })
+    expect(vi.mocked(requestPrivateWake).mock.calls[0]?.[2]?.idempotencyKey).toBe(
+      vi.mocked(requestPrivateWake).mock.calls[1]?.[2]?.idempotencyKey,
+    )
+  })
+
   it("keeps relaying feedback when an obligation private wake request fails", async () => {
     let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
     const manager = {
@@ -998,12 +1040,14 @@ describe("coding feedback relay", () => {
     const target = { send: vi.fn().mockResolvedValue(undefined) }
     const session = makeSession() as CodingSession & { obligationId?: string }
     session.obligationId = "ob-5"
+    const events: LogEvent[] = []
 
     vi.mocked(requestInnerWake).mockClear()
     vi.mocked(requestPrivateWake).mockClear()
     vi.mocked(requestPrivateWake)
       .mockRejectedValueOnce("wake failed")
       .mockRejectedValueOnce(new Error("wake failed error"))
+    setRuntimeLogger(createLogger({ level: "debug", sinks: [(entry) => events.push(entry)] }))
     attachCodingSessionFeedback(manager, session as CodingSession, target)
     await Promise.resolve()
     target.send.mockClear()
@@ -1022,6 +1066,30 @@ describe("coding feedback relay", () => {
     expect(target.send).toHaveBeenCalledWith("codex coding-001 waiting")
     expect(target.send).toHaveBeenCalledWith("codex coding-001 stalled")
     expect(requestPrivateWake).toHaveBeenCalledTimes(2)
+    expectCodingFeedbackPrivateWake({ callNumber: 1, kind: "waiting_input", session: session as CodingSession })
+    expectCodingFeedbackPrivateWake({ callNumber: 2, kind: "stalled", session: session as CodingSession })
     expect(requestInnerWake).not.toHaveBeenCalled()
+    expect(events.filter((event) => event.event === "repertoire.coding_feedback_wake_error")).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        component: "repertoire",
+        message: "coding feedback wake request failed",
+        meta: {
+          sessionId: "coding-001",
+          kind: "waiting_input",
+          reason: "wake failed",
+        },
+      }),
+      expect.objectContaining({
+        level: "warn",
+        component: "repertoire",
+        message: "coding feedback wake request failed",
+        meta: {
+          sessionId: "coding-001",
+          kind: "stalled",
+          reason: "wake failed error",
+        },
+      }),
+    ])
   })
 })

@@ -77,18 +77,18 @@ function codingFeedbackOriginSessionId(session: CodingSession): string {
 
 function buildCodingFeedbackPrivateWakeOptions(input: {
   agentName: string
+  obligationId: string
   update: CodingSessionUpdate
 }): NonNullable<Parameters<typeof requestPrivateWake>[2]> {
-  const obligationId = input.update.session.obligationId ?? "missing-obligation"
   return {
     reason: "coding feedback private attention",
     triggerSource: "coding-feedback",
     budgetClass: "interactive",
-    idempotencyKey: `coding-feedback:${input.agentName}:${obligationId}:${input.update.session.id}:${input.update.kind}`,
+    idempotencyKey: `coding-feedback:${input.agentName}:${input.obligationId}:${input.update.session.id}:${input.update.kind}`,
     originRefs: [
       { kind: "coding-session", id: input.update.session.id },
       { kind: "coding-update", id: input.update.kind },
-      { kind: "obligation", id: obligationId },
+      { kind: "obligation", id: input.obligationId },
       { kind: "session", id: codingFeedbackOriginSessionId(input.update.session) },
     ],
   }
@@ -300,13 +300,14 @@ function syncObligationFromUpdate(update: CodingSessionUpdate): void {
 }
 
 async function requestPrivateWakeForObligation(update: CodingSessionUpdate): Promise<void> {
-  if (!update.session.obligationId || !OBLIGATION_WAKE_UPDATE_KINDS.has(update.kind)) {
+  const obligationId = update.session.obligationId
+  if (!obligationId || !OBLIGATION_WAKE_UPDATE_KINDS.has(update.kind)) {
     return
   }
 
   try {
     const agentName = getAgentName()
-    await requestPrivateWake(agentName, undefined, buildCodingFeedbackPrivateWakeOptions({ agentName, update }))
+    await requestPrivateWake(agentName, undefined, buildCodingFeedbackPrivateWakeOptions({ agentName, obligationId, update }))
   } catch (error) {
     emitNervesEvent({
       level: "warn",
