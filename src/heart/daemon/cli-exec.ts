@@ -4685,6 +4685,26 @@ function makeBackgroundOperationId(kind: "mail.import-mbox" | "mail.backfill-ind
   return `${prefix}_${randomUUID().slice(0, 8)}`
 }
 
+function buildMailOperationPrivateWakeCommand(
+  agentName: string,
+  record: BackgroundOperationRecord,
+): Extract<DaemonCommand, { kind: "private.wake" }> {
+  const status = record.status === "failed" ? "failed" : "succeeded"
+  return {
+    kind: "private.wake",
+    agent: agentName,
+    reason: "mail background operation private attention",
+    triggerSource: "mail-background-operation",
+    budgetClass: "interactive",
+    idempotencyKey: `mail-operation:${agentName}:${record.id}:${status}`,
+    originRefs: [
+      { kind: "background-operation", id: record.id },
+      { kind: "mail-operation", id: record.kind },
+      { kind: "mail-operation-status", id: status },
+    ],
+  }
+}
+
 async function notifyMailOperation(
   agentName: string,
   record: BackgroundOperationRecord & { detail: string },
@@ -4720,7 +4740,7 @@ async function notifyMailOperation(
     mode: "reflect",
   })
   await queueMailOperationTargetNotification(agentName, content, deps).catch(() => undefined)
-  await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agentName } as DaemonCommand)
+  await deps.sendCommand(deps.socketPath, buildMailOperationPrivateWakeCommand(agentName, record))
     .then(() => undefined)
     .catch(() => undefined)
 }
