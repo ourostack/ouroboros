@@ -113,7 +113,7 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
   },
   surface: () => "sharing a thought...",
 
-  // Metacognitive (agent's inner life)
+  // Metacognitive (private runtime)
   ponder: (args) => {
     const objective = args.objective || args.thought
     return objective ? `bookmarking ${truncate(objective, 40)}...` : "bookmarking deeper work..."

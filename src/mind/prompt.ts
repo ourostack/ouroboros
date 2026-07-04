@@ -1364,7 +1364,7 @@ think. record. share. rest.`
 
 export function loopOrientationSection(channel: Channel): string {
   if (channel === "inner") return ""
-  return `sometimes a thought of mine surfaces alongside what someone is saying — marked as [inner thought: ...]. that's me, bringing up something i was thinking about. i can weave it into the conversation naturally, or let it go. my call.
+  return `sometimes a private-runtime note surfaces alongside what someone is saying — marked as [private-runtime note: ...]. that's me, bringing up something I was holding privately. i can weave it into the conversation naturally, or let it go. my call.
 
 when something deserves more thought than the moment allows, i can note it to myself and come back later with a considered answer.`
 }
@@ -1531,9 +1531,9 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     toolRestrictionSection(context),
     loopOrientationSection(channel),
 
-    // Group 5: my inner life (inner channel only)
+    // Group 5: private runtime (private-runtime channel only)
     ...(channel === "inner" ? [
-      "# my inner life",
+      "# my private runtime",
       metacognitiveFramingSection(channel),
     ] : []),
 

@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.675",
       "changes": [
-        "Complete the private-runtime vocabulary convergence across live prompt/tool/status surfaces: private turns, progress labels, query/session status, return obligations, commitments, and queue summaries now use private-runtime wording; static guards also reject inner-session, inner-turn, inner-lane, self/inner progress, private-thinking, and queued-to-inner/dialog regressions except explicit compatibility/safety fixtures."
+        "Finish private-runtime vocabulary on final live prompt/tool/CLI markers: ponder payload guidance, query_session status wording, note context, CLI self-message prefixes, loop orientation, and private-runtime prompt headers no longer use inner-pass, self/inner, inner-thought, or inner-life phrasing; guards now reject those terms outside explicit safety/compatibility fixtures."
       ]
     },
     {

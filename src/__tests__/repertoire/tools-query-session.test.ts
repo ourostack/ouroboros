@@ -480,7 +480,7 @@ describe("query_session tool", () => {
     expect(result).toBe("no session found for that friend/channel/key combination.")
   })
 
-  it("supports a lightweight status mode for self/inner checks", async () => {
+  it("supports a lightweight status mode for self/private-runtime checks", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
 

@@ -40,7 +40,7 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
         },
         payload_json: {
           type: "string",
-          description: "JSON object string with packet-specific structured details. include exact markers, return wording fragments, or constraints the inner pass must preserve; sourceRequest is owned by the runtime from the latest user request. use {} only when there are no such details.",
+          description: "JSON object string with packet-specific structured details. include exact markers, return wording fragments, or constraints the private-runtime pass must preserve; sourceRequest is owned by the runtime from the latest user request. use {} only when there are no such details.",
         },
         thought: {
           type: "string",

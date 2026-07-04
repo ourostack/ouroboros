@@ -42,6 +42,11 @@ const OLD_VOCABULARY: OldVocabularyPattern[] = [
   { id: "inner return obligations", regex: /inner return obligations/gi },
   { id: "private thinking", regex: /private thinking/gi },
   { id: "queued to inner/dialog", regex: /queued to inner\/dialog/gi },
+  { id: "inner pass", regex: /inner pass/gi },
+  { id: "self/inner context", regex: /self\/inner context/gi },
+  { id: "self/inner checks", regex: /self\/inner checks/gi },
+  { id: "inner thought marker", regex: /\[inner thought/gi },
+  { id: "my inner life", regex: /# my inner life/gi },
 ]
 
 const ALLOWED_FINDINGS: AllowedFinding[] = [

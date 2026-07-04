@@ -3462,10 +3462,10 @@ describe("loopOrientationSection", () => {
     expect(loopOrientationSection("inner")).toBe("")
   })
 
-  it("CLI includes inner thought syntax reference", async () => {
+  it("CLI includes private-runtime note syntax reference", async () => {
     const { loopOrientationSection } = await import("../../mind/prompt")
     const result = loopOrientationSection("cli")
-    expect(result).toContain("[inner thought:")
+    expect(result).toContain("[private-runtime note:")
   })
 
   it("external channels mention deferring thought", async () => {
@@ -3489,7 +3489,7 @@ describe("loopOrientationSection", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("sometimes a thought of mine surfaces")
+    expect(result).toContain("sometimes a private-runtime note surfaces")
   })
 
   it("buildSystem('inner') does NOT include external loop orientation", async () => {
@@ -4455,7 +4455,7 @@ describe("system prompt group headers", () => {
     }
   })
 
-  it("inner channel output contains '# my inner life' group header", async () => {
+  it("inner channel output contains private-runtime '# my private runtime' group header", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -4466,7 +4466,7 @@ describe("system prompt group headers", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    expect(result).toContain("# my inner life")
+    expect(result).toContain("# my private runtime")
   })
 
   it("teams channel with remote context contains '# social context' group header", async () => {
@@ -4486,7 +4486,7 @@ describe("system prompt group headers", () => {
     expect(result).toContain("# social context")
   })
 
-  it("cli channel does NOT contain '# my inner life' or '# social context'", async () => {
+  it("cli channel does NOT contain '# my private runtime' or '# social context'", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -4497,7 +4497,7 @@ describe("system prompt group headers", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).not.toContain("# my inner life")
+    expect(result).not.toContain("# my private runtime")
     expect(result).not.toContain("# social context")
   })
 

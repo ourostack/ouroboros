@@ -535,7 +535,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
             mode: {
               type: "string",
               enum: ["transcript", "status", "search"],
-              description: "transcript (default), lightweight status for self/inner checks, or deprecated search; use search_facts, consult_diary, or consult_notes instead",
+              description: "transcript (default), lightweight status for self/private-runtime checks, or deprecated search; use search_facts, consult_diary, or consult_notes instead",
             },
             query: { type: "string", description: "deprecated when mode=search; use search_facts, consult_diary, or consult_notes instead" },
           },
