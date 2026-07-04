@@ -629,7 +629,7 @@ export async function routeDelegatedCompletion(
   const delegatedFrom = enrichDelegatedFromWithBridge(delegated.delegatedFrom)
   const obligationId = delegated.obligationId
 
-  // Advance any inner return obligations from queued -> running (they were drained this turn).
+  // Advance any private-runtime return obligations from queued -> running (they were drained this turn).
   // drainedPending is guaranteed non-null here (we found delegated above).
   for (const msg of drainedPending!) {
     if (msg.obligationId) {

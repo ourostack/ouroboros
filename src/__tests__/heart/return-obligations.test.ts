@@ -336,7 +336,7 @@ describe("listActiveReturnObligations", () => {
     expect(result.map((o) => o.id)).toEqual(["v"])
   })
 
-  it("excludes self-inner return obligations from active injection", async () => {
+  it("excludes self-private-runtime return obligations from active injection", async () => {
     const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(true)
     const nowMs = 2_000_000_000_000

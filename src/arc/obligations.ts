@@ -270,7 +270,7 @@ export function enrichObligation(
 //   Created when a friend asks something that requires sustained work.
 //   Rich lifecycle: pending → investigating → waiting_for_merge → fulfilled.
 //
-// - ReturnObligation (below): "I've been delegated work via the inner lane
+// - ReturnObligation (below): "I've been delegated work via private runtime
 //   and need to route the result back." Created when ponder delegates
 //   inward. Lightweight lifecycle: queued → running → returned/deferred.
 //
@@ -373,7 +373,7 @@ export function advanceReturnObligation(
   return updated
 }
 
-// Inner return obligations that have been sitting in queued/running state
+  // Private-runtime return obligations that have been sitting in queued/running state
 // longer than this are auto-pruned from the "held work items" injection.
 // Anything older is overwhelmingly noise: the agent has had many turns to
 // resolve them and has not, and reinjecting them every turn just burns

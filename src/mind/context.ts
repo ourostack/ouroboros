@@ -174,7 +174,7 @@ function compactIdleRestOnlyTurns(
   emitNervesEvent({
     component: "mind",
     event: "mind.session_idle_rest_compaction",
-    message: "compacted old idle rest-only inner turns",
+    message: "compacted old idle rest-only private-runtime turns",
     meta: {
       removedTurns: blocks.length - keepTurns,
       keptTurns: keepTurns,

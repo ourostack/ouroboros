@@ -330,7 +330,7 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null)
     return "this same thread"
   }
   if (frame.inner?.job?.status === "running") {
-    return "inner lane"
+    return "private runtime"
   }
   return null
 }
@@ -1044,7 +1044,7 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
 
   if (frame.innerReturnObligations && frame.innerReturnObligations.length > 0) {
     lines.push("")
-    lines.push("## inner return obligations")
+    lines.push("## private-runtime return obligations")
     for (const ob of frame.innerReturnObligations) {
       const preview = ob.delegatedContent.length > 60
         ? `${ob.delegatedContent.slice(0, 57)}...`

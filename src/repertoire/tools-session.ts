@@ -524,12 +524,12 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_session",
-        description: "inspect another session. use transcript for recent context or status for self/inner progress. deprecated search invocations should use search_facts, consult_diary, or consult_notes instead.",
+        description: "inspect another session. use transcript for recent context or status for self/private-runtime progress. deprecated search invocations should use search_facts, consult_diary, or consult_notes instead.",
         parameters: {
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, inner, or mcp" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, mcp, or legacy inner for private-runtime compatibility" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
             mode: {
@@ -608,7 +608,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, inner, or mcp. channel=voice intentionally starts a live phone call to a trusted friend through the Voice sense." },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, mcp, or legacy inner for private-runtime compatibility. channel=voice intentionally starts a live phone call to a trusted friend through the Voice sense." },
             key: { type: "string", description: "session key (defaults to 'session')" },
             content: { type: "string", description: "the message content to send" },
             voiceAudioSource: { type: "string", enum: ["tone", "url", "file"], description: "optional initial non-speech audio to play after the opening greeting when channel=voice" },
@@ -752,7 +752,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         }
 
         return renderInnerProgressStatus({
-          queue: "queued to inner/dialog",
+          queue: "queued to private runtime",
           wake: "daemon requested",
           processing: "pending",
           surfaced: "nothing yet",

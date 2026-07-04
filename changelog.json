@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.675",
       "changes": [
-        "Tighten private-runtime vocabulary after reviewer audit: current docs, prompts, tool descriptions, mailbox status, and progress labels no longer describe live private work as inner work, inner-lane scratch, or private thinking space; guards now scan current docs and source surfaces for those stale phrases while preserving explicit compatibility and safety fixtures."
+        "Complete the private-runtime vocabulary convergence across live prompt/tool/status surfaces: private turns, progress labels, query/session status, return obligations, commitments, and queue summaries now use private-runtime wording; static guards also reject inner-session, inner-turn, inner-lane, self/inner progress, private-thinking, and queued-to-inner/dialog regressions except explicit compatibility/safety fixtures."
       ]
     },
     {

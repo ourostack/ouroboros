@@ -94,7 +94,7 @@ afterEach(() => {
 })
 
 describe("listTargetSessionCandidates", () => {
-  it("returns live candidate sessions with trust explanation, snapshots, and delivery truth while excluding current and inner sessions", async () => {
+  it("returns live candidate sessions with trust explanation, snapshots, and delivery truth while excluding current and private-runtime turns", async () => {
     const { listTargetSessionCandidates } = await loadTargetResolutionModule()
     const root = makeTempDir()
     const sessionsDir = path.join(root, "state", "sessions")

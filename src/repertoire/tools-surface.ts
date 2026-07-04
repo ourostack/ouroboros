@@ -233,7 +233,7 @@ export const surfaceToolDefinition: ToolDefinition = {
         const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
           .filter((s) => s.friendId === friendId && s.channel !== "inner")
 
-        // Priority 2: Queue to freshest non-inner session
+        // Priority 2: Queue to freshest non-private-runtime session
         const freshest = allFriendSessions[0]
         if (freshest) {
           const { queuePendingMessage, getPendingDir } = await import("../mind/pending")

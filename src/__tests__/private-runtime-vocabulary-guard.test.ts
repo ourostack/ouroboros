@@ -34,6 +34,14 @@ const OLD_VOCABULARY: OldVocabularyPattern[] = [
   { id: "InnerDialog", regex: /InnerDialog/g },
   { id: "inner work", regex: /inner work/gi },
   { id: "inner-lane scratch", regex: /inner-lane scratch/gi },
+  { id: "inner session", regex: /inner session/gi },
+  { id: "inner-lane turn", regex: /inner-lane turns?/gi },
+  { id: "inner turn", regex: /inner turn/gi },
+  { id: "inner terminal move", regex: /inner terminal move/gi },
+  { id: "self/inner progress", regex: /self\/inner progress/gi },
+  { id: "inner return obligations", regex: /inner return obligations/gi },
+  { id: "private thinking", regex: /private thinking/gi },
+  { id: "queued to inner/dialog", regex: /queued to inner\/dialog/gi },
 ]
 
 const ALLOWED_FINDINGS: AllowedFinding[] = [
@@ -41,6 +49,11 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     path: "src/__tests__/private-runtime-vocabulary-guard.test.ts",
     classification: "safety-guard",
     reason: "the guard names old vocabulary patterns so it can classify them",
+  },
+  {
+    path: "src/__tests__/docs/private-runtime-docs.contract.test.ts",
+    classification: "safety-guard",
+    reason: "the docs contract names stale documentation patterns so it can reject them",
   },
   {
     path: "src/senses/inner-dialog.ts",

@@ -1102,7 +1102,7 @@ describe("mailbox deep readers", () => {
         ],
         state: { lastFriendActivityAt: "2026-03-29T08:00:00.000Z" },
       })
-      // Inner session should be excluded
+    // Private-runtime sessions should be excluded
       writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "dialog.json"), {
         version: 1,
         messages: [{ role: "system", content: "inner" }],

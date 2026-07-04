@@ -17,8 +17,8 @@ describe("renderInnerProgressStatus (selfhood framing)", () => {
 
   it("returns queued message for pending processing", () => {
     const result = renderInnerProgressStatus({
-      queue: "queued to inner/dialog",
-      wake: "awaiting inner session",
+      queue: "queued to private runtime",
+      wake: "awaiting private-runtime turn",
       processing: "pending",
       surfaced: "nothing yet",
     })

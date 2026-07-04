@@ -324,7 +324,7 @@ describe("humanReadableToolDescription", () => {
 
     it("returns status text when mode is status", () => {
       expect(humanReadableToolDescription("query_session", { mode: "status" }))
-        .toBe("checking inner session status...")
+        .toBe("checking private-runtime turn status...")
     })
   })
 

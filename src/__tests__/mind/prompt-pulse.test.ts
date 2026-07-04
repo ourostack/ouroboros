@@ -141,9 +141,9 @@ describe("pulseSection", () => {
     const { pulseSection } = await import("../../mind/prompt")
     const result = pulseSection("inner")
     expect(result).toContain("reachable siblings")
-    expect(result).toContain("inner-lane turns can use send_message")
+    expect(result).toContain("private-runtime turns can use send_message")
     expect(result).toContain("explicitly choose outward contact")
-    expect(result).not.toContain("inner-lane turns do not call send_message")
+    expect(result).not.toContain("private-runtime turns do not call send_message")
     expect(result).not.toContain("use surface or report the need")
   })
 

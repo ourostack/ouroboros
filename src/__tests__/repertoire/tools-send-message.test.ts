@@ -373,7 +373,7 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
-  it("lets an inner-lane turn intentionally send a BlueBubbles message through the explicit send_message path", async () => {
+  it("lets a private-runtime turn intentionally send a BlueBubbles message through the explicit send_message path", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
     mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: true })

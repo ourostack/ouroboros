@@ -181,7 +181,7 @@ export function derivePrivateRuntimeStatus(
   if (runtimeState?.status === "running") {
     if (pendingMessages.length > 0) {
       return {
-        queue: "queued to inner/dialog",
+        queue: "queued to private runtime",
         wake: "queued behind active turn",
         processing: "pending",
         surfaced: "nothing yet",
@@ -199,8 +199,8 @@ export function derivePrivateRuntimeStatus(
 
   if (pendingMessages.length > 0) {
     return {
-      queue: "queued to inner/dialog",
-      wake: "awaiting inner session",
+      queue: "queued to private runtime",
+      wake: "awaiting private-runtime turn",
       processing: "pending",
       surfaced: "nothing yet",
       ...extractEnrichedFields(pendingMessages),

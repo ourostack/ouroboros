@@ -16,7 +16,7 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
         kind: {
           type: "string",
           enum: ["harness_friction", "research", "reflection"],
-          description: "the packet kind. determines the SOP the inner session should follow.",
+          description: "the packet kind. determines the SOP the private-runtime turn should follow.",
         },
         packet_id: {
           type: "string",
@@ -105,7 +105,7 @@ export const restTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "rest",
-    description: "end an inner-session turn when i'm done thinking. rest remains the explicit terminal move for the inner session and must be the only tool call in the turn. on idle heartbeat turns, use status=HEARTBEAT_OK.",
+    description: "end a private-runtime turn when private work is complete. rest remains the explicit terminal move for the private-runtime turn and must be the only tool call in the turn. on idle heartbeat turns, use status=HEARTBEAT_OK.",
     parameters: {
       type: "object",
       properties: {

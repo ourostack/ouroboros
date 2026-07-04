@@ -1818,7 +1818,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("process type: cli session")
   })
 
-  it("inner channel includes process type: inner session", async () => {
+  it("inner channel includes process type: private-runtime turn", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1826,7 +1826,7 @@ describe("runtimeInfoSection", () => {
     const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = runtimeInfoSection("inner")
-    expect(result).toContain("process type: inner session")
+    expect(result).toContain("process type: private-runtime turn")
   })
 
   it("teams channel includes process type: teams handler", async () => {
@@ -3108,9 +3108,9 @@ describe("buildSystem with context", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    expect(result).toContain("this is my inner session. there is no one else here.")
+    expect(result).toContain("this is my private-runtime turn. there is no one else here.")
     expect(result).toContain("the messages that appear here are my own awareness surfacing")
-    expect(result).toContain("i can think freely here")
+    expect(result).toContain("i can work privately here")
   })
 
   it("buildSystem includes delegation hints with explicit reasons and closure state", async () => {
@@ -3155,7 +3155,7 @@ describe("buildSystem with context", () => {
     expect(result).not.toContain("delegation hint")
   })
 
-  it("buildSystem('inner') includes inner session loop orientation", async () => {
+  it("buildSystem('inner') includes private-runtime turn loop orientation", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3192,8 +3192,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("When I am returning a held thought or session-linked work, I call `surface`")
     expect(result).toContain("When I intentionally want to contact a person or sibling directly, I call `send_message`")
     expect(result).toContain("I do not use `surface` as a substitute for intentional live contact")
-    expect(result).not.toContain("I do not call `send_message` or `settle` from an inner-lane turn")
-    expect(result).toContain("I do not call `settle` from an inner-lane turn")
+    expect(result).not.toContain("I do not call `send_message` or `settle` from a private-runtime turn")
+    expect(result).toContain("I do not call `settle` from a private-runtime turn")
     expect(result).not.toContain("my outward delivery tool is `surface`, not `send_message`")
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
 
@@ -3212,7 +3212,7 @@ describe("buildSystem with context", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).not.toContain("this is my inner session. there is no one else here.")
+    expect(result).not.toContain("this is my private-runtime turn. there is no one else here.")
   })
 
   // --- A: Body map + self-evolution orientation ---

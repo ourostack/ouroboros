@@ -7,12 +7,12 @@ describe("progress story", () => {
     expect(renderProgressStory(buildProgressStory({
       scope: "inner-delegation",
       phase: "queued",
-      objective: "queued to inner/dialog",
-      outcomeText: "wake: awaiting inner session",
+      objective: "queued to private runtime",
+      outcomeText: "wake: awaiting private-runtime turn",
     }))).toBe([
       "private-runtime work: queued",
-      "queued to inner/dialog",
-      "wake: awaiting inner session",
+      "queued to private runtime",
+      "wake: awaiting private-runtime turn",
     ].join("\n"))
 
     expect(renderProgressStory(buildProgressStory({

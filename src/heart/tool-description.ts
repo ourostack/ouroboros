@@ -86,7 +86,7 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
   query_session: (args) => {
     const mode = args.mode
     if (mode === "search") return `searching session for '${truncate(args.query || "", 30)}'...`
-    if (mode === "status") return "checking inner session status..."
+    if (mode === "status") return "checking private-runtime turn status..."
     return "checking session history..."
   },
   web_search: (args) => {

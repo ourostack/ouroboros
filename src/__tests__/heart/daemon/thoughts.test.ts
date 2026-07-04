@@ -830,8 +830,8 @@ describe("thoughts", () => {
         [{ from: "slugger", content: "think about penguins", timestamp: 1 }],
         [],
       )).toEqual({
-        queue: "queued to inner/dialog",
-        wake: "awaiting inner session",
+        queue: "queued to private runtime",
+        wake: "awaiting private-runtime turn",
         processing: "pending",
         surfaced: "nothing yet",
       })
@@ -857,7 +857,7 @@ describe("thoughts", () => {
       })
     })
 
-    it("reports processing started when runtime state says the inner turn is still active", async () => {
+    it("reports processing started when runtime state says the private-runtime turn is still active", async () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
       expect(thoughts.derivePrivateRuntimeStatus(
@@ -893,7 +893,7 @@ describe("thoughts", () => {
           startedAt: "2026-03-12T00:00:00.000Z",
         },
       )).toEqual({
-        queue: "queued to inner/dialog",
+        queue: "queued to private runtime",
         wake: "queued behind active turn",
         processing: "pending",
         surfaced: "nothing yet",
@@ -930,12 +930,12 @@ describe("thoughts", () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
       expect(thoughts.formatPrivateRuntimeStatus({
-        queue: "queued to inner/dialog",
+        queue: "queued to private runtime",
         wake: "in progress",
         processing: "started",
         surfaced: '"formal little blokes"',
       })).toBe([
-        "queue: queued to inner/dialog",
+        "queue: queued to private runtime",
         "wake: in progress",
         "processing: started",
         'surfaced: "formal little blokes"',
@@ -1112,8 +1112,8 @@ describe("thoughts", () => {
       const thoughts = await import("../../../heart/daemon/thoughts")
 
       const formatted = thoughts.formatPrivateRuntimeStatus({
-        queue: "queued to inner/dialog",
-        wake: "awaiting inner session",
+        queue: "queued to private runtime",
+        wake: "awaiting private-runtime turn",
         processing: "pending",
         surfaced: "nothing yet",
         origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },

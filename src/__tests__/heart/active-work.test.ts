@@ -3019,7 +3019,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
     })
   })
 
-  it("surfaces inner return obligations in the formatted active work frame", async () => {
+  it("surfaces private-runtime return obligations in the formatted active work frame", async () => {
     const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
 
     const frame = buildActiveWorkFrame({
@@ -3060,7 +3060,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
     })
 
     const formatted = formatActiveWorkFrame(frame)
-    expect(formatted).toContain("## inner return obligations")
+    expect(formatted).toContain("## private-runtime return obligations")
     expect(formatted).toContain("[queued] friend-1/bluebubbles/chat: think about penguins")
     expect(formatted).toContain("[running] friend-2/cli/session: analyze the data")
     // Long content should be truncated to 60 chars
@@ -3068,7 +3068,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
     expect(formatted).not.toContain("should be truncated")
   })
 
-  it("omits inner return obligations section when no obligations exist", async () => {
+  it("omits private-runtime return obligations section when no obligations exist", async () => {
     const { buildActiveWorkFrame, formatActiveWorkFrame } = await import("../../heart/active-work")
 
     const frame = buildActiveWorkFrame({
@@ -3081,7 +3081,7 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
     })
 
     const formatted = formatActiveWorkFrame(frame)
-    expect(formatted).not.toContain("inner return obligations")
+    expect(formatted).not.toContain("private-runtime return obligations")
   })
 })
 

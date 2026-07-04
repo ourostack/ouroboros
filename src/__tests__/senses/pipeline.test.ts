@@ -1802,7 +1802,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("does not stamp a fresh friend-facing activity time for inner turns", async () => {
+    it("does not stamp a fresh friend-facing activity time for private-runtime turns", async () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
@@ -1827,7 +1827,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("keeps inner turns without saved friend activity from inventing state", async () => {
+    it("keeps private-runtime turns without saved friend activity from inventing state", async () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),
@@ -1845,7 +1845,7 @@ describe("handleInboundTurn", () => {
       )
     })
 
-    it("clears terminal inner turns with no saved friend activity to undefined state", async () => {
+    it("clears terminal private-runtime turns with no saved friend activity to undefined state", async () => {
       const input = makeInput({
         channel: "inner",
         capabilities: makeCapabilities({ channel: "inner", senseType: "local" }),

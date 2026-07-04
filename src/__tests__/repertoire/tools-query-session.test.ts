@@ -577,7 +577,7 @@ describe("query_session tool", () => {
     expect(result).toContain("formal little blokes")
   })
 
-  it("reports live processing when runtime state says an inner turn is still running", async () => {
+  it("reports live processing when runtime state says a private-runtime turn is still running", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
 
@@ -620,7 +620,7 @@ describe("query_session tool", () => {
     expect(result).toBe("i'm working through this privately right now.")
   })
 
-  it("reports queued-behind-active-turn when pending work exists during a running inner turn", async () => {
+  it("reports queued-behind-active-turn when pending work exists during a running private-runtime turn", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
 
