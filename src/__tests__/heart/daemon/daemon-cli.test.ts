@@ -2829,6 +2829,61 @@ describe("ouro CLI execution", () => {
     expect(sentCommands).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
   })
 
+  it("does not retry legacy wake when an operator CLI message is default-denied by private policy", async () => {
+    let privateWakeResponses = 0
+    let legacyWakeAttempts = 0
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return {
+            ok: true,
+            message: "queued",
+            data: { id: "msg-denied-456", queuedAt: "2026-04-10T05:02:36.000Z" },
+          }
+        }
+        if (command.kind === "private.wake") {
+          privateWakeResponses += 1
+          return {
+            ok: true,
+            message: "private-runtime wake denied by policy",
+            data: { decision: { result: "deny", executable: false } },
+          }
+        }
+        if (command.kind === "inner.wake") {
+          legacyWakeAttempts += 1
+          throw new Error("legacy wake would bypass canonical default-deny accounting")
+        }
+        return { ok: true, message: "unexpected command" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+
+    }
+
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
+
+    const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
+    expect(sentCommands).toEqual([
+      expect.objectContaining({
+        kind: "message.send",
+        from: "ouro-cli",
+        to: "slugger",
+        content: "hi",
+      }),
+      expect.objectContaining({
+        kind: "private.wake",
+        agent: "slugger",
+        idempotencyKey: "cli:message:slugger:msg-denied-456",
+      }),
+    ])
+    expect(privateWakeResponses).toBe(1)
+    expect(legacyWakeAttempts).toBe(0)
+  })
+
   it("routes link command through friend store instead of daemon socket", async () => {
     const friendRecord = {
       id: "friend-1",
