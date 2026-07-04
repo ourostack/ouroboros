@@ -1154,6 +1154,102 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
+  it("routes manual await pokes through private-runtime policy and denies without direct await delivery", async () => {
+    const socketPath = tmpSocketPath("daemon-await-poke-denied")
+    const ledgerPath = path.join(os.tmpdir(), `await-poke-denied-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const wake = await daemon.handleCommand({
+      kind: "await.poke",
+      agent: "slugger",
+      awaitName: "hey_export",
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: default policy deny",
+      data: {
+        decision: expect.objectContaining({
+          agent: "slugger",
+          origin: "daemon.private.wake",
+          result: "deny",
+          executable: false,
+          deniedReason: "default policy deny",
+          triggerSource: "await-poke",
+          budgetClass: "scheduled",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "slugger",
+        reason: "manual await condition check for hey_export",
+        triggerSource: "await-poke",
+        budgetClass: "scheduled",
+        originRefs: [
+          { kind: "await", id: "hey_export" },
+          { kind: "daemon-command", id: "await.poke" },
+        ],
+      }),
+      expect.any(Object),
+    )
+    expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("records an await-poke allow decision before starting the model-backed private turn", async () => {
+    const socketPath = tmpSocketPath("daemon-await-poke-allowed")
+    const ledgerPath = path.join(os.tmpdir(), `await-poke-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const wake = await daemon.handleCommand({
+      kind: "await.poke",
+      agent: "slugger",
+      awaitName: "hey_export",
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: {
+        decision: expect.objectContaining({
+          agent: "slugger",
+          origin: "daemon.private.wake",
+          result: "allow",
+          executable: true,
+          triggerSource: "await-poke",
+          budgetClass: "scheduled",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
+    const ledgerRows = readPrivateTurnLedger(ledgerPath)
+    expect(ledgerRows).toHaveLength(1)
+    expect(ledgerRows[0]).toMatchObject({
+      result: "allow",
+      executable: true,
+      triggerSource: "await-poke",
+      ledgerLocator: { path: ledgerPath, line: 1 },
+    })
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
+      type: "message",
+      privateTurnDecision: expect.objectContaining({
+        result: "allow",
+        triggerSource: "await-poke",
+      }),
+    })
+    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("slugger", {
+      type: "await",
+      awaitName: "hey_export",
+    })
+  })
+
   it("treats legacy inner.wake as a compatibility alias for private wake", async () => {
     const socketPath = tmpSocketPath("daemon-inner-wake")
     const ledgerPath = path.join(os.tmpdir(), `inner-wake-alias-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
