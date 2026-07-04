@@ -3,6 +3,7 @@ import { getAgentBundlesRoot } from "../identity"
 import { readAgentConfigForAgent } from "../auth/auth-flow"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ProviderLane } from "../provider-lanes"
+import { readCachedProviderCredentialRecord } from "../provider-credentials"
 import { recordPrivateTurnDecision } from "./ledger"
 import type {
   PrivateTurnDecision,
@@ -103,11 +104,16 @@ async function defaultResolveProviderLane(
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   const { config } = readAgentConfigForAgent(agent, bundlesRoot)
   const facing = lane === "inner" ? config.agentFacing : config.humanFacing
+  const credential = readCachedProviderCredentialRecord(agent, facing.provider)
+  if (!credential.ok) {
+    throw new Error(`${lane} provider ${facing.provider} (${facing.model}) credential revision unavailable: ${credential.error}`)
+  }
   return {
     lane,
     provider: facing.provider,
     model: facing.model,
     source: "agent.json",
+    credentialRevision: credential.record.revision,
   }
 }
 

@@ -3,7 +3,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks, type CompletionMetadata, type RunAgentOutcome } from "../heart/core"
-import { getAgentName, getAgentRoot } from "../heart/identity"
+import { getAgentName, getAgentRoot, type AgentProvider } from "../heart/identity"
 import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
@@ -27,6 +27,7 @@ import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
+import { readCachedProviderCredentialRecord } from "../heart/provider-credentials"
 import { createBridgeManager } from "../heart/bridges/manager"
 import { listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
@@ -342,11 +343,16 @@ function configuredProviderLaneMetadata(agentName: string, lane: PrivateTurnProv
   if (typeof provider !== "string" || provider.trim().length === 0 || typeof model !== "string" || model.trim().length === 0) {
     throw new Error(`private-runtime provider lane mismatch: incomplete ${facingKey}`)
   }
+  const credential = readCachedProviderCredentialRecord(agentName, provider as AgentProvider)
+  if (!credential.ok) {
+    throw new Error(`private-runtime provider lane mismatch: credential revision unavailable for ${provider}`)
+  }
   return {
     lane,
     provider,
     model,
     source: "agent.json",
+    credentialRevision: credential.record.revision,
   }
 }
 
@@ -357,6 +363,10 @@ function assertProviderLaneStillMatches(decision: PrivateTurnDecision, agentName
     || current.provider !== decision.providerLane.provider
     || current.model !== decision.providerLane.model
     || current.source !== decision.providerLane.source
+    || (
+      typeof decision.providerLane.credentialRevision === "string"
+      && current.credentialRevision !== decision.providerLane.credentialRevision
+    )
   ) {
     throw new Error(
       `private-runtime provider lane mismatch: receipt was for ${decision.providerLane.provider}/${decision.providerLane.model}, current ${decision.providerLane.lane} lane is ${current.provider}/${current.model}`,

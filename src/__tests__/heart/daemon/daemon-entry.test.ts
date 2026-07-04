@@ -14,6 +14,22 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
 }))
 
+const { refreshProviderCredentialPoolMock } = vi.hoisted(() => ({
+  refreshProviderCredentialPoolMock: vi.fn(async () => ({
+    ok: true,
+    poolPath: "vault:slugger:providers/*",
+    pool: { schemaVersion: 1, updatedAt: "2026-04-13T00:00:00.000Z", providers: {} },
+  })),
+}))
+
+vi.mock("../../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+  return {
+    ...actual,
+    refreshProviderCredentialPool: refreshProviderCredentialPoolMock,
+  }
+})
+
 const { habitSchedulerOptionsMock, habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock, habitSchedulerListJobsMock, habitSchedulerTriggerJobMock } = vi.hoisted(() => ({
   habitSchedulerOptionsMock: vi.fn(),
   habitSchedulerStartMock: vi.fn(),
@@ -108,6 +124,7 @@ describe("daemon entrypoint", () => {
     listEnabledBundleAgentsMock.mockReturnValue([])
     readPrivateRuntimeConfigMock.mockReset()
     readPrivateRuntimeConfigMock.mockReturnValue({ autoStart: false, source: "default" })
+    refreshProviderCredentialPoolMock.mockClear()
     habitSchedulerStartMock.mockReset()
     habitSchedulerStopMock.mockReset()
     habitSchedulerOptionsMock.mockReset()
@@ -580,6 +597,7 @@ describe("daemon entrypoint", () => {
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
     expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
+    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
   })
 
   it("routes pulse alerts through canonical private wake commands", async () => {

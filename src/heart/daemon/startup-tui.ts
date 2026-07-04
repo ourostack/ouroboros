@@ -85,7 +85,9 @@ export function assessStability(payload: StatusPayload, now: number): StabilityA
   let allResolved = true
 
   for (const worker of payload.workers) {
-    if (worker.status === "crashed") {
+    if (isPassiveStoppedWorker(worker)) {
+      continue
+    } else if (worker.status === "crashed") {
       degraded.push({
         agent: worker.agent,
         errorReason: worker.errorReason ?? "unknown error",
@@ -353,6 +355,7 @@ function buildTimedOutStartupResult(
   const seconds = (maxWaitMs / 1000).toFixed(0)
 
   for (const worker of payload.workers) {
+    if (isPassiveStoppedWorker(worker)) continue
     if (stableAgents.has(worker.agent) || degradedAgents.has(worker.agent)) continue
     degraded.push({
       agent: worker.agent,
@@ -364,6 +367,10 @@ function buildTimedOutStartupResult(
   }
 
   return { stable, degraded }
+}
+
+function isPassiveStoppedWorker(worker: StatusPayload["workers"][number]): boolean {
+  return worker.autoStart === false && worker.status === "stopped"
 }
 
 function formatStartupWorkerLine(payload: StatusPayload["workers"][number]): string {

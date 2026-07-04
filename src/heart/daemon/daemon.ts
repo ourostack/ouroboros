@@ -372,6 +372,7 @@ export interface DaemonProcessManagerLike {
   listAgentSnapshots(): Array<{
     name: string
     channel: string
+    autoStart?: boolean
     status: string
     pid: number | null
     restartCount: number
@@ -499,6 +500,7 @@ export interface OuroDaemonOptions {
 interface DaemonWorkerRow {
   agent: string
   worker: string
+  autoStart: boolean
   status: string
   pid: number | null
   restartCount: number
@@ -570,6 +572,7 @@ function buildWorkerRows(
   return snapshots.map((snapshot) => ({
     agent: snapshot.name,
     worker: snapshot.channel,
+    autoStart: snapshot.autoStart ?? true,
     status: snapshot.status,
     pid: snapshot.pid,
     restartCount: snapshot.restartCount,
@@ -590,12 +593,20 @@ function unhealthySenseRows(senses: DaemonSenseRow[]): DaemonSenseRow[] {
   })
 }
 
+function isParkedWorker(row: DaemonWorkerRow): boolean {
+  return row.autoStart === false && row.status === "stopped"
+}
+
+function unhealthyWorkerRows(workers: DaemonWorkerRow[]): DaemonWorkerRow[] {
+  return workers.filter((row) => !isParkedWorker(row) && row.status !== "running")
+}
+
 function unhealthyHealthChecks(healthChecks: DaemonHealthResult[]): DaemonHealthResult[] {
   return healthChecks.filter((row) => row.status !== "ok")
 }
 
 function overviewHealth(workers: DaemonWorkerRow[], senses: DaemonSenseRow[], healthChecks: DaemonHealthResult[] = []): "ok" | "warn" {
-  if (!workers.every((worker) => worker.status === "running")) return "warn"
+  if (unhealthyWorkerRows(workers).length > 0) return "warn"
   if (unhealthySenseRows(senses).length > 0) return "warn"
   if (unhealthyHealthChecks(healthChecks).length > 0) return "warn"
   return "ok"
@@ -606,8 +617,7 @@ function formatStatusSummary(payload: DaemonStatusPayload): string {
     return "no managed agents"
   }
   const degraded = [
-    ...payload.workers
-      .filter((row) => row.status !== "running")
+    ...unhealthyWorkerRows(payload.workers)
       .map((row) => `worker:${row.agent}/${row.worker}:${row.status}`),
     ...unhealthySenseRows(payload.senses)
       .map((row) => `sense:${row.agent}/${row.sense}:${row.status}`),

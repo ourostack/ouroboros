@@ -16,6 +16,7 @@ function makePayload(workers: Array<{
   agent: string
   status: string
   startedAt: string | null
+  autoStart?: boolean
   errorReason?: string | null
   fixHint?: string | null
 }>): StatusPayload {
@@ -38,6 +39,7 @@ function makePayload(workers: Array<{
     workers: workers.map((w) => ({
       agent: w.agent,
       worker: "cli",
+      autoStart: w.autoStart ?? true,
       status: w.status,
       pid: w.status === "crashed" ? null : 1234,
       restartCount: w.status === "crashed" ? 3 : 0,
@@ -139,6 +141,17 @@ describe("startup-tui", () => {
       ])
       const result = assessStability(payload, now)
       expect(result.resolved).toBe(false)
+    })
+
+    it("treats non-autostart stopped workers as already parked", () => {
+      const now = new Date("2026-04-09T12:00:10.000Z").getTime()
+      const payload = makePayload([
+        { agent: "alpha", status: "stopped", startedAt: null, autoStart: false },
+      ])
+      const result = assessStability(payload, now)
+      expect(result.resolved).toBe(true)
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toEqual([])
     })
 
     it("empty workers returns immediately resolved", () => {

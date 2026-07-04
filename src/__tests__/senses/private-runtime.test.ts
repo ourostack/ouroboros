@@ -131,6 +131,11 @@ import {
   type PrivateTurnRequest,
 } from "../../heart/private-runtime"
 import {
+  cacheProviderCredentialRecords,
+  createProviderCredentialRecord,
+  resetProviderCredentialCache,
+} from "../../heart/provider-credentials"
+import {
   buildPrivateRuntimeBootstrapMessage,
   buildNonCanonicalCleanupNudge,
   buildHeldReturnWakeMessage,
@@ -146,6 +151,7 @@ describe("private runtime", () => {
   let sessionFile: string
   let agentRoot: string
   let privateDecisionCounter = 0
+  let minimaxCredentialRevision = ""
 
   const innerCapabilities = {
     channel: "inner",
@@ -158,6 +164,7 @@ describe("private runtime", () => {
   }
 
   beforeEach(() => {
+    resetProviderCredentialCache()
     privateDecisionCounter = 0
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "private-runtime-test-"))
     sessionFile = path.join(tmp, "private-runtime-session.json")
@@ -171,6 +178,22 @@ describe("private runtime", () => {
       agentFacing: { provider: "minimax", model: "minimax-test" },
       senses: {},
     }, null, 2)}\n`, "utf-8")
+    const minimaxCredential = createProviderCredentialRecord({
+      provider: "minimax",
+      credentials: { apiKey: "minimax-test-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-03-06T11:58:00.000Z"),
+    })
+    const codexCredential = createProviderCredentialRecord({
+      provider: "openai-codex",
+      credentials: { oauthAccessToken: "codex-token", refreshToken: "codex-refresh", expiresAt: 4102444800000 },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-03-06T11:57:00.000Z"),
+    })
+    minimaxCredentialRevision = minimaxCredential.revision
+    cacheProviderCredentialRecords("test-agent", [minimaxCredential, codexCredential], new Date("2026-03-06T11:59:00.000Z"))
 
     mockBuildSystem.mockReset().mockResolvedValue({ stable: "system prompt", volatile: "" })
     mockRunAgent.mockReset().mockImplementation(async (_messages: any, callbacks: any) => {
@@ -283,7 +306,7 @@ describe("private runtime", () => {
         provider: "minimax",
         model: "minimax-test",
         source: "agent.json",
-        credentialRevision: "test-rev",
+        credentialRevision: minimaxCredentialRevision,
       },
       triggerSource: request.triggerSource,
       idempotencyKey: request.idempotencyKey!,
@@ -294,7 +317,7 @@ describe("private runtime", () => {
         provider: "minimax",
         model: "minimax-test",
         source: "agent.json",
-        credentialRevision: "test-rev",
+        credentialRevision: minimaxCredentialRevision,
       }),
       result: "allow",
       executable: true,

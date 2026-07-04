@@ -36,6 +36,7 @@ import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
+import { refreshProviderCredentialPool } from "../provider-credentials"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 
 function parseSocketPath(argv: string[]): string {
@@ -470,8 +471,14 @@ function writeStopCommandHealthState(): void {
   }
 }
 
+async function preloadProviderCredentialPools(): Promise<void> {
+  await Promise.all(managedAgents.map((agent) =>
+    refreshProviderCredentialPool(agent, { preserveCachedOnFailure: true }),
+  ))
+}
+
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
-void daemon.start().then(async () => {
+void preloadProviderCredentialPools().then(() => daemon.start()).then(async () => {
   const bundlesRoot = getAgentBundlesRoot()
   const ouroPath = resolveOuroBinaryPath()
   const osCronDeps = createRealOsCronDeps()

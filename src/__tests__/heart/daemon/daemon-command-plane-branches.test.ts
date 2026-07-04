@@ -451,6 +451,37 @@ describe("daemon command plane branches", () => {
       {
         name: "slugger",
         channel: "private-runtime",
+        autoStart: false,
+        status: "stopped",
+        pid: null,
+        restartCount: 0,
+        startedAt: null,
+        lastCrashAt: null,
+        backoffMs: 1000,
+      },
+    ])
+    senseManager.listSenseRows.mockReturnValueOnce([])
+
+    const passiveWorkerStatus = await daemon.handleCommand({ kind: "daemon.status" })
+    expect(passiveWorkerStatus.summary).toBe(
+      "daemon=running\tworkers=1\tsenses=0\thealth=ok\titems=slugger/private-runtime:stopped",
+    )
+    expect(passiveWorkerStatus.data).toEqual(expect.objectContaining({
+      overview: expect.objectContaining({ health: "ok", workerCount: 1 }),
+      workers: [
+        expect.objectContaining({
+          agent: "slugger",
+          worker: "private-runtime",
+          autoStart: false,
+          status: "stopped",
+        }),
+      ],
+    }))
+
+    processManager.listAgentSnapshots.mockReturnValueOnce([
+      {
+        name: "slugger",
+        channel: "private-runtime",
         status: "running",
         pid: null,
         restartCount: 2,

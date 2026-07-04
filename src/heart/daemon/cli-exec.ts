@@ -398,6 +398,11 @@ async function checkAgentProviders(
 
 type StatusProviderRow = StatusPayload["providers"][number]
 
+interface DaemonStatusProviderCheckResult {
+  degraded: DegradedAgent[]
+  needsLiveReadinessRefresh: boolean
+}
+
 function degradedFromStatusProviderRow(row: StatusProviderRow): DegradedAgent {
   const binding = row.provider === "unconfigured" ? row.provider : `${row.provider} / ${row.model}`
   const detail = row.detail ? `: ${row.detail}` : ""
@@ -419,13 +424,17 @@ function providerStatusRowsCoverAgents(rows: StatusProviderRow[], agents: string
   return true
 }
 
+function providerRowNeedsLiveReadinessRefresh(row: StatusProviderRow): boolean {
+  return row.provider !== "unconfigured" && row.readiness === "unknown"
+}
+
 async function checkAgentProvidersFromDaemonStatus(
   deps: OuroCliDeps,
   agents: string[],
   onProgress?: (message: string) => void,
-): Promise<DegradedAgent[] | null> {
+): Promise<DaemonStatusProviderCheckResult | null> {
   const uniqueAgents = [...new Set(agents)]
-  if (uniqueAgents.length === 0) return []
+  if (uniqueAgents.length === 0) return { degraded: [], needsLiveReadinessRefresh: false }
   let response
   try {
     response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
@@ -448,7 +457,10 @@ async function checkAgentProvidersFromDaemonStatus(
   onProgress?.(degraded.length === 0
     ? "provider readiness confirmed by daemon status"
     : "provider readiness reported by daemon status")
-  return degraded
+  return {
+    degraded,
+    needsLiveReadinessRefresh: rows.some(providerRowNeedsLiveReadinessRefresh),
+  }
 }
 
 async function checkAgentProviderHealth(
@@ -704,7 +716,7 @@ function managedAgentsSignature(agentNames: string[]): string {
 
 type StartupProviderCheckResult = {
   degraded: DegradedAgent[]
-  source: "daemon-status" | "offline-config"
+  source: "daemon-status" | "live-provider-check" | "offline-config"
 }
 
 async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<StartupProviderCheckResult> {
@@ -712,7 +724,13 @@ async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?:
   const statusResult = await checkAgentProvidersFromDaemonStatus(deps, agents, onProgress)
   if (statusResult) {
     const configResult = await checkAgentConfigsOffline(deps, agents)
-    return { degraded: [...statusResult, ...configResult], source: "daemon-status" }
+    if (configResult.length > 0) {
+      return { degraded: [...statusResult.degraded, ...configResult], source: "daemon-status" }
+    }
+    if (statusResult.needsLiveReadinessRefresh) {
+      return { degraded: await checkAgentProviders(deps, agents, onProgress), source: "live-provider-check" }
+    }
+    return { degraded: statusResult.degraded, source: "daemon-status" }
   }
   return { degraded: await checkAgentConfigsOffline(deps, agents, onProgress), source: "offline-config" }
 }
@@ -811,6 +829,9 @@ function startupProviderCheckSummary(result: StartupProviderCheckResult): string
     return "provider readiness confirmed by daemon status"
   }
   if (result.source === "daemon-status") {
+    return providerRepairCountSummary(result.degraded.length)
+  }
+  if (result.source === "live-provider-check") {
     return providerRepairCountSummary(result.degraded.length)
   }
   return startupConfigCheckSummary(result.degraded.length)

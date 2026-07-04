@@ -2,6 +2,11 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
+import {
+  cacheProviderCredentialRecords,
+  createProviderCredentialRecord,
+  resetProviderCredentialCache,
+} from "../../../heart/provider-credentials"
 
 const privateRuntimeModulePath = "../../../heart/private-runtime"
 
@@ -43,6 +48,29 @@ function readLedger(pathname: string): Array<Record<string, unknown>> {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>)
+}
+
+function cacheTestProviderCredentials(agent = "slugger"): { minimaxRevision: string; openaiRevision: string } {
+  resetProviderCredentialCache()
+  const minimax = createProviderCredentialRecord({
+    provider: "minimax",
+    credentials: { apiKey: "minimax-test-key" },
+    config: {},
+    provenance: { source: "manual" },
+    now: new Date("2026-07-03T19:59:00.000Z"),
+  })
+  const openaiCodex = createProviderCredentialRecord({
+    provider: "openai-codex",
+    credentials: { oauthAccessToken: "codex-token", refreshToken: "codex-refresh", expiresAt: 4102444800000 },
+    config: {},
+    provenance: { source: "manual" },
+    now: new Date("2026-07-03T19:58:00.000Z"),
+  })
+  cacheProviderCredentialRecords(agent, [minimax, openaiCodex], new Date("2026-07-03T20:00:00.000Z"))
+  return {
+    minimaxRevision: minimax.revision,
+    openaiRevision: openaiCodex.revision,
+  }
 }
 
 function privateTurnRequest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -231,6 +259,7 @@ describe("private-runtime policy and ledger", () => {
     const privateRuntime = await loadPrivateRuntime()
     const bundlesRoot = tempBundlesRoot()
     writeAgentBundle(bundlesRoot)
+    const revisions = cacheTestProviderCredentials()
     const deps = policyDeps({
       bundlesRoot,
       resolveProviderLane: undefined,
@@ -255,6 +284,7 @@ describe("private-runtime policy and ledger", () => {
         lane: "inner",
         provider: "openai-codex",
         model: "gpt-5.5",
+        credentialRevision: revisions.openaiRevision,
       },
       originRefs: [],
     })
@@ -262,9 +292,38 @@ describe("private-runtime policy and ledger", () => {
       lane: "outward",
       provider: "minimax",
       model: "MiniMax-M2.5",
+      credentialRevision: revisions.minimaxRevision,
     })
-    expect(deps.readProviderCredentialPool).not.toHaveBeenCalled()
     expect(deps.pingProvider).not.toHaveBeenCalled()
+  })
+
+  it("fails closed when cached provider credentials are unavailable for the configured lane", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const bundlesRoot = tempBundlesRoot()
+    writeAgentBundle(bundlesRoot)
+    resetProviderCredentialCache()
+    const deps = policyDeps({
+      bundlesRoot,
+      resolveProviderLane: undefined,
+      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "should not run" })),
+    })
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "configured-missing-credential-revision",
+    }), deps)
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "provider lane resolution failed",
+      providerLane: {
+        lane: "inner",
+        provider: "unconfigured",
+        model: "-",
+      },
+    })
+    expect(decision.reason).toContain("credential revision unavailable")
+    expect(deps.evaluatePolicy).not.toHaveBeenCalled()
   })
 
   it("fails closed when provider lane resolution fails", async () => {
@@ -300,6 +359,7 @@ describe("private-runtime policy and ledger", () => {
     try {
       const bundlesRoot = path.join(homeDir, "AgentBundles")
       writeAgentBundle(bundlesRoot)
+      const revisions = cacheTestProviderCredentials()
 
       expect(privateRuntime.privateTurnLedgerPath("slugger")).toBe(
         path.join(bundlesRoot, "slugger.ouro", "state", "private-runtime", "decisions.jsonl"),
@@ -318,6 +378,7 @@ describe("private-runtime policy and ledger", () => {
         lane: "inner",
         provider: "openai-codex",
         model: "gpt-5.5",
+        credentialRevision: revisions.openaiRevision,
       })
     } finally {
       if (previousHome === undefined) {

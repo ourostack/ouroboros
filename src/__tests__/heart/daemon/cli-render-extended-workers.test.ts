@@ -91,6 +91,30 @@ describe("parseStatusPayload extended worker fields", () => {
     expect(payload!.workers[0].fixHint).toBe("run ouro auth testagent")
   })
 
+  it("parses autoStart from worker rows", () => {
+    const data = {
+      overview: makeOverview(),
+      workers: [makeWorkerRow({ autoStart: false, status: "stopped", pid: null })],
+      senses: [],
+    }
+    const payload = parseStatusPayload(data)
+    expect(payload).not.toBeNull()
+    expect(payload!.workers[0].autoStart).toBe(false)
+  })
+
+  it("defaults missing autoStart to true for older daemon payloads", () => {
+    const row = makeWorkerRow()
+    delete row.autoStart
+    const data = {
+      overview: makeOverview(),
+      workers: [row],
+      senses: [],
+    }
+    const payload = parseStatusPayload(data)
+    expect(payload).not.toBeNull()
+    expect(payload!.workers[0].autoStart).toBe(true)
+  })
+
   it("handles null startedAt", () => {
     const data = {
       overview: makeOverview(),
