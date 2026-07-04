@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { buildAlertId } from "../../../heart/daemon/pulse"
 
 const { listEnabledBundleAgentsMock, readPrivateRuntimeConfigMock } = vi.hoisted(() => ({
   listEnabledBundleAgentsMock: vi.fn(() => [] as string[]),
@@ -402,6 +403,123 @@ describe("daemon entrypoint", () => {
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
     expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
+  })
+
+  it("routes pulse alerts through canonical private wake commands", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger", "ouroboros"])
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const daemonCtor = vi.fn()
+    const processManagerCtor = vi.fn()
+    const sendDaemonCommand = vi.fn(async () => ({ ok: true }))
+    const expectedAlertId = buildAlertId("ouroboros", "missing github-copilot creds")
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        constructor(_opts: unknown) {
+          daemonCtor(_opts)
+        }
+        start = start
+        stop = stop
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        constructor(_opts: unknown) {
+          processManagerCtor(_opts)
+        }
+        listAgentSnapshots = vi.fn(() => [
+          {
+            name: "slugger",
+            channel: "private-runtime",
+            autoStart: false,
+            status: "running",
+            pid: 123,
+            restartCount: 0,
+            startedAt: "2026-04-08T22:00:00.000Z",
+            lastCrashAt: null,
+            backoffMs: 1000,
+            lastExitCode: null,
+            lastSignal: null,
+            errorReason: null,
+            fixHint: null,
+          },
+          {
+            name: "ouroboros",
+            channel: "private-runtime",
+            autoStart: false,
+            status: "crashed",
+            pid: null,
+            restartCount: 1,
+            startedAt: null,
+            lastCrashAt: "2026-04-08T21:59:00.000Z",
+            backoffMs: 1000,
+            lastExitCode: 1,
+            lastSignal: null,
+            errorReason: "missing github-copilot creds",
+            fixHint: "run `ouro auth ouroboros`",
+          },
+        ])
+      },
+    }))
+    vi.doMock("../../../heart/daemon/socket-client", () => ({
+      sendDaemonCommand,
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-pulse-private-wake.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+
+    const processManagerOptions = processManagerCtor.mock.calls[0]?.[0] as {
+      onSnapshotChange: () => void
+    }
+    processManagerOptions.onSnapshotChange()
+
+    expect(sendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/ouro-pulse-private-wake.sock",
+      {
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "pulse alert for ouroboros: missing github-copilot creds",
+        triggerSource: "pulse-alert",
+        budgetClass: "scheduled",
+        idempotencyKey: `pulse:slugger:${expectedAlertId}`,
+        originRefs: [
+          { kind: "pulse-alert", id: expectedAlertId },
+          { kind: "agent", id: "ouroboros" },
+        ],
+      },
+    )
+    expect(sendDaemonCommand).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "inner.wake" }),
+    )
   })
 
   it("lets privateRuntime explicitly allow autonomous private-runtime startup", async () => {

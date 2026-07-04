@@ -693,6 +693,7 @@ describe("flushPulse", () => {
     prev?: PulseState | null
     delivered?: Set<string>
     fireInnerWake?: ReturnType<typeof vi.fn>
+    firePrivateWake?: ReturnType<typeof vi.fn>
     writtenStateRef?: { state: PulseState | null }
     writtenDeliveredRef?: { delivered: Set<string> | null }
   }) {
@@ -710,6 +711,7 @@ describe("flushPulse", () => {
         if (overrides.writtenDeliveredRef) overrides.writtenDeliveredRef.delivered = d
       },
       fireInnerWake: overrides.fireInnerWake ?? vi.fn(),
+      firePrivateWake: overrides.firePrivateWake ?? vi.fn(),
     }
   }
 
@@ -763,6 +765,45 @@ describe("flushPulse", () => {
     expect(result.wakeFiredFor).toEqual(["slugger"])
     expect(result.newlyDelivered).toHaveLength(1)
     expect(writtenDeliveredRef.delivered?.size).toBe(1)
+  })
+
+  it("queues private-runtime wake metadata instead of legacy inner wake when an agent newly breaks", () => {
+    const privateWake = vi.fn()
+    const legacyWake = vi.fn()
+    const writtenDeliveredRef: { delivered: Set<string> | null } = { delivered: null }
+    const expectedAlertId = buildAlertId("ouroboros", "missing github-copilot creds")
+
+    const result = flushPulse(makeFlushDeps({
+      snapshots: [
+        makeSnapshot({ name: "slugger", channel: "private-runtime", startedAt: "2026-04-08T22:00:00.000Z" }),
+        makeSnapshot({
+          name: "ouroboros",
+          channel: "private-runtime",
+          status: "crashed",
+          errorReason: "missing github-copilot creds",
+          fixHint: "run `ouro auth ouroboros`",
+        }),
+      ],
+      prev: null,
+      fireInnerWake: legacyWake,
+      firePrivateWake: privateWake,
+      writtenDeliveredRef,
+    }))
+
+    expect(privateWake).toHaveBeenCalledWith({
+      agent: "slugger",
+      reason: "pulse alert for ouroboros: missing github-copilot creds",
+      triggerSource: "pulse-alert",
+      budgetClass: "scheduled",
+      idempotencyKey: `pulse:slugger:${expectedAlertId}`,
+      originRefs: [
+        { kind: "pulse-alert", id: expectedAlertId },
+        { kind: "agent", id: "ouroboros" },
+      ],
+    })
+    expect(legacyWake).not.toHaveBeenCalled()
+    expect(result.wakeFiredFor).toEqual(["slugger"])
+    expect(writtenDeliveredRef.delivered?.has(expectedAlertId)).toBe(true)
   })
 
   it("does not re-fire inner.wake on the same alert across daemon restarts (persistent at-most-once)", () => {
