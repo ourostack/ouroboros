@@ -91,8 +91,9 @@ describe("evolution case store", () => {
     expect(created.budget.limits.codingSessions).toBe(1)
     expect(created.budget.spent.codingSessions).toBe(0)
     expect(created.authority.actions.spawn_coding).toBe("allowed")
-    expect(created.authority.actions.merge_pr).toBe("ask_before_action")
-    expect(created.authority.actions.mutate_identity).toBe("human_required")
+    expect(created.authority.actions.merge_pr).toBe("reviewer_required")
+    expect(created.authority.actions.mutate_identity).toBe("reviewer_required")
+    expect(created.authority.actions.mutate_credentials).toBe("human_required")
     expect(created.packetId).toBe("pkt-1")
     expect(created.obligationId).toBe("obl-1")
     expect(fs.existsSync(casePath(agentRoot, created.id))).toBe(true)
@@ -266,12 +267,12 @@ describe("evolution case store", () => {
     })).toThrow(/budget/i)
 
     setEvolutionAuthority(agentRoot, created.id, {
-      actions: { open_pr: "ask_before_action", merge_pr: "human_required" },
+      actions: { open_pr: "reviewer_required", merge_pr: "human_required" },
       reason: "tighten authority",
     })
     expect(evaluateEvolutionAction(agentRoot, created.id, "open_pr")).toMatchObject({
       allowed: false,
-      code: "ask_before_action",
+      code: "reviewer_required",
     })
     expect(evaluateEvolutionAction(agentRoot, created.id, "merge_pr")).toMatchObject({
       allowed: false,
@@ -424,7 +425,7 @@ describe("evolution case store", () => {
     }, null, 2), "utf-8")
     expect(evaluateEvolutionAction(agentRoot, created.id, "write_diary")).toMatchObject({
       allowed: false,
-      code: "human_required",
+      code: "reviewer_required",
     })
 
     setEvolutionAuthority(agentRoot, created.id, {

@@ -345,8 +345,8 @@ describe("coding evolution binding", () => {
   it("coding_spawn returns a blocked JSON result without spawning when evolution authority disallows coding delegation", async () => {
     const evolutionCaseId = makeEvolutionCase(mockRuntime.agentRoot, "Authority-blocked case")
     setEvolutionAuthority(mockRuntime.agentRoot, evolutionCaseId, {
-      actions: { spawn_coding: "human_required" },
-      reason: "operator wants to approve this delegation manually",
+      actions: { spawn_coding: "reviewer_required" },
+      reason: "delegation requires reviewer approval first",
     })
     mockRuntime.manager.spawnSession.mockResolvedValue({
       id: "coding-should-not-spawn",
@@ -382,7 +382,7 @@ describe("coding evolution binding", () => {
       blocked: true,
       action: "spawn_coding",
       evolutionCaseId,
-      code: "human_required",
+      code: "reviewer_required",
     })
   })
 

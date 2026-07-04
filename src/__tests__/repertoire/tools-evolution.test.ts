@@ -334,14 +334,14 @@ describe("evolution tools", () => {
     expect(readEvolutionCase(agentRoot, item.id)?.decision).toBeNull()
   })
 
-  it("evolution_decide blocks sensitive actions that default to human-required authority", async () => {
+  it("evolution_decide blocks sensitive actions that default to reviewer authority", async () => {
     const item = makeCase()
 
     const result = await invoke("evolution_decide", {
       caseId: item.id,
       decision: "act",
       action: "mutate_identity",
-      reason: "identity changes require explicit human review",
+      reason: "identity changes require reviewer approval",
     })
 
     expect(result).toMatchObject({
@@ -349,8 +349,8 @@ describe("evolution tools", () => {
       blocked: true,
       caseId: item.id,
       action: "mutate_identity",
-      code: "human_required",
-      reason: "mutate_identity is human_required",
+      code: "reviewer_required",
+      reason: "mutate_identity is reviewer_required",
     })
     expect(readEvolutionCase(agentRoot, item.id)?.decision).toBeNull()
   })

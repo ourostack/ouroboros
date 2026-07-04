@@ -144,8 +144,8 @@ describe("local evolution loop flow", () => {
       reason: "local implementation is allowed one delegated coding pass",
     })
     setEvolutionAuthority(mockRuntime.agentRoot, evolutionCaseId, {
-      actions: { spawn_coding: "allowed", merge_pr: "ask_before_action", mutate_identity: "human_required" },
-      reason: "delegate implementation, keep merge and sensitive surfaces gated",
+      actions: { spawn_coding: "allowed", merge_pr: "reviewer_required", mutate_identity: "reviewer_required" },
+      reason: "delegate implementation, keep merge and sensitive surfaces reviewer-gated",
     })
 
     const decision = await invokeEvolutionTool("evolution_decide", {
