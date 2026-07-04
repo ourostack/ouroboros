@@ -21,6 +21,7 @@ vi.mock("../../repertoire/skills", () => ({
 
 const mockRunInnerDialogTurn = vi.fn()
 const mockRequestInnerWake = vi.fn()
+const mockRequestPrivateWake = vi.fn()
 const mockIsInnerDialogAutoStartEnabled = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockSendProactiveTeamsMessageToSession = vi.fn()
@@ -32,6 +33,7 @@ vi.mock("../../senses/inner-dialog", () => ({
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
+  requestPrivateWake: (...args: any[]) => mockRequestPrivateWake(...args),
 }))
 
 vi.mock("../../heart/daemon/agent-discovery", () => ({
@@ -87,6 +89,7 @@ beforeEach(() => {
   vi.mocked(fs.mkdirSync).mockReset()
   mockRunInnerDialogTurn.mockReset()
   mockRequestInnerWake.mockReset()
+  mockRequestPrivateWake.mockReset()
   mockIsInnerDialogAutoStartEnabled.mockReset()
   mockIsInnerDialogAutoStartEnabled.mockReturnValue(true)
   mockSendProactiveBlueBubblesMessageToSession.mockReset()
@@ -1142,14 +1145,9 @@ describe("send_message tool", () => {
       expect(result).toContain("queued to inner/dialog")
     })
 
-    it("falls back to an immediate inner turn when no daemon wake path is available", async () => {
+    it("queues self-route attention without inline provider calls when no daemon wake path is available", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [{ role: "assistant", content: "penguins surfaced." }],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
-      })
 
       const result = await tool.handler({
         friendId: "self",
@@ -1157,39 +1155,33 @@ describe("send_message tool", () => {
         content: "think about penguins",
       })
 
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
-      expect(result).toBe([
-        "inner work: completed",
-        "queued to inner/dialog",
-        "wake: inline fallback",
-        "penguins surfaced.",
-      ].join("\n"))
-    })
-
-    it("keeps parked inner dialog queued when no daemon wake path is available", async () => {
-      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockIsInnerDialogAutoStartEnabled.mockReturnValue(false)
-
-      const result = await tool.handler({
-        friendId: "self",
-        channel: "cli",
-        content: "hold this without spending",
-      })
-
-      expect(mockIsInnerDialogAutoStartEnabled).toHaveBeenCalledWith("testagent")
+      expect(mockRequestPrivateWake).toHaveBeenCalledWith(
+        "testagent",
+        undefined,
+        expect.objectContaining({
+          reason: "send_message self-route private attention",
+          triggerSource: "send-message-self-route",
+          budgetClass: "interactive",
+          originRefs: expect.arrayContaining([
+            { kind: "tool", id: "send_message" },
+            { kind: "pending-queue", id: "self/inner/dialog" },
+          ]),
+        }),
+      )
+      expect(mockRequestInnerWake).not.toHaveBeenCalled()
+      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
 
-    it("uses daemon-managed wake when available and skips the inline fallback", async () => {
+    it("uses canonical private wake when allowed and skips the inline fallback", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
-      mockRequestInnerWake.mockResolvedValue({
+      mockRequestPrivateWake.mockResolvedValue({
         ok: true,
-        message: "woke inner dialog for testagent",
+        message: "woke private runtime for testagent",
+        data: { decision: { result: "allow", idempotencyKey: "self-route-wake" } },
       })
 
       const result = await tool.handler({
@@ -1198,18 +1190,32 @@ describe("send_message tool", () => {
         content: "notice this now",
       })
 
-      expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
+      expect(mockRequestPrivateWake).toHaveBeenCalledWith(
+        "testagent",
+        undefined,
+        expect.objectContaining({
+          reason: "send_message self-route private attention",
+          triggerSource: "send-message-self-route",
+          budgetClass: "interactive",
+          originRefs: expect.arrayContaining([
+            { kind: "tool", id: "send_message" },
+            { kind: "pending-queue", id: "self/inner/dialog" },
+          ]),
+        }),
+      )
+      expect(mockRequestInnerWake).not.toHaveBeenCalled()
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
 
-    it("uses the daemon socket from tool context when waking inner dialog", async () => {
+    it("uses the daemon socket from tool context when requesting private wake", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
-      mockRequestInnerWake.mockResolvedValue({
+      mockRequestPrivateWake.mockResolvedValue({
         ok: true,
-        message: "woke inner dialog for testagent",
+        message: "woke private runtime for testagent",
+        data: { decision: { result: "allow", idempotencyKey: "self-route-wake" } },
       })
 
       await tool.handler({
@@ -1220,190 +1226,53 @@ describe("send_message tool", () => {
         daemonSocketPath: "/tmp/ouroboros-e2e.sock",
       } as any)
 
-      expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", "/tmp/ouroboros-e2e.sock")
+      expect(mockRequestPrivateWake).toHaveBeenCalledWith(
+        "testagent",
+        "/tmp/ouroboros-e2e.sock",
+        expect.objectContaining({
+          triggerSource: "send-message-self-route",
+        }),
+      )
+      expect(mockRequestInnerWake).not.toHaveBeenCalled()
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
     })
 
-    it("falls back to an immediate inner turn when daemon wake rejects", async () => {
+    it("keeps self-route queued without inline provider calls when private wake is denied", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
-      mockRequestInnerWake.mockRejectedValue(new Error("socket unavailable"))
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [{ role: "assistant", content: "picked up inline." }],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      mockRequestPrivateWake.mockResolvedValue({
+        ok: true,
+        message: "private-runtime wake denied for testagent: default policy deny",
+        data: { decision: { result: "deny", executable: false, deniedReason: "default policy deny" } },
       })
 
-      await tool.handler({
+      const result = await tool.handler({
         friendId: "self",
         channel: "cli",
         content: "keep thinking",
       })
 
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
+      expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
 
-    it("surfaces inline fallback failures instead of masking them as queued success", async () => {
+    it("keeps self-route queued without inline provider calls when private wake rejects", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
-      mockRunInnerDialogTurn.mockRejectedValue(new Error("inner dialog failed"))
-
-      await expect(tool.handler({
-        friendId: "self",
-        channel: "cli",
-        content: "keep going",
-      })).rejects.toThrow("inner dialog failed")
-    })
-
-    it("reports no outward result when the inline fallback finishes without assistant text", async () => {
-      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
-      })
+      mockRequestPrivateWake.mockRejectedValue(new Error("socket unavailable"))
 
       const result = await tool.handler({
         friendId: "self",
         channel: "cli",
-        content: "sit with this quietly",
+        content: "keep thinking",
       })
 
-      expect(result).toContain("inner work: completed")
-      expect(result).toContain("queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("no outward result")
-    })
-
-    it("reports no outward result when the inline fallback returns without a messages payload", async () => {
-      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockRunInnerDialogTurn.mockResolvedValue(undefined)
-
-      const result = await tool.handler({
-        friendId: "self",
-        channel: "cli",
-        content: "hold this lightly",
-      })
-
-      expect(result).toContain("inner work: completed")
-      expect(result).toContain("queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("no outward result")
-    })
-
-    it("truncates long surfaced previews in the inline fallback response", async () => {
-      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [{ role: "assistant", content: "a".repeat(160) }],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
-      })
-
-      const result = await tool.handler({
-        friendId: "self",
-        channel: "cli",
-        content: "stretch the preview",
-      })
-
-      expect(result).toContain("inner work: completed")
-      expect(result).toContain("queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("...")
-      expect(result).not.toContain("a".repeat(160))
-    })
-
-    it("extracts surfaced previews from structured assistant content arrays", async () => {
-      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [{
-          role: "assistant",
-          content: [
-            "penguins",
-            { type: "text", text: "formal little blokes" },
-            { type: "image_url", image_url: { url: "https://example.test/penguin.png" } },
-          ] as any,
-        }],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
-      })
-
-      const result = await tool.handler({
-        friendId: "self",
-        channel: "cli",
-        content: "let the image-thought settle",
-      })
-
-      expect(result).toContain("inner work: completed")
-      expect(result).toContain("queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("penguins")
-    })
-
-    it("extracts surfaced previews from settle-only inner turns", async () => {
-      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [{
-          role: "assistant",
-          content: null,
-          tool_calls: [
-            {
-              id: "tc_1",
-              type: "function",
-              function: {
-                name: "settle",
-                arguments: JSON.stringify({
-                  answer: "formal little blokes",
-                  intent: "complete",
-                }),
-              },
-            },
-          ],
-        }],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
-      })
-
-      const result = await tool.handler({
-        friendId: "self",
-        channel: "cli",
-        content: "let the thought conclude cleanly",
-      })
-
-      expect(result).toContain("inner work: completed")
-      expect(result).toContain("queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("formal little blokes")
-    })
-
-    it("treats non-array assistant content as no outward result", async () => {
-      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [{
-          role: "assistant",
-          content: { type: "text", text: "not in the expected array shape" } as any,
-        }],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
-      })
-
-      const result = await tool.handler({
-        friendId: "self",
-        channel: "cli",
-        content: "hold a strangely-shaped reply",
-      })
-
-      expect(result).toContain("inner work: completed")
-      expect(result).toContain("queued to inner/dialog")
-      expect(result).toContain("wake: inline fallback")
-      expect(result).toContain("no outward result")
+      expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
 
     it("sets obligationStatus to 'pending' on the envelope when self-routing with delegatedFrom", async () => {
@@ -1502,20 +1371,12 @@ describe("send_message tool", () => {
       expect(obligationEvent).toBeUndefined()
     })
 
-    it("defers the inline fallback to a microtask when already in inner dialog", async () => {
+    it("does not inline-run or schedule provider work when already in private context", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
-      const queuedCallbacks: Array<() => void> = []
       const queueMicrotaskSpy = vi
         .spyOn(globalThis, "queueMicrotask")
-        .mockImplementation((callback: VoidFunction) => {
-          queuedCallbacks.push(callback)
-        })
-
-      mockRunInnerDialogTurn.mockResolvedValue({
-        messages: [{ role: "assistant", content: "i kept the thread alive." }],
-        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
-      })
+        .mockImplementation(() => undefined)
 
       await tool.handler(
         {
@@ -1532,10 +1393,15 @@ describe("send_message tool", () => {
         },
       )
 
-      expect(queueMicrotaskSpy).toHaveBeenCalledTimes(1)
+      expect(mockRequestPrivateWake).toHaveBeenCalledWith(
+        "testagent",
+        undefined,
+        expect.objectContaining({
+          triggerSource: "send-message-self-route",
+        }),
+      )
+      expect(queueMicrotaskSpy).not.toHaveBeenCalled()
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
-      queuedCallbacks[0]?.()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledTimes(1)
       queueMicrotaskSpy.mockRestore()
     })
   })
