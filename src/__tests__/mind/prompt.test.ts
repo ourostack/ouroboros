@@ -3298,7 +3298,7 @@ describe("buildSystem with context", () => {
     expect(result).not.toMatch(/GEPA[^\n.]*before[^\n.]*trace quality/i)
   })
 
-  it("buildSystem keeps sensitive evolution surfaces human-gated and desk non-authoritative", async () => {
+  it("buildSystem keeps sensitive evolution surfaces reviewer-gated and desk non-authoritative", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3307,7 +3307,8 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
-    expect(result).toContain("identity, voice, credentials, provider config, outbound messages, and hosted infrastructure require human authority")
+    expect(result).toContain("identity, voice, provider config, outbound messages, and hosted infrastructure require reviewer-gated authority")
+    expect(result).toContain("credential mutation remains human-required")
     expect(result).toContain("desk is the cockpit and mirror, not runtime authority")
     expect(result).toContain("runtime truth lives in the evolution case and trace")
   })
