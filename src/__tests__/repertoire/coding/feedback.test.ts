@@ -700,88 +700,85 @@ describe("coding feedback relay", () => {
   })
 
   it("requests private attention when an obligation-bound coding session needs the loop to continue", async () => {
-    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
-    const manager = {
-      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
-        listener = cb
-        return () => undefined
-      }),
+    async function attachAndEmit(update: CodingSessionUpdate): Promise<void> {
+      let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+      const manager = {
+        subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+          listener = cb
+          return () => undefined
+        }),
+      }
+      const target = { send: vi.fn().mockResolvedValue(undefined) }
+      attachCodingSessionFeedback(manager, update.session, target)
+      await Promise.resolve()
+      await listener?.(update)
+      await Promise.resolve()
     }
-    const target = { send: vi.fn().mockResolvedValue(undefined) }
-    const session = makeSession() as CodingSession & {
-      originSession?: { friendId: string; channel: string; key: string }
-      obligationId?: string
-    }
-    session.originSession = { friendId: "ari", channel: "cli", key: "session" }
-    session.obligationId = "ob-4"
+
+    const baseSession = makeSession({
+      originSession: { friendId: "ari", channel: "cli", key: "session" },
+      obligationId: "ob-4",
+    })
 
     vi.mocked(requestInnerWake).mockClear()
     vi.mocked(requestPrivateWake).mockClear()
-    attachCodingSessionFeedback(manager, session as CodingSession, target)
-    await Promise.resolve()
 
-    expect(requestInnerWake).not.toHaveBeenCalled()
-    expect(requestPrivateWake).not.toHaveBeenCalled()
-
-    await listener?.({
+    await attachAndEmit({
       kind: "progress",
-      session: { ...(session as CodingSession), stdoutTail: "thinking" },
+      session: { ...baseSession, stdoutTail: "thinking" },
       stream: "stdout",
       text: "thinking",
     })
-    await Promise.resolve()
+
     expect(requestInnerWake).not.toHaveBeenCalled()
     expect(requestPrivateWake).not.toHaveBeenCalled()
 
-    const waitingUpdate = {
-      kind: "waiting_input",
-      session: { ...(session as CodingSession), status: "waiting_input" },
-    } satisfies CodingSessionUpdate
-    const stalledUpdate = {
-      kind: "stalled",
-      session: { ...(session as CodingSession), status: "stalled" },
-    } satisfies CodingSessionUpdate
-    const completedUpdate = {
-      kind: "completed",
-      session: {
-        ...(session as CodingSession),
-        status: "completed",
-        pid: null,
-        endedAt: "2026-03-05T23:55:00.000Z",
+    const updates = [
+      {
+        kind: "waiting_input",
+        session: { ...baseSession, status: "waiting_input" },
       },
-    } satisfies CodingSessionUpdate
-    const failedUpdate = {
-      kind: "failed",
-      session: {
-        ...(session as CodingSession),
-        status: "failed",
-        pid: null,
-        endedAt: "2026-03-05T23:56:00.000Z",
+      {
+        kind: "stalled",
+        session: { ...baseSession, status: "stalled" },
       },
-    } satisfies CodingSessionUpdate
-    const killedUpdate = {
-      kind: "killed",
-      session: {
-        ...(session as CodingSession),
-        status: "killed",
-        pid: null,
-        endedAt: "2026-03-05T23:57:00.000Z",
+      {
+        kind: "completed",
+        session: {
+          ...baseSession,
+          status: "completed",
+          pid: null,
+          endedAt: "2026-03-05T23:55:00.000Z",
+        },
       },
-    } satisfies CodingSessionUpdate
+      {
+        kind: "failed",
+        session: {
+          ...baseSession,
+          status: "failed",
+          pid: null,
+          endedAt: "2026-03-05T23:56:00.000Z",
+        },
+      },
+      {
+        kind: "killed",
+        session: {
+          ...baseSession,
+          status: "killed",
+          pid: null,
+          endedAt: "2026-03-05T23:57:00.000Z",
+        },
+      },
+    ] satisfies CodingSessionUpdate[]
 
-    await listener?.(waitingUpdate)
-    await listener?.(stalledUpdate)
-    await listener?.(completedUpdate)
-    await listener?.(failedUpdate)
-    await listener?.(killedUpdate)
-    await Promise.resolve()
+    for (const update of updates) {
+      await attachAndEmit(update)
+    }
 
     expect(requestPrivateWake).toHaveBeenCalledTimes(5)
-    expectCodingFeedbackPrivateWake({ callNumber: 1, kind: "waiting_input", session: waitingUpdate.session })
-    expectCodingFeedbackPrivateWake({ callNumber: 2, kind: "stalled", session: stalledUpdate.session })
-    expectCodingFeedbackPrivateWake({ callNumber: 3, kind: "completed", session: completedUpdate.session })
-    expectCodingFeedbackPrivateWake({ callNumber: 4, kind: "failed", session: failedUpdate.session })
-    expectCodingFeedbackPrivateWake({ callNumber: 5, kind: "killed", session: killedUpdate.session })
+    updates.forEach((update, index) => {
+      expectCodingFeedbackPrivateWake({ callNumber: index + 1, kind: update.kind, session: update.session })
+    })
   })
 
   it("does not request private attention for coding sessions without an obligation", async () => {
