@@ -2884,6 +2884,66 @@ describe("ouro CLI execution", () => {
     expect(legacyWakeAttempts).toBe(0)
   })
 
+  it("uses an unreceipted CLI private wake idempotency key when daemon message data has no id", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return { ok: true, message: "queued", data: { queuedAt: "2026-04-10T05:02:36.000Z" } }
+        }
+        return { ok: true, message: "awake" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
+
+    const privateWake = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, payload]) => payload)
+      .find((payload) => payload.kind === "private.wake")
+
+    expect(privateWake).toEqual(expect.objectContaining({
+      kind: "private.wake",
+      agent: "slugger",
+      idempotencyKey: "cli:message:slugger:unreceipted",
+      originRefs: [expect.objectContaining({ kind: "cli-command", id: "ouro msg" })],
+    }))
+  })
+
+  it("uses an unreceipted CLI private wake idempotency key when daemon message data is absent", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "message.send") {
+          return { ok: true, message: "queued" }
+        }
+        return { ok: true, message: "awake" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
+
+    const privateWake = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, payload]) => payload)
+      .find((payload) => payload.kind === "private.wake")
+
+    expect(privateWake).toEqual(expect.objectContaining({
+      kind: "private.wake",
+      agent: "slugger",
+      idempotencyKey: "cli:message:slugger:unreceipted",
+      originRefs: [expect.objectContaining({ kind: "cli-command", id: "ouro msg" })],
+    }))
+  })
+
   it("routes link command through friend store instead of daemon socket", async () => {
     const friendRecord = {
       id: "friend-1",

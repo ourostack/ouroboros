@@ -335,6 +335,12 @@ describe("ouro private status CLI parsing", () => {
     expect(result).toEqual({ kind: "private.status", agent: "slugger" })
   })
 
+  it("rejects unexpected private status arguments", () => {
+    expect(() => parseOuroCommand(["private", "status", "extra"])).toThrow(
+      "Usage: ouro private status [--agent <name>]",
+    )
+  })
+
   it("parses legacy 'inner' with --agent flag", () => {
     const result = parseOuroCommand(["inner", "--agent", "slugger"])
     expect(result).toEqual({ kind: "private.status", agent: "slugger", legacyAlias: "inner" })
