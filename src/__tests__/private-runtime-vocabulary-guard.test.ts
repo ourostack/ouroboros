@@ -209,6 +209,7 @@ const SCAN_ROOTS = [
   "docs",
   "README.md",
   "ARCHITECTURE.md",
+  "CONTRIBUTING.md",
   "package.json",
 ]
 
