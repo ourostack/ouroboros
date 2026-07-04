@@ -324,7 +324,7 @@ describe("ouro private status CLI parsing", () => {
 
   it("parses canonical private status with default agent", () => {
     const result = parseOuroCommand(["private", "status"])
-    expect(result).toEqual({ kind: "private.status" })
+    expect(result).toEqual({ kind: "private.status", json: false })
   })
 
   it("parses legacy 'inner' command as a private status alias", () => {
@@ -334,12 +334,17 @@ describe("ouro private status CLI parsing", () => {
 
   it("parses private status with --agent flag", () => {
     const result = parseOuroCommand(["private", "status", "--agent", "slugger"])
-    expect(result).toEqual({ kind: "private.status", agent: "slugger" })
+    expect(result).toEqual({ kind: "private.status", agent: "slugger", json: false })
+  })
+
+  it("parses private status with --json flag", () => {
+    const result = parseOuroCommand(["private", "status", "--agent", "slugger", "--json"])
+    expect(result).toEqual({ kind: "private.status", agent: "slugger", json: true })
   })
 
   it("rejects unexpected private status arguments", () => {
     expect(() => parseOuroCommand(["private", "status", "extra"])).toThrow(
-      "Usage: ouro private status [--agent <name>]",
+      "Usage: ouro private status [--agent <name>] [--json]",
     )
   })
 

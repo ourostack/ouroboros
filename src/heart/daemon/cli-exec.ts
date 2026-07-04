@@ -8795,14 +8795,17 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Attention count
       const activeObligations = listActiveReturnObligations(command.agent)
 
-      const statusOutput = buildInnerStatusOutput({
+      const statusPayload = {
         agentName: command.agent,
         runtimeState,
         recordSummary,
         heartbeat,
         attentionCount: activeObligations.length,
         now: Date.now(),
-      })
+      }
+      const statusOutput = command.json
+        ? `${JSON.stringify(statusPayload, null, 2)}\n`
+        : buildInnerStatusOutput(statusPayload)
       const message = command.legacyAlias === "inner"
         ? [`legacy alias: use \`ouro private status --agent ${command.agent}\``, statusOutput].join("\n")
         : statusOutput

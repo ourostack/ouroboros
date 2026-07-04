@@ -501,6 +501,12 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["private", "status", "--agent", "slugger"])).toEqual({
       kind: "private.status",
       agent: "slugger",
+      json: false,
+    })
+    expect(parseOuroCommand(["private", "status", "--agent", "slugger", "--json"])).toEqual({
+      kind: "private.status",
+      agent: "slugger",
+      json: true,
     })
     expect(parseOuroCommand(["inner", "--agent", "slugger"])).toEqual({
       kind: "private.status",
@@ -516,7 +522,7 @@ describe("ouro CLI parsing", () => {
     } catch (caught) {
       error = caught as Error
     }
-    expect(error?.message).toContain("ouro private status [--agent <name>]")
+    expect(error?.message).toContain("ouro private status [--agent <name>] [--json]")
     expect(error?.message).not.toContain("ouro inner")
   })
 
@@ -7509,6 +7515,32 @@ describe("ouro private status CLI execution", () => {
     expect(result).toContain("status: idle")
     expect(result).toContain("last turn:")
     expect(result).not.toContain("status: unknown")
+    expect(result).not.toContain(["inner", "dialog"].join(" "))
+  })
+
+  it("prints structured private status json when requested", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "inner-status-bundle-"))
+    cleanup.push(tempBundle)
+
+    fs.mkdirSync(path.join(tempBundle, "state", "sessions", "self", "inner"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "habits"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "desk", "_record", "notes"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tempBundle, "state", "sessions", "self", "inner", "runtime.json"),
+      JSON.stringify({ status: "idle", lastCompletedAt: "2026-03-26T10:25:00.000Z" }, null, 2),
+      "utf-8",
+    )
+
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+    const result = await runOuroCli(["private", "status", "--agent", "test", "--json"], deps)
+    const parsed = JSON.parse(result)
+
+    expect(parsed).toMatchObject({
+      agentName: "test",
+      runtimeState: { status: "idle", lastCompletedAt: "2026-03-26T10:25:00.000Z" },
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
+      attentionCount: 0,
+    })
     expect(result).not.toContain(["inner", "dialog"].join(" "))
   })
 
