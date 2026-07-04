@@ -566,6 +566,43 @@ describe("private-runtime policy and ledger", () => {
     expect(deps.pingProvider).not.toHaveBeenCalled()
   })
 
+  it("collapses duplicate same-key same-fingerprint denies into the prior parked decision", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps({
+      evaluatePolicy: vi.fn(async () => ({ result: "deny", reason: "wait", deniedReason: "wait" })),
+    })
+
+    const first = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+    const second = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+
+    expect(first).toMatchObject({ result: "deny", executable: false, deniedReason: "wait" })
+    expect(second).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "wait",
+      receiptId: first.receiptId,
+    })
+    expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
+  })
+
+  it("records the first executable allow after an earlier deny for the same request", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps({
+      evaluatePolicy: vi.fn()
+        .mockResolvedValueOnce({ result: "deny", reason: "wait", deniedReason: "wait" })
+        .mockResolvedValueOnce({ result: "allow", reason: "operator-approved" }),
+    })
+
+    const first = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+    const second = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+
+    expect(first).toMatchObject({ result: "deny", executable: false, deniedReason: "wait" })
+    expect(second).toMatchObject({ result: "allow", executable: true })
+    const ledgerRows = readLedger(deps.ledgerPath as string)
+    expect(ledgerRows).toHaveLength(2)
+    expect(ledgerRows.map((row) => row.result)).toEqual(["deny", "allow"])
+  })
+
   it("rejects same-key different-fingerprint decisions without overwriting the original receipt", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({

@@ -840,6 +840,49 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
+  it("uses canonical private wake defaults and falls back to denial reason text", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-defaults")
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-defaults-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
+    policyDeps.evaluatePolicy.mockReturnValueOnce({
+      result: "deny",
+      reason: "policy says wait",
+    })
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const wake = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: policy says wait",
+      data: {
+        decision: expect.objectContaining({
+          result: "deny",
+          executable: false,
+          deniedReason: "policy says wait",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "slugger",
+        origin: "daemon.private.wake",
+        reason: "manual private-runtime wake",
+        triggerSource: "manual",
+        budgetClass: "interactive",
+        idempotencyKey: expect.stringMatching(/^ptk_[0-9a-f]{64}$/),
+        originRefs: [{ kind: "daemon-command", id: "private.wake" }],
+      }),
+      expect.any(Object),
+    )
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
   it("allows canonical private wake only after recording one policy decision", async () => {
     const socketPath = tmpSocketPath("daemon-private-wake-allowed")
     const ledgerPath = path.join(os.tmpdir(), `private-wake-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)

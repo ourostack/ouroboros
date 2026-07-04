@@ -185,7 +185,7 @@ export function recordPrivateTurnDecision(
         && latestSameFingerprint.executable === candidate.executable
         && latestSameFingerprint.deniedReason === candidate.deniedReason
       ) {
-        return latestSameFingerprint.executable ? duplicateDecision(latestSameFingerprint) : latestSameFingerprint
+        return latestSameFingerprint
       }
 
       if (priorExecutable && !candidate.executable) {
