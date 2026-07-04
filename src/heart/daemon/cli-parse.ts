@@ -131,7 +131,7 @@ export function usage(): string {
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     "  ouro private decisions [--agent <name>] [--limit <n>] [--json]",
-    "  ouro private status [--agent <name>]",
+    "  ouro private status [--agent <name>] [--json]",
     "  ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
     "  ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
@@ -1673,13 +1673,18 @@ function parsePrivateCommand(args: string[]): OuroCliCommand {
   const [subcommand] = args
   if (subcommand === "status") {
     const { agent, rest } = extractAgentFlag(args.slice(1))
-    if (rest.length > 0) {
-      throw new Error("Usage: ouro private status [--agent <name>]")
+    let json = false
+    for (const token of rest) {
+      if (token === "--json") {
+        json = true
+      } else {
+        throw new Error("Usage: ouro private status [--agent <name>] [--json]")
+      }
     }
-    return { kind: "private.status", ...(agent ? { agent } : {}) }
+    return { kind: "private.status", ...(agent ? { agent } : {}), json }
   }
   if (subcommand !== "decisions") {
-    throw new Error("Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json] OR ouro private status [--agent <name>]")
+    throw new Error("Usage: ouro private decisions [--agent <name>] [--limit <n>] [--json] OR ouro private status [--agent <name>] [--json]")
   }
 
   const { agent, rest } = extractAgentFlag(args.slice(1))

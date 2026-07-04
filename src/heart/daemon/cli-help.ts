@@ -363,8 +363,8 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "private status": {
     description: "Show private-runtime status from local agent state",
-    usage: "ouro private status [--agent <name>]",
-    example: "ouro private status --agent ouroboros",
+    usage: "ouro private status [--agent <name>] [--json]",
+    example: "ouro private status --agent ouroboros --json",
   },
   "auth verify": {
     description: "Verify agent provider credentials without changing provider/model lanes",

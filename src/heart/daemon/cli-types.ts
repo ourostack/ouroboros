@@ -84,7 +84,7 @@ export type OuroCliCommand =
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
   | { kind: "private.decisions"; agent?: string; limit: number; json: boolean }
-  | { kind: "private.status"; agent?: string; legacyAlias?: "inner" }
+  | { kind: "private.status"; agent?: string; json?: boolean; legacyAlias?: "inner" }
   | { kind: "work.card"; agent?: string; format?: "text" | "json" }
   | { kind: "work.gauntlet"; agent?: string; format?: "text" | "json" }
   | { kind: "work.sentinel"; agent?: string; format?: "text" | "json" }
