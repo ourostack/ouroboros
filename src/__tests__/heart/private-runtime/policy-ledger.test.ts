@@ -589,4 +589,33 @@ describe("private-runtime policy and ledger", () => {
       deniedReason: "idempotency-key fingerprint mismatch",
     })
   })
+
+  it("keeps the original idempotency fingerprint authoritative after mismatch rows", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps({
+      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "operator-approved" })),
+    })
+
+    const first = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+    const mismatchedRequest = privateTurnRequest({ reason: "different work" })
+    const mismatch = await privateRuntime.requestPrivateTurnDecision(mismatchedRequest, deps)
+    const retry = await privateRuntime.requestPrivateTurnDecision(mismatchedRequest, deps)
+
+    expect(first).toMatchObject({ result: "allow", executable: true })
+    expect(mismatch).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "idempotency-key fingerprint mismatch",
+      duplicateOf: first.receiptId,
+    })
+    expect(retry).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "idempotency-key fingerprint mismatch",
+      duplicateOf: first.receiptId,
+    })
+    const mismatchedFingerprint = privateRuntime.createPrivateTurnRequestFingerprint(mismatchedRequest)
+    const ledgerRows = readLedger(deps.ledgerPath as string)
+    expect(ledgerRows.filter((row) => row.requestFingerprint === mismatchedFingerprint && row.executable === true)).toHaveLength(0)
+  })
 })

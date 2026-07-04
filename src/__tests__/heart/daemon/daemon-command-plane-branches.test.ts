@@ -996,6 +996,61 @@ describe("daemon command plane branches", () => {
     })
   })
 
+  it("does not execute a wake after an allow then refreshed deny then allow replay", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-allow-deny-allow")
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-allow-deny-allow-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const command = {
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+      originRefs: [{ kind: "cli", id: "manual" }],
+    } as unknown as never
+
+    const firstWake = await daemon.handleCommand(command)
+    policyDeps.evaluatePolicy.mockReturnValueOnce({
+      result: "deny",
+      reason: "private runtime policy denies refreshed wake",
+      deniedReason: "refreshed policy deny",
+    })
+    const deniedWake = await daemon.handleCommand(command)
+    const replayedAllowWake = await daemon.handleCommand(command)
+
+    expect(firstWake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: { decision: expect.objectContaining({ result: "allow", executable: true }) },
+    })
+    expect(deniedWake).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: refreshed policy deny",
+      data: { decision: expect.objectContaining({ result: "deny", executable: false }) },
+    })
+    expect(replayedAllowWake).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: duplicate private-turn decision already recorded",
+      data: {
+        decision: expect.objectContaining({
+          result: "allow",
+          executable: false,
+          deniedReason: "duplicate private-turn decision already recorded",
+          idempotencyKey: "manual-private-wake",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(3)
+    expect(processManager.startAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    const ledgerRows = readPrivateTurnLedger(ledgerPath)
+    expect(ledgerRows).toHaveLength(2)
+    expect(ledgerRows.map((row) => row.result)).toEqual(["allow", "deny"])
+  })
+
   it("fails canonical private wake cleanly for unknown agents before policy evaluation", async () => {
     const socketPath = tmpSocketPath("daemon-private-wake-unknown")
     const ledgerPath = path.join(os.tmpdir(), `private-wake-unknown-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
