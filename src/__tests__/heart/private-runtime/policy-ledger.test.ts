@@ -547,6 +547,21 @@ describe("private-runtime policy and ledger", () => {
     ])
 
     expect(new Set(decisions.map((decision: Record<string, unknown>) => decision.receiptId)).size).toBe(1)
+    expect(decisions.filter((decision: Record<string, unknown>) => decision.executable === true)).toHaveLength(1)
+    const duplicateDecisions = decisions.filter((decision: Record<string, unknown>) => decision.executable === false)
+    expect(duplicateDecisions).toHaveLength(2)
+    expect(duplicateDecisions).toEqual([
+      expect.objectContaining({
+        result: "allow",
+        deniedReason: "duplicate private-turn decision already recorded",
+        duplicateOf: decisions.find((decision: Record<string, unknown>) => decision.executable === true)?.receiptId,
+      }),
+      expect.objectContaining({
+        result: "allow",
+        deniedReason: "duplicate private-turn decision already recorded",
+        duplicateOf: decisions.find((decision: Record<string, unknown>) => decision.executable === true)?.receiptId,
+      }),
+    ])
     expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
     expect(deps.pingProvider).not.toHaveBeenCalled()
   })

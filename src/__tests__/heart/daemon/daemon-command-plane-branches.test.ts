@@ -947,6 +947,55 @@ describe("daemon command plane branches", () => {
     })
   })
 
+  it("does not execute duplicate allowed wake decisions for the same request", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-duplicate-allowed")
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-duplicate-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const command = {
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "manual wake",
+      triggerSource: "manual",
+      budgetClass: "interactive",
+      idempotencyKey: "manual-private-wake",
+      originRefs: [{ kind: "cli", id: "manual" }],
+    } as unknown as never
+
+    const firstWake = await daemon.handleCommand(command)
+    const duplicateWake = await daemon.handleCommand(command)
+
+    expect(firstWake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: { decision: expect.objectContaining({ result: "allow", executable: true }) },
+    })
+    expect(duplicateWake).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: duplicate private-turn decision already recorded",
+      data: {
+        decision: expect.objectContaining({
+          result: "allow",
+          executable: false,
+          deniedReason: "duplicate private-turn decision already recorded",
+          idempotencyKey: "manual-private-wake",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(2)
+    expect(processManager.startAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    const ledgerRows = readPrivateTurnLedger(ledgerPath)
+    expect(ledgerRows).toHaveLength(1)
+    expect(ledgerRows[0]).toMatchObject({
+      result: "allow",
+      executable: true,
+      idempotencyKey: "manual-private-wake",
+      ledgerLocator: { path: ledgerPath, line: 1 },
+    })
+  })
+
   it("fails canonical private wake cleanly for unknown agents before policy evaluation", async () => {
     const socketPath = tmpSocketPath("daemon-private-wake-unknown")
     const ledgerPath = path.join(os.tmpdir(), `private-wake-unknown-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
