@@ -599,11 +599,104 @@ describe("daemon command plane branches", () => {
       taskRef: "habit-heartbeat",
     }))
     expect(scheduler.recordTaskRun).toHaveBeenCalledWith("slugger", "habit-heartbeat")
-    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", { type: "poke", taskId: "habit-heartbeat" })
+    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("slugger", { type: "poke", taskId: "habit-heartbeat" })
 
     const hatch = await daemon.handleCommand({ kind: "hatch.start" })
     expect(hatch.ok).toBe(true)
     expect(hatch.message).toContain("hatch flow is stubbed")
+  })
+
+  it("routes task pokes through private-runtime policy and denies without direct poke delivery", async () => {
+    const socketPath = tmpSocketPath("daemon-task-poke-denied")
+    const ledgerPath = path.join(os.tmpdir(), `task-poke-denied-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
+    const { daemon, processManager, router, scheduler } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({ kind: "task.poke", agent: "slugger", taskId: "habit-heartbeat" })
+
+    expect(poke).toMatchObject({
+      ok: true,
+      message: "queued poke msg-1",
+      data: { id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" },
+    })
+    expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
+      from: "ouro-poke",
+      to: "slugger",
+      content: "poke habit-heartbeat",
+      priority: "high",
+      taskRef: "habit-heartbeat",
+    }))
+    expect(scheduler.recordTaskRun).toHaveBeenCalledWith("slugger", "habit-heartbeat")
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "slugger",
+        origin: "daemon.private.wake",
+        reason: "task poke habit-heartbeat",
+        triggerSource: "task-poke",
+        budgetClass: "scheduled",
+        idempotencyKey: "task-poke:slugger:habit-heartbeat",
+        originRefs: [
+          { kind: "task", id: "habit-heartbeat" },
+          { kind: "daemon-command", id: "task.poke" },
+        ],
+      }),
+      expect.any(Object),
+    )
+    expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("records one task-poke allow decision before starting model-backed private work", async () => {
+    const socketPath = tmpSocketPath("daemon-task-poke-allowed")
+    const ledgerPath = path.join(os.tmpdir(), `task-poke-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({ kind: "task.poke", agent: "slugger", taskId: "habit-heartbeat" })
+
+    expect(poke).toMatchObject({
+      ok: true,
+      message: "queued poke msg-1",
+      data: { id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: "task-poke:slugger:habit-heartbeat",
+        triggerSource: "task-poke",
+        originRefs: [
+          { kind: "task", id: "habit-heartbeat" },
+          { kind: "daemon-command", id: "task.poke" },
+        ],
+      }),
+      expect.any(Object),
+    )
+    const ledgerRows = readPrivateTurnLedger(ledgerPath)
+    expect(ledgerRows).toHaveLength(1)
+    expect(ledgerRows[0]).toMatchObject({
+      agent: "slugger",
+      origin: "daemon.private.wake",
+      result: "allow",
+      executable: true,
+      triggerSource: "task-poke",
+      idempotencyKey: "task-poke:slugger:habit-heartbeat",
+      ledgerLocator: { path: ledgerPath, line: 1 },
+    })
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
+      type: "message",
+      privateTurnDecision: expect.objectContaining({
+        result: "allow",
+        triggerSource: "task-poke",
+        idempotencyKey: "task-poke:slugger:habit-heartbeat",
+      }),
+    })
+    expect(policyDeps.evaluatePolicy.mock.invocationCallOrder[0]).toBeLessThan(
+      processManager.startAgent.mock.invocationCallOrder[0]!,
+    )
   })
 
   it("revives a managed sense by resetting failure state, starting it, and returning its fresh snapshot", async () => {
