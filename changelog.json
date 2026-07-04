@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.675",
       "changes": [
-        "Finish private-runtime vocabulary on final live prompt/tool/CLI markers: ponder payload guidance, query_session status wording, note context, CLI self-message prefixes, loop orientation, and private-runtime prompt headers no longer use inner-pass, self/inner, inner-thought, or inner-life phrasing; guards now reject those terms outside explicit safety/compatibility fixtures."
+        "Render private-runtime prompt metadata without current inner channel/sense labels: private-runtime turns now show channel private-runtime and current sense private runtime (agent-facing runtime, not a sense), with tests and guards preventing channel/current-sense inner labels from returning."
       ]
     },
     {

@@ -1826,7 +1826,11 @@ describe("runtimeInfoSection", () => {
     const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = runtimeInfoSection("inner")
+    expect(result).toContain("channel: private-runtime")
+    expect(result).toContain("current sense: private runtime (agent-facing runtime, not a sense)")
     expect(result).toContain("process type: private-runtime turn")
+    expect(result).not.toContain("channel: inner")
+    expect(result).not.toContain("current sense: inner")
   })
 
   it("teams channel includes process type: teams handler", async () => {

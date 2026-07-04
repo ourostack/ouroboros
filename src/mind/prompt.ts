@@ -345,6 +345,14 @@ function processTypeLabel(channel: Channel): string {
   return PROCESS_TYPE_LABELS[channel]
 }
 
+function promptChannelLabel(channel: Channel): string {
+  return channel === "inner" ? "private-runtime" : channel
+}
+
+function promptSenseLabel(channel: Channel): string {
+  return channel === "inner" ? "private runtime (agent-facing runtime, not a sense)" : channel
+}
+
 const DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
 
 function daemonStatus(preRead?: boolean): string {
@@ -384,8 +392,8 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
   lines.push(`source root: ${sourceRoot}`);
   lines.push(`runtime mode: ${detectRuntimeMode(sourceRoot)}`);
   lines.push(`cwd: ${recoverRuntimeCwd(sourceRoot)}`);
-  lines.push(`channel: ${channel}`);
-  lines.push(`current sense: ${channel}`);
+  lines.push(`channel: ${promptChannelLabel(channel)}`);
+  lines.push(`current sense: ${promptSenseLabel(channel)}`);
   lines.push(`process type: ${processTypeLabel(channel)}`);
   lines.push(`daemon: ${daemonStatus(options?.daemonRunning)}`);
   lines.push(`mcp serve: i can expose my tools to dev tools via \`ouro mcp-serve\`. see the configure-dev-tools skill for setup.`);

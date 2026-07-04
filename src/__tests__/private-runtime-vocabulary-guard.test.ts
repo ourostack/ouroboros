@@ -47,6 +47,8 @@ const OLD_VOCABULARY: OldVocabularyPattern[] = [
   { id: "self/inner checks", regex: /self\/inner checks/gi },
   { id: "inner thought marker", regex: /\[inner thought/gi },
   { id: "my inner life", regex: /# my inner life/gi },
+  { id: "channel inner label", regex: /["'`]channel: inner/gi },
+  { id: "current sense inner label", regex: /["'`]current sense: inner/gi },
 ]
 
 const ALLOWED_FINDINGS: AllowedFinding[] = [
@@ -116,6 +118,12 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     textIncludes: ["not.toContain(\"Inner work\")", "not.toContain(\"Pending inner work queued.\")"],
     classification: "safety-guard",
     reason: "verifies old Mailbox UI copy stays absent from current private-runtime UI",
+  },
+  {
+    path: "src/__tests__/mind/prompt.test.ts",
+    textIncludes: ["not.toContain(\"channel: inner\")", "not.toContain(\"current sense: inner\")"],
+    classification: "safety-guard",
+    reason: "verifies private-runtime prompt metadata does not render inner as current channel/sense vocabulary",
   },
   {
     path: "src/__tests__/senses/surface-tool.test.ts",
