@@ -108,6 +108,40 @@ describe("FileMessageRouter", () => {
     ])
   })
 
+  it("caps storm backlogs to the newest queued messages while keeping receipts distinct", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-07T01:02:03.004Z",
+      maxMessagesPerInbox: 3,
+    })
+
+    for (let index = 1; index <= 5; index += 1) {
+      await router.send({
+        from: "claude-code:storm-session",
+        to: "slugger",
+        content: `post-tool-use ${index}`,
+      })
+    }
+
+    expect(router.pollInbox("slugger")).toEqual([
+      expect.objectContaining({
+        id: "msg-20260307010203004-3",
+        content: "post-tool-use 3",
+      }),
+      expect.objectContaining({
+        id: "msg-20260307010203004-4",
+        content: "post-tool-use 4",
+      }),
+      expect.objectContaining({
+        id: "msg-20260307010203004-5",
+        content: "post-tool-use 5",
+      }),
+    ])
+  })
+
   it("returns no messages when the inbox file does not exist and preserves explicit priority", async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
     tempDirs.push(baseDir)

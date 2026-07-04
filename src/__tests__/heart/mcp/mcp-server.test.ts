@@ -810,6 +810,26 @@ describe("MCP server protocol layer", () => {
     expect(response.id).toBe(61)
     expect(response.result.isError).toBe(false)
     expect(response.result.content[0].text).toContain("hello from agent")
+    expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        kind: "agent.senseTurn",
+        agent: "test-agent",
+        friendId: "test-friend",
+        channel: "mcp",
+        sessionKey: "test-session-id",
+        message: "hello agent",
+      }),
+    )
+    expect(mockSendDaemonCommand).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "private.wake" }),
+    )
+    expect(mockSendDaemonCommand).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ kind: "inner.wake" }),
+    )
 
     localStdin.destroy()
     localStdout.destroy()

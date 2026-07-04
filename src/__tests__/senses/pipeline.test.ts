@@ -38,6 +38,7 @@ vi.mock("../../nerves/runtime", async () => {
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: vi.fn(async () => null),
+  requestPrivateWake: vi.fn(async () => null),
   sendDaemonCommand: vi.fn(),
   checkDaemonSocketAlive: vi.fn(),
   DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
@@ -384,9 +385,11 @@ describe("handleInboundTurn", () => {
     mockEmitNervesEvent.mockReset()
     mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
     vi.mocked(daemonSocketClient.requestInnerWake).mockClear()
+    vi.mocked(daemonSocketClient.requestPrivateWake).mockClear()
+    vi.mocked(daemonSocketClient.sendDaemonCommand).mockClear()
   })
 
-  it("does not wake inner dialog solely for ordinary non-inner turn awareness", async () => {
+  it("does not wake private runtime solely for ordinary non-private turn awareness", async () => {
     const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
     const input = makeInput({
       channel: "cli",
@@ -397,6 +400,11 @@ describe("handleInboundTurn", () => {
       await handleInboundTurn(input)
 
       expect(daemonSocketClient.requestInnerWake).not.toHaveBeenCalled()
+      expect(daemonSocketClient.requestPrivateWake).not.toHaveBeenCalled()
+      expect(daemonSocketClient.sendDaemonCommand).not.toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ kind: "private.wake" }),
+      )
     } finally {
       agentNameSpy.mockRestore()
     }

@@ -631,6 +631,39 @@ describe("daemon command plane branches", () => {
     expect(hatch.message).toContain("hatch flow is stubbed")
   })
 
+  it("keeps high-frequency ordinary message sends queue-only with no private-runtime policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-message-send-storm")
+    const ledgerPath = path.join(os.tmpdir(), `message-send-storm-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    router.send.mockImplementation(async ({ content }: { content: string }) => {
+      const match = content.match(/(\d+)$/)
+      const sequence = match ? match[1] : "0"
+      return { id: `storm-${sequence}`, queuedAt: "2026-07-04T03:00:00.000Z" }
+    })
+
+    const responses = []
+    for (let index = 1; index <= 25; index += 1) {
+      responses.push(await daemon.handleCommand({
+        kind: "message.send",
+        from: "claude-code:storm-session",
+        to: "slugger",
+        content: `post-tool-use ${index}`,
+        sessionId: "storm-session",
+      }))
+    }
+
+    expect(responses).toHaveLength(25)
+    expect(responses[0]).toMatchObject({ ok: true, message: "queued message storm-1" })
+    expect(responses[24]).toMatchObject({ ok: true, message: "queued message storm-25" })
+    expect(router.send).toHaveBeenCalledTimes(25)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    expect(policyDeps.resolveProviderLane).not.toHaveBeenCalled()
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+  })
+
   it("routes task pokes through private-runtime policy and denies without direct poke delivery", async () => {
     const socketPath = tmpSocketPath("daemon-task-poke-denied")
     const ledgerPath = path.join(os.tmpdir(), `task-poke-denied-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)

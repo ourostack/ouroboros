@@ -242,4 +242,85 @@ describe("daemon CLI hook execution", () => {
       fs.rmSync(homeRoot, { recursive: true, force: true })
     }
   })
+
+  it("sends one canonical private wake for session-start lifecycle hooks when the daemon socket is present", async () => {
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-cli-hook-"))
+    const socketPath = path.join(homeRoot, "daemon.sock")
+    fs.writeFileSync(socketPath, "", "utf-8")
+
+    try {
+      const deps: OuroCliDeps = {
+        socketPath,
+        sendCommand: vi.fn(async () => ({ ok: true, summary: "sent" })),
+        startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => path.join(homeRoot, "pending.jsonl")),
+        bundlesRoot: path.join(homeRoot, "AgentBundles"),
+      }
+
+      await expect(runOuroCli(["hook", "session-start", "--agent", "slugger"], deps)).resolves.toBe(
+        JSON.stringify({ continue: true }),
+      )
+
+      const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
+      expect(sentCommands).toEqual([
+        expect.objectContaining({ kind: "message.send", to: "slugger" }),
+        expect.objectContaining({
+          kind: "private.wake",
+          agent: "slugger",
+          triggerSource: "dev-tool-hook",
+          budgetClass: "interactive",
+          reason: expect.stringContaining("session-start"),
+          originRefs: expect.arrayContaining([
+            expect.objectContaining({ kind: "dev-tool-hook", id: "session-start" }),
+          ]),
+        }),
+      ])
+      expect(sentCommands).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
+    } finally {
+      fs.rmSync(homeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps post-tool-use hook storms queue-only without private-runtime wakes", async () => {
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-cli-hook-"))
+    const socketPath = path.join(homeRoot, "daemon.sock")
+    fs.writeFileSync(socketPath, "", "utf-8")
+
+    try {
+      const deps: OuroCliDeps = {
+        socketPath,
+        sendCommand: vi.fn(async () => ({ ok: true, summary: "sent" })),
+        startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => path.join(homeRoot, "pending.jsonl")),
+        bundlesRoot: path.join(homeRoot, "AgentBundles"),
+      }
+
+      for (let index = 0; index < 25; index += 1) {
+        await expect(runOuroCli(["hook", "post-tool-use", "--agent", "slugger"], deps)).resolves.toBe(
+          JSON.stringify({ continue: true }),
+        )
+      }
+
+      const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
+      expect(sentCommands).toHaveLength(25)
+      expect(sentCommands).toEqual(
+        Array.from({ length: 25 }, () => expect.objectContaining({
+          kind: "message.send",
+          to: "slugger",
+        })),
+      )
+      expect(sentCommands).not.toContainEqual(expect.objectContaining({ kind: "private.wake" }))
+      expect(sentCommands).not.toContainEqual(expect.objectContaining({ kind: "inner.wake" }))
+      expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+      expect(deps.writeStdout).toHaveBeenCalledTimes(25)
+    } finally {
+      fs.rmSync(homeRoot, { recursive: true, force: true })
+    }
+  })
 })
