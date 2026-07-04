@@ -174,6 +174,7 @@ export async function requestPrivateTurnDecision(
     receiptId: emptyReceiptId(),
     agent: normalizedRequest.agent,
     origin: normalizedRequest.origin,
+    requestReason: normalizedRequest.reason,
     reason,
     providerLane,
     triggerSource: normalizedRequest.triggerSource,

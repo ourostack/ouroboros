@@ -79,10 +79,11 @@ describe("private-runtime worker", () => {
     }
     const worker = createPrivateRuntimeWorker()
 
+    const privateTurnDecision = { result: "allow", triggerSource: "await-poke" }
     await worker.handleMessage({
       type: "await",
       awaitName: "hey_export",
-      privateTurnDecision: { result: "allow", triggerSource: "await-poke" },
+      privateTurnDecision,
     })
 
     expect(runPrivateRuntimeTurn).toHaveBeenCalledWith({
@@ -90,6 +91,7 @@ describe("private-runtime worker", () => {
       taskId: undefined,
       habitName: undefined,
       awaitName: "hey_export",
+      privateTurnDecision,
     })
   })
 

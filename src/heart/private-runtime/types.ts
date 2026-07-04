@@ -40,6 +40,7 @@ export interface PrivateTurnDecision {
   receiptId: string
   agent: string
   origin: string
+  requestReason?: string
   reason: string
   providerLane: PrivateTurnProviderLaneMetadata
   triggerSource: string
@@ -81,4 +82,3 @@ export interface PrivateTurnPolicyDeps {
   }) => void
   bundlesRoot?: string
 }
-

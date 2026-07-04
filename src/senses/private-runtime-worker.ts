@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { runPrivateRuntimeTurn, type PreparedHabitContext } from "./private-runtime"
 import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
+import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
@@ -32,7 +33,7 @@ export interface PrivateRuntimeWorkerMessage {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
-  privateTurnDecision?: unknown
+  privateTurnDecision?: PrivateTurnDecision
 }
 
 export interface PrivateRuntimeWorkerRunOptions {
@@ -43,10 +44,18 @@ export interface PrivateRuntimeWorkerRunOptions {
   trigger?: HabitRunReceipt["trigger"]
   habitSession?: HabitSessionToolContext
   preparedHabit?: PreparedHabitContext
+  privateTurnDecision?: PrivateTurnDecision
 }
 
 export interface PrivateRuntimeWorkerController {
-  run(reason: PrivateRuntimeWorkerReason, taskId?: string, habitName?: string, awaitName?: string, trigger?: HabitRunReceipt["trigger"]): Promise<void>
+  run(
+    reason: PrivateRuntimeWorkerReason,
+    taskId?: string,
+    habitName?: string,
+    awaitName?: string,
+    trigger?: HabitRunReceipt["trigger"],
+    privateTurnDecision?: PrivateTurnDecision,
+  ): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
 
@@ -56,6 +65,7 @@ interface QueueEntry {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
+  privateTurnDecision?: PrivateTurnDecision
 }
 
 interface PreparedHabitRun {
@@ -397,9 +407,16 @@ export function createPrivateRuntimeWorker(
     }
   }
 
-  async function run(reason: PrivateRuntimeWorkerReason, taskId?: string, habitName?: string, awaitName?: string, trigger?: HabitRunReceipt["trigger"]): Promise<void> {
+  async function run(
+    reason: PrivateRuntimeWorkerReason,
+    taskId?: string,
+    habitName?: string,
+    awaitName?: string,
+    trigger?: HabitRunReceipt["trigger"],
+    privateTurnDecision?: PrivateTurnDecision,
+  ): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName, awaitName, trigger })
+      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision })
       return
     }
 
@@ -410,6 +427,7 @@ export function createPrivateRuntimeWorker(
       let nextHabitName = habitName
       let nextAwaitName = awaitName
       let nextTrigger = trigger
+      let nextPrivateTurnDecision = privateTurnDecision
       let nextHabitRun: PreparedHabitRun | null = null
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
@@ -440,6 +458,7 @@ export function createPrivateRuntimeWorker(
             taskId: nextTaskId,
             habitName: nextHabitName,
             awaitName: nextAwaitName,
+            ...(nextPrivateTurnDecision ? { privateTurnDecision: nextPrivateTurnDecision } : {}),
             ...(currentHabitRun
               ? {
                 trigger: currentHabitRun.trigger,
@@ -505,6 +524,7 @@ export function createPrivateRuntimeWorker(
           nextHabitName = next.habitName
           nextAwaitName = next.awaitName
           nextTrigger = next.trigger
+          nextPrivateTurnDecision = next.privateTurnDecision
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
         }
@@ -537,6 +557,7 @@ export function createPrivateRuntimeWorker(
             nextHabitName = currentHabitName
             nextAwaitName = undefined
             nextTrigger = currentTrigger
+            nextPrivateTurnDecision = undefined
             nextHabitRun = currentHabitRun
           } else {
             finalizeCurrentHabitRun()
@@ -546,6 +567,7 @@ export function createPrivateRuntimeWorker(
             nextHabitName = undefined
             nextAwaitName = undefined
             nextTrigger = undefined
+            nextPrivateTurnDecision = undefined
           }
           continue
         }
@@ -569,7 +591,7 @@ export function createPrivateRuntimeWorker(
         return
       }
       recordHabitFireForRecursion(habitName)
-      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue")
+      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision)
       return
     }
     if (maybeMessage.type === "await") {
@@ -577,7 +599,7 @@ export function createPrivateRuntimeWorker(
       /* v8 ignore next -- defensive fallback: live await dispatch always sets awaitName @preserve */
       const awaitName = maybeMessage.awaitName ?? "(unnamed)"
       recordHabitFireForRecursion(`await:${awaitName}`)
-      await run("await", undefined, undefined, maybeMessage.awaitName)
+      await run("await", undefined, undefined, maybeMessage.awaitName, undefined, maybeMessage.privateTurnDecision)
       return
     }
     if (maybeMessage.type === "heartbeat") {
@@ -587,12 +609,12 @@ export function createPrivateRuntimeWorker(
         return
       }
       recordHabitFireForRecursion("heartbeat")
-      await run("habit", undefined, "heartbeat", undefined, "overdue")
+      await run("habit", undefined, "heartbeat", undefined, "overdue", maybeMessage.privateTurnDecision)
       return
     }
     if (maybeMessage.type === "poke") {
       clearHeartbeatRestShield()
-      await run("instinct", maybeMessage.taskId)
+      await run("instinct", maybeMessage.taskId, undefined, undefined, undefined, maybeMessage.privateTurnDecision)
       return
     }
     if (
@@ -600,7 +622,7 @@ export function createPrivateRuntimeWorker(
       maybeMessage.type === "message"
     ) {
       clearHeartbeatRestShield()
-      await run("instinct")
+      await run("instinct", undefined, undefined, undefined, undefined, maybeMessage.privateTurnDecision)
       return
     }
     if (maybeMessage.type === "shutdown") {

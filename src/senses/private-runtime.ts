@@ -41,6 +41,13 @@ import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/flight-recorder"
 import { deskRecordOrientationSection } from "../mind/desk-section"
 import type { HabitSessionToolContext } from "../repertoire/tools-base"
+import {
+  createPrivateTurnRequestFingerprint,
+  readPrivateTurnLedger,
+  type PrivateTurnDecision,
+  type PrivateTurnOriginRef,
+  type PrivateTurnRequest,
+} from "../heart/private-runtime"
 
 export interface InnerDialogInstinct {
   id: string
@@ -71,6 +78,7 @@ export interface RunInnerDialogTurnOptions {
   signal?: AbortSignal
   habitSession?: HabitSessionToolContext
   preparedHabit?: PreparedHabitContext
+  privateTurnDecision?: PrivateTurnDecision
 }
 
 export interface PreparedHabitContext {
@@ -96,6 +104,9 @@ interface InnerDialogRuntimeState {
   startedAt?: string
   lastCompletedAt?: string
 }
+
+export const PRIVATE_TURN_DECISION_MAX_AGE_MS = 15 * 60_000
+const DUPLICATE_PRIVATE_TURN_STATUS = "DUPLICATE_PRIVATE_TURN"
 
 const DEFAULT_INNER_DIALOG_INSTINCTS: InnerDialogInstinct[] = [
   {
@@ -295,6 +306,127 @@ function extractToolFunction(toolCall: unknown): { name?: string; arguments?: st
     : undefined
 
   return { name, arguments: argumentsValue }
+}
+
+function privateTurnRequestFromDecision(decision: PrivateTurnDecision): PrivateTurnRequest {
+  return {
+    agent: decision.agent,
+    origin: decision.origin,
+    reason: decision.requestReason ?? decision.reason,
+    providerLane: decision.providerLane.lane,
+    triggerSource: decision.triggerSource,
+    idempotencyKey: decision.idempotencyKey,
+    budgetClass: decision.budgetClass,
+    originRefs: decision.originRefs,
+  }
+}
+
+function findOriginRef(refs: PrivateTurnOriginRef[], kind: string, id: string): PrivateTurnOriginRef | undefined {
+  return refs.find((ref) => ref.kind === kind && ref.id === id)
+}
+
+function assertPayloadBinding(
+  decision: PrivateTurnDecision,
+  kind: "task" | "habit" | "await",
+  id: string | undefined,
+): void {
+  const refs = decision.originRefs.filter((ref) => ref.kind === kind)
+  if (!id && refs.length === 0) return
+  if (!id) {
+    throw new Error(`private-runtime decision payload mismatch: missing ${kind} payload for ${refs.map((ref) => ref.id).join(", ")}`)
+  }
+  if (findOriginRef(refs, kind, id)) return
+  throw new Error(`private-runtime decision payload mismatch: missing ${kind} origin ref ${id}`)
+}
+
+function ledgerDecisionFor(decision: PrivateTurnDecision): PrivateTurnDecision {
+  const ledgerPath = decision.ledgerLocator?.path
+  if (!ledgerPath) {
+    throw new Error("private-runtime decision has no ledger locator")
+  }
+  const rows = readPrivateTurnLedger(ledgerPath)
+  const lineIndex = typeof decision.ledgerLocator.line === "number"
+    ? decision.ledgerLocator.line - 1
+    : -1
+  const row = lineIndex >= 0 && lineIndex < rows.length
+    ? rows[lineIndex]
+    : rows.find((candidate) =>
+      candidate.receiptId === decision.receiptId
+      && candidate.idempotencyKey === decision.idempotencyKey
+      && candidate.requestFingerprint === decision.requestFingerprint
+    )
+  if (!row) {
+    throw new Error("private-runtime decision is not present in the ledger")
+  }
+  if (
+    row.receiptId !== decision.receiptId
+    || row.idempotencyKey !== decision.idempotencyKey
+    || row.requestFingerprint !== decision.requestFingerprint
+    || row.result !== decision.result
+    || row.executable !== decision.executable
+  ) {
+    throw new Error("private-runtime decision does not match its ledger row")
+  }
+  return row
+}
+
+function assertPrivateTurnDecisionAllowed(input: {
+  decision: PrivateTurnDecision | undefined
+  agentName: string
+  options?: RunInnerDialogTurnOptions
+  now: () => Date
+}): PrivateTurnDecision {
+  const { decision, agentName, options, now } = input
+  if (!decision) {
+    throw new Error("private-runtime provider boundary requires an approved private-turn decision")
+  }
+  if (decision.agent !== agentName) {
+    throw new Error(`private-runtime decision agent mismatch: expected ${agentName}, got ${decision.agent}`)
+  }
+  if (decision.result !== "allow" || decision.executable !== true) {
+    throw new Error(`private-runtime decision denied: ${decision.deniedReason ?? decision.result}`)
+  }
+  const expectedFingerprint = createPrivateTurnRequestFingerprint(privateTurnRequestFromDecision(decision))
+  if (decision.requestFingerprint !== expectedFingerprint) {
+    throw new Error("private-runtime decision fingerprint mismatch")
+  }
+
+  assertPayloadBinding(decision, "task", options?.taskId)
+  assertPayloadBinding(decision, "habit", options?.habitName)
+  assertPayloadBinding(decision, "await", options?.awaitName)
+
+  const ledgerRow = ledgerDecisionFor(decision)
+  const decidedAtMs = Date.parse(ledgerRow.decidedAt)
+  if (!Number.isFinite(decidedAtMs)) {
+    throw new Error("private-runtime decision has invalid decidedAt timestamp")
+  }
+  const ageMs = now().getTime() - decidedAtMs
+  if (ageMs < 0 || ageMs > PRIVATE_TURN_DECISION_MAX_AGE_MS) {
+    throw new Error("private-runtime decision is stale")
+  }
+  return ledgerRow
+}
+
+function privateTurnExecutionPath(decision: PrivateTurnDecision): string {
+  const safeReceiptId = decision.receiptId.replace(/[^A-Za-z0-9_.-]/g, "_")
+  return path.join(path.dirname(decision.ledgerLocator.path), "executions", `${safeReceiptId}.json`)
+}
+
+function claimPrivateTurnExecution(decision: PrivateTurnDecision, now: () => Date): boolean {
+  const executionPath = privateTurnExecutionPath(decision)
+  fs.mkdirSync(path.dirname(executionPath), { recursive: true })
+  try {
+    fs.writeFileSync(executionPath, JSON.stringify({
+      receiptId: decision.receiptId,
+      idempotencyKey: decision.idempotencyKey,
+      requestFingerprint: decision.requestFingerprint,
+      claimedAt: now().toISOString(),
+    }), { encoding: "utf-8", flag: "wx" })
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+    throw error
+  }
 }
 
 function checkpointTextFromAssistantToolCalls(message: OpenAI.ChatCompletionMessageParam): string | null {
@@ -710,6 +842,21 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
   const reason = options?.reason ?? "instinct"
   const sessionFilePath = options?.habitSession?.sessionPath ?? innerDialogSessionPath()
   const agentName = getAgentName()
+  const privateTurnDecision = assertPrivateTurnDecisionAllowed({
+    decision: options?.privateTurnDecision,
+    agentName,
+    options,
+    now,
+  })
+  if (!claimPrivateTurnExecution(privateTurnDecision, now)) {
+    return {
+      messages: [],
+      usage: undefined,
+      sessionPath: sessionFilePath,
+      turnOutcome: "rested",
+      restStatus: DUPLICATE_PRIVATE_TURN_STATUS,
+    }
+  }
   writeInnerDialogRuntimeState(sessionFilePath, {
     status: "running",
     reason,
