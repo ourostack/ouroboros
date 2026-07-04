@@ -246,7 +246,7 @@ describe("local evolution loop flow", () => {
     const evolutionCaseId = createHarnessFrictionCase(mockRuntime.agentRoot, "evolution-loop:no-coding-budget")
     setEvolutionBudget(mockRuntime.agentRoot, evolutionCaseId, {
       profile: "capture",
-      reason: "capture evidence only until a human grants coding budget",
+      reason: "capture evidence only until reviewer authority grants coding budget",
     })
 
     const result = await invokeCodingSpawn({
