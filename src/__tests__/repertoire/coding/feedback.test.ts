@@ -11,11 +11,12 @@ vi.mock("../../../arc/obligations", () => ({
 
 vi.mock("../../../heart/daemon/socket-client", () => ({
   requestInnerWake: vi.fn().mockResolvedValue(null),
+  requestPrivateWake: vi.fn().mockResolvedValue(null),
 }))
 
 import { attachCodingSessionFeedback, formatCodingTail } from "../../../repertoire/coding/feedback"
 import { advanceObligation } from "../../../arc/obligations"
-import { requestInnerWake } from "../../../heart/daemon/socket-client"
+import { requestInnerWake, requestPrivateWake } from "../../../heart/daemon/socket-client"
 import type { CodingSession, CodingSessionUpdate } from "../../../repertoire/coding/types"
 
 function makeSession(overrides: Partial<CodingSession> = {}): CodingSession {
@@ -41,6 +42,34 @@ function makeSession(overrides: Partial<CodingSession> = {}): CodingSession {
     artifactPath: undefined,
     ...overrides,
   }
+}
+
+function originSessionId(session: CodingSession): string {
+  return session.originSession
+    ? `${session.originSession.friendId}/${session.originSession.channel}/${session.originSession.key}`
+    : "detached"
+}
+
+function expectCodingFeedbackPrivateWake(input: {
+  callNumber?: number
+  kind: CodingSessionUpdate["kind"]
+  session: CodingSession
+}): void {
+  const callNumber = input.callNumber ?? 1
+  const obligationId = input.session.obligationId ?? "missing-obligation"
+  expect(requestPrivateWake).toHaveBeenNthCalledWith(callNumber, "slugger", undefined, {
+    reason: "coding feedback private attention",
+    triggerSource: "coding-feedback",
+    budgetClass: "interactive",
+    idempotencyKey: `coding-feedback:slugger:${obligationId}:${input.session.id}:${input.kind}`,
+    originRefs: [
+      { kind: "coding-session", id: input.session.id },
+      { kind: "coding-update", id: input.kind },
+      { kind: "obligation", id: obligationId },
+      { kind: "session", id: originSessionId(input.session) },
+    ],
+  })
+  expect(requestInnerWake).not.toHaveBeenCalled()
 }
 
 describe("coding feedback relay", () => {
@@ -670,7 +699,7 @@ describe("coding feedback relay", () => {
     )
   })
 
-  it("wakes inner dialog when an obligation-bound coding session needs the loop to continue", async () => {
+  it("requests private attention when an obligation-bound coding session needs the loop to continue", async () => {
     let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
     const manager = {
       subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
@@ -687,10 +716,12 @@ describe("coding feedback relay", () => {
     session.obligationId = "ob-4"
 
     vi.mocked(requestInnerWake).mockClear()
+    vi.mocked(requestPrivateWake).mockClear()
     attachCodingSessionFeedback(manager, session as CodingSession, target)
     await Promise.resolve()
 
     expect(requestInnerWake).not.toHaveBeenCalled()
+    expect(requestPrivateWake).not.toHaveBeenCalled()
 
     await listener?.({
       kind: "progress",
@@ -700,16 +731,17 @@ describe("coding feedback relay", () => {
     })
     await Promise.resolve()
     expect(requestInnerWake).not.toHaveBeenCalled()
+    expect(requestPrivateWake).not.toHaveBeenCalled()
 
-    await listener?.({
+    const waitingUpdate = {
       kind: "waiting_input",
       session: { ...(session as CodingSession), status: "waiting_input" },
-    })
-    await listener?.({
+    } satisfies CodingSessionUpdate
+    const stalledUpdate = {
       kind: "stalled",
       session: { ...(session as CodingSession), status: "stalled" },
-    })
-    await listener?.({
+    } satisfies CodingSessionUpdate
+    const completedUpdate = {
       kind: "completed",
       session: {
         ...(session as CodingSession),
@@ -717,8 +749,8 @@ describe("coding feedback relay", () => {
         pid: null,
         endedAt: "2026-03-05T23:55:00.000Z",
       },
-    })
-    await listener?.({
+    } satisfies CodingSessionUpdate
+    const failedUpdate = {
       kind: "failed",
       session: {
         ...(session as CodingSession),
@@ -726,8 +758,8 @@ describe("coding feedback relay", () => {
         pid: null,
         endedAt: "2026-03-05T23:56:00.000Z",
       },
-    })
-    await listener?.({
+    } satisfies CodingSessionUpdate
+    const killedUpdate = {
       kind: "killed",
       session: {
         ...(session as CodingSession),
@@ -735,18 +767,24 @@ describe("coding feedback relay", () => {
         pid: null,
         endedAt: "2026-03-05T23:57:00.000Z",
       },
-    })
+    } satisfies CodingSessionUpdate
+
+    await listener?.(waitingUpdate)
+    await listener?.(stalledUpdate)
+    await listener?.(completedUpdate)
+    await listener?.(failedUpdate)
+    await listener?.(killedUpdate)
     await Promise.resolve()
 
-    expect(requestInnerWake).toHaveBeenCalledTimes(5)
-    expect(requestInnerWake).toHaveBeenNthCalledWith(1, "slugger")
-    expect(requestInnerWake).toHaveBeenNthCalledWith(2, "slugger")
-    expect(requestInnerWake).toHaveBeenNthCalledWith(3, "slugger")
-    expect(requestInnerWake).toHaveBeenNthCalledWith(4, "slugger")
-    expect(requestInnerWake).toHaveBeenNthCalledWith(5, "slugger")
+    expect(requestPrivateWake).toHaveBeenCalledTimes(5)
+    expectCodingFeedbackPrivateWake({ callNumber: 1, kind: "waiting_input", session: waitingUpdate.session })
+    expectCodingFeedbackPrivateWake({ callNumber: 2, kind: "stalled", session: stalledUpdate.session })
+    expectCodingFeedbackPrivateWake({ callNumber: 3, kind: "completed", session: completedUpdate.session })
+    expectCodingFeedbackPrivateWake({ callNumber: 4, kind: "failed", session: failedUpdate.session })
+    expectCodingFeedbackPrivateWake({ callNumber: 5, kind: "killed", session: killedUpdate.session })
   })
 
-  it("does not wake inner dialog for coding sessions without an obligation", async () => {
+  it("does not request private attention for coding sessions without an obligation", async () => {
     let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
     const manager = {
       subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
@@ -757,6 +795,7 @@ describe("coding feedback relay", () => {
     const target = { send: vi.fn().mockResolvedValue(undefined) }
 
     vi.mocked(requestInnerWake).mockClear()
+    vi.mocked(requestPrivateWake).mockClear()
     attachCodingSessionFeedback(manager, makeSession(), target)
     await Promise.resolve()
 
@@ -771,6 +810,7 @@ describe("coding feedback relay", () => {
     await Promise.resolve()
 
     expect(requestInnerWake).not.toHaveBeenCalled()
+    expect(requestPrivateWake).not.toHaveBeenCalled()
   })
 
   it("updates obligation notes for progress, waiting, stalled, failed, and killed coding states", async () => {
@@ -907,7 +947,50 @@ describe("coding feedback relay", () => {
     )
   })
 
-  it("keeps relaying feedback when an obligation wake request fails", async () => {
+  it("keeps relaying feedback when default policy denies private wake execution", async () => {
+    let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
+    const manager = {
+      subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
+        listener = cb
+        return () => undefined
+      }),
+    }
+    const target = { send: vi.fn().mockResolvedValue(undefined) }
+    const session = makeSession({
+      originSession: { friendId: "ari", channel: "cli", key: "session" },
+      obligationId: "ob-10",
+    })
+
+    vi.mocked(requestInnerWake).mockClear()
+    vi.mocked(requestPrivateWake).mockClear()
+    vi.mocked(requestPrivateWake).mockResolvedValueOnce({
+      ok: true,
+      message: "private-runtime wake denied for slugger: default policy",
+      data: {
+        decision: {
+          executable: false,
+          deniedReason: "default policy",
+        },
+      },
+    })
+    attachCodingSessionFeedback(manager, session, target)
+    await Promise.resolve()
+    target.send.mockClear()
+
+    const waitingUpdate = {
+      kind: "waiting_input",
+      session: { ...session, status: "waiting_input" },
+    } satisfies CodingSessionUpdate
+    await listener?.(waitingUpdate)
+    await Promise.resolve()
+
+    expect(target.send).toHaveBeenCalledWith(
+      "codex coding-001 for cli/session waiting\nnext: answer codex coding-001 and continue",
+    )
+    expectCodingFeedbackPrivateWake({ kind: "waiting_input", session: waitingUpdate.session })
+  })
+
+  it("keeps relaying feedback when an obligation private wake request fails", async () => {
     let listener: ((update: CodingSessionUpdate) => void | Promise<void>) | undefined
     const manager = {
       subscribe: vi.fn((_sessionId: string, cb: (update: CodingSessionUpdate) => void | Promise<void>) => {
@@ -920,7 +1003,8 @@ describe("coding feedback relay", () => {
     session.obligationId = "ob-5"
 
     vi.mocked(requestInnerWake).mockClear()
-    vi.mocked(requestInnerWake)
+    vi.mocked(requestPrivateWake).mockClear()
+    vi.mocked(requestPrivateWake)
       .mockRejectedValueOnce("wake failed")
       .mockRejectedValueOnce(new Error("wake failed error"))
     attachCodingSessionFeedback(manager, session as CodingSession, target)
@@ -940,6 +1024,7 @@ describe("coding feedback relay", () => {
 
     expect(target.send).toHaveBeenCalledWith("codex coding-001 waiting")
     expect(target.send).toHaveBeenCalledWith("codex coding-001 stalled")
-    expect(requestInnerWake).toHaveBeenCalledWith("slugger")
+    expect(requestPrivateWake).toHaveBeenCalledTimes(2)
+    expect(requestInnerWake).not.toHaveBeenCalled()
   })
 })
