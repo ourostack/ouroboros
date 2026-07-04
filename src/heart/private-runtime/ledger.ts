@@ -164,20 +164,39 @@ export function recordPrivateTurnDecision(
 
   try {
     const matchingRows = readRows(ledgerPath).filter((row) => row.idempotencyKey === candidate.idempotencyKey)
-    const existing = matchingRows[matchingRows.length - 1]
-    if (existing) {
-      if (existing.requestFingerprint === candidate.requestFingerprint) {
-        if (existing.result === candidate.result && existing.executable === candidate.executable && existing.deniedReason === candidate.deniedReason) {
-          return duplicateDecision(existing)
-        }
+    const anchor = matchingRows[0]
+    if (anchor) {
+      if (anchor.requestFingerprint !== candidate.requestFingerprint) {
+        const mismatch = mismatchDecision(candidate, anchor)
+        const writtenMismatch = writeRow(ledgerPath, mismatch)
+        emitDecisionRecorded(deps, { level: "warn", decision: writtenMismatch })
+        return writtenMismatch
+      }
+
+      const priorExecutable = matchingRows.find((row) => row.requestFingerprint === candidate.requestFingerprint && row.executable)
+      if (priorExecutable && candidate.executable) {
+        return duplicateDecision(priorExecutable)
+      }
+
+      const latestSameFingerprint = [...matchingRows].reverse().find((row) => row.requestFingerprint === candidate.requestFingerprint)
+      if (
+        latestSameFingerprint
+        && latestSameFingerprint.result === candidate.result
+        && latestSameFingerprint.executable === candidate.executable
+        && latestSameFingerprint.deniedReason === candidate.deniedReason
+      ) {
+        return latestSameFingerprint.executable ? duplicateDecision(latestSameFingerprint) : latestSameFingerprint
+      }
+
+      if (priorExecutable && !candidate.executable) {
         const written = writeRow(ledgerPath, candidate)
         emitDecisionRecorded(deps, { level: written.result === "allow" ? "info" : "warn", decision: written })
         return written
       }
-      const mismatch = mismatchDecision(candidate, existing)
-      const writtenMismatch = writeRow(ledgerPath, mismatch)
-      emitDecisionRecorded(deps, { level: "warn", decision: writtenMismatch })
-      return writtenMismatch
+
+      const written = writeRow(ledgerPath, candidate)
+      emitDecisionRecorded(deps, { level: written.result === "allow" ? "info" : "warn", decision: written })
+      return written
     }
 
     const written = writeRow(ledgerPath, candidate)
