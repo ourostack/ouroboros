@@ -9,9 +9,11 @@ import { resetIdentity } from "../../heart/identity"
 import { scanMailImportDiscoveryAttention, startMailSenseApp } from "../../senses/mail"
 
 const mockRequestInnerWake = vi.fn(async () => null)
+const mockRequestPrivateWake = vi.fn(async () => null)
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
+  requestPrivateWake: (...args: any[]) => mockRequestPrivateWake(...args),
 }))
 
 vi.mock("../../heart/identity", async (importOriginal) => {
@@ -49,11 +51,31 @@ afterEach(() => {
   resetIdentity()
   resetRuntimeCredentialConfigCache()
   mockRequestInnerWake.mockReset()
+  mockRequestPrivateWake.mockReset()
   vi.restoreAllMocks()
   for (const dir of tempRoots.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+function expectMailImportDiscoveryPrivateWake(input: {
+  agentName?: string
+  fingerprint: string
+  candidatePaths: string[]
+}): void {
+  const agentName = input.agentName ?? "slugger"
+  expect(mockRequestPrivateWake).toHaveBeenCalledWith(agentName, undefined, {
+    reason: "mail import discovery private attention",
+    triggerSource: "mail-import-discovery",
+    budgetClass: "interactive",
+    idempotencyKey: `mail-import-discovery:${agentName}:${input.fingerprint}`,
+    originRefs: [
+      { kind: "mail-import-discovery", id: input.fingerprint },
+      ...input.candidatePaths.map((candidatePath) => ({ kind: "mail-import-candidate", id: candidatePath })),
+    ],
+  })
+  expect(mockRequestInnerWake).not.toHaveBeenCalled()
+}
 
 describe("mail sense runtime", () => {
   it("starts ingress, scans Screener into inner pending attention, and writes runtime state", async () => {
@@ -390,7 +412,7 @@ describe("mail sense runtime", () => {
     }
   })
 
-  it("keeps discovery queueing alive when requestInnerWake rejects", async () => {
+  it("keeps discovery queueing alive when requestPrivateWake rejects", async () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
@@ -399,12 +421,16 @@ describe("mail sense runtime", () => {
     const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
     fs.mkdirSync(sandboxDir, { recursive: true })
     fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
-    mockRequestInnerWake.mockRejectedValueOnce(new Error("socket unavailable"))
+    mockRequestPrivateWake.mockRejectedValueOnce(new Error("socket unavailable"))
 
     const result = await scanMailImportDiscoveryAttention({ agentName: "slugger" })
 
     expect(result.queued).toBe(true)
     expect(pendingBodies(agentRoot)[0]).toContain(mboxPath)
+    expectMailImportDiscoveryPrivateWake({
+      fingerprint: result.fingerprint ?? "",
+      candidatePaths: [mboxPath],
+    })
   })
 
   it("keeps the process alive when mail import discovery scanning throws an Error instance", async () => {
@@ -751,7 +777,7 @@ describe("mail sense runtime", () => {
     expect(close).toHaveBeenCalledTimes(2)
   })
 
-  it("queues and wakes inner attention once when a fresh worktree-local MBOX archive appears", async () => {
+  it("queues and requests private attention once when a fresh worktree-local MBOX archive appears", async () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot
     const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
@@ -807,7 +833,11 @@ describe("mail sense runtime", () => {
       clearIntervalFn: vi.fn(),
     })
 
-    expect(mockRequestInnerWake).toHaveBeenCalledWith("slugger")
+    const expectedFingerprint = `${mboxPath}:${fs.statSync(mboxPath).mtimeMs}`
+    expectMailImportDiscoveryPrivateWake({
+      fingerprint: expectedFingerprint,
+      candidatePaths: [mboxPath],
+    })
     const firstPassBodies = pendingBodies(agentRoot)
     expect(firstPassBodies).toHaveLength(1)
     expect(firstPassBodies[0]).toContain("[Mail Import Ready]")
@@ -816,7 +846,8 @@ describe("mail sense runtime", () => {
     intervalCallback?.()
     await new Promise((resolve) => setImmediate(resolve))
 
-    expect(mockRequestInnerWake).toHaveBeenCalledTimes(1)
+    expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
+    expect(mockRequestInnerWake).not.toHaveBeenCalled()
     expect(pendingBodies(agentRoot)).toHaveLength(1)
 
     await app.stop()

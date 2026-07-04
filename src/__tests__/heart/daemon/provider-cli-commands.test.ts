@@ -174,6 +174,31 @@ function readPendingMessages(
     .map((entry) => JSON.parse(fs.readFileSync(path.join(pendingDir, entry), "utf-8")) as { content: string })
 }
 
+function expectMailOperationPrivateWake(
+  sendCommand: ReturnType<typeof vi.fn>,
+  input: {
+    operationId: string
+    kind?: "mail.import-mbox" | "mail.backfill-indexes"
+    status?: "succeeded" | "failed"
+  },
+): void {
+  const operationKind = input.kind ?? "mail.import-mbox"
+  const status = input.status ?? "succeeded"
+  expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", {
+    kind: "private.wake",
+    agent: "Slugger",
+    reason: "mail background operation private attention",
+    triggerSource: "mail-background-operation",
+    budgetClass: "interactive",
+    idempotencyKey: `mail-operation:Slugger:${input.operationId}:${status}`,
+    originRefs: [
+      { kind: "background-operation", id: input.operationId },
+      { kind: "mail-operation", id: operationKind },
+      { kind: "mail-operation-status", id: status },
+    ],
+  })
+}
+
 function recentIso(minutesAgo: number): string {
   return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
 }
@@ -4038,7 +4063,7 @@ describe("provider CLI command execution", () => {
     )) as { status: string; result?: Record<string, unknown> }
     expect(record.status).toBe("succeeded")
     expect(record.result).toMatchObject({ imported: 1, duplicates: 0, scanned: 1 })
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete" })
     const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-1")
     expect(mcpPending).toHaveLength(1)
     expect(mcpPending[0]?.content).toContain("[Background Operation]")
@@ -4110,7 +4135,7 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
 
     expect(result).toContain("Imported MBOX for Slugger")
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete_fallback" })
     const phonePending = readPendingMessages(sluggerRoot, "friend-phone", "bluebubbles", "chat-any")
     expect(phonePending).toHaveLength(1)
     expect(phonePending[0]?.content).toContain("mail import finished.")
@@ -4177,7 +4202,7 @@ describe("provider CLI command execution", () => {
       "utf-8",
     )) as { status: string }
     expect(record.status).toBe("succeeded")
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete_degraded" })
   })
 
   it("still completes a tracked foreground MBOX import when outward notification resolution fails", async () => {
@@ -4241,7 +4266,7 @@ describe("provider CLI command execution", () => {
       "utf-8",
     )) as { status: string }
     expect(record.status).toBe("succeeded")
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, { operationId: "op_mail_import_complete_target_resolution_degraded" })
 
     activitySpy.mockRestore()
   })
@@ -4308,7 +4333,11 @@ describe("provider CLI command execution", () => {
     expect(record.error).toEqual({
       message: "hosted message index backfill incomplete after indexing 16583 message(s)",
     })
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_backfill_fail",
+      kind: "mail.backfill-indexes",
+      status: "failed",
+    })
     const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-2")
     expect(mcpPending).toHaveLength(1)
     expect(mcpPending[0]?.content).toContain("mail index repair failed.")
@@ -4425,7 +4454,10 @@ describe("provider CLI command execution", () => {
         indexed: 12,
         store: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
       })
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_backfill_complete",
+        kind: "mail.backfill-indexes",
+      })
     } finally {
       refreshSpy.mockRestore()
       readerSpy.mockRestore()
@@ -4488,7 +4520,10 @@ describe("provider CLI command execution", () => {
       expect(record.detail).toBe(`file: ${mboxPath}`)
       expect(record.progress).toEqual({ current: 0, unit: "messages" })
       expect(record.error).toEqual({ message: "reader exploded" })
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_import_fail_string",
+        status: "failed",
+      })
     } finally {
       readerSpy.mockRestore()
     }
@@ -4551,7 +4586,10 @@ describe("provider CLI command execution", () => {
       "rerun with --file <path> or narrower owner/source hints so the archive choice is unambiguous",
       "retry after confirming which archive is the intended one",
     ])
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_import_fail_ambiguity",
+      status: "failed",
+    })
   })
 
   it("keeps tracked discovery failure detail compact when no owner/source hints were supplied", async () => {
@@ -4659,7 +4697,10 @@ describe("provider CLI command execution", () => {
         "repair filesystem access to the archive or backing store, then rerun the import",
         "retry after confirming the path is readable by Ouro",
       ])
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_import_fail_access",
+        status: "failed",
+      })
     } finally {
       registrySpy.mockRestore()
     }
@@ -4725,7 +4766,10 @@ describe("provider CLI command execution", () => {
       "create or repair the delegated source grant for the intended owner/source, then rerun the import",
       "confirm the import is pointed at the intended owner/source before retrying",
     ])
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_import_fail_source_grant_missing",
+      status: "failed",
+    })
   })
 
   it("classifies tracked source-grant ambiguity failures when imports need narrower owner/source hints", async () => {
@@ -4799,7 +4843,10 @@ describe("provider CLI command execution", () => {
       "rerun the import with explicit --owner-email and/or --source hints",
       "confirm which delegated lane should receive this archive before retrying",
     ])
-    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    expectMailOperationPrivateWake(sendCommand, {
+      operationId: "op_mail_import_fail_source_grant_ambiguity",
+      status: "failed",
+    })
   })
 
   it("classifies tracked transient import failures as retry-safe", async () => {
@@ -4865,7 +4912,10 @@ describe("provider CLI command execution", () => {
         "retry the import from the same archive after the transient storage/network issue clears",
         "use query_active_work to confirm the failed operation has settled before retrying",
       ])
-      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+      expectMailOperationPrivateWake(sendCommand, {
+        operationId: "op_mail_import_fail_transient",
+        status: "failed",
+      })
     } finally {
       readerSpy.mockRestore()
     }
