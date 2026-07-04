@@ -146,12 +146,14 @@ const processManager = new DaemonProcessManager({
       bundlesRoot: getAgentBundlesRoot(),
       daemonVersion: getPackageVersion(),
       now: new Date(),
-      // Default I/O wired into pulse.ts (writePulse, readPulse, etc.)
-      // Wake recipient: send inner.wake over the daemon's own socket so
-      // the recipient agent runs an inner-dialog turn that picks up the
-      // pulse alert. Catch errors silently — pulse is best-effort.
-      fireInnerWake: (agent: string) => {
-        sendDaemonCommand(socketPath, { kind: "inner.wake", agent }).catch(() => {})
+      // Default I/O wired into pulse.ts (writePulse, readPulse, etc.).
+      // Pulse alerts queue canonical private-runtime wakes so policy decides
+      // whether a model-backed notification turn may run.
+      firePrivateWake: (request) => {
+        sendDaemonCommand(socketPath, {
+          kind: "private.wake",
+          ...request,
+        }).catch(() => {})
       },
     })
   },

@@ -711,7 +711,7 @@ describe("flushPulse", () => {
         if (overrides.writtenDeliveredRef) overrides.writtenDeliveredRef.delivered = d
       },
       fireInnerWake: overrides.fireInnerWake ?? vi.fn(),
-      firePrivateWake: overrides.firePrivateWake ?? vi.fn(),
+      ...(overrides.firePrivateWake ? { firePrivateWake: overrides.firePrivateWake } : {}),
     }
   }
 
@@ -947,6 +947,56 @@ describe("flushPulse", () => {
     expect(result.wakeFiredFor).toContain("slugger")
     // The recovery alert ID should be marked delivered
     expect(result.newlyDelivered.some((id) => id.startsWith("recovery:ouroboros:"))).toBe(true)
+  })
+
+  it("queues private-runtime wake metadata on a recovery transition", () => {
+    const slugger = makeSnapshot({ name: "slugger", channel: "private-runtime", startedAt: "2026-04-08T22:00:00.000Z" })
+    const ouroborosBefore = makeSnapshot({
+      name: "ouroboros",
+      channel: "private-runtime",
+      status: "crashed",
+      errorReason: "missing creds",
+      fixHint: "fix it",
+    })
+    const ouroborosAfter = makeSnapshot({
+      name: "ouroboros",
+      channel: "private-runtime",
+      status: "running",
+      startedAt: "2026-04-08T22:00:00.000Z",
+    })
+    const prev = buildPulseState([slugger, ouroborosBefore], "/x", "v", new Date("2026-04-08T21:00:00Z"), () => null)
+    const previousAlertId = buildAlertId("ouroboros", "missing creds")
+    const expectedRecoveryAlertId = buildRecoveryAlertId("ouroboros", "2026-04-08T22:00:00.000Z")
+    const privateWake = vi.fn()
+    const legacyWake = vi.fn()
+
+    const result = flushPulse({
+      snapshots: [slugger, ouroborosAfter],
+      bundlesRoot: "/Users/test/AgentBundles",
+      daemonVersion: "0.1.0-alpha.273",
+      now: new Date("2026-04-08T22:00:00Z"),
+      readPrev: () => prev,
+      writeNext: () => {},
+      readDelivered: () => new Set([previousAlertId]),
+      writeDelivered: () => {},
+      fireInnerWake: legacyWake,
+      firePrivateWake: privateWake,
+    })
+
+    expect(privateWake).toHaveBeenCalledWith({
+      agent: "slugger",
+      reason: "pulse recovery for ouroboros",
+      triggerSource: "pulse-recovery",
+      budgetClass: "scheduled",
+      idempotencyKey: `pulse:slugger:${expectedRecoveryAlertId}`,
+      originRefs: [
+        { kind: "pulse-recovery", id: expectedRecoveryAlertId },
+        { kind: "agent", id: "ouroboros" },
+      ],
+    })
+    expect(legacyWake).not.toHaveBeenCalled()
+    expect(result.wakeFiredFor).toEqual(["slugger"])
+    expect(result.newlyDelivered).toContain(expectedRecoveryAlertId)
   })
 
   it("marks recovery alert delivered even when no wake recipient is available", () => {

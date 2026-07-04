@@ -35,9 +35,8 @@ import {
  *      writes ~/.ouro-cli/pulse.json.
  *   3. For "novel broken" transitions (an agent goes from healthy/unknown
  *      to crashed for the first time, OR with a different error than
- *      before), the writer fires inner.wake on the most-recently-active
- *      running agent so the user finds out within seconds rather than
- *      next-time-they-talk-to-someone.
+ *      before), the writer queues a private-runtime wake on the most-recently-
+ *      active running agent so policy can decide whether to notify the user.
  *   4. Persistent at-most-once delivery: the writer tracks delivered
  *      alert IDs in ~/.ouro-cli/pulse-delivered.json so daemon restarts
  *      don't re-page on the same broken state.
@@ -89,8 +88,17 @@ export interface PulseState {
 }
 
 export interface PulseDeliveredState {
-  /** Set of alert IDs that have been delivered via inner.wake. */
+  /** Set of alert IDs that have been delivered via pulse wake. */
   delivered: string[]
+}
+
+export interface PulsePrivateWakeRequest {
+  agent: string
+  reason: string
+  triggerSource: "pulse-alert" | "pulse-recovery"
+  budgetClass: "scheduled"
+  idempotencyKey: string
+  originRefs: Array<{ kind: "pulse-alert" | "pulse-recovery" | "agent"; id: string }>
 }
 
 /* v8 ignore next 3 -- path defaults: tests always inject @preserve */
@@ -223,8 +231,8 @@ export function buildPulseState(
 /**
  * A "novel broken transition" is an agent that is currently broken AND
  * either (a) wasn't broken in the previous pulse state, OR (b) was broken
- * but with a different alertId. Used to decide when to fire an inner.wake
- * for proactive notification.
+ * but with a different alertId. Used to decide when to queue a proactive
+ * pulse wake.
  *
  * Pure: takes prev and next states, returns the list of newly-broken
  * agents that warrant a wake.
@@ -280,8 +288,30 @@ export function buildRecoveryAlertId(agent: string, recoveredAt: string): string
   return `recovery:${agent}:${recoveredAt}`
 }
 
+export function buildPulsePrivateWakeRequest(options: {
+  recipient: string
+  subject: PulseAgentEntry
+  alertId: string
+  triggerSource: "pulse-alert" | "pulse-recovery"
+}): PulsePrivateWakeRequest {
+  const prefix = options.triggerSource === "pulse-alert" ? "pulse alert" : "pulse recovery"
+  const detail = options.subject.errorReason ? `: ${options.subject.errorReason}` : ""
+  const originKind = options.triggerSource === "pulse-alert" ? "pulse-alert" : "pulse-recovery"
+  return {
+    agent: options.recipient,
+    reason: `${prefix} for ${options.subject.name}${detail}`,
+    triggerSource: options.triggerSource,
+    budgetClass: "scheduled",
+    idempotencyKey: `pulse:${options.recipient}:${options.alertId}`,
+    originRefs: [
+      { kind: originKind, id: options.alertId },
+      { kind: "agent", id: options.subject.name },
+    ],
+  }
+}
+
 /**
- * Pick which agent should receive an inner.wake for a fleet alert. Heuristic:
+ * Pick which agent should receive a pulse wake for a fleet alert. Heuristic:
  * the most-recently-active running agent (by `lastSeenAt`), excluding the
  * broken agent itself and any agents that aren't currently running. Returns
  * null if there's no eligible recipient (e.g., the only other agent on the
@@ -495,15 +525,16 @@ export interface FlushPulseDeps {
   readDelivered?: () => Set<string>
   /** Writes the persistent delivered-alerts state. Defaults to writeDeliveredState(). */
   writeDelivered?: (delivered: Set<string>) => void
-  /** Fires inner.wake on the named agent. Returns true on success.
-   *  Defaults are wired in by the daemon-entry; tests inject a mock. */
+  /** Legacy wake callback retained only for compatibility while callers migrate. */
   fireInnerWake?: (agent: string) => void
+  /** Queues a canonical private-runtime wake for pulse attention. */
+  firePrivateWake?: (request: PulsePrivateWakeRequest) => void
 }
 
 export interface FlushPulseResult {
   /** The new pulse state that was just written. */
   state: PulseState
-  /** Recipients that received an inner.wake for newly-broken siblings. */
+  /** Recipients that received a pulse wake for newly-broken or recovered siblings. */
   wakeFiredFor: string[]
   /** Alert IDs added to the delivered set in this flush. */
   newlyDelivered: string[]
@@ -512,7 +543,7 @@ export interface FlushPulseResult {
 /**
  * Single entry point the daemon's onSnapshotChange callback uses. Builds
  * the new pulse state, diffs against the previous, writes the file, and
- * fires inner.wake on novel broken transitions to the most-recently-active
+ * queues pulse wakes on novel broken transitions for the most-recently-active
  * sibling. Persistent at-most-once delivery via the delivered state file.
  *
  * Pure-ish: all I/O goes through dep callbacks so tests can pin every
@@ -535,6 +566,7 @@ export function flushPulse(deps: FlushPulseDeps): FlushPulseResult {
   const readDelivered = deps.readDelivered ?? (() => readDeliveredState())
   const writeDelivered = deps.writeDelivered ?? ((d: Set<string>) => writeDeliveredState(d))
   const fireInnerWake = deps.fireInnerWake ?? null
+  const firePrivateWake = deps.firePrivateWake ?? null
   /* v8 ignore stop */
 
   const prev = readPrev()
@@ -569,7 +601,15 @@ export function flushPulse(deps: FlushPulseDeps): FlushPulseResult {
     /* v8 ignore next -- defensive: undeliveredBroken already filtered to non-null alertId; this is a TS narrowing helper @preserve */
     if (broken.alertId === null) continue
     const recipient = pickWakeRecipient(state, broken.name)
-    if (recipient !== null && fireInnerWake !== null) {
+    if (recipient !== null && firePrivateWake !== null) {
+      firePrivateWake(buildPulsePrivateWakeRequest({
+        recipient,
+        subject: broken,
+        alertId: broken.alertId,
+        triggerSource: "pulse-alert",
+      }))
+      wakeFiredFor.push(recipient)
+    } else if (recipient !== null && fireInnerWake !== null) {
       fireInnerWake(recipient)
       wakeFiredFor.push(recipient)
     }
@@ -586,7 +626,15 @@ export function flushPulse(deps: FlushPulseDeps): FlushPulseResult {
     const recoveredAgent = undeliveredRecovered[i]!
     const recoveryAlertId = buildRecoveryAlertId(recoveredAgent.name, state.generatedAt)
     const recipient = pickWakeRecipient(state, recoveredAgent.name)
-    if (recipient !== null && fireInnerWake !== null) {
+    if (recipient !== null && firePrivateWake !== null) {
+      firePrivateWake(buildPulsePrivateWakeRequest({
+        recipient,
+        subject: recoveredAgent,
+        alertId: recoveryAlertId,
+        triggerSource: "pulse-recovery",
+      }))
+      wakeFiredFor.push(recipient)
+    } else if (recipient !== null && fireInnerWake !== null) {
       fireInnerWake(recipient)
       wakeFiredFor.push(recipient)
     }
