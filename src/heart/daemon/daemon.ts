@@ -1365,7 +1365,7 @@ export class OuroDaemon {
     if (!decision.executable) {
       return {
         ok: true,
-        message: `private-runtime wake denied for ${command.agent}: ${decision.deniedReason ?? decision.reason}`,
+        message: `private-runtime wake denied for ${command.agent}: ${decision.deniedReason}`,
         data: { decision },
       }
     }

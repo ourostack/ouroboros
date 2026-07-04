@@ -190,7 +190,7 @@ export function recordPrivateTurnDecision(
 
       if (priorExecutable && !candidate.executable) {
         const written = writeRow(ledgerPath, candidate)
-        emitDecisionRecorded(deps, { level: written.result === "allow" ? "info" : "warn", decision: written })
+        emitDecisionRecorded(deps, { level: "warn", decision: written })
         return written
       }
 

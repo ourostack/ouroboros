@@ -603,6 +603,24 @@ describe("private-runtime policy and ledger", () => {
     expect(ledgerRows.map((row) => row.result)).toEqual(["deny", "allow"])
   })
 
+  it("records refreshed deny reasons before any executable receipt exists", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps({
+      evaluatePolicy: vi.fn()
+        .mockResolvedValueOnce({ result: "deny", reason: "wait", deniedReason: "wait" })
+        .mockResolvedValueOnce({ result: "deny", reason: "still waiting", deniedReason: "still waiting" }),
+    })
+
+    const first = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+    const second = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
+
+    expect(first).toMatchObject({ result: "deny", executable: false, deniedReason: "wait" })
+    expect(second).toMatchObject({ result: "deny", executable: false, deniedReason: "still waiting" })
+    const ledgerRows = readLedger(deps.ledgerPath as string)
+    expect(ledgerRows).toHaveLength(2)
+    expect(ledgerRows.map((row) => row.deniedReason)).toEqual(["wait", "still waiting"])
+  })
+
   it("rejects same-key different-fingerprint decisions without overwriting the original receipt", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({
