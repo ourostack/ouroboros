@@ -938,8 +938,12 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   let userContent: string
   let habitTools: string[] | undefined
   let habitParsedSuccessfully = false
+  const isPayloadSpecificWake =
+    !!options?.taskId
+    || (reason === "habit" && !!options?.habitName)
+    || (reason === "await" && !!options?.awaitName)
 
-  if (existingMessages.length === 0 && !(reason === "habit" && options?.habitName)) {
+  if (existingMessages.length === 0 && !isPayloadSpecificWake) {
     // Fresh session: bootstrap message with non-canonical cleanup nudge
     const aspirations = readAspirations(getAgentRoot())
     const nonCanonical = findNonCanonicalBundlePaths(getAgentRoot())

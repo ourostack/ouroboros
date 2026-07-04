@@ -2180,6 +2180,33 @@ describe("private runtime", () => {
     expect(String(input.messages[0].content)).toBe("fresh habit turn message")
   })
 
+  it("uses the await prompt instead of bootstrapping on a fresh await wake", async () => {
+    const awaitingDir = path.join(agentRoot, "awaiting")
+    fs.mkdirSync(awaitingDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(awaitingDir, "hey-export.md"),
+      "---\ncondition: HEY export download is available\ncadence: 15m\nstatus: pending\n---\n\nCheck the delegated mailbox for the export link.",
+      "utf8",
+    )
+    mockLoadSession.mockReturnValueOnce(null)
+
+    await runApprovedPrivateRuntimeTurn({
+      reason: "await",
+      awaitName: "hey-export",
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const content = String(input.messages[0].content)
+    expect(content).toContain("await tick: hey-export")
+    expect(content).toContain("HEY export download is available")
+    expect(content).toContain("what would count as ready:")
+    expect(content).toContain("Check the delegated mailbox for the export link.")
+    expect(content).toContain("history: never checked. this is my first look.")
+    expect(content).not.toContain("No prior private-runtime session found.")
+    expect(content).not.toContain("waking up.")
+  })
+
   it("uses prepared habit context without reparsing the habit file", async () => {
     mockLoadSession.mockReturnValue({
       messages: [
@@ -2772,7 +2799,7 @@ describe("private runtime", () => {
     expect(content).toContain("(task file not found)")
   })
 
-  it("ignores taskId on fresh session (uses bootstrap instead)", async () => {
+  it("uses the task prompt instead of bootstrapping on a fresh task wake", async () => {
     await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       taskId: "habits/daily-standup",
@@ -2781,8 +2808,10 @@ describe("private runtime", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     const content = String(input.messages[0].content)
-    expect(content).toContain("waking up.")
-    expect(content).not.toContain("a task needs my attention.")
+    expect(content).toContain("a task needs my attention.")
+    expect(content).toContain("## task: habits/daily-standup")
+    expect(content).toContain("(task file not found)")
+    expect(content).not.toContain("waking up.")
   })
 
   // ── Session loader tests ──────────────────────────────────────────
