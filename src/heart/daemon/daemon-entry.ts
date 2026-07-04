@@ -29,7 +29,7 @@ import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig } from "./agent-config-check"
-import { flushPulse } from "./pulse"
+import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -126,6 +126,27 @@ function emitAwaitPrivateWakeDispatchError(options: {
   })
 }
 
+function emitPulsePrivateWakeDispatchError(options: {
+  request: PulsePrivateWakeRequest
+  socketPath: string
+  error: unknown
+}): void {
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.pulse_private_wake_dispatch_error",
+    message: "failed to dispatch pulse private-runtime wake",
+    meta: {
+      agent: options.request.agent,
+      triggerSource: options.request.triggerSource,
+      idempotencyKey: options.request.idempotencyKey,
+      originRefs: options.request.originRefs,
+      socketPath: options.socketPath,
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+  })
+}
+
 const processManager = new DaemonProcessManager({
   agents: managedPrivateRuntimes.map(({ agent, config }) => ({
     name: agent,
@@ -153,7 +174,13 @@ const processManager = new DaemonProcessManager({
         sendDaemonCommand(socketPath, {
           kind: "private.wake",
           ...request,
-        }).catch(() => {})
+        }).catch((error) => {
+          emitPulsePrivateWakeDispatchError({
+            request,
+            socketPath,
+            error,
+          })
+        })
       },
     })
   },
