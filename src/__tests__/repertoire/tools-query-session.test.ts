@@ -316,7 +316,7 @@ describe("query_session tool", () => {
         version: 1,
         messages: [
           { role: "system", content: "sys" },
-          { role: "user", content: "inner dialog bootstrap" },
+          { role: "user", content: "private runtime bootstrap" },
           { role: "assistant", content: "working on billing fix" },
         ],
       }),
@@ -336,7 +336,7 @@ describe("query_session tool", () => {
     expect(result).toBe("Summary: autonomous work on billing fix.")
     expect(mockSummarize).toHaveBeenCalledWith(
       expect.any(String),
-      expect.stringContaining("inner dialog"),
+      expect.stringContaining("private runtime"),
     )
     // Should NOT contain trust level for self-queries
     expect(mockSummarize.mock.calls[0][1]).not.toContain("trust level")
@@ -512,7 +512,7 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
+    expect(result).toBe("i've queued this thought for private attention. it'll come up when my private runtime is free.")
   })
 
   it("keeps transcript mode wired to the shared session transcript helper while search is deprecated", async () => {
@@ -669,7 +669,7 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
+    expect(result).toBe("i've queued this thought for private attention. it'll come up when my private runtime is free.")
   })
 
   it("reports completed idle status when nothing recent has surfaced", async () => {
@@ -704,7 +704,7 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe("status mode is only available for self/inner dialog.")
+    expect(result).toBe("status mode is only available for self/private runtime.")
   })
 
   it("describes query_session search as deprecated and points agents at notes tools", async () => {

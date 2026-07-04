@@ -11,7 +11,6 @@ const { listEnabledBundleAgentsMock, readPrivateRuntimeConfigMock } = vi.hoisted
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
-  isInnerDialogAutoStartEnabled: vi.fn(() => true),
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
 }))
 

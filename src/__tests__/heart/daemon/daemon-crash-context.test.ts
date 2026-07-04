@@ -37,7 +37,7 @@ describe("crash context in status output", () => {
   })
   const clearTimeoutFn = vi.fn()
   const agents: DaemonManagedAgent[] = [
-    { name: "slugger", entry: "heart/agent-entry.js", channel: "inner-dialog", autoStart: true },
+    { name: "slugger", entry: "heart/agent-entry.js", channel: "private-runtime", autoStart: true },
   ]
 
   afterEach(() => {

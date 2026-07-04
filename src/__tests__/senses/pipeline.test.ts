@@ -546,7 +546,7 @@ describe("handleInboundTurn", () => {
     it("includes pending messages in runAgent options when present", async () => {
       const pendingMsgs: PendingMessage[] = [
         { from: "trust-gate", content: "someone tried to reach you", timestamp: 1000 },
-        { from: "inner-dialog", content: "thought about something", timestamp: 1001 },
+        { from: "private-runtime", content: "thought about something", timestamp: 1001 },
       ]
       const input = makeInput({
         drainPending: vi.fn().mockReturnValue(pendingMsgs),
@@ -560,7 +560,7 @@ describe("handleInboundTurn", () => {
       // Pending messages now flow through runAgentOptions.pendingMessages
       expect(options.pendingMessages).toEqual([
         { from: "trust-gate", content: "someone tried to reach you" },
-        { from: "inner-dialog", content: "thought about something" },
+        { from: "private-runtime", content: "thought about something" },
       ])
       // Messages should NOT contain pending content directly
       const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
@@ -625,7 +625,7 @@ describe("handleInboundTurn", () => {
         { from: "testagent", content: "penguins surfaced", timestamp: 999 },
       ]
       const sessionPending: PendingMessage[] = [
-        { from: "inner-dialog", content: "a local pending note", timestamp: 1000 },
+        { from: "private-runtime", content: "a local pending note", timestamp: 1000 },
       ]
       const input = makeInput({
         drainPending: vi.fn().mockReturnValue(sessionPending),
@@ -645,7 +645,7 @@ describe("handleInboundTurn", () => {
       // Deferred returns should come before session pending in the pendingMessages array
       expect(options.pendingMessages).toEqual([
         { from: "testagent", content: "penguins surfaced" },
-        { from: "inner-dialog", content: "a local pending note" },
+        { from: "private-runtime", content: "a local pending note" },
       ])
     })
 
@@ -3215,12 +3215,12 @@ describe("handleInboundTurn", () => {
   describe("onPendingDrained extra prefix sections", () => {
     it("prepends extra sections to first user message when onPendingDrained returns non-empty array", async () => {
       const pendingMsgs: PendingMessage[] = [
-        { from: "inner-dialog", content: "woke up", timestamp: 1000 },
+        { from: "private-runtime", content: "woke up", timestamp: 1000 },
       ]
       const input = makeInput({
         drainPending: vi.fn().mockReturnValue(pendingMsgs),
         messages: [{ role: "user", content: "hi there" }] as ChatCompletionMessageParam[],
-        onPendingDrained: vi.fn().mockReturnValue(["## Wake context", "Inner dialog surfaced a thought"]),
+        onPendingDrained: vi.fn().mockReturnValue(["## Wake context", "Private runtime surfaced a thought"]),
       } as any)
 
       await handleInboundTurn(input)
@@ -3231,7 +3231,7 @@ describe("handleInboundTurn", () => {
       const userMsg = msgs.find(m => m.role === "user" && typeof m.content === "string")
       expect(userMsg).toBeTruthy()
       expect((userMsg as any).content).toContain("## Wake context")
-      expect((userMsg as any).content).toContain("Inner dialog surfaced a thought")
+      expect((userMsg as any).content).toContain("Private runtime surfaced a thought")
       expect((userMsg as any).content).toContain("hi there")
     })
 

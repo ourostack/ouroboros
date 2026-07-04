@@ -237,7 +237,7 @@ describe("daemon command plane branches", () => {
     let agentStatus = "starting"
     processManager.listAgentSnapshots.mockImplementation(() => [{
       name: "slugger",
-      channel: "inner-dialog",
+      channel: "private-runtime",
       status: agentStatus,
       pid: null,
       restartCount: 0,
@@ -270,7 +270,7 @@ describe("daemon command plane branches", () => {
     const { daemon, processManager, senseManager } = make(socketPath)
     processManager.listAgentSnapshots.mockImplementation(() => [{
       name: "slugger",
-      channel: "inner-dialog",
+      channel: "private-runtime",
       status: "starting",
       pid: null,
       restartCount: 0,
@@ -450,7 +450,7 @@ describe("daemon command plane branches", () => {
     processManager.listAgentSnapshots.mockReturnValueOnce([
       {
         name: "slugger",
-        channel: "inner-dialog",
+        channel: "private-runtime",
         status: "running",
         pid: null,
         restartCount: 2,
@@ -499,7 +499,7 @@ describe("daemon command plane branches", () => {
       workers: [
         expect.objectContaining({
           agent: "slugger",
-          worker: "inner-dialog",
+          worker: "private-runtime",
           status: "running",
           restartCount: 2,
         }),
@@ -2056,7 +2056,7 @@ describe("daemon command plane branches", () => {
         listAgentSnapshots: () => [
           {
             name: "slugger",
-            channel: "inner-dialog",
+            channel: "private-runtime",
             status: "crashed",
             pid: null,
             restartCount: 1,
@@ -2091,7 +2091,7 @@ describe("daemon command plane branches", () => {
         senseCount: 0,
       }),
       senses: [],
-      workers: [expect.objectContaining({ agent: "slugger", worker: "inner-dialog", status: "crashed" })],
+      workers: [expect.objectContaining({ agent: "slugger", worker: "private-runtime", status: "crashed" })],
       sync: [],
       agents: [],
     })

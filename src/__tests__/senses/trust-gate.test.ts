@@ -85,7 +85,7 @@ describe("trust gate", () => {
     })
   })
 
-  // ── Internal (inner dialog) ───────────────────────────────────────
+  // ── Internal (private runtime) ───────────────────────────────────────
 
   describe("internal sense type", () => {
     it("allows any trust level on internal channel", () => {

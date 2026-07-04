@@ -77,7 +77,7 @@ vi.mock("../../mind/pending", async () => {
   return {
     ...actual,
     queuePendingMessage: (...args: any[]) => mockQueuePendingMessage(...args),
-    getInnerDialogPendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
+    getPrivateRuntimePendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
   }
 })
 
@@ -702,7 +702,7 @@ describe("ponder packets in runAgent", () => {
 
   it("rejects private-return queued acknowledgements that did not create a ponder packet", async () => {
     mockCreate.mockReturnValueOnce(makeStream(settleChunks(
-      "Private pass is queued. Will return the validation result when the inner dialog completes.",
+      "Private pass is queued. Will return the validation result when the private runtime completes.",
     )))
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       action: "create",
@@ -761,9 +761,58 @@ describe("ponder packets in runAgent", () => {
     expect(result.completion?.answer).toBe("Private pass queued. Will return when ready.")
   })
 
+  it("rejects legacy private-runtime completion acknowledgements that did not create a ponder packet", async () => {
+    const legacyPrivateRuntimeLabel = ["inner", "dialog"].join(" ")
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks(
+      `I'll bring the validation result back after the ${legacyPrivateRuntimeLabel} completes.`,
+    )))
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Validate private attention return loop from legacy acknowledgement wording",
+      summary: "Run the private pass and return when complete",
+      success_criteria: "- return AX_LEGACY_PRIVATE_20260524_VALIDATED to the MCP session",
+      payload_json: JSON.stringify({ marker: "AX_LEGACY_PRIVATE_20260524_VALIDATED" }),
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Private pass queued. Will return when ready.")))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{
+        role: "user",
+        content: "Please think privately and return marker AX_LEGACY_PRIVATE_20260524_VALIDATED later.",
+      }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        kind: "reflection",
+        objective: "Validate private attention return loop from legacy acknowledgement wording",
+        relatedReturnObligationId: "ret-test-123",
+      }),
+    )
+    expectPonderPrivateWake({
+      packetId: "pkt-test-123",
+      returnObligationId: "ret-test-123",
+      sessionId: "ari/mcp/session",
+    })
+    expect(result.outcome).toBe("settled")
+    expect(result.completion?.answer).toBe("Private pass queued. Will return when ready.")
+  })
+
   it("rejects text-only private-return queued acknowledgements that did not create a ponder packet", async () => {
     mockCreate.mockReturnValueOnce(makeStream([
-      makeChunk("Private pass is queued. Will return the validation result when the inner dialog completes."),
+      makeChunk("Private pass is queued. Will return the validation result when the private runtime completes."),
     ]))
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       action: "create",
@@ -882,7 +931,7 @@ describe("ponder packets in runAgent", () => {
   })
 
   it("fails closed when text-only private-return acknowledgements keep skipping ponder", async () => {
-    const fakeAck = "Private pass is queued. Will return the validation result when the inner dialog completes."
+    const fakeAck = "Private pass is queued. Will return the validation result when the private runtime completes."
     mockCreate.mockReturnValueOnce(makeStream([makeChunk(fakeAck)]))
     mockCreate.mockReturnValueOnce(makeStream([makeChunk(fakeAck)]))
     mockCreate.mockReturnValueOnce(makeStream([makeChunk(fakeAck)]))
@@ -960,7 +1009,7 @@ describe("ponder packets in runAgent", () => {
     expect(result.completion?.answer).toBe("Which MCP session should receive the private return?")
   })
 
-  it("does not create a self-return obligation for inner-dialog ponder packets", async () => {
+  it("does not create a self-return obligation for private-runtime ponder packets", async () => {
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       action: "create",
       kind: "reflection",
@@ -987,7 +1036,7 @@ describe("ponder packets in runAgent", () => {
     expectNoPonderWake()
   })
 
-  it("rejects inner-dialog replacement ponder packets while a held return is waiting", async () => {
+  it("rejects private-runtime replacement ponder packets while a held return is waiting", async () => {
     const delegatedOrigins = [{
       id: "ret-1",
       friendId: "ari",
@@ -1266,7 +1315,7 @@ describe("ponder packets in runAgent", () => {
     })
   })
 
-  it("drops stale self-return links when revising inner-dialog packets", async () => {
+  it("drops stale self-return links when revising private-runtime packets", async () => {
     mockRevisePonderPacket.mockReturnValue({
       id: "pkt-test-123",
       sop: "reflection_v1",

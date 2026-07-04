@@ -847,7 +847,7 @@ describe("ouro CLI execution", () => {
               senses: [],
               workers: [{
                 agent: "slugger",
-                worker: "inner-dialog",
+                worker: "private-runtime",
                 status: "running",
                 pid: 7777,
                 restartCount: 0,
@@ -906,7 +906,7 @@ describe("ouro CLI execution", () => {
               workers: [
                 {
                   agent: "slugger",
-                  worker: "inner-dialog",
+                  worker: "private-runtime",
                   status: "running",
                   pid: 7777,
                   restartCount: 0,
@@ -918,7 +918,7 @@ describe("ouro CLI execution", () => {
                 },
                 {
                   agent: "ouroboros",
-                  worker: "inner-dialog",
+                  worker: "private-runtime",
                   status: "running",
                   pid: 8888,
                   restartCount: 0,
@@ -1780,7 +1780,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               pid: null,
               restartCount: 0,
@@ -1802,7 +1802,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("ouroboros daemon")
     expect(result).toContain("Socket")
     expect(result).toContain("Workers")
-    expect(result).toContain("inner-dialog")
+    expect(result).toContain("private-runtime")
     expect(result).not.toContain("Ouro status")
     expect(result).not.toContain("What is running, what is stopped, and what needs attention.")
     expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("ouroboros daemon"))
@@ -1911,7 +1911,7 @@ describe("ouro CLI execution", () => {
       workers: [
         {
           agent: "slugger",
-          worker: "inner-dialog",
+          worker: "private-runtime",
           status: "running",
           pid: 1234,
           restarts: 0,
@@ -2198,7 +2198,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               pid: null,
               restartCount: 0,
@@ -2240,7 +2240,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("failureLayer=recovery_quarantine")
     expect(result).toContain("lastFailure=previous recovery timeout")
     expect(result).toContain("recovery=inspect quarantined recovery logs")
-    expect(result).toContain("inner-dialog")
+    expect(result).toContain("private-runtime")
     expect(result).toContain("restarts: 0")
     expect(result).toContain("sense-probe:mcp-canary:slugger")
     expect(result).toContain("mcp canary failed: transport closed")
@@ -2396,7 +2396,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               pid: 12345,
               restartCount: 2,
@@ -2594,7 +2594,7 @@ describe("ouro CLI execution", () => {
           workers: [
             {
               agent: "slugger",
-              worker: "inner-dialog",
+              worker: "private-runtime",
               status: "running",
               restartCount: 0,
             },
@@ -4723,7 +4723,7 @@ describe("ensureDaemonRunning", () => {
               senseCount: 0,
             },
             senses: [],
-            workers: [{ agent: "slugger", worker: "inner-dialog", status: "running", pid: 123, restartCount: 0, lastExitCode: null, lastSignal: null, startedAt: null, errorReason: null, fixHint: null }],
+            workers: [{ agent: "slugger", worker: "private-runtime", status: "running", pid: 123, restartCount: 0, lastExitCode: null, lastSignal: null, startedAt: null, errorReason: null, fixHint: null }],
           },
         })),
         startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
@@ -7262,13 +7262,13 @@ describe("ouro thoughts CLI execution", () => {
     writeSessionFile([
       { role: "system", content: "system prompt" },
       { role: "user", content: "waking up.\n\nwhat needs my attention?" },
-      { role: "assistant", content: "hello from inner dialog." },
+      { role: "assistant", content: "hello from private runtime." },
     ])
     const deps = makeDeps()
     const result = await runOuroCli(["thoughts", "--agent", testAgentName, "--json"], deps)
 
     expect(result).toContain("\"version\":1")
-    expect(result).toContain("hello from inner dialog.")
+    expect(result).toContain("hello from private runtime.")
   })
 
   it("limits turns with --last flag", async () => {
@@ -7293,14 +7293,14 @@ describe("ouro thoughts CLI execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["thoughts", "--agent", "nonexistent-agent-xyzzy"], deps)
 
-    expect(result).toContain("no inner dialog activity")
+    expect(result).toContain("no private-runtime activity")
   })
 
   it("returns no-session message for --json with nonexistent agent", async () => {
     const deps = makeDeps()
     const result = await runOuroCli(["thoughts", "--agent", "nonexistent-agent-xyzzy", "--json"], deps)
 
-    expect(result).toContain("no inner dialog session found")
+    expect(result).toContain("no private-runtime session found")
   })
 
   it("returns a clear no-agents message when thoughts has no target to use", async () => {
@@ -7365,7 +7365,7 @@ describe("ouro thoughts CLI execution", () => {
   })
 
   it("returns the defensive no-agent-context message when thought parsing throws unexpectedly", async () => {
-    const parseSpy = vi.spyOn(daemonThoughts, "parseInnerDialogSession").mockImplementation(() => {
+    const parseSpy = vi.spyOn(daemonThoughts, "parsePrivateRuntimeSession").mockImplementation(() => {
       throw new Error("unexpected parse failure")
     })
     try {
@@ -7452,7 +7452,7 @@ describe("ouro private status CLI execution", () => {
     expect(result).toContain("status: idle")
     expect(result).toContain("last turn:")
     expect(result).not.toContain("status: unknown")
-    expect(result).not.toContain("inner dialog")
+    expect(result).not.toContain(["inner", "dialog"].join(" "))
   })
 
   it("keeps ouro inner as a compatibility alias that points to private status", async () => {
@@ -7473,7 +7473,7 @@ describe("ouro private status CLI execution", () => {
 
     expect(result).toContain("legacy alias: use `ouro private status --agent test`")
     expect(result).toContain("private runtime status: test")
-    expect(result).not.toContain("inner dialog")
+    expect(result).not.toContain(["inner", "dialog"].join(" "))
   })
 })
 

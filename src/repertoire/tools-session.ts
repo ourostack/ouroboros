@@ -6,11 +6,11 @@ import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
 import { requestPrivateWake } from "../heart/daemon/socket-client";
 import {
-  deriveInnerDialogStatus,
+  derivePrivateRuntimeStatus,
   deriveInnerJob,
-  getInnerDialogSessionPath,
-  readInnerDialogRawData,
-  readInnerDialogStatus,
+  getPrivateRuntimeSessionPath,
+  readPrivateRuntimeRawData,
+  readPrivateRuntimeStatus,
 } from "../heart/daemon/thoughts";
 import { createBridgeManager } from "../heart/bridges/manager";
 import {
@@ -21,7 +21,7 @@ import {
 import { listSessionActivity } from "../heart/session-activity";
 import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
-import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
+import { getPendingDir, getPrivateRuntimePendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../arc/obligations";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
@@ -281,10 +281,10 @@ function readActiveWorkInnerState(): ActiveWorkFrame["inner"] {
   }
   try {
     const agentRoot = getAgentRoot()
-    const pendingDir = getInnerDialogPendingDir(getAgentName())
-    const sessionPath = getInnerDialogSessionPath(agentRoot)
-    const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
-    const dialogStatus = deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
+    const pendingDir = getPrivateRuntimePendingDir(getAgentName())
+    const sessionPath = getPrivateRuntimeSessionPath(agentRoot)
+    const { pendingMessages, turns, runtimeState } = readPrivateRuntimeRawData(sessionPath, pendingDir)
+    const dialogStatus = derivePrivateRuntimeStatus(pendingMessages, turns, runtimeState)
     const job = deriveInnerJob(pendingMessages, turns, runtimeState)
     const storeObligationPending = readPendingObligations(agentRoot).length > 0
     return {
@@ -421,7 +421,7 @@ function sendMessageRiskProfile(args: Record<string, string>) {
     return {
       mutates: "private_attention_write",
       risk: "high",
-      reason: "queues private inner-dialog attention without contacting an external session",
+      reason: "queues private-runtime attention without contacting an external session",
     } as const
   }
   return {
@@ -435,7 +435,7 @@ export function renderInnerProgressStatus(
   status: { queue: string; wake: string; processing: string; surfaced: string },
 ): string {
   if (status.processing === "pending") {
-    return "i've queued this thought for private attention. it'll come up when my inner dialog is free."
+    return "i've queued this thought for private attention. it'll come up when my private runtime is free."
   }
 
   if (status.processing === "started") {
@@ -561,12 +561,12 @@ export const sessionToolDefinitions: ToolDefinition[] = [
 
       if (mode === "status") {
         if (friendId !== "self" || channel !== "inner") {
-          return "status mode is only available for self/inner dialog."
+          return "status mode is only available for self/private runtime."
         }
 
-        const sessionPath = getInnerDialogSessionPath(getAgentRoot())
-        const pendingDir = getInnerDialogPendingDir(getAgentName())
-        return renderInnerProgressStatus(readInnerDialogStatus(sessionPath, pendingDir))
+        const sessionPath = getPrivateRuntimeSessionPath(getAgentRoot())
+        const pendingDir = getPrivateRuntimePendingDir(getAgentName())
+        return renderInnerProgressStatus(readPrivateRuntimeStatus(sessionPath, pendingDir))
       }
 
       if (mode === "search") {
@@ -669,11 +669,11 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       }
       /* v8 ignore stop */
 
-      // Self-routing: messages to "self" always go to inner dialog pending dir,
+      // Self-routing: messages to "self" always go to the private-runtime pending dir,
       // regardless of the channel or key the agent specified.
       const isSelf = friendId === "self"
       const pendingDir = isSelf
-        ? getInnerDialogPendingDir(agentName)
+        ? getPrivateRuntimePendingDir(agentName)
         : getPendingDir(agentName, friendId, channel, key)
       const delegatingBridgeId = findDelegatingBridgeId(ctx)
       const delegatedFrom = isSelf
@@ -727,7 +727,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           emitNervesEvent({
             event: "repertoire.obligation_created",
             component: "repertoire",
-            message: "obligation created for inner dialog delegation",
+            message: "obligation created for private-runtime delegation",
             meta: {
               friendId: delegatedFrom.friendId,
               channel: delegatedFrom.channel,

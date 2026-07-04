@@ -74,14 +74,14 @@ vi.mock("../../heart/active-work", () => ({
 }))
 
 vi.mock("../../heart/daemon/thoughts", () => ({
-  readInnerDialogRawData: vi.fn().mockReturnValue(null),
-  deriveInnerDialogStatus: vi.fn().mockReturnValue("idle"),
+  readPrivateRuntimeRawData: vi.fn().mockReturnValue(null),
+  derivePrivateRuntimeStatus: vi.fn().mockReturnValue("idle"),
   deriveInnerJob: vi.fn().mockReturnValue(null),
-  getInnerDialogSessionPath: vi.fn().mockReturnValue(null),
+  getPrivateRuntimeSessionPath: vi.fn().mockReturnValue(null),
 }))
 
 vi.mock("../../mind/pending", () => ({
-  getInnerDialogPendingDir: vi.fn().mockReturnValue("/tmp/inner-pending"),
+  getPrivateRuntimePendingDir: vi.fn().mockReturnValue("/tmp/inner-pending"),
 }))
 
 vi.mock("../../heart/provider-failover", () => ({

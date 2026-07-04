@@ -5,10 +5,10 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { InnerDialogStatus } from "../../heart/daemon/thoughts"
+import type { PrivateRuntimeStatus } from "../../heart/daemon/thoughts"
 
 describe("renderInnerProgressStatus (selfhood framing)", () => {
-  let renderInnerProgressStatus: (status: InnerDialogStatus) => string
+  let renderInnerProgressStatus: (status: PrivateRuntimeStatus) => string
 
   beforeAll(async () => {
     const mod = await import("../../repertoire/tools-base")

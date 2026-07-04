@@ -388,7 +388,7 @@ describe("session transcript", () => {
     expect(result.kind).toBe("ok")
     expect(summarize).toHaveBeenCalledWith(
       expect.stringContaining("penguins"),
-      expect.stringContaining("inner dialog"),
+      expect.stringContaining("private runtime"),
     )
     expect(summarize.mock.calls[0][1]).not.toContain("trust level")
   })
@@ -547,7 +547,7 @@ describe("session transcript", () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
       messages: [
-        { role: "assistant", content: "i surfaced this note from inner dialog" },
+        { role: "assistant", content: "i surfaced this note from private runtime" },
       ],
     }))
 

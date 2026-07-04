@@ -11,10 +11,10 @@ import { getToolsForChannel } from "../repertoire/tools"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
   drainPending,
-  getInnerDialogPendingDir,
+  getPrivateRuntimePendingDir,
   getDeferredReturnDir,
   getPendingDir,
-  INNER_DIALOG_PENDING,
+  PRIVATE_RUNTIME_PENDING,
   type PendingMessage,
   type DelegatedFrom,
 } from "../mind/pending"
@@ -49,13 +49,13 @@ import {
   type PrivateTurnRequest,
 } from "../heart/private-runtime"
 
-export interface InnerDialogInstinct {
+export interface PrivateRuntimeInstinct {
   id: string
   prompt: string
   enabled?: boolean
 }
 
-export interface InnerDialogState {
+export interface PrivateRuntimeTurnState {
   cycleCount: number
   resting?: boolean
   lastHeartbeatAt?: string
@@ -67,13 +67,13 @@ export interface HabitParseErrorInfo {
   error: string
 }
 
-export interface RunInnerDialogTurnOptions {
+export interface RunPrivateRuntimeTurnOptions {
   reason?: "boot" | "heartbeat" | "habit" | "instinct" | "await"
   taskId?: string
   habitName?: string
   awaitName?: string
   parseErrors?: HabitParseErrorInfo[]
-  instincts?: InnerDialogInstinct[]
+  instincts?: PrivateRuntimeInstinct[]
   now?: () => Date
   signal?: AbortSignal
   habitSession?: HabitSessionToolContext
@@ -89,7 +89,7 @@ export interface PreparedHabitContext {
   priorSessionSummary?: PriorHabitSessionSummaryInfo
 }
 
-export interface InnerDialogTurnResult {
+export interface PrivateRuntimeTurnResult {
   messages: OpenAI.ChatCompletionMessageParam[]
   usage?: UsageData
   sessionPath: string
@@ -98,7 +98,7 @@ export interface InnerDialogTurnResult {
   restStatus?: string
 }
 
-interface InnerDialogRuntimeState {
+interface PrivateRuntimeStateSnapshot {
   status: "idle" | "running"
   reason?: "boot" | "heartbeat" | "habit" | "instinct" | "await"
   startedAt?: string
@@ -108,7 +108,7 @@ interface InnerDialogRuntimeState {
 export const PRIVATE_TURN_DECISION_MAX_AGE_MS = 15 * 60_000
 const DUPLICATE_PRIVATE_TURN_STATUS = "DUPLICATE_PRIVATE_TURN"
 
-const DEFAULT_INNER_DIALOG_INSTINCTS: InnerDialogInstinct[] = [
+const DEFAULT_PRIVATE_RUNTIME_INSTINCTS: PrivateRuntimeInstinct[] = [
   {
     id: "heartbeat_checkin",
     prompt: "...time passing. anything stirring?",
@@ -124,11 +124,11 @@ function readAspirations(agentRoot: string): string {
   }
 }
 
-export function loadInnerDialogInstincts(): InnerDialogInstinct[] {
-  return [...DEFAULT_INNER_DIALOG_INSTINCTS]
+export function loadPrivateRuntimeInstincts(): PrivateRuntimeInstinct[] {
+  return [...DEFAULT_PRIVATE_RUNTIME_INSTINCTS]
 }
 
-export function buildInnerDialogBootstrapMessage(aspirations: string, stateSummary: string): string {
+export function buildPrivateRuntimeBootstrapMessage(aspirations: string, stateSummary: string): string {
   const lines = ["waking up."]
   if (aspirations) {
     lines.push("", "## what matters to me", aspirations)
@@ -162,11 +162,11 @@ function displayCheckpoint(checkpoint?: string): string | undefined {
 }
 
 export function buildInstinctUserMessage(
-  instincts: InnerDialogInstinct[],
+  instincts: PrivateRuntimeInstinct[],
   _reason: "boot" | "heartbeat" | "habit" | "instinct" | "await",
-  state: InnerDialogState,
+  state: PrivateRuntimeTurnState,
 ): string {
-  const active = instincts.find((instinct) => instinct.enabled !== false) ?? DEFAULT_INNER_DIALOG_INSTINCTS[0]
+  const active = instincts.find((instinct) => instinct.enabled !== false) ?? DEFAULT_PRIVATE_RUNTIME_INSTINCTS[0]
   const checkpoint = displayCheckpoint(state.checkpoint)
   const lines = [active.prompt]
   if (checkpoint) {
@@ -373,7 +373,7 @@ function ledgerDecisionFor(decision: PrivateTurnDecision): PrivateTurnDecision {
 function assertPrivateTurnDecisionAllowed(input: {
   decision: PrivateTurnDecision | undefined
   agentName: string
-  options?: RunInnerDialogTurnOptions
+  options?: RunPrivateRuntimeTurnOptions
   now: () => Date
 }): PrivateTurnDecision {
   const { decision, agentName, options, now } = input
@@ -488,7 +488,7 @@ function extractToolCallNames(messages: OpenAI.ChatCompletionMessageParam[]): st
   return [...new Set(names)]
 }
 
-function createInnerDialogCallbacks(): ChannelCallbacks {
+function createPrivateRuntimeCallbacks(): ChannelCallbacks {
   return {
     onModelStart: () => {},
     onModelStreamStart: () => {},
@@ -500,16 +500,16 @@ function createInnerDialogCallbacks(): ChannelCallbacks {
   }
 }
 
-export function innerDialogSessionPath(): string {
-  return sessionPath(INNER_DIALOG_PENDING.friendId, INNER_DIALOG_PENDING.channel, INNER_DIALOG_PENDING.key)
+export function privateRuntimeSessionPath(): string {
+  return sessionPath(PRIVATE_RUNTIME_PENDING.friendId, PRIVATE_RUNTIME_PENDING.channel, PRIVATE_RUNTIME_PENDING.key)
 }
 
-function innerDialogRuntimeStatePath(sessionFilePath: string): string {
+function privateRuntimeStatePath(sessionFilePath: string): string {
   return path.join(path.dirname(sessionFilePath), "runtime.json")
 }
 
-function writeInnerDialogRuntimeState(sessionFilePath: string, state: InnerDialogRuntimeState): void {
-  const filePath = innerDialogRuntimeStatePath(sessionFilePath)
+function writePrivateRuntimeState(sessionFilePath: string, state: PrivateRuntimeStateSnapshot): void {
+  const filePath = privateRuntimeStatePath(sessionFilePath)
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
     fs.writeFileSync(filePath, JSON.stringify(state, null, 2) + "\n", "utf8")
@@ -517,8 +517,8 @@ function writeInnerDialogRuntimeState(sessionFilePath: string, state: InnerDialo
     emitNervesEvent({
       level: "warn",
       component: "senses",
-      event: "senses.inner_dialog_runtime_state_error",
-      message: "failed to write inner dialog runtime state",
+      event: "senses.private_runtime_state_error",
+      message: "failed to write private-runtime state",
       meta: {
         status: state.status,
         reason: state.reason ?? null,
@@ -738,7 +738,7 @@ export async function routeDelegatedCompletion(
 }
 /* v8 ignore stop */
 
-// Self-referencing friend record for inner dialog (agent talking to itself).
+// Self-referencing friend record for the private runtime (agent talking to itself).
 // No real friend to resolve -- this satisfies the pipeline's friend resolver contract.
 function createSelfFriend(agentName: string): FriendRecord {
   return {
@@ -756,7 +756,7 @@ function createSelfFriend(agentName: string): FriendRecord {
   }
 }
 
-// No-op friend store for inner dialog. Inner dialog doesn't track token usage per-friend.
+// No-op friend store for the private runtime. It doesn't track token usage per-friend.
 function createNoOpFriendStore(): FriendStore {
   return {
     get: async () => null,
@@ -837,10 +837,10 @@ function buildHabitSurfacePolicy(origin: HabitOrigin | null, surface: HabitSurfa
   return lines.join("\n")
 }
 
-export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions): Promise<InnerDialogTurnResult> {
+export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptions): Promise<PrivateRuntimeTurnResult> {
   const now = options?.now ?? (() => new Date())
   const reason = options?.reason ?? "instinct"
-  const sessionFilePath = options?.habitSession?.sessionPath ?? innerDialogSessionPath()
+  const sessionFilePath = options?.habitSession?.sessionPath ?? privateRuntimeSessionPath()
   const agentName = getAgentName()
   const privateTurnDecision = assertPrivateTurnDecisionAllowed({
     decision: options?.privateTurnDecision,
@@ -857,7 +857,7 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
       restStatus: DUPLICATE_PRIVATE_TURN_STATUS,
     }
   }
-  writeInnerDialogRuntimeState(sessionFilePath, {
+  writePrivateRuntimeState(sessionFilePath, {
     status: "running",
     reason,
     startedAt: now().toISOString(),
@@ -866,13 +866,13 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
   try {
   const loaded = loadSession(sessionFilePath)
   const existingMessages = loaded?.messages ? [...loaded.messages] : []
-  const instincts = options?.instincts ?? loadInnerDialogInstincts()
-  const state: InnerDialogState = {
+  const instincts = options?.instincts ?? loadPrivateRuntimeInstincts()
+  const state: PrivateRuntimeTurnState = {
     cycleCount: 1,
     resting: false,
     lastHeartbeatAt: now().toISOString(),
   }
-  const pendingDir = options?.habitSession?.pendingDir ?? getInnerDialogPendingDir(agentName)
+  const pendingDir = options?.habitSession?.pendingDir ?? getPrivateRuntimePendingDir(agentName)
   const shouldUseHeldReturnWake =
     !options?.taskId && reason !== "habit" && reason !== "await"
       ? listActiveReturnObligations(agentName).length > 0
@@ -889,7 +889,7 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
     const nonCanonical = findNonCanonicalBundlePaths(getAgentRoot())
     const cleanupNudge = buildNonCanonicalCleanupNudge(nonCanonical)
     userContent = [
-      buildInnerDialogBootstrapMessage(aspirations, "No prior inner dialog session found."),
+      buildPrivateRuntimeBootstrapMessage(aspirations, "No prior private-runtime session found."),
       cleanupNudge,
     ].filter(Boolean).join("\n\n")
   } else {
@@ -1084,7 +1084,7 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
   }
 
   // ── Call shared pipeline ──────────────────────────────────────────
-  const callbacks = createInnerDialogCallbacks()
+  const callbacks = createPrivateRuntimeCallbacks()
   const traceId = createTraceId()
 
   // Attention queue: built when pending messages are drained, shared with tool context
@@ -1152,7 +1152,7 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
     },
   })
   // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.
-  // settle in inner dialog produces no CompletionMetadata, so routeDelegatedCompletion
+  // settle in the private runtime produces no CompletionMetadata, so routeDelegatedCompletion
   // would be a no-op. The routing infrastructure is reused by the surface handler.
 
   const resultMessages = result.messages ?? []
@@ -1161,8 +1161,8 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
 
   emitNervesEvent({
     component: "senses",
-    event: "senses.inner_dialog_turn",
-    message: "inner dialog turn completed",
+    event: "senses.private_runtime_turn",
+    message: "private-runtime turn completed",
     meta: {
       reason,
       session: sessionFilePath,
@@ -1186,7 +1186,7 @@ export async function runPrivateRuntimeTurn(options?: RunInnerDialogTurnOptions)
     restStatus: latestRestStatus(resultMessages),
   }
   } finally {
-    writeInnerDialogRuntimeState(sessionFilePath, {
+    writePrivateRuntimeState(sessionFilePath, {
       status: "idle",
       lastCompletedAt: now().toISOString(),
     })

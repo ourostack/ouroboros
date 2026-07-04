@@ -59,7 +59,6 @@ const { registerGlobalLogSinkMock, registeredHealthSinks, capturedHealthStates }
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
-  isInnerDialogAutoStartEnabled: vi.fn(() => true),
   readPrivateRuntimeConfig: vi.fn(() => ({ autoStart: true, source: "privateRuntime" })),
 }))
 
@@ -228,8 +227,8 @@ describe("daemon-entry rollup vocabulary", () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["alpha", "beta"])
     setupDaemonMocks([
-      { name: "alpha", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
-      { name: "beta",  channel: "inner-dialog", status: "running", pid: 101, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "alpha", channel: "private-runtime", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "beta",  channel: "private-runtime", status: "running", pid: 101, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
     ])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
@@ -246,8 +245,8 @@ describe("daemon-entry rollup vocabulary", () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["alpha", "beta"])
     setupDaemonMocks([
-      { name: "alpha", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
-      { name: "beta",  channel: "inner-dialog", status: "crashed", pid: null, restartCount: 3, lastCrashAt: "2026-04-28T19:30:00.000Z", errorReason: "live-check failed", fixHint: "ouro doctor" },
+      { name: "alpha", channel: "private-runtime", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "beta",  channel: "private-runtime", status: "crashed", pid: null, restartCount: 3, lastCrashAt: "2026-04-28T19:30:00.000Z", errorReason: "live-check failed", fixHint: "ouro doctor" },
     ])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
@@ -264,8 +263,8 @@ describe("daemon-entry rollup vocabulary", () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["alpha", "beta"])
     setupDaemonMocks([
-      { name: "alpha", channel: "inner-dialog", status: "crashed", pid: null, restartCount: 3, lastCrashAt: null, errorReason: "boom", fixHint: null },
-      { name: "beta",  channel: "inner-dialog", status: "stopped", pid: null, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "alpha", channel: "private-runtime", status: "crashed", pid: null, restartCount: 3, lastCrashAt: null, errorReason: "boom", fixHint: null },
+      { name: "beta",  channel: "private-runtime", status: "stopped", pid: null, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
     ])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
@@ -304,7 +303,7 @@ describe("daemon-entry rollup vocabulary", () => {
       throw new Error("habit migration failed")
     })
     setupDaemonMocks([
-      { name: "alpha", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "alpha", channel: "private-runtime", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
     ])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 

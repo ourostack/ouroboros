@@ -12,10 +12,10 @@ function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
 }
 
 function mockWorkerModules(startPrivateRuntimeWorker = vi.fn(async () => undefined)) {
-  const startInnerDialogWorker = vi.fn(async () => undefined)
+  const startLegacyWorker = vi.fn(async () => undefined)
   vi.doMock("../../senses/private-runtime-worker", () => ({ startPrivateRuntimeWorker }))
-  vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-  return { startPrivateRuntimeWorker, startInnerDialogWorker }
+  vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker: startLegacyWorker }))
+  return { startPrivateRuntimeWorker, startLegacyWorker }
 }
 
 describe("agent entrypoint", () => {
@@ -23,10 +23,10 @@ describe("agent entrypoint", () => {
     vi.restoreAllMocks()
   })
 
-  it("starts the canonical private-runtime worker instead of the legacy inner-dialog worker", async () => {
+  it("starts the canonical private-runtime worker instead of the legacy worker shim", async () => {
     vi.resetModules()
 
-    const { startPrivateRuntimeWorker, startInnerDialogWorker } = mockWorkerModules()
+    const { startPrivateRuntimeWorker, startLegacyWorker } = mockWorkerModules()
     const configureCliRuntimeLogger = vi.fn()
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
     vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock())
@@ -42,7 +42,7 @@ describe("agent entrypoint", () => {
 
     await vi.waitFor(() => {
       expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
-      expect(startInnerDialogWorker).not.toHaveBeenCalled()
+      expect(startLegacyWorker).not.toHaveBeenCalled()
     })
     argvSpy.mockRestore()
   })
@@ -50,7 +50,7 @@ describe("agent entrypoint", () => {
   it("starts unified agent runtime when --agent is present", async () => {
     vi.resetModules()
 
-    const { startPrivateRuntimeWorker, startInnerDialogWorker } = mockWorkerModules()
+    const { startPrivateRuntimeWorker, startLegacyWorker } = mockWorkerModules()
     const configureCliRuntimeLogger = vi.fn()
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
     vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock())
@@ -67,7 +67,7 @@ describe("agent entrypoint", () => {
     expect(configureCliRuntimeLogger).toHaveBeenCalledWith("self")
     await vi.waitFor(() => {
       expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
-      expect(startInnerDialogWorker).not.toHaveBeenCalled()
+      expect(startLegacyWorker).not.toHaveBeenCalled()
     })
     argvSpy.mockRestore()
   })
@@ -75,7 +75,7 @@ describe("agent entrypoint", () => {
   it("continues startup when runtime config refresh is unavailable", async () => {
     vi.resetModules()
 
-    const { startPrivateRuntimeWorker, startInnerDialogWorker } = mockWorkerModules()
+    const { startPrivateRuntimeWorker, startLegacyWorker } = mockWorkerModules()
     const configureCliRuntimeLogger = vi.fn()
     const refreshRuntimeCredentialConfig = vi.fn(async () => {
       throw new Error("vault locked")
@@ -97,7 +97,7 @@ describe("agent entrypoint", () => {
     await vi.waitFor(() => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
       expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
-      expect(startInnerDialogWorker).not.toHaveBeenCalled()
+      expect(startLegacyWorker).not.toHaveBeenCalled()
     })
     argvSpy.mockRestore()
   })
@@ -105,7 +105,7 @@ describe("agent entrypoint", () => {
   it("starts unified agent runtime without waiting for runtime config refresh", async () => {
     vi.resetModules()
 
-    const { startPrivateRuntimeWorker, startInnerDialogWorker } = mockWorkerModules()
+    const { startPrivateRuntimeWorker, startLegacyWorker } = mockWorkerModules()
     const configureCliRuntimeLogger = vi.fn()
     const refreshRuntimeCredentialConfig = vi.fn(() => new Promise(() => undefined))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
@@ -125,7 +125,7 @@ describe("agent entrypoint", () => {
     await vi.waitFor(() => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
       expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
-      expect(startInnerDialogWorker).not.toHaveBeenCalled()
+      expect(startLegacyWorker).not.toHaveBeenCalled()
     })
     argvSpy.mockRestore()
   })
@@ -133,7 +133,7 @@ describe("agent entrypoint", () => {
   it("accepts daemon runtime bootstrap before starting work", async () => {
     vi.resetModules()
 
-    const { startPrivateRuntimeWorker, startInnerDialogWorker } = mockWorkerModules()
+    const { startPrivateRuntimeWorker, startLegacyWorker } = mockWorkerModules()
     const configureCliRuntimeLogger = vi.fn()
     const refreshRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
     const refreshMachineRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
@@ -159,7 +159,7 @@ describe("agent entrypoint", () => {
     await vi.waitFor(() => {
       expect(waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
       expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
-      expect(startInnerDialogWorker).not.toHaveBeenCalled()
+      expect(startLegacyWorker).not.toHaveBeenCalled()
     })
     expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
     expect(refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()

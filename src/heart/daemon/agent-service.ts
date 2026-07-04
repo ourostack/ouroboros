@@ -39,8 +39,8 @@ function agentDiaryRoot(agent: string): string {
   return resolveRecordDiaryRoot(getAgentRoot(agent))
 }
 
-/** Read inner dialog runtime status. */
-function readInnerDialogStatus(agent: string): { status: string; lastCompletedAt: string } | null {
+/** Read private-runtime status. */
+function readPrivateRuntimeStatus(agent: string): { status: string; lastCompletedAt: string } | null {
   const content = readAgentFile(agent, "state", "sessions", "self", "inner", "runtime.json")
   if (!content) return null
   try {
@@ -289,7 +289,7 @@ export async function handleAgentStatus(params: AgentServiceParams): Promise<Dae
   emitNervesEvent({ component: "daemon", event: "daemon.agent_service_start", message: "handling agent.status", meta: { agent: params.agent } })
   const diaryRoot = agentDiaryRoot(params.agent)
   const facts = readDiaryEntries(diaryRoot)
-  const innerStatus = readInnerDialogStatus(params.agent)
+  const innerStatus = readPrivateRuntimeStatus(params.agent)
   const sessions = enumerateSessions(params.agent)
   const mcpVersion = readMcpRuntimeVersion()
   const runtime = await readRuntimeStatus(params.socketPath ?? DEFAULT_DAEMON_SOCKET_PATH, params.agent)
@@ -343,11 +343,11 @@ export async function handleAgentCatchup(params: AgentServiceParams): Promise<Da
   const sessions = enumerateSessions(params.agent)
   const sorted = sessions.sort((a, b) => (b.lastUsage || "").localeCompare(a.lastUsage || ""))
   const recentSessions = sorted.slice(0, 5)
-  const innerStatus = readInnerDialogStatus(params.agent)
+  const innerStatus = readPrivateRuntimeStatus(params.agent)
 
   const parts: string[] = []
   if (innerStatus) {
-    parts.push(`Inner dialog: ${innerStatus.status} (last completed: ${innerStatus.lastCompletedAt || "never"})`)
+    parts.push(`Private runtime: ${innerStatus.status} (last completed: ${innerStatus.lastCompletedAt || "never"})`)
   }
   if (recentSessions.length > 0) {
     parts.push(`Recent sessions (${recentSessions.length}):`)
@@ -382,7 +382,7 @@ export async function handleAgentGetContext(params: AgentServiceParams): Promise
   const query = (params.question ?? params.query ?? params.topic) as string | undefined
   const diaryRoot = agentDiaryRoot(params.agent)
   const facts = readDiaryEntries(diaryRoot)
-  const innerStatus = readInnerDialogStatus(params.agent)
+  const innerStatus = readPrivateRuntimeStatus(params.agent)
   const sessions = enumerateSessions(params.agent)
   const taskFiles = listTaskFiles(params.agent)
 

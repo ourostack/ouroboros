@@ -27,7 +27,7 @@ vi.mock("../../../nerves/runtime", () => ({
 function makeSnapshot(overrides: Partial<DaemonAgentSnapshot>): DaemonAgentSnapshot {
   return {
     name: "slugger",
-    channel: "inner-dialog",
+    channel: "private-runtime",
     status: "running",
     pid: 1234,
     restartCount: 0,

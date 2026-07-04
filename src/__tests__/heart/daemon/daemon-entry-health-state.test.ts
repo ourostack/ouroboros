@@ -46,7 +46,6 @@ const { registerGlobalLogSinkMock, registeredHealthSinks, capturedHealthStates }
 
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
-  isInnerDialogAutoStartEnabled: vi.fn(() => true),
   readPrivateRuntimeConfig: vi.fn(() => ({ autoStart: true, source: "privateRuntime" })),
 }))
 
@@ -220,7 +219,7 @@ describe("daemon entry health state wiring", () => {
     // rollup correctly reports healthy.
     listEnabledBundleAgentsMock.mockReturnValue(["solo"])
     const { emitNervesEvent } = setupDaemonMocks([
-      { name: "solo", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "solo", channel: "private-runtime", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
     ])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
@@ -300,7 +299,7 @@ describe("daemon entry health state wiring", () => {
     vi.resetModules()
     setupDaemonMocks([{
       name: "ouroboros",
-      channel: "inner-dialog",
+      channel: "private-runtime",
       status: "crashed",
       pid: null,
       restartCount: 0,
@@ -339,7 +338,7 @@ describe("daemon entry health state wiring", () => {
     vi.resetModules()
     setupDaemonMocks([{
       name: "helper",
-      channel: "inner-dialog",
+      channel: "private-runtime",
       status: "stopped",
       pid: null,
       restartCount: 0,
@@ -358,7 +357,7 @@ describe("daemon entry health state wiring", () => {
     expect(capturedHealthStates[0]?.degraded).toEqual([
       expect.objectContaining({
         component: "agent:helper",
-        reason: "inner-dialog is stopped",
+        reason: "private-runtime is stopped",
       }),
     ])
   })
@@ -368,7 +367,7 @@ describe("daemon entry health state wiring", () => {
     listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
     setupDaemonMocks([{
       name: "slugger",
-      channel: "inner-dialog",
+      channel: "private-runtime",
       autoStart: false,
       status: "stopped",
       pid: null,

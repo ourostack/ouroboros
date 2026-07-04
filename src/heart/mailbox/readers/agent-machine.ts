@@ -11,8 +11,8 @@ import { buildAgentProviderVisibility } from "../../provider-visibility"
 import {
   deriveInnerJob,
   formatSurfacedValue,
-  getInnerDialogSessionPath,
-  readInnerDialogRawData,
+  getPrivateRuntimeSessionPath,
+  readPrivateRuntimeRawData,
 } from "../../daemon/thoughts"
 import {
   MAILBOX_DEFAULT_INNER_VISIBILITY,
@@ -196,9 +196,9 @@ function readInnerSummary(agentRoot: string): {
   issues: MailboxIssue[]
   latestActivityAt: string | null
 } {
-  const sessionPath = getInnerDialogSessionPath(agentRoot)
+  const sessionPath = getPrivateRuntimeSessionPath(agentRoot)
   const pendingDir = path.join(agentRoot, "state", "pending", "self", "inner", "dialog")
-  const { pendingMessages, turns, runtimeState } = readInnerDialogRawData(sessionPath, pendingDir)
+  const { pendingMessages, turns, runtimeState } = readPrivateRuntimeRawData(sessionPath, pendingDir)
   const job = deriveInnerJob(pendingMessages, turns, runtimeState)
   const surfacedSummary = job.surfacedResult ? formatSurfacedValue(job.surfacedResult) : null
   const latestPendingTimestamp = pendingMessages.length > 0

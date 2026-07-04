@@ -950,8 +950,8 @@ describe("MCP server protocol layer", () => {
   it("handles check_response tool with pending messages", async () => {
     const { drainPending } = await import("../../../mind/pending")
     vi.mocked(drainPending).mockReturnValueOnce([
-      { content: "pending message 1", source: "inner-dialog", timestamp: "2026-03-27T00:00:00Z" },
-      { content: "pending message 2", source: "inner-dialog", timestamp: "2026-03-27T00:01:00Z" },
+      { content: "pending message 1", source: "private-runtime", timestamp: "2026-03-27T00:00:00Z" },
+      { content: "pending message 2", source: "private-runtime", timestamp: "2026-03-27T00:01:00Z" },
     ] as any)
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")

@@ -240,7 +240,7 @@ describe("isInnerDialogAutoStartEnabled", () => {
     }))
   })
 
-  it("stringifies non-Error inner-dialog policy read failures", async () => {
+  it("stringifies non-Error private-runtime policy read failures", async () => {
     readFileSyncMock.mockImplementation(() => {
       throw "raw permission denied" // eslint-disable-line no-throw-literal
     })

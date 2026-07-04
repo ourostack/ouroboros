@@ -122,7 +122,7 @@ describe("mcp canary", () => {
     const child = createFakeChild([
       "agent=slugger\tinnerStatus=idle",
       "daemon=running\thealth=ok\tdaemonVersion=0.1.0-alpha.532\tmcpVersion=0.1.0-alpha.532",
-      "worker=inner-dialog:running",
+      "worker=private-runtime:running",
       "sense=bluebubbles:running\tdetail=:18789\tproof=bluebubbles.checkHealth\tpendingRecovery=0\tfailedRecovery=0",
       "sense=mail:running\tdetail=slugger@ouro.bot",
     ].join("\n"))

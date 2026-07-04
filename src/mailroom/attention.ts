@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
-import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending"
+import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import type { MailCompartmentKind, MailScreenerCandidate, MailboxRole } from "./core"
 import type { MailroomStore } from "./file-store"
 
@@ -134,7 +134,7 @@ export async function scanMailScreenerAttention(input: MailScreenerAttentionScan
   const nowMs = input.now?.() ?? Date.now()
   const queuedAt = new Date(nowMs).toISOString()
   const statePath = input.statePath ?? defaultStatePath(input.agentName)
-  const pendingDir = input.pendingDir ?? getInnerDialogPendingDir(input.agentName)
+  const pendingDir = input.pendingDir ?? getPrivateRuntimePendingDir(input.agentName)
   const state = readState(statePath, queuedAt)
   const seen = new Set(state.notifiedCandidateIds)
   const queued: MailScreenerAttentionQueued[] = []

@@ -66,7 +66,7 @@ export interface PulseAgentEntry {
    *  `<agent>:<sha-of-errorReason>` so the same error generates the same
    *  ID across daemon restarts but a different error generates a new ID. */
   alertId: string | null
-  /** What this sibling is currently doing, derived from their inner-dialog
+  /** What this sibling is currently doing, derived from their private-runtime
    *  runtime.json. Examples: "running (instinct since 22:00)",
    *  "idle since 21:30", "currently in a turn". Null when the sibling has
    *  no readable runtime state (just started, or its runtime.json is
@@ -142,7 +142,7 @@ export function buildAlertId(agent: string, errorReason: string): string {
 }
 
 /**
- * Read an agent's inner-dialog runtime state and format it as a short
+ * Read an agent's private-runtime state and format it as a short
  * activity hint string suitable for display in another agent's pulse
  * section. Returns null when the file is missing or malformed — both
  * cases are silent (the pulse just doesn't include activity for that

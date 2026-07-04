@@ -1528,7 +1528,7 @@ describe("buildSystem", () => {
     expect(result).toContain("- settle:")
   })
 
-  it("inner dialog tool behavior guides agent to use rest/ponder for internal state, not surface", async () => {
+  it("private runtime tool behavior guides agent to use rest/ponder for internal state, not surface", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3457,7 +3457,7 @@ describe("loopOrientationSection", () => {
     setAgentProvider("minimax")
   })
 
-  it("inner dialog returns empty string (already has loop text in metacognitive framing)", async () => {
+  it("private runtime returns empty string (already has loop text in metacognitive framing)", async () => {
     const { loopOrientationSection } = await import("../../mind/prompt")
     expect(loopOrientationSection("inner")).toBe("")
   })
@@ -3500,7 +3500,7 @@ describe("loopOrientationSection", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    // Inner dialog has metacognitive framing with its own loop text
+    // Private runtime has metacognitive framing with its own loop text
     expect(result).toContain("think. record. share. rest.")
     // But not the external channel version
     expect(result).not.toContain("sometimes a thought of mine surfaces")
@@ -3562,7 +3562,7 @@ describe("channelNatureSection", () => {
     expect(channelNatureSection(caps)).toBe("")
   })
 
-  it("returns empty string for inner dialog (senseType internal)", async () => {
+  it("returns empty string for private runtime (senseType internal)", async () => {
     const { channelNatureSection } = await import("../../mind/prompt")
     const caps = {
       channel: "inner" as const,
@@ -4197,7 +4197,7 @@ describe("feedbackSignalSection", () => {
     expect(result).toBe("")
   })
 
-  it("returns empty for inner dialog", async () => {
+  it("returns empty for private runtime", async () => {
     const { feedbackSignalSection } = await import("../../mind/prompt")
     const result = feedbackSignalSection({ friend: makeFriend(), channel: makeCaps("inner", "internal") } as any)
     expect(result).toBe("")
@@ -4731,7 +4731,7 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
 
     const result = flattenSystemPrompt(await buildSystem("cli", {
       pendingMessages: [
-        { from: "inner-dialog", content: "heads up: coding session finished" },
+        { from: "private-runtime", content: "heads up: coding session finished" },
       ],
     } as any))
     expect(result).toContain("## pending messages")
@@ -4749,11 +4749,11 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
 
     const result = flattenSystemPrompt(await buildSystem("cli", {
       pendingMessages: [
-        { from: "inner-dialog", content: "coding session finished" },
+        { from: "private-runtime", content: "coding session finished" },
         { from: "bridge-1", content: "Ari says hi" },
       ],
     } as any))
-    expect(result).toContain("- from inner-dialog: coding session finished")
+    expect(result).toContain("- from private-runtime: coding session finished")
     expect(result).toContain("- from bridge-1: Ari says hi")
   })
 

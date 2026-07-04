@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot, getRepoRoot } from "../heart/identity"
 import { refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending"
+import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import { requestPrivateWake } from "../heart/daemon/socket-client"
 import { listBackgroundOperations } from "../heart/background-operations"
 import { listAmbientMailImportOperations } from "../heart/mail-import-discovery"
@@ -214,7 +214,7 @@ export async function scanMailImportDiscoveryAttention(input: {
   const nowMs = input.now?.() ?? Date.now()
   const updatedAt = new Date(nowMs).toISOString()
   const statePath = input.statePath ?? importDiscoveryStatePath(input.agentName)
-  const pendingDir = input.pendingDir ?? getInnerDialogPendingDir(input.agentName)
+  const pendingDir = input.pendingDir ?? getPrivateRuntimePendingDir(input.agentName)
   const state = readImportDiscoveryState(statePath, updatedAt)
   const existingOperations = listBackgroundOperations({
     agentName: input.agentName,
@@ -332,7 +332,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
       const screener = await scanMailScreenerAttention({
         agentName: options.agentName,
         store: resolved.store,
-        pendingDir: getInnerDialogPendingDir(options.agentName),
+        pendingDir: getPrivateRuntimePendingDir(options.agentName),
         statePath: attentionPath,
         now,
       })
@@ -350,7 +350,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
     try {
       const importDiscovery = await scanMailImportDiscoveryAttention({
         agentName: options.agentName,
-        pendingDir: getInnerDialogPendingDir(options.agentName),
+        pendingDir: getPrivateRuntimePendingDir(options.agentName),
         statePath: importDiscoveryPath,
         now,
       })

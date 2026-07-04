@@ -19,16 +19,16 @@ vi.mock("../../repertoire/skills", () => ({
 }))
 
 
-const mockRunInnerDialogTurn = vi.fn()
+const mockRunPrivateRuntimeTurn = vi.fn()
 const mockRequestInnerWake = vi.fn()
 const mockRequestPrivateWake = vi.fn()
-const mockIsInnerDialogAutoStartEnabled = vi.fn()
+const mockReadPrivateRuntimeConfig = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockSendProactiveTeamsMessageToSession = vi.fn()
 const mockPlaceConfiguredTwilioPhoneCall = vi.fn()
 
-vi.mock("../../senses/inner-dialog", () => ({
-  runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
+vi.mock("../../senses/private-runtime", () => ({
+  runPrivateRuntimeTurn: (...args: any[]) => mockRunPrivateRuntimeTurn(...args),
 }))
 
 vi.mock("../../heart/daemon/socket-client", () => ({
@@ -37,7 +37,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 }))
 
 vi.mock("../../heart/daemon/agent-discovery", () => ({
-  isInnerDialogAutoStartEnabled: (...args: any[]) => mockIsInnerDialogAutoStartEnabled(...args),
+  readPrivateRuntimeConfig: (...args: any[]) => mockReadPrivateRuntimeConfig(...args),
 }))
 
 vi.mock("../../senses/bluebubbles", () => ({
@@ -87,11 +87,11 @@ beforeEach(() => {
   vi.mocked(fs.writeFileSync).mockReset()
   vi.mocked(fs.readdirSync).mockReset()
   vi.mocked(fs.mkdirSync).mockReset()
-  mockRunInnerDialogTurn.mockReset()
+  mockRunPrivateRuntimeTurn.mockReset()
   mockRequestInnerWake.mockReset()
   mockRequestPrivateWake.mockReset()
-  mockIsInnerDialogAutoStartEnabled.mockReset()
-  mockIsInnerDialogAutoStartEnabled.mockReturnValue(true)
+  mockReadPrivateRuntimeConfig.mockReset()
+  mockReadPrivateRuntimeConfig.mockReturnValue({ autoStart: true, source: "privateRuntime" })
   mockSendProactiveBlueBubblesMessageToSession.mockReset()
   mockSendProactiveTeamsMessageToSession.mockReset()
   mockPlaceConfiguredTwilioPhoneCall.mockReset()
@@ -550,7 +550,7 @@ describe("send_message tool", () => {
       friendId: "group-uuid",
       channel: "bluebubbles",
       key: "chat:any;+;project-group-123",
-      content: "[surfaced from inner dialog] should not leak",
+      content: "[surfaced from private runtime] should not leak",
     }, makeTrustedBlueBubblesTurnContext())
 
     expect(result.toLowerCase()).toContain("blocked")
@@ -827,7 +827,7 @@ describe("send_message tool", () => {
   })
 
   describe("self-routing special case", () => {
-    it("routes friendId='self' to inner dialog pending dir regardless of channel", async () => {
+    it("routes friendId='self' to private runtime pending dir regardless of channel", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
@@ -837,7 +837,7 @@ describe("send_message tool", () => {
         content: "note to self",
       })
 
-      // Self always routes to inner dialog pending dir, NOT to the specified channel
+      // Self always routes to private runtime pending dir, NOT to the specified channel
       expect(fs.mkdirSync).toHaveBeenCalledWith(
         "/mock/agent-root/state/pending/self/inner/dialog",
         { recursive: true },
@@ -848,7 +848,7 @@ describe("send_message tool", () => {
       )
     })
 
-    it("routes friendId='self' with channel='cli' to inner dialog pending dir", async () => {
+    it("routes friendId='self' with channel='cli' to private runtime pending dir", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
@@ -858,14 +858,14 @@ describe("send_message tool", () => {
         content: "keep this for later",
       })
 
-      // Even when channel is 'cli', self goes to inner dialog
+      // Even when channel is 'cli', self goes to private runtime
       expect(fs.mkdirSync).toHaveBeenCalledWith(
         "/mock/agent-root/state/pending/self/inner/dialog",
         { recursive: true },
       )
     })
 
-    it("routes friendId='self' with channel='bluebubbles' to inner dialog pending dir", async () => {
+    it("routes friendId='self' with channel='bluebubbles' to private runtime pending dir", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
@@ -1105,7 +1105,7 @@ describe("send_message tool", () => {
         content: "hey friend",
       })
 
-      // Regular friend routes to the specified channel, NOT inner dialog
+      // Regular friend routes to the specified channel, NOT private runtime
       expect(fs.mkdirSync).toHaveBeenCalledWith(
         "/mock/agent-root/state/pending/friend-uuid-1/bluebubbles/session",
         { recursive: true },
@@ -1169,9 +1169,9 @@ describe("send_message tool", () => {
         }),
       )
       expect(mockRequestInnerWake).not.toHaveBeenCalled()
-      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
-      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
-      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
+      expect(mockReadPrivateRuntimeConfig).not.toHaveBeenCalled()
+      expect(mockRunPrivateRuntimeTurn).not.toHaveBeenCalled()
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my private runtime is free.")
     })
 
     it("uses canonical private wake when allowed and skips the inline fallback", async () => {
@@ -1204,8 +1204,8 @@ describe("send_message tool", () => {
         }),
       )
       expect(mockRequestInnerWake).not.toHaveBeenCalled()
-      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
-      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
+      expect(mockRunPrivateRuntimeTurn).not.toHaveBeenCalled()
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my private runtime is free.")
     })
 
     it("uses the daemon socket from tool context when requesting private wake", async () => {
@@ -1234,7 +1234,7 @@ describe("send_message tool", () => {
         }),
       )
       expect(mockRequestInnerWake).not.toHaveBeenCalled()
-      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      expect(mockRunPrivateRuntimeTurn).not.toHaveBeenCalled()
     })
 
     it("keeps self-route queued without inline provider calls when private wake is denied", async () => {
@@ -1255,9 +1255,9 @@ describe("send_message tool", () => {
 
       expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
       expect(mockRequestInnerWake).not.toHaveBeenCalled()
-      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
-      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
-      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
+      expect(mockReadPrivateRuntimeConfig).not.toHaveBeenCalled()
+      expect(mockRunPrivateRuntimeTurn).not.toHaveBeenCalled()
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my private runtime is free.")
     })
 
     it("keeps self-route queued without inline provider calls when private wake rejects", async () => {
@@ -1274,9 +1274,9 @@ describe("send_message tool", () => {
 
       expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
       expect(mockRequestInnerWake).not.toHaveBeenCalled()
-      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
-      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
-      expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
+      expect(mockReadPrivateRuntimeConfig).not.toHaveBeenCalled()
+      expect(mockRunPrivateRuntimeTurn).not.toHaveBeenCalled()
+      expect(result).toBe("i've queued this thought for private attention. it'll come up when my private runtime is free.")
     })
 
     it("sets obligationStatus to 'pending' on the envelope when self-routing with delegatedFrom", async () => {
@@ -1411,9 +1411,9 @@ describe("send_message tool", () => {
         }),
       )
       expect(mockRequestInnerWake).not.toHaveBeenCalled()
-      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
+      expect(mockReadPrivateRuntimeConfig).not.toHaveBeenCalled()
       expect(queueMicrotaskSpy).not.toHaveBeenCalled()
-      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
+      expect(mockRunPrivateRuntimeTurn).not.toHaveBeenCalled()
       queueMicrotaskSpy.mockRestore()
     })
   })

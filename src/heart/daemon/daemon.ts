@@ -1660,7 +1660,7 @@ export class OuroDaemon {
         // (cli-exec.ts) intentionally sends only message.send for tool-use
         // events to avoid waking the agent on every tool call. The hook's
         // intent was completely defeated by this handler calling
-        // `sendToAgent({type: "message"})`, which woke the inner-dialog
+        // `sendToAgent({type: "message"})`, which woke the private runtime
         // worker on EVERY message.send anyway. ~30 message.send/min × the
         // 3-turn instinct-loop cap = ~90 turns/min sustained for hours.
         //

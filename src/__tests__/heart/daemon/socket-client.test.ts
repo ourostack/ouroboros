@@ -40,7 +40,7 @@ describe("daemon socket client", () => {
     class MockConnection extends EventEmitter {
       write = vi.fn(() => {
         queueMicrotask(() => {
-          this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke inner dialog for slugger\"}", "utf-8"))
+          this.emit("data", Buffer.from("{\"ok\":true,\"message\":\"woke private runtime for slugger\"}", "utf-8"))
           this.emit("end")
         })
       })
@@ -63,7 +63,7 @@ describe("daemon socket client", () => {
     const response = await requestInnerWake("slugger", "/tmp/daemon.sock")
 
     expect(createConnection).toHaveBeenCalledWith("/tmp/daemon.sock")
-    expect(response).toEqual({ ok: true, message: "woke inner dialog for slugger" })
+    expect(response).toEqual({ ok: true, message: "woke private runtime for slugger" })
     const connection = createConnection.mock.results[0]?.value as MockConnection
     expect(connection.write).toHaveBeenCalledWith(JSON.stringify({ kind: "inner.wake", agent: "slugger" }) + "\n")
   })

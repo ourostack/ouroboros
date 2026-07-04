@@ -1,4 +1,4 @@
-// Formats inner dialog session turns for human consumption.
+// Formats private-runtime session turns for human consumption.
 // Used by `ouro thoughts` CLI command to show what the agent has been thinking.
 
 import * as fs from "fs"
@@ -20,7 +20,7 @@ export interface ThoughtTurn {
   taskId?: string
 }
 
-export interface InnerDialogStatus {
+export interface PrivateRuntimeStatus {
   queue: string
   wake: string
   processing: string
@@ -30,7 +30,7 @@ export interface InnerDialogStatus {
   obligationPending?: boolean
 }
 
-export interface InnerDialogRuntimeState {
+export interface PrivateRuntimeState {
   status: "idle" | "running"
   reason?: "boot" | "heartbeat" | "instinct"
   startedAt?: string
@@ -158,7 +158,7 @@ export function formatSurfacedValue(text: string, maxLength = 120): string {
 
 function extractEnrichedFields(
   pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from" | "delegatedFrom" | "obligationStatus">>,
-): Pick<InnerDialogStatus, "origin" | "contentSnippet" | "obligationPending"> {
+): Pick<PrivateRuntimeStatus, "origin" | "contentSnippet" | "obligationPending"> {
   const delegated = pendingMessages.find((msg) => msg.delegatedFrom)
   if (!delegated?.delegatedFrom) return {}
   const snippet = delegated.content.length > 80 ? delegated.content.slice(0, 77) + "..." : delegated.content
@@ -173,11 +173,11 @@ function extractEnrichedFields(
   }
 }
 
-export function deriveInnerDialogStatus(
+export function derivePrivateRuntimeStatus(
   pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from" | "delegatedFrom" | "obligationStatus">>,
   turns: ThoughtTurn[],
-  runtimeState?: InnerDialogRuntimeState | null,
-): InnerDialogStatus {
+  runtimeState?: PrivateRuntimeState | null,
+): PrivateRuntimeStatus {
   if (runtimeState?.status === "running") {
     if (pendingMessages.length > 0) {
       return {
@@ -231,7 +231,7 @@ export function deriveInnerDialogStatus(
 export function deriveInnerJob(
   pendingMessages: Array<Pick<PendingMessage, "content" | "timestamp" | "from" | "delegatedFrom" | "obligationStatus"> & { mode?: "reflect" | "plan" | "relay" }>,
   turns: ThoughtTurn[],
-  runtimeState?: InnerDialogRuntimeState | null,
+  runtimeState?: PrivateRuntimeState | null,
 ): InnerJob {
   const isRunning = runtimeState?.status === "running"
   const delegated = pendingMessages.find((msg) => msg.delegatedFrom)
@@ -246,8 +246,8 @@ export function deriveInnerJob(
   if (isRunning) {
     emitNervesEvent({
       component: "engine",
-      event: "engine.inner_job_derive",
-      message: "derived inner job state",
+      event: "engine.private_runtime_job_derive",
+      message: "derived private-runtime job state",
       meta: { status: "running", mode: pendingMode, hasOrigin: origin !== null, hasObligation: obligationStatus !== null },
     })
     return {
@@ -266,8 +266,8 @@ export function deriveInnerJob(
   if (pendingMessages.length > 0) {
     emitNervesEvent({
       component: "engine",
-      event: "engine.inner_job_derive",
-      message: "derived inner job state",
+      event: "engine.private_runtime_job_derive",
+      message: "derived private-runtime job state",
       meta: { status: "queued", mode: pendingMode, hasOrigin: origin !== null, hasObligation: obligationStatus !== null },
     })
     return {
@@ -294,8 +294,8 @@ export function deriveInnerJob(
     ])
     emitNervesEvent({
       component: "engine",
-      event: "engine.inner_job_derive",
-      message: "derived inner job state",
+      event: "engine.private_runtime_job_derive",
+      message: "derived private-runtime job state",
       meta: { status: "surfaced", mode: "reflect", hasOrigin: false, hasObligation: false },
     })
     return {
@@ -314,8 +314,8 @@ export function deriveInnerJob(
 
   emitNervesEvent({
     component: "engine",
-    event: "engine.inner_job_derive",
-    message: "derived inner job state",
+    event: "engine.private_runtime_job_derive",
+    message: "derived private-runtime job state",
     meta: { status: "idle", mode: "reflect", hasOrigin: false, hasObligation: false },
   })
   return {
@@ -331,7 +331,7 @@ export function deriveInnerJob(
   }
 }
 
-export function formatInnerDialogStatus(status: InnerDialogStatus): string {
+export function formatPrivateRuntimeStatus(status: PrivateRuntimeStatus): string {
   const lines = [
     `queue: ${status.queue}`,
     `wake: ${status.wake}`,
@@ -445,11 +445,11 @@ export function extractThoughtResponseFromMessages(
     : extractSettleAnswer(messages) || extractToolActionSummary(messages)
 }
 
-export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
+export function parsePrivateRuntimeSession(sessionPath: string): ThoughtTurn[] {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.thoughts_parse",
-    message: "parsing inner dialog session",
+    message: "parsing private-runtime session",
     meta: { sessionPath },
   })
 
@@ -545,11 +545,11 @@ export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
 }
 
 export function formatThoughtTurns(turns: ThoughtTurn[], lastN: number): string {
-  if (turns.length === 0) return "no inner dialog activity"
+  if (turns.length === 0) return "no private-runtime activity"
 
   const selected = lastN > 0 ? turns.slice(-lastN) : turns
   /* v8 ignore next -- unreachable: turns.length > 0 checked above, slice always returns ≥1 @preserve */
-  if (selected.length === 0) return "no inner dialog activity"
+  if (selected.length === 0) return "no private-runtime activity"
 
   const lines: string[] = []
 
@@ -576,18 +576,18 @@ export function formatThoughtTurns(turns: ThoughtTurn[], lastN: number): string 
   return lines.join("\n").trim()
 }
 
-export function getInnerDialogSessionPath(agentRoot: string): string {
+export function getPrivateRuntimeSessionPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "sessions", "self", "inner", "dialog.json")
 }
 
-function getInnerDialogRuntimeStatePath(sessionPath: string): string {
+function getPrivateRuntimeStatePath(sessionPath: string): string {
   return path.join(path.dirname(sessionPath), "runtime.json")
 }
 
-function readInnerDialogRuntimeState(runtimePath: string): InnerDialogRuntimeState | null {
+function readPrivateRuntimeState(runtimePath: string): PrivateRuntimeState | null {
   try {
     const raw = fs.readFileSync(runtimePath, "utf-8")
-    const parsed = JSON.parse(raw) as Partial<InnerDialogRuntimeState>
+    const parsed = JSON.parse(raw) as Partial<PrivateRuntimeState>
     if (parsed.status !== "running" && parsed.status !== "idle") return null
     return {
       status: parsed.status,
@@ -602,22 +602,22 @@ function readInnerDialogRuntimeState(runtimePath: string): InnerDialogRuntimeSta
   }
 }
 
-export function readInnerDialogStatus(sessionPath: string, pendingDir: string, runtimePath = getInnerDialogRuntimeStatePath(sessionPath)): InnerDialogStatus {
+export function readPrivateRuntimeStatus(sessionPath: string, pendingDir: string, runtimePath = getPrivateRuntimeStatePath(sessionPath)): PrivateRuntimeStatus {
   const pendingMessages = readPendingMessagesForStatus(pendingDir)
-  const turns = parseInnerDialogSession(sessionPath)
-  const runtimeState = readInnerDialogRuntimeState(runtimePath)
-  return deriveInnerDialogStatus(pendingMessages, turns, runtimeState)
+  const turns = parsePrivateRuntimeSession(sessionPath)
+  const runtimeState = readPrivateRuntimeState(runtimePath)
+  return derivePrivateRuntimeStatus(pendingMessages, turns, runtimeState)
 }
 
-export function readInnerDialogRawData(sessionPath: string, pendingDir: string): {
+export function readPrivateRuntimeRawData(sessionPath: string, pendingDir: string): {
   pendingMessages: PendingMessage[]
   turns: ThoughtTurn[]
-  runtimeState: InnerDialogRuntimeState | null
+  runtimeState: PrivateRuntimeState | null
 } {
-  const runtimePath = getInnerDialogRuntimeStatePath(sessionPath)
+  const runtimePath = getPrivateRuntimeStatePath(sessionPath)
   const pendingMessages = readPendingMessagesForStatus(pendingDir)
-  const turns = parseInnerDialogSession(sessionPath)
-  const runtimeState = readInnerDialogRuntimeState(runtimePath)
+  const turns = parsePrivateRuntimeSession(sessionPath)
+  const runtimeState = readPrivateRuntimeState(runtimePath)
   return { pendingMessages, turns, runtimeState }
 }
 
@@ -630,17 +630,17 @@ export function followThoughts(
   onNewTurns: (formatted: string) => void,
   pollIntervalMs = 1000,
 ): () => void {
-  let displayedCount = parseInnerDialogSession(sessionPath).length
+  let displayedCount = parsePrivateRuntimeSession(sessionPath).length
 
   emitNervesEvent({
     component: "daemon",
     event: "daemon.thoughts_follow_start",
-    message: "started following inner dialog session",
+    message: "started following private-runtime session",
     meta: { sessionPath, initialTurns: displayedCount },
   })
 
   fs.watchFile(sessionPath, { interval: pollIntervalMs }, () => {
-    const turns = parseInnerDialogSession(sessionPath)
+    const turns = parsePrivateRuntimeSession(sessionPath)
     if (turns.length > displayedCount) {
       const newTurns = turns.slice(displayedCount)
       onNewTurns(formatThoughtTurns(newTurns, 0))
@@ -656,7 +656,7 @@ export function followThoughts(
     emitNervesEvent({
       component: "daemon",
       event: "daemon.thoughts_follow_end",
-      message: "stopped following inner dialog session",
+      message: "stopped following private-runtime session",
       meta: { sessionPath, totalTurns: displayedCount },
     })
   }

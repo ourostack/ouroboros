@@ -5,7 +5,7 @@ import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
-import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
+import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
 import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import {
@@ -89,7 +89,7 @@ interface PreparedHabitRun {
 /**
  * Cap on consecutive `instinct` follow-on turns triggered by `hasPendingWork()`
  * with no externally-queued work in between. Without this cap, a turn that
- * writes anything back into the inner-dialog pending dir as a side effect of
+ * writes anything back into the private-runtime pending dir as a side effect of
  * processing (e.g. a surface tool routing a response) puts the worker into
  * a self-sustaining loop where the next turn's drain produces another write,
  * and so on. Real workflows rarely chain more than 2–3 instinct turns; an
@@ -126,7 +126,7 @@ function defaultHasPendingWork(pendingDir?: string): boolean {
   if (pendingDir) return hasPendingMessages(pendingDir)
   const agentArgIndex = process.argv.indexOf("--agent")
   const agentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
-  return agentName ? hasPendingMessages(getInnerDialogPendingDir(agentName)) : false
+  return agentName ? hasPendingMessages(getPrivateRuntimePendingDir(agentName)) : false
 }
 
 function isHeartbeatOkRestResult(result: unknown): boolean {
@@ -490,8 +490,8 @@ export function createPrivateRuntimeWorker(
           emitNervesEvent({
             level: "error",
             component: "senses",
-            event: "senses.inner_dialog_worker_error",
-            message: "inner dialog worker turn failed",
+            event: "senses.private_runtime_worker_error",
+            message: "private-runtime worker turn failed",
             meta: {
               reason: nextReason,
               error: error instanceof Error ? error.message : String(error),
@@ -530,7 +530,7 @@ export function createPrivateRuntimeWorker(
         }
 
         // Then check hasPendingWork fallback. This is the loop site: any
-        // tool that writes to the inner-dialog pending dir during a turn
+        // tool that writes to the private-runtime pending dir during a turn
         // would cause hasPendingWork() to be true here, producing a
         // self-sustaining "instinct" loop with no external input. Cap it.
         if (hasPendingWork(currentHabitRun?.paths.pendingDir)) {
@@ -539,8 +539,8 @@ export function createPrivateRuntimeWorker(
             emitNervesEvent({
               level: "warn",
               component: "senses",
-              event: "senses.inner_dialog_worker_instinct_loop_capped",
-              message: "inner dialog worker stopped chaining instinct turns; pending work remains for next external trigger",
+              event: "senses.private_runtime_worker_instinct_loop_capped",
+              message: "private-runtime worker stopped chaining instinct turns; pending work remains for next external trigger",
               meta: {
                 consecutiveInstinctTurns,
                 cap: MAX_CONSECUTIVE_INSTINCT_TURNS,

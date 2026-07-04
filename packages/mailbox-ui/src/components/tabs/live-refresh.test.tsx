@@ -1316,7 +1316,7 @@ describe("Mailbox deep-tab live refresh", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     await act(async () => {
-      ui.getByText("Load inner dialog").click()
+      ui.getByText("Load private runtime").click()
       await flushRefresh()
     })
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))

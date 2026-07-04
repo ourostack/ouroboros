@@ -103,7 +103,7 @@ function normalizeSessionMessages(
 
 function buildSummaryInstruction(friendId: string, channel: string, trustLevel: TrustLevel): string {
   if (friendId === "self" && channel === "inner") {
-    return "summarize this session transcript fully and transparently. this is my own inner dialog — include all details, decisions, and reasoning."
+    return "summarize this session transcript fully and transparently. this is my own private runtime — include all details, decisions, and reasoning."
   }
 
   return `summarize this session transcript. the person asking has trust level: ${trustLevel}. family=full transparency, friend=share work and general topics but protect other people's identities, acquaintance=very guarded minimal disclosure.`

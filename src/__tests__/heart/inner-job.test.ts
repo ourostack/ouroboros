@@ -6,7 +6,7 @@ vi.mock("../../nerves/runtime", () => ({
 
 import type { PendingMessage } from "../../mind/pending"
 import type { ThoughtTurn } from "../../heart/daemon/thoughts"
-import type { InnerDialogRuntimeState } from "../../heart/daemon/thoughts"
+import type { PrivateRuntimeState } from "../../heart/daemon/thoughts"
 import { deriveInnerJob } from "../../heart/daemon/thoughts"
 import type { InnerJob, InnerJobStatus } from "../../heart/daemon/thoughts"
 
@@ -82,7 +82,7 @@ describe("deriveInnerJob", () => {
 
   it("returns running when pending + runtime running", () => {
     const pending = makeDelegatedPending()
-    const runtime: InnerDialogRuntimeState = { status: "running", startedAt: "2026-01-01T00:00:00Z" }
+    const runtime: PrivateRuntimeState = { status: "running", startedAt: "2026-01-01T00:00:00Z" }
     const job = deriveInnerJob([pending], [], runtime)
 
     expect(job.status).toBe("running")
@@ -91,7 +91,7 @@ describe("deriveInnerJob", () => {
   })
 
   it("returns running when runtime running with no delegated history", () => {
-    const runtime: InnerDialogRuntimeState = { status: "running" }
+    const runtime: PrivateRuntimeState = { status: "running" }
     const job = deriveInnerJob([], [], runtime)
 
     expect(job.status).toBe("running")

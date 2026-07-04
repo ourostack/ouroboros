@@ -422,7 +422,7 @@ describe("execTool", () => {
     expect(frame.actionPolicy.blockedMutationKinds).toEqual(["durable_state_write", "external_side_effect"])
   })
 
-  it("orientation hold allows private self-delegation to inner dialog", async () => {
+  it("orientation hold allows private self-delegation to private runtime", async () => {
     const socketClient = await import("../../heart/daemon/socket-client")
     vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
     vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any)
@@ -435,7 +435,7 @@ describe("execTool", () => {
     )
 
     expect(result).not.toContain("orientation hold")
-    expect(result).toContain("inner")
+    expect(result).toContain("private attention")
     expect(fs.writeFileSync).toHaveBeenCalled()
   })
 

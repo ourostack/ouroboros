@@ -135,19 +135,19 @@ vi.mock("../../heart/session-activity", () => ({
 vi.mock("../../heart/daemon/thoughts", () => ({
   extractThoughtResponseFromMessages: vi.fn(() => null),
   formatSurfacedValue: vi.fn((value) => value),
-  getInnerDialogSessionPath: vi.fn(() => "/mock/agent-root/state/sessions/self/inner/dialog.json"),
-  readInnerDialogStatus: vi.fn(() => ({
+  getPrivateRuntimeSessionPath: vi.fn(() => "/mock/agent-root/state/sessions/self/inner/dialog.json"),
+  readPrivateRuntimeStatus: vi.fn(() => ({
     queue: "clear",
     wake: "clear",
     processing: "started",
     surfaced: "nothing recent",
   })),
-  readInnerDialogRawData: vi.fn(() => ({
+  readPrivateRuntimeRawData: vi.fn(() => ({
     pendingMessages: [],
     turns: [],
     runtimeState: null,
   })),
-  deriveInnerDialogStatus: vi.fn(() => ({
+  derivePrivateRuntimeStatus: vi.fn(() => ({
     queue: "clear",
     wake: "clear",
     processing: "started",
@@ -329,7 +329,7 @@ describe("query_active_work tool", () => {
 
   it("treats idle inner processing as idle instead of forcing a running lane", async () => {
     const thoughts = await import("../../heart/daemon/thoughts")
-    vi.mocked(thoughts.deriveInnerDialogStatus).mockImplementation(() => ({
+    vi.mocked(thoughts.derivePrivateRuntimeStatus).mockImplementation(() => ({
       queue: "clear",
       wake: "clear",
       processing: "clear",

@@ -98,7 +98,7 @@ describe("private-runtime worker", () => {
   it("checks the default pending directory from the explicit agent argv", async () => {
     vi.resetModules()
     const runPrivateRuntimeTurn = vi.fn(async () => undefined)
-    const getInnerDialogPendingDir = vi.fn((agentName: string) => `/pending/${agentName}`)
+    const getPrivateRuntimePendingDir = vi.fn((agentName: string) => `/pending/${agentName}`)
     const hasPendingMessages = vi.fn(() => false)
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -108,7 +108,7 @@ describe("private-runtime worker", () => {
     ])
     vi.doMock(runtimeModulePath, () => ({ runPrivateRuntimeTurn }))
     vi.doMock("../../mind/pending", () => ({
-      getInnerDialogPendingDir,
+      getPrivateRuntimePendingDir,
       hasPendingMessages,
     }))
     const { createPrivateRuntimeWorker } = await import(workerModulePath) as {
@@ -124,7 +124,7 @@ describe("private-runtime worker", () => {
       argvSpy.mockRestore()
     }
 
-    expect(getInnerDialogPendingDir).toHaveBeenCalledWith("slugger")
+    expect(getPrivateRuntimePendingDir).toHaveBeenCalledWith("slugger")
     expect(hasPendingMessages).toHaveBeenCalledWith("/pending/slugger")
   })
 })

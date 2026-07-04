@@ -37,7 +37,7 @@ Authoritative outward delivery is:
 
 These are not outward delivery:
 
-- inner-dialog `settle` followed by `(settled)`
+- private-runtime `settle` followed by `(settled)`
 - malformed or blank tool arguments
 - tool calls without a matching ack
 - tool acks after another non-tool message has started

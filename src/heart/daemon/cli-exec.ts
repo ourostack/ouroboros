@@ -28,7 +28,7 @@ import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } 
 import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
-import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
+import { parsePrivateRuntimeSession, formatThoughtTurns, getPrivateRuntimeSessionPath, followThoughts } from "./thoughts"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import {
   resolveHatchCredentials,
@@ -8560,19 +8560,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       /* v8 ignore next -- production fallback: tests always inject bundlesRoot via createTmpBundle @preserve */
       const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
       const agentRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
-      const sessionFilePath = getInnerDialogSessionPath(agentRoot)
+      const sessionFilePath = getPrivateRuntimeSessionPath(agentRoot)
       if (command.json) {
         try {
           const raw = fs.readFileSync(sessionFilePath, "utf-8")
           deps.writeStdout(raw)
           return raw
         } catch {
-          const message = "no inner dialog session found"
+          const message = "no private-runtime session found"
           deps.writeStdout(message)
           return message
         }
       }
-      const turns = parseInnerDialogSession(sessionFilePath)
+      const turns = parsePrivateRuntimeSession(sessionFilePath)
       const message = formatThoughtTurns(turns, command.last ?? 10)
       deps.writeStdout(message)
       if (command.follow) {
@@ -8718,7 +8718,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const { resolveDeskRecordPaths } = await import("../../mind/record-paths")
 
       // Read runtime state from the persisted historical session location.
-      const innerSessionPath = getInnerDialogSessionPath(agentRoot)
+      const innerSessionPath = getPrivateRuntimeSessionPath(agentRoot)
       const runtimeJsonPath = path.join(path.dirname(innerSessionPath), "runtime.json")
       let runtimeState: import("./inner-status").InnerRuntimeState | null = null
       try {

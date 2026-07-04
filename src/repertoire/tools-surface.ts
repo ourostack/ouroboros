@@ -145,7 +145,7 @@ export const surfaceToolDefinition: ToolDefinition = {
     const agentName = (() => { try { return getAgentName() } catch { return "unknown" } })()
 
     const routeToFriend = async (friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> => {
-      /* v8 ignore start -- routing: integration path tested via inner-dialog routing tests @preserve */
+      /* v8 ignore start -- routing: integration path tested via private-runtime routing tests @preserve */
       try {
         const agentRoot = getAgentRoot()
         const sessionsDir = path.join(agentRoot, "state", "sessions")

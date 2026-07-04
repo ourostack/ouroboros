@@ -14,7 +14,7 @@ const mockGetAgentRoot = vi.fn()
 const mockGetAgentName = vi.fn()
 const mockDrainPending = vi.fn()
 const mockGetPendingDir = vi.fn()
-const mockGetInnerDialogPendingDir = vi.fn()
+const mockGetPrivateRuntimePendingDir = vi.fn()
 const mockGetDeferredReturnDir = vi.fn()
 const mockHandleInboundTurn = vi.fn()
 const mockGetChannelCapabilities = vi.fn()
@@ -59,9 +59,9 @@ vi.mock("../../heart/identity", () => ({
 vi.mock("../../mind/pending", () => ({
   drainPending: (...args: any[]) => mockDrainPending(...args),
   getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
-  getInnerDialogPendingDir: (...args: any[]) => mockGetInnerDialogPendingDir(...args),
+  getPrivateRuntimePendingDir: (...args: any[]) => mockGetPrivateRuntimePendingDir(...args),
   getDeferredReturnDir: (...args: any[]) => mockGetDeferredReturnDir(...args),
-  INNER_DIALOG_PENDING: { friendId: "self", channel: "inner", key: "dialog" },
+  PRIVATE_RUNTIME_PENDING: { friendId: "self", channel: "inner", key: "dialog" },
 }))
 
 vi.mock("../../nerves/runtime", () => ({
@@ -131,19 +131,18 @@ import {
   type PrivateTurnRequest,
 } from "../../heart/private-runtime"
 import {
-  buildInnerDialogBootstrapMessage,
+  buildPrivateRuntimeBootstrapMessage,
   buildNonCanonicalCleanupNudge,
   buildHeldReturnWakeMessage,
   buildInstinctUserMessage,
   buildTaskTriggeredMessage,
   readTaskFile,
   deriveResumeCheckpoint,
-  loadInnerDialogInstincts,
-  runInnerDialogTurn,
-} from "../../senses/inner-dialog"
-import { runPrivateRuntimeTurn } from "../../senses/private-runtime"
+  loadPrivateRuntimeInstincts,
+  runPrivateRuntimeTurn,
+} from "../../senses/private-runtime"
 
-describe("inner dialog runtime", () => {
+describe("private runtime", () => {
   let sessionFile: string
   let agentRoot: string
   let privateDecisionCounter = 0
@@ -160,8 +159,8 @@ describe("inner dialog runtime", () => {
 
   beforeEach(() => {
     privateDecisionCounter = 0
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inner-dialog-test-"))
-    sessionFile = path.join(tmp, "inner-dialog-session.json")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "private-runtime-test-"))
+    sessionFile = path.join(tmp, "private-runtime-session.json")
     agentRoot = path.join(tmp, "agent-root")
     fs.mkdirSync(path.join(agentRoot, "psyche"), { recursive: true })
     fs.writeFileSync(path.join(agentRoot, "psyche", "ASPIRATIONS.md"), "Keep improving the harness.", "utf8")
@@ -170,11 +169,11 @@ describe("inner dialog runtime", () => {
     mockRunAgent.mockReset().mockImplementation(async (_messages: any, callbacks: any) => {
       callbacks?.onModelStart?.()
       callbacks?.onModelStreamStart?.()
-      callbacks?.onTextChunk?.("inner-dialog text chunk")
-      callbacks?.onReasoningChunk?.("inner-dialog reasoning chunk")
+      callbacks?.onTextChunk?.("private-runtime text chunk")
+      callbacks?.onReasoningChunk?.("private-runtime reasoning chunk")
       callbacks?.onToolStart?.("search_facts")
       callbacks?.onToolEnd?.("search_facts", true)
-      callbacks?.onError?.(new Error("inner-dialog synthetic callback error"))
+      callbacks?.onError?.(new Error("private-runtime synthetic callback error"))
       return { usage: undefined }
     })
     mockSessionPath.mockReset().mockReturnValue(sessionFile)
@@ -185,7 +184,7 @@ describe("inner dialog runtime", () => {
     mockGetAgentName.mockReset().mockReturnValue("test-agent")
     mockDrainPending.mockReset().mockReturnValue([])
     mockGetPendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
-    mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
+    mockGetPrivateRuntimePendingDir.mockReset().mockReturnValue("/tmp/fake-pending-dir")
     mockGetDeferredReturnDir.mockReset().mockReturnValue("/tmp/fake-deferred-returns")
     mockGetChannelCapabilities.mockReset().mockReturnValue(innerCapabilities)
     mockEnforceTrustGate.mockReset().mockReturnValue({ allowed: true })
@@ -312,10 +311,6 @@ describe("inner dialog runtime", () => {
     }
   }
 
-  function runApprovedInnerDialogTurn(options?: Parameters<typeof runInnerDialogTurn>[0]) {
-    return runInnerDialogTurn(withApprovedPrivateTurnDecision(options))
-  }
-
   function runApprovedPrivateRuntimeTurn(options?: Parameters<typeof runPrivateRuntimeTurn>[0]) {
     return runPrivateRuntimeTurn(withApprovedPrivateTurnDecision(options))
   }
@@ -323,7 +318,7 @@ describe("inner dialog runtime", () => {
   // ── Pure function tests (adapter concerns, no pipeline) ──────────
 
   it("builds bootstrap message with aspirations and state summary", () => {
-    const message = buildInnerDialogBootstrapMessage("Learn and help Ari.", "No prior session found.")
+    const message = buildPrivateRuntimeBootstrapMessage("Learn and help Ari.", "No prior session found.")
     expect(message).toContain("waking up.")
     expect(message).toContain("## what matters to me")
     expect(message).toContain("Learn and help Ari.")
@@ -333,14 +328,14 @@ describe("inner dialog runtime", () => {
   })
 
   it("omits aspirations section when aspirations are empty", () => {
-    const message = buildInnerDialogBootstrapMessage("", "No prior session found.")
+    const message = buildPrivateRuntimeBootstrapMessage("", "No prior session found.")
     expect(message).not.toContain("## what matters to me")
     expect(message).toContain("## what i know so far")
     expect(message).toContain("what needs my attention?")
   })
 
   it("omits state summary section when state summary is empty", () => {
-    const message = buildInnerDialogBootstrapMessage("Learn things.", "")
+    const message = buildPrivateRuntimeBootstrapMessage("Learn things.", "")
     expect(message).toContain("## what matters to me")
     expect(message).not.toContain("## what i know so far")
     expect(message).toContain("what needs my attention?")
@@ -359,12 +354,12 @@ describe("inner dialog runtime", () => {
   })
 
   it("returns minimal bootstrap when both aspirations and state are empty", () => {
-    const message = buildInnerDialogBootstrapMessage("", "")
+    const message = buildPrivateRuntimeBootstrapMessage("", "")
     expect(message).toBe("waking up.\n\nwhat needs my attention?")
   })
 
   it("returns default instincts with first-person awareness framing", () => {
-    const instincts = loadInnerDialogInstincts()
+    const instincts = loadPrivateRuntimeInstincts()
     expect(instincts.length).toBeGreaterThan(0)
     expect(instincts[0].prompt).toContain("stirring")
     expect(instincts[0].prompt).not.toContain("Heartbeat instinct:")
@@ -402,7 +397,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("default instinct message uses first-person awareness language", () => {
-    const instincts = loadInnerDialogInstincts()
+    const instincts = loadPrivateRuntimeInstincts()
     const text = buildInstinctUserMessage(
       instincts,
       "heartbeat",
@@ -1108,8 +1103,8 @@ describe("inner dialog runtime", () => {
       expect(mockRunAgent).not.toHaveBeenCalled()
     })
 
-    it("applies the same fail-closed guard through the legacy runInnerDialogTurn shim", async () => {
-      await expect(runInnerDialogTurn({
+    it("applies the same fail-closed guard through the canonical private-runtime boundary", async () => {
+      await expect(runPrivateRuntimeTurn({
         reason: "instinct",
         instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
         now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1121,7 +1116,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("calls handleInboundTurn instead of inline lifecycle", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1131,7 +1126,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("passes channel 'inner' and senseType 'internal' capabilities to pipeline", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1151,7 +1146,7 @@ describe("inner dialog runtime", () => {
       messages: [{ role: "system", content: "system prompt" }],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1169,7 +1164,7 @@ describe("inner dialog runtime", () => {
       messages: [{ role: "system", content: "system prompt" }],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1179,15 +1174,15 @@ describe("inner dialog runtime", () => {
   })
 
   it("passes pending dir for self/inner/dialog to pipeline", async () => {
-    mockGetInnerDialogPendingDir.mockReturnValue("/tmp/pending/test-agent/self/inner/dialog")
+    mockGetPrivateRuntimePendingDir.mockReturnValue("/tmp/pending/test-agent/self/inner/dialog")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-09T10:00:00.000Z"),
     })
 
-    expect(mockGetInnerDialogPendingDir).toHaveBeenCalledWith("test-agent")
+    expect(mockGetPrivateRuntimePendingDir).toHaveBeenCalledWith("test-agent")
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.pendingDir).toBe("/tmp/pending/test-agent/self/inner/dialog")
   })
@@ -1208,7 +1203,7 @@ describe("inner dialog runtime", () => {
       },
     ] as any)
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-09T10:00:00.000Z"),
@@ -1235,7 +1230,7 @@ describe("inner dialog runtime", () => {
       }
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-09T10:00:00.000Z"),
@@ -1286,7 +1281,7 @@ describe("inner dialog runtime", () => {
       return { usage: undefined }
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-09T10:00:00.000Z"),
@@ -1296,7 +1291,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("injects drainPending, runAgent, postTurn, accumulateFriendTokens, enforceTrustGate into pipeline", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1311,7 +1306,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("passes toolChoiceRequired: true in runAgentOptions", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1323,8 +1318,8 @@ describe("inner dialog runtime", () => {
     }))
   })
 
-  it("passes empty continuity ingress text to the shared pipeline for inner dialog", async () => {
-    await runApprovedInnerDialogTurn({
+  it("passes empty continuity ingress text to the shared pipeline for private runtime", async () => {
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1405,7 +1400,7 @@ describe("inner dialog runtime", () => {
       delivered: true,
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1471,7 +1466,7 @@ describe("inner dialog runtime", () => {
       reason: "send_error",
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1506,7 +1501,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1578,7 +1573,7 @@ describe("inner dialog runtime", () => {
       reason: "send_error",
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1657,7 +1652,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1720,7 +1715,7 @@ describe("inner dialog runtime", () => {
       delivered: true,
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1801,7 +1796,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1838,7 +1833,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -1856,7 +1851,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("passes bootstrap user message with aspirations on fresh session", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -1879,7 +1874,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       instincts: [{ id: "backlog", prompt: "Instinct: review pending tasks.", enabled: true }],
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -1905,7 +1900,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       instincts: [{ id: "resume", prompt: "what was i working on?", enabled: true }],
       now: () => new Date("2026-03-06T12:06:00.000Z"),
@@ -1935,7 +1930,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("unified habit turn message")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -1961,7 +1956,7 @@ describe("inner dialog runtime", () => {
     mockLoadSession.mockReturnValueOnce(null)
     mockBuildHabitTurnMessage.mockReturnValueOnce("fresh habit turn message")
 
-    await (runApprovedInnerDialogTurn as any)({
+    await (runApprovedPrivateRuntimeTurn as any)({
       reason: "habit",
       habitName: "heartbeat",
       now: () => new Date("2026-06-11T17:00:00.000Z"),
@@ -2006,7 +2001,7 @@ describe("inner dialog runtime", () => {
     const sessionPath = path.join(agentRoot, "state", "habit-sessions", runId, "session.json")
     const pendingDir = path.join(agentRoot, "state", "habit-sessions", runId, "pending")
 
-    await (runApprovedInnerDialogTurn as any)({
+    await (runApprovedPrivateRuntimeTurn as any)({
       reason: "habit",
       habitName: "stateful-check",
       now: () => new Date("2026-06-11T17:00:00.000Z"),
@@ -2077,7 +2072,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("habit turn with body")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -2108,7 +2103,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("daily reflection habit turn")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2140,7 +2135,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn with checkpoint")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -2178,7 +2173,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn with obligations")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => nowDate,
@@ -2213,7 +2208,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn with also-due")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2233,7 +2228,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "nonexistent",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2255,7 +2250,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -2286,7 +2281,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn with parse errors")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2316,7 +2311,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn without parse errors")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2357,7 +2352,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn with degraded")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2398,7 +2393,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn without degraded")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2427,7 +2422,7 @@ describe("inner dialog runtime", () => {
     mockReadHealth.mockReturnValue(null)
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn without health")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2456,7 +2451,7 @@ describe("inner dialog runtime", () => {
     mockReadHealth.mockImplementation(() => { throw new Error("disk error") })
     mockBuildHabitTurnMessage.mockReturnValueOnce("turn despite health error")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "daily-reflection",
       now: () => new Date("2026-03-06T22:00:00.000Z"),
@@ -2497,7 +2492,7 @@ describe("inner dialog runtime", () => {
       habits: {},
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -2528,7 +2523,7 @@ describe("inner dialog runtime", () => {
       habits: {},
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
     })
@@ -2553,7 +2548,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       taskId: "habits/daily-standup",
       now: () => new Date("2026-03-06T09:00:00.000Z"),
@@ -2575,7 +2570,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       taskId: "habits/nonexistent",
       now: () => new Date("2026-03-06T09:00:00.000Z"),
@@ -2587,7 +2582,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("ignores taskId on fresh session (uses bootstrap instead)", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       taskId: "habits/daily-standup",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2610,7 +2605,7 @@ describe("inner dialog runtime", () => {
       messages: [],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2638,7 +2633,7 @@ describe("inner dialog runtime", () => {
       messages: [],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -2652,7 +2647,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("calls buildSystem('inner', ...) for fresh session system prompt", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-10T01:00:00.000Z"),
@@ -2665,7 +2660,7 @@ describe("inner dialog runtime", () => {
   it("uses bootstrap with empty aspirations when aspirations file is missing", async () => {
     fs.unlinkSync(path.join(agentRoot, "psyche", "ASPIRATIONS.md"))
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:01:00.000Z"),
@@ -2682,7 +2677,7 @@ describe("inner dialog runtime", () => {
     fs.mkdirSync(legacyDir, { recursive: true })
     fs.writeFileSync(path.join(legacyDir, "manifest.json"), "{}", "utf8")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:02:00.000Z"),
@@ -2702,7 +2697,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn()
+    await runApprovedPrivateRuntimeTurn()
 
     // Default reason is now "instinct", so on resumed session uses instinct message
     const input = mockHandleInboundTurn.mock.calls[0][0]
@@ -2725,7 +2720,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    const result = await runApprovedInnerDialogTurn({
+    const result = await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2759,7 +2754,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    const result = await runApprovedInnerDialogTurn({
+    const result = await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
@@ -2796,7 +2791,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    const result = await runApprovedInnerDialogTurn({
+    const result = await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
@@ -2826,7 +2821,7 @@ describe("inner dialog runtime", () => {
       }
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2847,7 +2842,7 @@ describe("inner dialog runtime", () => {
     const runtimePath = path.join(path.dirname(sessionFile), "runtime.json")
     mockHandleInboundTurn.mockRejectedValueOnce(new Error("turn exploded"))
 
-    await expect(runApprovedInnerDialogTurn({
+    await expect(runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2863,9 +2858,9 @@ describe("inner dialog runtime", () => {
     const blockedParent = path.join(path.dirname(sessionFile), "runtime-parent-blocker")
     fs.writeFileSync(blockedParent, "not a directory", "utf8")
 
-    mockSessionPath.mockReturnValue(path.join(blockedParent, "inner-dialog-session.json"))
+    mockSessionPath.mockReturnValue(path.join(blockedParent, "private-runtime-session.json"))
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2873,13 +2868,13 @@ describe("inner dialog runtime", () => {
 
     const warnings = mockEmitNervesEvent.mock.calls
       .map(([event]) => event)
-      .filter((event) => event?.event === "senses.inner_dialog_runtime_state_error")
+      .filter((event) => event?.event === "senses.private_runtime_state_error")
 
     expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({
       level: "warn",
       component: "senses",
-      event: "senses.inner_dialog_runtime_state_error",
-      message: "failed to write inner dialog runtime state",
+      event: "senses.private_runtime_state_error",
+      message: "failed to write private-runtime state",
       meta: expect.objectContaining({
         path: path.join(blockedParent, "runtime.json"),
         error: expect.any(String),
@@ -2888,7 +2883,7 @@ describe("inner dialog runtime", () => {
     expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({
       level: "warn",
       component: "senses",
-      event: "senses.inner_dialog_runtime_state_error",
+      event: "senses.private_runtime_state_error",
       meta: expect.objectContaining({
         status: "running",
         reason: "boot",
@@ -2897,7 +2892,7 @@ describe("inner dialog runtime", () => {
     expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({
       level: "warn",
       component: "senses",
-      event: "senses.inner_dialog_runtime_state_error",
+      event: "senses.private_runtime_state_error",
       meta: expect.objectContaining({
         status: "idle",
         reason: null,
@@ -2914,7 +2909,7 @@ describe("inner dialog runtime", () => {
       messages: undefined,
     })
 
-    const result = await runApprovedInnerDialogTurn({
+    const result = await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2926,7 +2921,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("provides a friendResolver that resolves to a self-referencing context", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2940,7 +2935,7 @@ describe("inner dialog runtime", () => {
   })
 
   it("provides a no-op friendStore with all methods returning safe defaults", async () => {
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2960,7 +2955,7 @@ describe("inner dialog runtime", () => {
   it("passes signal through to pipeline when provided", async () => {
     const controller = new AbortController()
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
@@ -2986,13 +2981,13 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+      (call: any[]) => call[0].event === "senses.private_runtime_turn",
     )
     expect(nervesCall).toBeDefined()
     const meta = nervesCall![0].meta
@@ -3010,14 +3005,14 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       taskId: "habits/daily-standup",
       now: () => new Date("2026-03-06T09:00:00.000Z"),
     })
 
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+      (call: any[]) => call[0].event === "senses.private_runtime_turn",
     )
     expect(nervesCall).toBeDefined()
     expect(nervesCall![0].meta.taskId).toBe("habits/daily-standup")
@@ -3043,13 +3038,13 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+      (call: any[]) => call[0].event === "senses.private_runtime_turn",
     )
     expect(nervesCall![0].meta.toolCalls).toEqual(["query_session", "send_message"])
   })
@@ -3063,13 +3058,13 @@ describe("inner dialog runtime", () => {
       messages: [{ role: "system", content: "system prompt" }],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+      (call: any[]) => call[0].event === "senses.private_runtime_turn",
     )
     expect(nervesCall).toBeDefined()
     const meta = nervesCall![0].meta
@@ -3091,13 +3086,13 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+      (call: any[]) => call[0].event === "senses.private_runtime_turn",
     )
     const preview = nervesCall![0].meta.assistantPreview
     expect(preview.length).toBe(120)
@@ -3123,13 +3118,13 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+      (call: any[]) => call[0].event === "senses.private_runtime_turn",
     )
     expect(nervesCall![0].meta.toolCalls).toEqual(["valid_tool"])
   })
@@ -3152,13 +3147,13 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "boot",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
     })
 
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
-      (call: any[]) => call[0].event === "senses.inner_dialog_turn",
+      (call: any[]) => call[0].event === "senses.private_runtime_turn",
     )
     expect(nervesCall![0].meta.toolCalls).toEqual(["search_facts"])
   })
@@ -3233,7 +3228,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -3301,7 +3296,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -3351,7 +3346,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -3400,7 +3395,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -3466,7 +3461,7 @@ describe("inner dialog runtime", () => {
     })
     mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: true })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -3514,7 +3509,7 @@ describe("inner dialog runtime", () => {
     })
     mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: true })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -3563,7 +3558,7 @@ describe("inner dialog runtime", () => {
       ],
     })
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "heartbeat",
       now: () => new Date("2026-03-13T20:10:00.000Z"),
     })
@@ -3593,7 +3588,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("focused habit message")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "focused-habit",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -3623,7 +3618,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("partial habit message")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "partial-habit",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -3653,7 +3648,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("open habit message")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "open-habit",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -3680,7 +3675,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("silent habit message")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "silent-habit",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -3709,7 +3704,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("restricted habit message")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "restricted-habit",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
@@ -3742,7 +3737,7 @@ describe("inner dialog runtime", () => {
     })
     mockBuildHabitTurnMessage.mockReturnValueOnce("unrestricted habit message")
 
-    await runApprovedInnerDialogTurn({
+    await runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "unrestricted-habit",
       now: () => new Date("2026-03-06T12:05:00.000Z"),

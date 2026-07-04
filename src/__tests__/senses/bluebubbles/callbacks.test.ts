@@ -191,7 +191,7 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     expect(blockedCall![0].meta).toEqual(expect.objectContaining({ site: "flush" }))
   })
 
-  it("flush() still delivers normal prose that mentions inner-dialog concepts in plain text", async () => {
+  it("flush() still delivers normal prose that mentions private-runtime concepts in plain text", async () => {
     const indexModule = await import("../../../senses/bluebubbles")
     const { createBlueBubblesCallbacks } = indexModule
     const sendText = vi.fn(async () => ({ messageGuid: "g" }))
@@ -206,12 +206,12 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     const replyTarget = { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn(() => "ok") }
     const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
 
-    callbacks.onTextChunk("had a thought from my inner dialog about your question")
+    callbacks.onTextChunk("had a thought from my private runtime about your question")
     await (callbacks as any).flush()
 
     expect(sendText).toHaveBeenCalledTimes(1)
     expect(sendText).toHaveBeenCalledWith(expect.objectContaining({
-      text: "had a thought from my inner dialog about your question",
+      text: "had a thought from my private runtime about your question",
     }))
   })
 

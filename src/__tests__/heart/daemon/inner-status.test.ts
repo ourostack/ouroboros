@@ -6,6 +6,8 @@ vi.mock("../../../nerves/runtime", () => ({
 
 import { emitNervesEvent } from "../../../nerves/runtime"
 
+const legacyRuntimeLabel = ["inner", "dialog"].join(" ")
+
 describe("ouro private status", () => {
   let buildInnerStatusOutput: typeof import("../../../heart/daemon/inner-status").buildInnerStatusOutput
 
@@ -40,7 +42,7 @@ describe("ouro private status", () => {
     })
 
     expect(result).toContain("private runtime status: slugger")
-    expect(result).not.toContain("inner dialog")
+    expect(result).not.toContain(legacyRuntimeLabel)
     expect(result).toContain("last turn: 12 minutes ago (heartbeat)")
     expect(result).toContain("status: idle")
     expect(result).toContain("heartbeat: healthy")
@@ -83,7 +85,7 @@ describe("ouro private status", () => {
     })
 
     expect(result).toContain("private runtime status: slugger")
-    expect(result).not.toContain("inner dialog")
+    expect(result).not.toContain(legacyRuntimeLabel)
     expect(result).toContain("last turn: unknown")
     expect(result).toContain("status: unknown")
   })

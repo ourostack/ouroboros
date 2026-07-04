@@ -222,7 +222,7 @@ describe("token baseline measurement", () => {
       cli: "CLI coding session (has edit_file, shell, coding tools)",
       teams: "Teams 1:1 chat (has trust, feedback, social tools)",
       bluebubbles: "BlueBubbles group chat (has observe, group participation)",
-      inner: "Inner dialog heartbeat (has metacognitive, Desk record tools)",
+      inner: "Private runtime heartbeat (has metacognitive, Desk record tools)",
       mcp: "MCP channel (programmatic access)",
     }
 

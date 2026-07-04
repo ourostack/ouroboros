@@ -13,7 +13,7 @@ import {
   deliverAwaitAlert,
   type AwaitAlertResult,
 } from "../heart/awaiting/await-alert"
-import { getInnerDialogPendingDir } from "../mind/pending"
+import { getPrivateRuntimePendingDir } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
@@ -59,11 +59,11 @@ function readAwaitDefinition(agentRoot: string, name: string): AwaitFile | null 
 
 /**
  * Default delivery deps for the await alert path used from the tool.
- * Mirrors the proactive-outreach pattern: queue to the inner-dialog pending
+ * Mirrors the proactive-outreach pattern: queue to the private-runtime pending
  * dir when no live deliverer is registered.
  */
 function defaultDeliveryDeps(agentName: string): CrossChatDeliveryDeps {
-  const pendingDir = getInnerDialogPendingDir(agentName)
+  const pendingDir = getPrivateRuntimePendingDir(agentName)
   return {
     agentName,
     queuePending: (message: PendingMessage) => {

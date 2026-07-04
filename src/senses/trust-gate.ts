@@ -3,7 +3,7 @@ import * as path from "path"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { isTrustedLevel, type Channel, type FriendRecord, type IdentityProvider, type SenseType } from "@ouro.bot/friends"
-import { INNER_DIALOG_PENDING } from "../mind/pending"
+import { PRIVATE_RUNTIME_PENDING } from "../mind/pending"
 
 // Canned reply; eventually agents should compose their own first-contact message
 export const STRANGER_AUTO_REPLY = "I'm sorry, I'm not allowed to talk to strangers"
@@ -88,7 +88,7 @@ function writeInnerPendingNotice(
   noticeContent: string,
   nowIso: string,
 ): void {
-  const innerPendingDir = path.join(bundleRoot, "state", "pending", INNER_DIALOG_PENDING.friendId, INNER_DIALOG_PENDING.channel, INNER_DIALOG_PENDING.key)
+  const innerPendingDir = path.join(bundleRoot, "state", "pending", PRIVATE_RUNTIME_PENDING.friendId, PRIVATE_RUNTIME_PENDING.channel, PRIVATE_RUNTIME_PENDING.key)
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
   const filePath = path.join(innerPendingDir, fileName)
 
@@ -196,7 +196,7 @@ function maybeSurfaceAutoCreatedGroup(input: TrustGateInput, bundleRoot: string,
 export function enforceTrustGate(input: TrustGateInput): TrustGateResult {
   const { senseType } = input
 
-  // Local (CLI) and internal (inner dialog) — always allow
+  // Local (CLI) and internal (private runtime) — always allow
   if (senseType === "local" || senseType === "internal") {
     return { allowed: true }
   }

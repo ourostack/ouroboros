@@ -137,7 +137,7 @@ ouro repair --agent <agent>
 ouro up
 ```
 
-The daemon discovers your agent bundle, starts the inner dialog worker, and begins sync. You can now talk to your agent:
+The daemon discovers your agent bundle, starts the private runtime worker, and begins sync. You can now talk to your agent:
 
 If `ouro up` has to replace an older or drifted daemon, it now says that plainly and keeps showing replacement progress until the new background service is actually answering.
 

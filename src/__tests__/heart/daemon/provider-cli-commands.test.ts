@@ -581,7 +581,7 @@ function daemonStatusData(
     },
     workers: [{
       agent: agentName,
-      worker: overrides.worker ?? "inner-dialog",
+      worker: overrides.worker ?? "private-runtime",
       status,
       pid: overrides.pid ?? 4242,
       restartCount: 0,
@@ -7620,7 +7620,7 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("... applying change to running Slugger")
     expect(output).toContain("checking whether Ouro is already running")
     expect(output).toContain("asking Ouro to reload Slugger")
-    expect(output).toContain("- daemon reports Slugger/inner-dialog running")
+    expect(output).toContain("- daemon reports Slugger/private-runtime running")
     expect(output).not.toContain("pplx-secret")
     expect(sentCommands).toContainEqual({ kind: "agent.restart", agent: "Slugger" })
     expect(sentCommands).not.toContainEqual({ kind: "agent.restart", agent: "Slugger", skipConfigCheck: true })
@@ -7802,7 +7802,7 @@ describe("provider CLI command execution", () => {
               overview: { daemon: "running", health: "ok", workerCount: 1, senseCount: 1 },
               workers: [{
                 agent: "Slugger",
-                worker: "inner-dialog",
+                worker: "private-runtime",
                 status: "running",
                 pid: 42,
                 restartCount: 0,
@@ -9830,7 +9830,7 @@ describe("provider CLI command execution", () => {
     expect(restartOutput).toContain("asking Ouro to reload Slugger")
     expect(restartOutput).toContain("waiting for Slugger to come back")
     expect(restartOutput).toContain("- reload request accepted")
-    expect(restartOutput).toContain("- daemon reports Slugger/inner-dialog running")
+    expect(restartOutput).toContain("- daemon reports Slugger/private-runtime running")
     expect(restartOutput).toContain("✓ applying change to running Slugger")
     expect(sentCommands).toContainEqual({ kind: "agent.restart", agent: "Slugger", skipConfigCheck: true })
 
@@ -9969,7 +9969,7 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
-    expect(result).toContain("running agent: restart requested, but Slugger/inner-dialog crashed before reporting running: check logs")
+    expect(result).toContain("running agent: restart requested, but Slugger/private-runtime crashed before reporting running: check logs")
     expect(output).toContain("... applying change to running Slugger")
   })
 
@@ -9993,7 +9993,7 @@ describe("provider CLI command execution", () => {
 
     const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
 
-    expect(result).toContain("running agent: restart requested, but Slugger/inner-dialog crashed before reporting running: bad config")
+    expect(result).toContain("running agent: restart requested, but Slugger/private-runtime crashed before reporting running: bad config")
   })
 
   it("provider refresh still summarizes a crashed worker when no extra reason is available", async () => {
@@ -10016,7 +10016,7 @@ describe("provider CLI command execution", () => {
 
     const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
 
-    expect(result).toContain("running agent: restart requested, but Slugger/inner-dialog crashed before reporting running")
+    expect(result).toContain("running agent: restart requested, but Slugger/private-runtime crashed before reporting running")
     expect(result).not.toContain(": undefined")
   })
 

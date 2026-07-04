@@ -184,17 +184,17 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
         )}
       </section>
 
-      {/* Inner dialog — always show recent, load more on demand */}
+      {/* Private runtime — always show recent, load more on demand */}
       <section>
         <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-ouro-glow">
-          Inner dialog {transcript ? `(${transcript.messages.length} total)` : ""}
+          Private runtime {transcript ? `(${transcript.messages.length} total)` : ""}
         </p>
         {!transcript ? (
           <button
             onClick={loadTranscript}
             className="mt-2 w-full rounded-lg px-3 py-2.5 text-left font-mono text-xs text-ouro-glow ring-1 ring-ouro-moss/15 hover:ring-ouro-glow/20 transition-colors"
           >
-            Load inner dialog
+            Load private runtime
           </button>
         ) : (
           <InnerTranscriptView messages={transcript.messages} />

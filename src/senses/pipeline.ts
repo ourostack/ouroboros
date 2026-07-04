@@ -848,7 +848,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // Assemble messages: session messages + pending + inbound user messages
   // NOTE: live world-state checkpoint and pending messages are rendered via buildSystem (system prompt sections)
   const extraPrefixSections = input.onPendingDrained?.(pending) ?? []
-  // extraPrefixSections from onPendingDrained still prepend to user message (e.g., inner dialog wakes)
+  // extraPrefixSections from onPendingDrained still prepend to user message (e.g., private-runtime wakes)
   if (extraPrefixSections.length > 0 && input.messages.length > 0) {
     input.messages[0] = prependTurnSections(input.messages[0], extraPrefixSections)
   }

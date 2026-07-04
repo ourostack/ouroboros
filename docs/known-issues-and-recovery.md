@@ -65,7 +65,7 @@ missed.
 
 ## "Heartbeat keeps firing 'fresh work arrived' even after rest + HEARTBEAT_OK"
 
-**Symptom**: the agent's inner-dialog heartbeat appears to be in a
+**Symptom**: the agent's private-runtime heartbeat appears to be in a
 self-sustaining loop; rest is repeatedly rejected with "fresh work
 arrived for me this turn — inspect the pending messages above and
 take the next concrete action before you rest" even though the

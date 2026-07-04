@@ -36,7 +36,7 @@ describe("bridge context inheritance in delegatedFrom", () => {
     ])
 
     // Simulate the enrichment logic
-    const { enrichDelegatedFromWithBridge } = await import("../../senses/inner-dialog")
+    const { enrichDelegatedFromWithBridge } = await import("../../senses/private-runtime")
 
     const enriched = enrichDelegatedFromWithBridge(delegatedFrom)
     expect(enriched.bridgeId).toBe("bridge-1")
@@ -54,7 +54,7 @@ describe("bridge context inheritance in delegatedFrom", () => {
       { id: "bridge-1", lifecycle: "active" },
     ])
 
-    const { enrichDelegatedFromWithBridge } = await import("../../senses/inner-dialog")
+    const { enrichDelegatedFromWithBridge } = await import("../../senses/private-runtime")
 
     const enriched = enrichDelegatedFromWithBridge(delegatedFrom)
     expect(enriched.bridgeId).toBe("existing-bridge")
@@ -71,7 +71,7 @@ describe("bridge context inheritance in delegatedFrom", () => {
       { id: "bridge-1", lifecycle: "completed" },
     ])
 
-    const { enrichDelegatedFromWithBridge } = await import("../../senses/inner-dialog")
+    const { enrichDelegatedFromWithBridge } = await import("../../senses/private-runtime")
 
     const enriched = enrichDelegatedFromWithBridge(delegatedFrom)
     expect(enriched.bridgeId).toBeUndefined()
@@ -86,7 +86,7 @@ describe("bridge context inheritance in delegatedFrom", () => {
 
     mockFindBridgesForSession.mockReturnValue([])
 
-    const { enrichDelegatedFromWithBridge } = await import("../../senses/inner-dialog")
+    const { enrichDelegatedFromWithBridge } = await import("../../senses/private-runtime")
 
     const enriched = enrichDelegatedFromWithBridge(delegatedFrom)
     expect(enriched.bridgeId).toBeUndefined()

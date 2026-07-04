@@ -254,10 +254,10 @@ describe("record tools: note and consult_notes", () => {
     })
   })
 
-  it("note accepts the real inner-dialog self friend context", async () => {
+  it("note accepts the real private-runtime self friend context", async () => {
     const handler = await handlerFor("note")
     const result = await handler({
-      content: "Inner dialog self context can write durable notes.",
+      content: "Private runtime self context can write durable notes.",
     } as never, innerSelfFriendContext()) as NoteHandlerResult
 
     expect(typeof result).toBe("string")

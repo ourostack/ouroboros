@@ -91,7 +91,7 @@ This is for machine-level artifacts, not bundle-owned identity.
 - vault coordinates
 - provider/model lane selection
 
-Provider/model selection is part of `agent.json`: `outward` powers CLI and human-facing senses, while `inner` powers inner dialogue and agent-facing model calls. There is no second local provider-selection file.
+Provider/model selection is part of `agent.json`: `outward` powers CLI and human-facing senses, while `inner` powers private runtime and agent-facing model calls. There is no second local provider-selection file.
 
 `bundle-meta.json` tracks the runtime version that last touched the bundle and supports version-aware behavior on startup.
 
@@ -173,7 +173,7 @@ Threads are treated as routing/context metadata, not as separate long-lived worl
 - `src/repertoire/`
   Tool registry (split into category modules: tools-files, tools-shell, tools-notes, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config, tools-bluebubbles, tools-teams, tools-github), coding orchestration, task tooling, skills, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Voice (in senses/voice/), MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Voice (in senses/voice/), MCP bridge, activity transport, trust gating, private-runtime worker logic, and contextual heartbeat.
 - `src/nerves/`
   Structured runtime events, log rotation, and deterministic audit coverage.
 
@@ -189,8 +189,8 @@ The metacognitive tool vocabulary:
 
 - **settle** — deliver a response to a friend (outer sessions)
 - **ponder** — "I need to think about this" (takes thought inward, or continues thinking)
-- **rest** — "I'm putting this down" (inner dialog only, ends the turn)
-- **surface** — share a thought outward from inner dialog
+- **rest** — "I'm putting this down" (private runtime only, ends the turn)
+- **surface** — share a thought outward from private runtime
 - **observe** — stay quiet in group chats
 - **diary_write** — record something to the Desk record diary for later use
 - **search_facts** — search written Desk record facts
@@ -223,19 +223,19 @@ Habits are the agent's autonomous rhythms — recurring patterns that fire indep
 
 The heartbeat is just one habit among many — the agent's breathing. But agents can create any rhythm they want.
 
-## Inner Dialog
+## Private Runtime
 
-The inner dialog is the agent's private thinking space.
+The private runtime is the agent's private thinking space.
 
-- **ponder**: From any conversation, the agent can *ponder* something — it goes to inner dialog with the thought as context. From inner dialog, *ponder* triggers another turn (the wheel keeps turning).
+- **ponder**: From any conversation, the agent can *ponder* something — it goes to private runtime with the thought as context. From private runtime, *ponder* triggers another turn (the wheel keeps turning).
 - **rest**: When thinking is done, the agent *rests*. The wheel stops until the next habit fires.
-- **surface**: From inner dialog, the agent can *surface* thoughts outward to friends.
-- **settle**: In outer conversations, the agent *settles* on a response (not available in inner dialog).
+- **surface**: From private runtime, the agent can *surface* thoughts outward to friends.
+- **settle**: In outer conversations, the agent *settles* on a response (not available in private runtime).
 - **observe**: In group chats, the agent can choose to stay quiet.
 
-The inner dialog is one private agent-facing surface. Habits are separate explicit private sessions with their own session/pending paths and Arc receipts; they are not folded into one continuous inner-dialog stream.
+The private runtime is one private agent-facing surface. Habits are separate explicit private sessions with their own session/pending paths and Arc receipts; they are not folded into one continuous private-runtime stream.
 
-**Cross-session truth:** When activity happens on any other channel (CLI, Teams, BlueBubbles, MCP), the harness records it in durable activity state. Ordinary channel turns do not wake inner dialog solely for awareness; the next private agent-facing turn renders the current checkpoint from Arc, pulse, session state, and pending work. The agent sees their whole world without turning every external event into a hidden private loop.
+**Cross-session truth:** When activity happens on any other channel (CLI, Teams, BlueBubbles, MCP), the harness records it in durable activity state. Ordinary channel turns do not wake private runtime solely for awareness; the next private agent-facing turn renders the current checkpoint from Arc, pulse, session state, and pending work. The agent sees their whole world without turning every external event into a hidden private loop.
 
 ## Desk Record
 
@@ -332,7 +332,7 @@ Lifecycle hooks give agents passive awareness of activity in developer tools.
 - Hooks fire via `ouro hook <event> --agent <name>`, which forwards the event to the daemon over the Unix socket.
 - Hooks are designed to never block the dev tool — they always exit 0, even if the daemon is unavailable.
 - PostToolUse hooks fire on Bash, Edit, and Write tool calls, giving the agent awareness of file changes happening in their codebase.
-- The daemon records hook events so private agent-facing turns can include them in the next checkpoint without forcing an inner-dialog wake.
+- The daemon records hook events so private agent-facing turns can include them in the next checkpoint without forcing an private-runtime wake.
 
 ## Harness-Level Skills
 

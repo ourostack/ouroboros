@@ -46,12 +46,12 @@ vi.mock("../../repertoire/coding", () => ({
   getCodingSessionManager: () => ({ listSessions: mockListSessions }),
 }))
 
-const mockReadInnerDialogRawData = vi.fn().mockReturnValue({
+const mockReadPrivateRuntimeRawData = vi.fn().mockReturnValue({
   pendingMessages: [],
   turns: [],
   runtimeState: null,
 })
-const mockDeriveInnerDialogStatus = vi.fn().mockReturnValue({
+const mockDerivePrivateRuntimeStatus = vi.fn().mockReturnValue({
   processing: "idle",
   queue: "clear",
 })
@@ -66,16 +66,16 @@ const mockDeriveInnerJob = vi.fn().mockReturnValue({
   startedAt: null,
   surfacedAt: null,
 })
-const mockGetInnerDialogSessionPath = vi.fn().mockReturnValue("/mock/inner-session")
+const mockGetPrivateRuntimeSessionPath = vi.fn().mockReturnValue("/mock/private-runtime-session")
 vi.mock("../../heart/daemon/thoughts", () => ({
-  readInnerDialogRawData: (...args: any[]) => mockReadInnerDialogRawData(...args),
-  deriveInnerDialogStatus: (...args: any[]) => mockDeriveInnerDialogStatus(...args),
+  readPrivateRuntimeRawData: (...args: any[]) => mockReadPrivateRuntimeRawData(...args),
+  derivePrivateRuntimeStatus: (...args: any[]) => mockDerivePrivateRuntimeStatus(...args),
   deriveInnerJob: (...args: any[]) => mockDeriveInnerJob(...args),
-  getInnerDialogSessionPath: (...args: any[]) => mockGetInnerDialogSessionPath(...args),
+  getPrivateRuntimeSessionPath: (...args: any[]) => mockGetPrivateRuntimeSessionPath(...args),
 }))
 
 vi.mock("../../mind/pending", () => ({
-  getInnerDialogPendingDir: () => "/mock/pending",
+  getPrivateRuntimePendingDir: () => "/mock/pending",
 }))
 
 const mockReadRecentEpisodes = vi.fn().mockReturnValue([])
@@ -268,12 +268,12 @@ describe("buildTurnContext", () => {
     mockReadFlightRecorderResume.mockReturnValue(baseFlightRecorderResume)
     mockReadContextLossSentinelView.mockReturnValue(sentinelView)
     mockListVisibleBackgroundOperations.mockReturnValue([])
-    mockReadInnerDialogRawData.mockReturnValue({
+    mockReadPrivateRuntimeRawData.mockReturnValue({
       pendingMessages: [],
       turns: [],
       runtimeState: null,
     })
-    mockDeriveInnerDialogStatus.mockReturnValue({
+    mockDerivePrivateRuntimeStatus.mockReturnValue({
       processing: "idle",
       queue: "clear",
     })
@@ -439,7 +439,7 @@ describe("buildTurnContext", () => {
   })
 
   it("handles inner work state with running dialog", async () => {
-    mockDeriveInnerDialogStatus.mockReturnValue({
+    mockDerivePrivateRuntimeStatus.mockReturnValue({
       processing: "started",
       queue: "pending",
       origin: { friendId: "f1", channel: "cli", key: "k1" },
@@ -528,7 +528,7 @@ describe("buildTurnContext", () => {
   })
 
   it("handles inner work state read failure gracefully", async () => {
-    mockReadInnerDialogRawData.mockImplementation(() => { throw new Error("inner dialog fail") })
+    mockReadPrivateRuntimeRawData.mockImplementation(() => { throw new Error("private runtime fail") })
 
     const ctx = await buildTurnContext(makeInput())
     expect(ctx.innerWorkState.status).toBe("idle")
