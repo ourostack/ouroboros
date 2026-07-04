@@ -323,6 +323,60 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(ui.container.textContent).not.toContain("CENTER OF GRAVITY")
   })
 
+  it("uses private-runtime vocabulary for the private runtime tab and overview meter", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/habits")) return jsonResponse({ totalCount: 0, items: [] })
+      if (url.endsWith("/habit-runs")) return jsonResponse({ totalCount: 0, limit: 20, items: [] })
+      if (url.endsWith("/needs-me")) return jsonResponse({ items: [] })
+      if (url.endsWith("/coding")) return jsonResponse({ items: [] })
+      if (url.endsWith("/continuity")) return jsonResponse({ presence: { self: null, peers: [] }, cares: { activeCount: 0, items: [] }, episodes: { recentCount: 0, items: [] } })
+      if (url.endsWith("/orientation")) return jsonResponse({ currentSession: null, centerOfGravity: "steady", primaryObligation: null, resumeHandle: null, otherActiveSessions: [] })
+      if (url.endsWith("/changes")) return jsonResponse({ changeCount: 0, items: [], snapshotAge: null, formatted: "none" })
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView({
+      inner: {
+        mode: "summary",
+        status: "idle",
+        summary: "ready for routine private work",
+        hasPending: true,
+        returnObligationQueue: { queuedCount: 0, runningCount: 0, oldestActiveAt: null },
+      },
+    })
+
+    const inspector = render(
+      <AgentInspector
+        agentName="slugger"
+        view={view}
+        deskPrefs={null}
+        refreshGeneration={0}
+        initialRoute={{ agent: "slugger", tab: "inner", focus: undefined }}
+      />
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    expect(inspector.container.textContent).toContain("Private Runtime")
+    expect(inspector.container.textContent).toContain("Private runtime work queued.")
+    expect(inspector.container.textContent).not.toContain("Inner work")
+    expect(inspector.container.textContent).not.toContain("Pending inner work queued.")
+    inspector.unmount()
+
+    const overview = render(
+      <NavigationContext.Provider value={() => {}}>
+        <OverviewTab view={view} refreshGeneration={0} deskPrefs={null} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(7))
+
+    expect(overview.container.textContent).toContain("Private Runtime")
+    expect(overview.container.textContent).not.toContain("Inner")
+  })
+
   it("re-fetches overview deep data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)

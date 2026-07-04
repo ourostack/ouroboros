@@ -111,14 +111,14 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
         </section>
       )}
 
-      {/* Inner work status */}
+      {/* Private runtime work status */}
       <section>
         <div className="rounded-xl bg-ouro-moss/15 p-4 ring-1 ring-ouro-glow/10">
-          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">Inner work</p>
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">Private runtime work</p>
           <p className="mt-1 font-display text-xl italic font-semibold text-ouro-bone">{inner.status}</p>
           {inner.summary && <p className="mt-2 text-sm leading-relaxed text-ouro-mist">{inner.summary}</p>}
           <p className="mt-2 text-sm text-ouro-shadow">
-            {inner.hasPending ? "Pending inner work queued." : "No pending inner work."}
+            {inner.hasPending ? "Private runtime work queued." : "No private runtime work."}
           </p>
           {(inner.returnObligationQueue.queuedCount > 0 || inner.returnObligationQueue.runningCount > 0) && (
             <p className="mt-1 text-sm text-ouro-mist">
