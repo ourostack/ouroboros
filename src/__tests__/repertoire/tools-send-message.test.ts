@@ -1254,6 +1254,8 @@ describe("send_message tool", () => {
       })
 
       expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
+      expect(mockRequestInnerWake).not.toHaveBeenCalled()
+      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
@@ -1271,6 +1273,8 @@ describe("send_message tool", () => {
       })
 
       expect(mockRequestPrivateWake).toHaveBeenCalledTimes(1)
+      expect(mockRequestInnerWake).not.toHaveBeenCalled()
+      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
     })
@@ -1385,6 +1389,12 @@ describe("send_message tool", () => {
           content: "stay with this",
         },
         {
+          currentSession: {
+            friendId: "self",
+            channel: "inner",
+            key: "dialog",
+            sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+          },
           context: {
             friend: {} as any,
             channel: { channel: "inner" } as any,
@@ -1400,6 +1410,8 @@ describe("send_message tool", () => {
           triggerSource: "send-message-self-route",
         }),
       )
+      expect(mockRequestInnerWake).not.toHaveBeenCalled()
+      expect(mockIsInnerDialogAutoStartEnabled).not.toHaveBeenCalled()
       expect(queueMicrotaskSpy).not.toHaveBeenCalled()
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       queueMicrotaskSpy.mockRestore()
