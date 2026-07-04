@@ -31,6 +31,7 @@ import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
+import { buildAwaitPrivateWakeCommand } from "./await-private-wake"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
@@ -134,10 +135,6 @@ const processManager = new DaemonProcessManager({
   },
   /* v8 ignore stop */
 })
-
-function awaitWakeIdempotencyKey(agent: string, awaitName: string, triggerSource: "await-scheduler" | "await-expiry"): string {
-  return `await:${agent}:${awaitName}:${triggerSource}:${new Date().toISOString()}`
-}
 
 const taskScheduler = new TaskDrivenScheduler({
   agents: [...managedAgents],
@@ -476,18 +473,11 @@ void daemon.start().then(async () => {
         awaitsDir,
         osCronManager: awaitOsCronManager,
         onAwaitFire: (awaitName) => {
-          sendDaemonCommand(socketPath, {
-            kind: "private.wake",
+          sendDaemonCommand(socketPath, buildAwaitPrivateWakeCommand({
             agent,
-            reason: `scheduled await condition check for ${awaitName}`,
+            awaitName,
             triggerSource: "await-scheduler",
-            budgetClass: "scheduled",
-            idempotencyKey: awaitWakeIdempotencyKey(agent, awaitName, "await-scheduler"),
-            originRefs: [
-              { kind: "await", id: awaitName },
-              { kind: "scheduler", id: "await-scheduler" },
-            ],
-          }).catch(() => {})
+          })).catch(() => {})
         },
         onAwaitExpire: (awaitName) => {
           void archiveAndAlertExpiredAwait({
@@ -498,18 +488,11 @@ void daemon.start().then(async () => {
               agentName: agent,
               queuePending: () => {
                 // Best-effort: queue private-runtime wake so the agent processes the alert path.
-                sendDaemonCommand(socketPath, {
-                  kind: "private.wake",
+                sendDaemonCommand(socketPath, buildAwaitPrivateWakeCommand({
                   agent,
-                  reason: `queued await expiry alert for ${awaitName}`,
+                  awaitName,
                   triggerSource: "await-expiry",
-                  budgetClass: "scheduled",
-                  idempotencyKey: awaitWakeIdempotencyKey(agent, awaitName, "await-expiry"),
-                  originRefs: [
-                    { kind: "await", id: awaitName },
-                    { kind: "await-alert", id: "expired" },
-                  ],
-                }).catch(() => {})
+                })).catch(() => {})
               },
             },
           }).catch((err) => {

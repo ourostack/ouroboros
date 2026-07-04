@@ -1200,6 +1200,28 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
+  it("fails manual await pokes for unknown private-runtime agents before policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-await-poke-unknown")
+    const ledgerPath = path.join(os.tmpdir(), `await-poke-unknown-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("slugger")])
+
+    const wake = await daemon.handleCommand({
+      kind: "await.poke",
+      agent: "ghost",
+      awaitName: "hey_export",
+    } as unknown as never)
+
+    expect(wake).toEqual({
+      ok: false,
+      error: "No managed agent 'ghost' is registered with daemon-managed private runtime.",
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
   it("records an await-poke allow decision before starting the model-backed private turn", async () => {
     const socketPath = tmpSocketPath("daemon-await-poke-allowed")
     const ledgerPath = path.join(os.tmpdir(), `await-poke-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
@@ -1287,6 +1309,90 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
       type: "await",
       awaitName: "hey_export",
+      privateTurnDecision: expect.objectContaining({
+        result: "allow",
+        triggerSource: "await-scheduler",
+      }),
+    })
+  })
+
+  it("does not execute duplicate allowed await private wakes for the same idempotency key", async () => {
+    const socketPath = tmpSocketPath("daemon-await-scheduled-duplicate")
+    const ledgerPath = path.join(os.tmpdir(), `await-scheduled-duplicate-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const command = {
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "scheduled await condition check for hey_export",
+      triggerSource: "await-scheduler",
+      budgetClass: "scheduled",
+      idempotencyKey: "await:slugger:hey_export:await-scheduler:2026-07-03T20:00:00.000Z",
+      originRefs: [
+        { kind: "await", id: "hey_export" },
+        { kind: "scheduler", id: "await-scheduler" },
+      ],
+    } as unknown as never
+
+    const firstWake = await daemon.handleCommand(command)
+    const duplicateWake = await daemon.handleCommand(command)
+
+    expect(firstWake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: { decision: expect.objectContaining({ result: "allow", executable: true }) },
+    })
+    expect(duplicateWake).toMatchObject({
+      ok: true,
+      message: "private-runtime wake denied for slugger: duplicate private-turn decision already recorded",
+      data: {
+        decision: expect.objectContaining({
+          result: "allow",
+          executable: false,
+          deniedReason: "duplicate private-turn decision already recorded",
+          triggerSource: "await-scheduler",
+        }),
+      },
+    })
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(2)
+    expect(processManager.startAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
+    expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+  })
+
+  it("ignores blank await origin refs when selecting the worker wake mode", async () => {
+    const socketPath = tmpSocketPath("daemon-await-blank-ref")
+    const ledgerPath = path.join(os.tmpdir(), `await-blank-ref-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const wake = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "scheduled await condition check for blank ref",
+      triggerSource: "await-scheduler",
+      budgetClass: "scheduled",
+      idempotencyKey: "await:slugger:blank:await-scheduler:2026-07-03T20:00:00.000Z",
+      originRefs: [
+        { kind: "await", id: "   " },
+        { kind: "scheduler", id: "await-scheduler" },
+      ],
+    } as unknown as never)
+
+    expect(wake).toMatchObject({
+      ok: true,
+      message: "woke private runtime for slugger",
+      data: { decision: expect.objectContaining({ result: "allow", executable: true }) },
+    })
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
+      type: "message",
       privateTurnDecision: expect.objectContaining({
         result: "allow",
         triggerSource: "await-scheduler",

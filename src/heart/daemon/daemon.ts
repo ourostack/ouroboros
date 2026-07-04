@@ -40,6 +40,7 @@ import {
 import type { PrivateTurnDecision, PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
+import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from "./await-private-wake"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -1348,34 +1349,18 @@ export class OuroDaemon {
   }
 
   private buildAwaitPrivateWakeCommand(command: Extract<DaemonCommand, { kind: "await.poke" }>): Extract<DaemonCommand, { kind: "private.wake" }> {
-    const firedAt = new Date().toISOString()
-    return {
-      kind: "private.wake",
+    return buildAwaitPrivateWakeCommand({
       agent: command.agent,
-      reason: `manual await condition check for ${command.awaitName}`,
+      awaitName: command.awaitName,
       triggerSource: "await-poke",
-      budgetClass: "scheduled",
-      idempotencyKey: `await:${command.agent}:${command.awaitName}:await-poke:${firedAt}`,
-      originRefs: [
-        { kind: "await", id: command.awaitName },
-        { kind: "daemon-command", id: "await.poke" },
-      ],
-    }
-  }
-
-  private awaitNameFromPrivateWakeCommand(command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>): string | null {
-    if (command.kind !== "private.wake") return null
-    const awaitRef = command.originRefs?.find((ref) => ref.kind === "await" && typeof ref.id === "string")
-    if (!awaitRef || typeof awaitRef.id !== "string") return null
-    const trimmed = awaitRef.id.trim()
-    return trimmed.length > 0 ? trimmed : null
+    })
   }
 
   private buildPrivateRuntimeWorkerWakeMessage(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
     decision: PrivateTurnDecision,
   ): Record<string, unknown> {
-    const awaitName = this.awaitNameFromPrivateWakeCommand(command)
+    const awaitName = awaitNameFromPrivateWakeCommand(command)
     if (awaitName) {
       return {
         type: "await",

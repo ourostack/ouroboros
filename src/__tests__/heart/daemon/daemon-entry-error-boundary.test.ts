@@ -497,6 +497,49 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     }))
   })
 
+  it("swallows failed scheduled await private wake dispatch", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    let awaitOptions: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    } | null = null
+    awaitSchedulerCtorHook.mockImplementation((options: {
+      agent: string
+      onAwaitFire: (awaitName: string) => void
+    }) => {
+      awaitOptions = options
+    })
+    sendDaemonCommandMock.mockRejectedValueOnce(new Error("socket write failed"))
+
+    setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-await-failed-wake.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
+    })
+
+    expect(() => awaitOptions?.onAwaitFire("hey_export")).not.toThrow()
+    await Promise.resolve()
+    expect(sendDaemonCommandMock).toHaveBeenCalledWith(
+      "/tmp/ouro-await-failed-wake.sock",
+      expect.objectContaining({
+        kind: "private.wake",
+        agent: "alpha",
+        triggerSource: "await-scheduler",
+        originRefs: [
+          { kind: "await", id: "hey_export" },
+          { kind: "scheduler", id: "await-scheduler" },
+        ],
+      }),
+    )
+    expect(daemonProcessManagerSendToAgentMock).not.toHaveBeenCalledWith("alpha", expect.objectContaining({
+      type: "await",
+      awaitName: "hey_export",
+    }))
+  })
+
   it("wires queued await-expiry alerts through private wake instead of inner wake", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
