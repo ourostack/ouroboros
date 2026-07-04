@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.675",
+      "changes": [
+        "Replace hidden inner-dialog private work with policy-gated private runtime: startup/reload/restart and queue-only activity no longer spend, all private-turn origins pass through a ledgered decision and provider-boundary guard, spend-invariant matrix coverage locks the behavior, and current UI/docs/CLI surfaces use private-runtime vocabulary with legacy aliases classified."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.674",
       "changes": [
         "Add an inner-dialog auto-start guard so enabled agents can stay online without autonomous model-spending boot turns, including client-side self-message fallback paths and daemon health/status surfaces that respect intentionally parked agents."
