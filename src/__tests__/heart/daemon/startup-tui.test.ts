@@ -923,6 +923,37 @@ describe("startup-tui", () => {
       expect(deps.writeRaw).not.toHaveBeenCalled()
     })
 
+    it("does not report parked passive workers as degraded when other workers time out", async () => {
+      let calls = 0
+      const payload = makePayload([
+        { agent: "parked", status: "stopped", startedAt: null, autoStart: false },
+        { agent: "active", status: "starting", startedAt: null, autoStart: true },
+      ])
+      const deps = {
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 99999,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? 0 : 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
+        maxWaitMs: 1_000,
+        render: false,
+      }
+
+      const result = await pollDaemonStartup(deps)
+
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toEqual([{
+        agent: "active",
+        errorReason: "startup timed out after 1s while worker was starting",
+        fixHint: "run `ouro status` or `ouro doctor` for current worker details; the daemon is still answering",
+      }])
+    })
+
     it("continues polling when daemon pid is null (unknown)", async () => {
       let callCount = 0
       const deps = {

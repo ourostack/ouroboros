@@ -1016,6 +1016,21 @@ describe("private runtime", () => {
       expect(mockRunAgent).not.toHaveBeenCalled()
     })
 
+    it("fails closed when the current credential revision cannot be read", async () => {
+      const decision = writeLedgeredPrivateTurnDecision()
+      resetProviderCredentialCache()
+
+      await expect((runPrivateRuntimeTurn as any)({
+        reason: "instinct",
+        privateTurnDecision: decision,
+        instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+        now: () => new Date("2026-03-06T12:00:00.000Z"),
+      })).rejects.toThrow(/credential revision unavailable/i)
+
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockRunAgent).not.toHaveBeenCalled()
+    })
+
     it.each([
       {
         name: "non-object config",

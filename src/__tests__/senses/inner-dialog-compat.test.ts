@@ -6,6 +6,20 @@ describe("inner-dialog compatibility shims", () => {
     vi.resetModules()
   })
 
+  it("legacy runtime exports point to the canonical private-runtime module", async () => {
+    vi.resetModules()
+    vi.doUnmock("../../senses/inner-dialog")
+    vi.doUnmock("../../senses/private-runtime")
+
+    const privateRuntime = await import("../../senses/private-runtime")
+    const innerDialog = await import("../../senses/inner-dialog")
+
+    expect(innerDialog.buildInnerDialogBootstrapMessage).toBe(privateRuntime.buildPrivateRuntimeBootstrapMessage)
+    expect(innerDialog.loadInnerDialogInstincts).toBe(privateRuntime.loadPrivateRuntimeInstincts)
+    expect(innerDialog.innerDialogSessionPath).toBe(privateRuntime.privateRuntimeSessionPath)
+    expect(innerDialog.runInnerDialogTurn).toBe(privateRuntime.runPrivateRuntimeTurn)
+  })
+
   it("legacy worker factory delegates default turns to the canonical private-runtime turn runner", async () => {
     vi.resetModules()
     const runInnerDialogTurn = vi.fn(async () => "turn-complete")

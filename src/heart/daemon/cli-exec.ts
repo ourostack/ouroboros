@@ -1308,7 +1308,12 @@ export async function ensureDaemonRunning(
     return null
   }
 
-  const alive = options.initialAlive ?? await deps.checkSocketAlive(deps.socketPath)
+  let alive: boolean
+  if (typeof options.initialAlive === "boolean") {
+    alive = options.initialAlive
+  } else {
+    alive = await deps.checkSocketAlive(deps.socketPath)
+  }
   if (alive) {
     const localRuntime = getRuntimeMetadata()
     const localManagedAgents = managedAgentsSignature(listEnabledBundleAgents({

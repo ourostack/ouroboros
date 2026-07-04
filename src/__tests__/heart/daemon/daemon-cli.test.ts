@@ -4626,6 +4626,52 @@ describe("ensureDaemonRunning", () => {
     expect(deps.cleanupStaleSocket).not.toHaveBeenCalled()
   })
 
+  it("honors an explicit initialAlive false result when starting a fresh daemon", async () => {
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      now: vi.fn(() => Date.now()),
+      sleep: vi.fn(async () => {}),
+    }
+
+    const result = await ensureDaemonRunning(deps, { initialAlive: false })
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(result.message).toContain("daemon started")
+    expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.checkSocketAlive).toHaveBeenCalledTimes(1)
+  })
+
+  it("honors an explicit initialAlive true result without probing the socket first", async () => {
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await ensureDaemonRunning(deps, { initialAlive: true })
+
+    expect(result.alreadyRunning).toBe(true)
+    expect(result.message).toContain("already running")
+    expect(deps.checkSocketAlive).not.toHaveBeenCalled()
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+    expect(deps.cleanupStaleSocket).not.toHaveBeenCalled()
+  })
+
   it("replaces a running daemon when its version is older than the local runtime", async () => {
     vi.resetModules()
     vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
