@@ -16,11 +16,11 @@ configureCliRuntimeLogger("self")
 emitNervesEvent({
   component: "senses",
   event: "senses.entry_boot",
-  message: "booting private-runtime entrypoint",
+  message: "starting private-runtime process entrypoint",
   meta: { entry: "private-runtime", agentName },
 })
 
-// Dynamic import: agent-entry is boot-time wiring that starts a sense process.
+// Dynamic import: agent-entry is process-start wiring that starts a sense process.
 // Using dynamic import avoids a static heart/ -> senses/ dependency.
 import("./runtime-credentials")
   .then(async ({
@@ -34,7 +34,7 @@ import("./runtime-credentials")
     if (!readRuntimeCredentialConfig(agentName).ok) {
       void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
-    /* v8 ignore next 7 -- boot-time best-effort machine credential refresh runs in a child entrypoint and is covered operationally by daemon startup tests @preserve */
+    /* v8 ignore next 7 -- process-start best-effort machine credential refresh runs in a child entrypoint and is covered operationally by daemon startup tests @preserve */
     if (!readMachineRuntimeCredentialConfig(agentName).ok) {
       void import("./machine-identity")
         .then(({ loadOrCreateMachineIdentity }) => {
