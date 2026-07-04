@@ -385,10 +385,11 @@ Unsafe or irreversible external actions still require their normal tool-level
 confirmation rules. The habit surfacing default only answers "who may this
 private session contact when it needs help or needs to report back?"
 
-## Inner Lane
+## Private Runtime
 
-The inner lane is the private execution lane. It is not a record substrate and
-not memory.
+Private runtime is the policy-gated execution path for private agent-facing
+turns. It is not a record substrate and not memory. It may use the `inner`
+provider/model lane for provider selection, but that lane is not the runtime.
 
 It runs:
 
@@ -406,10 +407,10 @@ Its transcript can be throwaway because the things that matter leave the lane:
 - reference notes -> Desk record notes;
 - outward messages -> the relevant sense.
 
-Inner lane is how a habit or private run thinks. Arc and Desk are how it remains
-true afterward. The lane is allowed to be habit-driven, private, and throwaway;
-that is only safe because record-worthy outputs are written explicitly before
-the transcript falls away.
+Private runtime is where a habit or private turn can do bounded work. Arc and
+Desk are how it remains true afterward. Private runtime is allowed to be
+habit-driven, private, and throwaway; that is only safe because record-worthy
+outputs are written explicitly before the transcript falls away.
 
 ## Implementation Cut
 

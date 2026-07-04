@@ -95,7 +95,7 @@ describe("active work frame", () => {
     })
   })
 
-  it("falls back to inward-work when there is no active bridge but inner work or handoff pressure is live", async () => {
+  it("falls back to inward-work when there is no active bridge but private-runtime work or handoff pressure is live", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
 
     const frame = buildActiveWorkFrame({

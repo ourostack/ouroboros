@@ -139,7 +139,7 @@ When you want this machine to use a provider/model for a lane, use:
 ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <model>
 ```
 
-The outward lane handles user-facing senses. The inner lane handles the agent's private thinking. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
+The outward lane selects the provider/model for user-facing senses. The `inner` lane selects the provider/model for private agent-facing turns; private-runtime policy decides whether those turns may run. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
 
 For the full locked auth/provider contract, including refresh, repair actors, caching, and SerpentGuide hatch bootstrap, see `docs/auth-and-providers.md`.
 

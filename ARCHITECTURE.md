@@ -227,15 +227,16 @@ The heartbeat is just one habit among many — the agent's breathing. But agents
 
 ## Private Runtime
 
-The private runtime is the agent's private thinking space.
+The private runtime is the policy-gated surface for private agent-facing turns:
+habits, returns, awaits, and bounded background work.
 
 Starting the private runtime worker is process supervision, not a model turn.
 Denied/default private-runtime policy records or queues work with zero provider calls.
 Provider-readiness pings are explicit readiness checks, not private turns.
 
-- **ponder**: From any conversation, the agent can *ponder* something — it goes to private runtime with the thought as context. From private runtime, *ponder* triggers another turn (the wheel keeps turning).
-- **rest**: When thinking is done, the agent *rests*. The wheel stops until the next habit fires.
-- **surface**: From private runtime, the agent can *surface* thoughts outward to friends.
+- **ponder**: From any conversation, the agent can bookmark bounded follow-up work in private runtime with the current context. From private runtime, *ponder* schedules another private turn.
+- **rest**: When private work is complete, the agent *rests*. The private turn loop stops until the next approved trigger.
+- **surface**: From private runtime, the agent can *surface* results or requests outward to friends.
 - **settle**: In outer conversations, the agent *settles* on a response (not available in private runtime).
 - **observe**: In group chats, the agent can choose to stay quiet.
 

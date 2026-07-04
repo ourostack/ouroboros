@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.675",
       "changes": [
-        "Replace hidden inner-dialog private work with policy-gated private runtime: startup/reload/restart and queue-only activity no longer spend, all private-turn origins pass through a ledgered decision and provider-boundary guard, spend-invariant matrix coverage locks the behavior, and current UI/docs/CLI surfaces use private-runtime vocabulary with legacy aliases classified."
+        "Tighten private-runtime vocabulary after reviewer audit: current docs, prompts, tool descriptions, mailbox status, and progress labels no longer describe live private work as inner work, inner-lane scratch, or private thinking space; guards now scan current docs and source surfaces for those stale phrases while preserving explicit compatibility and safety fixtures."
       ]
     },
     {

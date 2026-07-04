@@ -6,6 +6,29 @@ function readRepoFile(...parts: string[]): string {
   return fs.readFileSync(path.resolve(process.cwd(), ...parts), "utf-8")
 }
 
+function listMarkdownFiles(root: string): string[] {
+  const absoluteRoot = path.resolve(process.cwd(), root)
+  const entries = fs.readdirSync(absoluteRoot, { withFileTypes: true })
+  const files: string[] = []
+
+  for (const entry of entries) {
+    const relativePath = path.join(root, entry.name)
+    if (entry.isDirectory()) {
+      if (relativePath === path.join("docs", "doing")) {
+        continue
+      }
+      files.push(...listMarkdownFiles(relativePath))
+      continue
+    }
+
+    if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(relativePath)
+    }
+  }
+
+  return files
+}
+
 describe("private-runtime documentation contract", () => {
   it("documents canonical private-runtime commands instead of teaching the legacy inner alias", () => {
     const readme = readRepoFile("README.md")
@@ -46,5 +69,26 @@ describe("private-runtime documentation contract", () => {
     expect(senseGuide).toContain("agent-facing runtime")
     expect(senseGuide).toContain("`inner` provider/model lane")
     expect(senseGuide).not.toContain("`teams`, `cli`, `inner`")
+  })
+
+  it("does not document inner as the current private execution or thinking runtime", () => {
+    const currentDocPaths = ["README.md", "ARCHITECTURE.md", ...listMarkdownFiles("docs")]
+    const staleCurrentRuntimePatterns = [
+      /^## Inner Lane$/m,
+      /\binner lane is the private execution lane\b/i,
+      /\binner lane handles the agent's private thinking\b/i,
+      /\binner lane is how a habit or private run thinks\b/i,
+      /\bprivate execution lane\b/i,
+      /\bprivate run thinks\b/i,
+      /\bprivate runtime is the agent's private thinking space\b/i,
+    ]
+
+    for (const docPath of currentDocPaths) {
+      const content = readRepoFile(docPath)
+
+      for (const pattern of staleCurrentRuntimePatterns) {
+        expect(content, `${docPath} must not match ${pattern}`).not.toMatch(pattern)
+      }
+    }
   })
 })

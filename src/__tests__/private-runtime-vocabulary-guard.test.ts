@@ -32,6 +32,8 @@ const OLD_VOCABULARY: OldVocabularyPattern[] = [
   { id: "inner dialogue", regex: /inner dialogue/gi },
   { id: "innerDialog", regex: /innerDialog/g },
   { id: "InnerDialog", regex: /InnerDialog/g },
+  { id: "inner work", regex: /inner work/gi },
+  { id: "inner-lane scratch", regex: /inner-lane scratch/gi },
 ]
 
 const ALLOWED_FINDINGS: AllowedFinding[] = [
@@ -90,6 +92,12 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     textIncludes: ["[surfaced from inner dialog]"],
     classification: "safety-guard",
     reason: "verifies legacy internal meta markers are still stripped from outward BlueBubbles sends",
+  },
+  {
+    path: "packages/mailbox-ui/src/components/tabs/live-refresh.test.tsx",
+    textIncludes: ["not.toContain(\"Inner work\")", "not.toContain(\"Pending inner work queued.\")"],
+    classification: "safety-guard",
+    reason: "verifies old Mailbox UI copy stays absent from current private-runtime UI",
   },
   {
     path: "src/__tests__/senses/surface-tool.test.ts",

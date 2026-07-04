@@ -209,11 +209,11 @@ function readInnerSummary(agentRoot: string): {
     ?? runtimeState?.lastCompletedAt
     ?? null
 
-  // Read the return-obligation queue so the Inner tab can show what the
-  // agent is actually holding right now. Before this, the "Inner work"
-  // panel only consulted the pending-messages dir (inbox-style); it
-  // reported "No pending inner work" even when dozens of held items were
-  // sitting in arc/obligations/inner/ waiting to be reinjected next turn.
+  // Read the return-obligation queue so the Private Runtime tab can show what the
+  // agent is actually holding right now. Before this, the private-runtime work
+  // panel only consulted the pending-messages dir (inbox-style), so it
+  // looked empty even when dozens of held items were sitting in
+  // arc/obligations/inner/ waiting to be reinjected next turn.
   const returnObligationQueue = readReturnObligationQueueSummary(agentRoot)
 
   return {

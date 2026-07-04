@@ -870,7 +870,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 
 export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obligationDetailsRenderedElsewhere?: boolean }): string {
   const lines = ["## what i'm holding"]
-  lines.push("this is my top-level live world-state right now. inner work, coding lanes, other sessions, and return obligations all belong inside this picture.")
+  lines.push("this is my top-level live world-state right now. private-runtime work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
   const primaryObligation = findPrimaryOpenObligation(frame)
   const currentSessionObligation = findCurrentSessionOpenObligation(frame)

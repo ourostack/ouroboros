@@ -59,7 +59,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "surface",
     description:
-      "return a ready thought to a friend or active session without publishing private inner work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
+      "return a ready thought to a friend or active session without publishing private-runtime work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
     parameters: {
       type: "object",
       properties: {

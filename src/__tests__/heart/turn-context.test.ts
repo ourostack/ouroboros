@@ -438,7 +438,7 @@ describe("buildTurnContext", () => {
     expect(mockListTargetSessionCandidates).not.toHaveBeenCalled()
   })
 
-  it("handles inner work state with running dialog", async () => {
+  it("handles private-runtime work state with running dialog", async () => {
     mockDerivePrivateRuntimeStatus.mockReturnValue({
       processing: "started",
       queue: "pending",
@@ -527,7 +527,7 @@ describe("buildTurnContext", () => {
     expect((ctx as any).recoverySentinel.degraded.issues[0]).toContain("sentinel fail")
   })
 
-  it("handles inner work state read failure gracefully", async () => {
+  it("handles private-runtime work state read failure gracefully", async () => {
     mockReadPrivateRuntimeRawData.mockImplementation(() => { throw new Error("private runtime fail") })
 
     const ctx = await buildTurnContext(makeInput())

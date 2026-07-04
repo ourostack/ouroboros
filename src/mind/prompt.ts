@@ -1029,7 +1029,7 @@ export function centerOfGravitySteeringSection(
   const statusObligation = findStatusObligation(frame)
   const genericConcreteStatus = renderConcreteStatusGuidance(frame, statusObligation)
   const liveWorldClause = context?.friend?.trustLevel === "family"
-    ? "\nmy center of gravity lives in the active-work world-state above. inner work is one lane inside it, not the whole picture.\nwhen that world-state conflicts with older transcript history, the world-state wins."
+    ? "\nmy center of gravity lives in the active-work world-state above. private-runtime work is one lane inside it, not the whole picture.\nwhen that world-state conflicts with older transcript history, the world-state wins."
     : ""
 
   if (cog === "local-turn") {
@@ -1053,8 +1053,8 @@ ${genericConcreteStatus}`
       return `## where my attention is
 i'm thinking through something privately right now.${originClause}${obligationClause}${liveWorldClause}
 
-if this conversation connects to that inner work, i can weave them together.
-if it's separate, i can be fully present here -- my inner work will wait.`
+if this conversation connects to that private-runtime work, i can weave them together.
+if it's separate, i can be fully present here -- my private-runtime work will wait.`
     }
 
     /* v8 ignore start -- surfaced/idle/shared branches tested in prompt-steering.test.ts; CI module caching prevents attribution @preserve */
@@ -1328,7 +1328,7 @@ reach out to people, work on tasks, or just sit with a thought.
 
 Arc is my live continuity record. Desk is my durable work room.
 diary_write is for conclusions i want available later in my Desk record diary.
-inner-lane scratch is private execution state, not durable record. if scratch
+private-runtime scratch is private execution state, not durable record. if scratch
 becomes important, I put the durable output in Arc, Desk, or the Desk record
 before it falls away.
 

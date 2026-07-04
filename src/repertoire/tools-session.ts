@@ -456,7 +456,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_active_work",
-        description: "read the current live world-state across visible sessions, coding lanes, inner work, and return obligations. use this instead of piecing status together from separate session and coding tools.",
+        description: "read the current live world-state across visible sessions, coding lanes, private-runtime work, and return obligations. use this instead of piecing status together from separate session and coding tools.",
         parameters: {
           type: "object",
           properties: {},

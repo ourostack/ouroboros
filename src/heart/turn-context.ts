@@ -436,7 +436,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     limit: 5,
   })
 
-  // Inner work state
+  // Private-runtime work state
   const innerWorkState = readInnerWorkState()
 
   // Return obligations
