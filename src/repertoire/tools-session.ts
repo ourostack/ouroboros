@@ -4,13 +4,10 @@ import { resolveSessionPath } from "../heart/config";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
-import { requestInnerWake } from "../heart/daemon/socket-client";
-import { isInnerDialogAutoStartEnabled } from "../heart/daemon/agent-discovery";
+import { requestPrivateWake } from "../heart/daemon/socket-client";
 import {
   deriveInnerDialogStatus,
   deriveInnerJob,
-  extractThoughtResponseFromMessages,
-  formatSurfacedValue,
   getInnerDialogSessionPath,
   readInnerDialogRawData,
   readInnerDialogStatus,
@@ -81,18 +78,6 @@ async function summarizeSessionTailSafely(options: SessionTailOptions): Promise<
     }
     return { kind: "missing" }
   }
-}
-
-function normalizeProgressOutcome(text: string): string | null {
-  const trimmed = text.trim()
-  /* v8 ignore next -- defensive: normalizeProgressOutcome null branch @preserve */
-  if (!trimmed || trimmed === "nothing yet" || trimmed === "nothing recent") {
-    return null
-  }
-  if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length >= 2) {
-    return trimmed.slice(1, -1)
-  }
-  return trimmed
 }
 
 function optionalArg(args: Record<string, unknown>, key: string): string | undefined | null {
@@ -174,11 +159,12 @@ function renderSessionSummaryText(summary: HabitSessionSummary): string {
   return lines.filter((line): line is string => Boolean(line)).join("\n")
 }
 
-function writePendingEnvelope(queueDir: string, message: PendingMessage): void {
+function writePendingEnvelope(queueDir: string, message: PendingMessage): string {
   fs.mkdirSync(queueDir, { recursive: true })
   const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
   const filePath = path.join(queueDir, fileName)
   fs.writeFileSync(filePath, JSON.stringify({ ...message, content: capStructuredRecordString(message.content) }, null, 2))
+  return fileName.replace(/\.json$/, "")
 }
 
 function renderCrossChatDeliveryStatus(
@@ -713,7 +699,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       }
 
       if (isSelf) {
-        writePendingEnvelope(pendingDir, envelope)
+        const pendingMessageId = writePendingEnvelope(pendingDir, envelope)
         if (delegatedFrom) {
           try {
             createObligation(getAgentRoot(), {
@@ -749,45 +735,20 @@ export const sessionToolDefinitions: ToolDefinition[] = [
             },
           })
         }
-        let wakeResponse: { ok: boolean } | null = null
         try {
-          wakeResponse = await requestInnerWake(agentName, ctx?.daemonSocketPath)
+          await requestPrivateWake(agentName, ctx?.daemonSocketPath, {
+            reason: "send_message self-route private attention",
+            triggerSource: "send-message-self-route",
+            budgetClass: "interactive",
+            idempotencyKey: `send-message-self-route:${agentName}:${pendingMessageId}`,
+            originRefs: [
+              { kind: "tool", id: "send_message" },
+              { kind: "pending-queue", id: "self/inner/dialog" },
+              { kind: "pending-message", id: pendingMessageId },
+            ],
+          })
         } catch {
-          wakeResponse = null
-        }
-
-        if (!wakeResponse?.ok) {
-          if (!isInnerDialogAutoStartEnabled(agentName)) {
-            return renderInnerProgressStatus({
-              queue: "queued to inner/dialog",
-              wake: "parked by innerDialog.autoStart=false",
-              processing: "pending",
-              surfaced: "nothing yet",
-            })
-          }
-          const { runInnerDialogTurn } = await import("../senses/inner-dialog")
-          if (ctx?.context?.channel?.channel === "inner") {
-            queueMicrotask(() => {
-              void runInnerDialogTurn({ reason: "instinct" })
-            })
-            return renderInnerProgressStatus({
-              queue: "queued to inner/dialog",
-              wake: "inline scheduled",
-              processing: "pending",
-              surfaced: "nothing yet",
-            })
-          } else {
-            const turnResult = await runInnerDialogTurn({ reason: "instinct" })
-            const surfacedPreview = normalizeProgressOutcome(
-              formatSurfacedValue(extractThoughtResponseFromMessages(turnResult?.messages ?? [])),
-            )
-            return renderProgressStory(buildProgressStory({
-              scope: "inner-delegation",
-              phase: "completed",
-              objective: "queued to inner/dialog",
-              outcomeText: `wake: inline fallback\n${surfacedPreview}`,
-            }))
-          }
+          // Queue-first self routing must not inline-run private work when the daemon is unavailable.
         }
 
         return renderInnerProgressStatus({

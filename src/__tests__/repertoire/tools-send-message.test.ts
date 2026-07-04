@@ -1130,7 +1130,7 @@ describe("send_message tool", () => {
       )
     })
 
-    it("confirmation message mentions self routing", async () => {
+    it("confirmation message mentions private attention without exposing the original outward channel", async () => {
       const { baseToolDefinitions } = await import("../../repertoire/tools-base")
       const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
 
@@ -1141,8 +1141,8 @@ describe("send_message tool", () => {
       })
 
       // Should indicate inward routing, not the original outward channel
-      expect(result).toContain("inner")
-      expect(result).toContain("queued to inner/dialog")
+      expect(result).toContain("private attention")
+      expect(result).not.toContain("teams")
     })
 
     it("queues self-route attention without inline provider calls when no daemon wake path is available", async () => {
