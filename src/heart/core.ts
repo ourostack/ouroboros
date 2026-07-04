@@ -29,7 +29,7 @@ import type { OrientationFrame } from "./orientation-frame";
 import type { DelegationDecision } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
 import { getAgentName, getAgentRoot } from "./identity";
-import { requestInnerWake } from "./daemon/socket-client";
+import { requestPrivateWake } from "./daemon/socket-client";
 import { createObligation, createReturnObligation, generateObligationId, readReturnObligation } from "../arc/obligations";
 import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
 import { advancePonderPacket, createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
@@ -699,6 +699,32 @@ function activeReturnObligationId(agentName: string, obligationId: string | unde
   if (!obligationId) return null
   const obligation = readReturnObligation(agentName, obligationId)
   return obligation?.status === "queued" || obligation?.status === "running" ? obligationId : null
+}
+
+function ponderReturnSessionId(packet: PonderPacket): string {
+  const origin = packet.origin
+  if (!origin) return "unknown/unknown/unknown"
+  return `${origin.friendId}/${origin.channel}/${origin.key}`
+}
+
+function buildPonderReturnPrivateWakeOptions(input: {
+  agentName: string
+  packet: PonderPacket
+  returnObligationId: string
+}) {
+  const sessionId = ponderReturnSessionId(input.packet)
+  return {
+    reason: "ponder return obligation private attention",
+    triggerSource: "ponder-return-obligation",
+    budgetClass: "interactive",
+    idempotencyKey: `ponder-return:${input.agentName}:${input.returnObligationId}:${input.packet.id}:${sessionId}`,
+    originRefs: [
+      { kind: "tool", id: "ponder" },
+      { kind: "ponder-packet", id: input.packet.id },
+      { kind: "return-obligation", id: input.returnObligationId },
+      { kind: "session", id: sessionId },
+    ],
+  }
 }
 
 export function buildPonderResult(
@@ -1873,7 +1899,12 @@ export async function runAgent(
                 for (const token of extractPrivateReturnHeldTokens(privateReturnSourceRequest)) {
                   privateReturnHeldTokens.add(token)
                 }
-                await requestInnerWake(getAgentName(), augmentedToolContext?.daemonSocketPath).catch(() => undefined)
+                const agentName = getAgentName()
+                await requestPrivateWake(
+                  agentName,
+                  augmentedToolContext?.daemonSocketPath,
+                  buildPonderReturnPrivateWakeOptions({ agentName, packet, returnObligationId }),
+                ).catch(() => undefined)
               }
               sawPonder = true;
               toolResult = buildPonderResult(packet, resultAction, returnObligationId);
