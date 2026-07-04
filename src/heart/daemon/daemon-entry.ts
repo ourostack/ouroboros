@@ -31,7 +31,7 @@ import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
-import { buildAwaitPrivateWakeCommand } from "./await-private-wake"
+import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
@@ -102,6 +102,28 @@ async function refreshDaemonSentinel(
       message: `Sentinel refresh failed: ${error instanceof Error ? error.message : String(error)}`,
     }
   }
+}
+
+function emitAwaitPrivateWakeDispatchError(options: {
+  agent: string
+  awaitName: string
+  triggerSource: AwaitPrivateWakeTriggerSource
+  socketPath: string
+  error: unknown
+}): void {
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.await_private_wake_dispatch_error",
+    message: "failed to dispatch await private-runtime wake",
+    meta: {
+      agent: options.agent,
+      awaitName: options.awaitName,
+      triggerSource: options.triggerSource,
+      socketPath: options.socketPath,
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+    },
+  })
 }
 
 const processManager = new DaemonProcessManager({
@@ -477,7 +499,15 @@ void daemon.start().then(async () => {
             agent,
             awaitName,
             triggerSource: "await-scheduler",
-          })).catch(() => {})
+          })).catch((error) => {
+            emitAwaitPrivateWakeDispatchError({
+              agent,
+              awaitName,
+              triggerSource: "await-scheduler",
+              socketPath,
+              error,
+            })
+          })
         },
         onAwaitExpire: (awaitName) => {
           void archiveAndAlertExpiredAwait({
@@ -492,7 +522,15 @@ void daemon.start().then(async () => {
                   agent,
                   awaitName,
                   triggerSource: "await-expiry",
-                })).catch(() => {})
+                })).catch((error) => {
+                  emitAwaitPrivateWakeDispatchError({
+                    agent,
+                    awaitName,
+                    triggerSource: "await-expiry",
+                    socketPath,
+                    error,
+                  })
+                })
               },
             },
           }).catch((err) => {
