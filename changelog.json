@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.678",
+      "changes": [
+        "Register dev-tool MCP clients through the installed ouro command instead of repo dist, preventing Codex and Claude setup from pinning long-lived clients to stale ignored build artifacts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.677",
       "changes": [
         "Support structured JSON output for ouro private status so the installed private-runtime CLI matches its advertised help surface alongside private decisions."

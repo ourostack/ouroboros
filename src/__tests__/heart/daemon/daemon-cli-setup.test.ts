@@ -171,6 +171,25 @@ describe("ouro setup command", () => {
       expect(calls.some((c: string) => c.includes("codex") && c.includes("mcp") && c.includes("add"))).toBe(true)
     })
 
+    it("codex setup uses installed ouro command in dev mode", async () => {
+      const { detectRuntimeMode } = await import("../../../heart/daemon/runtime-mode")
+      vi.mocked(detectRuntimeMode).mockReturnValue("dev")
+
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      await runOuroCli(["setup", "--tool", "codex", "--agent", "test-agent"], deps)
+
+      const calls = mockExecSync.mock.calls.map((c: any[]) => c[0])
+      const mcpAddCall = calls.find((c: string) => c.includes("codex") && c.includes("mcp") && c.includes("add"))
+      expect(mcpAddCall).toBeDefined()
+      expect(mcpAddCall).toContain("ouro mcp-serve")
+      expect(mcpAddCall).not.toContain("node")
+      expect(mcpAddCall).not.toContain("/mock/repo")
+      expect(mcpAddCall).not.toContain("dist")
+    })
+
     it("claude-code setup reads existing CLAUDE.md and skips write when instructions present", async () => {
       const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps()
@@ -243,7 +262,7 @@ describe("ouro setup command", () => {
       expect(mcpAddCall).not.toContain("node")
     })
 
-    it("detects dev mode and uses node + absolute path", async () => {
+    it("uses installed ouro command in dev mode so persisted clients do not point at stale repo dist", async () => {
       const { detectRuntimeMode } = await import("../../../heart/daemon/runtime-mode")
       vi.mocked(detectRuntimeMode).mockReturnValue("dev")
 
@@ -253,12 +272,13 @@ describe("ouro setup command", () => {
 
       await runOuroCli(["setup", "--tool", "claude-code", "--agent", "test-agent"], deps)
 
-      // In dev mode, mcp add command should use node + path to entry
       const calls = mockExecSync.mock.calls.map((c: any[]) => c[0])
       const mcpAddCall = calls.find((c: string) => c.includes("mcp") && c.includes("add"))
       expect(mcpAddCall).toBeDefined()
-      // Should reference node or the repo path (dev mode)
-      expect(mcpAddCall).toMatch(/node|dist/)
+      expect(mcpAddCall).toContain("ouro mcp-serve")
+      expect(mcpAddCall).not.toContain("node")
+      expect(mcpAddCall).not.toContain("/mock/repo")
+      expect(mcpAddCall).not.toContain("dist")
     })
   })
 })

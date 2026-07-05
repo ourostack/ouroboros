@@ -108,6 +108,9 @@ describe("ouro setup WSL-aware", () => {
       )
       expect(mcpAddCall).toBeDefined()
       expect(String(mcpAddCall![0])).toContain("wsl ")
+      expect(String(mcpAddCall![0])).toContain("ouro mcp-serve")
+      expect(String(mcpAddCall![0])).not.toContain("/mock/repo")
+      expect(String(mcpAddCall![0])).not.toContain("dist")
     })
 
     it("hook commands in settings.json are prefixed with wsl", async () => {

@@ -7835,9 +7835,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     const sourceRoot = getRepoRoot()
     const runtimeMode = detectRuntimeMode(sourceRoot)
-    const baseMcpServeCommand = runtimeMode === "dev"
-      ? `node ${path.join(sourceRoot, "dist", "heart", "daemon", "ouro-bot-entry.js")} mcp-serve --agent ${setupAgent}`
-      : `ouro mcp-serve --agent ${setupAgent}`
+    const baseMcpServeCommand = `ouro mcp-serve --agent ${setupAgent}`
     const mcpServeCommand = `${mcpServePrefix}${baseMcpServeCommand}`
 
     if (tool === "claude-code") {
