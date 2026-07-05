@@ -148,6 +148,12 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     reason: "tests legacy CLI alias parsing",
   },
   {
+    path: "src/__tests__/heart/daemon/agent-service.test.ts",
+    textIncludes: ["not.toContain(\"Inner dialog\")"],
+    classification: "safety-guard",
+    reason: "verifies MCP catchup output does not regress to the old private-runtime label",
+  },
+  {
     path: "src/__tests__/heart/daemon/daemon-cli.test.ts",
     textIncludes: [
       "legacy inner status as an alias",
