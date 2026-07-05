@@ -380,6 +380,21 @@ describe("agent-service handlers", () => {
       expect(r.message).toContain("No recent sessions")
     })
 
+    it("uses private-runtime vocabulary for runtime status", async () => {
+      vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes("runtime.json"))
+      vi.mocked(fs.readFileSync).mockImplementation((p) => {
+        if (String(p).includes("runtime.json")) return JSON.stringify({ status: "idle", lastCompletedAt: "2026-06-30T18:43:49.687Z" })
+        return ""
+      })
+
+      const { handleAgentCatchup } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentCatchup({ agent: "test", friendId: "f1" })
+
+      expect(r.ok).toBe(true)
+      expect(r.message).toContain("Private runtime: idle")
+      expect(r.message).not.toContain("Inner dialog")
+    })
+
     it("enumerates sessions from filesystem and sorts by lastUsage", async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true)
       vi.mocked(fs.statSync).mockImplementation((p) => {
