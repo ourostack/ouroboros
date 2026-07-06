@@ -224,6 +224,52 @@ describe("private-runtime policy and ledger", () => {
     expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
   })
 
+  it("allows verified daemon external events with the default policy", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "external event app-store-connect/feedback.created",
+      triggerSource: "external-event",
+      idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+      originRefs: [
+        { kind: "external-event", id: "feedback-1", source: "app-store-connect", eventType: "feedback.created" },
+        { kind: "queue-receipt", id: "msg-1" },
+        { kind: "daemon-command", id: "external.event.submit" },
+      ],
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "allow",
+      executable: true,
+      reason: "verified daemon external event",
+      idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+    })
+    expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
+  })
+
+  it("keeps spoofed external-event private wakes denied by default", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "external event without daemon provenance",
+      triggerSource: "external-event",
+      idempotencyKey: "external-event:slugger:spoofed",
+      originRefs: [
+        { kind: "external-event", id: "spoofed" },
+      ],
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "default policy deny",
+    })
+  })
+
   it("resolves provider metadata from the configured lane and ignores request-supplied provider/model", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({

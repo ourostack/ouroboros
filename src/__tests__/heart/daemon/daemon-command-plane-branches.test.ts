@@ -31,7 +31,7 @@ describe("daemon command plane branches", () => {
   const make = (
     socketPath: string,
     bundlesRoot?: string,
-    options?: { onStopCommandComplete?: () => void; privateRuntimePolicyDeps?: unknown },
+    options?: { onStopCommandComplete?: () => void; privateRuntimePolicyDeps?: unknown; externalEventRoot?: string },
   ) => {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
@@ -76,6 +76,7 @@ describe("daemon command plane branches", () => {
       bundlesRoot,
       senseManager,
       privateRuntimePolicyDeps: options?.privateRuntimePolicyDeps,
+      externalEventRoot: options?.externalEventRoot,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
@@ -736,6 +737,99 @@ describe("daemon command plane branches", () => {
     expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
     expect(processManager.startAgent).not.toHaveBeenCalled()
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("routes external events through receipts, queued evidence, and idempotent private wakes", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = path.join(os.tmpdir(), `external-events-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps, externalEventRoot })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const command = {
+      kind: "external.event.submit",
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "feedback.created",
+      eventId: "feedback-1",
+      summary: "Feedback arrived",
+      evidence: ["/tmp/feedback/screenshot-1.jpg"],
+      payloadPath: "/tmp/feedback/event.json",
+      priority: "high",
+    } as const
+
+    const first = await daemon.handleCommand(command)
+    const duplicate = await daemon.handleCommand(command)
+
+    expect(first).toMatchObject({
+      ok: true,
+      message: expect.stringContaining("queued external event app-store-connect/feedback-1 as msg-1"),
+      data: {
+        event: expect.objectContaining({
+          agent: "slugger",
+          source: "app-store-connect",
+          eventType: "feedback.created",
+          eventId: "feedback-1",
+          duplicateCount: 0,
+        }),
+        wake: expect.objectContaining({
+          message: "woke private runtime for slugger",
+        }),
+      },
+    })
+    expect(duplicate).toMatchObject({
+      ok: true,
+      data: {
+        event: expect.objectContaining({ duplicateCount: 1 }),
+        wake: expect.objectContaining({
+          message: "private-runtime wake denied for slugger: duplicate private-turn decision already recorded",
+        }),
+      },
+    })
+
+    expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
+      from: "ouro-external-event",
+      to: "slugger",
+      priority: "high",
+      taskRef: "app-store-connect:feedback-1",
+      content: expect.stringContaining("source: app-store-connect"),
+    }))
+    expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining("/tmp/feedback/screenshot-1.jpg"),
+    }))
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: "slugger",
+        origin: "daemon.private.wake",
+        reason: "external event app-store-connect/feedback.created",
+        triggerSource: "external-event",
+        budgetClass: "interactive",
+        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+        originRefs: [
+          { kind: "external-event", id: "feedback-1", source: "app-store-connect", eventType: "feedback.created" },
+          { kind: "queue-receipt", id: "msg-1" },
+          { kind: "daemon-command", id: "external.event.submit" },
+        ],
+      }),
+      expect.any(Object),
+    )
+    expect(processManager.startAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({
+      type: "message",
+      privateTurnDecision: expect.objectContaining({
+        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+      }),
+    }))
+
+    const recordPath = path.join(externalEventRoot, "slugger", "app-store-connect", "feedback-1.json")
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf-8")) as { duplicateCount: number; payloadPath: string }
+    expect(record).toMatchObject({
+      duplicateCount: 1,
+      payloadPath: "/tmp/feedback/event.json",
+    })
+    expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
   })
 
   it("records one task-poke allow decision before starting model-backed private work", async () => {

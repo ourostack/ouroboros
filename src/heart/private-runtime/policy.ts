@@ -136,6 +136,16 @@ async function evaluatePolicy(
   deps: PrivateTurnPolicyDeps,
 ): Promise<PrivateTurnPolicyEvaluation> {
   if (deps.evaluatePolicy) return deps.evaluatePolicy(request, context)
+  if (
+    request.triggerSource === "external-event"
+    && (request.originRefs ?? []).some((ref) => ref.kind === "external-event" && typeof ref.id === "string" && ref.id.length > 0)
+    && (request.originRefs ?? []).some((ref) => ref.kind === "daemon-command" && ref.id === "external.event.submit")
+  ) {
+    return {
+      result: "allow",
+      reason: "verified daemon external event",
+    }
+  }
   return {
     result: "deny",
     reason: "private runtime policy denies by default",
