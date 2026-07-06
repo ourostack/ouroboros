@@ -866,6 +866,12 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     if (!context || !context.senses[parsed.sense].enabled) return null
 
     const managedName = `${parsed.agent}:${parsed.sense}`
+    const runtimeConfig = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
+    const needsMachineConfig = parsed.sense === "bluebubbles" || parsed.sense === "voice" || parsed.sense === "a2a"
+    const machineRuntimeConfig = needsMachineConfig
+      ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
+      : readMachineRuntimeCredentialConfig(parsed.agent)
+    context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, runtimeConfig, machineRuntimeConfig)
     this.processManager.resetAgentFailureState?.(managedName)
     await this.processManager.startAgent?.(managedName)
     return this.listSenseRows().find((row) => row.agent === parsed.agent && row.sense === parsed.sense) ?? null

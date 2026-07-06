@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.680",
+      "changes": [
+        "Refactor private-runtime external-event policy origin checks for fully covered provenance validation while preserving the generic event-intake release behavior."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.679",
       "changes": [
         "Preserve machine runtime config during A2A identity writes and report BlueBubbles attachment gaps before stale proof facts."

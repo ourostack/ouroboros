@@ -140,6 +140,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     example: "ouro msg --to ouroboros hello there",
   },
+  event: {
+    category: "Tasks",
+    description: "Submit a verified external event to an owning agent and optionally wake its private runtime",
+    usage: "ouro event submit --agent <agent> --source <source> --type <event-type> --id <provider-id> [--summary <text>] [--evidence <path>] [--payload <path>] [--priority high|normal|low] [--no-wake]",
+    example: "ouro event submit --agent slugger --source app-store-connect --type feedback.created --id evt_123 --evidence /tmp/feedback",
+    subcommands: ["submit"],
+  },
   poke: {
     category: "Tasks",
     description: "Poke an agent about a task or habit",
