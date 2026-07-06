@@ -832,6 +832,72 @@ describe("daemon command plane branches", () => {
     expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
   })
 
+  it("queues external events without waking and uses the default CLI receipt root", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-no-wake")
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-external-event-home-"))
+    const previousHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      const { daemon, processManager, router } = make(socketPath)
+      const response = await daemon.handleCommand({
+        kind: "external.event.submit",
+        agent: "slugger",
+        source: "app-store-connect",
+        eventType: "feedback.created",
+        eventId: "feedback-no-wake",
+        wake: false,
+      } as const)
+
+      expect(response).toMatchObject({
+        ok: true,
+        message: "queued external event app-store-connect/feedback-no-wake as msg-1",
+        data: {
+          wake: null,
+          event: expect.objectContaining({
+            recordPath: path.join(home, ".ouro-cli", "daemon", "external-events", "slugger", "app-store-connect", "feedback-no-wake.json"),
+          }),
+        },
+      })
+      expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
+        taskRef: "app-store-connect:feedback-no-wake",
+      }))
+      expect(processManager.startAgent).not.toHaveBeenCalled()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = previousHome
+      }
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("uses a defensive wake-skipped label when an external-event wake has no message", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-wake-fallback")
+    const externalEventRoot = path.join(os.tmpdir(), `external-events-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    vi.spyOn(daemon as any, "handlePrivateRuntimeWake").mockResolvedValue({ ok: true })
+
+    const response = await daemon.handleCommand({
+      kind: "external.event.submit",
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "feedback.created",
+      eventId: "feedback-wake-fallback",
+    } as const)
+
+    expect(response).toMatchObject({
+      ok: true,
+      message: "queued external event app-store-connect/feedback-wake-fallback as msg-1; wake skipped",
+      data: {
+        wake: { ok: true },
+      },
+    })
+    fs.rmSync(externalEventRoot, { recursive: true, force: true })
+  })
+
   it("records one task-poke allow decision before starting model-backed private work", async () => {
     const socketPath = tmpSocketPath("daemon-task-poke-allowed")
     const ledgerPath = path.join(os.tmpdir(), `task-poke-allowed-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)

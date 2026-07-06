@@ -431,6 +431,10 @@ describe("ouro CLI parsing", () => {
       "/tmp/feedback/payload.json",
       "--priority",
       "high",
+      "--session",
+      "session-1",
+      "--task",
+      "feedback-task",
     ])).toEqual({
       kind: "external.event.submit",
       agent: "slugger",
@@ -441,6 +445,8 @@ describe("ouro CLI parsing", () => {
       evidence: ["/tmp/feedback"],
       payloadPath: "/tmp/feedback/payload.json",
       priority: "high",
+      sessionId: "session-1",
+      taskRef: "feedback-task",
       wake: true,
     })
 
@@ -692,7 +698,9 @@ describe("ouro CLI parsing", () => {
   it("throws on malformed command shapes", () => {
     expect(parseOuroCommand(["chat"])).toEqual({ kind: "chat.connect", agent: "" })
     expect(() => parseOuroCommand(["msg", "--to", "slugger"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["event", "status"])).toThrow("Usage")
     expect(() => parseOuroCommand(["event", "submit", "--agent", "slugger"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["event", "submit", "--agent", "slugger", "--source", "x", "--type", "y", "--id", "z", "--wat"])).toThrow("Usage")
     expect(() => parseOuroCommand(["event", "submit", "--agent", "slugger", "--source", "x", "--type", "y", "--id", "z", "--priority", "urgent"])).toThrow("--priority must be high, normal, or low")
     expect(() => parseOuroCommand(["poke"])).toThrow("Usage")
     expect(() => parseOuroCommand(["link"])).toThrow("Usage")

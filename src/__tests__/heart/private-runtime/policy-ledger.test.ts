@@ -270,6 +270,69 @@ describe("private-runtime policy and ledger", () => {
     })
   })
 
+  it("denies external-event wakes when daemon provenance names a different command", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "external event with wrong daemon provenance",
+      triggerSource: "external-event",
+      idempotencyKey: "external-event:slugger:wrong-daemon-command",
+      originRefs: [
+        { kind: "external-event", id: "feedback-1", source: "app-store-connect", eventType: "feedback.created" },
+        { kind: "daemon-command", id: "message.send" },
+      ],
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "default policy deny",
+    })
+  })
+
+  it("denies external-event wakes when the provider event id is empty", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "external event with empty provider id",
+      triggerSource: "external-event",
+      idempotencyKey: "external-event:slugger:empty-provider-id",
+      originRefs: [
+        { kind: "external-event", id: "" },
+        { kind: "daemon-command", id: "external.event.submit" },
+      ],
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "default policy deny",
+    })
+  })
+
+  it("denies external-event wakes without origin refs", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "external event without origin refs",
+      triggerSource: "external-event",
+      idempotencyKey: "external-event:slugger:no-origin-refs",
+      originRefs: undefined,
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "default policy deny",
+    })
+  })
+
   it("resolves provider metadata from the configured lane and ignores request-supplied provider/model", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({

@@ -532,7 +532,7 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(ui.container.textContent).toContain("Voice")
+    await waitFor(() => expect(ui.container.textContent).toContain("Voice"))
     expect(ui.container.textContent).toContain("can you hear me?")
     expect(ui.container.textContent).toContain("yes, loud and clear.")
   })
