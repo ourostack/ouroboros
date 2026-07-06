@@ -43,6 +43,7 @@ import {
   type ProviderCredentialRecord,
 } from "../provider-credentials"
 import {
+  mergeMachineRuntimeCredentialConfig,
   refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   upsertMachineRuntimeCredentialConfig,
@@ -2366,7 +2367,7 @@ async function executeVaultRecover(
           await upsertRuntimeCredentialConfig(command.agent, splitRuntimeConfig.agentConfig, now)
         }
         if (machineRuntimeFields.length > 0) {
-          await upsertMachineRuntimeCredentialConfig(command.agent, currentMachineId(deps), splitRuntimeConfig.machineConfig, now)
+          await mergeMachineRuntimeCredentialConfig(command.agent, currentMachineId(deps), splitRuntimeConfig.machineConfig, now)
         }
         return {
           providerCount: importedProviders.size,
@@ -2664,19 +2665,20 @@ async function storeRuntimeConfigKeys(input: {
 }): Promise<{ revision: string; itemPath: string; machineId?: string }> {
   const machineId = input.scope === "machine" ? currentMachineId(input.deps) : undefined
   input.onProgress?.("checking existing runtime config")
-  const current = input.scope === "machine"
-    ? await refreshMachineRuntimeCredentialConfig(input.agent, machineId!, { preserveCachedOnFailure: true })
-    : await refreshRuntimeCredentialConfig(input.agent, { preserveCachedOnFailure: true })
-  if (!current.ok && current.reason !== "missing") {
-    throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
+  let nextConfig: RuntimeCredentialConfig = {}
+  if (input.scope !== "machine") {
+    const current = await refreshRuntimeCredentialConfig(input.agent, { preserveCachedOnFailure: true })
+    if (!current.ok && current.reason !== "missing") {
+      throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
+    }
+    nextConfig = current.ok ? current.config : {}
   }
-  let nextConfig = current.ok ? current.config : {}
   for (const entry of input.entries) {
-    input.onProgress?.(`storing ${entry.key} in ${current.itemPath}`)
+    input.onProgress?.(`storing ${entry.key} in ${runtimeScopeLabel(input.scope)}`)
     nextConfig = setRuntimeConfigValue(nextConfig, entry.key, entry.value)
   }
   const stored = input.scope === "machine"
-    ? await upsertMachineRuntimeCredentialConfig(input.agent, machineId!, nextConfig, providerCliNow(input.deps))
+    ? await mergeMachineRuntimeCredentialConfig(input.agent, machineId!, nextConfig, providerCliNow(input.deps))
     : await upsertRuntimeCredentialConfig(input.agent, nextConfig, providerCliNow(input.deps))
   input.onProgress?.(`stored ${input.entries.map((entry) => entry.key).join(", ")}; credential values were not printed`)
   return { revision: stored.revision, itemPath: stored.itemPath, ...(machineId ? { machineId } : {}) }
@@ -4152,8 +4154,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       progress.end()
       throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
     }
-    const nextConfig: RuntimeCredentialConfig = {
-      ...(current.ok ? current.config : {}),
+    const blueBubblesPatch: RuntimeCredentialConfig = {
       bluebubbles: {
         serverUrl,
         password,
@@ -4167,7 +4168,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       },
     }
     progress.updateDetail("storing local machine config")
-    stored = await upsertMachineRuntimeCredentialConfig(agent, machineId, nextConfig, providerCliNow(deps))
+    stored = await mergeMachineRuntimeCredentialConfig(agent, machineId, blueBubblesPatch, providerCliNow(deps))
     progress.updateDetail("enabling BlueBubbles in agent.json")
     enableAgentSense(agent, "bluebubbles", deps)
     progress.completePhase("saving BlueBubbles attachment", "secret stored")

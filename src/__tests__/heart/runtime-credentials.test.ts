@@ -49,6 +49,7 @@ import {
   cacheMachineRuntimeCredentialConfig,
   cacheRuntimeCredentialConfig,
   machineRuntimeConfigItemName,
+  mergeMachineRuntimeCredentialConfig,
   readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
   refreshMachineRuntimeCredentialConfig,
@@ -539,6 +540,83 @@ describe("runtime credentials vault config", () => {
       },
     })
     expect(readMachineRuntimeCredentialConfig("slugger")).toEqual(refreshed)
+  })
+
+  it("merges partial machine-runtime updates into the current vault item without replacing sibling attachments", async () => {
+    emitTestEvent("runtime credentials machine scoped merge update")
+
+    mockCredentialStore.items.set("runtime/machines/machine_local/config", {
+      username: "runtime/machines/machine_local/config",
+      password: runtimePayload({
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-secret" },
+        bluebubblesChannel: { port: 18790, webhookPath: "/bluebubbles-webhook" },
+        voice: { whisperCliPath: "/opt/whisper.cpp/main", whisperModelPath: "/models/base.bin" },
+        a2a: { publicUrl: "https://agent.example" },
+      }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+
+    const merged = await mergeMachineRuntimeCredentialConfig("slugger", "machine_local", {
+      a2a: { identity: { ed25519Seed: "seed-123" } },
+    }, new Date("2026-04-14T13:00:00.000Z"))
+
+    expect(merged).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_local/config",
+      updatedAt: "2026-04-14T13:00:00.000Z",
+      config: {
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-secret" },
+        bluebubblesChannel: { port: 18790, webhookPath: "/bluebubbles-webhook" },
+        voice: { whisperCliPath: "/opt/whisper.cpp/main", whisperModelPath: "/models/base.bin" },
+        a2a: {
+          publicUrl: "https://agent.example",
+          identity: { ed25519Seed: "seed-123" },
+        },
+      },
+    })
+    const raw = mockCredentialStore.items.get("runtime/machines/machine_local/config")?.password
+    expect(raw).toBe(runtimePayload({
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-secret" },
+      bluebubblesChannel: { port: 18790, webhookPath: "/bluebubbles-webhook" },
+      voice: { whisperCliPath: "/opt/whisper.cpp/main", whisperModelPath: "/models/base.bin" },
+      a2a: {
+        publicUrl: "https://agent.example",
+        identity: { ed25519Seed: "seed-123" },
+      },
+    }, "2026-04-14T13:00:00.000Z"))
+  })
+
+  it("creates a machine-runtime item from a partial merge when no item exists yet", async () => {
+    emitTestEvent("runtime credentials machine scoped merge missing")
+
+    const merged = await mergeMachineRuntimeCredentialConfig("slugger", "machine_first", {
+      a2a: { identity: { ed25519Seed: "first-seed" } },
+    }, new Date("2026-04-14T13:00:00.000Z"))
+
+    expect(merged).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_first/config",
+      config: { a2a: { identity: { ed25519Seed: "first-seed" } } },
+    })
+  })
+
+  it("refuses partial machine-runtime merges when the current vault item is unreadable", async () => {
+    emitTestEvent("runtime credentials machine scoped merge unreadable")
+
+    mockCredentialStore.items.set("runtime/machines/machine_bad/config", {
+      username: "runtime/machines/machine_bad/config",
+      password: JSON.stringify({ schemaVersion: 1, kind: "wrong", updatedAt: "2026-04-14T12:00:00.000Z", config: { password: "nope" } }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+
+    await expect(
+      mergeMachineRuntimeCredentialConfig("slugger", "machine_bad", {
+        a2a: { identity: { ed25519Seed: "seed-123" } },
+      }),
+    ).rejects.toThrow(/cannot merge machine runtime config/i)
+
+    const raw = mockCredentialStore.items.get("runtime/machines/machine_bad/config")?.password
+    expect(raw).toContain('"kind":"wrong"')
   })
 
   it("classifies missing and invalid machine-scoped runtime config without leaking values", async () => {

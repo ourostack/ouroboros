@@ -884,17 +884,23 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     const rows = [...this.contexts.entries()].flatMap(([agent, context]) => {
       context.facts = senseFactsFromRuntimeConfig(agent, context.senses, readRuntimeCredentialConfig(agent), readMachineRuntimeCredentialConfig(agent))
       const blueBubblesRuntimeFacts = readBlueBubblesRuntimeFacts(agent, this.bundlesRoot, runtime.get(agent)?.bluebubbles)
+      const blueBubblesConfigured = context.facts.bluebubbles.configured
       const runtimeInfo: Partial<Record<SenseName, SenseRuntimeInfo>> = {
         cli: { configured: true },
         teams: {
           configured: context.facts.teams.configured,
           ...(runtime.get(agent)?.teams ?? {}),
         },
-        bluebubbles: {
-          configured: context.facts.bluebubbles.configured,
-          optional: context.facts.bluebubbles.optional,
-          ...blueBubblesRuntimeFacts,
-        },
+        bluebubbles: blueBubblesConfigured
+          ? {
+            configured: true,
+            optional: context.facts.bluebubbles.optional,
+            ...blueBubblesRuntimeFacts,
+          }
+          : {
+            configured: false,
+            optional: context.facts.bluebubbles.optional,
+          },
         mail: {
           configured: context.facts.mail.configured,
           ...(runtime.get(agent)?.mail ?? {}),
@@ -921,11 +927,13 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         status: entry.status,
         detail: entry.enabled
           ? entry.sense === "bluebubbles"
-            ? blueBubblesRuntimeFacts.detail
-              ?? context.facts[entry.sense].detail
+            ? blueBubblesConfigured
+              ? blueBubblesRuntimeFacts.detail
+                ?? context.facts[entry.sense].detail
+              : context.facts[entry.sense].detail
             : context.facts[entry.sense].detail
           : "not enabled in agent.json",
-        ...(entry.sense === "bluebubbles" ? {
+        ...(entry.sense === "bluebubbles" && blueBubblesConfigured ? {
           proofMethod: blueBubblesRuntimeFacts.proofMethod,
           lastProofAt: blueBubblesRuntimeFacts.lastProofAt,
           proofAgeMs: blueBubblesRuntimeFacts.proofAgeMs,
