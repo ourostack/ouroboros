@@ -2728,6 +2728,9 @@ async function applyRuntimeChangeToRunningAgent(
         : { kind: "agent.restart", agent }),
     )
     if (!response.ok) return `daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`
+    if (typeof response.message === "string" && response.message.startsWith("restart skipped")) {
+      return response.message
+    }
 
     const deadline = cliNowMs(deps) + DEFAULT_RUNTIME_APPLY_TIMEOUT_MS
     onProgress?.(`waiting for ${agent} to come back\n- reload request accepted`)

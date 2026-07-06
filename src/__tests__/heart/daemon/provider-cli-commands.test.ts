@@ -558,6 +558,7 @@ function daemonStatusData(
   status: "running" | "starting" | "stopped" | "crashed" = "running",
   overrides: Partial<{
     worker: string
+    autoStart: boolean
     pid: number | null
     startedAt: string | null
     errorReason: string | null
@@ -582,6 +583,7 @@ function daemonStatusData(
     workers: [{
       agent: agentName,
       worker: overrides.worker ?? "private-runtime",
+      autoStart: overrides.autoStart ?? true,
       status,
       pid: overrides.pid ?? 4242,
       restartCount: 0,
@@ -6782,6 +6784,11 @@ describe("provider CLI command execution", () => {
     writeMachineIdentity(homeDir, "machine_config")
     mockVaultDeps.rawSecrets.set("Slugger:runtime/machines/machine_config/config", runtimeConfigSecret({
       bluebubbles: { serverUrl: "http://127.0.0.1:1234" },
+      a2a: { identity: { ed25519Seed: "keep-a2a-seed" } },
+      voice: {
+        whisperCliPath: "/opt/homebrew/bin/whisper-cli",
+        whisperModelPath: "/models/ggml-base.en.bin",
+      },
     }))
     resetRuntimeCredentialConfigCache()
     const machineSet = await runOuroCli(
@@ -6796,6 +6803,11 @@ describe("provider CLI command execution", () => {
       bluebubbles: {
         serverUrl: "http://127.0.0.1:1234",
         password: "local-password",
+      },
+      a2a: { identity: { ed25519Seed: "keep-a2a-seed" } },
+      voice: {
+        whisperCliPath: "/opt/homebrew/bin/whisper-cli",
+        whisperModelPath: "/models/ggml-base.en.bin",
       },
     })
 
@@ -8145,6 +8157,11 @@ describe("provider CLI command execution", () => {
     writeMachineIdentity(homeDir, "machine_bb")
     mockVaultDeps.rawSecrets.set("Slugger:runtime/machines/machine_bb/config", runtimeConfigSecret({
       localTool: { token: "keep-me" },
+      a2a: { identity: { ed25519Seed: "keep-a2a-seed" } },
+      voice: {
+        whisperCliPath: "/opt/homebrew/bin/whisper-cli",
+        whisperModelPath: "/models/ggml-base.en.bin",
+      },
     }))
     resetRuntimeCredentialConfigCache()
 
@@ -8164,6 +8181,11 @@ describe("provider CLI command execution", () => {
     const stored = readRuntimeSecret("Slugger", "runtime/machines/machine_bb/config")
     expect(stored.config).toMatchObject({
       localTool: { token: "keep-me" },
+      a2a: { identity: { ed25519Seed: "keep-a2a-seed" } },
+      voice: {
+        whisperCliPath: "/opt/homebrew/bin/whisper-cli",
+        whisperModelPath: "/models/ggml-base.en.bin",
+      },
       bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-password" },
       bluebubblesChannel: { webhookPath: "/bb-webhook" },
     })
@@ -9885,6 +9907,38 @@ describe("provider CLI command execution", () => {
 
     const serpent = await runOuroCli(["provider", "refresh", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot))
     expect(serpent).toContain("SerpentGuide has no persistent provider credentials")
+  })
+
+  it("provider refresh does not wait for a parked non-autostart worker to become running", async () => {
+    emitTestEvent("provider cli refresh parked non-autostart worker")
+    const bundlesRoot = makeTempDir("provider-cli-refresh-parked-bundles")
+    const homeDir = makeTempDir("provider-cli-refresh-parked-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const sentCommands: unknown[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      checkSocketAlive: async () => true,
+      sendCommand: async (_socketPath, command) => {
+        sentCommands.push(command)
+        if (command.kind === "agent.restart") {
+          return { ok: true, message: "restart skipped for parked non-autostart agent 'Slugger'" }
+        }
+        if (command.kind === "daemon.status") {
+          throw new Error("provider refresh should not poll status after a parked restart skip")
+        }
+        return { ok: true }
+      },
+    })
+
+    const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("running agent: restart skipped for parked non-autostart agent 'Slugger'")
+    expect(output).toContain("asking Ouro to reload Slugger")
+    expect(output).not.toContain("waiting for Slugger to come back")
+    expect(sentCommands).toEqual([{ kind: "agent.restart", agent: "Slugger", skipConfigCheck: true }])
   })
 
   it("provider refresh times out cleanly when the daemon never reports the agent running again", async () => {
