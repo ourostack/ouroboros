@@ -439,12 +439,15 @@ describe("daemon sense manager", () => {
       bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" },
       bluebubblesChannel: { port: 18789, webhookPath: "/bluebubbles-webhook" },
     })
+    let snapshotRunning = false
     const processManager = {
       startAutoStartAgents: vi.fn(async () => undefined),
       resetAgentFailureState: vi.fn(),
-      startAgent: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => {
+        snapshotRunning = true
+      }),
       stopAll: vi.fn(async () => undefined),
-      listAgentSnapshots: vi.fn(() => [{ name: "slugger:bluebubbles", status: "running" }]),
+      listAgentSnapshots: vi.fn(() => snapshotRunning ? [{ name: "slugger:bluebubbles", status: "running" }] : []),
     }
 
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
@@ -463,6 +466,171 @@ describe("daemon sense manager", () => {
       sense: "bluebubbles",
       status: "running",
       detail: ":18789 /bluebubbles-webhook",
+    }))
+  })
+
+  it("refreshes stale machine runtime facts before reviving a local managed sense", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const runtimeConfig = {
+      ok: true,
+      itemPath: "vault:slugger:runtime/config",
+      config: {},
+      revision: "runtime_test",
+      updatedAt: new Date(0).toISOString(),
+    }
+    const missingMachineConfig = {
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:slugger:runtime/machines/machine_test/config",
+      error: "missing",
+    }
+    const refreshedMachineConfig = {
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_test/config",
+      config: {
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" },
+        bluebubblesChannel: { port: 18791, webhookPath: "/bluebubbles-webhook" },
+      },
+      revision: "runtime_machine_test",
+      updatedAt: new Date(0).toISOString(),
+    }
+    let machineRuntimeConfig = missingMachineConfig
+    const refreshRuntimeCredentialConfig = vi.fn(async () => runtimeConfig)
+    const refreshMachineRuntimeCredentialConfig = vi.fn(async () => {
+      machineRuntimeConfig = refreshedMachineConfig
+      return refreshedMachineConfig
+    })
+    vi.doMock("../../../heart/runtime-credentials", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
+      return {
+        ...actual,
+        readRuntimeCredentialConfig: vi.fn(() => runtimeConfig),
+        refreshRuntimeCredentialConfig,
+        readMachineRuntimeCredentialConfig: vi.fn(() => machineRuntimeConfig),
+        refreshMachineRuntimeCredentialConfig,
+      }
+    })
+    let snapshotRunning = false
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      startAgent: vi.fn(async () => {
+        snapshotRunning = true
+      }),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => snapshotRunning ? [{ name: "slugger:bluebubbles", status: "running" }] : []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "bluebubbles",
+      status: "not_attached",
+      detail: "not attached on this machine",
+    }))
+
+    const row = await manager.reviveSense("slugger", "bluebubbles")
+
+    expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+    expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", expect.any(String), { preserveCachedOnFailure: true })
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(row).toEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "bluebubbles",
+      status: "running",
+      detail: ":18791 /bluebubbles-webhook",
+    }))
+  })
+
+  it("uses cached machine runtime facts when reviving a non-local managed sense", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        mail: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const runtimeConfig = {
+      ok: true,
+      itemPath: "vault:slugger:runtime/config",
+      config: {
+        mailroom: {
+          mailboxAddress: "slugger@example.com",
+          privateKeys: { default: "key" },
+        },
+      },
+      revision: "runtime_test",
+      updatedAt: new Date(0).toISOString(),
+    }
+    const machineRuntimeConfig = {
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_test/config",
+      config: {},
+      revision: "runtime_machine_test",
+      updatedAt: new Date(0).toISOString(),
+    }
+    const refreshRuntimeCredentialConfig = vi.fn(async () => runtimeConfig)
+    const readMachineRuntimeCredentialConfig = vi.fn(() => machineRuntimeConfig)
+    const refreshMachineRuntimeCredentialConfig = vi.fn(async () => machineRuntimeConfig)
+    vi.doMock("../../../heart/runtime-credentials", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
+      return {
+        ...actual,
+        readRuntimeCredentialConfig: vi.fn(() => runtimeConfig),
+        refreshRuntimeCredentialConfig,
+        readMachineRuntimeCredentialConfig,
+        refreshMachineRuntimeCredentialConfig,
+      }
+    })
+    let snapshotRunning = false
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      startAgent: vi.fn(async () => {
+        snapshotRunning = true
+      }),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => snapshotRunning ? [{ name: "slugger:mail", status: "running" }] : []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    const row = await manager.reviveSense("slugger", "mail")
+
+    expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+    expect(readMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger")
+    expect(refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:mail")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:mail")
+    expect(row).toEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "mail",
+      status: "running",
+      detail: "slugger@example.com",
     }))
   })
 

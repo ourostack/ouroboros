@@ -44,6 +44,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { parseHabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
+import { buildExternalEventMessage, recordExternalEvent } from "../external-events/router"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -455,6 +456,7 @@ export type DaemonCommand =
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger?: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
+  | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list"; agent?: string }
@@ -495,6 +497,8 @@ export interface OuroDaemonOptions {
    * in the daemon core.
    */
   onStopCommandComplete?: () => void
+  /** Test seam for external-event receipts. Defaults to ~/.ouro-cli/daemon/external-events. */
+  externalEventRoot?: string
 }
 
 interface DaemonWorkerRow {
@@ -764,6 +768,7 @@ export class OuroDaemon {
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void) | null
+  private readonly externalEventRoot: string | null
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -777,6 +782,7 @@ export class OuroDaemon {
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
+    this.externalEventRoot = options.externalEventRoot ?? null
   }
 
   /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
@@ -1412,6 +1418,25 @@ export class OuroDaemon {
     }
   }
 
+  private buildExternalEventPrivateWakeCommand(
+    command: Extract<DaemonCommand, { kind: "external.event.submit" }>,
+    receiptId: string,
+  ): Extract<DaemonCommand, { kind: "private.wake" }> {
+    return {
+      kind: "private.wake",
+      agent: command.agent,
+      reason: `external event ${command.source}/${command.eventType}`,
+      triggerSource: "external-event",
+      budgetClass: "interactive",
+      idempotencyKey: `external-event:${command.agent}:${command.source}:${command.eventId}`,
+      originRefs: [
+        { kind: "external-event", id: command.eventId, source: command.source, eventType: command.eventType },
+        { kind: "queue-receipt", id: receiptId },
+        { kind: "daemon-command", id: "external.event.submit" },
+      ],
+    }
+  }
+
   private resolveHabitPokeOccurrenceId(
     command: Extract<DaemonCommand, { kind: "habit.poke" }>,
     trigger: HabitRunTrigger,
@@ -1698,6 +1723,39 @@ export class OuroDaemon {
           ok: true,
           summary: `${messages.length} messages`,
           data: messages,
+        }
+      }
+      case "external.event.submit": {
+        const record = recordExternalEvent({
+          agent: command.agent,
+          source: command.source,
+          eventType: command.eventType,
+          eventId: command.eventId,
+          summary: command.summary,
+          evidence: command.evidence,
+          payloadPath: command.payloadPath,
+          priority: command.priority,
+        }, {
+          ...(this.externalEventRoot ? { root: this.externalEventRoot } : {}),
+        })
+        const receipt = await this.router.send({
+          from: "ouro-external-event",
+          to: command.agent,
+          content: buildExternalEventMessage(record),
+          priority: record.priority,
+          sessionId: command.sessionId,
+          taskRef: command.taskRef ?? `${record.source}:${record.eventId}`,
+        })
+        let wake: DaemonResponse | null = null
+        if (command.wake !== false) {
+          wake = await this.handlePrivateRuntimeWake(this.buildExternalEventPrivateWakeCommand(command, receipt.id))
+        }
+        return {
+          ok: true,
+          message: command.wake === false
+            ? `queued external event ${record.source}/${record.eventId} as ${receipt.id}`
+            : `queued external event ${record.source}/${record.eventId} as ${receipt.id}; ${wake?.message ?? "wake skipped"}`,
+          data: { event: record, receipt, wake },
         }
       }
       case "private.decisions": {

@@ -412,6 +412,65 @@ describe("ouro CLI parsing", () => {
       taskRef: "habit-heartbeat",
     })
 
+    expect(parseOuroCommand([
+      "event",
+      "submit",
+      "--agent",
+      "slugger",
+      "--source",
+      "app-store-connect",
+      "--type",
+      "feedback.created",
+      "--id",
+      "feedback-1",
+      "--summary",
+      "feedback arrived",
+      "--evidence",
+      "/tmp/feedback",
+      "--payload",
+      "/tmp/feedback/payload.json",
+      "--priority",
+      "high",
+      "--session",
+      "session-1",
+      "--task",
+      "feedback-task",
+    ])).toEqual({
+      kind: "external.event.submit",
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "feedback.created",
+      eventId: "feedback-1",
+      summary: "feedback arrived",
+      evidence: ["/tmp/feedback"],
+      payloadPath: "/tmp/feedback/payload.json",
+      priority: "high",
+      sessionId: "session-1",
+      taskRef: "feedback-task",
+      wake: true,
+    })
+
+    expect(parseOuroCommand([
+      "event",
+      "submit",
+      "--agent",
+      "slugger",
+      "--source",
+      "app-store-connect",
+      "--type",
+      "feedback.created",
+      "--id",
+      "feedback-1",
+      "--no-wake",
+    ])).toEqual({
+      kind: "external.event.submit",
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "feedback.created",
+      eventId: "feedback-1",
+      wake: false,
+    })
+
     expect(parseOuroCommand(["poke", "slugger", "--task", "habit-heartbeat"])).toEqual({
       kind: "task.poke",
       agent: "slugger",
@@ -639,6 +698,10 @@ describe("ouro CLI parsing", () => {
   it("throws on malformed command shapes", () => {
     expect(parseOuroCommand(["chat"])).toEqual({ kind: "chat.connect", agent: "" })
     expect(() => parseOuroCommand(["msg", "--to", "slugger"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["event", "status"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["event", "submit", "--agent", "slugger"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["event", "submit", "--agent", "slugger", "--source", "x", "--type", "y", "--id", "z", "--wat"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["event", "submit", "--agent", "slugger", "--source", "x", "--type", "y", "--id", "z", "--priority", "urgent"])).toThrow("--priority must be high, normal, or low")
     expect(() => parseOuroCommand(["poke"])).toThrow("Usage")
     expect(() => parseOuroCommand(["link"])).toThrow("Usage")
     expect(() => parseOuroCommand(["link", "slugger", "--friend", "friend-1", "--provider", "aad"])).toThrow("Usage")
@@ -2959,6 +3022,57 @@ describe("ouro CLI execution", () => {
       idempotencyKey: "cli:message:slugger:unreceipted",
       originRefs: [expect.objectContaining({ kind: "cli-command", id: "ouro msg" })],
     }))
+  })
+
+  it("routes external event submit through the daemon command plane", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "external.event.submit") {
+          return {
+            ok: true,
+            message: "queued external event app-store-connect/feedback-1 as msg-1; woke private runtime for slugger",
+            data: { receipt: { id: "msg-1", queuedAt: "2026-04-10T05:02:36.000Z" } },
+          }
+        }
+        return { ok: true, message: "unexpected command" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli([
+      "event",
+      "submit",
+      "--agent",
+      "slugger",
+      "--source",
+      "app-store-connect",
+      "--type",
+      "feedback.created",
+      "--id",
+      "feedback-1",
+      "--evidence",
+      "/tmp/feedback",
+    ], deps)
+
+    expect(result).toContain("queued external event")
+    expect(deps.sendCommand).toHaveBeenCalledTimes(1)
+    expect(deps.sendCommand).toHaveBeenCalledWith(
+      "/tmp/ouro-test.sock",
+      expect.objectContaining({
+        kind: "external.event.submit",
+        agent: "slugger",
+        source: "app-store-connect",
+        eventType: "feedback.created",
+        eventId: "feedback-1",
+        evidence: ["/tmp/feedback"],
+        wake: true,
+      }),
+    )
   })
 
   it("routes link command through friend store instead of daemon socket", async () => {

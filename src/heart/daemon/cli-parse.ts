@@ -116,6 +116,7 @@ export function usage(): string {
     "  ouro dns backup|plan|apply|verify|rollback|certificate [--agent <name>] --binding <path> [--output <path>] [--backup <path>] [--yes]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
+    "  ouro event submit --agent <agent> --source <source> --type <event-type> --id <provider-id> [--summary <text>] [--evidence <path>] [--payload <path>] [--priority high|normal|low] [--no-wake]",
     "  ouro poke <agent> --task <task-id>",
     "  ouro poke <agent> --habit <name> [--trigger poke|launchd|cron|overdue|manual]",
     "  ouro habit list [--agent <name>]",
@@ -188,6 +189,58 @@ function parseMessageCommand(args: string[]): OuroCliCommand {
     content,
     sessionId,
     taskRef,
+  }
+}
+
+function parseEventCommand(args: string[]): OuroCliCommand {
+  const sub = args[0]
+  if (sub !== "submit") throw new Error(`Usage\n${usage()}`)
+
+  let agent: string | undefined
+  let source: string | undefined
+  let eventType: string | undefined
+  let eventId: string | undefined
+  let summary: string | undefined
+  const evidence: string[] = []
+  let payloadPath: string | undefined
+  let priority: string | undefined
+  let sessionId: string | undefined
+  let taskRef: string | undefined
+  let wake = true
+
+  for (let i = 1; i < args.length; i += 1) {
+    const token = args[i]
+    const value = args[i + 1]
+    if (token === "--agent" && value) { agent = value; i += 1; continue }
+    if (token === "--source" && value) { source = value; i += 1; continue }
+    if (token === "--type" && value) { eventType = value; i += 1; continue }
+    if (token === "--id" && value) { eventId = value; i += 1; continue }
+    if (token === "--summary" && value) { summary = value; i += 1; continue }
+    if (token === "--evidence" && value) { evidence.push(value); i += 1; continue }
+    if (token === "--payload" && value) { payloadPath = value; i += 1; continue }
+    if (token === "--priority" && value) { priority = value; i += 1; continue }
+    if (token === "--session" && value) { sessionId = value; i += 1; continue }
+    if (token === "--task" && value) { taskRef = value; i += 1; continue }
+    if (token === "--no-wake") { wake = false; continue }
+    throw new Error(`Usage\n${usage()}`)
+  }
+
+  if (!agent || !source || !eventType || !eventId) throw new Error(`Usage\n${usage()}`)
+  if (priority && !["high", "normal", "low"].includes(priority)) throw new Error("--priority must be high, normal, or low")
+
+  return {
+    kind: "external.event.submit",
+    agent,
+    source,
+    eventType,
+    eventId,
+    ...(summary ? { summary } : {}),
+    ...(evidence.length > 0 ? { evidence } : {}),
+    ...(payloadPath ? { payloadPath } : {}),
+    ...(priority ? { priority } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(taskRef ? { taskRef } : {}),
+    wake,
   }
 }
 
@@ -1840,6 +1893,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return { kind: "chat.connect", agent: second }
   }
   if (head === "msg") return parseMessageCommand(args.slice(1))
+  if (head === "event") return parseEventCommand(args.slice(1))
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
   if (head === "link") return parseLinkCommand(args.slice(1))
