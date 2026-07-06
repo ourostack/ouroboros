@@ -862,6 +862,62 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
   })
 
+  it("does not respawn a non-autostart worker after an unexpected crash exit", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValueOnce(1_000).mockReturnValue(2_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("ouroboros")
+    child.emit("exit", 1, null)
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(timers).toHaveLength(0)
+    expect(manager.getAgentSnapshot("ouroboros")).toEqual(expect.objectContaining({
+      autoStart: false,
+      status: "stopped",
+      pid: null,
+      lastExitCode: 1,
+      lastSignal: null,
+      restartCount: 0,
+    }))
+  })
+
+  it("does not respawn a non-autostart worker after an external signal", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValueOnce(1_000).mockReturnValue(2_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("ouroboros")
+    child.emit("exit", null, "SIGTERM")
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(timers).toHaveLength(0)
+    expect(manager.getAgentSnapshot("ouroboros")).toEqual(expect.objectContaining({
+      autoStart: false,
+      status: "stopped",
+      pid: null,
+      lastExitCode: null,
+      lastSignal: "SIGTERM",
+      restartCount: 0,
+    }))
+  })
+
   it("ignores stale exits from a child that was replaced during restart", async () => {
     const first = new MockChild()
     first.pid = 111

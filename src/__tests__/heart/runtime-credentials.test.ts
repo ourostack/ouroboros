@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
+import * as path from "path"
 
 const mockCredentialStore = vi.hoisted(() => {
   const items = new Map<string, { username?: string; password: string; notes?: string; createdAt: string }>()
@@ -80,6 +82,19 @@ function runtimePayload(config: Record<string, unknown>, updatedAt = "2026-04-14
     kind: "runtime-config",
     updatedAt,
     config,
+  })
+}
+
+function listProductionTsFiles(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === "__tests__" || entry.name === "node_modules") return []
+      return listProductionTsFiles(fullPath)
+    }
+    if (!entry.isFile()) return []
+    if (!entry.name.endsWith(".ts") || entry.name.endsWith(".d.ts")) return []
+    return [fullPath]
   })
 }
 
@@ -584,6 +599,19 @@ describe("runtime credentials vault config", () => {
         identity: { ed25519Seed: "seed-123" },
       },
     }, "2026-04-14T13:00:00.000Z"))
+  })
+
+  it("keeps production machine-runtime partial writers behind the merge helper", () => {
+    emitTestEvent("runtime credentials machine writer inventory")
+
+    const srcRoot = path.join(process.cwd(), "src")
+    const allowedRawWriter = path.join("src", "heart", "runtime-credentials.ts")
+    const offenders = listProductionTsFiles(srcRoot)
+      .filter((filePath) => path.relative(process.cwd(), filePath) !== allowedRawWriter)
+      .filter((filePath) => fs.readFileSync(filePath, "utf-8").includes("upsertMachineRuntimeCredentialConfig("))
+      .map((filePath) => path.relative(process.cwd(), filePath))
+
+    expect(offenders).toEqual([])
   })
 
   it("creates a machine-runtime item from a partial merge when no item exists yet", async () => {

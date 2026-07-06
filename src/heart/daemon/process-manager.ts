@@ -732,6 +732,13 @@ export class DaemonProcessManager {
     }
 
     state.snapshot.lastCrashAt = new Date(now).toISOString()
+    if (state.config.autoStart === false) {
+      state.snapshot.status = "stopped"
+      state.snapshot.errorReason = "non-autostart worker exited unexpectedly; not respawning"
+      state.snapshot.fixHint = "Start it explicitly after checking the exit cause."
+      this.notifySnapshotChange(state.snapshot)
+      return
+    }
 
     // Fast-crash detection: if the agent dies within 5 seconds of starting, it's likely
     // a configuration issue (missing credentials, bad provider, etc.) not a transient failure.

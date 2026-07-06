@@ -2414,6 +2414,24 @@ describe("daemon command plane branches", () => {
     expect(processManager.restartAgent).toHaveBeenCalledWith("slugger")
   })
 
+  it("skips agent restart requests for parked non-autostart workers", async () => {
+    const socketPath = tmpSocketPath("daemon-agent-restart-parked")
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([{
+      ...registeredSnapshot("slugger"),
+      autoStart: false,
+      status: "stopped",
+      pid: null,
+      startedAt: null,
+    }])
+    processManager.restartAgent = vi.fn(async () => undefined)
+
+    const response = await daemon.handleCommand({ kind: "agent.restart", agent: "slugger" })
+
+    expect(response).toEqual({ ok: true, message: "restart skipped for parked non-autostart agent 'slugger'" })
+    expect(processManager.restartAgent).not.toHaveBeenCalled()
+  })
+
   it("passes skipConfigCheck to acknowledged agent restarts when requested", async () => {
     const socketPath = tmpSocketPath("daemon-agent-restart-skip-config")
     const { daemon, processManager } = make(socketPath)

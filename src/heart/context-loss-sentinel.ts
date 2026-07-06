@@ -1141,6 +1141,11 @@ function renderSignal(signalEntry: ContextLossSentinelSignal): string {
 }
 
 function formatReceipt(receipt: ContextLossSentinelReceipt): string[] {
+  const blockedGuidance = receipt.verdict === "blocked"
+    ? receipt.latestReadyLocator
+      ? "guidance: current latest is blocked; repair blocked signals or use latest-ready before continuing."
+      : "guidance: current latest is blocked; repair blocked signals before continuing."
+    : null
   return [
     `Recovery Sentinel - ${receipt.agent}`,
     `generated: ${receipt.generatedAt}`,
@@ -1149,6 +1154,7 @@ function formatReceipt(receipt: ContextLossSentinelReceipt): string[] {
     `verdict: ${receipt.verdict}`,
     `latest-ready: ${receipt.latestReadyLocator ?? "unavailable"}`,
     `summary: ${receipt.summary}`,
+    ...(blockedGuidance ? [blockedGuidance] : []),
     "",
     "Recovery anchor",
     `  kind: ${receipt.recoveryAnchor.kind}`,

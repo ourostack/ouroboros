@@ -1623,10 +1623,13 @@ export class OuroDaemon {
         if (!this.processManager.restartAgent) {
           return { ok: false, error: "Managed agent restart is not available." }
         }
-        const managed = this.processManager.listAgentSnapshots()
-          .some((snapshot) => snapshot.name === command.agent)
-        if (!managed) {
+        const managedSnapshot = this.processManager.listAgentSnapshots()
+          .find((snapshot) => snapshot.name === command.agent)
+        if (!managedSnapshot) {
           return { ok: false, error: `Unknown managed agent '${command.agent}'.` }
+        }
+        if (managedSnapshot.autoStart === false && managedSnapshot.status === "stopped") {
+          return { ok: true, message: `restart skipped for parked non-autostart agent '${command.agent}'` }
         }
         const restartWork = command.skipConfigCheck === true
           ? this.processManager.restartAgent(command.agent, { skipConfigCheck: true })

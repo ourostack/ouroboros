@@ -361,9 +361,25 @@ describe("start-of-turn packet", () => {
       const rendered = renderStartOfTurnPacket(packet)
       expect(rendered).toContain("**Recovery Sentinel:**")
       expect(rendered).toContain("verdict: blocked")
+      expect(rendered).toContain("current latest is blocked")
       expect(rendered).toContain("latest-ready: arc/flight-recorder/context-loss-sentinel/latest-ready.json")
       expect(rendered).toContain("current ask: continue Arc Sentinel implementation")
       expect(rendered).toContain("next action: resume from latest-ready and rerun checks")
+    })
+
+    it("renders current-session timing so long gaps are visible at turn start", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "answer the current message" })],
+      })
+      const packet = buildStartOfTurnPacket(view, {
+        currentSessionTiming: "current thread: last inbound 7d ago; i last replied 7d ago; 1 unanswered inbound message",
+      })
+
+      const rendered = renderStartOfTurnPacket(packet)
+
+      expect(rendered).toContain("**Thread timing:** current thread: last inbound 7d ago")
+      expect(rendered).toContain("i last replied 7d ago")
+      expect(rendered).toContain("1 unanswered inbound message")
     })
 
     it("keeps Recovery Sentinel and Arc resume under truncation pressure", () => {
@@ -388,6 +404,29 @@ describe("start-of-turn packet", () => {
       expect(rendered).toContain("**Arc:**")
       expect(rendered).toContain("**Recovery Sentinel:**")
       expect(rendered).toContain("latest-ready: arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+    })
+
+    it("keeps current-session timing under truncation pressure", () => {
+      const view = makeView({
+        tempo: "brief",
+        recentEpisodes: Array.from({ length: 60 }, (_, i) =>
+          makeEpisode({ id: `ep-${i}`, summary: `oversized episode ${i} with detail that can be trimmed` }),
+        ),
+        activeObligations: Array.from({ length: 40 }, (_, i) =>
+          makeObligation({ id: `ob-${i}`, content: `oversized obligation ${i} that can be trimmed` }),
+        ),
+        activeCares: Array.from({ length: 40 }, (_, i) =>
+          makeCare({ id: `care-${i}`, label: `oversized care ${i} that can be trimmed` }),
+        ),
+      })
+      const packet = buildStartOfTurnPacket(view, {
+        currentSessionTiming: "current thread: last inbound 8d ago; i last replied 8d ago",
+        recoverySentinel: makeSentinelView(),
+      } as any)
+
+      const rendered = renderStartOfTurnPacket(packet)
+
+      expect(rendered).toContain("**Thread timing:** current thread: last inbound 8d ago")
     })
   })
 

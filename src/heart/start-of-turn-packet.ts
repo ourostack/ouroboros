@@ -288,7 +288,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   for (const section of sortedByPriority) {
     if (tokens <= budget.max) break
     // Skip continuity sections — they are protected.
-    if (section.label === "resume" || section.label === "arc" || section.label === "recoverySentinel") continue
+    if (section.label === "resume" || section.label === "arc" || section.label === "recoverySentinel" || section.label === "sessionTiming") continue
 
     // Remove this section entirely
     const idx = sections.findIndex((s) => s.label === section.label)
@@ -326,6 +326,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         break
       case "recoverySentinel":
         parts.push(`**Recovery Sentinel:**\n${section.content}`)
+        break
+      case "sessionTiming":
+        parts.push(`**Thread timing:** ${section.content}`)
         break
       case "obligations":
         parts.push(`**Owed:**\n${section.content}`)
