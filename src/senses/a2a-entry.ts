@@ -34,8 +34,8 @@ Promise.all([
 ])
   .then(async ([
     { startA2AServer },
-    { loadOrMintA2AIdentity },
-    { waitForRuntimeCredentialBootstrap, readMachineRuntimeCredentialConfig, upsertMachineRuntimeCredentialConfig },
+    { loadOrMintA2AIdentity, readStoredA2ASeed },
+    { waitForRuntimeCredentialBootstrap, readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, mergeMachineRuntimeCredentialConfig },
     { loadOrCreateMachineIdentity },
     { ready },
   ]) => {
@@ -52,14 +52,21 @@ Promise.all([
 
     const sodium = await ready()
     const machineId = loadOrCreateMachineIdentity({ homeDir: os.homedir() }).machineId
-    const machineConfigRead = readMachineRuntimeCredentialConfig(agentName)
+    const cachedMachineConfigRead = readMachineRuntimeCredentialConfig(agentName)
+    const machineConfigRead = cachedMachineConfigRead.ok && readStoredA2ASeed(cachedMachineConfigRead.config)
+      ? cachedMachineConfigRead
+      : await refreshMachineRuntimeCredentialConfig(agentName, machineId)
+    if (!machineConfigRead.ok && machineConfigRead.reason !== "missing") {
+      throw new Error(`A2A identity requires readable machine runtime config at ${machineConfigRead.itemPath}: ${machineConfigRead.error}`)
+    }
     const machineConfig = machineConfigRead.ok ? machineConfigRead.config : {}
     const identity = await loadOrMintA2AIdentity({
       agentName,
       sodium,
       config: machineConfig,
       upsert: async (next) => {
-        await upsertMachineRuntimeCredentialConfig(agentName, machineId, next)
+        const seed = readStoredA2ASeed(next) as string
+        await mergeMachineRuntimeCredentialConfig(agentName, machineId, { a2a: { identity: { ed25519Seed: seed } } })
       },
     })
 

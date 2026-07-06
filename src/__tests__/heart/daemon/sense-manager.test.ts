@@ -2813,6 +2813,63 @@ describe("daemon sense manager", () => {
     )
   })
 
+  it("reports missing BlueBubbles config before stale proof or listener facts", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+      },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(runtimeDir, "runtime.json"),
+      JSON.stringify({
+        upstreamStatus: "error",
+        detail: "old stale proof should not hide missing config",
+        lastCheckedAt: "2026-01-01T00:00:00.000Z",
+        proofMethod: "bluebubbles.checkHealth",
+        pendingRecoveryCount: 2,
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:bluebubbles", status: "crashed" },
+        ],
+      },
+    })
+
+    const row = manager.listSenseRows().find((entry) => entry.sense === "bluebubbles")
+    expect(row).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "missing bluebubbles.password",
+      }),
+    )
+    expect(row?.failureLayer).toBeUndefined()
+    expect(row?.lastFailure).toBeUndefined()
+    expect(row?.proofMethod).toBeUndefined()
+  })
+
   it("reports unavailable BlueBubbles machine attachments distinctly from not_attached", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {

@@ -327,6 +327,18 @@ export async function refreshMachineRuntimeCredentialConfig(
   return refreshRuntimeCredentialConfigItem(agentName, machineRuntimeConfigItemName(machineId), cacheMachineResult, options)
 }
 
+function mergeRuntimeCredentialConfig(base: RuntimeCredentialConfig, patch: RuntimeCredentialConfig): RuntimeCredentialConfig {
+  const next: RuntimeCredentialConfig = { ...base }
+  for (const key of Object.keys(patch)) {
+    const baseValue = next[key]
+    const patchValue = patch[key]
+    next[key] = isRecord(baseValue) && isRecord(patchValue)
+      ? mergeRuntimeCredentialConfig(baseValue, patchValue)
+      : patchValue
+  }
+  return next
+}
+
 export async function upsertRuntimeCredentialConfig(
   agentName: string,
   config: RuntimeCredentialConfig,
@@ -383,6 +395,22 @@ export async function upsertMachineRuntimeCredentialConfig(
   })
   cacheMachineResult(agentName, result)
   return result
+}
+
+// Partial machine-runtime writers must use this helper, not raw upsert: one
+// machine item carries multiple local attachments such as A2A, BlueBubbles, and Voice.
+export async function mergeMachineRuntimeCredentialConfig(
+  agentName: string,
+  machineId: string,
+  patch: RuntimeCredentialConfig,
+  now: Date = new Date(),
+): Promise<RuntimeCredentialConfigReadSuccess> {
+  const current = await refreshMachineRuntimeCredentialConfig(agentName, machineId)
+  if (!current.ok && current.reason !== "missing") {
+    throw new Error(`cannot merge machine runtime config at ${current.itemPath}: ${current.error}`)
+  }
+  const base = current.ok ? current.config : {}
+  return upsertMachineRuntimeCredentialConfig(agentName, machineId, mergeRuntimeCredentialConfig(base, patch), now)
 }
 
 export function resetRuntimeCredentialConfigCache(): void {
