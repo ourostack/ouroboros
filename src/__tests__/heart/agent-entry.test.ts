@@ -11,7 +11,14 @@ function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function mockWorkerModules(startPrivateRuntimeWorker = vi.fn(async () => undefined)) {
+function createWorkerControllerMock() {
+  return {
+    run: vi.fn(async () => undefined),
+    handleMessage: vi.fn(async () => undefined),
+  }
+}
+
+function mockWorkerModules(startPrivateRuntimeWorker = vi.fn(async () => createWorkerControllerMock())) {
   const startLegacyWorker = vi.fn(async () => undefined)
   vi.doMock("../../senses/private-runtime-worker", () => ({ startPrivateRuntimeWorker }))
   vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker: startLegacyWorker }))
@@ -164,6 +171,84 @@ describe("agent entrypoint", () => {
     expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
     expect(refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     argvSpy.mockRestore()
+  })
+
+  it("buffers work messages that arrive while credential bootstrap is still pending", async () => {
+    vi.resetModules()
+
+    ;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for("ouro.agentEntry.ipcState")] = {
+      bufferedMessages: [],
+      installed: false,
+      workerMessageHandler: null,
+    }
+    let messageHandler: ((message: unknown) => void) | undefined
+    const processOnSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "message") messageHandler = handler
+      return process
+    }) as never)
+    const controller = createWorkerControllerMock()
+    let resolveWorkerStart!: (value: typeof controller) => void
+    const workerStart = new Promise<typeof controller>((resolve) => {
+      resolveWorkerStart = resolve
+    })
+    const startPrivateRuntimeWorker = vi.fn(() => workerStart)
+    mockWorkerModules(startPrivateRuntimeWorker)
+    const configureCliRuntimeLogger = vi.fn()
+    let resolveBootstrap!: (value: boolean) => void
+    const waitForRuntimeCredentialBootstrap = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveBootstrap = resolve
+    }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      waitForRuntimeCredentialBootstrap,
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
+      })
+      expect(messageHandler).toEqual(expect.any(Function))
+      messageHandler?.({
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+      })
+      messageHandler?.([])
+      messageHandler?.({ type: "poke", taskId: "testflight-feedback" })
+      resolveBootstrap(true)
+
+      await vi.waitFor(() => {
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
+          attachProcessListeners: false,
+          bufferedMessages: [{ type: "poke", taskId: "testflight-feedback" }],
+        })
+      })
+
+      messageHandler?.({ type: "message" })
+      resolveWorkerStart(controller)
+      await vi.waitFor(() => {
+        expect(controller.handleMessage).toHaveBeenCalledWith({ type: "message" })
+      })
+
+      messageHandler?.({ type: "chat" })
+      await vi.waitFor(() => {
+        expect(controller.handleMessage).toHaveBeenCalledWith({ type: "chat" })
+      })
+    } finally {
+      argvSpy.mockRestore()
+      processOnSpy.mockRestore()
+    }
   })
 
   it("fails fast when --agent is missing", async () => {

@@ -34,7 +34,7 @@ describe("private-runtime worker", () => {
 
     try {
       const { startPrivateRuntimeWorker } = await import(workerModulePath) as {
-        startPrivateRuntimeWorker: () => Promise<void>
+        startPrivateRuntimeWorker: () => Promise<unknown>
       }
 
       await startPrivateRuntimeWorker()
@@ -47,6 +47,40 @@ describe("private-runtime worker", () => {
     } finally {
       onSpy.mockRestore()
       exitSpy.mockRestore()
+    }
+  })
+
+  it("can flush buffered messages without attaching process listeners", async () => {
+    vi.resetModules()
+    const runPrivateRuntimeTurn = vi.fn(async () => undefined)
+    const onSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: any[]) => void) => {
+      void event
+      void handler
+      return process
+    }) as any)
+    vi.doMock(runtimeModulePath, () => ({ runPrivateRuntimeTurn }))
+
+    try {
+      const { startPrivateRuntimeWorker } = await import(workerModulePath) as {
+        startPrivateRuntimeWorker: (options?: {
+          attachProcessListeners?: boolean
+          bufferedMessages?: unknown[]
+        }) => Promise<unknown>
+      }
+
+      await startPrivateRuntimeWorker({
+        attachProcessListeners: false,
+        bufferedMessages: [{ type: "poke", taskId: "queued-feedback" }],
+      })
+
+      expect(onSpy).not.toHaveBeenCalled()
+      expect(runPrivateRuntimeTurn).toHaveBeenCalledWith({
+        reason: "instinct",
+        taskId: "queued-feedback",
+        habitName: undefined,
+      })
+    } finally {
+      onSpy.mockRestore()
     }
   })
 
