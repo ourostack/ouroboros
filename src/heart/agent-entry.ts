@@ -1,12 +1,13 @@
 // Unified agent runtime entrypoint.
 // Requires --agent before importing runtime modules that rely on identity.
 const agentArgIndex = process.argv.indexOf("--agent")
-const agentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
-if (!agentName) {
+const parsedAgentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
+if (!parsedAgentName) {
   // eslint-disable-next-line no-console -- pre-boot guard
   console.error("Missing required --agent <name> argument.\nUsage: node dist/heart/agent-entry.js --agent ouroboros")
   process.exit(1)
 }
+const agentName = parsedAgentName
 
 import { configureCliRuntimeLogger } from "../nerves/cli-logging"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -15,6 +16,7 @@ import type { PrivateRuntimeWorkerController } from "../senses/private-runtime-w
 configureCliRuntimeLogger("self")
 
 interface AgentEntryIpcState {
+  bufferedRuntimeCredentialMessages: unknown[]
   bufferedMessages: unknown[]
   installed: boolean
   workerMessageHandler: ((message: unknown) => void) | null
@@ -22,11 +24,13 @@ interface AgentEntryIpcState {
 
 const ipcStateKey = Symbol.for("ouro.agentEntry.ipcState")
 const ipcState = ((globalThis as unknown as Record<symbol, AgentEntryIpcState>)[ipcStateKey] ??= {
+  bufferedRuntimeCredentialMessages: [],
   bufferedMessages: [],
   installed: false,
   workerMessageHandler: null,
 })
 
+ipcState.bufferedRuntimeCredentialMessages = []
 ipcState.bufferedMessages = []
 ipcState.workerMessageHandler = null
 
@@ -35,6 +39,27 @@ function isRuntimeCredentialBootstrapMessage(message: unknown): boolean {
     && typeof message === "object"
     && !Array.isArray(message)
     && (message as { type?: unknown }).type === "ouro.runtimeCredentialBootstrap"
+}
+
+function isRuntimeCredentialBootstrapForAgent(message: unknown, expectedAgentName: string): boolean {
+  return isRuntimeCredentialBootstrapMessage(message)
+    && (message as { agentName?: unknown }).agentName === expectedAgentName
+}
+
+function drainBufferedRuntimeCredentialBootstrap(
+  applyRuntimeCredentialBootstrapMessage: (message: unknown) => boolean,
+): boolean {
+  let bootstrapped = false
+  const remainingMessages: unknown[] = []
+  for (const message of ipcState.bufferedRuntimeCredentialMessages.splice(0)) {
+    if (isRuntimeCredentialBootstrapForAgent(message, agentName)) {
+      bootstrapped = applyRuntimeCredentialBootstrapMessage(message) || bootstrapped
+    } else {
+      remainingMessages.push(message)
+    }
+  }
+  ipcState.bufferedRuntimeCredentialMessages.push(...remainingMessages)
+  return bootstrapped
 }
 
 function isPrivateRuntimeWorkMessage(message: unknown): boolean {
@@ -50,7 +75,10 @@ function isPrivateRuntimeWorkMessage(message: unknown): boolean {
 }
 
 function forwardOrBufferRuntimeMessage(message: unknown): void {
-  if (isRuntimeCredentialBootstrapMessage(message)) return
+  if (isRuntimeCredentialBootstrapMessage(message)) {
+    ipcState.bufferedRuntimeCredentialMessages.push(message)
+    return
+  }
   if (!isPrivateRuntimeWorkMessage(message)) return
   if (ipcState.workerMessageHandler) {
     ipcState.workerMessageHandler(message)
@@ -83,9 +111,18 @@ import("./runtime-credentials")
     readRuntimeCredentialConfig,
     refreshMachineRuntimeCredentialConfig,
     refreshRuntimeCredentialConfig,
+    applyRuntimeCredentialBootstrapMessage,
     waitForRuntimeCredentialBootstrap,
   }) => {
-    await waitForRuntimeCredentialBootstrap(agentName)
+    const bootstrappedBeforeWait = drainBufferedRuntimeCredentialBootstrap(applyRuntimeCredentialBootstrapMessage)
+    const bootstrappedDuringWait = bootstrappedBeforeWait ? true : await waitForRuntimeCredentialBootstrap(agentName)
+    if (bootstrappedDuringWait) {
+      ipcState.bufferedRuntimeCredentialMessages = ipcState.bufferedRuntimeCredentialMessages.filter(
+        (message) => !isRuntimeCredentialBootstrapForAgent(message, agentName),
+      )
+    } else {
+      drainBufferedRuntimeCredentialBootstrap(applyRuntimeCredentialBootstrapMessage)
+    }
     if (!readRuntimeCredentialConfig(agentName).ok) {
       void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
