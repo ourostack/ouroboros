@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.682",
       "changes": [
-        "Buffer private runtime IPC messages during credential bootstrap so external event wakes are not lost."
+        "Buffer private-runtime IPC messages during credential bootstrap so external event wakes are not lost, with coverage for filters and child-process-only disconnect behavior."
       ]
     },
     {

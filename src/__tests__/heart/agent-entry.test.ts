@@ -176,8 +176,22 @@ describe("agent entrypoint", () => {
   it("buffers work messages that arrive while credential bootstrap is still pending", async () => {
     vi.resetModules()
 
+    ;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for("ouro.agentEntry.ipcState")] = {
+      bufferedMessages: [],
+      installed: false,
+      workerMessageHandler: null,
+    }
+    let messageHandler: ((message: unknown) => void) | undefined
+    const processOnSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "message") messageHandler = handler
+      return process
+    }) as never)
     const controller = createWorkerControllerMock()
-    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    let resolveWorkerStart!: (value: typeof controller) => void
+    const workerStart = new Promise<typeof controller>((resolve) => {
+      resolveWorkerStart = resolve
+    })
+    const startPrivateRuntimeWorker = vi.fn(() => workerStart)
     mockWorkerModules(startPrivateRuntimeWorker)
     const configureCliRuntimeLogger = vi.fn()
     let resolveBootstrap!: (value: boolean) => void
@@ -198,26 +212,43 @@ describe("agent entrypoint", () => {
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    try {
+      await import("../../heart/agent-entry")
 
-    await vi.waitFor(() => {
-      expect(waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
-    })
-    process.emit("message", { type: "poke", taskId: "testflight-feedback" })
-    resolveBootstrap(true)
-
-    await vi.waitFor(() => {
-      expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
-        attachProcessListeners: false,
-        bufferedMessages: [{ type: "poke", taskId: "testflight-feedback" }],
+      await vi.waitFor(() => {
+        expect(waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
       })
-    })
+      expect(messageHandler).toEqual(expect.any(Function))
+      messageHandler?.({
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "slugger",
+        runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+      })
+      messageHandler?.([])
+      messageHandler?.({ type: "poke", taskId: "testflight-feedback" })
+      resolveBootstrap(true)
 
-    process.emit("message", { type: "chat" })
-    await vi.waitFor(() => {
-      expect(controller.handleMessage).toHaveBeenCalledWith({ type: "chat" })
-    })
-    argvSpy.mockRestore()
+      await vi.waitFor(() => {
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
+          attachProcessListeners: false,
+          bufferedMessages: [{ type: "poke", taskId: "testflight-feedback" }],
+        })
+      })
+
+      messageHandler?.({ type: "message" })
+      resolveWorkerStart(controller)
+      await vi.waitFor(() => {
+        expect(controller.handleMessage).toHaveBeenCalledWith({ type: "message" })
+      })
+
+      messageHandler?.({ type: "chat" })
+      await vi.waitFor(() => {
+        expect(controller.handleMessage).toHaveBeenCalledWith({ type: "chat" })
+      })
+    } finally {
+      argvSpy.mockRestore()
+      processOnSpy.mockRestore()
+    }
   })
 
   it("fails fast when --agent is missing", async () => {

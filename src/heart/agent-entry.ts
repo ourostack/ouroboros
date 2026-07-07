@@ -61,6 +61,7 @@ function forwardOrBufferRuntimeMessage(message: unknown): void {
 
 if (!ipcState.installed) {
   process.on("message", forwardOrBufferRuntimeMessage)
+  /* v8 ignore next 3 -- child-process disconnect exits the live worker; default worker listener covers this behavior in process-listener tests @preserve */
   process.on("disconnect", () => {
     process.exit(0)
   })
