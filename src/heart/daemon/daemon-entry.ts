@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as fs from "fs"
 import * as path from "path"
-import { DaemonProcessManager } from "./process-manager"
+import { DaemonProcessManager, type RuntimeCredentialBootstrap } from "./process-manager"
 import { OuroDaemon, type DaemonHealthResult } from "./daemon"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { registerGlobalLogSink } from "../../nerves/index"
@@ -36,7 +36,9 @@ import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
-import { refreshProviderCredentialPool } from "../provider-credentials"
+import { readProviderCredentialPool, refreshProviderCredentialPool, type ProviderCredentialRecord } from "../provider-credentials"
+import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
+import { loadOrCreateMachineIdentity } from "../machine-identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 
 function parseSocketPath(argv: string[]): string {
@@ -78,6 +80,29 @@ const managedPrivateRuntimes = managedAgents.map((agent) => ({
   agent,
   config: readPrivateRuntimeConfig(agent),
 }))
+
+function currentMachineId(): string {
+  return loadOrCreateMachineIdentity().machineId
+}
+
+function privateRuntimeCredentialBootstrapFor(agent: string): RuntimeCredentialBootstrap | null {
+  const machineId = currentMachineId()
+  const runtime = readRuntimeCredentialConfig(agent)
+  const machine = readMachineRuntimeCredentialConfig(agent)
+  const providerPool = readProviderCredentialPool(agent)
+  const providerCredentialRecords = providerPool.ok
+    ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
+    : []
+  const bootstrap: RuntimeCredentialBootstrap = {
+    agentName: agent,
+    runtimeConfig: runtime.ok ? runtime.config : undefined,
+    machineRuntimeConfig: machine.ok ? machine.config : undefined,
+    machineId,
+    providerCredentialRecords: providerCredentialRecords.length > 0 ? providerCredentialRecords : undefined,
+  }
+  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords) return null
+  return bootstrap
+}
 
 function sentinelHealthStatus(receipt: Pick<ContextLossSentinelReceipt, "verdict">): DaemonHealthResult["status"] {
   if (receipt.verdict === "ready") return "ok"
@@ -180,6 +205,7 @@ const processManager = new DaemonProcessManager({
     entry: "heart/agent-entry.js",
     channel: "private-runtime",
     autoStart: config.autoStart,
+    getRuntimeCredentialBootstrap: () => privateRuntimeCredentialBootstrapFor(agent),
   })),
   existsSync: fs.existsSync,
   /* v8 ignore next 4 -- wiring: delegates to checkAgentConfig which has full unit tests @preserve */
