@@ -761,8 +761,9 @@ describe("daemon command plane branches", () => {
     const socketPath = tmpSocketPath("daemon-external-event")
     const ledgerPath = path.join(os.tmpdir(), `external-event-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
     const externalEventRoot = path.join(os.tmpdir(), `external-events-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-external-event-bundles-"))
     const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
-    const { daemon, processManager, router } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps, externalEventRoot })
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps, externalEventRoot })
     processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
 
     const command = {
@@ -847,7 +848,28 @@ describe("daemon command plane branches", () => {
       duplicateCount: 1,
       payloadPath: "/tmp/feedback/event.json",
     })
+    const pendingDir = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+    const pendingFiles = fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))
+    expect(pendingFiles).toHaveLength(1)
+    const pending = JSON.parse(fs.readFileSync(path.join(pendingDir, pendingFiles[0]), "utf-8"))
+    expect(pending).toMatchObject({
+      from: "ouro-external-event",
+      friendId: "ouro-external-event",
+      channel: "external-event",
+      key: "app-store-connect:feedback-1",
+      delegatedFrom: {
+        friendId: "ouro-external-event",
+        channel: "external-event",
+        key: "app-store-connect:feedback-1",
+      },
+      obligationStatus: "pending",
+      mode: "relay",
+    })
+    expect(pending.content).toContain("[External Event]")
+    expect(pending.content).toContain("type: feedback.created")
+    expect(pending.content).toContain("/tmp/feedback/screenshot-1.jpg")
     expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
   it("queues external events without waking and uses the default CLI receipt root", async () => {
@@ -889,6 +911,38 @@ describe("daemon command plane branches", () => {
       }
       fs.rmSync(home, { recursive: true, force: true })
     }
+  })
+
+  it("falls back to Date.now when queuing external events with malformed timestamps", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-invalid-timestamp")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-external-event-invalid-timestamp-bundles-"))
+    const { daemon } = make(socketPath, bundlesRoot)
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(123456)
+
+    ;(daemon as any).queueExternalEventForPrivateRuntime({
+      schemaVersion: 1,
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "feedback.created",
+      eventId: "feedback-bad-time",
+      summary: null,
+      evidence: [],
+      payloadPath: null,
+      priority: "high",
+      receivedAt: "not-a-date",
+      recordPath: "/tmp/feedback-bad-time.json",
+      duplicateCount: 0,
+      updatedAt: "2026-07-07T00:00:00.000Z",
+    })
+
+    const pendingDir = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+    const pendingFiles = fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))
+    expect(pendingFiles).toHaveLength(1)
+    const pending = JSON.parse(fs.readFileSync(path.join(pendingDir, pendingFiles[0]), "utf-8"))
+    expect(pending.timestamp).toBe(123456)
+
+    nowSpy.mockRestore()
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
   it("uses a defensive wake-skipped label when an external-event wake has no message", async () => {
