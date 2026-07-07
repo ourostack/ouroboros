@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
   return {
+    applyRuntimeCredentialBootstrapMessage: vi.fn(() => false),
     waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
     readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
     readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
@@ -177,6 +178,7 @@ describe("agent entrypoint", () => {
     vi.resetModules()
 
     ;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for("ouro.agentEntry.ipcState")] = {
+      bufferedRuntimeCredentialMessages: [],
       bufferedMessages: [],
       installed: false,
       workerMessageHandler: null,
@@ -244,6 +246,88 @@ describe("agent entrypoint", () => {
       messageHandler?.({ type: "chat" })
       await vi.waitFor(() => {
         expect(controller.handleMessage).toHaveBeenCalledWith({ type: "chat" })
+      })
+    } finally {
+      argvSpy.mockRestore()
+      processOnSpy.mockRestore()
+    }
+  })
+
+  it("applies credential bootstrap that arrives before the credential waiter attaches", async () => {
+    vi.resetModules()
+
+    const bootstrapMessage = {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+      providerCredentialRecords: [{
+        provider: "minimax",
+        revision: "vault_test",
+        updatedAt: "2026-07-07T00:00:00.000Z",
+        credentials: { apiKey: "test-key" },
+        config: {},
+        provenance: { source: "manual", updatedAt: "2026-07-07T00:00:00.000Z" },
+      }],
+    }
+    const otherAgentBootstrapMessage = {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "fresh-agent",
+      runtimeConfig: { mailroom: { mailboxAddress: "fresh-agent@ouro.bot" } },
+    }
+    const staleBootstrapMessage = {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      runtimeConfig: { mailroom: { mailboxAddress: "stale@ouro.bot" } },
+    }
+    const workMessage = { type: "poke", taskId: "testflight-feedback" }
+    ;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for("ouro.agentEntry.ipcState")] = {
+      bufferedRuntimeCredentialMessages: [],
+      bufferedMessages: [],
+      installed: false,
+      workerMessageHandler: null,
+    }
+    const processOnSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "message") {
+        handler(otherAgentBootstrapMessage)
+        handler(bootstrapMessage)
+        handler(staleBootstrapMessage)
+        handler(workMessage)
+      }
+      return process
+    }) as never)
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker)
+    const configureCliRuntimeLogger = vi.fn()
+    const applyRuntimeCredentialBootstrapMessage = vi.fn((message: unknown) => message === bootstrapMessage)
+    const waitForRuntimeCredentialBootstrap = vi.fn(async () => false)
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      applyRuntimeCredentialBootstrapMessage,
+      waitForRuntimeCredentialBootstrap,
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(applyRuntimeCredentialBootstrapMessage).toHaveBeenCalledWith(bootstrapMessage)
+        expect(applyRuntimeCredentialBootstrapMessage).toHaveBeenCalledWith(staleBootstrapMessage)
+        expect(applyRuntimeCredentialBootstrapMessage).not.toHaveBeenCalledWith(otherAgentBootstrapMessage)
+        expect(waitForRuntimeCredentialBootstrap).not.toHaveBeenCalled()
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
+          attachProcessListeners: false,
+          bufferedMessages: [workMessage],
+        })
       })
     } finally {
       argvSpy.mockRestore()
