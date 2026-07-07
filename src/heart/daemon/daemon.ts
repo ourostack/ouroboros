@@ -20,7 +20,7 @@ import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { CLI_UPDATE_DIST_TAG, startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
 import { execSync } from "child_process"
-import { drainPending } from "../../mind/pending"
+import { drainPending, PRIVATE_RUNTIME_PENDING, queuePendingMessage } from "../../mind/pending"
 import {
   handleAgentCatchup, handleAgentCheckGuidance,
   handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
@@ -50,7 +50,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { parseHabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, recordExternalEvent } from "../external-events/router"
+import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -1493,8 +1493,50 @@ export class OuroDaemon {
     return { type: "message", privateTurnDecision: decision }
   }
 
+  private queueExternalEventForPrivateRuntime(record: ExternalEventRecord): void {
+    const pendingDir = path.join(
+      this.bundlesRoot,
+      `${record.agent}.ouro`,
+      "state",
+      "pending",
+      PRIVATE_RUNTIME_PENDING.friendId,
+      PRIVATE_RUNTIME_PENDING.channel,
+      PRIVATE_RUNTIME_PENDING.key,
+    )
+    const originKey = `${record.source}:${record.eventId}`
+    const parsedReceivedAt = Date.parse(record.receivedAt)
+    queuePendingMessage(pendingDir, {
+      from: "ouro-external-event",
+      friendId: "ouro-external-event",
+      channel: "external-event",
+      key: originKey,
+      content: buildExternalEventMessage(record),
+      timestamp: Number.isFinite(parsedReceivedAt) ? parsedReceivedAt : Date.now(),
+      delegatedFrom: {
+        friendId: "ouro-external-event",
+        channel: "external-event",
+        key: originKey,
+      },
+      obligationStatus: "pending",
+      mode: "relay",
+    })
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.external_event_private_runtime_queued",
+      message: "queued external event for private-runtime attention",
+      meta: {
+        agent: record.agent,
+        source: record.source,
+        eventType: record.eventType,
+        eventId: record.eventId,
+        pendingDir,
+      },
+    })
+  }
+
   private async handlePrivateRuntimeWake(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
+    beforeDispatch?: (decision: PrivateTurnDecision) => void | Promise<void>,
   ): Promise<DaemonResponse> {
     if (!this.hasManagedPrivateRuntime(command.agent)) {
       return {
@@ -1516,6 +1558,7 @@ export class OuroDaemon {
       }
     }
 
+    await beforeDispatch?.(decision)
     await this.processManager.startAgent(command.agent)
     this.processManager.sendToAgent?.(command.agent, this.buildPrivateRuntimeWorkerWakeMessage(command, decision))
     return {
@@ -1755,7 +1798,10 @@ export class OuroDaemon {
         })
         let wake: DaemonResponse | null = null
         if (command.wake !== false) {
-          wake = await this.handlePrivateRuntimeWake(this.buildExternalEventPrivateWakeCommand(command, receipt.id))
+          wake = await this.handlePrivateRuntimeWake(
+            this.buildExternalEventPrivateWakeCommand(command, receipt.id),
+            () => this.queueExternalEventForPrivateRuntime(record),
+          )
         }
         return {
           ok: true,
