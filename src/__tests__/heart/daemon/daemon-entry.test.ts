@@ -204,6 +204,24 @@ describe("daemon entrypoint", () => {
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
+    const runtimeCredentials = await import("../../../heart/runtime-credentials")
+    const providerCredentials = await import("../../../heart/provider-credentials")
+    const { loadOrCreateMachineIdentity } = await import("../../../heart/machine-identity")
+    const machineId = loadOrCreateMachineIdentity().machineId
+    runtimeCredentials.resetRuntimeCredentialConfigCache()
+    providerCredentials.resetProviderCredentialCache()
+    runtimeCredentials.cacheRuntimeCredentialConfig("slugger", { mailroom: { mailboxAddress: "slugger@ouro.bot" } }, new Date("2026-07-07T00:00:00.000Z"))
+    runtimeCredentials.cacheMachineRuntimeCredentialConfig("slugger", { bluebubbles: { port: 18790 } }, new Date("2026-07-07T00:00:00.000Z"), machineId)
+    providerCredentials.cacheProviderCredentialRecords("slugger", [
+      providerCredentials.createProviderCredentialRecord({
+        provider: "minimax",
+        credentials: { apiKey: "test-key" },
+        config: {},
+        provenance: { source: "manual" },
+        now: new Date("2026-07-07T00:00:00.000Z"),
+      }),
+    ], new Date("2026-07-07T00:00:00.000Z"))
+
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
@@ -217,7 +235,13 @@ describe("daemon entrypoint", () => {
       checkAgentConfig,
       checkAgentConfigWithProviderHealth,
       processManagerOptions: processManagerCtor.mock.calls[0]?.[0] as {
-        agents: Array<{ name: string; entry: string; channel: string; autoStart: boolean }>
+        agents: Array<{
+          name: string
+          entry: string
+          channel: string
+          autoStart: boolean
+          getRuntimeCredentialBootstrap: () => unknown
+        }>
         configCheck: (agent: string) => Promise<{ ok: boolean }>
       },
     }
@@ -587,17 +611,33 @@ describe("daemon entrypoint", () => {
     const { checkAgentConfig, checkAgentConfigWithProviderHealth, processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: false, source: "default" })
 
-    expect(processManagerOptions.agents).toEqual([{
+    expect(processManagerOptions.agents).toEqual([expect.objectContaining({
       name: "slugger",
       entry: "heart/agent-entry.js",
       channel: "private-runtime",
       autoStart: false,
-    }])
+      getRuntimeCredentialBootstrap: expect.any(Function),
+    })])
 
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
     expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
     expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+    expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toMatchObject({
+      agentName: "slugger",
+      runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+      machineRuntimeConfig: { bluebubbles: { port: 18790 } },
+      machineId: expect.any(String),
+      providerCredentialRecords: [expect.objectContaining({
+        provider: "minimax",
+        revision: expect.any(String),
+      })],
+    })
+    const runtimeCredentials = await import("../../../heart/runtime-credentials")
+    const providerCredentials = await import("../../../heart/provider-credentials")
+    runtimeCredentials.resetRuntimeCredentialConfigCache()
+    providerCredentials.resetProviderCredentialCache()
+    expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toBeNull()
   })
 
   it("routes pulse alerts through canonical private wake commands", async () => {
@@ -793,12 +833,13 @@ describe("daemon entrypoint", () => {
     const { processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: true, source: "privateRuntime" })
 
-    expect(processManagerOptions.agents).toEqual([{
+    expect(processManagerOptions.agents).toEqual([expect.objectContaining({
       name: "slugger",
       entry: "heart/agent-entry.js",
       channel: "private-runtime",
       autoStart: true,
-    }])
+      getRuntimeCredentialBootstrap: expect.any(Function),
+    })])
   })
 
   it("wires daemon.stop command cleanup to stop entrypoint timers before exiting", async () => {
