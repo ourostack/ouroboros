@@ -11,7 +11,14 @@ function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function mockWorkerModules(startPrivateRuntimeWorker = vi.fn(async () => undefined)) {
+function createWorkerControllerMock() {
+  return {
+    run: vi.fn(async () => undefined),
+    handleMessage: vi.fn(async () => undefined),
+  }
+}
+
+function mockWorkerModules(startPrivateRuntimeWorker = vi.fn(async () => createWorkerControllerMock())) {
   const startLegacyWorker = vi.fn(async () => undefined)
   vi.doMock("../../senses/private-runtime-worker", () => ({ startPrivateRuntimeWorker }))
   vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker: startLegacyWorker }))
@@ -163,6 +170,53 @@ describe("agent entrypoint", () => {
     })
     expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
     expect(refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
+    argvSpy.mockRestore()
+  })
+
+  it("buffers work messages that arrive while credential bootstrap is still pending", async () => {
+    vi.resetModules()
+
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker)
+    const configureCliRuntimeLogger = vi.fn()
+    let resolveBootstrap!: (value: boolean) => void
+    const waitForRuntimeCredentialBootstrap = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveBootstrap = resolve
+    }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      waitForRuntimeCredentialBootstrap,
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../heart/agent-entry")
+
+    await vi.waitFor(() => {
+      expect(waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
+    })
+    process.emit("message", { type: "poke", taskId: "testflight-feedback" })
+    resolveBootstrap(true)
+
+    await vi.waitFor(() => {
+      expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
+        attachProcessListeners: false,
+        bufferedMessages: [{ type: "poke", taskId: "testflight-feedback" }],
+      })
+    })
+
+    process.emit("message", { type: "chat" })
+    await vi.waitFor(() => {
+      expect(controller.handleMessage).toHaveBeenCalledWith({ type: "chat" })
+    })
     argvSpy.mockRestore()
   })
 

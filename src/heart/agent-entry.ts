@@ -10,8 +10,62 @@ if (!agentName) {
 
 import { configureCliRuntimeLogger } from "../nerves/cli-logging"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { PrivateRuntimeWorkerController } from "../senses/private-runtime-worker"
 
 configureCliRuntimeLogger("self")
+
+interface AgentEntryIpcState {
+  bufferedMessages: unknown[]
+  installed: boolean
+  workerMessageHandler: ((message: unknown) => void) | null
+}
+
+const ipcStateKey = Symbol.for("ouro.agentEntry.ipcState")
+const ipcState = ((globalThis as unknown as Record<symbol, AgentEntryIpcState>)[ipcStateKey] ??= {
+  bufferedMessages: [],
+  installed: false,
+  workerMessageHandler: null,
+})
+
+ipcState.bufferedMessages = []
+ipcState.workerMessageHandler = null
+
+function isRuntimeCredentialBootstrapMessage(message: unknown): boolean {
+  return !!message
+    && typeof message === "object"
+    && !Array.isArray(message)
+    && (message as { type?: unknown }).type === "ouro.runtimeCredentialBootstrap"
+}
+
+function isPrivateRuntimeWorkMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return false
+  const type = (message as { type?: unknown }).type
+  return type === "heartbeat"
+    || type === "habit"
+    || type === "await"
+    || type === "shutdown"
+    || type === "poke"
+    || type === "chat"
+    || type === "message"
+}
+
+function forwardOrBufferRuntimeMessage(message: unknown): void {
+  if (isRuntimeCredentialBootstrapMessage(message)) return
+  if (!isPrivateRuntimeWorkMessage(message)) return
+  if (ipcState.workerMessageHandler) {
+    ipcState.workerMessageHandler(message)
+    return
+  }
+  ipcState.bufferedMessages.push(message)
+}
+
+if (!ipcState.installed) {
+  process.on("message", forwardOrBufferRuntimeMessage)
+  process.on("disconnect", () => {
+    process.exit(0)
+  })
+  ipcState.installed = true
+}
 
 emitNervesEvent({
   component: "senses",
@@ -44,7 +98,18 @@ import("./runtime-credentials")
         .catch(() => undefined)
     }
     const { startPrivateRuntimeWorker } = await import("../senses/private-runtime-worker")
-    await startPrivateRuntimeWorker()
+    const bufferedMessages = ipcState.bufferedMessages.splice(0)
+    const worker: PrivateRuntimeWorkerController = await startPrivateRuntimeWorker({
+      attachProcessListeners: false,
+      bufferedMessages,
+    })
+    ipcState.workerMessageHandler = (message: unknown) => {
+      void worker.handleMessage(message)
+    }
+    const messagesBufferedDuringStart = ipcState.bufferedMessages.splice(0)
+    for (const message of messagesBufferedDuringStart) {
+      ipcState.workerMessageHandler(message)
+    }
   })
   .catch((error) => {
     emitNervesEvent({

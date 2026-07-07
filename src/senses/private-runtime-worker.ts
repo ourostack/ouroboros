@@ -59,6 +59,11 @@ export interface PrivateRuntimeWorkerController {
   handleMessage(message: unknown): Promise<void>
 }
 
+export interface StartPrivateRuntimeWorkerOptions {
+  attachProcessListeners?: boolean
+  bufferedMessages?: unknown[]
+}
+
 interface QueueEntry {
   reason: PrivateRuntimeWorkerReason
   taskId?: string
@@ -633,12 +638,20 @@ export function createPrivateRuntimeWorker(
   return { run, handleMessage }
 }
 
-export async function startPrivateRuntimeWorker(): Promise<void> {
+export async function startPrivateRuntimeWorker(
+  options: StartPrivateRuntimeWorkerOptions = {},
+): Promise<PrivateRuntimeWorkerController> {
   const worker = createPrivateRuntimeWorker()
-  process.on("message", (message) => {
+  if (options.attachProcessListeners ?? true) {
+    process.on("message", (message) => {
+      void worker.handleMessage(message)
+    })
+    process.on("disconnect", () => {
+      process.exit(0)
+    })
+  }
+  for (const message of options.bufferedMessages ?? []) {
     void worker.handleMessage(message)
-  })
-  process.on("disconnect", () => {
-    process.exit(0)
-  })
+  }
+  return worker
 }
