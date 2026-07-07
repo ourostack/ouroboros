@@ -3,7 +3,13 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 import { getAgentBundlesRoot, getRepoRoot, setAgentName } from "../identity"
-import { listAllBundleAgents, listBundleSyncRows, type BundleAgentRow, type BundleSyncRow } from "./agent-discovery"
+import {
+  listAllBundleAgents,
+  listBundleSyncRows,
+  listEnabledBundleAgents,
+  type BundleAgentRow,
+  type BundleSyncRow,
+} from "./agent-discovery"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonSenseManagerLike, DaemonSenseRow } from "./sense-manager"
 import { getRuntimeMetadata } from "./runtime-metadata"
@@ -828,10 +834,11 @@ export class OuroDaemon {
     const repoRoot = getRepoRoot()
     const sync = listBundleSyncRows({ bundlesRoot: this.bundlesRoot })
     const agents = listAllBundleAgents({ bundlesRoot: this.bundlesRoot })
-    const providers = agents.flatMap((agent) =>
+    const providerAgents = listEnabledBundleAgents({ bundlesRoot: this.bundlesRoot })
+    const providers = providerAgents.flatMap((agentName) =>
       providerVisibilityStatusRows(buildAgentProviderVisibility({
-        agentName: agent.name,
-        agentRoot: path.join(this.bundlesRoot, `${agent.name}.ouro`),
+        agentName,
+        agentRoot: path.join(this.bundlesRoot, `${agentName}.ouro`),
       })),
     )
 

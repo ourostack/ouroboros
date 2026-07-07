@@ -131,6 +131,12 @@ function moveDir(src: string, dest: string): void {
   }
 }
 
+function updateAgentConfig(bundleRoot: string, updates: Record<string, unknown>): void {
+  const agentJsonPath = path.join(bundleRoot, "agent.json")
+  const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8")) as Record<string, unknown>
+  fs.writeFileSync(agentJsonPath, `${JSON.stringify({ ...parsed, ...updates }, null, 2)}\n`, "utf-8")
+}
+
 async function execCompleteAdoption(
   args: Record<string, string>,
   deps: SpecialistExecToolDeps,
@@ -184,6 +190,9 @@ async function execCompleteAdoption(
     return `error: failed to read hatchling vault unlock secret: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
   }
 
+  // Keep the bundle inert until vault/provider credentials are durably stored.
+  updateAgentConfig(deps.tempDir, { enabled: false, vault })
+
   // Scaffold structural dirs into tempDir
   scaffoldBundle(deps.tempDir)
 
@@ -234,6 +243,8 @@ async function execCompleteAdoption(
     const friendPath = path.join(targetBundle, "friends", `${friendId}.json`)
     fs.writeFileSync(friendPath, JSON.stringify(friendRecord, null, 2), "utf-8")
   }
+
+  updateAgentConfig(targetBundle, { enabled: true })
 
   // Play hatch animation
   await playHatchAnimation(name, deps.animationWriter)

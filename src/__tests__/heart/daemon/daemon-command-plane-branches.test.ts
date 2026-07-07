@@ -572,8 +572,17 @@ describe("daemon command plane branches", () => {
     const socketPath = tmpSocketPath("daemon-status-providers")
     const isolatedBundles = path.join(os.tmpdir(), `daemon-status-provider-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
     const agentRoot = path.join(isolatedBundles, "slugger.ouro")
+    const scaffoldRoot = path.join(isolatedBundles, "fresh-agent.ouro")
     fs.mkdirSync(agentRoot, { recursive: true })
-    fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({ enabled: true })}\n`, "utf-8")
+    fs.mkdirSync(scaffoldRoot, { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({
+      enabled: true,
+      vault: { email: "slugger@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+    })}\n`, "utf-8")
+    fs.writeFileSync(path.join(scaffoldRoot, "agent.json"), `${JSON.stringify({
+      enabled: true,
+      senses: { cli: { enabled: true } },
+    })}\n`, "utf-8")
     const { daemon } = make(socketPath, isolatedBundles)
 
     try {
@@ -601,6 +610,15 @@ describe("daemon command plane branches", () => {
           }),
         ],
       })
+      expect(status.data).toMatchObject({
+        agents: expect.arrayContaining([
+          expect.objectContaining({
+            name: "fresh-agent",
+            managementBlockedReason: "inactive scaffold: no vault locator, sync, or enabled external sense",
+          }),
+        ]),
+      })
+      expect(JSON.stringify(status.data)).not.toContain("\"agent\":\"fresh-agent\"")
     } finally {
       fs.rmSync(isolatedBundles, { recursive: true, force: true })
     }

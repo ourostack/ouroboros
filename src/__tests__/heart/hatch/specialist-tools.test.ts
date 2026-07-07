@@ -342,6 +342,12 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // Bundle should be moved to final location
     const finalBundle = path.join(bundlesRoot, "TestAgent.ouro")
     expect(fs.existsSync(finalBundle)).toBe(true)
+    const agentConfig = JSON.parse(fs.readFileSync(path.join(finalBundle, "agent.json"), "utf-8")) as Record<string, unknown>
+    expect(agentConfig.enabled).toBe(true)
+    expect(agentConfig.vault).toEqual({
+      email: "testagent@ouro.bot",
+      serverUrl: "https://vault.ouro.bot",
+    })
 
     // Scaffold dirs should exist
     expect(fs.existsSync(path.join(finalBundle, "desk", "_record", "notes"))).toBe(true)
@@ -584,7 +590,17 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles-rollback")
     cleanup.push(bundlesRoot)
 
-    mockStoreProviderCredentials.mockRejectedValueOnce(new Error("mock secret write failed"))
+    mockStoreProviderCredentials.mockImplementationOnce(async () => {
+      const inFlightConfig = JSON.parse(
+        fs.readFileSync(path.join(bundlesRoot, "TestAgent.ouro", "agent.json"), "utf-8"),
+      ) as Record<string, unknown>
+      expect(inFlightConfig.enabled).toBe(false)
+      expect(inFlightConfig.vault).toEqual({
+        email: "testagent@ouro.bot",
+        serverUrl: "https://vault.ouro.bot",
+      })
+      throw new Error("mock secret write failed")
+    })
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({

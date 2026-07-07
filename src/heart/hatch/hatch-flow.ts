@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { buildDefaultAgentTemplate, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
+import { buildDefaultAgentTemplate, PROVIDER_CREDENTIALS, resolveVaultConfig, type AgentProvider } from "../identity"
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { storeProviderCredentials } from "../auth/auth-flow"
@@ -152,8 +152,16 @@ function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): v
   template.provider = input.provider
   template.humanFacing = { provider: input.provider, model }
   template.agentFacing = { provider: input.provider, model }
-  template.enabled = true
+  template.vault = resolveVaultConfig(input.agentName)
+  template.enabled = false
   fs.writeFileSync(path.join(bundleRoot, "agent.json"), `${JSON.stringify(template, null, 2)}\n`, "utf-8")
+}
+
+function setHatchlingEnabled(bundleRoot: string, enabled: boolean): void {
+  const agentJsonPath = path.join(bundleRoot, "agent.json")
+  const parsed = JSON.parse(fs.readFileSync(agentJsonPath, "utf-8")) as Record<string, unknown>
+  parsed.enabled = enabled
+  fs.writeFileSync(agentJsonPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8")
 }
 
 export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = {}): Promise<HatchFlowResult> {
@@ -204,6 +212,7 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
   writeRecordScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)
   writeHeartbeatHabit(bundleRoot, now)
+  setHatchlingEnabled(bundleRoot, true)
 
   emitNervesEvent({
     component: "daemon",

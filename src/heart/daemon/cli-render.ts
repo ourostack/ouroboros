@@ -81,6 +81,7 @@ interface StatusSyncRow {
 interface StatusAgentRow {
   name: string
   enabled: boolean
+  managementBlockedReason?: string
 }
 
 interface StatusProviderRow {
@@ -292,7 +293,10 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     const name = stringField(row.name)
     const enabled = booleanField(row.enabled)
     if (!name || enabled === null) return null
-    return { name, enabled } satisfies StatusAgentRow
+    const parsed: StatusAgentRow = { name, enabled }
+    const managementBlockedReason = stringField(row.managementBlockedReason)
+    if (managementBlockedReason !== null) parsed.managementBlockedReason = managementBlockedReason
+    return parsed
   })
 
   const parsedProviders = (providers ?? []).map((entry) => {
@@ -464,9 +468,11 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
     const agentNameWidth = Math.max(12, ...payload.agents.map((r) => r.name.length))
     for (const row of payload.agents) {
       const name = row.name.padEnd(agentNameWidth)
-      const dot = row.enabled ? green("●") : dim("○")
-      const stateText = row.enabled ? "enabled " : "disabled"
-      lines.push(`    ${name} ${dot} ${stateText}`)
+      const inactive = row.enabled && !!row.managementBlockedReason
+      const dot = inactive ? yellow("●") : row.enabled ? green("●") : dim("○")
+      const stateText = inactive ? "inactive" : row.enabled ? "enabled " : "disabled"
+      const detail = inactive ? `  ${dim(row.managementBlockedReason!)}` : ""
+      lines.push(`    ${name} ${dot} ${stateText}${detail}`)
     }
     lines.push("")
   }

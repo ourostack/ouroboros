@@ -25,6 +25,16 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: emitNervesEventMock,
 }))
 
+function managedConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    vault: {
+      email: "agent@ouro.bot",
+      serverUrl: "https://vault.ouro.bot",
+    },
+    ...overrides,
+  }
+}
+
 describe("listEnabledBundleAgents", () => {
   afterEach(() => {
     getAgentBundlesRootMock.mockReset()
@@ -51,10 +61,10 @@ describe("listEnabledBundleAgents", () => {
     ])
     readFileSyncMock.mockImplementation((target: string) => {
       if (target.endsWith("/zeta.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true })
+        return JSON.stringify(managedConfig({ enabled: true }))
       }
       if (target.endsWith("/alpha.ouro/agent.json")) {
-        return JSON.stringify({})
+        return JSON.stringify(managedConfig())
       }
       throw new Error(`unexpected read: ${target}`)
     })
@@ -104,10 +114,10 @@ describe("listAllBundleAgents", () => {
     ])
     readFileSyncMock.mockImplementation((target: string) => {
       if (target.endsWith("/zeta.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true })
+        return JSON.stringify(managedConfig({ enabled: true }))
       }
       if (target.endsWith("/alpha.ouro/agent.json")) {
-        return JSON.stringify({}) // missing enabled defaults to true
+        return JSON.stringify(managedConfig()) // missing enabled defaults to true
       }
       if (target.endsWith("/off.ouro/agent.json")) {
         return JSON.stringify({ enabled: false })
@@ -132,7 +142,7 @@ describe("listAllBundleAgents", () => {
     ])
     readFileSyncMock.mockImplementation((target: string) => {
       if (target.endsWith("/valid.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true })
+        return JSON.stringify(managedConfig({ enabled: true }))
       }
       if (target.endsWith("/broken.ouro/agent.json")) {
         throw new Error("ENOENT")
@@ -175,9 +185,9 @@ describe("listAllBundleAgents", () => {
       { name: "c.ouro", isDirectory: () => true },
     ])
     readFileSyncMock.mockImplementation((target: string) => {
-      if (target.endsWith("/a.ouro/agent.json")) return JSON.stringify({ enabled: true })
+      if (target.endsWith("/a.ouro/agent.json")) return JSON.stringify(managedConfig({ enabled: true }))
       if (target.endsWith("/b.ouro/agent.json")) return JSON.stringify({ enabled: false })
-      if (target.endsWith("/c.ouro/agent.json")) return JSON.stringify({ enabled: true })
+      if (target.endsWith("/c.ouro/agent.json")) return JSON.stringify(managedConfig({ enabled: true }))
       throw new Error(`unexpected: ${target}`)
     })
 
@@ -188,6 +198,44 @@ describe("listAllBundleAgents", () => {
       { name: "a", enabled: true },
       { name: "b", enabled: false },
       { name: "c", enabled: true },
+    ])
+  })
+
+  it("keeps enabled scaffold-only bundles out of managed agent surfaces", async () => {
+    readdirSyncMock.mockReturnValue([
+      { name: "fresh-agent.ouro", isDirectory: () => true },
+      { name: "real.ouro", isDirectory: () => true },
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/fresh-agent.ouro/agent.json")) {
+        return JSON.stringify({
+          enabled: true,
+          senses: { cli: { enabled: true } },
+        })
+      }
+      if (target.endsWith("/real.ouro/agent.json")) {
+        return JSON.stringify(managedConfig({ enabled: true }))
+      }
+      throw new Error(`unexpected: ${target}`)
+    })
+
+    const {
+      listAllBundleAgents,
+      listBundleSyncRows,
+      listEnabledBundleAgents,
+    } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listEnabledBundleAgents()).toEqual(["real"])
+    expect(listBundleSyncRows()).toEqual([
+      { agent: "real", enabled: false, remote: "origin" },
+    ])
+    expect(listAllBundleAgents()).toEqual([
+      {
+        name: "fresh-agent",
+        enabled: true,
+        managementBlockedReason: "inactive scaffold: no vault locator, sync, or enabled external sense",
+      },
+      { name: "real", enabled: true },
     ])
   })
 })
@@ -374,10 +422,10 @@ describe("listBundleSyncRows", () => {
         return JSON.stringify({ enabled: true, sync: { enabled: true, remote: "upstream" } })
       }
       if (target.endsWith("/beta.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true, sync: { enabled: false } })
+        return JSON.stringify(managedConfig({ enabled: true, sync: { enabled: false } }))
       }
       if (target.endsWith("/gamma.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true })
+        return JSON.stringify(managedConfig({ enabled: true }))
       }
       throw new Error(`unexpected read: ${target}`)
     })
@@ -427,7 +475,7 @@ describe("listBundleSyncRows", () => {
       if (target.endsWith("/broken.ouro/agent.json")) {
         callCount++
         // First call (discovery) returns valid; second call (sync read) throws
-        if (callCount === 1) return JSON.stringify({ enabled: true })
+        if (callCount === 1) return JSON.stringify(managedConfig({ enabled: true }))
         throw new Error("read failed")
       }
       throw new Error(`unexpected read: ${target}`)
@@ -447,7 +495,7 @@ describe("listBundleSyncRows", () => {
     ])
     readFileSyncMock.mockImplementation((target: string) => {
       if (target.endsWith("/weird.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true, sync: "not-an-object" })
+        return JSON.stringify(managedConfig({ enabled: true, sync: "not-an-object" }))
       }
       throw new Error(`unexpected read: ${target}`)
     })
@@ -465,7 +513,7 @@ describe("listBundleSyncRows", () => {
     ])
     readFileSyncMock.mockImplementation((target: string) => {
       if (target.endsWith("/partial.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true, sync: { enabled: "yes", remote: 42 } })
+        return JSON.stringify(managedConfig({ enabled: true, sync: { enabled: "yes", remote: 42 } }))
       }
       throw new Error(`unexpected read: ${target}`)
     })

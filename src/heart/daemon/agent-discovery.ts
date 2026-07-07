@@ -28,6 +28,15 @@ export interface BundleAgentRow {
    * `"library"`, the bundle is treated as a regular agent.
    */
   kind?: string
+  /**
+   * Present when agent.json says the bundle is enabled but the daemon refuses
+   * to manage it because it still looks like an unadopted scaffold.
+   */
+  managementBlockedReason?: string
+}
+
+interface DiscoveredBundleAgentRow extends BundleAgentRow {
+  manageable: boolean
 }
 
 export type PrivateRuntimeConfigSource = "default" | "privateRuntime" | "legacy-innerDialog" | "unreadable"
@@ -47,6 +56,47 @@ export function isLibraryKind(kind: unknown): boolean {
   return kind === "library"
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function hasConfiguredVault(parsed: Record<string, unknown>): boolean {
+  const vault = parsed.vault
+  if (!isRecord(vault)) return false
+  return typeof vault.email === "string" && vault.email.trim().length > 0
+    && typeof vault.serverUrl === "string" && vault.serverUrl.trim().length > 0
+}
+
+function hasEnabledSync(parsed: Record<string, unknown>): boolean {
+  const sync = parsed.sync
+  return isRecord(sync) && sync.enabled === true
+}
+
+function hasEnabledExternalSense(parsed: Record<string, unknown>): boolean {
+  const senses = parsed.senses
+  if (!isRecord(senses)) return false
+  for (const [name, value] of Object.entries(senses)) {
+    if (name === "cli") continue
+    if (isRecord(value) && value.enabled === true) return true
+  }
+  return false
+}
+
+function isManageableAgentConfig(parsed: Record<string, unknown>): boolean {
+  return hasConfiguredVault(parsed)
+    || hasEnabledSync(parsed)
+    || hasEnabledExternalSense(parsed)
+}
+
+function stripDiscoveryMetadata(row: DiscoveredBundleAgentRow): BundleAgentRow {
+  const publicRow: BundleAgentRow = { name: row.name, enabled: row.enabled }
+  if (row.kind !== undefined) publicRow.kind = row.kind
+  if (row.managementBlockedReason !== undefined) {
+    publicRow.managementBlockedReason = row.managementBlockedReason
+  }
+  return publicRow
+}
+
 /**
  * Walk the bundles root and return one row per `<name>.ouro` directory whose
  * `agent.json` is readable and parseable. Includes both enabled and disabled
@@ -58,7 +108,7 @@ export function isLibraryKind(kind: unknown): boolean {
  *
  * Sorted alphabetically by name for stable display.
  */
-export function listAllBundleAgents(options: AgentDiscoveryOptions = {}): BundleAgentRow[] {
+function discoverBundleAgents(options: AgentDiscoveryOptions = {}): DiscoveredBundleAgentRow[] {
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
   const readdirSync = options.readdirSync ?? fs.readdirSync
   const readFileSync = options.readFileSync ?? fs.readFileSync
@@ -77,31 +127,41 @@ export function listAllBundleAgents(options: AgentDiscoveryOptions = {}): Bundle
     return []
   }
 
-  const discovered: BundleAgentRow[] = []
+  const discovered: DiscoveredBundleAgentRow[] = []
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
     const agentName = entry.name.slice(0, -5)
     const configPath = path.join(bundlesRoot, entry.name, "agent.json")
     let enabled = true
     let kind: string | undefined
+    let manageable = false
     try {
       const raw = readFileSync(configPath, "utf-8")
-      const parsed = JSON.parse(raw) as { enabled?: unknown; kind?: unknown }
+      const parsed = JSON.parse(raw) as unknown
+      if (!isRecord(parsed)) continue
       if (typeof parsed.enabled === "boolean") {
         enabled = parsed.enabled
       }
       if (typeof parsed.kind === "string") {
         kind = parsed.kind
       }
+      manageable = isManageableAgentConfig(parsed)
     } catch {
       continue
     }
-    const row: BundleAgentRow = { name: agentName, enabled }
+    const row: DiscoveredBundleAgentRow = { name: agentName, enabled, manageable }
     if (kind !== undefined) row.kind = kind
+    if (enabled && !isLibraryKind(kind) && !manageable) {
+      row.managementBlockedReason = "inactive scaffold: no vault locator, sync, or enabled external sense"
+    }
     discovered.push(row)
   }
 
   return discovered.sort((left, right) => left.name.localeCompare(right.name))
+}
+
+export function listAllBundleAgents(options: AgentDiscoveryOptions = {}): BundleAgentRow[] {
+  return discoverBundleAgents(options).map(stripDiscoveryMetadata)
 }
 
 /**
@@ -110,8 +170,8 @@ export function listAllBundleAgents(options: AgentDiscoveryOptions = {}): Bundle
  * never appear in spawn lists, status rollups, or sync rows.
  */
 export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
-  return listAllBundleAgents(options)
-    .filter((row) => row.enabled && !isLibraryKind(row.kind))
+  return discoverBundleAgents(options)
+    .filter((row) => row.enabled && !isLibraryKind(row.kind) && row.manageable)
     .map((row) => row.name)
 }
 
