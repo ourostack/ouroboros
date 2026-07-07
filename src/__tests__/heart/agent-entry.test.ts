@@ -12,6 +12,41 @@ function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function providerCredentialPool() {
+  return {
+    ok: true,
+    poolPath: "vault:slugger:providers/*",
+    pool: {
+      schemaVersion: 1,
+      updatedAt: "2026-07-07T00:00:00.000Z",
+      providers: {
+        minimax: {
+          provider: "minimax",
+          revision: "vault_test",
+          updatedAt: "2026-07-07T00:00:00.000Z",
+          credentials: { apiKey: "test-key" },
+          config: {},
+          provenance: { source: "manual", updatedAt: "2026-07-07T00:00:00.000Z" },
+        },
+      },
+    },
+  }
+}
+
+function providerCredentialMock(overrides: Record<string, unknown> = {}) {
+  return {
+    readProviderCredentialPool: vi.fn(() => providerCredentialPool()),
+    refreshProviderCredentialPool: vi.fn(async () => providerCredentialPool()),
+    ...overrides,
+  }
+}
+
+function mockProviderCredentialModule(overrides: Record<string, unknown> = {}) {
+  const module = providerCredentialMock(overrides)
+  vi.doMock("../../heart/provider-credentials", () => module)
+  return module
+}
+
 function createWorkerControllerMock() {
   return {
     run: vi.fn(async () => undefined),
@@ -19,10 +54,14 @@ function createWorkerControllerMock() {
   }
 }
 
-function mockWorkerModules(startPrivateRuntimeWorker = vi.fn(async () => createWorkerControllerMock())) {
+function mockWorkerModules(
+  startPrivateRuntimeWorker = vi.fn(async () => createWorkerControllerMock()),
+  options: { mockProviderCredentials?: boolean } = {},
+) {
   const startLegacyWorker = vi.fn(async () => undefined)
   vi.doMock("../../senses/private-runtime-worker", () => ({ startPrivateRuntimeWorker }))
   vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker: startLegacyWorker }))
+  if (options.mockProviderCredentials !== false) mockProviderCredentialModule()
   return { startPrivateRuntimeWorker, startLegacyWorker }
 }
 
@@ -332,6 +371,119 @@ describe("agent entrypoint", () => {
     } finally {
       argvSpy.mockRestore()
       processOnSpy.mockRestore()
+    }
+  })
+
+  it("waits for provider credentials before flushing buffered private-runtime work", async () => {
+    vi.resetModules()
+
+    ;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for("ouro.agentEntry.ipcState")] = {
+      bufferedRuntimeCredentialMessages: [],
+      bufferedMessages: [],
+      installed: false,
+      workerMessageHandler: null,
+    }
+    let messageHandler: ((message: unknown) => void) | undefined
+    const processOnSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "message") messageHandler = handler
+      return process
+    }) as never)
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker, { mockProviderCredentials: false })
+    const configureCliRuntimeLogger = vi.fn()
+    let resolveProviderRefresh!: (value: ReturnType<typeof providerCredentialPool>) => void
+    const providerRefresh = new Promise<ReturnType<typeof providerCredentialPool>>((resolve) => {
+      resolveProviderRefresh = resolve
+    })
+    const readProviderCredentialPool = vi.fn(() => ({
+      ok: false,
+      reason: "missing",
+      poolPath: "vault:slugger:providers/*",
+      error: "provider credentials have not been loaded from vault",
+    }))
+    const refreshProviderCredentialPool = vi.fn(() => providerRefresh)
+    mockProviderCredentialModule({
+      readProviderCredentialPool,
+      refreshProviderCredentialPool,
+    })
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+      })
+      messageHandler?.({ type: "poke", taskId: "testflight-feedback" })
+      expect(startPrivateRuntimeWorker).not.toHaveBeenCalled()
+
+      resolveProviderRefresh(providerCredentialPool())
+
+      await vi.waitFor(() => {
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
+          attachProcessListeners: false,
+          bufferedMessages: [{ type: "poke", taskId: "testflight-feedback" }],
+        })
+      })
+    } finally {
+      argvSpy.mockRestore()
+      processOnSpy.mockRestore()
+    }
+  })
+
+  it("continues startup when provider credential refresh is unavailable", async () => {
+    vi.resetModules()
+
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker, { mockProviderCredentials: false })
+    const configureCliRuntimeLogger = vi.fn()
+    const refreshProviderCredentialPool = vi.fn(async () => {
+      throw new Error("vault locked")
+    })
+    mockProviderCredentialModule({
+      readProviderCredentialPool: vi.fn(() => ({
+        ok: false,
+        reason: "unavailable",
+        poolPath: "vault:slugger:providers/*",
+        error: "vault locked",
+      })),
+      refreshProviderCredentialPool,
+    })
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
+      })
+    } finally {
+      argvSpy.mockRestore()
     }
   })
 

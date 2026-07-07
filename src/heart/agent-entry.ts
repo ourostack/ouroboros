@@ -114,6 +114,7 @@ import("./runtime-credentials")
     applyRuntimeCredentialBootstrapMessage,
     waitForRuntimeCredentialBootstrap,
   }) => {
+    const { readProviderCredentialPool, refreshProviderCredentialPool } = await import("./provider-credentials")
     const bootstrappedBeforeWait = drainBufferedRuntimeCredentialBootstrap(applyRuntimeCredentialBootstrapMessage)
     const bootstrappedDuringWait = bootstrappedBeforeWait ? true : await waitForRuntimeCredentialBootstrap(agentName)
     if (bootstrappedDuringWait) {
@@ -125,6 +126,10 @@ import("./runtime-credentials")
     }
     if (!readRuntimeCredentialConfig(agentName).ok) {
       void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    }
+    const providerPool = readProviderCredentialPool(agentName)
+    if (!providerPool.ok || Object.keys(providerPool.pool.providers).length === 0) {
+      await refreshProviderCredentialPool(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
     /* v8 ignore next 7 -- process-start best-effort machine credential refresh runs in a child entrypoint and is covered operationally by daemon startup tests @preserve */
     if (!readMachineRuntimeCredentialConfig(agentName).ok) {
