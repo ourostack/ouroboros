@@ -210,7 +210,11 @@ describe("listAllBundleAgents", () => {
       if (target.endsWith("/fresh-agent.ouro/agent.json")) {
         return JSON.stringify({
           enabled: true,
-          senses: { cli: { enabled: true } },
+          senses: {
+            cli: { enabled: true },
+            teams: { enabled: false },
+            voice: "not-an-object",
+          },
         })
       }
       if (target.endsWith("/real.ouro/agent.json")) {
@@ -236,6 +240,51 @@ describe("listAllBundleAgents", () => {
         managementBlockedReason: "inactive scaffold: no vault locator, sync, or enabled external sense",
       },
       { name: "real", enabled: true },
+    ])
+  })
+
+  it("treats enabled non-CLI senses as an adoption signal", async () => {
+    readdirSyncMock.mockReturnValue([
+      { name: "voice-bot.ouro", isDirectory: () => true },
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/voice-bot.ouro/agent.json")) {
+        return JSON.stringify({
+          enabled: true,
+          senses: {
+            cli: { enabled: true },
+            voice: { enabled: true },
+          },
+        })
+      }
+      throw new Error(`unexpected: ${target}`)
+    })
+
+    const { listAllBundleAgents, listEnabledBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listEnabledBundleAgents()).toEqual(["voice-bot"])
+    expect(listAllBundleAgents()).toEqual([
+      { name: "voice-bot", enabled: true },
+    ])
+  })
+
+  it("skips bundles whose agent.json parses to a non-object value", async () => {
+    readdirSyncMock.mockReturnValue([
+      { name: "array.ouro", isDirectory: () => true },
+      { name: "nullish.ouro", isDirectory: () => true },
+      { name: "valid.ouro", isDirectory: () => true },
+    ])
+    readFileSyncMock.mockImplementation((target: string) => {
+      if (target.endsWith("/array.ouro/agent.json")) return "[]"
+      if (target.endsWith("/nullish.ouro/agent.json")) return "null"
+      if (target.endsWith("/valid.ouro/agent.json")) return JSON.stringify(managedConfig({ enabled: true }))
+      throw new Error(`unexpected: ${target}`)
+    })
+
+    const { listAllBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+    expect(listAllBundleAgents()).toEqual([
+      { name: "valid", enabled: true },
     ])
   })
 })
