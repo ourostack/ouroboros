@@ -66,6 +66,10 @@ export interface CreateTmpBundleOptions {
 const DEFAULT_AGENT_JSON: Record<string, unknown> = {
   version: 2,
   enabled: true,
+  vault: {
+    email: "test@ouro.bot",
+    serverUrl: "https://vault.ouro.bot",
+  },
   humanFacing: { provider: "minimax", model: "minimax-text-01" },
   agentFacing: { provider: "minimax", model: "minimax-text-01" },
   phrases: {

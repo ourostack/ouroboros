@@ -96,6 +96,10 @@ function writeAgentConfig(agentRoot: string, overrides: Record<string, unknown> 
     version: 1,
     enabled: true,
     provider: "anthropic",
+    vault: {
+      email: "mailbox-test@ouro.bot",
+      serverUrl: "https://vault.ouro.bot",
+    },
     senses: {
       cli: { enabled: true },
       teams: { enabled: false },

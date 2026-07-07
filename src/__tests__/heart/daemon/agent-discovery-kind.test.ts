@@ -25,6 +25,16 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: emitNervesEventMock,
 }))
 
+function managedConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    vault: {
+      email: "agent@ouro.bot",
+      serverUrl: "https://vault.ouro.bot",
+    },
+    ...overrides,
+  }
+}
+
 /**
  * Layer 3 — `kind: library` exclusion.
  *
@@ -58,7 +68,7 @@ describe("kind:library exclusion", () => {
       ])
       readFileSyncMock.mockImplementation((target: string) => {
         if (target.endsWith("/real.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true })
+          return JSON.stringify(managedConfig({ enabled: true }))
         }
         if (target.endsWith("/RepairGuide.ouro/agent.json")) {
           return JSON.stringify({ enabled: true, kind: "library" })
@@ -71,13 +81,13 @@ describe("kind:library exclusion", () => {
       expect(listEnabledBundleAgents()).toEqual(["real"])
     })
 
-    it("includes bundles with no kind field (back-compat default)", async () => {
+    it("includes bundles with no kind field when they have an adoption signal", async () => {
       readdirSyncMock.mockReturnValue([
         { name: "alpha.ouro", isDirectory: () => true },
       ])
       readFileSyncMock.mockImplementation((target: string) => {
         if (target.endsWith("/alpha.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true })
+          return JSON.stringify(managedConfig({ enabled: true }))
         }
         throw new Error(`unexpected: ${target}`)
       })
@@ -87,13 +97,29 @@ describe("kind:library exclusion", () => {
       expect(listEnabledBundleAgents()).toEqual(["alpha"])
     })
 
+    it("excludes no-kind scaffold-only bundles until they have an adoption signal", async () => {
+      readdirSyncMock.mockReturnValue([
+        { name: "scratch.ouro", isDirectory: () => true },
+      ])
+      readFileSyncMock.mockImplementation((target: string) => {
+        if (target.endsWith("/scratch.ouro/agent.json")) {
+          return JSON.stringify({ enabled: true, senses: { cli: { enabled: true } } })
+        }
+        throw new Error(`unexpected: ${target}`)
+      })
+
+      const { listEnabledBundleAgents } = await import("../../../heart/daemon/agent-discovery")
+
+      expect(listEnabledBundleAgents()).toEqual([])
+    })
+
     it("includes bundles with explicit kind:agent", async () => {
       readdirSyncMock.mockReturnValue([
         { name: "explicit.ouro", isDirectory: () => true },
       ])
       readFileSyncMock.mockImplementation((target: string) => {
         if (target.endsWith("/explicit.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true, kind: "agent" })
+          return JSON.stringify(managedConfig({ enabled: true, kind: "agent" }))
         }
         throw new Error(`unexpected: ${target}`)
       })
@@ -112,13 +138,13 @@ describe("kind:library exclusion", () => {
       ])
       readFileSyncMock.mockImplementation((target: string) => {
         if (target.endsWith("/real-a.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true, kind: "agent" })
+          return JSON.stringify(managedConfig({ enabled: true, kind: "agent" }))
         }
         if (target.endsWith("/SerpentGuide.ouro/agent.json")) {
           return JSON.stringify({ enabled: false, kind: "library" })
         }
         if (target.endsWith("/real-b.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true })
+          return JSON.stringify(managedConfig({ enabled: true }))
         }
         if (target.endsWith("/RepairGuide.ouro/agent.json")) {
           return JSON.stringify({ enabled: false, kind: "library" })
@@ -137,7 +163,7 @@ describe("kind:library exclusion", () => {
       ])
       readFileSyncMock.mockImplementation((target: string) => {
         if (target.endsWith("/weird.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true, kind: 42 })
+          return JSON.stringify(managedConfig({ enabled: true, kind: 42 }))
         }
         throw new Error(`unexpected: ${target}`)
       })
@@ -156,7 +182,7 @@ describe("kind:library exclusion", () => {
       ])
       readFileSyncMock.mockImplementation((target: string) => {
         if (target.endsWith("/real.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true })
+          return JSON.stringify(managedConfig({ enabled: true }))
         }
         if (target.endsWith("/RepairGuide.ouro/agent.json")) {
           return JSON.stringify({ enabled: false, kind: "library" })
@@ -178,7 +204,7 @@ describe("kind:library exclusion", () => {
       ])
       readFileSyncMock.mockImplementation((target: string) => {
         if (target.endsWith("/agent-a.ouro/agent.json")) {
-          return JSON.stringify({ enabled: true })
+          return JSON.stringify(managedConfig({ enabled: true }))
         }
         throw new Error(`unexpected: ${target}`)
       })

@@ -2125,6 +2125,11 @@ describe("ouro CLI execution", () => {
           sync: [],
           agents: [
             { name: "alpha", enabled: true },
+            {
+              name: "fresh-agent",
+              enabled: true,
+              managementBlockedReason: "inactive scaffold: no vault locator, sync, or enabled external sense",
+            },
             { name: "ouroboros", enabled: false },
             { name: "slugger", enabled: true },
           ],
@@ -2141,6 +2146,9 @@ describe("ouro CLI execution", () => {
 
     expect(result).toContain("Agents")
     expect(result).toContain("alpha")
+    expect(result).toContain("fresh-agent")
+    expect(result).toContain("inactive")
+    expect(result).toContain("inactive scaffold")
     expect(result).toContain("ouroboros")
     expect(result).toContain("slugger")
     expect(result).toContain("enabled")

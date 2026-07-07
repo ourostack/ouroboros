@@ -2028,8 +2028,14 @@ describe("daemon CLI default dependency branches", () => {
       fs.writeFileSync(path.join(dir, "agent.json"), configRaw, "utf-8")
     }
 
-    makeBundle("zeta", JSON.stringify({ enabled: true }))
-    makeBundle("alpha", JSON.stringify({ enabled: true }))
+    makeBundle("zeta", JSON.stringify({
+      enabled: true,
+      vault: { email: "zeta@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+    }))
+    makeBundle("alpha", JSON.stringify({
+      enabled: true,
+      vault: { email: "alpha@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+    }))
     makeBundle("disabled", JSON.stringify({ enabled: false }))
     makeBundle("broken", "{")
     fs.mkdirSync(path.join(tmpBundlesRoot, "scratch"), { recursive: true })

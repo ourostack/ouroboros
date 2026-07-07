@@ -70,6 +70,10 @@ describe("hatch flow", () => {
     expect(agentConfig.enabled).toBe(true)
     expect(agentConfig.provider).toBe("anthropic")
     expect(agentConfig.version).toBe(2)
+    expect(agentConfig.vault).toEqual({
+      email: "hatchling@ouro.bot",
+      serverUrl: "https://vault.ouro.bot",
+    })
     expect(agentConfig.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
     expect(agentConfig.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
 
@@ -233,6 +237,41 @@ describe("hatch flow", () => {
         },
       ),
     ).rejects.toThrow("Missing required credentials for anthropic")
+  })
+
+  it("leaves a partially created hatchling disabled when credential storage fails", async () => {
+    const bundlesRoot = makeTempDir("hatch-bundles-store-fail")
+    const specialistSource = makeTempDir("hatch-specialist-store-fail")
+    const specialistTarget = makeTempDir("hatch-specialist-target-store-fail")
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
+    fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
+    mockStoreProviderCredentials.mockRejectedValueOnce(new Error("vault write failed"))
+
+    await expect(() =>
+      runHatchFlow(
+        {
+          agentName: "HalfHatched",
+          humanName: "Ari",
+          provider: "minimax",
+          credentials: { apiKey: "minimax-key" },
+        },
+        {
+          bundlesRoot,
+          specialistIdentitySourceDir: specialistSource,
+          specialistIdentityTargetDir: specialistTarget,
+          random: () => 0,
+        },
+      ),
+    ).rejects.toThrow("vault write failed")
+
+    const agentConfig = JSON.parse(
+      fs.readFileSync(path.join(bundlesRoot, "HalfHatched.ouro", "agent.json"), "utf-8"),
+    ) as Record<string, unknown>
+    expect(agentConfig.enabled).toBe(false)
+    expect(agentConfig.vault).toEqual({
+      email: "halfhatched@ouro.bot",
+      serverUrl: "https://vault.ouro.bot",
+    })
   })
 
   it("writes provider-specific secrets for azure hatch flows", async () => {
