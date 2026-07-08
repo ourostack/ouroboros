@@ -80,6 +80,8 @@ export default defineConfig({
         "src/heart/session-stats-cli-main.ts",
         "src/heart/session-stats.ts",
         "src/heart/providers/anthropic-token.ts",
+        "src/heart/private-runtime/index.ts",
+        "src/heart/private-runtime/types.ts",
         "src/nerves/observation.ts",
         "src/heart/mailbox/mailbox-render.ts",
         "src/heart/mailbox/mailbox-read.ts",

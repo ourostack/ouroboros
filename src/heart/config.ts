@@ -110,6 +110,10 @@ export interface IntegrationsConfig {
   openaiEmbeddingsApiKey: string
 }
 
+export interface FeaturesConfig {
+  workbenchCoding: boolean
+}
+
 export interface OuroborosConfig {
   teams: TeamsConfig
   teamsSecondary: TeamsConfig
@@ -120,6 +124,7 @@ export interface OuroborosConfig {
   bluebubblesChannel: BlueBubblesChannelConfig
   vault: VaultSecretsConfig
   integrations: IntegrationsConfig
+  features: FeaturesConfig
 }
 
 type ProviderConfigPatch = Partial<Record<AgentProvider, Record<string, unknown>>>
@@ -174,6 +179,9 @@ const DEFAULT_LOCAL_RUNTIME_CONFIG: Omit<OuroborosConfig, "context"> = {
     perplexityApiKey: "",
     openaiEmbeddingsApiKey: "",
   },
+  features: {
+    workbenchCoding: false,
+  },
 }
 
 function defaultRuntimeConfig(): OuroborosConfig {
@@ -187,6 +195,7 @@ function defaultRuntimeConfig(): OuroborosConfig {
     bluebubblesChannel: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.bluebubblesChannel },
     vault: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.vault },
     integrations: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.integrations },
+    features: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.features },
   }
 }
 

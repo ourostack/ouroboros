@@ -68,6 +68,8 @@ describe("coding tool contracts", () => {
     manager.getSession.mockReset()
     manager.listSessions.mockReset()
     manager.listSessions.mockReturnValue([])
+    delete (manager as any).refreshSessions
+    delete (manager as any).refreshSession
     manager.subscribe.mockReset()
     manager.subscribe.mockReturnValue(() => {})
     manager.sendInput.mockReset()
@@ -1400,6 +1402,37 @@ describe("coding tool contracts", () => {
     })
 
     expect(JSON.parse(result)).toEqual([])
+  })
+
+  it("coding_status and coding_tail use async refresh methods when the manager supports them", async () => {
+    const refreshedSession = {
+      id: "workbench-session-1",
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      taskRef: "workbench-task",
+      status: "running",
+      stdoutTail: "fresh from Workbench",
+      stderrTail: "",
+      pid: 4242,
+      startedAt: "2026-03-05T23:50:00.000Z",
+      lastActivityAt: "2026-03-05T23:51:00.000Z",
+      endedAt: null,
+      restartCount: 0,
+      lastExitCode: null,
+      lastSignal: null,
+      failure: null,
+    }
+    ;(manager as any).refreshSessions = vi.fn().mockResolvedValue([refreshedSession])
+    ;(manager as any).refreshSession = vi.fn().mockResolvedValue(refreshedSession)
+
+    const status = await execTool("coding_status", {})
+    const tail = await execTool("coding_tail", { sessionId: "workbench-session-1" })
+
+    expect((manager as any).refreshSessions).toHaveBeenCalled()
+    expect((manager as any).refreshSession).toHaveBeenCalledWith("workbench-session-1")
+    expect(manager.listSessions).not.toHaveBeenCalled()
+    expect(JSON.parse(status)).toMatchObject([expect.objectContaining({ id: "workbench-session-1" })])
+    expect(tail).toContain("fresh from Workbench")
   })
 
   it("coding_tail returns readable recent stdout/stderr for a session", async () => {

@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.687",
+      "changes": [
+        "Route coding sessions through Workbench behind a default-off feature flag.",
+        "Tighten Workbench coding adapter construction and coverage.",
+        "Handle Workbench MCP subprocess broken pipes without leaking unhandled test/runtime errors.",
+        "Fail Workbench coding spawns when the initial task prompt is not confirmed delivered.",
+        "Remove legacy inner-dialog source shims and stale auto-start config fallback so private-runtime startup is controlled only by privateRuntime.autoStart.",
+        "Exclude private-runtime barrel and type-only modules from code coverage so CI enforces executable code instead of inert export surfaces."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.686",
       "changes": [
         "Queue external-event payloads into private-runtime attention before dispatch."

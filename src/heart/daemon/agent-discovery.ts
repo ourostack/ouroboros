@@ -39,12 +39,11 @@ interface DiscoveredBundleAgentRow extends BundleAgentRow {
   manageable: boolean
 }
 
-export type PrivateRuntimeConfigSource = "default" | "privateRuntime" | "legacy-innerDialog" | "unreadable"
+export type PrivateRuntimeConfigSource = "default" | "privateRuntime" | "unreadable"
 
 export interface PrivateRuntimeConfig {
   autoStart: boolean
   source: PrivateRuntimeConfigSource
-  compatibilityNote?: string
   error?: string
 }
 
@@ -182,21 +181,12 @@ export function readPrivateRuntimeConfig(agent: string, options: AgentDiscoveryO
 
   try {
     const raw = readFileSync(configPath, "utf-8")
-    const parsed = JSON.parse(raw) as { privateRuntime?: unknown; innerDialog?: unknown }
+    const parsed = JSON.parse(raw) as { privateRuntime?: unknown }
     const privateRuntime = parsed.privateRuntime
     if (privateRuntime && typeof privateRuntime === "object" && !Array.isArray(privateRuntime)) {
       return {
         autoStart: (privateRuntime as { autoStart?: unknown }).autoStart === true,
         source: "privateRuntime",
-      }
-    }
-
-    const innerDialog = parsed.innerDialog
-    if (innerDialog && typeof innerDialog === "object" && !Array.isArray(innerDialog)) {
-      return {
-        autoStart: (innerDialog as { autoStart?: unknown }).autoStart === true,
-        source: "legacy-innerDialog",
-        compatibilityNote: "innerDialog.autoStart is a legacy migration input; use privateRuntime.autoStart.",
       }
     }
     return { autoStart: false, source: "default" }
@@ -215,15 +205,6 @@ export function readPrivateRuntimeConfig(agent: string, options: AgentDiscoveryO
     })
     return { autoStart: false, source: "unreadable", error: message }
   }
-}
-
-/**
- * Legacy compatibility shim for older call sites. New code should use
- * readPrivateRuntimeConfig() so compatibility notes and failure provenance are
- * preserved.
- */
-export function isInnerDialogAutoStartEnabled(agent: string, options: AgentDiscoveryOptions = {}): boolean {
-  return readPrivateRuntimeConfig(agent, options).autoStart
 }
 
 export interface BundleSyncRow {

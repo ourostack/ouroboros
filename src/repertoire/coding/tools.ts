@@ -8,7 +8,7 @@ import { advanceObligation, createObligation, findPendingObligationForOrigin } f
 import { consumeEvolutionBudget, evaluateEvolutionAction, type EvolutionActionDecision } from "../../arc/evolution"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getCodingCompletionScrutiny } from "../../mind/scrutiny"
-import type { CodingRunner, CodingSession, CodingSessionRequest } from "./types"
+import type { CodingActionResult, CodingRunner, CodingSession, CodingSessionManagerApi, CodingSessionRequest, RefreshableCodingSessionManagerApi } from "./types"
 
 const RUNNERS: CodingRunner[] = ["claude", "codex"]
 
@@ -38,6 +38,27 @@ function emitCodingToolEvent(toolName: string): void {
     message: "coding tool handler invoked",
     meta: { toolName },
   })
+}
+
+function isRefreshableCodingSessionManager(manager: CodingSessionManagerApi): manager is RefreshableCodingSessionManagerApi {
+  return typeof (manager as Partial<RefreshableCodingSessionManagerApi>).refreshSessions === "function"
+    && typeof (manager as Partial<RefreshableCodingSessionManagerApi>).refreshSession === "function"
+}
+
+async function listCodingSessions(manager: CodingSessionManagerApi): Promise<CodingSession[]> {
+  return isRefreshableCodingSessionManager(manager) ? manager.refreshSessions() : manager.listSessions()
+}
+
+async function getCodingSession(manager: CodingSessionManagerApi, sessionId: string): Promise<CodingSession | null> {
+  return isRefreshableCodingSessionManager(manager) ? manager.refreshSession(sessionId) : manager.getSession(sessionId)
+}
+
+async function sendCodingInput(manager: CodingSessionManagerApi, sessionId: string, input: string): Promise<CodingActionResult> {
+  return manager.sendInput(sessionId, input)
+}
+
+async function killCodingSession(manager: CodingSessionManagerApi, sessionId: string): Promise<CodingActionResult> {
+  return manager.killSession(sessionId)
 }
 
 /**
@@ -320,7 +341,7 @@ export const codingToolDefinitions: ToolDefinition[] = [
       if (stateFile) request.stateFile = stateFile
 
       const manager = getCodingSessionManager()
-      const existingSessions = manager.listSessions()
+      const existingSessions = await listCodingSessions(manager)
       const existingSession = findReusableCodingSession(existingSessions, request)
       if (existingSession) {
         emitNervesEvent({
@@ -399,15 +420,15 @@ export const codingToolDefinitions: ToolDefinition[] = [
   },
   {
     tool: codingStatusTool,
-    handler: (args: Record<string, string>, ctx?: ToolContext): string => {
+    handler: async (args: Record<string, string>, ctx?: ToolContext): Promise<string> => {
       emitCodingToolEvent("coding_status")
       const manager = getCodingSessionManager()
       const sessionId = requireArg(args, "sessionId")
       if (!sessionId) {
-        return JSON.stringify(selectCodingStatusSessions(manager.listSessions(), ctx?.currentSession))
+        return JSON.stringify(selectCodingStatusSessions(await listCodingSessions(manager), ctx?.currentSession))
       }
 
-      const session = manager.getSession(sessionId)
+      const session = await getCodingSession(manager, sessionId)
       if (!session) return `session not found: ${sessionId}`
       return appendCompletionScrutiny(JSON.stringify(session), session)
     },
@@ -415,12 +436,12 @@ export const codingToolDefinitions: ToolDefinition[] = [
   },
   {
     tool: codingTailTool,
-    handler: (args: Record<string, string>): string => {
+    handler: async (args: Record<string, string>): Promise<string> => {
       emitCodingToolEvent("coding_tail")
       const sessionId = requireArg(args, "sessionId")
       if (!sessionId) return "sessionId is required"
 
-      const session = getCodingSessionManager().getSession(sessionId)
+      const session = await getCodingSession(getCodingSessionManager(), sessionId)
       if (!session) return `session not found: ${sessionId}`
       return appendCompletionScrutiny(formatCodingTail(session), session)
     },
@@ -428,7 +449,7 @@ export const codingToolDefinitions: ToolDefinition[] = [
   },
   {
     tool: codingSendInputTool,
-    handler: (args: Record<string, string>): string => {
+    handler: async (args: Record<string, string>): Promise<string> => {
       emitCodingToolEvent("coding_send_input")
       const sessionId = requireArg(args, "sessionId")
       if (!sessionId) return "sessionId is required"
@@ -436,19 +457,19 @@ export const codingToolDefinitions: ToolDefinition[] = [
       const input = requireArg(args, "input")
       if (!input) return "input is required"
 
-      return JSON.stringify(getCodingSessionManager().sendInput(sessionId, input))
+      return JSON.stringify(await sendCodingInput(getCodingSessionManager(), sessionId, input))
     },
     summaryKeys: ["sessionId", "input"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends input to a live coding process" },
   },
   {
     tool: codingKillTool,
-    handler: (args: Record<string, string>): string => {
+    handler: async (args: Record<string, string>): Promise<string> => {
       emitCodingToolEvent("coding_kill")
       const sessionId = requireArg(args, "sessionId")
       if (!sessionId) return "sessionId is required"
 
-      return JSON.stringify(getCodingSessionManager().killSession(sessionId))
+      return JSON.stringify(await killCodingSession(getCodingSessionManager(), sessionId))
     },
     summaryKeys: ["sessionId"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "terminates a live coding process" },

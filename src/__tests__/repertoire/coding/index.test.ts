@@ -1,5 +1,17 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
+const mockWorkbenchManager = vi.hoisted(() => ({
+  spawnSession: vi.fn(),
+  listSessions: vi.fn(() => []),
+  getSession: vi.fn(() => null),
+  subscribe: vi.fn(() => () => {}),
+  sendInput: vi.fn(),
+  killSession: vi.fn(),
+  checkStalls: vi.fn(() => 0),
+  shutdown: vi.fn(),
+}))
+const mockWorkbenchClient = vi.hoisted(() => ({}))
+
 // Mock heart/identity BEFORE importing the coding module, otherwise
 // `getCodingSessionManager()` will call `getAgentName()` which throws
 // under vitest (no --agent in argv). Previously the manager silently
@@ -31,8 +43,31 @@ vi.mock("fs", async () => {
   }
 })
 
+vi.mock("../../../heart/config", () => ({
+  loadConfig: vi.fn(() => ({ features: { workbenchCoding: false } })),
+}))
+
+vi.mock("../../../repertoire/coding/workbench-manager", () => ({
+  WorkbenchCodingSessionManager: vi.fn(function WorkbenchCodingSessionManager() {
+    return mockWorkbenchManager
+  }),
+}))
+
+vi.mock("../../../repertoire/coding/workbench-client", () => ({
+  WorkbenchMcpClient: vi.fn(function WorkbenchMcpClient() {
+    return mockWorkbenchClient
+  }),
+}))
+
+import { loadConfig } from "../../../heart/config"
+import { WorkbenchMcpClient } from "../../../repertoire/coding/workbench-client"
+import { WorkbenchCodingSessionManager } from "../../../repertoire/coding/workbench-manager"
+
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(loadConfig).mockReturnValue({ features: { workbenchCoding: false } } as any)
+  mockWorkbenchManager.listSessions.mockReturnValue([])
+  mockWorkbenchManager.shutdown.mockReset()
 })
 
 describe("coding manager singleton", () => {
@@ -59,5 +94,31 @@ describe("coding manager singleton", () => {
     resetCodingSessionManager()
     const manager = getCodingSessionManager()
     expect(manager).toBeDefined()
+  })
+
+  it("does not construct Workbench dependencies when the feature flag is disabled", async () => {
+    const { getCodingSessionManager, resetCodingSessionManager } = await import(
+      "../../../repertoire/coding"
+    )
+
+    resetCodingSessionManager()
+    const manager = getCodingSessionManager()
+
+    expect(manager).toBeDefined()
+    expect(WorkbenchMcpClient).not.toHaveBeenCalled()
+    expect(WorkbenchCodingSessionManager).not.toHaveBeenCalled()
+  })
+
+  it("uses the Workbench-backed manager when the feature flag is enabled", async () => {
+    vi.mocked(loadConfig).mockReturnValue({ features: { workbenchCoding: true } } as any)
+    const { getCodingSessionManager, resetCodingSessionManager } = await import(
+      "../../../repertoire/coding"
+    )
+
+    resetCodingSessionManager()
+    const manager = getCodingSessionManager()
+
+    expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith(expect.objectContaining({ agentName: "test-coding-singleton" }))
+    expect(manager.listSessions()).toEqual([])
   })
 })

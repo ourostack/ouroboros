@@ -28,7 +28,7 @@ describe("proactive content guard", () => {
       expect(getProactiveInternalContentBlockReason("[surfaced from inner dialog] check-in")).not.toBeNull()
     })
 
-    it("blocks inner dialog references", () => {
+    it("blocks stale private-runtime vocabulary references", () => {
       expect(getProactiveInternalContentBlockReason("my inner dialog has a thought")).not.toBeNull()
     })
 

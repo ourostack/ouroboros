@@ -67,45 +67,6 @@ const ALLOWED_FINDINGS: AllowedFinding[] = [
     reason: "the docs contract names stale documentation patterns so it can reject them",
   },
   {
-    path: "src/senses/inner-dialog.ts",
-    classification: "compat-alias",
-    reason: "legacy module shim delegating to canonical private-runtime exports",
-  },
-  {
-    path: "src/senses/inner-dialog-worker.ts",
-    classification: "compat-alias",
-    reason: "legacy worker shim delegating to canonical private-runtime worker",
-  },
-  {
-    path: "src/__tests__/senses/inner-dialog-compat.test.ts",
-    classification: "compat-alias",
-    reason: "explicit compatibility-shim test fixture",
-  },
-  {
-    path: "src/heart/daemon/agent-discovery.ts",
-    textIncludes: ["innerDialog", "InnerDialog"],
-    classification: "compat-alias",
-    reason: "legacy agent.json migration input for privateRuntime",
-  },
-  {
-    path: "src/__tests__/heart/daemon/agent-discovery.test.ts",
-    textIncludes: ["innerDialog", "InnerDialog"],
-    classification: "compat-alias",
-    reason: "tests legacy agent.json migration input for privateRuntime",
-  },
-  {
-    path: "src/__tests__/heart/agent-entry.test.ts",
-    textIncludes: ["inner-dialog-worker", "startInnerDialogWorker"],
-    classification: "compat-alias",
-    reason: "ensures the current agent entrypoint does not import the legacy worker shim",
-  },
-  {
-    path: "src/mind/pending.ts",
-    textIncludes: ["INNER_DIALOG_PENDING", "getInnerDialogPendingDir"],
-    classification: "persisted-history",
-    reason: "legacy alias for the durable self/inner/dialog pending path",
-  },
-  {
     path: "src/__tests__/senses/bluebubbles/callbacks.test.ts",
     textIncludes: ["[surfaced from inner dialog]"],
     classification: "safety-guard",
