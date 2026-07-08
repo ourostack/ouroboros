@@ -32,6 +32,9 @@ const listSessionActivityMock = vi.fn(() => [
     lastActivityAt: "2026-03-21T17:36:03.760Z",
     lastActivityMs: Date.parse("2026-03-21T17:36:03.760Z"),
     activitySource: "friend-facing",
+    lastInboundAt: "2026-03-21T17:36:03.760Z",
+    lastOutboundAt: "2026-03-21T17:40:03.760Z",
+    unansweredInboundCount: 0,
   },
   {
     friendId: "friend-2",
@@ -42,6 +45,9 @@ const listSessionActivityMock = vi.fn(() => [
     lastActivityAt: "2026-03-21T19:36:03.760Z",
     lastActivityMs: Date.parse("2026-03-21T19:36:03.760Z"),
     activitySource: "friend-facing",
+    lastInboundAt: "2026-03-21T19:36:03.760Z",
+    lastOutboundAt: null,
+    unansweredInboundCount: 1,
   },
 ])
 const readPendingObligationsMock = vi.fn(() => [
@@ -128,9 +134,13 @@ vi.mock("../../heart/identity", () => ({
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
 }))
 
-vi.mock("../../heart/session-activity", () => ({
-  listSessionActivity: listSessionActivityMock,
-}))
+vi.mock("../../heart/session-activity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../heart/session-activity")>()
+  return {
+    ...actual,
+    listSessionActivity: listSessionActivityMock,
+  }
+})
 
 vi.mock("../../heart/daemon/thoughts", () => ({
   extractThoughtResponseFromMessages: vi.fn(() => null),
@@ -211,6 +221,9 @@ describe("query_active_work tool", () => {
         lastActivityAt: "2026-03-21T17:36:03.760Z",
         lastActivityMs: Date.parse("2026-03-21T17:36:03.760Z"),
         activitySource: "friend-facing",
+        lastInboundAt: "2026-03-21T17:36:03.760Z",
+        lastOutboundAt: "2026-03-21T17:40:03.760Z",
+        unansweredInboundCount: 0,
       },
       {
         friendId: "friend-2",
@@ -221,6 +234,9 @@ describe("query_active_work tool", () => {
         lastActivityAt: "2026-03-21T19:36:03.760Z",
         lastActivityMs: Date.parse("2026-03-21T19:36:03.760Z"),
         activitySource: "friend-facing",
+        lastInboundAt: "2026-03-21T19:36:03.760Z",
+        lastOutboundAt: null,
+        unansweredInboundCount: 1,
       },
     ])
     readPendingObligationsMock.mockReset()
@@ -307,6 +323,9 @@ describe("query_active_work tool", () => {
     expect(result).toContain("this is my current top-level live world-state.")
     expect(result).toContain("## what i'm holding")
     expect(result).toContain("this is my top-level live world-state right now.")
+    expect(result).toContain("## contact timing")
+    expect(result).toContain("freshest friend-facing contact: Jordan/teams/thread-1")
+    expect(result).toContain("1 unanswered inbound message")
     expect(result).toContain("## live coding work")
     expect(result).toContain("codex coding-083")
     expect(result).toContain("## other active sessions")

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.688",
+      "changes": [
+        "Render freshest friend-facing contact timing in protected turn orientation and active-work status so private/self turns cannot mistake stale background timestamps for current contact."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.687",
       "changes": [
         "Route coding sessions through Workbench behind a default-off feature flag.",

@@ -7,7 +7,7 @@ import { bridgeStateLabel } from "./bridges/state-machine"
 import type { BridgeRecord } from "./bridges/store"
 import type { InnerJob } from "./daemon/thoughts"
 import { isOpenObligation, isOpenObligationStatus, type Obligation, type ObligationStatus } from "../arc/obligations"
-import type { SessionActivityRecord } from "./session-activity"
+import { describeSessionActivityTiming, selectFreshestFriendFacingActivity, type SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 import { sanitizeKey } from "./config"
 import type { BackgroundOperationRecord } from "./background-operations"
@@ -872,6 +872,15 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
   const lines = ["## what i'm holding"]
   lines.push("this is my top-level live world-state right now. private-runtime work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
+  const friendContactTiming = describeSessionActivityTiming(
+    selectFreshestFriendFacingActivity(frame.friendActivity?.allOtherLiveSessions ?? []),
+    { prefix: "freshest friend-facing contact" },
+  )
+  if (friendContactTiming) {
+    lines.push("")
+    lines.push("## contact timing")
+    lines.push(`- ${friendContactTiming}`)
+  }
   const primaryObligation = findPrimaryOpenObligation(frame)
   const currentSessionObligation = findCurrentSessionOpenObligation(frame)
   const activeLane = formatActiveLane(frame, primaryObligation)

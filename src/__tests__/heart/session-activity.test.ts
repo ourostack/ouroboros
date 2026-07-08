@@ -519,6 +519,152 @@ describe("session activity", () => {
     }
   })
 
+  it("formats the freshest friend-facing contact for protected turn orientation", async () => {
+    const nowMs = Date.parse("2026-07-08T21:00:00.000Z")
+    const records = [
+      {
+        friendId: "self",
+        friendName: "slugger",
+        channel: "inner",
+        key: "dialog",
+        sessionPath: "/mock/self.json",
+        lastActivityAt: "2026-07-08T20:59:00.000Z",
+        lastActivityMs: Date.parse("2026-07-08T20:59:00.000Z"),
+        activitySource: "friend-facing" as const,
+        lastInboundAt: "2026-07-08T20:59:00.000Z",
+        lastOutboundAt: null,
+        unansweredInboundCount: 0,
+      },
+      {
+        friendId: "ari",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@mendelow.me",
+        sessionPath: "/mock/ari.json",
+        lastActivityAt: "2026-07-08T20:48:25.328Z",
+        lastActivityMs: Date.parse("2026-07-08T20:48:25.328Z"),
+        activitySource: "friend-facing" as const,
+        lastInboundAt: "2026-07-08T20:48:25.328Z",
+        lastOutboundAt: "2026-07-08T20:48:51.709Z",
+        unansweredInboundCount: 0,
+      },
+    ]
+
+    const { describeSessionActivityTiming, selectFreshestFriendFacingActivity } = await import("../../heart/session-activity")
+    const selected = selectFreshestFriendFacingActivity(records)
+
+    expect(selected?.friendId).toBe("ari")
+    expect(describeSessionActivityTiming(selected, {
+      nowMs,
+      prefix: "freshest friend-facing contact",
+    })).toBe("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago; i last replied 11m ago")
+  })
+
+  it("prefers friend-facing contact over newer mtime fallback when selecting contact timing", async () => {
+    const nowMs = Date.parse("2026-07-08T21:00:00.000Z")
+    const records = [
+      {
+        friendId: "sam",
+        friendName: "Sam",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/mock/sam.json",
+        lastActivityAt: "2026-07-08T20:59:00.000Z",
+        lastActivityMs: Date.parse("2026-07-08T20:59:00.000Z"),
+        activitySource: "mtime-fallback" as const,
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        unansweredInboundCount: 0,
+      },
+      {
+        friendId: "ari",
+        friendName: "Ari",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@mendelow.me",
+        sessionPath: "/mock/ari.json",
+        lastActivityAt: "2026-07-08T20:00:00.000Z",
+        lastActivityMs: Date.parse("2026-07-08T20:00:00.000Z"),
+        activitySource: "friend-facing" as const,
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        unansweredInboundCount: 0,
+      },
+    ]
+
+    const { describeSessionActivityTiming, selectFreshestFriendFacingActivity } = await import("../../heart/session-activity")
+    const selected = selectFreshestFriendFacingActivity(records)
+
+    expect(selected?.friendId).toBe("ari")
+    expect(describeSessionActivityTiming(selected, { nowMs })).toBe("friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last activity 1h ago")
+  })
+
+  it("does not select mtime fallback records as friend-facing contact", async () => {
+    const records = [
+      {
+        friendId: "sam",
+        friendName: "Sam",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/mock/sam.json",
+        lastActivityAt: "2026-07-08T20:59:00.000Z",
+        lastActivityMs: Date.parse("2026-07-08T20:59:00.000Z"),
+        activitySource: "mtime-fallback" as const,
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        unansweredInboundCount: 0,
+      },
+    ]
+
+    const { describeSessionActivityTiming, selectFreshestFriendFacingActivity } = await import("../../heart/session-activity")
+    const selected = selectFreshestFriendFacingActivity(records)
+
+    expect(selected).toBeNull()
+    expect(describeSessionActivityTiming(selected)).toBe("")
+  })
+
+  it("formats singular unanswered inbound contact timing", async () => {
+    const { describeSessionActivityTiming } = await import("../../heart/session-activity")
+    const rendered = describeSessionActivityTiming({
+      friendId: "ari",
+      friendName: "Ari",
+      channel: "bluebubbles",
+      key: "chat:any;-;ari@mendelow.me",
+      sessionPath: "/mock/ari.json",
+      lastActivityAt: "2026-07-08T20:59:00.000Z",
+      lastActivityMs: Date.parse("2026-07-08T20:59:00.000Z"),
+      activitySource: "friend-facing",
+      lastInboundAt: "2026-07-08T20:59:00.000Z",
+      lastOutboundAt: null,
+      unansweredInboundCount: 1,
+    }, {
+      nowMs: Date.parse("2026-07-08T21:00:00.000Z"),
+    })
+
+    expect(rendered).toContain("1 unanswered inbound message")
+    expect(rendered).not.toContain("1 unanswered inbound messages")
+  })
+
+  it("formats plural unanswered inbound contact timing", async () => {
+    const { describeSessionActivityTiming } = await import("../../heart/session-activity")
+    const rendered = describeSessionActivityTiming({
+      friendId: "ari",
+      friendName: "Ari",
+      channel: "bluebubbles",
+      key: "chat:any;-;ari@mendelow.me",
+      sessionPath: "/mock/ari.json",
+      lastActivityAt: "2026-07-08T20:59:00.000Z",
+      lastActivityMs: Date.parse("2026-07-08T20:59:00.000Z"),
+      activitySource: "friend-facing",
+      lastInboundAt: "2026-07-08T20:59:00.000Z",
+      lastOutboundAt: null,
+      unansweredInboundCount: 2,
+    }, {
+      nowMs: Date.parse("2026-07-08T21:00:00.000Z"),
+    })
+
+    expect(rendered).toContain("2 unanswered inbound messages")
+  })
+
   it("falls back to mtime when derived chronology has a malformed inbound timestamp", async () => {
     vi.resetModules()
     const now = Date.now()
