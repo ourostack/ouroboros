@@ -37,6 +37,8 @@ describe("Workbench MCP client", () => {
         existsSync: (target) => target === "/custom/OuroWorkbenchMCP",
       }),
     ).toBe("/custom/OuroWorkbenchMCP")
+
+    expect(() => resolveWorkbenchMcpPath({ executablePath: "/definitely/missing/OuroWorkbenchMCP" })).not.toThrow()
   })
 
   it("falls back to the user-installed app candidate and fails loudly when none exists", () => {
@@ -75,6 +77,13 @@ describe("Workbench MCP client", () => {
             id: 2,
             result: { content: [{ text: "{\"ok\":true,\"requestId\":\"req-1\"}" }] },
           })}\n`)
+          child?.stdout.write(`${JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            result: { content: [{ text: "{\"ignored\":true}" }] },
+          })}\n`)
+          child?.stderr.write("ignored after success\n")
+          child?.emit("exit", 0, null)
         })
         return child as never
       },
@@ -147,6 +156,19 @@ describe("Workbench MCP client", () => {
       },
     })
     await expect(rpcError.callToolText("workbench_status", {})).rejects.toThrow("returned an RPC error")
+
+    const emptyError = new WorkbenchMcpClient({
+      executablePath: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
+      existsSync: () => true,
+      spawnFn: () => {
+        const errorChild = new FakeWorkbenchProcess()
+        errorChild.stdin.on("finish", () => {
+          errorChild.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { isError: true, content: [] } })}\n`)
+        })
+        return errorChild as never
+      },
+    })
+    await expect(emptyError.callToolText("workbench_status", {})).rejects.toThrow("returned an error")
   })
 
   it("rejects process startup errors, stderr-only exits, timeouts, and non-JSON tool text", async () => {
@@ -183,9 +205,42 @@ describe("Workbench MCP client", () => {
     })
     await expect(timeout.callToolText("workbench_status", {})).rejects.toThrow("timed out")
 
+    const defaultSpawn = new WorkbenchMcpClient({
+      executablePath: "/usr/bin/false",
+      existsSync: () => true,
+      timeoutMs: 1,
+    })
+    await expect(defaultSpawn.callToolText("workbench_status", {})).rejects.toThrow("timed out")
+
     const nonJson = clientWithCallToolJson()
     nonJson.callToolText.mockResolvedValue("not-json")
     await expect(nonJson.client.callToolJson("workbench_status", {})).rejects.toThrow("non-JSON")
+
+    const emptyText = new WorkbenchMcpClient({
+      executablePath: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
+      existsSync: () => true,
+      spawnFn: () => {
+        const child = new FakeWorkbenchProcess()
+        child.stdin.on("finish", () => {
+          child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{}] } })}\n`)
+        })
+        return child as never
+      },
+    })
+    await expect(emptyText.callToolText("workbench_status", {})).resolves.toBe("")
+
+    const emptyResult = new WorkbenchMcpClient({
+      executablePath: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
+      existsSync: () => true,
+      spawnFn: () => {
+        const child = new FakeWorkbenchProcess()
+        child.stdin.on("finish", () => {
+          child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, result: {} })}\n`)
+        })
+        return child as never
+      },
+    })
+    await expect(emptyResult.callToolText("workbench_status", {})).resolves.toBe("")
   })
 
   it("wraps Workbench tools with the expected programmatic JSON arguments", async () => {
@@ -193,6 +248,7 @@ describe("Workbench MCP client", () => {
     callToolJson
       .mockResolvedValueOnce({ queued: true, requestId: "create-1" })
       .mockResolvedValueOnce({ sessions: [{ id: "session-1", name: "coding-codex-task" }] })
+      .mockResolvedValueOnce({})
       .mockResolvedValueOnce({ ok: true, requestId: "action-1" })
       .mockResolvedValueOnce({ requestId: "action-1", state: "applied", succeeded: true })
     callToolText.mockResolvedValueOnce("tail")
@@ -202,6 +258,7 @@ describe("Workbench MCP client", () => {
       requestId: "create-1",
     })
     await expect(client.listSessions({ owner: "slugger" })).resolves.toEqual([{ id: "session-1", name: "coding-codex-task" }])
+    await expect(client.listSessions()).resolves.toEqual([])
     await expect(client.transcriptTail("session-1", 12)).resolves.toBe("tail")
     await expect(client.requestAction({ action: "terminate", entry: "session-1" })).resolves.toEqual({
       ok: true,
@@ -219,13 +276,14 @@ describe("Workbench MCP client", () => {
       format: "json",
     })
     expect(callToolJson).toHaveBeenNthCalledWith(2, "workbench_sessions", { owner: "slugger" })
+    expect(callToolJson).toHaveBeenNthCalledWith(3, "workbench_sessions", {})
     expect(callToolText).toHaveBeenCalledWith("workbench_transcript_tail", { entry: "session-1", maxBytes: 12 })
-    expect(callToolJson).toHaveBeenNthCalledWith(3, "workbench_request_action", {
+    expect(callToolJson).toHaveBeenNthCalledWith(4, "workbench_request_action", {
       action: "terminate",
       entry: "session-1",
       format: "json",
     })
-    expect(callToolJson).toHaveBeenNthCalledWith(4, "workbench_action_result", { requestId: "action-1" })
+    expect(callToolJson).toHaveBeenNthCalledWith(5, "workbench_action_result", { requestId: "action-1" })
   })
 
   it("creates a coding session, resolves its Workbench id, and injects the prompt", async () => {
@@ -276,6 +334,35 @@ describe("Workbench MCP client", () => {
       appendNewline: true,
     })
     expect(waitForAction).toHaveBeenCalledWith("prompt-1", 10000)
+
+    createSession.mockClear()
+    requestAction.mockResolvedValueOnce({ ok: true })
+    waitForAction.mockClear()
+    await expect(
+      client.createCodingSession({
+        owner: "slugger",
+        name: "coding-codex-custom",
+        command: "codex",
+        workingDirectory: "/repo",
+        prompt: "please work",
+        group: "custom-group",
+        trust: "untrusted",
+        autoResume: false,
+        source: "custom-source",
+      }),
+    ).resolves.toMatchObject({
+      session: { id: "session-1" },
+      promptResult: undefined,
+    })
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        group: "custom-group",
+        trust: "untrusted",
+        autoResume: false,
+        source: "custom-source",
+      }),
+    )
+    expect(waitForAction).not.toHaveBeenCalled()
   })
 
   it("polls session and action results without treating queued actions as success", async () => {
@@ -285,6 +372,11 @@ describe("Workbench MCP client", () => {
       .mockResolvedValueOnce([{ id: "session-1", name: "Coding-Codex-Task", owner: {} }])
     await expect(client.waitForSession({ owner: "slugger", name: "coding-codex-task", timeoutMs: 1000 })).resolves.toMatchObject({
       id: "session-1",
+    })
+
+    vi.spyOn(client, "listSessions").mockResolvedValueOnce([{ id: "session-2", name: "coding-default-timeout", owner: { name: "slugger" } }])
+    await expect(client.waitForSession({ owner: "slugger", name: "coding-default-timeout" })).resolves.toMatchObject({
+      id: "session-2",
     })
 
     vi.spyOn(client, "actionResult")

@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.687",
       "changes": [
-        "Route coding sessions through Workbench behind a default-off feature flag."
+        "Route coding sessions through Workbench behind a default-off feature flag.",
+        "Tighten Workbench coding adapter construction and coverage."
       ]
     },
     {

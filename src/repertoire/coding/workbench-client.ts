@@ -124,7 +124,7 @@ function parseJson<T>(text: string, toolName: string): T {
   try {
     return JSON.parse(text) as T
   } catch (error) {
-    throw new Error(`Workbench MCP ${toolName} returned non-JSON text: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(`Workbench MCP ${toolName} returned non-JSON text: ${String(error)}`)
   }
 }
 
@@ -186,12 +186,7 @@ export class WorkbenchMcpClient {
 
     const result = await new Promise<string>((resolve, reject) => {
       let settled = false
-      const timer = setTimeout(() => {
-        if (settled) return
-        settled = true
-        child.kill("SIGTERM")
-        reject(new Error(`Workbench MCP ${name} timed out after ${this.timeoutMs}ms`))
-      }, this.timeoutMs)
+      let timer: NodeJS.Timeout
 
       const settle = (fn: () => void): void => {
         if (settled) return
@@ -199,6 +194,13 @@ export class WorkbenchMcpClient {
         clearTimeout(timer)
         fn()
       }
+
+      timer = setTimeout(() => {
+        settle(() => {
+          child.kill("SIGTERM")
+          reject(new Error(`Workbench MCP ${name} timed out after ${this.timeoutMs}ms`))
+        })
+      }, this.timeoutMs)
 
       child.on("error", (error) => {
         settle(() => reject(error))

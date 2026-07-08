@@ -18,7 +18,7 @@ import { WorkbenchMcpClient, type WorkbenchActionResult, type WorkbenchSession }
 type ReadText = (target: string, encoding: "utf-8") => string
 
 export interface WorkbenchCodingSessionManagerOptions {
-  client?: Pick<
+  client: Pick<
     WorkbenchMcpClient,
     "createCodingSession" | "listSessions" | "transcriptTail" | "requestAction" | "waitForAction"
   >
@@ -38,13 +38,6 @@ function cloneSession(session: CodingSession): CodingSession {
   return {
     ...session,
     originSession: session.originSession ? { ...session.originSession } : undefined,
-    codingIdentity: session.codingIdentity
-      ? {
-          ...session.codingIdentity,
-          dirtyFiles: [...session.codingIdentity.dirtyFiles],
-          verificationCommands: [...session.codingIdentity.verificationCommands],
-        }
-      : undefined,
     failure: session.failure ? { ...session.failure, args: [...session.failure.args] } : null,
   }
 }
@@ -116,7 +109,7 @@ function failureFor(session: WorkbenchSession, command: string): CodingFailureDi
     code: session.exitCode ?? null,
     signal: null,
     stdoutTail: "",
-    stderrTail: checkpointFor(session, "failed") ?? "Workbench session failed",
+    stderrTail: checkpointFor(session, "failed")!,
   }
 }
 
@@ -141,7 +134,7 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
   private readonly source: string
 
   constructor(options: WorkbenchCodingSessionManagerOptions) {
-    this.client = options.client ?? new WorkbenchMcpClient()
+    this.client = options.client
     this.agentName = options.agentName
     this.nowIso = options.nowIso ?? (() => new Date().toISOString())
     this.existsSync = options.existsSync ?? fs.existsSync
@@ -152,7 +145,7 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
   async spawnSession(request: CodingSessionRequest): Promise<CodingSession> {
     const now = this.nowIso()
     const name = sessionNameForRequest(request, now)
-    const normalizedRequest: CodingSessionRequest = {
+    const normalizedRequest: CodingSessionRequest & { parentAgent: string } = {
       ...request,
       parentAgent: request.parentAgent ?? this.agentName,
     }
@@ -161,7 +154,7 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
       readFileSync: this.readFileSync,
     })
     const result = await this.client.createCodingSession({
-      owner: normalizedRequest.parentAgent ?? this.agentName,
+      owner: normalizedRequest.parentAgent,
       name,
       command: commandForRunner(normalizedRequest.runner),
       workingDirectory: normalizedRequest.workdir,
@@ -204,8 +197,7 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
     if (!session) return null
 
     const tail = await this.client.transcriptTail(sessionId)
-    const record = this.records.get(sessionId)
-    if (!record) return session
+    const record = this.records.get(sessionId)!
     record.session.stdoutTail = tail
     record.session.lastActivityAt = this.nowIso()
     record.session.checkpoint = tail.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? record.session.checkpoint
@@ -242,13 +234,11 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
   async killSession(sessionId: string): Promise<CodingActionResult> {
     const actionResult = await this.queueAction(sessionId, "terminate", {})
     if (actionResult.ok) {
-      const record = this.records.get(sessionId)
-      if (record) {
-        record.session.status = "killed"
-        record.session.endedAt = this.nowIso()
-        record.session.checkpoint = "terminated by parent agent"
-        this.notifyListeners(sessionId, { kind: "killed", session: cloneSession(record.session) })
-      }
+      const record = this.records.get(sessionId)!
+      record.session.status = "killed"
+      record.session.endedAt = this.nowIso()
+      record.session.checkpoint = "terminated by parent agent"
+      this.notifyListeners(sessionId, { kind: "killed", session: cloneSession(record.session) })
     }
     return actionResult
   }

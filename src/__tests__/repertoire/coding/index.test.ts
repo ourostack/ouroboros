@@ -10,6 +10,7 @@ const mockWorkbenchManager = vi.hoisted(() => ({
   checkStalls: vi.fn(() => 0),
   shutdown: vi.fn(),
 }))
+const mockWorkbenchClient = vi.hoisted(() => ({}))
 
 // Mock heart/identity BEFORE importing the coding module, otherwise
 // `getCodingSessionManager()` will call `getAgentName()` which throws
@@ -49,6 +50,12 @@ vi.mock("../../../heart/config", () => ({
 vi.mock("../../../repertoire/coding/workbench-manager", () => ({
   WorkbenchCodingSessionManager: vi.fn(function WorkbenchCodingSessionManager() {
     return mockWorkbenchManager
+  }),
+}))
+
+vi.mock("../../../repertoire/coding/workbench-client", () => ({
+  WorkbenchMcpClient: vi.fn(function WorkbenchMcpClient() {
+    return mockWorkbenchClient
   }),
 }))
 
@@ -97,7 +104,7 @@ describe("coding manager singleton", () => {
     resetCodingSessionManager()
     const manager = getCodingSessionManager()
 
-    expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith({ agentName: "test-coding-singleton" })
+    expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith(expect.objectContaining({ agentName: "test-coding-singleton" }))
     expect(manager.listSessions()).toEqual([])
   })
 })

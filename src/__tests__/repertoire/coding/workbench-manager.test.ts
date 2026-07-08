@@ -59,6 +59,7 @@ describe("Workbench coding session manager", () => {
       taskRef: "Task 123",
       scopeFile: "/tmp/scope.md",
       autoRestartOnCrash: false,
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
     })
 
     expect(client.createCodingSession).toHaveBeenCalledWith(
@@ -82,10 +83,47 @@ describe("Workbench coding session manager", () => {
       runner: "codex",
       workdir: "/repo",
       taskRef: "Task 123",
+      originSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
       status: "running",
       pid: 4242,
     })
     expect(manager.listSessions()).toHaveLength(1)
+  })
+
+  it("sanitizes missing and noisy task refs when naming Workbench sessions", async () => {
+    const client = fakeClient()
+    client.createCodingSession
+      .mockResolvedValueOnce({
+        session: fakeWorkbenchSession({ id: "fallback-task", name: "coding-codex-task-20260708T010203004Z" }),
+        createAck: { queued: true },
+        promptAck: { ok: true },
+      } satisfies WorkbenchCreateCodingSessionResult)
+      .mockResolvedValueOnce({
+        session: fakeWorkbenchSession({ id: "noisy-task", name: "coding-codex-task-20260708T010203004Z" }),
+        createAck: { queued: true },
+        promptAck: { ok: true },
+      } satisfies WorkbenchCreateCodingSessionResult)
+
+    const manager = new WorkbenchCodingSessionManager({
+      agentName: "slugger",
+      client: client as unknown as WorkbenchMcpClient,
+      nowIso: () => "2026-07-08T01:02:03.004Z",
+    })
+
+    await manager.spawnSession({ runner: "codex", workdir: "/repo", prompt: "no task ref" })
+    await manager.spawnSession({
+      runner: "codex",
+      workdir: "/repo",
+      prompt: "noisy task ref",
+      taskRef: "!!!",
+      parentAgent: "boss",
+    })
+
+    expect(client.createCodingSession).toHaveBeenNthCalledWith(1, expect.objectContaining({ name: "coding-codex-task-20260708T010203004Z" }))
+    expect(client.createCodingSession).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      owner: "boss",
+      name: "coding-codex-task-20260708T010203004Z",
+    }))
   })
 
   it("refreshes Workbench sessions into the local coding-session snapshot cache", async () => {
@@ -121,6 +159,13 @@ describe("Workbench coding session manager", () => {
     expect(client.transcriptTail).toHaveBeenCalledWith("workbench-session-2")
     expect(withTail?.stdoutTail).toBe("waiting for input\n")
     expect(manager.getSession("workbench-session-2")?.stdoutTail).toBe("waiting for input\n")
+    expect(manager.getSession("missing")).toBeNull()
+
+    client.transcriptTail.mockResolvedValueOnce("\n")
+    const emptyTail = await manager.refreshSession("workbench-session-2")
+    expect(emptyTail?.checkpoint).toBe("Approve the focused test plan?")
+
+    await expect(manager.refreshSession("missing")).resolves.toBeNull()
   })
 
   it("queues Workbench control actions for input and termination", async () => {
@@ -142,6 +187,9 @@ describe("Workbench coding session manager", () => {
 
     await manager.refreshSessions()
     const unsubscribe = manager.subscribe("workbench-session-1", listener)
+    const secondListener = vi.fn()
+    const unsubscribeSecond = manager.subscribe("workbench-session-1", secondListener)
+    unsubscribeSecond()
     await expect(manager.sendInput("workbench-session-1", "continue")).resolves.toEqual({
       ok: true,
       message: "sendInput applied for workbench-session-1",
@@ -197,10 +245,16 @@ describe("Workbench coding session manager", () => {
         id: "failed",
         name: "coding-claude-failed",
         status: "exited",
-        exitCode: 2,
+        exitCode: undefined,
         attentionPrompt: undefined,
         attentionReason: undefined,
         attention: undefined,
+      }),
+      fakeWorkbenchSession({
+        id: "failed-code",
+        name: "coding-codex-failed-code",
+        status: "exited",
+        exitCode: 2,
       }),
       fakeWorkbenchSession({
         id: "recovery",
@@ -219,6 +273,7 @@ describe("Workbench coding session manager", () => {
         status: undefined,
         workingDirectory: undefined,
         lastOutputAt: undefined,
+        pid: undefined,
       }),
     ])
 
@@ -233,6 +288,7 @@ describe("Workbench coding session manager", () => {
       "completed",
       "configured",
       "failed",
+      "failed-code",
       "manual",
       "recovery",
       "unknown-runner",
@@ -250,8 +306,13 @@ describe("Workbench coding session manager", () => {
     expect(sessions.find((session) => session.id === "failed")).toMatchObject({
       runner: "claude",
       status: "failed",
+      checkpoint: "exited",
+      failure: expect.objectContaining({ command: "claude", code: null, stderrTail: "exited" }),
+    })
+    expect(sessions.find((session) => session.id === "failed-code")).toMatchObject({
+      status: "failed",
       checkpoint: "exit code 2",
-      failure: expect.objectContaining({ command: "claude", code: 2, stderrTail: "exit code 2" }),
+      failure: expect.objectContaining({ code: 2, stderrTail: "exit code 2" }),
     })
     expect(sessions.find((session) => session.id === "recovery")).toMatchObject({
       status: "stalled",
@@ -265,6 +326,7 @@ describe("Workbench coding session manager", () => {
       runner: "codex",
       workdir: "",
       status: "running",
+      pid: null,
     })
   })
 
@@ -276,6 +338,7 @@ describe("Workbench coding session manager", () => {
       .mockResolvedValue([fakeWorkbenchSession({ id: "workbench-session-1" })])
     client.requestAction
       .mockResolvedValueOnce({ ok: false, message: "denied by Workbench" } satisfies WorkbenchActionAck)
+      .mockResolvedValueOnce({ ok: true } satisfies WorkbenchActionAck)
       .mockResolvedValueOnce({ ok: true, requestId: "queued-1" } satisfies WorkbenchActionAck)
       .mockResolvedValueOnce({ ok: true, requestId: "failed-1" } satisfies WorkbenchActionAck)
     client.waitForAction
@@ -285,6 +348,10 @@ describe("Workbench coding session manager", () => {
         state: "failed",
         result: "session is not running",
         succeeded: false,
+      } satisfies WorkbenchActionResult)
+      .mockResolvedValueOnce({
+        requestId: "failed-2",
+        state: "unknown",
       } satisfies WorkbenchActionResult)
 
     const manager = new WorkbenchCodingSessionManager({
@@ -302,6 +369,10 @@ describe("Workbench coding session manager", () => {
       message: "denied by Workbench",
     })
     await expect(manager.sendInput("workbench-session-1", "continue")).resolves.toEqual({
+      ok: true,
+      message: "sendInput queued for workbench-session-1",
+    })
+    await expect(manager.sendInput("workbench-session-1", "continue")).resolves.toEqual({
       ok: false,
       message: "sendInput queued for workbench-session-1 but not confirmed",
     })
@@ -309,7 +380,33 @@ describe("Workbench coding session manager", () => {
       ok: false,
       message: "session is not running",
     })
+    client.requestAction.mockResolvedValueOnce({ ok: true, requestId: "failed-2" } satisfies WorkbenchActionAck)
+    await expect(manager.sendInput("workbench-session-1", "again")).resolves.toEqual({
+      ok: false,
+      message: "sendInput unknown for workbench-session-1",
+    })
     expect(manager.checkStalls()).toBe(0)
     manager.shutdown()
+  })
+
+  it("uses default timing and filesystem dependencies when options omit them", async () => {
+    const client = fakeClient()
+    client.listSessions.mockResolvedValue([
+      fakeWorkbenchSession({
+        id: "undated",
+        name: "coding-codex-undated",
+        startedAt: undefined,
+        lastOutputAt: undefined,
+      }),
+    ])
+
+    const manager = new WorkbenchCodingSessionManager({
+      agentName: "slugger",
+      client: client as unknown as WorkbenchMcpClient,
+    })
+
+    const [session] = await manager.refreshSessions()
+    expect(Date.parse(session.startedAt)).not.toBeNaN()
+    expect(Date.parse(session.lastActivityAt)).not.toBeNaN()
   })
 })

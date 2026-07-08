@@ -3,6 +3,7 @@ import { loadConfig } from "../../heart/config"
 import { getAgentName } from "../../heart/identity"
 import { CodingSessionManager } from "./manager"
 import { WorkbenchCodingSessionManager } from "./workbench-manager"
+import { WorkbenchMcpClient } from "./workbench-client"
 import type { CodingSessionManagerApi } from "./types"
 
 let manager: CodingSessionManagerApi | null = null
@@ -12,7 +13,7 @@ export function getCodingSessionManager(): CodingSessionManagerApi {
     const config = loadConfig()
     const backend = config.features.workbenchCoding ? "workbench" : "process"
     manager = config.features.workbenchCoding
-      ? new WorkbenchCodingSessionManager({ agentName: getAgentName() })
+      ? new WorkbenchCodingSessionManager({ agentName: getAgentName(), client: new WorkbenchMcpClient() })
       : new CodingSessionManager({})
     emitNervesEvent({
       component: "repertoire",
