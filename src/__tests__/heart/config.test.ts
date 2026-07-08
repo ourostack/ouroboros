@@ -110,6 +110,7 @@ describe("loadConfig", () => {
     expect(config.context.contextMargin).toBe(20)
     expect(config.teams.clientId).toBe("")
     expect(config.integrations.perplexityApiKey).toBe("")
+    expect(config.features.workbenchCoding).toBe(false)
     expect(config).not.toHaveProperty("providers")
     expect(fs.readFileSync).not.toHaveBeenCalled()
     expect(fs.writeFileSync).not.toHaveBeenCalled()
@@ -246,6 +247,16 @@ describe("loadConfig", () => {
     cacheRuntimeConfigForTests("testagent", { integrations: { perplexityApiKey: "fresh-key" } })
     expect(getIntegrationsConfig().perplexityApiKey).toBe("fresh-key")
     expect(fs.readFileSync).not.toHaveBeenCalled()
+  })
+
+  it("merges the Workbench coding feature flag from runtime config", async () => {
+    const { loadConfig } = await importConfigModule({
+      features: { workbenchCoding: true },
+    })
+
+    const config = loadConfig()
+
+    expect(config.features.workbenchCoding).toBe(true)
   })
 
   it("emits config.load observability event when loading config", async () => {

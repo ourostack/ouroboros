@@ -102,3 +102,19 @@ export interface CodingActionResult {
   ok: boolean
   message: string
 }
+
+export interface CodingSessionManagerApi {
+  spawnSession(request: CodingSessionRequest): Promise<CodingSession>
+  listSessions(): CodingSession[]
+  getSession(sessionId: string): CodingSession | null
+  subscribe(sessionId: string, listener: (update: CodingSessionUpdate) => void | Promise<void>): () => void
+  sendInput(sessionId: string, input: string): CodingActionResult | Promise<CodingActionResult>
+  killSession(sessionId: string): CodingActionResult | Promise<CodingActionResult>
+  checkStalls(nowMs?: number): number | Promise<number>
+  shutdown(): void | Promise<void>
+}
+
+export interface RefreshableCodingSessionManagerApi extends CodingSessionManagerApi {
+  refreshSessions(): Promise<CodingSession[]>
+  refreshSession(sessionId: string): Promise<CodingSession | null>
+}

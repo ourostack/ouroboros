@@ -88,7 +88,7 @@ function appendFileSection(
   sections.push(`${label} (${filePath}):\n${content}`)
 }
 
-function buildPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCodingDeps, "existsSync" | "readFileSync">>): string {
+export function buildCodingPrompt(request: CodingSessionRequest, deps: Required<Pick<SpawnCodingDeps, "existsSync" | "readFileSync">>): string {
   const sections: string[] = []
 
   sections.push(
@@ -125,7 +125,7 @@ export function spawnCodingProcess(request: CodingSessionRequest, deps: SpawnCod
   const homeDir = deps.homeDir ?? os.homedir()
   const baseEnv = deps.baseEnv ?? process.env
 
-  const prompt = buildPrompt(request, { existsSync, readFileSync })
+  const prompt = buildCodingPrompt(request, { existsSync, readFileSync })
   const { command, args } = buildCommandArgs(request.runner, request.workdir, request.parentAgent)
   const env = buildSpawnEnv(baseEnv, homeDir)
 
