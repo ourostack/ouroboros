@@ -389,6 +389,46 @@ describe("pipeline continuity integration", () => {
       )
     })
 
+    it("passes freshest friend-facing contact timing into the protected start-of-turn packet", async () => {
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          friendName: "Jordan",
+          channel: "bluebubbles",
+          key: "chat:any;-;jordan@example.com",
+          sessionPath: "/tmp/jordan.json",
+          lastActivityAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+          lastActivityMs: Date.now() - 11 * 60 * 1000,
+          activitySource: "friend-facing",
+          lastInboundAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+          lastOutboundAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          unansweredInboundCount: 0,
+        },
+      ])
+
+      const input = makeInput({
+        channel: "inner" as Channel,
+        sessionLoader: {
+          loadOrCreate: vi.fn().mockResolvedValue({
+            messages: [{ role: "system", content: "You are helpful." }],
+            events: [],
+            state: {},
+            sessionPath: "/tmp/self-inner.json",
+          }),
+        },
+      })
+      const { handleInboundTurn } = await import("../../senses/pipeline")
+      await handleInboundTurn(input)
+
+      expect(mockBuildStartOfTurnPacket).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          currentSessionTiming: "",
+          friendContactTiming: expect.stringContaining("freshest friend-facing contact: Jordan/bluebubbles/chat:any;-;jordan@example.com"),
+        }),
+      )
+    })
+
     it("passes rendered start-of-turn packet to runAgent options", async () => {
       mockRenderStartOfTurnPacket.mockReturnValue("**Next:** review PR #42")
 

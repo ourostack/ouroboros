@@ -382,6 +382,22 @@ describe("start-of-turn packet", () => {
       expect(rendered).toContain("1 unanswered inbound message")
     })
 
+    it("renders freshest friend-facing contact timing separately from current-thread timing", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "answer the current message" })],
+      })
+      const packet = buildStartOfTurnPacket(view, {
+        currentSessionTiming: "",
+        friendContactTiming: "freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago; i last replied 10m ago",
+      })
+
+      const rendered = renderStartOfTurnPacket(packet)
+
+      expect(rendered).toContain("**Recent contact:** freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me")
+      expect(rendered).toContain("last inbound 11m ago")
+      expect(rendered).not.toContain("**Thread timing:**")
+    })
+
     it("keeps Recovery Sentinel and Arc resume under truncation pressure", () => {
       const view = makeView({
         tempo: "brief",
@@ -427,6 +443,29 @@ describe("start-of-turn packet", () => {
       const rendered = renderStartOfTurnPacket(packet)
 
       expect(rendered).toContain("**Thread timing:** current thread: last inbound 8d ago")
+    })
+
+    it("keeps freshest friend-facing contact under truncation pressure", () => {
+      const view = makeView({
+        tempo: "brief",
+        recentEpisodes: Array.from({ length: 60 }, (_, i) =>
+          makeEpisode({ id: `ep-${i}`, summary: `oversized episode ${i} with detail that can be trimmed` }),
+        ),
+        activeObligations: Array.from({ length: 40 }, (_, i) =>
+          makeObligation({ id: `ob-${i}`, content: `oversized obligation ${i} that can be trimmed` }),
+        ),
+        activeCares: Array.from({ length: 40 }, (_, i) =>
+          makeCare({ id: `care-${i}`, label: `oversized care ${i} that can be trimmed` }),
+        ),
+      })
+      const packet = buildStartOfTurnPacket(view, {
+        friendContactTiming: "freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago",
+        recoverySentinel: makeSentinelView(),
+      } as any)
+
+      const rendered = renderStartOfTurnPacket(packet)
+
+      expect(rendered).toContain("**Recent contact:** freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me")
     })
   })
 

@@ -70,6 +70,69 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(result).not.toContain("i still owe")
   })
 
+  it("renders freshest friend-facing contact timing before old work details", () => {
+    const now = Date.parse("2026-07-08T21:00:00.000Z")
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(now)
+      const result = formatActiveWorkFrame(makeFrame({
+        currentSession: { friendId: "self", channel: "inner" as any, key: "dialog", sessionPath: "/tmp/self.json" },
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [
+            {
+              friendId: "ari",
+              friendName: "Ari",
+              channel: "bluebubbles",
+              key: "chat:any;-;ari@mendelow.me",
+              sessionPath: "/tmp/ari.json",
+              lastActivityAt: "2026-07-08T20:48:25.328Z",
+              lastActivityMs: Date.parse("2026-07-08T20:48:25.328Z"),
+              activitySource: "friend-facing",
+              lastInboundAt: "2026-07-08T20:48:25.328Z",
+              lastOutboundAt: "2026-07-08T20:48:51.709Z",
+              unansweredInboundCount: 0,
+            },
+          ],
+        },
+      }))
+
+      expect(result).toContain("## contact timing")
+      expect(result).toContain("freshest friend-facing contact: Ari/bluebubbles/chat:any;-;ari@mendelow.me; last inbound 11m ago; i last replied 11m ago")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not render contact timing from mtime fallback activity", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      currentSession: { friendId: "self", channel: "inner" as any, key: "dialog", sessionPath: "/tmp/self.json" },
+      friendActivity: {
+        freshestForCurrentFriend: null,
+        otherLiveSessionsForCurrentFriend: [],
+        allOtherLiveSessions: [
+          {
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "chat:any;-;ari@mendelow.me",
+            sessionPath: "/tmp/ari.json",
+            lastActivityAt: "2026-07-08T20:48:25.328Z",
+            lastActivityMs: Date.parse("2026-07-08T20:48:25.328Z"),
+            activitySource: "mtime-fallback",
+            lastInboundAt: null,
+            lastOutboundAt: null,
+            unansweredInboundCount: 0,
+          },
+        ],
+      },
+    }))
+
+    expect(result).not.toContain("## contact timing")
+    expect(result).not.toContain("freshest friend-facing contact")
+  })
+
   it("renders obligation appended to session line", () => {
     const result = formatActiveWorkFrame(makeFrame({
       pendingObligations: [

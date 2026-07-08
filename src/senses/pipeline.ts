@@ -42,6 +42,7 @@ import { detectBundleState } from "../heart/bundle-state"
 import { preTurnPull, postTurnPush } from "../heart/sync"
 import { getSyncConfig } from "../heart/config"
 import { describeCurrentSessionTiming, stampIngressTime, type SessionEvent } from "../heart/session-events"
+import { describeSessionActivityTiming, selectFreshestFriendFacingActivity } from "../heart/session-activity"
 import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
@@ -827,6 +828,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     targetCandidates: ctx.targetCandidates,
     innerReturnObligations: ctx.returnObligations,
   })
+  const friendContactTiming = describeSessionActivityTiming(
+    selectFreshestFriendFacingActivity(sessionActivity),
+    { prefix: "freshest friend-facing contact" },
+  )
   const delegationDecision = decideDelegation({
     channel: input.channel,
     ingressTexts: input.continuityIngressTexts ?? [],
@@ -902,6 +907,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         all: activeWorkFrame.pendingObligations,
       },
       currentSessionTiming,
+      friendContactTiming,
       flightRecorderResume: ctx.flightRecorderResume,
       recoverySentinel: ctx.recoverySentinel,
     })

@@ -20,6 +20,7 @@ export interface StartOfTurnPacket {
   recoverySentinel?: ContextLossSentinelView
   resumeHint: string
   currentSessionTiming?: string
+  friendContactTiming?: string
   tempo: TempoMode
   tokenBudget: TempoTokenBudget
   assembledAt: string
@@ -198,6 +199,7 @@ export function buildStartOfTurnPacket(
   opts?: {
     canonicalObligations?: { primary: Obligation | null; all: Obligation[] }
     currentSessionTiming?: string
+    friendContactTiming?: string
     flightRecorderResume?: FlightRecorderResume
     recoverySentinel?: ContextLossSentinelView
   },
@@ -215,6 +217,7 @@ export function buildStartOfTurnPacket(
     recoverySentinel: opts?.recoverySentinel,
     resumeHint: buildResumeHint(view, opts?.canonicalObligations ? effectiveObligations : undefined),
     currentSessionTiming: opts?.currentSessionTiming,
+    friendContactTiming: opts?.friendContactTiming,
     tempo,
     tokenBudget,
     assembledAt: new Date().toISOString(),
@@ -260,6 +263,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
     { label: "arc", content: packet.arcResume ?? "", priority: 7 },
     { label: "recoverySentinel", content: packet.recoverySentinel ? formatContextLossSentinelText(packet.recoverySentinel) : "", priority: 7 },
     { label: "resume", content: packet.resumeHint, priority: 6 },
+    { label: "friendContact", content: packet.friendContactTiming ?? "", priority: 6 },
     { label: "sessionTiming", content: packet.currentSessionTiming ?? "", priority: 5 },
     { label: "obligations", content: packet.obligations, priority: 5 },
     { label: "cares", content: packet.cares, priority: 4 },
@@ -288,7 +292,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   for (const section of sortedByPriority) {
     if (tokens <= budget.max) break
     // Skip continuity sections — they are protected.
-    if (section.label === "resume" || section.label === "arc" || section.label === "recoverySentinel" || section.label === "sessionTiming") continue
+    if (section.label === "resume" || section.label === "arc" || section.label === "recoverySentinel" || section.label === "friendContact" || section.label === "sessionTiming") continue
 
     // Remove this section entirely
     const idx = sections.findIndex((s) => s.label === section.label)
@@ -329,6 +333,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         break
       case "sessionTiming":
         parts.push(`**Thread timing:** ${section.content}`)
+        break
+      case "friendContact":
+        parts.push(`**Recent contact:** ${section.content}`)
         break
       case "obligations":
         parts.push(`**Owed:**\n${section.content}`)

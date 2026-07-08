@@ -33,6 +33,15 @@ function activityPriority(source: SessionActivityRecord["activitySource"]): numb
   return source === "friend-facing" ? 0 : 1
 }
 
+function formatElapsed(ms: number): string {
+  const minutes = Math.max(0, Math.floor(ms / 60000))
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 function resolveFriendName(friendId: string, friendsDir: string, agentName: string): string {
   if (friendId === "self") return agentName
   try {
@@ -191,6 +200,46 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
     if (sourceDiff !== 0) return sourceDiff
     return b.lastActivityMs - a.lastActivityMs
   })
+}
+
+export function selectFreshestFriendFacingActivity(records: SessionActivityRecord[]): SessionActivityRecord | null {
+  const candidates = records
+    .filter((record) => record.friendId !== "self" && record.channel !== "inner" && record.activitySource === "friend-facing")
+    .sort((a, b) => b.lastActivityMs - a.lastActivityMs)
+  return candidates[0] ?? null
+}
+
+export function describeSessionActivityTiming(
+  record: SessionActivityRecord | null,
+  options: {
+    nowMs?: number
+    prefix?: string
+  } = {},
+): string {
+  if (!record) return ""
+
+  const nowMs = options.nowMs ?? Date.now()
+  const parts: string[] = []
+  const inboundMs = record.lastInboundAt ? Date.parse(record.lastInboundAt) : NaN
+  const outboundMs = record.lastOutboundAt ? Date.parse(record.lastOutboundAt) : NaN
+
+  if (Number.isFinite(inboundMs)) {
+    parts.push(`last inbound ${formatElapsed(nowMs - inboundMs)}`)
+  }
+  if (Number.isFinite(outboundMs)) {
+    parts.push(`i last replied ${formatElapsed(nowMs - outboundMs)}`)
+  }
+  if (record.unansweredInboundCount > 0) {
+    const count = record.unansweredInboundCount
+    parts.push(`${count} unanswered inbound message${count === 1 ? "" : "s"}`)
+  }
+  if (parts.length === 0) {
+    parts.push(`last activity ${formatElapsed(nowMs - record.lastActivityMs)}`)
+  }
+
+  const label = `${record.friendName}/${record.channel}/${record.key}`
+  const prefix = options.prefix ?? "friend-facing contact"
+  return `${prefix}: ${label}; ${parts.join("; ")}`
 }
 
 export function findFreshestFriendSession(
