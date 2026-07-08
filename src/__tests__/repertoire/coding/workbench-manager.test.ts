@@ -96,12 +96,14 @@ describe("Workbench coding session manager", () => {
       .mockResolvedValueOnce({
         session: fakeWorkbenchSession({ id: "fallback-task", name: "coding-codex-task-20260708T010203004Z" }),
         createAck: { queued: true },
-        promptAck: { ok: true },
+        promptAck: { ok: true, requestId: "prompt-fallback" },
+        promptResult: { requestId: "prompt-fallback", state: "applied", succeeded: true },
       } satisfies WorkbenchCreateCodingSessionResult)
       .mockResolvedValueOnce({
         session: fakeWorkbenchSession({ id: "noisy-task", name: "coding-codex-task-20260708T010203004Z" }),
         createAck: { queued: true },
-        promptAck: { ok: true },
+        promptAck: { ok: true, requestId: "prompt-noisy" },
+        promptResult: { requestId: "prompt-noisy", state: "appliedUnconfirmed", succeeded: true },
       } satisfies WorkbenchCreateCodingSessionResult)
 
     const manager = new WorkbenchCodingSessionManager({
@@ -124,6 +126,59 @@ describe("Workbench coding session manager", () => {
       owner: "boss",
       name: "coding-codex-task-20260708T010203004Z",
     }))
+  })
+
+  it("fails closed when Workbench does not confirm initial prompt delivery", async () => {
+    const client = fakeClient()
+    client.createCodingSession
+      .mockResolvedValueOnce({
+        session: fakeWorkbenchSession({ id: "denied" }),
+        createAck: { queued: true },
+        promptAck: { ok: false, message: "denied by Workbench" },
+      } satisfies WorkbenchCreateCodingSessionResult)
+      .mockResolvedValueOnce({
+        session: fakeWorkbenchSession({ id: "queued" }),
+        createAck: { queued: true },
+        promptAck: { ok: true, requestId: "prompt-queued" },
+        promptResult: { requestId: "prompt-queued", state: "queued" },
+      } satisfies WorkbenchCreateCodingSessionResult)
+      .mockResolvedValueOnce({
+        session: fakeWorkbenchSession({ id: "failed" }),
+        createAck: { queued: true },
+        promptAck: { ok: true, requestId: "prompt-failed" },
+        promptResult: { requestId: "prompt-failed", state: "failed", result: "session is not running" },
+      } satisfies WorkbenchCreateCodingSessionResult)
+      .mockResolvedValueOnce({
+        session: fakeWorkbenchSession({ id: "unknown" }),
+        createAck: { queued: true },
+        promptAck: { ok: true, requestId: "prompt-unknown" },
+        promptResult: { requestId: "prompt-unknown", state: "unknown" },
+      } satisfies WorkbenchCreateCodingSessionResult)
+      .mockResolvedValueOnce({
+        session: fakeWorkbenchSession({ id: "missing-confirmation" }),
+        createAck: { queued: true },
+        promptAck: { ok: true },
+      } satisfies WorkbenchCreateCodingSessionResult)
+
+    const manager = new WorkbenchCodingSessionManager({
+      agentName: "slugger",
+      client: client as unknown as WorkbenchMcpClient,
+      nowIso: () => "2026-07-08T01:02:03.004Z",
+    })
+    const request = { runner: "codex" as const, workdir: "/repo", prompt: "do the task" }
+
+    await expect(manager.spawnSession(request)).rejects.toThrow("Workbench denied initial prompt for denied")
+    await expect(manager.spawnSession(request)).rejects.toThrow(
+      "Workbench queued initial prompt for queued but did not confirm delivery",
+    )
+    await expect(manager.spawnSession(request)).rejects.toThrow("Workbench failed initial prompt for failed")
+    await expect(manager.spawnSession(request)).rejects.toThrow(
+      "Workbench did not confirm initial prompt delivery for unknown",
+    )
+    await expect(manager.spawnSession(request)).rejects.toThrow(
+      "Workbench did not confirm initial prompt delivery for missing-confirmation",
+    )
+    expect(manager.listSessions()).toEqual([])
   })
 
   it("refreshes Workbench sessions into the local coding-session snapshot cache", async () => {

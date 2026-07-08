@@ -13,7 +13,12 @@ import type {
   CodingSessionUpdate,
   RefreshableCodingSessionManagerApi,
 } from "./types"
-import { WorkbenchMcpClient, type WorkbenchActionResult, type WorkbenchSession } from "./workbench-client"
+import {
+  WorkbenchMcpClient,
+  type WorkbenchActionResult,
+  type WorkbenchCreateCodingSessionResult,
+  type WorkbenchSession,
+} from "./workbench-client"
 
 type ReadText = (target: string, encoding: "utf-8") => string
 
@@ -123,6 +128,26 @@ function resultToActionResult(action: string, sessionId: string, result: Workben
   return { ok: false, message: result.result ?? `${action} ${result.state} for ${sessionId}` }
 }
 
+function promptDeliveryFailure(result: WorkbenchCreateCodingSessionResult): string | null {
+  const sessionId = result.session.id
+  if (result.promptAck.ok === false) {
+    return `Workbench denied initial prompt for ${sessionId}`
+  }
+
+  switch (result.promptResult?.state) {
+    case "applied":
+    case "appliedUnconfirmed":
+      return null
+    case "failed":
+      return `Workbench failed initial prompt for ${sessionId}`
+    case "queued":
+      return `Workbench queued initial prompt for ${sessionId} but did not confirm delivery`
+    case "unknown":
+    case undefined:
+      return `Workbench did not confirm initial prompt delivery for ${sessionId}`
+  }
+}
+
 export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, RefreshableCodingSessionManagerApi {
   private readonly records = new Map<string, WorkbenchCodingSessionRecord>()
   private readonly listeners = new Map<string, Set<(update: CodingSessionUpdate) => void | Promise<void>>>()
@@ -164,6 +189,10 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
       autoResume: normalizedRequest.autoRestartOnCrash !== false,
       source: this.source,
     })
+    const promptFailure = promptDeliveryFailure(result)
+    if (promptFailure) {
+      throw new Error(promptFailure)
+    }
 
     const session = this.toCodingSession(result.session, normalizedRequest)
     this.records.set(session.id, { request: normalizedRequest, session })

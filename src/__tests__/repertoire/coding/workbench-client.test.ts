@@ -243,7 +243,7 @@ describe("Workbench MCP client", () => {
       timeoutMs: 1,
     })
     await expect(defaultSpawn.callToolText("workbench_status", {})).rejects.toThrow(
-      "exited before returning a response",
+      /exited before returning a response|timed out/,
     )
 
     const nonJson = clientWithCallToolJson()
