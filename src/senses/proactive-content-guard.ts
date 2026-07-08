@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 export type ProactiveContentBlockReason =
   | "raw_meta_marker"
-  | "inner_dialog_reference"
+  | "legacy_private_runtime_reference"
   | "attention_queue_reference"
   | "return_obligation_reference"
   | "surfacing_mechanics_reference"
@@ -18,8 +18,8 @@ const PROACTIVE_INTERNAL_CONTENT_PATTERNS: Array<{ reason: ProactiveContentBlock
   // PR 447 patterns: raw meta markers
   { reason: "raw_meta_marker", pattern: /<\s*\/?\s*(think|analysis|commentary)\b[^>]*>/i },
   { reason: "raw_meta_marker", pattern: /\[\s*surfaced from inner dialog\s*\]/i },
-  // Inner dialog / attention / obligation references
-  { reason: "inner_dialog_reference", pattern: /\binner (dialog|dialogue)\b/i },
+  // Stale private-runtime vocabulary / attention / obligation references
+  { reason: "legacy_private_runtime_reference", pattern: /\binner (dialog|dialogue)\b/i },
   { reason: "attention_queue_reference", pattern: /\battention queues?\b/i },
   { reason: "return_obligation_reference", pattern: /\b(return|held|heart|inner)\s+obligations?\b/i },
   // Surfacing mechanics

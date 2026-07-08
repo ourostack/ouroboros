@@ -5,9 +5,8 @@
 // Failure mode is "drop and log", never queue for later delivery.
 //
 // Patterns are deliberately narrow: bracketed system markers and angle-bracket
-// reasoning tags. Plain prose mentioning "inner dialog" or "attention queue"
-// is NOT blocked, so user-facing replies that legitimately discuss those
-// concepts still pass.
+// reasoning tags. Plain prose mentioning related concepts is NOT blocked, so
+// user-facing replies that legitimately discuss those concepts still pass.
 
 import { emitNervesEvent } from "../nerves/runtime"
 

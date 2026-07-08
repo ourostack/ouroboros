@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.687",
       "changes": [
         "Route coding sessions through Workbench behind a default-off feature flag.",
-        "Tighten Workbench coding adapter construction and coverage."
+        "Tighten Workbench coding adapter construction and coverage.",
+        "Remove legacy inner-dialog source shims and stale auto-start config fallback so private-runtime startup is controlled only by privateRuntime.autoStart."
       ]
     },
     {

@@ -42,14 +42,6 @@ export function getPrivateRuntimePendingDir(agentName: string): string {
   return getPendingDir(agentName, PRIVATE_RUNTIME_PENDING.friendId, PRIVATE_RUNTIME_PENDING.channel, PRIVATE_RUNTIME_PENDING.key)
 }
 
-/** Legacy alias for readers and callers that still reference the historical path name. */
-export const INNER_DIALOG_PENDING = PRIVATE_RUNTIME_PENDING
-
-/** Legacy alias for readers and callers that still reference the historical path name. */
-export function getInnerDialogPendingDir(agentName: string): string {
-  return getPrivateRuntimePendingDir(agentName)
-}
-
 export function hasPendingMessages(pendingDir: string): boolean {
   if (!fs.existsSync(pendingDir)) return false
 

@@ -60,6 +60,7 @@ vi.mock("../../../repertoire/coding/workbench-client", () => ({
 }))
 
 import { loadConfig } from "../../../heart/config"
+import { WorkbenchMcpClient } from "../../../repertoire/coding/workbench-client"
 import { WorkbenchCodingSessionManager } from "../../../repertoire/coding/workbench-manager"
 
 beforeEach(() => {
@@ -93,6 +94,19 @@ describe("coding manager singleton", () => {
     resetCodingSessionManager()
     const manager = getCodingSessionManager()
     expect(manager).toBeDefined()
+  })
+
+  it("does not construct Workbench dependencies when the feature flag is disabled", async () => {
+    const { getCodingSessionManager, resetCodingSessionManager } = await import(
+      "../../../repertoire/coding"
+    )
+
+    resetCodingSessionManager()
+    const manager = getCodingSessionManager()
+
+    expect(manager).toBeDefined()
+    expect(WorkbenchMcpClient).not.toHaveBeenCalled()
+    expect(WorkbenchCodingSessionManager).not.toHaveBeenCalled()
   })
 
   it("uses the Workbench-backed manager when the feature flag is enabled", async () => {

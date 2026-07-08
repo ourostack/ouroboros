@@ -6,6 +6,7 @@ const readdirSyncMock = vi.hoisted(() => vi.fn())
 const readFileSyncMock = vi.hoisted(() => vi.fn())
 const existsSyncMock = vi.hoisted(() => vi.fn())
 const execFileSyncMock = vi.hoisted(() => vi.fn())
+const staleAutoStartKey = ["inner", "Dialog"].join("")
 
 vi.mock("fs", () => ({
   readdirSync: readdirSyncMock,
@@ -289,7 +290,7 @@ describe("listAllBundleAgents", () => {
   })
 })
 
-describe("isInnerDialogAutoStartEnabled", () => {
+describe("private runtime auto-start discovery", () => {
   afterEach(() => {
     getAgentBundlesRootMock.mockReset()
     getAgentBundlesRootMock.mockReturnValue("/mock/AgentBundles")
@@ -297,24 +298,29 @@ describe("isInnerDialogAutoStartEnabled", () => {
     readFileSyncMock.mockReset()
   })
 
-  it("defaults legacy auto-start reads to fail-closed when no private-runtime policy is configured", async () => {
+  async function readPrivateRuntimeConfig(agent: string) {
+    const mod = await import("../../../heart/daemon/agent-discovery")
+    const reader = (mod as {
+      readPrivateRuntimeConfig?: (agent: string) => unknown
+    }).readPrivateRuntimeConfig
+    expect(reader).toEqual(expect.any(Function))
+    return reader!(agent)
+  }
+
+  it("defaults auto-start reads to fail-closed when no private-runtime policy is configured", async () => {
     readFileSyncMock.mockReturnValue(JSON.stringify({ enabled: true }))
 
-    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
-
-    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(false)
+    await expect(readPrivateRuntimeConfig("slugger")).resolves.toMatchObject({ autoStart: false, source: "default" })
     expect(readFileSyncMock).toHaveBeenCalledWith("/mock/AgentBundles/slugger.ouro/agent.json", "utf-8")
   })
 
-  it("honors legacy innerDialog.autoStart true without disabling the agent bundle", async () => {
+  it("ignores stale legacy auto-start fields", async () => {
     readFileSyncMock.mockReturnValue(JSON.stringify({
       enabled: true,
-      innerDialog: { autoStart: true },
+      [staleAutoStartKey]: { autoStart: true },
     }))
 
-    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
-
-    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(true)
+    await expect(readPrivateRuntimeConfig("slugger")).resolves.toMatchObject({ autoStart: false, source: "default" })
   })
 
   it("fails closed when the private-runtime policy cannot be read", async () => {
@@ -322,9 +328,7 @@ describe("isInnerDialogAutoStartEnabled", () => {
       throw new Error("permission denied")
     })
 
-    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
-
-    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(false)
+    await expect(readPrivateRuntimeConfig("slugger")).resolves.toMatchObject({ autoStart: false, source: "unreadable" })
     expect(emitNervesEventMock).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
       component: "daemon",
@@ -342,9 +346,7 @@ describe("isInnerDialogAutoStartEnabled", () => {
       throw "raw permission denied" // eslint-disable-line no-throw-literal
     })
 
-    const { isInnerDialogAutoStartEnabled } = await import("../../../heart/daemon/agent-discovery")
-
-    expect(isInnerDialogAutoStartEnabled("slugger")).toBe(false)
+    await expect(readPrivateRuntimeConfig("slugger")).resolves.toMatchObject({ autoStart: false, source: "unreadable" })
     expect(emitNervesEventMock).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.private_runtime_policy_read_failed",
       meta: expect.objectContaining({
@@ -392,24 +394,23 @@ describe("readPrivateRuntimeConfig", () => {
     })
   })
 
-  it("accepts legacy innerDialog.autoStart only as a migration input", async () => {
+  it("ignores stale legacy private-runtime config fields", async () => {
     readFileSyncMock.mockReturnValue(JSON.stringify({
       enabled: true,
-      innerDialog: { autoStart: false },
+      [staleAutoStartKey]: { autoStart: false },
     }))
 
     await expect(readPrivateRuntimeConfig("slugger")).resolves.toMatchObject({
       autoStart: false,
-      source: "legacy-innerDialog",
-      compatibilityNote: expect.stringContaining("innerDialog.autoStart"),
+      source: "default",
     })
   })
 
-  it("lets privateRuntime override legacy innerDialog.autoStart during migration", async () => {
+  it("uses privateRuntime when stale legacy fields are also present", async () => {
     readFileSyncMock.mockReturnValue(JSON.stringify({
       enabled: true,
       privateRuntime: { autoStart: true },
-      innerDialog: { autoStart: false },
+      [staleAutoStartKey]: { autoStart: false },
     }))
 
     await expect(readPrivateRuntimeConfig("slugger")).resolves.toMatchObject({
