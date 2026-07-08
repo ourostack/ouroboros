@@ -197,6 +197,38 @@ describe("Workbench MCP client", () => {
     })
     await expect(stderrOnly.callToolText("workbench_status", {})).rejects.toThrow("nope")
 
+    const brokenPipe = new WorkbenchMcpClient({
+      executablePath: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
+      existsSync: () => true,
+      spawnFn: () => {
+        const child = new FakeWorkbenchProcess()
+        child.stdin.on("finish", () => {
+          child.stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }))
+          child.emit("exit", 1, null)
+        })
+        return child as never
+      },
+    })
+    await expect(brokenPipe.callToolText("workbench_status", {})).rejects.toThrow(
+      "exited before returning a response",
+    )
+
+    const stdinFailure = new WorkbenchMcpClient({
+      executablePath: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
+      existsSync: () => true,
+      spawnFn: () => {
+        const child = new FakeWorkbenchProcess()
+        child.stdin.on("finish", () => {
+          child.stdin.emit(
+            "error",
+            Object.assign(new Error("stdin unavailable"), { code: "ERR_STREAM_DESTROYED" }),
+          )
+        })
+        return child as never
+      },
+    })
+    await expect(stdinFailure.callToolText("workbench_status", {})).rejects.toThrow("stdin unavailable")
+
     const timeout = new WorkbenchMcpClient({
       executablePath: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
       existsSync: () => true,
@@ -210,7 +242,9 @@ describe("Workbench MCP client", () => {
       existsSync: () => true,
       timeoutMs: 1,
     })
-    await expect(defaultSpawn.callToolText("workbench_status", {})).rejects.toThrow("timed out")
+    await expect(defaultSpawn.callToolText("workbench_status", {})).rejects.toThrow(
+      "exited before returning a response",
+    )
 
     const nonJson = clientWithCallToolJson()
     nonJson.callToolText.mockResolvedValue("not-json")

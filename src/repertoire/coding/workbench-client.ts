@@ -143,6 +143,10 @@ function responseText(response: JsonRpcResponse, toolName: string): string {
   return text
 }
 
+function isBrokenPipe(error: NodeJS.ErrnoException): boolean {
+  return error.code === "EPIPE"
+}
+
 export class WorkbenchMcpClient {
   private readonly executablePath: string
   private readonly spawnFn: SpawnFn
@@ -205,11 +209,19 @@ export class WorkbenchMcpClient {
       child.on("error", (error) => {
         settle(() => reject(error))
       })
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        if (isBrokenPipe(error)) return
+        settle(() => reject(error))
+      })
       child.on("exit", () => {
         const stderr = Buffer.concat(stderrChunks).toString("utf-8").trim()
         const stdout = Buffer.concat(stdoutChunks).toString("utf-8")
-        if (!settled && stderr.length > 0 && stdout.trim().length === 0) {
-          settle(() => reject(new Error(stderr)))
+        if (!settled) {
+          if (stderr.length > 0 && stdout.trim().length === 0) {
+            settle(() => reject(new Error(stderr)))
+            return
+          }
+          settle(() => reject(new Error(`Workbench MCP ${name} exited before returning a response`)))
         }
       })
       child.stdout.on("data", (chunk: Buffer) => {
