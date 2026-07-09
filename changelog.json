@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.694",
       "changes": [
-        "Align Workbench setup with runtime MCP injection and stale bundle cleanup."
+        "Align Workbench setup with runtime MCP injection and stale bundle cleanup, including prompt/turn stale-state coverage."
       ]
     },
     {
