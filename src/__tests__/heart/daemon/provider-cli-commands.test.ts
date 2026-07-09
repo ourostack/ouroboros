@@ -1421,7 +1421,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("/voice/agents/agent/twilio")
   })
 
-  it("connects Ouro Workbench by enabling its local sense and registering MCP", async () => {
+  it("verifies Ouro Workbench runtime injection without writing synced bundle config", async () => {
     emitTestEvent("provider cli connect workbench")
     const bundlesRoot = makeTempDir("provider-cli-connect-workbench-bundles")
     const homeDir = makeTempDir("provider-cli-connect-workbench-home")
@@ -1440,14 +1440,32 @@ describe("provider CLI command execution", () => {
       mcpServers?: { ouro_workbench?: { command?: string; args?: string[] } }
     }
 
-    expect(result).toContain("Workbench connected for Slugger")
+    expect(result).toContain("Workbench runtime injection ready for Slugger")
+    expect(result).toContain(`OuroWorkbenchMCP found: ${mcpPath}`)
+    expect(result).toContain(`boss launch path: ouro mcp-serve --agent Slugger --workbench-mcp ${mcpPath}`)
     expect(result).toContain("provider secrets stay in the agent vault")
-    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
-    expect(config.senses?.workbench?.enabled).toBe(true)
-    expect(config.mcpServers?.ouro_workbench).toEqual({ command: mcpPath, args: [] })
+    expect(result).not.toContain("bundle sync:")
+    expect(config.senses?.workbench).toBeUndefined()
+    expect(config.mcpServers?.ouro_workbench).toBeUndefined()
   })
 
-  it("connects Workbench from the system install fallback and repairs malformed MCP config", async () => {
+  it("does not create Workbench placeholder config when connecting unrelated senses", async () => {
+    emitTestEvent("provider cli connect a2a no workbench placeholder")
+    const bundlesRoot = makeTempDir("provider-cli-connect-a2a-no-workbench-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-a2a-no-workbench-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli(["connect", "a2a", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      senses?: Record<string, unknown>
+    }
+
+    expect(result).toContain("A2A connected for Slugger")
+    expect(config.senses?.a2a).toEqual({ enabled: true })
+    expect(config.senses?.workbench).toBeUndefined()
+  })
+
+  it("connects Workbench from the system install fallback without depending on malformed MCP config", async () => {
     emitTestEvent("provider cli connect workbench system fallback")
     const bundlesRoot = makeTempDir("provider-cli-connect-workbench-system-bundles")
     const homeDir = makeTempDir("provider-cli-connect-workbench-system-home")
@@ -1463,22 +1481,28 @@ describe("provider CLI command execution", () => {
     }))
     const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
       senses?: { workbench?: { enabled?: boolean } }
-      mcpServers?: { ouro_workbench?: { command?: string; args?: string[] } }
+      mcpServers?: unknown
     }
 
-    expect(result).toContain("Workbench connected for Slugger")
-    expect(config.senses?.workbench?.enabled).toBe(true)
-    expect(config.mcpServers?.ouro_workbench).toEqual({ command: expectedMcpPath, args: [] })
+    expect(result).toContain("Workbench runtime injection ready for Slugger")
+    expect(result).toContain(`OuroWorkbenchMCP found: ${expectedMcpPath}`)
+    expect(config.senses?.workbench).toBeUndefined()
+    expect(config.mcpServers).toEqual([])
   })
 
-  it("preserves existing MCP registrations when connecting Workbench", async () => {
+  it("removes stale Workbench bundle entries while preserving existing MCP registrations", async () => {
     emitTestEvent("provider cli connect workbench preserves mcp")
     const bundlesRoot = makeTempDir("provider-cli-connect-workbench-preserve-bundles")
     const homeDir = makeTempDir("provider-cli-connect-workbench-preserve-home")
     writeAgentConfig(bundlesRoot, "Slugger")
     updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        workbench: { enabled: true },
+      }
       config.mcpServers = {
         existing_server: { command: "/usr/bin/true", args: ["--ok"] },
+        ouro_workbench: { command: "/stale/OuroWorkbenchMCP", args: [] },
       }
     })
     const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
@@ -1487,11 +1511,46 @@ describe("provider CLI command execution", () => {
 
     await runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
     const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      senses?: Record<string, unknown>
       mcpServers?: Record<string, unknown>
     }
 
     expect(config.mcpServers?.existing_server).toEqual({ command: "/usr/bin/true", args: ["--ok"] })
-    expect(config.mcpServers?.ouro_workbench).toEqual({ command: mcpPath, args: [] })
+    expect(config.mcpServers?.ouro_workbench).toBeUndefined()
+    expect(config.senses?.workbench).toBeUndefined()
+  })
+
+  it("removes disabled or malformed Workbench leftovers as stale bundle entries", async () => {
+    emitTestEvent("provider cli connect workbench stale disabled malformed")
+    const bundlesRoot = makeTempDir("provider-cli-connect-workbench-disabled-stale-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-workbench-disabled-stale-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        workbench: { enabled: false },
+      }
+      config.mcpServers = {
+        existing_server: { command: "/usr/bin/true", args: ["--ok"] },
+        ouro_workbench: { command: 42, args: [] },
+      }
+      config.sync = { enabled: true, remote: "origin" }
+    })
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+
+    const result = await runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      senses?: Record<string, unknown>
+      mcpServers?: Record<string, unknown>
+    }
+
+    expect(result).toContain("agent.json: removed stale senses.workbench / mcpServers.ouro_workbench entries")
+    expect(result).toContain("bundle sync: could not push bundle changes")
+    expect(config.mcpServers?.existing_server).toEqual({ command: "/usr/bin/true", args: ["--ok"] })
+    expect(config.mcpServers?.ouro_workbench).toBeUndefined()
+    expect(config.senses?.workbench).toBeUndefined()
   })
 
   it("explains the missing app install path before connecting Workbench", async () => {
@@ -1504,6 +1563,37 @@ describe("provider CLI command execution", () => {
       existsSync: () => false,
     })))
       .rejects.toThrow("Ouro Workbench is not installed for Slugger")
+  })
+
+  it("cleans stale Workbench bundle entries even when the app is missing", async () => {
+    emitTestEvent("provider cli connect workbench missing app cleans stale")
+    const bundlesRoot = makeTempDir("provider-cli-connect-workbench-missing-cleans-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-workbench-missing-cleans-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        workbench: { enabled: false },
+      }
+      config.mcpServers = {
+        existing_server: { command: "/usr/bin/true", args: ["--ok"] },
+        ouro_workbench: { command: "/missing/OuroWorkbenchMCP", args: [] },
+      }
+      config.sync = { enabled: true, remote: "origin" }
+    })
+
+    await expect(runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      existsSync: () => false,
+    })))
+      .rejects.toThrow(/agent\.json: removed stale senses\.workbench \/ mcpServers\.ouro_workbench entries[\s\S]*bundle sync: could not push bundle changes/)
+    const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      senses?: Record<string, unknown>
+      mcpServers?: Record<string, unknown>
+    }
+
+    expect(config.mcpServers?.existing_server).toEqual({ command: "/usr/bin/true", args: ["--ok"] })
+    expect(config.mcpServers?.ouro_workbench).toBeUndefined()
+    expect(config.senses?.workbench).toBeUndefined()
   })
 
   it("surfaces stale Workbench MCP registration in the root connect bay", async () => {
@@ -1533,13 +1623,44 @@ describe("provider CLI command execution", () => {
 
     const prompt = joinedPrompt(prompts)
     expect(result).toBe("connect cancelled.")
-    expectConnectStatus(prompt, 9, "Ouro Workbench", "needs attention")
-    expect(prompt).toContain("registered MCP command is missing:")
-    expect(prompt).toContain("Workbench.app/Contents/MacOS/OuroWorkbenchMCP")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "missing")
+    expect(prompt).toContain("stale bundle entry detected: remove senses.workbench")
+    expect(prompt).toContain("mcpServers.ouro_workbench; Workbench tools are injected at runtime instead")
     expect(prompt).toContain("OuroWorkbenchMCP not found in ~/Applications or /Applications")
   })
 
-  it("shows installed Workbench as not attached before the sense is enabled", async () => {
+  it("surfaces installed stale Workbench bundle config as needs attention in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu workbench installed stale")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-installed-stale-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-workbench-installed-stale-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        workbench: { enabled: false },
+      }
+    })
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "needs attention")
+    expect(prompt).toContain("OuroWorkbenchMCP found:")
+    expect(prompt).toContain("Workbench.app/Contents/MacOS/OuroWorkbenchMCP")
+    expect(prompt).toContain("stale bundle entry detected: remove senses.workbench")
+  })
+
+  it("shows installed Workbench runtime injection as ready without a bundle sense", async () => {
     emitTestEvent("provider cli connect menu workbench installed not attached")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-installed-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-workbench-installed-home")
@@ -1558,9 +1679,9 @@ describe("provider CLI command execution", () => {
 
     const prompt = joinedPrompt(prompts)
     expect(result).toBe("connect cancelled.")
-    expectConnectStatus(prompt, 9, "Ouro Workbench", "not attached")
-    expect(prompt).toContain("senses.workbench.enabled is not enabled")
-    expect(prompt).toContain("mcpServers.ouro_workbench is not registered")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "ready")
+    expect(prompt).toContain("bundle state: clean; no senses.workbench or mcpServers.ouro_workbench entry")
+    expect(prompt).toContain("required")
     expect(prompt).toContain("OuroWorkbenchMCP found:")
   })
 
@@ -1582,8 +1703,8 @@ describe("provider CLI command execution", () => {
     const prompt = joinedPrompt(prompts)
     expect(result).toBe("connect cancelled.")
     expectConnectStatus(prompt, 9, "Ouro Workbench", "missing")
-    expect(prompt).toContain("senses.workbench.enabled is not enabled")
-    expect(prompt).toContain("mcpServers.ouro_workbench is not registered")
+    expect(prompt).toContain("bundle state: clean; no senses.workbench or mcpServers.ouro_workbench entry")
+    expect(prompt).toContain("required")
     expect(prompt).toContain("OuroWorkbenchMCP not found in ~/Applications or /Applications")
   })
 
@@ -1605,7 +1726,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(joinedPrompt(prompts)).toContain("9. Ouro Workbench")
-    expect(result).toContain("Workbench connected for Slugger")
+    expect(result).toContain("Workbench runtime injection ready for Slugger")
   })
 
   it("routes Voice setup from the root connect bay", async () => {
@@ -8505,14 +8626,6 @@ describe("provider CLI command execution", () => {
         mail: { enabled: true },
         voice: { enabled: true },
         a2a: { enabled: true },
-        workbench: { enabled: true },
-      }
-      const existingMcpServers = config.mcpServers && typeof config.mcpServers === "object" && !Array.isArray(config.mcpServers)
-        ? config.mcpServers as Record<string, unknown>
-        : {}
-      config.mcpServers = {
-        ...existingMcpServers,
-        ouro_workbench: { command: workbenchMcpPath, args: [] },
       }
     })
     writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({

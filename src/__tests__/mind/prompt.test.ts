@@ -116,9 +116,10 @@ function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "openai-
 }
 
 // Helper: configure readFileSync to return psyche files by path
-function setupReadFileSync() {
+function setupReadFileSync(agentJson?: unknown) {
   vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
     const p = String(filePath)
+    if (p.endsWith("agent.json") && agentJson !== undefined) return JSON.stringify(agentJson)
     if (p.endsWith("SOUL.md")) return MOCK_SOUL
     if (p.endsWith("IDENTITY.md")) return MOCK_IDENTITY
     if (p.endsWith("LORE.md")) return MOCK_LORE
@@ -795,7 +796,7 @@ describe("buildSystem", () => {
     expect(result).toContain("Voice: needs_config")
   })
 
-  it("marks the Workbench sense as needs_config when enabled without MCP registration", async () => {
+  it("marks enabled Workbench bundle config as stale state", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
@@ -825,10 +826,109 @@ describe("buildSystem", () => {
 
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
-    expect(result).toContain("Workbench: needs_config")
+    expect(result).toContain("Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
   })
 
-  it("marks the Workbench sense as ready when MCP is registered", async () => {
+  it("marks disabled-only raw Workbench bundle placeholders as stale state", async () => {
+    setupReadFileSync({ senses: { workbench: { enabled: false } } })
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        workbench: { enabled: false },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
+  })
+
+  it("marks raw Workbench MCP-only bundle placeholders as stale state", async () => {
+    setupReadFileSync({ mcpServers: { ouro_workbench: { command: 42 } } })
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        workbench: { enabled: false },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
+  })
+
+  it("does not mark raw Workbench-free bundle config as stale state", async () => {
+    setupReadFileSync({ senses: {}, mcpServers: {} })
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        workbench: { enabled: false },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Workbench: disabled (runtime-injected when launched by Workbench app)")
+  })
+
+  it("marks persisted Workbench MCP registration as stale bundle state", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
@@ -864,7 +964,8 @@ describe("buildSystem", () => {
 
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
-    expect(result).toContain("Workbench: ready")
+    expect(result).toContain("Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
+    expect(result).not.toContain("Workbench: ready")
   })
 
   it("describes runtime injection in the workbench setup truth and does not claim the agent.json entry is required", async () => {

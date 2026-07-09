@@ -147,4 +147,20 @@ describe("sense truth model", () => {
       expect.objectContaining({ enabled: true, daemonManaged: false, status: "interactive" satisfies SenseStatus }),
     )
   })
+
+  it("reports enabled local senses as needs_config when runtime facts explicitly mark them unconfigured", () => {
+    const inventory = getSenseInventory(
+      {
+        senses: {
+          cli: { enabled: true },
+          workbench: { enabled: true },
+        },
+      },
+      { workbench: { configured: false } },
+    )
+
+    expect(inventory.find((item) => item.sense === "workbench")).toEqual(
+      expect.objectContaining({ enabled: true, daemonManaged: false, status: "needs_config" satisfies SenseStatus }),
+    )
+  })
 })

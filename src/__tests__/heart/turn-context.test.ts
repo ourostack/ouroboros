@@ -200,10 +200,11 @@ vi.mock("../../heart/mail-import-discovery", () => ({
 }))
 
 const mockExistsSync = vi.fn().mockReturnValue(false)
-const mockReadFileSync = vi.fn().mockImplementation((filePath: string) => {
+const defaultReadFileSync = (filePath: string) => {
   // Bundle-meta.json should not exist by default — throw to simulate missing file
   throw new Error("ENOENT: no such file or directory")
-})
+}
+const mockReadFileSync = vi.fn().mockImplementation(defaultReadFileSync)
 vi.mock("fs", () => ({
   existsSync: (...args: any[]) => mockExistsSync(...args),
   readFileSync: (...args: any[]) => mockReadFileSync(...args),
@@ -242,6 +243,7 @@ describe("buildTurnContext", () => {
     vi.clearAllMocks()
     mockGetAgentRoot.mockReturnValue("/mock/agent-root")
     mockGetAgentName.mockReturnValue("test-agent")
+    mockReadFileSync.mockImplementation(defaultReadFileSync)
     mockFindBridgesForSession.mockReturnValue([])
     mockListSessionActivity.mockReturnValue([])
     mockListTargetSessionCandidates.mockResolvedValue([])
@@ -570,18 +572,63 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: ready",
       "- A2A: ready",
-      "- Workbench: ready",
+      "- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)",
     ])
   })
 
-  it("marks Workbench as needs_config when enabled without MCP registration", async () => {
+  it("marks enabled Workbench bundle config as stale state", async () => {
     mockLoadAgentConfig.mockReturnValue({
       senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, workbench: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({})
 
     const ctx = await buildTurnContext(makeInput())
-    expect(ctx.senseStatusLines).toContain("- Workbench: needs_config")
+    expect(ctx.senseStatusLines).toContain("- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
+  })
+
+  it("marks disabled-only raw Workbench bundle placeholders as stale state", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, workbench: { enabled: false } },
+    })
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (filePath === "/mock/agent-root/agent.json") {
+        return JSON.stringify({ senses: { workbench: { enabled: false } } })
+      }
+      return defaultReadFileSync(filePath)
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toContain("- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
+  })
+
+  it("marks raw Workbench MCP-only bundle placeholders as stale state", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, workbench: { enabled: false } },
+    })
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (filePath === "/mock/agent-root/agent.json") {
+        return JSON.stringify({ mcpServers: { ouro_workbench: { command: 42 } } })
+      }
+      return defaultReadFileSync(filePath)
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toContain("- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
+  })
+
+  it("does not mark raw Workbench-free bundle config as stale state", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, workbench: { enabled: false } },
+    })
+    mockReadFileSync.mockImplementation((filePath: string) => {
+      if (filePath === "/mock/agent-root/agent.json") {
+        return JSON.stringify({ senses: {}, mcpServers: {} })
+      }
+      return defaultReadFileSync(filePath)
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toContain("- Workbench: disabled (runtime-injected when launched by Workbench app)")
   })
 
   it("detects Voice as ready when the ElevenLabs voice id is stored in voice config", async () => {

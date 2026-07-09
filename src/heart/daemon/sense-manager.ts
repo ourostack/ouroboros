@@ -95,6 +95,7 @@ interface SenseRuntimeFacts {
 
 interface AgentSenseContext {
   senses: AgentSensesConfig
+  workbenchHasStaleBundleEntry: boolean
   facts: Record<SenseName, SenseConfigFacts>
 }
 
@@ -103,6 +104,8 @@ const DEFAULT_BLUEBUBBLES_PORT = 18790
 const DEFAULT_BLUEBUBBLES_WEBHOOK_PATH = "/bluebubbles-webhook"
 const BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS = 90_000
 const SENSE_CONFIG_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000] as const
+const WORKBENCH_RUNTIME_INJECTION_DETAIL = "runtime-injected by Workbench app; no agent.json entry required"
+const WORKBENCH_STALE_BUNDLE_DETAIL = "stale agent.json Workbench entry; run 'ouro connect workbench' to clean it and use runtime injection"
 
 function defaultSenses(): AgentSensesConfig {
   return {
@@ -116,7 +119,7 @@ function defaultSenses(): AgentSensesConfig {
   }
 }
 
-function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
+function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; workbenchHasStaleBundleEntry: boolean } {
   const defaults = defaultSenses()
 
   let parsed: Record<string, unknown>
@@ -133,13 +136,27 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
         reason: error instanceof Error ? error.message : String(error),
       },
     })
-    return defaults
+    return { senses: defaults, workbenchHasStaleBundleEntry: false }
   }
 
   const rawSenses = parsed.senses
   if (!rawSenses || typeof rawSenses !== "object" || Array.isArray(rawSenses)) {
-    return defaults
+    const rawMcpServers = parsed.mcpServers
+    const workbenchHasStaleBundleEntry = !!rawMcpServers
+      && typeof rawMcpServers === "object"
+      && !Array.isArray(rawMcpServers)
+      && Object.prototype.hasOwnProperty.call(rawMcpServers, "ouro_workbench")
+    if (workbenchHasStaleBundleEntry) defaults.workbench = { enabled: true }
+    return { senses: defaults, workbenchHasStaleBundleEntry }
   }
+
+  const workbenchSensePresent = Object.prototype.hasOwnProperty.call(rawSenses, "workbench")
+  const rawMcpServers = parsed.mcpServers
+  const workbenchMcpPresent = !!rawMcpServers
+    && typeof rawMcpServers === "object"
+    && !Array.isArray(rawMcpServers)
+    && Object.prototype.hasOwnProperty.call(rawMcpServers, "ouro_workbench")
+  const workbenchHasStaleBundleEntry = workbenchSensePresent || workbenchMcpPresent
 
   for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "workbench"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
@@ -152,7 +169,11 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
     }
   }
 
-  return defaults
+  if (workbenchHasStaleBundleEntry) {
+    defaults.workbench = { enabled: true }
+  }
+
+  return { senses: defaults, workbenchHasStaleBundleEntry }
 }
 
 function textField(record: Record<string, unknown> | undefined, key: string): string {
@@ -211,6 +232,7 @@ function senseFactsFromRuntimeConfig(
   senses: AgentSensesConfig,
   runtimeConfig: RuntimeCredentialConfigReadResult,
   machineRuntimeConfig: RuntimeCredentialConfigReadResult = readMachineRuntimeCredentialConfig(agent),
+  workbenchHasStaleBundleEntry = false,
 ): Record<SenseName, SenseConfigFacts> {
   const base: Record<SenseName, SenseConfigFacts> = {
     cli: { configured: true, detail: "local interactive terminal" },
@@ -378,10 +400,10 @@ function senseFactsFromRuntimeConfig(
     }
   }
 
-  if (senses.workbench.enabled) {
+  if (workbenchHasStaleBundleEntry || senses.workbench.enabled) {
     base.workbench = {
-      configured: true,
-      detail: "native Workbench local control room; MCP registration is stored in agent.json",
+      configured: false,
+      detail: WORKBENCH_STALE_BUNDLE_DETAIL,
     }
   }
 
@@ -404,7 +426,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   }
   /* v8 ignore next -- Workbench is deliberately not daemon-managed, so getSenseInventory never asks the daemon manager for a repair hint @preserve */
   if (sense === "workbench") {
-    return `Agent-runnable: run 'ouro connect workbench --agent ${agent}' to enable senses.workbench.enabled and mcpServers.ouro_workbench in agent.json.`
+    return `Agent-runnable: install Ouro Workbench.app, then launch the boss through Workbench or run 'ouro mcp-serve --agent ${agent} --workbench-mcp'; 'ouro connect workbench --agent ${agent}' only cleans stale bundle entries.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
@@ -641,9 +663,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     this.bundlesRoot = bundlesRoot
     this.contexts = new Map(
       options.agents.map((agent) => {
-        const senses = readAgentSenses(path.join(bundlesRoot, `${agent}.ouro`, "agent.json"))
-        const facts = senseFactsFromRuntimeConfig(agent, senses, readRuntimeCredentialConfig(agent), readMachineRuntimeCredentialConfig(agent))
-        return [agent, { senses, facts }]
+        const { senses, workbenchHasStaleBundleEntry } = readAgentSenses(path.join(bundlesRoot, `${agent}.ouro`, "agent.json"))
+        const facts = senseFactsFromRuntimeConfig(
+          agent,
+          senses,
+          readRuntimeCredentialConfig(agent),
+          readMachineRuntimeCredentialConfig(agent),
+          workbenchHasStaleBundleEntry,
+        )
+        return [agent, { senses, workbenchHasStaleBundleEntry, facts }]
       }),
     )
 
@@ -673,6 +701,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           context.senses,
           readRuntimeCredentialConfig(parsed.agent),
           readMachineRuntimeCredentialConfig(parsed.agent),
+          context.workbenchHasStaleBundleEntry,
         )
         const fact = context.facts[parsed.sense]
         if (fact.configured) return { ok: true }
@@ -768,7 +797,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       const context = this.contexts.get(parsed.agent)
       /* v8 ignore next -- defensive: config refreshes are only scheduled for known agent contexts @preserve */
       if (!context) return
-      context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
+      context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed, context.workbenchHasStaleBundleEntry)
       if (!context.facts[parsed.sense].configured) {
         if (this.shouldRetryConfigRefresh(parsed.sense, refreshed, machineRefreshed)) {
           retryAfterMs = this.nextConfigRetryDelayMs(name)
@@ -822,7 +851,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         : readMachineRuntimeCredentialConfig(agent)
       /* v8 ignore stop */
 
-      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig)
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig, context.workbenchHasStaleBundleEntry)
     })
 
     await Promise.all(refreshes)
@@ -883,7 +912,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     for (const [agent, context] of this.contexts.entries()) {
       const runtimeConfig = readRuntimeCredentialConfig(agent)
       const machineRuntimeConfig = readMachineRuntimeCredentialConfig(agent)
-      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig)
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig, context.workbenchHasStaleBundleEntry)
       if (!context.senses.bluebubbles.enabled || !context.facts.bluebubbles.configured || !machineRuntimeConfig.ok) {
         continue
       }
@@ -939,7 +968,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     const machineRuntimeConfig = needsMachineConfig
       ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
       : readMachineRuntimeCredentialConfig(parsed.agent)
-    context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, runtimeConfig, machineRuntimeConfig)
+    context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, runtimeConfig, machineRuntimeConfig, context.workbenchHasStaleBundleEntry)
     this.processManager.resetAgentFailureState?.(managedName)
     await this.processManager.startAgent?.(managedName)
     return this.listSenseRows().find((row) => row.agent === parsed.agent && row.sense === parsed.sense) ?? null
@@ -956,7 +985,13 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     }
 
     const rows = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, readRuntimeCredentialConfig(agent), readMachineRuntimeCredentialConfig(agent))
+      context.facts = senseFactsFromRuntimeConfig(
+        agent,
+        context.senses,
+        readRuntimeCredentialConfig(agent),
+        readMachineRuntimeCredentialConfig(agent),
+        context.workbenchHasStaleBundleEntry,
+      )
       const blueBubblesRuntimeFacts = readBlueBubblesRuntimeFacts(agent, this.bundlesRoot, runtime.get(agent)?.bluebubbles)
       const blueBubblesConfigured = context.facts.bluebubbles.configured
       const runtimeInfo: Partial<Record<SenseName, SenseRuntimeInfo>> = {
@@ -1006,7 +1041,9 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
                 ?? context.facts[entry.sense].detail
               : context.facts[entry.sense].detail
             : context.facts[entry.sense].detail
-          : "not enabled in agent.json",
+          : entry.sense === "workbench"
+            ? WORKBENCH_RUNTIME_INJECTION_DETAIL
+            : "not enabled in agent.json",
         ...(entry.sense === "bluebubbles" && blueBubblesConfigured ? {
           proofMethod: blueBubblesRuntimeFacts.proofMethod,
           lastProofAt: blueBubblesRuntimeFacts.lastProofAt,

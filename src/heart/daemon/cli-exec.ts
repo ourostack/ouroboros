@@ -3248,7 +3248,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a" | "workbench", deps: OuroCliDeps): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -3265,7 +3265,6 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail"
     mail: senses.mail ?? { enabled: false },
     voice: senses.voice ?? { enabled: false },
     a2a: senses.a2a ?? { enabled: false },
-    workbench: senses.workbench ?? { enabled: false },
     [sense]: { ...existing, enabled: true },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
@@ -3285,6 +3284,7 @@ function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): {
   a2aEnabled: boolean
   workbenchEnabled: boolean
   workbenchMcpCommand: string | null
+  workbenchHasStaleBundleEntry: boolean
 } {
   const configPath = path.join(providerCliAgentRoot({ agent }, deps), "agent.json")
   const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
@@ -3298,17 +3298,32 @@ function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): {
     }
     mcpServers?: Record<string, { command?: unknown }>
   }
-  const workbenchCommand = parsed.mcpServers?.ouro_workbench?.command
+  const senses = parsed.senses && typeof parsed.senses === "object" && !Array.isArray(parsed.senses)
+    ? parsed.senses
+    : undefined
+  const mcpServers = parsed.mcpServers && typeof parsed.mcpServers === "object" && !Array.isArray(parsed.mcpServers)
+    ? parsed.mcpServers
+    : undefined
+  const workbenchSensePresent = senses
+    ? Object.prototype.hasOwnProperty.call(senses, "workbench")
+    : false
+  const workbenchMcpPresent = mcpServers
+    ? Object.prototype.hasOwnProperty.call(mcpServers, "ouro_workbench")
+    : false
+  const workbenchCommand = mcpServers?.ouro_workbench?.command
+  const workbenchEnabled = senses?.workbench?.enabled === true
+  const workbenchMcpCommand = typeof workbenchCommand === "string" && workbenchCommand.trim().length > 0
+    ? workbenchCommand
+    : null
   return {
-    teamsEnabled: parsed.senses?.teams?.enabled === true,
-    blueBubblesEnabled: parsed.senses?.bluebubbles?.enabled === true,
-    mailEnabled: parsed.senses?.mail?.enabled === true,
-    voiceEnabled: parsed.senses?.voice?.enabled === true,
-    a2aEnabled: parsed.senses?.a2a?.enabled === true,
-    workbenchEnabled: parsed.senses?.workbench?.enabled === true,
-    workbenchMcpCommand: typeof workbenchCommand === "string" && workbenchCommand.trim().length > 0
-      ? workbenchCommand
-      : null,
+    teamsEnabled: senses?.teams?.enabled === true,
+    blueBubblesEnabled: senses?.bluebubbles?.enabled === true,
+    mailEnabled: senses?.mail?.enabled === true,
+    voiceEnabled: senses?.voice?.enabled === true,
+    a2aEnabled: senses?.a2a?.enabled === true,
+    workbenchEnabled,
+    workbenchMcpCommand,
+    workbenchHasStaleBundleEntry: workbenchSensePresent || workbenchMcpPresent,
   }
 }
 
@@ -3356,22 +3371,33 @@ export function resolveWorkbenchRuntimeMcp(
   return { ouro_workbench: { command, args: [] } }
 }
 
-function writeWorkbenchMcpRegistration(agent: string, executablePath: string, deps: OuroCliDeps): void {
+function removeWorkbenchMcpRegistration(agent: string, deps: OuroCliDeps): boolean {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
-  enableAgentSense(agent, "workbench", deps)
-
   const nextRaw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
+  let changed = false
+
   const mcpServers = nextRaw.mcpServers && typeof nextRaw.mcpServers === "object" && !Array.isArray(nextRaw.mcpServers)
     ? nextRaw.mcpServers as Record<string, unknown>
-    : {}
-  nextRaw.mcpServers = {
-    ...mcpServers,
-    ouro_workbench: {
-      command: executablePath,
-      args: [],
-    },
+    : null
+  if (mcpServers && "ouro_workbench" in mcpServers) {
+    delete mcpServers.ouro_workbench
+    nextRaw.mcpServers = mcpServers
+    changed = true
   }
-  fs.writeFileSync(configPath, `${JSON.stringify(nextRaw, null, 2)}\n`, "utf-8")
+
+  const senses = nextRaw.senses && typeof nextRaw.senses === "object" && !Array.isArray(nextRaw.senses)
+    ? nextRaw.senses as Record<string, unknown>
+    : null
+  if (senses && "workbench" in senses) {
+    delete senses.workbench
+    nextRaw.senses = senses
+    changed = true
+  }
+
+  if (changed) {
+    fs.writeFileSync(configPath, `${JSON.stringify(nextRaw, null, 2)}\n`, "utf-8")
+  }
+  return changed
 }
 
 async function buildConnectMenu(
@@ -3411,8 +3437,8 @@ async function buildConnectMenu(
     mailEnabled,
     voiceEnabled,
     a2aEnabled,
-    workbenchEnabled,
     workbenchMcpCommand,
+    workbenchHasStaleBundleEntry,
   } = readConnectBaySenseFlags(agent, deps)
   const perplexityApiKey = runtimeConfig.ok
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.perplexityApiKey")
@@ -3569,31 +3595,18 @@ async function buildConnectMenu(
     : runtimeConfigReadStatus(runtimeConfig)
   const a2aStatus = a2aEnabled ? "ready" : "missing"
   const installedWorkbenchMcp = findInstalledWorkbenchMcp(deps, workbenchMcpCommand)
-  const configuredWorkbenchMcpExists = cliPathExists(deps, workbenchMcpCommand)
-  const workbenchStatus: ConnectMenuEntry["status"] = workbenchEnabled && configuredWorkbenchMcpExists
-    ? "ready"
-    : workbenchEnabled || workbenchMcpCommand
-      ? "needs attention"
-      : installedWorkbenchMcp
-        ? "not attached"
-        : "missing"
+  const workbenchStatus: ConnectMenuEntry["status"] = installedWorkbenchMcp
+    ? workbenchHasStaleBundleEntry ? "needs attention" : "ready"
+    : "missing"
   const workbenchDetailLines = [
-    workbenchEnabled ? "senses.workbench.enabled = true" : "senses.workbench.enabled is not enabled",
-    workbenchMcpCommand
-      ? configuredWorkbenchMcpExists
-        ? `MCP command registered: ${workbenchMcpCommand}`
-        : `registered MCP command is missing: ${workbenchMcpCommand}`
-      : "mcpServers.ouro_workbench is not registered",
     installedWorkbenchMcp
       ? `OuroWorkbenchMCP found: ${installedWorkbenchMcp}`
       : "OuroWorkbenchMCP not found in ~/Applications or /Applications",
-    // Runtime injection is the boss's normal path: the Workbench app launches
-    // its boss with `ouro mcp-serve --workbench-mcp`, which injects the
-    // ouro_workbench MCP per-turn without any agent.json entry. A blank/“not
-    // registered” bundle state above is expected for a runtime-only boss; this
-    // `connect workbench` command only writes a persistent entry as an opt-in.
+    workbenchHasStaleBundleEntry
+      ? "stale bundle entry detected: remove senses.workbench and mcpServers.ouro_workbench; Workbench tools are injected at runtime instead"
+      : "bundle state: clean; no senses.workbench or mcpServers.ouro_workbench entry required",
     installedWorkbenchMcp
-      ? "boss runtime injection: when the Workbench app launches this agent it injects ouro_workbench per-turn; an agent.json entry is not required (this command writes one as an opt-in escape hatch)."
+      ? "boss runtime injection: when the Workbench app launches this agent it injects ouro_workbench per-turn; an agent.json entry is not required."
       : "boss runtime injection: install Ouro Workbench.app so the app can inject ouro_workbench per-turn when it launches this agent as boss (no agent.json entry required).",
   ]
 
@@ -3730,7 +3743,7 @@ async function buildConnectMenu(
       name: "Ouro Workbench",
       section: "This machine",
       status: workbenchStatus,
-      description: "Native terminal-agent control room and local MCP sense.",
+      description: "Native terminal-agent control room with runtime-injected MCP tools.",
       detailLines: workbenchDetailLines,
       nextAction: connectEntryNeedsAttention({
         option: "9",
@@ -5583,11 +5596,17 @@ async function executeConnectA2A(agent: string, deps: OuroCliDeps): Promise<stri
 }
 
 async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promise<string> {
-  const { workbenchMcpCommand } = readConnectBaySenseFlags(agent, deps)
+  const { workbenchMcpCommand, workbenchHasStaleBundleEntry } = readConnectBaySenseFlags(agent, deps)
+  const changed = removeWorkbenchMcpRegistration(agent, deps)
+  const syncSummary = changed ? pushAgentBundleAfterCliMutation(agent, deps) : ""
   const executablePath = findInstalledWorkbenchMcp(deps, workbenchMcpCommand)
   if (!executablePath) {
     throw new Error([
       `Ouro Workbench is not installed for ${agent} on this machine.`,
+      changed
+        ? "agent.json: removed stale senses.workbench / mcpServers.ouro_workbench entries"
+        : "agent.json: no Workbench entries needed or written",
+      ...(syncSummary ? [syncSummary] : []),
       "Expected the MCP executable at one of:",
       ...defaultWorkbenchMcpCandidates(deps).map((candidate) => `  ${candidate}`),
       "Install or copy Ouro Workbench.app there, then run:",
@@ -5595,13 +5614,14 @@ async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promis
     ].join("\n"))
   }
 
-  writeWorkbenchMcpRegistration(agent, executablePath, deps)
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
   const message = [
-    `Workbench connected for ${agent}`,
-    "agent.json: senses.workbench.enabled = true",
-    `agent.json: mcpServers.ouro_workbench.command = ${executablePath}`,
-    "Workbench is a local machine sense; provider secrets stay in the agent vault.",
+    `Workbench runtime injection ready for ${agent}`,
+    `OuroWorkbenchMCP found: ${executablePath}`,
+    workbenchHasStaleBundleEntry
+      ? "agent.json: removed stale senses.workbench / mcpServers.ouro_workbench entries"
+      : "agent.json: no Workbench entries needed or written",
+    `boss launch path: ouro mcp-serve --agent ${agent} --workbench-mcp ${executablePath}`,
+    "Workbench tools are injected per served turn; provider secrets stay in the agent vault.",
     ...(syncSummary ? [syncSummary] : []),
   ].join("\n")
   deps.writeStdout(message)
