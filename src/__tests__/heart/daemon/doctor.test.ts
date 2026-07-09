@@ -48,6 +48,7 @@ function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     bundlesRoot: "/tmp/bundles",
     homedir: "/tmp/home",
     envPath: "/tmp/home/.ouro-cli/bin:/usr/bin",
+    platform: "darwin",
     ...overrides,
   }
 }
@@ -927,7 +928,11 @@ describe("checkHabits", () => {
       ]),
       readdirSync: readdirFor({
         "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/habits": ["daily.md"],
         "/tmp/home/Library/LaunchAgents": ["bot.ouro.test.daily.plist"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/habits/daily.md": "---\ntitle: Daily\ncadence: 30m\nstatus: active\n---\n\nCheck in.\n",
       }),
     })
     const cat = checkHabits(deps)
@@ -945,11 +950,61 @@ describe("checkHabits", () => {
       ]),
       readdirSync: readdirFor({
         "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/habits": ["heartbeat.md"],
         "/tmp/home/Library/LaunchAgents": ["com.other.plist"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/habits/heartbeat.md": "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\n---\n\nCheck in.\n",
       }),
     })
     const cat = checkHabits(deps)
     expect(cat.checks.some((c) => c.label.includes("launchd") && c.status === "fail")).toBe(true)
+    expect(cat.checks.find((c) => c.label.includes("launchd"))?.detail)
+      .toContain("bot.ouro.test.heartbeat.plist")
+  })
+
+  it("passes launchd check when only paused habits exist", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/habits",
+        "/tmp/home/Library/LaunchAgents",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/habits": ["heartbeat.md"],
+        "/tmp/home/Library/LaunchAgents": ["com.other.plist"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/habits/heartbeat.md": "---\ntitle: Heartbeat\ncadence: 30m\nstatus: paused\n---\n\nCheck in.\n",
+      }),
+    })
+    const cat = checkHabits(deps)
+    expect(cat.checks.find((c) => c.label.includes("launchd"))).toEqual(expect.objectContaining({
+      status: "pass",
+      detail: "no active scheduled habits require launchd",
+    }))
+  })
+
+  it("warns when a habit file cannot be read", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/habits",
+        "/tmp/home/Library/LaunchAgents",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/habits": ["broken.md"],
+        "/tmp/home/Library/LaunchAgents": [],
+      }),
+      readFileSync: readFileFor({}),
+    })
+    const cat = checkHabits(deps)
+    expect(cat.checks.find((c) => c.label === "test.ouro habit files")).toEqual(expect.objectContaining({
+      status: "warn",
+      detail: "1 unreadable habit file(s)",
+    }))
   })
 
   it("warns when habits dir is missing", () => {
@@ -962,7 +1017,7 @@ describe("checkHabits", () => {
     expect(cat.checks[0].detail).toContain("no habits directory")
   })
 
-  it("skips launchd check when LaunchAgents dir does not exist", () => {
+  it("does not require launchd when there are no active scheduled habits", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
@@ -972,10 +1027,57 @@ describe("checkHabits", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkHabits(deps)
-    // Should have habits dir check but no launchd check
-    expect(cat.checks).toHaveLength(1)
+    expect(cat.checks).toHaveLength(2)
     expect(cat.checks[0].label).toContain("habits dir")
     expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[1]).toEqual(expect.objectContaining({
+      label: "test.ouro launchd plists",
+      status: "pass",
+      detail: "no active scheduled habits require launchd",
+    }))
+  })
+
+  it("fails when active scheduled habits exist but LaunchAgents is missing", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/habits",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/habits": ["heartbeat.md"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/habits/heartbeat.md": "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\n---\n\nCheck in.\n",
+      }),
+    })
+    const cat = checkHabits(deps)
+    expect(cat.checks.find((c) => c.label.includes("launchd"))).toEqual(expect.objectContaining({
+      status: "fail",
+    }))
+    expect(cat.checks.find((c) => c.label.includes("launchd"))?.detail).toContain("LaunchAgents")
+  })
+
+  it("does not require launchd for active scheduled habits on non-macOS platforms", () => {
+    const deps = createMockDeps({
+      platform: "linux",
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/habits",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/habits": ["heartbeat.md"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/habits/heartbeat.md": "---\ntitle: Heartbeat\ncadence: 30m\nstatus: active\n---\n\nCheck in.\n",
+      }),
+    })
+    const cat = checkHabits(deps)
+    expect(cat.checks.find((c) => c.label.includes("launchd"))).toEqual(expect.objectContaining({
+      status: "pass",
+    }))
+    expect(cat.checks.find((c) => c.label.includes("launchd"))?.detail).toContain("not applicable on linux")
   })
 
   it("warns when no agents found", () => {
@@ -2040,7 +2142,7 @@ describe("checkDisk", () => {
     expect(cat.checks.find((c) => c.label.includes("logs dir"))?.detail).toContain("/tmp/bundles/test.ouro/state/daemon/logs")
   })
 
-  it("warns when log files are over 100MB", () => {
+  it("warns when an active log stream is over the rotation threshold", () => {
     const bigSize = 150 * 1024 * 1024 // 150MB
     const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
@@ -2055,7 +2157,43 @@ describe("checkDisk", () => {
     expect(cat.checks.find((c) => c.label.includes("log size"))?.detail).toContain("prune")
   })
 
-  it("fails when log files are over 500MB", () => {
+  it("passes when compressed generations push total over 100MB but active streams are under threshold", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        [logsDir]: ["daemon.ndjson", "ouro-bot.1.ndjson.gz", "ouro-bot.2.ndjson.gz"],
+      }),
+      statSync: statFor({
+        [`${logsDir}/daemon.ndjson`]: { mode: 0o644, size: 14 * 1024 * 1024 },
+        [`${logsDir}/ouro-bot.1.ndjson.gz`]: { mode: 0o644, size: 80 * 1024 * 1024 },
+        [`${logsDir}/ouro-bot.2.ndjson.gz`]: { mode: 0o644, size: 60 * 1024 * 1024 },
+      }),
+    })
+    const cat = checkDisk(deps)
+    expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("pass")
+  })
+
+  it("passes when compressed generations push total over 500MB but active streams are under threshold", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        [logsDir]: ["daemon.ndjson", "ouro-bot.1.ndjson.gz", "ouro-bot.2.ndjson.gz"],
+      }),
+      statSync: statFor({
+        [`${logsDir}/daemon.ndjson`]: { mode: 0o644, size: 14 * 1024 * 1024 },
+        [`${logsDir}/ouro-bot.1.ndjson.gz`]: { mode: 0o644, size: 300 * 1024 * 1024 },
+        [`${logsDir}/ouro-bot.2.ndjson.gz`]: { mode: 0o644, size: 260 * 1024 * 1024 },
+      }),
+    })
+    const cat = checkDisk(deps)
+    expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("pass")
+  })
+
+  it("fails when active log files are over 500MB", () => {
     const hugeSize = 600 * 1024 * 1024 // 600MB
     const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({

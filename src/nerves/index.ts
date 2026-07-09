@@ -338,8 +338,10 @@ export function createNdjsonFileSink(
     if (flushing || queue.length === 0) return
     flushing = true
     const line = queue.shift() as string
+    const checkBeforeAppend = bytesSinceCheck >= rotationCheckInterval
+    const checkAfterAppend = checkBeforeAppend || line.length >= rotationCheckInterval
 
-    if (bytesSinceCheck >= rotationCheckInterval) {
+    if (checkBeforeAppend) {
       bytesSinceCheck = 0
       try {
         rotateIfNeeded(filePath, options)
@@ -349,6 +351,13 @@ export function createNdjsonFileSink(
     }
 
     appendFile(filePath, line, "utf8", () => {
+      if (checkAfterAppend) {
+        try {
+          rotateIfNeeded(filePath, options)
+        } catch {
+          // Rotation errors are surfaced via nerves events; never block writes.
+        }
+      }
       flushing = false
       flush()
     })

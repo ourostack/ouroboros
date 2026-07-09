@@ -102,6 +102,7 @@ const DEFAULT_TEAMS_PORT = 3978
 const DEFAULT_BLUEBUBBLES_PORT = 18790
 const DEFAULT_BLUEBUBBLES_WEBHOOK_PATH = "/bluebubbles-webhook"
 const BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS = 90_000
+const SENSE_CONFIG_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000] as const
 
 function defaultSenses(): AgentSensesConfig {
   return {
@@ -631,6 +632,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly processManager: NonNullable<DaemonSenseManagerOptions["processManager"]>
   private readonly contexts: Map<string, AgentSenseContext>
   private readonly pendingConfigRefreshes = new Set<string>()
+  private readonly configRefreshRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly configRefreshRetryAttempts = new Map<string, number>()
   private readonly bundlesRoot: string
 
   constructor(options: DaemonSenseManagerOptions) {
@@ -701,13 +704,62 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     })
   }
 
-  private scheduleSenseConfigRefresh(name: string, parsed: { agent: string; sense: SenseName }): void {
-    if (this.pendingConfigRefreshes.has(name)) return
+  private scheduleSenseConfigRefresh(name: string, parsed: { agent: string; sense: SenseName }, delayMs = 0): void {
+    if (this.pendingConfigRefreshes.has(name) || this.configRefreshRetryTimers.has(name)) return
+    if (delayMs > 0) {
+      const timer = setTimeout(() => {
+        this.configRefreshRetryTimers.delete(name)
+        this.pendingConfigRefreshes.add(name)
+        void this.refreshSenseConfigAndRetry(name, parsed)
+      }, delayMs)
+      this.configRefreshRetryTimers.set(name, timer)
+      emitNervesEvent({
+        level: "warn",
+        component: "channels",
+        event: "channel.daemon_sense_config_retry_scheduled",
+        message: "scheduled managed sense config retry",
+        meta: {
+          agent: parsed.agent,
+          sense: parsed.sense,
+          managedName: name,
+          delayMs,
+          attempt: this.configRefreshRetryAttempts.get(name)!,
+        },
+      })
+      return
+    }
     this.pendingConfigRefreshes.add(name)
     void this.refreshSenseConfigAndRetry(name, parsed)
   }
 
+  private nextConfigRetryDelayMs(name: string): number {
+    const attempt = (this.configRefreshRetryAttempts.get(name) ?? 0) + 1
+    this.configRefreshRetryAttempts.set(name, attempt)
+    return SENSE_CONFIG_RETRY_DELAYS_MS[Math.min(attempt - 1, SENSE_CONFIG_RETRY_DELAYS_MS.length - 1)]
+  }
+
+  private clearConfigRetryState(name: string): void {
+    clearTimeout(this.configRefreshRetryTimers.get(name))
+    this.configRefreshRetryTimers.delete(name)
+    this.configRefreshRetryAttempts.delete(name)
+  }
+
+  private shouldRetryConfigRefresh(
+    sense: SenseName,
+    runtimeConfig: RuntimeCredentialConfigReadResult,
+    machineRuntimeConfig: RuntimeCredentialConfigReadResult,
+  ): boolean {
+    if (!runtimeConfig.ok && runtimeConfig.reason === "unavailable") return true
+    if (
+      (sense === "bluebubbles" || sense === "voice" || sense === "a2a") &&
+      !machineRuntimeConfig.ok &&
+      machineRuntimeConfig.reason === "unavailable"
+    ) return true
+    return false
+  }
+
   private async refreshSenseConfigAndRetry(name: string, parsed: { agent: string; sense: SenseName }): Promise<void> {
+    let retryAfterMs: number | null = null
     try {
       const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
       const machineRefreshed = parsed.sense === "bluebubbles" || parsed.sense === "voice" || parsed.sense === "a2a"
@@ -717,7 +769,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       /* v8 ignore next -- defensive: config refreshes are only scheduled for known agent contexts @preserve */
       if (!context) return
       context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
-      if (!context.facts[parsed.sense].configured) return
+      if (!context.facts[parsed.sense].configured) {
+        if (this.shouldRetryConfigRefresh(parsed.sense, refreshed, machineRefreshed)) {
+          retryAfterMs = this.nextConfigRetryDelayMs(name)
+        } else {
+          this.clearConfigRetryState(name)
+        }
+        return
+      }
+      this.clearConfigRetryState(name)
       setTimeout(() => {
         void this.processManager.startAgent?.(name).catch((error) => {
           emitNervesEvent({
@@ -741,6 +801,9 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       })
     } finally {
       this.pendingConfigRefreshes.delete(name)
+      if (retryAfterMs !== null) {
+        this.scheduleSenseConfigRefresh(name, parsed, retryAfterMs)
+      }
     }
   }
 
@@ -799,6 +862,11 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   }
 
   async stopAll(): Promise<void> {
+    for (const timer of this.configRefreshRetryTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.configRefreshRetryTimers.clear()
+    this.configRefreshRetryAttempts.clear()
     await this.processManager.stopAll()
   }
 

@@ -18,6 +18,9 @@ import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
 import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { parseHabitFile } from "../habits/habit-parser"
+import { parseCadenceToCron } from "./cadence"
+import { DEFAULT_MAX_LOG_SIZE_BYTES } from "../../nerves"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 
@@ -341,17 +344,73 @@ export function checkHabits(deps: DoctorDeps): DoctorCategory {
 
     checks.push({ label: `${agentDir} habits dir`, status: "pass", detail: habitsDir })
 
+    const activeScheduledHabits: string[] = []
+    let unreadableHabits = 0
+    for (const file of deps.readdirSync(habitsDir).filter((entry) => entry.endsWith(".md"))) {
+      const filePath = `${habitsDir}/${file}`
+      try {
+        const habit = parseHabitFile(deps.readFileSync(filePath), filePath)
+        if (habit.status === "active" && habit.cadence && parseCadenceToCron(habit.cadence) !== null) {
+          activeScheduledHabits.push(habit.name)
+        }
+      } catch {
+        unreadableHabits += 1
+      }
+    }
+
+    if (unreadableHabits > 0) {
+      checks.push({
+        label: `${agentDir} habit files`,
+        status: "warn",
+        detail: `${unreadableHabits} unreadable habit file(s)`,
+      })
+    }
+
+    if (activeScheduledHabits.length === 0) {
+      checks.push({
+        label: `${agentDir} launchd plists`,
+        status: "pass",
+        detail: "no active scheduled habits require launchd",
+      })
+      continue
+    }
+
     // Check for launchd plists on macOS
+    const platform = deps.platform
+    if (platform !== "darwin") {
+      checks.push({
+        label: `${agentDir} launchd plists`,
+        status: "pass",
+        detail: `launchd not applicable on ${platform}; scheduled habits use the platform cron manager`,
+      })
+      continue
+    }
+
     const launchAgentsDir = `${deps.homedir}/Library/LaunchAgents`
     if (deps.existsSync(launchAgentsDir)) {
-      const plists = deps.readdirSync(launchAgentsDir).filter(
-        (f) => f.startsWith(`bot.ouro.${agentName}.`) && f.endsWith(".plist"),
-      )
-      if (plists.length > 0) {
-        checks.push({ label: `${agentDir} launchd plists`, status: "pass", detail: `${plists.length} plist(s)` })
+      const plists = new Set(deps.readdirSync(launchAgentsDir))
+      const missing = activeScheduledHabits
+        .map((habitName) => `bot.ouro.${agentName}.${habitName}.plist`)
+        .filter((plistName) => !plists.has(plistName))
+      if (missing.length === 0) {
+        checks.push({
+          label: `${agentDir} launchd plists`,
+          status: "pass",
+          detail: `${activeScheduledHabits.length} active scheduled habit(s) registered`,
+        })
       } else {
-        checks.push({ label: `${agentDir} launchd plists`, status: "fail", detail: "no matching plists in LaunchAgents" })
+        checks.push({
+          label: `${agentDir} launchd plists`,
+          status: "fail",
+          detail: `missing ${missing.join(", ")}`,
+        })
       }
+    } else {
+      checks.push({
+        label: `${agentDir} launchd plists`,
+        status: "fail",
+        detail: `${launchAgentsDir} not found for ${activeScheduledHabits.length} active scheduled habit(s)`,
+      })
     }
   }
 
@@ -656,14 +715,28 @@ export function checkFriends(deps: DoctorDeps): DoctorCategory {
 export function checkDisk(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
+  const isActiveLogStream = (name: string): boolean => {
+    if (name.endsWith(".ndjson")) return !/\.\d+\.ndjson$/.test(name)
+    if (name.endsWith(".log")) return !/\.\d+\.log$/.test(name)
+    return false
+  }
+
   const addLogSizeCheck = (labelPrefix: string, logsDir: string): void => {
     let totalSize = 0
+    let activeSize = 0
+    const oversizedActive: string[] = []
     try {
       const files = deps.readdirSync(logsDir)
       for (const file of files) {
         try {
           const stat = deps.statSync(`${logsDir}/${file}`)
           totalSize += stat.size
+          if (isActiveLogStream(file)) {
+            activeSize += stat.size
+            if (stat.size >= DEFAULT_MAX_LOG_SIZE_BYTES) {
+              oversizedActive.push(file)
+            }
+          }
         } catch {
           // skip unreadable files
         }
@@ -673,12 +746,17 @@ export function checkDisk(deps: DoctorDeps): DoctorCategory {
     }
 
     const sizeMB = totalSize / (1024 * 1024)
-    if (sizeMB > 500) {
-      checks.push({ label: `${labelPrefix} daemon log size`, status: "fail", detail: `${sizeMB.toFixed(1)}MB — exceeds 500MB limit` })
-    } else if (sizeMB > 100) {
-      checks.push({ label: `${labelPrefix} daemon log size`, status: "warn", detail: `${sizeMB.toFixed(1)}MB — consider pruning with \`ouro logs prune\`` })
+    const activeSizeMB = activeSize / (1024 * 1024)
+    if (activeSizeMB > 500) {
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "fail", detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total — active logs exceed 500MB limit` })
+    } else if (oversizedActive.length > 0) {
+      checks.push({
+        label: `${labelPrefix} daemon log size`,
+        status: "warn",
+        detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total; active stream(s) over ${Math.round(DEFAULT_MAX_LOG_SIZE_BYTES / (1024 * 1024))}MB: ${oversizedActive.join(", ")} — run \`ouro logs prune\``,
+      })
     } else {
-      checks.push({ label: `${labelPrefix} daemon log size`, status: "pass", detail: `${sizeMB.toFixed(1)}MB` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "pass", detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total` })
     }
   }
 

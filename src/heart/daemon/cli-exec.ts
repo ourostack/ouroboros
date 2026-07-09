@@ -8977,6 +8977,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
+      platform: process.platform,
     }
     const doctorResult = command.category
       ? await runDoctorChecks(doctorDeps, { category: command.category })

@@ -36,6 +36,7 @@ describe("daemon sense manager", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.doUnmock("../../../heart/runtime-credentials")
+    vi.doUnmock("../../../heart/daemon/process-manager")
     vi.doUnmock("../../../heart/daemon/http-health-probe")
     vi.resetModules()
   })
@@ -852,6 +853,263 @@ describe("daemon sense manager", () => {
       }))
       expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it("retries transient portable runtime config failures and starts the managed sense after recovery", async () => {
+    vi.useFakeTimers()
+    try {
+      const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+      writeAgentJson(bundlesRoot, "slugger", {
+        version: 1,
+        enabled: true,
+        provider: "anthropic",
+        senses: {
+          cli: { enabled: true },
+          mail: { enabled: true },
+        },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      })
+
+      const runtimeUnavailable = {
+        ok: false as const,
+        reason: "unavailable" as const,
+        itemPath: "vault:slugger:runtime/config",
+        error: "bw CLI error: get item timed out",
+      }
+      const runtimeReady = {
+        ok: true as const,
+        itemPath: "vault:slugger:runtime/config",
+        config: {
+          mailroom: {
+            mailboxAddress: "slugger@ouro.bot",
+            privateKeys: { mail_slugger_primary: "secret" },
+          },
+        },
+        revision: "runtime_ready",
+        updatedAt: new Date(0).toISOString(),
+      }
+      const machineMissing = {
+        ok: false as const,
+        reason: "missing" as const,
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "missing",
+      }
+      let cachedRuntime = runtimeUnavailable
+      const refreshRuntimeCredentialConfig = vi.fn(async () => {
+        if (refreshRuntimeCredentialConfig.mock.calls.length === 1) return runtimeUnavailable
+        cachedRuntime = runtimeReady
+        return runtimeReady
+      })
+      const startAgent = vi.fn(async () => undefined)
+      let processManagerOptions: any
+
+      vi.doMock("../../../heart/runtime-credentials", () => ({
+        readRuntimeCredentialConfig: vi.fn(() => cachedRuntime),
+        refreshRuntimeCredentialConfig,
+        readMachineRuntimeCredentialConfig: vi.fn(() => machineMissing),
+        refreshMachineRuntimeCredentialConfig: vi.fn(async () => machineMissing),
+      }))
+      vi.doMock("../../../heart/daemon/process-manager", () => ({
+        DaemonProcessManager: class MockProcessManager {
+          constructor(options: unknown) {
+            processManagerOptions = options
+          }
+          startAgent = startAgent
+          startAutoStartAgents = vi.fn(async () => undefined)
+          triggerAutoStartAgents = vi.fn()
+          stopAll = vi.fn(async () => undefined)
+          listAgentSnapshots = vi.fn(() => [])
+        },
+      }))
+
+      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+      new DaemonSenseManager({ agents: ["slugger"], bundlesRoot })
+
+      const first = await processManagerOptions.configCheck("slugger:mail")
+      const second = await processManagerOptions.configCheck("slugger:mail")
+
+      expect(first).toEqual(expect.objectContaining({ ok: false, skip: true }))
+      expect(second).toEqual(expect.objectContaining({ ok: false, skip: true }))
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
+
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledTimes(2)
+      await vi.waitFor(() => {
+        expect(startAgent).toHaveBeenCalledWith("slugger:mail")
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("retries transient machine runtime config failures for local managed senses", async () => {
+    vi.useFakeTimers()
+    try {
+      const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-home-"))
+      const bundlesRoot = path.join(homeRoot, "AgentBundles")
+      writeAgentJson(bundlesRoot, "slugger", {
+        version: 1,
+        enabled: true,
+        provider: "anthropic",
+        senses: {
+          cli: { enabled: true },
+          voice: { enabled: true },
+        },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      })
+
+      const runtimeReady = {
+        ok: true as const,
+        itemPath: "vault:slugger:runtime/config",
+        config: {
+          integrations: {
+            elevenLabsApiKey: "eleven-secret",
+            elevenLabsVoiceId: "voice_123",
+          },
+        },
+        revision: "runtime_ready",
+        updatedAt: new Date(0).toISOString(),
+      }
+      const machineUnavailable = {
+        ok: false as const,
+        reason: "unavailable" as const,
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "bw CLI error: get item timed out",
+      }
+      const machineReady = {
+        ok: true as const,
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        config: {
+          voice: {
+            whisperCliPath: "/usr/local/bin/whisper",
+            whisperModelPath: "/models/ggml.bin",
+          },
+        },
+        revision: "machine_ready",
+        updatedAt: new Date(0).toISOString(),
+      }
+      let cachedMachine = machineUnavailable
+      const refreshMachineRuntimeCredentialConfig = vi.fn(async () => {
+        if (refreshMachineRuntimeCredentialConfig.mock.calls.length === 1) return machineUnavailable
+        cachedMachine = machineReady
+        return machineReady
+      })
+      const startAgent = vi.fn(async () => undefined)
+      let processManagerOptions: any
+
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return {
+          ...actual,
+          homedir: () => homeRoot,
+        }
+      })
+      vi.doMock("../../../heart/runtime-credentials", () => ({
+        readRuntimeCredentialConfig: vi.fn(() => runtimeReady),
+        refreshRuntimeCredentialConfig: vi.fn(async () => runtimeReady),
+        readMachineRuntimeCredentialConfig: vi.fn(() => cachedMachine),
+        refreshMachineRuntimeCredentialConfig,
+      }))
+      vi.doMock("../../../heart/daemon/process-manager", () => ({
+        DaemonProcessManager: class MockProcessManager {
+          constructor(options: unknown) {
+            processManagerOptions = options
+          }
+          startAgent = startAgent
+          startAutoStartAgents = vi.fn(async () => undefined)
+          triggerAutoStartAgents = vi.fn()
+          stopAll = vi.fn(async () => undefined)
+          listAgentSnapshots = vi.fn(() => [])
+        },
+      }))
+
+      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+      new DaemonSenseManager({ agents: ["slugger"] })
+
+      const first = await processManagerOptions.configCheck("slugger:voice")
+
+      expect(first).toEqual(expect.objectContaining({ ok: false, skip: true }))
+      expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
+
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledTimes(2)
+      await vi.waitFor(() => {
+        expect(startAgent).toHaveBeenCalledWith("slugger:voice")
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("clears pending transient config retry timers on stop", async () => {
+    vi.useFakeTimers()
+    try {
+      const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+      writeAgentJson(bundlesRoot, "slugger", {
+        version: 1,
+        enabled: true,
+        provider: "anthropic",
+        senses: {
+          cli: { enabled: true },
+          mail: { enabled: true },
+        },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      })
+
+      const runtimeUnavailable = {
+        ok: false as const,
+        reason: "unavailable" as const,
+        itemPath: "vault:slugger:runtime/config",
+        error: "bw CLI error: get item timed out",
+      }
+      const machineMissing = {
+        ok: false as const,
+        reason: "missing" as const,
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "missing",
+      }
+      const refreshRuntimeCredentialConfig = vi.fn(async () => runtimeUnavailable)
+      const stopAll = vi.fn(async () => undefined)
+      let processManagerOptions: any
+
+      vi.doMock("../../../heart/runtime-credentials", () => ({
+        readRuntimeCredentialConfig: vi.fn(() => runtimeUnavailable),
+        refreshRuntimeCredentialConfig,
+        readMachineRuntimeCredentialConfig: vi.fn(() => machineMissing),
+        refreshMachineRuntimeCredentialConfig: vi.fn(async () => machineMissing),
+      }))
+      vi.doMock("../../../heart/daemon/process-manager", () => ({
+        DaemonProcessManager: class MockProcessManager {
+          constructor(options: unknown) {
+            processManagerOptions = options
+          }
+          startAgent = vi.fn(async () => undefined)
+          startAutoStartAgents = vi.fn(async () => undefined)
+          triggerAutoStartAgents = vi.fn()
+          stopAll = stopAll
+          listAgentSnapshots = vi.fn(() => [])
+        },
+      }))
+
+      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+      const manager = new DaemonSenseManager({ agents: ["slugger"], bundlesRoot })
+
+      await processManagerOptions.configCheck("slugger:mail")
+      await Promise.resolve()
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
+
+      await manager.stopAll()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(stopAll).toHaveBeenCalledTimes(1)
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("reports needs_config for Teams and not_attached for local BlueBubbles when vault runtime/config is missing", async () => {

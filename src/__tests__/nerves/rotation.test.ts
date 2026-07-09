@@ -351,6 +351,36 @@ describe("rotation.new-scheme", () => {
   })
 
   describe("createNdjsonFileSink — rotation trigger path", () => {
+    it("rotates after a single oversized append even when no later event arrives", async () => {
+      const filePath = path.join(dir, "events.ndjson")
+      const sink = createNdjsonFileSink(filePath, {
+        maxSizeBytes: 400,
+        maxGenerations: 2,
+        compress: true,
+        rotationCheckIntervalBytes: 10,
+      })
+
+      sink({
+        ts: "2026-04-08T12:00:00.000Z",
+        level: "info",
+        event: "test.oversized_final_entry",
+        trace_id: "t-final",
+        component: "test",
+        message: "oversized final entry",
+        meta: { payload: "x".repeat(800) },
+      })
+
+      for (let i = 0; i < 100; i++) {
+        if (fs.existsSync(path.join(dir, "events.1.ndjson.gz"))) break
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+
+      const rotated = path.join(dir, "events.1.ndjson.gz")
+      expect(fs.existsSync(rotated)).toBe(true)
+      expect(zlib.gunzipSync(fs.readFileSync(rotated)).toString("utf-8"))
+        .toContain("test.oversized_final_entry")
+    })
+
     it("rotates once the stat-check threshold is reached", async () => {
       const filePath = path.join(dir, "events.ndjson")
 

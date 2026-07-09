@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.692",
+      "changes": [
+        "Retry transient managed-sense runtime credential reads with bounded backoff so enabled senses recover from vault timeouts without a daemon restart.",
+        "Rotate NDJSON logs immediately after a single oversized final event and make doctor ignore launchd plists for paused or unscheduled habits while avoiding prune warnings for already-rotated compressed history."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.691",
       "changes": [
         "Bound context-loss Sentinel per-receipt detail files while preserving append-only history, so long-lived agents cannot accumulate unbounded duplicate recovery JSON in their bundles."
