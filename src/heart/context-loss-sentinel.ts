@@ -842,7 +842,6 @@ function anchorFromResume(kind: ContextLossSentinelRecoveryAnchor["kind"], resum
 }
 
 function readFlightRecorderEventsByIds(agentRoot: string, eventIds: string[]): FlightRecorderEvent[] {
-  if (eventIds.length === 0) return []
   const wanted = new Set(eventIds)
   const eventsRoot = path.join(agentRoot, "arc", "flight-recorder", "events")
   if (!fs.existsSync(eventsRoot)) return []
@@ -868,16 +867,21 @@ function isSentinelAuthoredBlockerEvent(event: FlightRecorderEvent): boolean {
     )
 }
 
-function hasSentinelAuthoredBlocker(agentRoot: string, resume: FlightRecorderResume): boolean {
+function hasOnlySentinelAuthoredBlockers(agentRoot: string, resume: FlightRecorderResume): boolean {
   if (resume.blockedBecause.length === 0) return false
-  return readFlightRecorderEventsByIds(agentRoot, resume.lastSafeCheckpoint.sourceEventIds)
-    .some(isSentinelAuthoredBlockerEvent)
+  if (resume.lastSafeCheckpoint.sourceEventIds.length === 0) return false
+  const events = readFlightRecorderEventsByIds(agentRoot, resume.lastSafeCheckpoint.sourceEventIds)
+  const foundEventIds = new Set(events.map((event) => event.id))
+  if (resume.lastSafeCheckpoint.sourceEventIds.some((eventId) => !foundEventIds.has(eventId))) return false
+  const blockerEvents = events.filter((event) => (event.blockedBecause?.length ?? 0) > 0)
+  if (blockerEvents.length === 0) return false
+  return blockerEvents.every(isSentinelAuthoredBlockerEvent)
 }
 
 function selectGauntletResume(agentRoot: string): { resume: FlightRecorderResume; anchorKind: ContextLossSentinelRecoveryAnchor["kind"] } {
   const resume = readFlightRecorderResume(agentRoot)
   const latestReady = readLatestReady(agentRoot)
-  if (hasSentinelAuthoredBlocker(agentRoot, resume) && latestReady) {
+  if (hasOnlySentinelAuthoredBlockers(agentRoot, resume) && latestReady) {
     return { resume: latestReady.resumeSnapshot, anchorKind: "latest-ready" }
   }
   return { resume, anchorKind: "flight-recorder" }
@@ -995,6 +999,7 @@ function blockedSignalSummaries(receipt: ContextLossSentinelReceipt): string[] {
 
 function recordBlockedReceiptEvent(agentRoot: string, receipt: ContextLossSentinelReceipt): void {
   if (receipt.verdict !== "blocked") return
+  if (receipt.signals.some((signal) => signal.kind === "gauntlet" && signal.verdictImpact === "blocked")) return
   recordFlightRecorderEvent(agentRoot, {
     id: `fr-${receipt.id}`,
     kind: "blocker_detected",
@@ -1009,6 +1014,29 @@ function recordBlockedReceiptEvent(agentRoot: string, receipt: ContextLossSentin
       source: "context-loss-sentinel",
       receiptId: receipt.id,
       trigger: receipt.trigger,
+    },
+  })
+}
+
+function recordRecoveredReceiptEvent(agentRoot: string, receipt: ContextLossSentinelReceipt): void {
+  if (receipt.verdict === "blocked") return
+  const resume = readFlightRecorderResume(agentRoot)
+  if (!hasOnlySentinelAuthoredBlockers(agentRoot, resume)) return
+  recordFlightRecorderEvent(agentRoot, {
+    id: `fr-${receipt.id}-recovered`,
+    kind: "agent_note",
+    recordedAt: receipt.generatedAt,
+    summary: "context-loss Sentinel cleared its prior recovery blocker",
+    blockedBecause: [],
+    producedRefs: [{
+      kind: "arc",
+      locator: receipt.receiptLocator,
+    }],
+    meta: {
+      source: "context-loss-sentinel",
+      receiptId: receipt.id,
+      trigger: receipt.trigger,
+      resolution: "blocked-signals-recovered",
     },
   })
 }
@@ -1052,6 +1080,7 @@ async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelRec
       writeWatermark(agentRoot, watermark)
       setReceiptFileMtime(paths.latest, receipt)
       recordBlockedReceiptEvent(agentRoot, receipt)
+      recordRecoveredReceiptEvent(agentRoot, receipt)
     } else if (existingLatest && nextReady === receipt) {
       const updatedLatest = syncLatestReadyState(existingLatest, nextReady)
       atomicWriteJson(paths.latest, updatedLatest)

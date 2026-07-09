@@ -2294,6 +2294,12 @@ describe("context-loss Sentinel core", () => {
       currentAsk: "keep the Arc updated even if the transcript disappears",
       nextSafeAction: "refresh Sentinel and continue from the latest-ready anchor",
     })
+    const recoveredResume = readFlightRecorderResume(agentRoot)
+    expect(recoveredResume.canContinue).toBe(true)
+    expect(recoveredResume.blockedBecause).toEqual([])
+    expect(recoveredResume.lastSafeCheckpoint.sourceEventIds).toEqual(["fr-sentinel-after-self-blocker-recovered"])
+    expect(fs.readFileSync(path.join(agentRoot, "arc", "flight-recorder", "events", "2026-06-08.jsonl"), "utf-8"))
+      .toContain("context-loss Sentinel cleared its prior recovery blocker")
     writeFlightRecorderResume(agentRoot, {
       ...readyResume(),
       hasCompleteState: false,
@@ -2393,6 +2399,8 @@ describe("context-loss Sentinel core", () => {
     expect(inheritedBlockerRecovery.verdict).toBe("ready")
     expect(inheritedBlockerRecovery.gauntlet.failedChecks).not.toContain("stale_guard")
     expect(inheritedBlockerRecovery.recoveryAnchor.kind).toBe("latest-ready")
+    expect(readFlightRecorderResume(inheritedBlockerRoot).canContinue).toBe(true)
+    expect(readFlightRecorderResume(inheritedBlockerRoot).blockedBecause).toEqual([])
 
     const missingEventsRoot = makeAgentRoot()
     fs.rmSync(path.join(missingEventsRoot, "arc", "flight-recorder", "events"), { recursive: true, force: true })
@@ -2420,6 +2428,169 @@ describe("context-loss Sentinel core", () => {
 
     expect(missingEvents.verdict).toBe("blocked")
     expect(missingEvents.recoveryAnchor.kind).toBe("flight-recorder")
+  })
+
+  it("clears stale Sentinel-authored blockers even when recovered health still has watch-level bundle dirt", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:50:00.000Z"),
+      createReceiptId: () => "sentinel-watch-clear-ready-anchor",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-watch-clear-sentinel-blocker",
+      kind: "blocker_detected",
+      recordedAt: "2026-06-08T20:51:00.000Z",
+      summary: "Context-loss Sentinel blocked recovery",
+      blockedBecause: ["context-loss Sentinel blocked: sense probe timed out"],
+      producedRefs: [{
+        kind: "arc",
+        locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-timeout.json",
+      }],
+      meta: {
+        source: "context-loss-sentinel",
+        receiptId: "sentinel-timeout",
+      },
+    })
+
+    const recovered = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:52:00.000Z"),
+      createReceiptId: () => "sentinel-watch-clear-recovered",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: " M agent.json" }),
+    })
+
+    expect(recovered.verdict).toBe("watch")
+    expect(signal(recovered.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+    })
+    const resume = readFlightRecorderResume(agentRoot)
+    expect(resume.canContinue).toBe(true)
+    expect(resume.blockedBecause).toEqual([])
+    expect(resume.lastSafeCheckpoint.sourceEventIds).toEqual(["fr-sentinel-watch-clear-recovered-recovered"])
+  })
+
+  it("does not clear mixed Sentinel and non-Sentinel blockers", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:55:00.000Z"),
+      createReceiptId: () => "sentinel-mixed-blocker-ready-anchor",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-mixed-sentinel-blocker",
+      kind: "blocker_detected",
+      recordedAt: "2026-06-08T20:56:00.000Z",
+      summary: "Context-loss Sentinel blocked recovery",
+      blockedBecause: ["context-loss Sentinel blocked: sense probe timed out"],
+      producedRefs: [{
+        kind: "arc",
+        locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-timeout.json",
+      }],
+      meta: {
+        source: "context-loss-sentinel",
+        receiptId: "sentinel-timeout",
+      },
+    })
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-mixed-human-blocker",
+      kind: "blocker_detected",
+      recordedAt: "2026-06-08T20:56:30.000Z",
+      summary: "Human asked the agent to wait",
+      blockedBecause: ["human asked the agent to wait"],
+      producedRefs: [{
+        kind: "arc",
+        locator: "arc/notes/human-wait.json",
+      }],
+      meta: {
+        source: "human",
+      },
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readFlightRecorderResume(agentRoot),
+      hasCompleteState: true,
+      canContinue: false,
+      missing: [],
+      blockedBecause: [
+        "context-loss Sentinel blocked: sense probe timed out",
+        "human asked the agent to wait",
+      ],
+      lastSafeCheckpoint: {
+        turnId: "turn-mixed",
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:56:30.000Z",
+        sourceEventIds: ["fr-mixed-sentinel-blocker", "fr-mixed-human-blocker"],
+      },
+    })
+
+    const recovered = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:57:00.000Z"),
+      createReceiptId: () => "sentinel-mixed-blocker-recovered-health",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(recovered.verdict).toBe("blocked")
+    expect(recovered.recoveryAnchor.kind).toBe("flight-recorder")
+    const resume = readFlightRecorderResume(agentRoot)
+    expect(resume.canContinue).toBe(false)
+    expect(resume.blockedBecause).toEqual([
+      "context-loss Sentinel blocked: sense probe timed out",
+      "human asked the agent to wait",
+    ])
+  })
+
+  it("does not clear blocker text when its source event did not introduce a blocker", async () => {
+    const agentRoot = makeAgentRoot()
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-non-blocker-source",
+      kind: "claim_recorded",
+      recordedAt: "2026-06-08T20:58:00.000Z",
+      summary: "ordinary source event",
+      producedRefs: [{
+        kind: "claim",
+        locator: "arc/claims/non-blocker-source.json",
+      }],
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readFlightRecorderResume(agentRoot),
+      hasCompleteState: true,
+      canContinue: false,
+      missing: [],
+      blockedBecause: ["context-loss Sentinel blocked text without blocker provenance"],
+      lastSafeCheckpoint: {
+        turnId: "turn-non-blocker-source",
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:58:00.000Z",
+        sourceEventIds: ["fr-non-blocker-source"],
+      },
+    })
+
+    const recovered = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:59:00.000Z"),
+      createReceiptId: () => "sentinel-non-blocker-source-recovered-health",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(recovered.verdict).toBe("blocked")
+    expect(recovered.recoveryAnchor.kind).toBe("flight-recorder")
+    const resume = readFlightRecorderResume(agentRoot)
+    expect(resume.canContinue).toBe(false)
+    expect(resume.blockedBecause).toEqual(["context-loss Sentinel blocked text without blocker provenance"])
   })
 
   it("reports malformed receipts as degraded read state instead of mutating them", () => {
