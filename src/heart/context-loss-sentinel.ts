@@ -130,6 +130,8 @@ export interface ReadContextLossSentinelViewOptions {
   limit?: number
 }
 
+const CONTEXT_LOSS_SENTINEL_RECEIPT_FILE_LIMIT = 512
+
 interface ContextLossSentinelOrder {
   generatedAt: string
   id: string
@@ -452,6 +454,48 @@ function readReceiptFile(filePath: string, label: string, issues: string[]): Con
     return null
   }
   return parsed.value
+}
+
+function receiptIdFromFileName(fileName: string): string | null {
+  return fileName.endsWith(".json") ? fileName.slice(0, -".json".length) : null
+}
+
+function receiptOrderFromDetailFile(filePath: string, fileName: string): ContextLossSentinelOrder {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown
+    if (isReceipt(parsed)) return orderFromReceipt(parsed)
+  } catch {
+    // Malformed legacy detail files should not block retention cleanup.
+  }
+  const stat = fs.statSync(filePath)
+  return {
+    generatedAt: new Date(stat.mtimeMs).toISOString(),
+    id: receiptIdFromFileName(fileName)!,
+  }
+}
+
+function pruneReceiptDetailFiles(
+  paths: ContextLossSentinelPaths,
+  protectedReceiptIds: Set<string>,
+): void {
+  const fileNames = fs.readdirSync(paths.receiptsDir)
+    .filter((entry) => receiptIdFromFileName(entry) !== null)
+  if (fileNames.length <= CONTEXT_LOSS_SENTINEL_RECEIPT_FILE_LIMIT) return
+
+  const candidates = fileNames
+    .map((fileName) => ({
+      fileName,
+      filePath: path.join(paths.receiptsDir, fileName),
+      receiptId: receiptIdFromFileName(fileName)!,
+      order: receiptOrderFromDetailFile(path.join(paths.receiptsDir, fileName), fileName),
+    }))
+    .filter((entry) => !protectedReceiptIds.has(entry.receiptId))
+    .sort((left, right) => compareOrder(left.order, right.order))
+
+  const removalCount = fileNames.length - CONTEXT_LOSS_SENTINEL_RECEIPT_FILE_LIMIT
+  for (const entry of candidates.slice(0, removalCount)) {
+    fs.rmSync(entry.filePath, { force: true })
+  }
 }
 
 function isNonEmptyText(value: string | null): value is string {
@@ -1072,18 +1116,23 @@ async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelRec
       watermark,
     )
     if (coalesced) return coalesced
-    atomicWriteJson(path.join(paths.receiptsDir, `${receipt.id}.json`), receipt)
+    const receiptPath = path.join(paths.receiptsDir, `${receipt.id}.json`)
+    atomicWriteJson(receiptPath, receipt)
+    setReceiptFileMtime(receiptPath, receipt)
     appendHistory(paths, receipt)
+    let latestAfterWrite = existingLatest ?? receipt
     if (shouldReplaceLatestReceipt(existingLatest, receipt, latestOrder)) {
       atomicWriteJson(paths.latest, receipt)
       updateWatermarkOrder(watermark, "latest", receipt)
       writeWatermark(agentRoot, watermark)
       setReceiptFileMtime(paths.latest, receipt)
+      latestAfterWrite = receipt
       recordBlockedReceiptEvent(agentRoot, receipt)
       recordRecoveredReceiptEvent(agentRoot, receipt)
     } else if (existingLatest && nextReady === receipt) {
       const updatedLatest = syncLatestReadyState(existingLatest, nextReady)
       atomicWriteJson(paths.latest, updatedLatest)
+      latestAfterWrite = updatedLatest
     }
     if (receipt.verdict === "ready" && nextReady === receipt) {
       atomicWriteJson(paths.latestReady, receipt)
@@ -1091,6 +1140,9 @@ async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelRec
       writeWatermark(agentRoot, watermark)
       setReceiptFileMtime(paths.latestReady, receipt)
     }
+    const protectedReceiptIds = new Set([receipt.id, latestAfterWrite.id])
+    if (nextReady) protectedReceiptIds.add(nextReady.id)
+    pruneReceiptDetailFiles(paths, protectedReceiptIds)
     return receipt
   })
 }

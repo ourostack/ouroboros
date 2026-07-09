@@ -250,6 +250,12 @@ Workbench history is a projection over these receipts. It is allowed to be
 beautiful and useful, but it is not the source of truth and does not refresh
 Sentinel by reading.
 
+`history/YYYY-MM-DD.jsonl` is the append-only durable Sentinel ledger. Individual
+`receipts/<receiptId>.json` detail files are a bounded recent-detail cache:
+Sentinel keeps the newest detail files plus the current/latest-ready receipts
+and prunes older duplicates during mutating refreshes so agent bundles do not
+grow without limit.
+
 ## Habits
 
 A habit is Ouro-native cron: a schedule that starts a private session.

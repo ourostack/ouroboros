@@ -17,6 +17,7 @@ import {
   formatContextLossSentinelText,
   readContextLossSentinelView,
   refreshContextLossSentinel,
+  type ContextLossSentinelReceipt,
   type ContextLossSentinelSignal,
 } from "../../heart/context-loss-sentinel"
 import type { DaemonHealthResult } from "../../heart/daemon/daemon"
@@ -209,6 +210,32 @@ function sentinelFileMetadataSnapshot(rootDir: string): Record<string, { mtimeMs
   return files
 }
 
+function sentinelReceiptDetailFileNames(agentRoot: string): string[] {
+  const paths = contextLossSentinelPaths(agentRoot)
+  if (!fs.existsSync(paths.receiptsDir)) return []
+  return fs.readdirSync(paths.receiptsDir)
+    .filter((entry) => entry.endsWith(".json"))
+    .sort()
+}
+
+function copySentinelReceipt(
+  seed: ContextLossSentinelReceipt,
+  id: string,
+  generatedAt: string,
+): ContextLossSentinelReceipt {
+  return {
+    ...seed,
+    id,
+    generatedAt,
+    receiptLocator: `arc/flight-recorder/context-loss-sentinel/receipts/${id}.json`,
+    sourceLocators: seed.sourceLocators.map((locator) => (
+      locator === seed.receiptLocator
+        ? `arc/flight-recorder/context-loss-sentinel/receipts/${id}.json`
+        : locator
+    )),
+  }
+}
+
 function sentinelWatermarkPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "arc", "context-loss-sentinel-watermark.json")
 }
@@ -339,6 +366,63 @@ describe("context-loss Sentinel core", () => {
     formatContextLossSentinelText(view)
     formatContextLossSentinelJson(view)
     expect(mtimes.map(([filePath, mtime]) => [filePath, fs.statSync(filePath).mtimeMs])).toEqual(mtimes)
+  })
+
+  it("prunes old receipt detail files while preserving append-only Sentinel history", async () => {
+    const agentRoot = makeAgentRoot()
+    const seed = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-retention-seed",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const historyPath = path.join(paths.historyDir, "2026-06-08.jsonl")
+    fs.writeFileSync(path.join(paths.receiptsDir, "README.txt"), "ignored by retention\n", "utf-8")
+
+    for (let index = 0; index < 520; index += 1) {
+      const id = `sentinel-retention-old-${String(index).padStart(3, "0")}`
+      const generatedAt = new Date(Date.parse("2026-06-08T20:11:00.000Z") + index * 1_000).toISOString()
+      const receipt = copySentinelReceipt(seed, id, generatedAt)
+      const receiptPath = path.join(paths.receiptsDir, `${id}.json`)
+      fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf-8")
+      fs.utimesSync(receiptPath, new Date(generatedAt), new Date(generatedAt))
+      fs.appendFileSync(historyPath, `${JSON.stringify(receipt)}\n`, "utf-8")
+    }
+
+    const malformedPath = path.join(paths.receiptsDir, "sentinel-retention-malformed.json")
+    fs.writeFileSync(malformedPath, "{", "utf-8")
+    fs.utimesSync(malformedPath, new Date("2026-06-08T20:10:30.000Z"), new Date("2026-06-08T20:10:30.000Z"))
+    const wrongShapePath = path.join(paths.receiptsDir, "sentinel-retention-wrong-shape.json")
+    fs.writeFileSync(wrongShapePath, "[]\n", "utf-8")
+    fs.utimesSync(wrongShapePath, new Date("2026-06-08T20:10:31.000Z"), new Date("2026-06-08T20:10:31.000Z"))
+
+    const pruned = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "manual_cli",
+      now: () => new Date("2026-06-08T20:30:00.000Z"),
+      createReceiptId: () => "sentinel-retention-new",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(pruned.id).toBe("sentinel-retention-new")
+    const detailFiles = sentinelReceiptDetailFileNames(agentRoot)
+    expect(detailFiles).toHaveLength(512)
+    expect(detailFiles).toContain("sentinel-retention-new.json")
+    expect(detailFiles).toContain("sentinel-retention-old-519.json")
+    expect(detailFiles).not.toContain("sentinel-retention-old-000.json")
+    expect(detailFiles).not.toContain("sentinel-retention-malformed.json")
+    expect(detailFiles).not.toContain("sentinel-retention-wrong-shape.json")
+    expect(fs.existsSync(path.join(paths.receiptsDir, "README.txt"))).toBe(true)
+
+    const view = readContextLossSentinelView(agentRoot, { limit: 600 })
+    expect(view.latest?.id).toBe("sentinel-retention-new")
+    expect(view.latestReady?.id).toBe("sentinel-retention-new")
+    expect(view.history.map((entry) => entry.id)).toContain("sentinel-retention-old-000")
+    expect(view.history.at(-1)?.id).toBe("sentinel-retention-new")
   })
 
   it("coalesces unchanged periodic daemon-health refreshes without rewriting Sentinel files", async () => {
