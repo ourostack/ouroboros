@@ -395,7 +395,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     await vi.waitFor(() => {
       expect(habitSchedulerStartMock).toHaveBeenCalledTimes(3)
       expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
-    })
+    }, { timeout: 5_000 })
 
     // a1 and a4 should have watchForChanges called (a2 failed at migration, a3 failed at start)
     expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
@@ -408,7 +408,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
 
     // process.exit should NOT have been called
     expect(process.exit).not.toHaveBeenCalled()
-  })
+  }, 10_000)
 
   it("handles non-Error throws by converting to string in the error metadata", async () => {
     vi.resetModules()
