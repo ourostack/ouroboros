@@ -204,6 +204,12 @@ authority. Mutating refreshes happen through explicit lifecycle triggers:
 post-turn checkpointing, provider failover, daemon startup/health, session-start
 hooks, and `ouro work sentinel refresh`.
 
+The daily `history/YYYY-MM-DD.jsonl` files are the durable receipt ledger.
+Individual `receipts/<receiptId>.json` files are retained as a bounded
+recent-detail cache. Mutating refreshes prune old detail files while preserving
+the newest details and the current/latest-ready receipt details, preventing
+long-lived agents from accumulating unbounded duplicate JSON files.
+
 ## Agent API
 
 The agent needs query and write affordances, not just a display blob:
