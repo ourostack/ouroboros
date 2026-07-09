@@ -807,79 +807,102 @@ function computeSummary(categories: DoctorCategory[]): DoctorSummary {
  * to answer the operator's question after the daemon has gone silent: "did
  * it crash? when did it last do anything? did it just upgrade?"
  *
- * Reads daemon.ndjson from the first available agent bundle (one daemon
- * serves all agents, so any agent's bundle has the shared log).
+ * Reads the machine-local daemon.ndjson when available, plus any
+ * bundle-local copies left by older runtimes. The newest parseable event
+ * is the liveness signal; stale bundle logs cannot mask a live daemon.
  */
 export function checkLifecycle(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
   const HOUR_MS = 60 * 60 * 1000
   const STALE_THRESHOLD_MS = 5 * 60 * 1000
-  const cutoff = Date.now() - HOUR_MS
+  const now = Date.now()
+  const cutoff = now - HOUR_MS
 
+  const logPaths: string[] = []
+  const seenLogPaths = new Set<string>()
+  const addLogPath = (candidate: string): void => {
+    if (seenLogPaths.has(candidate) || !deps.existsSync(candidate)) return
+    seenLogPaths.add(candidate)
+    logPaths.push(candidate)
+  }
+  if (deps.daemonLogsDir) {
+    addLogPath(`${deps.daemonLogsDir}/daemon.ndjson`)
+  }
   const agents = discoverAgents(deps)
-  let logPath: string | null = null
   for (const agentDir of agents) {
-    const candidate = `${deps.bundlesRoot}/${agentDir}/state/daemon/logs/daemon.ndjson`
-    if (deps.existsSync(candidate)) {
-      logPath = candidate
-      break
-    }
+    addLogPath(`${deps.bundlesRoot}/${agentDir}/state/daemon/logs/daemon.ndjson`)
   }
 
-  if (!logPath) {
-    checks.push({ label: "daemon log readable", status: "warn", detail: "no daemon.ndjson found in any agent bundle" })
+  if (logPaths.length === 0) {
+    checks.push({ label: "daemon log readable", status: "warn", detail: "no daemon.ndjson found in daemon or agent bundle logs" })
     return { name: "Lifecycle", checks }
   }
 
   let lastTs: string | null = null
   let lastEvent: string | null = null
+  let lastEventTimeMs = Number.NEGATIVE_INFINITY
   let startCount = 0
   let installCount = 0
   let installVersions: string[] = []
   let processErrors: string[] = []
   let lastEntryAgeMs = Number.POSITIVE_INFINITY
+  let readCount = 0
+  const readErrors: string[] = []
 
-  try {
-    // Read the whole log via deps.readFileSync, then take the tail. For a
-    // chatty daemon this can be a few MB; we only inspect the last 5000
-    // lines which is enough for the last hour of activity. If the file is
-    // small (typical case), reading it all is cheap.
-    const raw = deps.readFileSync(logPath)
-    const allLines = raw.split("\n").filter((l) => l.trim())
-    const usable = allLines.length > 5000 ? allLines.slice(-5000) : allLines
-    for (const line of usable) {
-      let parsed: Record<string, unknown>
-      try {
-        parsed = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        continue
+  for (const logPath of logPaths) {
+    try {
+      // Read the whole log via deps.readFileSync, then take the tail. For a
+      // chatty daemon this can be a few MB; we only inspect the last 5000
+      // lines which is enough for the last hour of activity. If the file is
+      // small (typical case), reading it all is cheap.
+      const raw = deps.readFileSync(logPath)
+      readCount++
+      const allLines = raw.split("\n").filter((l) => l.trim())
+      const usable = allLines.length > 5000 ? allLines.slice(-5000) : allLines
+      for (const line of usable) {
+        let parsed: Record<string, unknown>
+        try {
+          parsed = JSON.parse(line) as Record<string, unknown>
+        } catch {
+          continue
+        }
+        const ts = typeof parsed.ts === "string" ? parsed.ts : null
+        const event = typeof parsed.event === "string" ? parsed.event : null
+        if (!ts || !event) continue
+        const tsMs = Date.parse(ts)
+        if (Number.isNaN(tsMs)) continue
+        if (tsMs > lastEventTimeMs) {
+          lastEventTimeMs = tsMs
+          lastTs = ts
+          lastEvent = event
+          lastEntryAgeMs = Math.max(0, now - tsMs)
+        }
+        if (tsMs < cutoff) continue
+        if (event === "daemon.daemon_started") startCount++
+        if (event === "daemon.cli_version_install_end") {
+          installCount++
+          const meta = parsed.meta as Record<string, unknown> | undefined
+          const ver = typeof meta?.version === "string" ? meta.version : null
+          if (ver) installVersions.push(ver)
+        }
+        if (event === "daemon.agent_process_error") {
+          const meta = parsed.meta as Record<string, unknown> | undefined
+          const reason = typeof meta?.reason === "string" ? meta.reason : "unknown"
+          const agent = typeof meta?.agent === "string" ? meta.agent : "unknown"
+          processErrors.push(`${agent}: ${reason}`)
+        }
       }
-      const ts = typeof parsed.ts === "string" ? parsed.ts : null
-      const event = typeof parsed.event === "string" ? parsed.event : null
-      if (!ts || !event) continue
-      const tsMs = Date.parse(ts)
-      if (Number.isNaN(tsMs)) continue
-      lastTs = ts
-      lastEvent = event
-      lastEntryAgeMs = Math.min(lastEntryAgeMs, Date.now() - tsMs)
-      if (tsMs < cutoff) continue
-      if (event === "daemon.daemon_started") startCount++
-      if (event === "daemon.cli_version_install_end") {
-        installCount++
-        const meta = parsed.meta as Record<string, unknown> | undefined
-        const ver = typeof meta?.version === "string" ? meta.version : null
-        if (ver) installVersions.push(ver)
-      }
-      if (event === "daemon.agent_process_error") {
-        const meta = parsed.meta as Record<string, unknown> | undefined
-        const reason = typeof meta?.reason === "string" ? meta.reason : "unknown"
-        const agent = typeof meta?.agent === "string" ? meta.agent : "unknown"
-        processErrors.push(`${agent}: ${reason}`)
-      }
+    } catch (error) {
+      readErrors.push(`${logPath}: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from deps.readFileSync (always Error) @preserve */ String(error)}`)
     }
-  } catch (error) {
-    checks.push({ label: "daemon log readable", status: "fail", detail: `read failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from deps.readFileSync (always Error) @preserve */ String(error)}` })
+  }
+
+  if (readCount === 0) {
+    checks.push({ label: "daemon log readable", status: "fail", detail: `read failed: ${readErrors.join("; ")}` })
     return { name: "Lifecycle", checks }
+  }
+  if (readErrors.length > 0) {
+    checks.push({ label: "daemon log readable", status: "warn", detail: `some daemon logs were unreadable: ${readErrors.join("; ")}` })
   }
 
   if (lastTs === null) {

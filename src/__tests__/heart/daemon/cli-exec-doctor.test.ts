@@ -59,6 +59,15 @@ describe("ouro doctor CLI execution", () => {
     expect(runDoctorChecks).toHaveBeenCalledWith(expect.objectContaining({ fetchImpl }))
   })
 
+  it("passes daemon log diagnostics through the injected homeDir", async () => {
+    const deps = createMinimalDeps({ homeDir: "/tmp/ouro-test-home" })
+    await runOuroCli(["doctor"], deps)
+
+    expect(runDoctorChecks).toHaveBeenCalledWith(expect.objectContaining({
+      daemonLogsDir: "/tmp/ouro-test-home/.ouro-cli/daemon/logs",
+    }))
+  })
+
   it("passes an empty envPath to doctor diagnostics when PATH is unset", async () => {
     const previousPath = process.env.PATH
     delete process.env.PATH
