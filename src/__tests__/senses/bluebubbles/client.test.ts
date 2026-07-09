@@ -974,6 +974,59 @@ describe("BlueBubbles client", () => {
     ])
   })
 
+  it("queries chat-scoped upstream messages before an anchor timestamp", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          {
+            guid: "same-chat-guid",
+            text: "context from this exact chat",
+            dateCreated: 1772949155000,
+            isFromMe: true,
+            handle: { address: "slugger@example.com" },
+            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+          },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.listRecentMessages?.({
+      chatGuid: "any;-;ari@mendelow.me",
+      beforeTimestamp: 1772949200000,
+      limit: 40,
+    })
+
+    expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toEqual({
+      limit: 40,
+      offset: 0,
+      sort: "DESC",
+      chatGuid: "any;-;ari@mendelow.me",
+      beforeTimestamp: 1772949200000,
+      with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
+    })
+    expect(result).toEqual([
+      expect.objectContaining({
+        messageGuid: "same-chat-guid",
+        fromMe: true,
+        textForAgent: "context from this exact chat",
+      }),
+    ])
+  })
+
   it("accepts BlueBubbles recent-message response wrapper variants", async () => {
     const responses = [
       { data: { messages: [{ guid: "messages-guid", text: "from data.messages" }] } },

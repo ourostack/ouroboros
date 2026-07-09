@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import { Readable } from "node:stream"
 
 const mocks = vi.hoisted(() => ({
@@ -109,6 +110,10 @@ function createClosableServer(): { server: any; close: () => void } {
 function writeFile(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, "{}")
+}
+
+function sha256Hex(input: string): string {
+  return createHash("sha256").update(input).digest("hex")
 }
 
 vi.mock("../../../heart/core", () => ({
@@ -7400,6 +7405,115 @@ describe("BlueBubbles sense runtime", () => {
     // runAgent should NOT have been called since handleInboundTurn mock returns rejection
     // (the mock doesn't call runAgent when we override it)
     expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.listRecentMessages).not.toHaveBeenCalled()
+  })
+
+  it("injects same-chat BlueBubbles history as ephemeral model context after trust passes", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "script-report-guid",
+        timestamp: dmTopLevelPayload.data.dateCreated - 3_000,
+        fromMe: true,
+        textForAgent: "RSVP Update -- Ari & Rachel\n149 attending / 123 declined / 1 pending",
+      }),
+      makeCatchUpMessage({
+        messageGuid: "ari-context-guid",
+        timestamp: dmTopLevelPayload.data.dateCreated - 2_000,
+        textForAgent: "slugger see the past messages in this chat lol you're missing context",
+      }),
+      makeCatchUpMessage({
+        messageGuid: dmTopLevelPayload.data.guid,
+        timestamp: dmTopLevelPayload.data.dateCreated,
+        textForAgent: dmTopLevelPayload.data.text,
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(mocks.listRecentMessages).toHaveBeenCalledWith({
+      chatGuid: "any;-;ari@mendelow.me",
+      beforeTimestamp: dmTopLevelPayload.data.dateCreated,
+      limit: 40,
+      offset: 0,
+    })
+    const modelMessages = firstRunAgentMessages()
+    const contextIndex = modelMessages.findIndex((message) =>
+      message.role === "system"
+      && typeof message.content === "string"
+      && message.content.includes("Untrusted bluebubbles context"))
+    const userIndex = modelMessages.findIndex((message) =>
+      message.role === "user"
+      && typeof message.content === "string"
+      && message.content.includes("top-level follow-up"))
+    expect(contextIndex).toBeGreaterThanOrEqual(0)
+    expect(userIndex).toBeGreaterThan(contextIndex)
+    expect(modelMessages[contextIndex].content).toContain("RSVP Update -- Ari & Rachel")
+    expect(modelMessages[contextIndex].content).toContain("slugger see the past messages")
+    expect(modelMessages[contextIndex].content).not.toContain("secret-token")
+
+    const durableMessages = mocks.postTurnTrim.mock.calls[0]?.[0] ?? []
+    expect(JSON.stringify(durableMessages)).not.toContain("Untrusted bluebubbles context")
+    expect(JSON.stringify(durableMessages)).not.toContain("RSVP Update -- Ari & Rachel")
+  })
+
+  it("uses the latest same-chat packet from the private ledger when live history fetch fails", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    const { buildSenseContextPacket } = await import("../../../senses/context-packets")
+    const { writeSenseContextPacket } = await import("../../../senses/context-packet-ledger")
+    const chatKeyHash = sha256Hex("any;-;ari@mendelow.me")
+    const packet = buildSenseContextPacket({
+      agent: "testagent",
+      sense: "bluebubbles",
+      sessionKey: "chat:any;-;ari@mendelow.me",
+      chatKeyHash,
+      anchorMessageGuid: "previous-anchor",
+      anchorTimestamp: "2026-03-07T22:00:00.000Z",
+      windowBeforeMessages: 40,
+      windowBeforeMs: 48 * 60 * 60 * 1000,
+      messages: [{
+        timestamp: "2026-03-07T21:59:00.000Z",
+        authorLabel: "Slugger",
+        body: "RSVP Update -- Ari & Rachel\n149 attending / 123 declined / 1 pending",
+        sourceRef: {
+          sense: "bluebubbles",
+          adapter: "bluebubbles-api-v1",
+          service: "imessage",
+          chatGuid: "any;-;ari@mendelow.me",
+          chatGuidHash: chatKeyHash,
+          messageGuid: "previous-script-guid",
+          senderExternalIdHash: sha256Hex("slugger@example.com"),
+          observedAt: "2026-03-07T21:59:00.000Z",
+        },
+      }],
+    })
+    writeSenseContextPacket(agentRoot, packet, { now: "2026-03-07T22:00:00.000Z" })
+    mocks.listRecentMessages.mockRejectedValueOnce(new Error("BlueBubbles query unavailable"))
+
+    const payload = {
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "2E75385B-C73E-490B-B432-6845F2565D56",
+        dateCreated: Date.parse("2026-03-07T22:05:00.000Z"),
+      },
+    }
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+
+    const contextMessage = firstRunAgentMessages().find((message) =>
+      message.role === "system"
+      && typeof message.content === "string"
+      && message.content.includes("Untrusted bluebubbles context"))
+    expect(contextMessage?.content).toContain("RSVP Update -- Ari & Rachel")
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_context_packet_error",
+    }))
   })
 
   it("passes pendingDir to pipeline for per-turn pending drain", async () => {

@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as http from "node:http"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sanitizeKey, sessionPath } from "../../heart/config"
@@ -44,6 +45,15 @@ import {
 } from "./active-turns"
 import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
+import {
+  buildSenseContextPacket,
+  renderSenseContextPacketForPrompt,
+  type SenseContextPacketInputMessage,
+} from "../context-packets"
+import {
+  readLatestVisibleSenseContextPacket,
+  writeSenseContextPacket,
+} from "../context-packet-ledger"
 
 const bbFailoverStates = new Map<string, FailoverState>()
 
@@ -288,6 +298,8 @@ const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
 const BLUEBUBBLES_SILENCE_WATCHDOG_MS = 75_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
+const BLUEBUBBLES_CONTEXT_PACKET_LIMIT = 40
+const BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS = 48 * 60 * 60 * 1000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
@@ -642,6 +654,138 @@ function getBlueBubblesContinuityIngressTexts(event: BlueBubblesNormalizedEvent)
     .join("\n")
 
   return fallbackText ? [fallbackText] : []
+}
+
+function sha256Hex(input: string): string {
+  return createHash("sha256").update(input).digest("hex")
+}
+
+function chatKeyForContext(event: BlueBubblesNormalizedMessage): string {
+  return event.chat.chatGuid ?? event.chat.chatIdentifier ?? event.chat.sessionKey
+}
+
+function isSameBlueBubblesChat(candidate: BlueBubblesNormalizedMessage, anchor: BlueBubblesNormalizedMessage): boolean {
+  return candidate.chat.sessionKey === anchor.chat.sessionKey
+    || (!!candidate.chat.chatGuid && candidate.chat.chatGuid === anchor.chat.chatGuid)
+    || (!!candidate.chat.chatIdentifier && candidate.chat.chatIdentifier === anchor.chat.chatIdentifier)
+}
+
+function contextAuthorLabel(event: BlueBubblesNormalizedMessage): string {
+  if (event.fromMe) return "Slugger"
+  return event.sender.displayName || event.sender.externalId || "Unknown"
+}
+
+function messageToContextInput(
+  event: BlueBubblesNormalizedMessage,
+  chatGuidHash: string,
+): SenseContextPacketInputMessage {
+  return {
+    timestamp: new Date(event.timestamp).toISOString(),
+    authorLabel: contextAuthorLabel(event),
+    body: event.textForAgent || event.text,
+    sourceRef: {
+      sense: "bluebubbles",
+      adapter: "bluebubbles-api-v1",
+      service: "imessage",
+      chatGuid: event.chat.chatGuid,
+      chatGuidHash,
+      messageGuid: event.messageGuid,
+      senderExternalIdHash: sha256Hex(event.sender.externalId || event.sender.rawId || "unknown"),
+      observedAt: new Date(event.timestamp).toISOString(),
+    },
+  }
+}
+
+function insertEphemeralContextMessages(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  contextMessages: OpenAI.ChatCompletionMessageParam[],
+): OpenAI.ChatCompletionMessageParam[] {
+  if (contextMessages.length === 0) return messages
+  const insertionIndex = Math.max(0, messages.length - 1)
+  return [
+    ...messages.slice(0, insertionIndex),
+    ...contextMessages,
+    ...messages.slice(insertionIndex),
+  ]
+}
+
+async function buildBlueBubblesContextMessages(input: {
+  agentName: string
+  agentRoot: string
+  client: BlueBubblesClient
+  event: BlueBubblesNormalizedEvent
+}): Promise<OpenAI.ChatCompletionMessageParam[]> {
+  if (input.event.kind !== "message") return []
+  const event = input.event
+  if (!Number.isFinite(event.timestamp)) return []
+  const chatKey = chatKeyForContext(event)
+  const chatGuidHash = sha256Hex(chatKey)
+  const anchorTimestamp = new Date(event.timestamp).toISOString()
+  try {
+    const query = {
+      beforeTimestamp: event.timestamp,
+      limit: BLUEBUBBLES_CONTEXT_PACKET_LIMIT,
+      offset: 0,
+      ...(event.chat.chatGuid ? { chatGuid: event.chat.chatGuid } : {}),
+      ...(!event.chat.chatGuid && event.chat.chatIdentifier ? { chatIdentifier: event.chat.chatIdentifier } : {}),
+    }
+    const candidates = input.client.listRecentMessages
+      ? await input.client.listRecentMessages(query)
+      : []
+    const history = candidates
+      .filter((candidate): candidate is BlueBubblesNormalizedMessage => candidate.kind === "message")
+      .filter((candidate) => isSameBlueBubblesChat(candidate, event))
+      .filter((candidate) => candidate.messageGuid !== event.messageGuid)
+      .filter((candidate) => candidate.timestamp <= event.timestamp)
+      .filter((candidate) => event.timestamp - candidate.timestamp <= BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS)
+    if (history.length === 0) return []
+    const packet = buildSenseContextPacket({
+      agent: input.agentName,
+      sense: "bluebubbles",
+      sessionKey: event.chat.sessionKey,
+      chatKeyHash: chatGuidHash,
+      anchorMessageGuid: event.messageGuid,
+      anchorTimestamp,
+      windowBeforeMessages: BLUEBUBBLES_CONTEXT_PACKET_LIMIT,
+      windowBeforeMs: BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS,
+      messages: history.map((candidate) => messageToContextInput(candidate, chatGuidHash)),
+    })
+    writeSenseContextPacket(input.agentRoot, packet)
+    const rendered = renderSenseContextPacketForPrompt(packet, {
+      redactionPatterns: [/password=[^\s]+/gi],
+    })
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.bluebubbles_context_packet_injected",
+      message: "injected bluebubbles same-chat context packet",
+      meta: {
+        packetId: packet.packetId,
+        messageGuid: event.messageGuid,
+        contextMessages: history.length,
+      },
+    })
+    return [{ role: "system", content: rendered.text }]
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_context_packet_error",
+      message: "failed to build live bluebubbles context packet",
+      meta: {
+        messageGuid: event.messageGuid,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+    const fallback = readLatestVisibleSenseContextPacket(input.agentRoot, {
+      sense: "bluebubbles",
+      chatKeyHash: chatGuidHash,
+      beforeAnchorTimestamp: anchorTimestamp,
+      maxAgeMs: 24 * 60 * 60 * 1000,
+    })
+    if (!fallback) return []
+    const rendered = renderSenseContextPacketForPrompt(fallback)
+    return [{ role: "system", content: rendered.text }]
+  }
 }
 
 function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBubblesReplyTargetController {
@@ -1493,27 +1637,35 @@ async function handleBlueBubblesNormalizedEvent(
         enforceTrustGate,
         drainPending,
         drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
-        runAgent: (msgs, cb, channel, sig, opts) => resolvedDeps.runAgent(msgs, cb, channel, sig, {
-          ...opts,
-          toolContext: {
-            /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
-            signin: async () => undefined,
-            ...opts?.toolContext,
-            summarize,
-            bluebubblesReplyTarget: {
-              setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
-            },
-            codingFeedback: {
-              send: async (message: string) => {
-                await client.sendText({
-                  chat: event.chat,
-                  text: message,
-                  replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-                })
-              },
-            },
-          },
-        }),
+	        runAgent: async (msgs, cb, channel, sig, opts) => {
+	          const contextMessages = await buildBlueBubblesContextMessages({
+	            agentName,
+	            agentRoot: getAgentRoot(),
+	            client,
+	            event,
+	          })
+	          return resolvedDeps.runAgent(insertEphemeralContextMessages(msgs, contextMessages), cb, channel, sig, {
+	            ...opts,
+	            toolContext: {
+	              /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
+	              signin: async () => undefined,
+	              ...opts?.toolContext,
+	              summarize,
+	              bluebubblesReplyTarget: {
+	                setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
+	              },
+	              codingFeedback: {
+	                send: async (message: string) => {
+	                  await client.sendText({
+	                    chat: event.chat,
+	                    text: message,
+	                    replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+	                  })
+	                },
+	              },
+	            },
+	          })
+	        },
         postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
           const prepared = resolvedDeps.postTurnTrim(turnMessages, usage, hooks)
           resolvedDeps.deferPostTurnPersist(sessionPathArg, prepared, usage, state)

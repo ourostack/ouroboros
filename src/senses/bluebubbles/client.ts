@@ -43,6 +43,9 @@ export interface BlueBubblesClient {
 export interface BlueBubblesListRecentMessagesParams {
   limit?: number
   offset?: number
+  chatGuid?: string
+  chatIdentifier?: string
+  beforeTimestamp?: number
 }
 
 type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
@@ -493,15 +496,22 @@ export function createBlueBubblesClient(
         meta: { limit, offset },
       })
 
+      const body = {
+        limit,
+        offset,
+        sort: "DESC",
+        ...(params.chatGuid?.trim() ? { chatGuid: params.chatGuid.trim() } : {}),
+        ...(params.chatIdentifier?.trim() ? { chatIdentifier: params.chatIdentifier.trim() } : {}),
+        ...(typeof params.beforeTimestamp === "number" && Number.isFinite(params.beforeTimestamp)
+          ? { beforeTimestamp: params.beforeTimestamp }
+          : {}),
+        with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
+      }
+
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          limit,
-          offset,
-          sort: "DESC",
-          with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
       })
 
