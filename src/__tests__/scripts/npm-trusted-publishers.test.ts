@@ -54,8 +54,9 @@ publish:
         node-version: 24
         registry-url: https://registry.npmjs.org
         package-manager-cache: false
-    - name: Install latest npm (trusted publishing requires npm >=11.5.1 on Node >=22.14)
-      run: npm install -g npm@latest
+    - name: Verify npm trusted-publishing toolchain (trusted publishing requires npm >=11.5.1 on Node >=22.14)
+      run: |
+        const fallback = "11.6.4"
     - run: npm publish --access public --tag "$TAG"
     - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
     - name: Verify selected npm dist-tags
@@ -104,6 +105,34 @@ publish:
 
     expect(result.ok).toBe(false)
     expect(result.errors.join("\n")).toContain("id-token: write")
+  })
+
+  it("fails when the publish workflow self-mutates npm through npm@latest", () => {
+    const root = makeRepoFixture({
+      workflow: `
+publish:
+  permissions:
+    contents: read
+    id-token: write
+  steps:
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        registry-url: https://registry.npmjs.org
+        package-manager-cache: false
+    - name: Install latest npm (trusted publishing requires npm >=11.5.1 on Node >=22.14)
+      run: npm install -g npm@latest
+    - run: npm publish --access public --tag "$TAG"
+    - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+    - name: Verify selected npm dist-tags
+      run: echo "selected npm dist-tags verified"
+`,
+    })
+    const result = validateTrustedPublisherLocalContract({ repoRoot: root })
+    fs.rmSync(root, { recursive: true, force: true })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("must not self-mutate npm with npm@latest")
   })
 
   it("prints the exact npm trust commands instead of relying on npm UI edits", () => {

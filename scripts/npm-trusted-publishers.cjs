@@ -50,6 +50,8 @@ function validateTrustedPublisherLocalContract(options = {}) {
     "node-version: 24",
     "registry-url: https://registry.npmjs.org",
     "package-manager-cache: false",
+    "Verify npm trusted-publishing toolchain",
+    'fallback = "11.6.4"',
     'npm publish --access public --tag "$TAG"',
     'npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"',
     "Verify selected npm dist-tags",
@@ -64,6 +66,10 @@ function validateTrustedPublisherLocalContract(options = {}) {
 
   if (!workflow.includes("trusted publishing requires npm >=11.5.1 on Node >=22.14")) {
     errors.push("coverage publish workflow must document the npm trusted publishing runtime floor")
+  }
+
+  if (workflow.includes("npm install -g npm@latest")) {
+    errors.push("coverage publish workflow must not self-mutate npm with npm@latest; use the bundled npm when it satisfies the floor and a pinned fallback otherwise")
   }
 
   if (workflow.includes("Verify supported npm dist-tags") || workflow.includes("supported npm dist-tags verified")) {

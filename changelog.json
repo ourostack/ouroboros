@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.689",
+      "changes": [
+        "Avoid self-mutating npm@latest in the trusted-publishing workflow; verify the npm toolchain floor and use a pinned fallback so publish can complete reliably after merge."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.688",
       "changes": [
         "Render freshest friend-facing contact timing in protected turn orientation and active-work status so private/self turns cannot mistake stale background timestamps for current contact."

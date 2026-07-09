@@ -115,8 +115,42 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Install latest npm (trusted publishing requires npm >=11.5.1 on Node >=22.14)
-        run: npm install -g npm@latest
+      - name: Verify npm trusted-publishing toolchain (trusted publishing requires npm >=11.5.1 on Node >=22.14)
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require("child_process")
+
+          const minimum = [11, 5, 1]
+          const fallback = "11.6.4"
+
+          function parse(version) {
+            return version.split(".").map((part) => Number.parseInt(part, 10))
+          }
+
+          function isAtLeast(version, floor) {
+            const parsed = parse(version)
+            return floor.every((value, index) => (parsed[index] ?? 0) === value)
+              || parsed.some((value, index) => value !== floor[index] && value > (floor[index] ?? 0) && parsed.slice(0, index).every((part, prior) => part === floor[prior]))
+          }
+
+          function npmVersion() {
+            return execFileSync("npm", ["--version"], { encoding: "utf8" }).trim()
+          }
+
+          const current = npmVersion()
+          if (isAtLeast(current, minimum)) {
+            console.log(`npm ${current} satisfies the trusted-publishing floor`)
+            process.exit(0)
+          }
+
+          console.log(`npm ${current} is below the trusted-publishing floor; installing pinned fallback npm@${fallback}`)
+          execFileSync("npm", ["install", "-g", `npm@${fallback}`], { stdio: "inherit" })
+          const updated = npmVersion()
+          if (!isAtLeast(updated, minimum)) {
+            throw new Error(`npm ${updated} is still below the trusted-publishing floor after fallback install`)
+          }
+          console.log(`npm ${updated} satisfies the trusted-publishing floor`)
+          NODE
 
       - name: Install Dependencies
         run: npm ci
