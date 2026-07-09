@@ -21,7 +21,7 @@ import { readAgentConfigForAgent } from "../heart/auth/auth-flow"
 import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
 import { listActiveReturnObligationsForRoot, readPendingObligations } from "../arc/obligations"
-import { listPonderPackets } from "../arc/packets"
+import { listActivePonderPackets } from "../arc/packets"
 import { listOpenEvolutionCases } from "../arc/evolution"
 import {
   buildFailoverContext,
@@ -57,15 +57,6 @@ export interface FailoverState {
 }
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
-const ACTIVE_FLIGHT_RECORDER_PACKET_STATUSES = new Set([
-  "drafting",
-  "processing",
-  "validating",
-  "collaborating",
-  "paused",
-  "blocked",
-])
-
 function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number): string | null {
   /* v8 ignore start -- pending expiry edge permutations are covered by the stale voice queue tests; this helper keeps defensive non-voice fallbacks @preserve */
   if (Number.isFinite(message.expiresAt) && Number(message.expiresAt) <= now) return "explicit_expiry"
@@ -237,9 +228,7 @@ function readPostTurnFlightRecorderArcSnapshot(agentRoot: string): FlightRecorde
   return {
     activeObligationIds: readPendingObligations(agentRoot).map((obligation) => obligation.id),
     activeReturnObligationIds: listActiveReturnObligationsForRoot(agentRoot).map((obligation) => obligation.id),
-    activePacketIds: listPonderPackets(agentRoot)
-      .filter((packet) => ACTIVE_FLIGHT_RECORDER_PACKET_STATUSES.has(packet.status))
-      .map((packet) => packet.id),
+    activePacketIds: listActivePonderPackets(agentRoot).map((packet) => packet.id),
     openEvolutionCaseIds: listOpenEvolutionCases(agentRoot).map((evolutionCase) => evolutionCase.id),
     recentClaimIds: latest.recentClaimIds,
     unverifiedClaimIds: latest.unverifiedClaimIds,

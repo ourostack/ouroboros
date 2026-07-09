@@ -51,7 +51,9 @@ function obligationsDir(agentRoot: string): string {
   return path.join(agentRoot, "arc", "obligations")
 }
 
-
+export function readObligation(agentRoot: string, obligationId: string): Obligation | null {
+  return readJsonFile<Obligation>(obligationsDir(agentRoot), obligationId)
+}
 
 export function isOpenObligationStatus(status: ObligationStatus): boolean {
   return status !== "fulfilled"
@@ -336,6 +338,10 @@ export function readReturnObligation(agentName: string, obligationId: string): R
   return readJsonFile<ReturnObligation>(getReturnObligationsDir(agentName), obligationId)
 }
 
+export function readReturnObligationForRoot(agentRoot: string, obligationId: string): ReturnObligation | null {
+  return readJsonFile<ReturnObligation>(getReturnObligationsDirForRoot(agentRoot), obligationId)
+}
+
 export function advanceReturnObligation(
   agentName: string,
   obligationId: string,
@@ -390,6 +396,10 @@ const RETURN_OBLIGATION_INJECTION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
 // it. This is a read-time defense; the underlying file is left as-is.
 const ACTIVE_RETURN_OBLIGATION_STATUSES: ReadonlySet<ReturnObligationStatus> = new Set(["queued", "running"])
 
+export function isActiveReturnObligationStatus(status: string): status is "queued" | "running" {
+  return ACTIVE_RETURN_OBLIGATION_STATUSES.has(status as ReturnObligationStatus)
+}
+
 function isSelfInnerReturnObligation(obligation: ReturnObligation): boolean {
   return obligation.origin?.friendId === "self" && obligation.origin.channel === "inner"
 }
@@ -407,6 +417,22 @@ function isReturnObligationRecord(value: unknown): value is ReturnObligation {
     && typeof candidate.origin.key === "string"
 }
 
+export function listReturnObligationsForRoot(agentRoot: string): ReturnObligation[] {
+  return readJsonDir<ReturnObligation>(getReturnObligationsDirForRoot(agentRoot))
+    .filter(isReturnObligationRecord)
+}
+
+export function isActiveReturnObligationRecord(
+  value: unknown,
+  options: { now?: () => number } = {},
+): value is ReturnObligation {
+  if (!isReturnObligationRecord(value)) return false
+  const nowMs = (options.now ?? Date.now)()
+  return isActiveReturnObligationStatus(value.status)
+    && !isSelfInnerReturnObligation(value)
+    && nowMs - value.createdAt <= RETURN_OBLIGATION_INJECTION_MAX_AGE_MS
+}
+
 export function listActiveReturnObligations(agentName: string, options: { now?: () => number } = {}): ReturnObligation[] {
   return listActiveReturnObligationsForRoot(getAgentRoot(agentName), options)
 }
@@ -415,12 +441,8 @@ export function listActiveReturnObligationsForRoot(
   agentRoot: string,
   options: { now?: () => number } = {},
 ): ReturnObligation[] {
-  const all = readJsonDir<ReturnObligation>(getReturnObligationsDirForRoot(agentRoot))
   const nowMs = (options.now ?? Date.now)()
-  return all
-    .filter(isReturnObligationRecord)
-    .filter((parsed) => ACTIVE_RETURN_OBLIGATION_STATUSES.has(parsed.status))
-    .filter((parsed) => !isSelfInnerReturnObligation(parsed))
-    .filter((parsed) => nowMs - parsed.createdAt <= RETURN_OBLIGATION_INJECTION_MAX_AGE_MS)
+  return listReturnObligationsForRoot(agentRoot)
+    .filter((parsed) => isActiveReturnObligationRecord(parsed, { now: () => nowMs }))
     .sort((a, b) => a.createdAt - b.createdAt)
 }

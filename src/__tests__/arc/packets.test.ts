@@ -14,8 +14,12 @@ import {
   completePonderPacket,
   createPonderPacket,
   findHarnessFrictionPacket,
+  findPonderPacketByRelatedReturnObligationId,
   getPonderPacketArtifactsDir,
+  listActivePonderPackets,
   listPonderPackets,
+  listPonderPacketsByRelatedObligationId,
+  listPonderPacketsByRelatedReturnObligationId,
   readPonderPacket,
   revisePonderPacket,
 } from "../../arc/packets"
@@ -71,6 +75,139 @@ describe("ponder packets", () => {
       kind: "harness_friction",
       objective: "Make screenshot interrogation bulletproof",
     })
+  })
+
+  it("excludes packets whose linked return obligation is terminal from active packet views", () => {
+    const agentRoot = makeAgentRoot()
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations", "inner"), { recursive: true })
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve stale held item",
+      summary: "The linked return was already released.",
+      successCriteria: ["No stale active packet"],
+      relatedReturnObligationId: "ret-fulfilled",
+      payload: {},
+    })
+    const stillActive = createPonderPacket(agentRoot, {
+      kind: "research",
+      objective: "Keep active packet",
+      summary: "No linked terminal return.",
+      successCriteria: ["Still visible"],
+      payload: {},
+    })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "inner", "ret-fulfilled.json"), JSON.stringify({
+      id: "ret-fulfilled",
+      status: "fulfilled",
+      delegatedContent: "legacy terminal return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: 1775976317954,
+    }), "utf-8")
+
+    expect(listPonderPackets(agentRoot).map((entry) => entry.id)).toContain(packet.id)
+    expect(listActivePonderPackets(agentRoot).map((entry) => entry.id)).toEqual([stillActive.id])
+  })
+
+  it("excludes packets whose linked return obligation is missing from active packet views", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve stale missing return route",
+      summary: "The packet declares a return route that no longer exists.",
+      successCriteria: ["No active packet without a return route"],
+      relatedReturnObligationId: "ret-missing",
+      payload: {},
+    })
+
+    expect(listPonderPackets(agentRoot).map((entry) => entry.id)).toContain(packet.id)
+    expect(listActivePonderPackets(agentRoot)).toEqual([])
+  })
+
+  it("excludes packets whose linked return obligation aged out while still queued", () => {
+    const agentRoot = makeAgentRoot()
+    const dayMs = 24 * 60 * 60 * 1000
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations", "inner"), { recursive: true })
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve stale aged return route",
+      summary: "The linked return route is queued but past the active window.",
+      successCriteria: ["No active packet with aged-out return route"],
+      relatedReturnObligationId: "ret-aged",
+      payload: {},
+    })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "inner", "ret-aged.json"), JSON.stringify({
+      id: "ret-aged",
+      status: "queued",
+      delegatedContent: "aged queued return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: Date.now() - 30 * dayMs,
+    }), "utf-8")
+
+    expect(listPonderPackets(agentRoot).map((entry) => entry.id)).toContain(packet.id)
+    expect(listActivePonderPackets(agentRoot)).toEqual([])
+  })
+
+  it("excludes packets whose linked return obligation has malformed status", () => {
+    const agentRoot = makeAgentRoot()
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations", "inner"), { recursive: true })
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve stale malformed return route",
+      summary: "The linked return route is old malformed JSON.",
+      successCriteria: ["No active packet with invalid return status"],
+      relatedReturnObligationId: "ret-malformed",
+      payload: {},
+    })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "inner", "ret-malformed.json"), JSON.stringify({
+      id: "ret-malformed",
+      status: 7,
+      delegatedContent: "malformed legacy return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: 1775976317954,
+    }), "utf-8")
+
+    expect(listPonderPackets(agentRoot).map((entry) => entry.id)).toContain(packet.id)
+    expect(listActivePonderPackets(agentRoot)).toEqual([])
+  })
+
+  it("excludes packets whose linked outer obligation is fulfilled from active packet views", () => {
+    const agentRoot = makeAgentRoot()
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations"), { recursive: true })
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve stale outer obligation",
+      summary: "The linked outer obligation was fulfilled.",
+      successCriteria: ["No stale active packet"],
+      relatedObligationId: "ob-fulfilled",
+      payload: {},
+    })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "ob-fulfilled.json"), JSON.stringify({
+      id: "ob-fulfilled",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      content: "finished elsewhere",
+      status: "fulfilled",
+      createdAt: "2026-04-12T06:45:17.954Z",
+    }), "utf-8")
+
+    expect(listPonderPackets(agentRoot).map((entry) => entry.id)).toContain(packet.id)
+    expect(listActivePonderPackets(agentRoot)).toEqual([])
+  })
+
+  it("finds packets by linked obligation and return-obligation ids", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "research",
+      objective: "Lookup linked packet",
+      summary: "Packet lookup should be deterministic.",
+      successCriteria: ["Linked packet is found"],
+      relatedObligationId: "ob-1",
+      relatedReturnObligationId: "ret-1",
+      payload: {},
+    })
+
+    expect(findPonderPacketByRelatedReturnObligationId(agentRoot, "ret-1")?.id).toBe(packet.id)
+    expect(findPonderPacketByRelatedReturnObligationId(agentRoot, "ret-missing")).toBeNull()
+    expect(listPonderPacketsByRelatedReturnObligationId(agentRoot, "ret-1").map((entry) => entry.id)).toEqual([packet.id])
+    expect(listPonderPacketsByRelatedObligationId(agentRoot, "ob-1").map((entry) => entry.id)).toEqual([packet.id])
   })
 
   it("creates an evolution case for harness-friction packets with a friction signature", () => {

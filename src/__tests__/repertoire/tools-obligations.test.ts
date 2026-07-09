@@ -31,6 +31,15 @@ vi.mock("../../arc/json-store", () => ({
   readJsonFile: (dir: string, name: string) => mockReadJsonFile(dir, name),
 }))
 
+const mockListPonderPacketsByRelatedReturnObligationId = vi.fn()
+const mockListPonderPacketsByRelatedObligationId = vi.fn()
+const mockCompletePonderPacket = vi.fn()
+vi.mock("../../arc/packets", () => ({
+  listPonderPacketsByRelatedReturnObligationId: (...args: unknown[]) => mockListPonderPacketsByRelatedReturnObligationId(...args),
+  listPonderPacketsByRelatedObligationId: (...args: unknown[]) => mockListPonderPacketsByRelatedObligationId(...args),
+  completePonderPacket: (...args: unknown[]) => mockCompletePonderPacket(...args),
+}))
+
 import { obligationToolDefinitions } from "../../repertoire/tools-obligations"
 
 function findTool(name: string) {
@@ -67,6 +76,9 @@ describe("let_go tool", () => {
     nervesEvents.length = 0
     mockReadReturnObligation.mockReturnValue(null)
     mockReadJsonFile.mockReturnValue(null)
+    mockListPonderPacketsByRelatedReturnObligationId.mockReturnValue([])
+    mockListPonderPacketsByRelatedObligationId.mockReturnValue([])
+    mockCompletePonderPacket.mockReset()
   })
 
   describe("schema", () => {
@@ -136,6 +148,68 @@ describe("let_go tool", () => {
       expect(update.returnedAt).toBeGreaterThan(0)
     })
 
+    it("completes a linked ponder packet when releasing a return obligation", async () => {
+      mockReadReturnObligation.mockReturnValue(makeReturnObligation({ status: "queued" }))
+      mockListPonderPacketsByRelatedReturnObligationId.mockReturnValue([{ id: "pkt-1" }])
+      const t = findTool("let_go")
+
+      await t.handler({ id: "1775976317954-s5pno43r", reason: "fixed elsewhere" })
+
+      expect(mockListPonderPacketsByRelatedReturnObligationId).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        "1775976317954-s5pno43r",
+      )
+      expect(mockCompletePonderPacket).toHaveBeenCalledWith("/bundles/slugger.ouro", "pkt-1")
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        event: "repertoire.packet_completed_for_released_obligation",
+        meta: { returnObligationId: "1775976317954-s5pno43r", packetId: "pkt-1" },
+      }))
+    })
+
+    it("warns without blocking when linked packet completion fails", async () => {
+      mockReadReturnObligation.mockReturnValue(makeReturnObligation({ status: "queued" }))
+      mockListPonderPacketsByRelatedReturnObligationId.mockReturnValue([{ id: "pkt-boom" }])
+      mockCompletePonderPacket.mockImplementationOnce(() => {
+        throw new Error("boom")
+      })
+      const t = findTool("let_go")
+
+      const result = JSON.parse(await t.handler({ id: "1775976317954-s5pno43r" }))
+
+      expect(result.let_go).toBe("1775976317954-s5pno43r")
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        level: "warn",
+        event: "repertoire.packet_completion_for_released_obligation_failed",
+        meta: expect.objectContaining({
+          returnObligationId: "1775976317954-s5pno43r",
+          packetId: "pkt-boom",
+          error: "boom",
+        }),
+      }))
+    })
+
+    it("warns with a stringified error when linked packet completion throws a non-error", async () => {
+      mockReadReturnObligation.mockReturnValue(makeReturnObligation({ status: "queued" }))
+      mockListPonderPacketsByRelatedReturnObligationId.mockReturnValue([{ id: "pkt-string-boom" }])
+      mockCompletePonderPacket.mockImplementationOnce(() => {
+        throw "string boom"
+      })
+      const t = findTool("let_go")
+
+      const result = JSON.parse(await t.handler({ id: "1775976317954-s5pno43r" }))
+
+      expect(result.let_go).toBe("1775976317954-s5pno43r")
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        level: "warn",
+        event: "repertoire.packet_completion_for_released_obligation_failed",
+        meta: expect.objectContaining({
+          returnObligationId: "1775976317954-s5pno43r",
+          packetId: "pkt-string-boom",
+          error: "string boom",
+        }),
+      }))
+    })
+
     it("advances running return obligation too (not only queued)", async () => {
       mockReadReturnObligation.mockReturnValue(makeReturnObligation({ status: "running" }))
       const t = findTool("let_go")
@@ -163,10 +237,12 @@ describe("let_go tool", () => {
 
     it("is idempotent: returns existing status (not error) when already returned", async () => {
       mockReadReturnObligation.mockReturnValue(makeReturnObligation({ status: "returned" }))
+      mockListPonderPacketsByRelatedReturnObligationId.mockReturnValue([{ id: "pkt-returned" }])
       const t = findTool("let_go")
       const result = JSON.parse(await t.handler({ id: "1775976317954-s5pno43r" }))
       expect(result).toEqual({ kind: "return_obligation", id: "1775976317954-s5pno43r", already: "returned" })
       expect(mockAdvanceReturnObligation).not.toHaveBeenCalled()
+      expect(mockCompletePonderPacket).toHaveBeenCalledWith("/bundles/slugger.ouro", "pkt-returned")
     })
 
     it("is idempotent: returns existing status when already deferred", async () => {
@@ -211,6 +287,22 @@ describe("let_go tool", () => {
         "1775976317954-2gkm4pz0",
         { latestNote: "merged PR #701" },
       )
+    })
+
+    it("completes packets linked to an outer obligation when fulfilling it", async () => {
+      mockReadReturnObligation.mockReturnValue(null)
+      mockReadJsonFile.mockReturnValue(makeObligation({ status: "pending" }))
+      mockListPonderPacketsByRelatedObligationId.mockReturnValue([{ id: "pkt-outer-1" }, { id: "pkt-outer-2" }])
+
+      const t = findTool("let_go")
+      await t.handler({ id: "1775976317954-2gkm4pz0", reason: "merged PR #701" })
+
+      expect(mockListPonderPacketsByRelatedObligationId).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        "1775976317954-2gkm4pz0",
+      )
+      expect(mockCompletePonderPacket).toHaveBeenCalledWith("/bundles/slugger.ouro", "pkt-outer-1")
+      expect(mockCompletePonderPacket).toHaveBeenCalledWith("/bundles/slugger.ouro", "pkt-outer-2")
     })
 
     it("fulfills outer obligation without latestNote when no reason given", async () => {

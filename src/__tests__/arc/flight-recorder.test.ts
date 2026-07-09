@@ -131,6 +131,266 @@ describe("Arc flight recorder", () => {
     }))
   })
 
+  it("removes active packet ids whose linked return obligation is terminal on read without mutating latest.json", async () => {
+    const { createPonderPacket } = await import("../../arc/packets")
+    const { flightRecorderLatestPath, readFlightRecorderResume, recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve stale held work",
+      summary: "The linked return was already fulfilled elsewhere.",
+      successCriteria: ["Do not keep prompting this packet"],
+      relatedReturnObligationId: "ret-fulfilled",
+      payload: {},
+    })
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations", "inner"), { recursive: true })
+    const returnObligationPath = path.join(agentRoot, "arc", "obligations", "inner", "ret-fulfilled.json")
+    fs.writeFileSync(returnObligationPath, JSON.stringify({
+      id: "ret-fulfilled",
+      status: "queued",
+      delegatedContent: "legacy terminal return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: Date.now(),
+    }), "utf-8")
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-stale-packet",
+      kind: "post_turn_persisted",
+      summary: "checkpoint with stale packet",
+      currentAsk: "finish packet",
+      nextSafeAction: "continue old packet",
+      activePacketIds: [packet.id],
+    })
+    fs.writeFileSync(returnObligationPath, JSON.stringify({
+      id: "ret-fulfilled",
+      status: "fulfilled",
+      delegatedContent: "legacy terminal return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: Date.now(),
+    }), "utf-8")
+
+    const resume = readFlightRecorderResume(agentRoot)
+    const persisted = JSON.parse(fs.readFileSync(flightRecorderLatestPath(agentRoot), "utf-8"))
+
+    expect(resume.activePacketIds).toEqual([])
+    expect(resume.hasCompleteState).toBe(true)
+    expect(resume.canContinue).toBe(false)
+    expect(resume.nextSafeAction.value).toBe("wait for new input; reconciled completed or missing return obligations: ret-fulfilled")
+    expect(resume.nextSafeAction.sourceEventIds).toEqual(["reconcile:active-obligations"])
+    expect(persisted.activeReturnObligationIds).toEqual(["ret-fulfilled"])
+    expect(persisted.activePacketIds).toEqual([packet.id])
+    expect(persisted.nextSafeAction.value).toBe("continue old packet")
+    expect(persisted.canContinue).toBe(true)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.flight_recorder_resume_reconciled",
+      meta: expect.objectContaining({
+        staleActiveReturnObligationIds: ["ret-fulfilled"],
+        staleActivePacketIds: [packet.id],
+        missingActivePacketIds: [],
+        unverifiableActivePacketIds: [],
+      }),
+    }))
+  })
+
+  it("removes paired active return and packet ids after the return obligation ages out", async () => {
+    const { createPonderPacket } = await import("../../arc/packets")
+    const { flightRecorderLatestPath, readFlightRecorderResume, recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+    const dayMs = 24 * 60 * 60 * 1000
+    const returnObligationPath = path.join(agentRoot, "arc", "obligations", "inner", "ret-aged.json")
+    fs.mkdirSync(path.dirname(returnObligationPath), { recursive: true })
+    fs.writeFileSync(returnObligationPath, JSON.stringify({
+      id: "ret-aged",
+      status: "queued",
+      delegatedContent: "legacy queued return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: Date.now(),
+    }), "utf-8")
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve aged held work",
+      summary: "The linked return aged out after latest.json was recorded.",
+      successCriteria: ["Do not keep prompting this return or packet"],
+      relatedReturnObligationId: "ret-aged",
+      payload: {},
+    })
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-aged-return-packet",
+      kind: "post_turn_persisted",
+      summary: "checkpoint with active return and packet",
+      currentAsk: "finish aged packet",
+      nextSafeAction: "continue old return and packet",
+      activeReturnObligationIds: ["ret-aged"],
+      activePacketIds: [packet.id],
+    })
+    fs.writeFileSync(returnObligationPath, JSON.stringify({
+      id: "ret-aged",
+      status: "queued",
+      delegatedContent: "legacy queued return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: Date.now() - 30 * dayMs,
+    }), "utf-8")
+
+    const resume = readFlightRecorderResume(agentRoot)
+    const persisted = JSON.parse(fs.readFileSync(flightRecorderLatestPath(agentRoot), "utf-8"))
+
+    expect(resume.activeReturnObligationIds).toEqual([])
+    expect(resume.activePacketIds).toEqual([])
+    expect(resume.canContinue).toBe(false)
+    expect(resume.nextSafeAction.value).toBe("wait for new input; reconciled completed or missing return obligations: ret-aged")
+    expect(resume.nextSafeAction.sourceEventIds).toEqual(["reconcile:active-obligations"])
+    expect(persisted.activeReturnObligationIds).toEqual(["ret-aged"])
+    expect(persisted.activePacketIds).toEqual([packet.id])
+    expect(persisted.nextSafeAction.value).toBe("continue old return and packet")
+    expect(persisted.canContinue).toBe(true)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.flight_recorder_resume_reconciled",
+      meta: expect.objectContaining({
+        staleActiveReturnObligationIds: ["ret-aged"],
+        staleActivePacketIds: [packet.id],
+      }),
+    }))
+  })
+
+  it("uses packet-only terminal wait text when only a packet is reconciled away", async () => {
+    const { completePonderPacket, createPonderPacket } = await import("../../arc/packets")
+    const { flightRecorderLatestPath, readFlightRecorderResume, recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+    const packet = createPonderPacket(agentRoot, {
+      kind: "research",
+      objective: "Complete packet-only work",
+      summary: "The packet will complete after latest.json records it.",
+      successCriteria: ["Packet-only terminal wait is synthesized"],
+      payload: {},
+    })
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-packet-only",
+      kind: "post_turn_persisted",
+      summary: "checkpoint with packet only",
+      currentAsk: "finish packet",
+      nextSafeAction: "continue packet only",
+      activePacketIds: [packet.id],
+    })
+    completePonderPacket(agentRoot, packet.id)
+
+    const resume = readFlightRecorderResume(agentRoot)
+    const persisted = JSON.parse(fs.readFileSync(flightRecorderLatestPath(agentRoot), "utf-8"))
+
+    expect(resume.activePacketIds).toEqual([])
+    expect(resume.canContinue).toBe(false)
+    expect(resume.nextSafeAction.value).toBe(`wait for new input; reconciled completed or missing packets: ${packet.id}`)
+    expect(persisted.activePacketIds).toEqual([packet.id])
+  })
+
+  it("preserves and degrades active return obligation ids that the return store cannot verify", async () => {
+    const { readFlightRecorderResume, recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-missing-return",
+      kind: "post_turn_persisted",
+      summary: "checkpoint with unverifiable return obligation",
+      currentAsk: "recover safely",
+      nextSafeAction: "continue missing return",
+      activeReturnObligationIds: ["ret-missing"],
+    })
+
+    const resume = readFlightRecorderResume(agentRoot)
+
+    expect(resume.activeReturnObligationIds).toEqual(["ret-missing"])
+    expect(resume.canContinue).toBe(false)
+    expect(resume.nextSafeAction.value).toBe("inspect unverifiable active return obligations before acting: ret-missing")
+    expect(resume.nextSafeAction.sourceEventIds).toEqual(["reconcile:active-obligations"])
+    expect(resume.nextSafeAction.stopBefore).toContain("acting on unverifiable return obligation state")
+    expect(resume.recorderHealth.status).toBe("degraded")
+    expect(resume.recorderHealth.issues).toContain("active return obligation ids could not be verified in arc/obligations/inner: ret-missing")
+  })
+
+  it("adds missing active return obligation ids from the return store on read", async () => {
+    const { readFlightRecorderResume, recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+    const returnObligationPath = path.join(agentRoot, "arc", "obligations", "inner", "ret-active.json")
+    fs.mkdirSync(path.dirname(returnObligationPath), { recursive: true })
+    fs.writeFileSync(returnObligationPath, JSON.stringify({
+      id: "ret-active",
+      status: "queued",
+      delegatedContent: "fresh queued return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: Date.now(),
+    }), "utf-8")
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-return-missing-from-latest",
+      kind: "post_turn_persisted",
+      summary: "checkpoint missing active return",
+      currentAsk: "finish validation",
+      nextSafeAction: null,
+      activeReturnObligationIds: [],
+    })
+
+    const resume = readFlightRecorderResume(agentRoot)
+
+    expect(resume.activeReturnObligationIds).toEqual(["ret-active"])
+    expect(resume.nextSafeAction.value).toBe("continue remaining Arc work: return obligation ret-active")
+    expect(resume.canContinue).toBe(true)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.flight_recorder_resume_reconciled",
+      meta: expect.objectContaining({
+        staleActiveReturnObligationIds: [],
+        missingActiveReturnObligationIds: ["ret-active"],
+        unverifiableActiveReturnObligationIds: [],
+      }),
+    }))
+  })
+
+  it("preserves and degrades active packet ids that the packet store cannot verify", async () => {
+    const { readFlightRecorderResume, recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-missing-packet",
+      kind: "post_turn_persisted",
+      summary: "checkpoint with unverifiable packet",
+      currentAsk: "recover safely",
+      nextSafeAction: "continue missing packet",
+      activePacketIds: ["pkt-missing"],
+    })
+
+    const resume = readFlightRecorderResume(agentRoot)
+
+    expect(resume.activePacketIds).toEqual(["pkt-missing"])
+    expect(resume.canContinue).toBe(false)
+    expect(resume.nextSafeAction.value).toBe("inspect unverifiable active packets before acting: pkt-missing")
+    expect(resume.nextSafeAction.sourceEventIds).toEqual(["reconcile:active-obligations"])
+    expect(resume.nextSafeAction.stopBefore).toContain("acting on unverifiable packet state")
+    expect(resume.recorderHealth.status).toBe("degraded")
+    expect(resume.recorderHealth.issues).toContain("active packet ids could not be verified in arc/packets: pkt-missing")
+  })
+
+  it("adds missing active packet ids from the packet store on read", async () => {
+    const { createPonderPacket } = await import("../../arc/packets")
+    const { readFlightRecorderResume, recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+    const packet = createPonderPacket(agentRoot, {
+      kind: "research",
+      objective: "Keep live packet visible",
+      summary: "The packet is still active but missing from latest.",
+      successCriteria: ["Packet is restored"],
+      payload: {},
+    })
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-packet-missing-from-latest",
+      kind: "post_turn_persisted",
+      summary: "checkpoint missing active packet",
+      currentAsk: "finish validation",
+      nextSafeAction: null,
+      activePacketIds: [],
+    })
+
+    const resume = readFlightRecorderResume(agentRoot)
+
+    expect(resume.activePacketIds).toEqual([packet.id])
+    expect(resume.nextSafeAction.value).toBe(`continue remaining Arc work: packet ${packet.id}`)
+    expect(resume.canContinue).toBe(true)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "mind.flight_recorder_resume_reconciled",
+      meta: expect.objectContaining({
+        staleActivePacketIds: [],
+        missingActivePacketIds: [packet.id],
+        unverifiableActivePacketIds: [],
+      }),
+    }))
+  })
+
   it("preserves and degrades active obligation ids that the obligation store cannot verify", async () => {
     const { flightRecorderLatestPath, readFlightRecorderResume } = await import("../../arc/flight-recorder")
     fs.mkdirSync(path.join(agentRoot, "arc", "obligations"), { recursive: true })
@@ -341,6 +601,27 @@ describe("Arc flight recorder", () => {
       content: "fulfilled work",
     })
     fulfillObligation(agentRoot, obligation.id)
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations", "inner"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "inner", "ret-1.json"), JSON.stringify({
+      id: "ret-1",
+      status: "queued",
+      delegatedContent: "valid remaining return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: Date.now(),
+    }), "utf-8")
+    fs.mkdirSync(path.join(agentRoot, "arc", "packets"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "arc", "packets", "packet-1.json"), JSON.stringify({
+      id: "packet-1",
+      kind: "research",
+      sop: "research_v1",
+      status: "processing",
+      objective: "finish remaining packet",
+      summary: "valid remaining packet",
+      successCriteria: [],
+      payload: {},
+      createdAt: 1775976317954,
+      updatedAt: 1775976317954,
+    }), "utf-8")
     fs.mkdirSync(path.dirname(flightRecorderLatestPath(agentRoot)), { recursive: true })
     fs.writeFileSync(flightRecorderLatestPath(agentRoot), `${JSON.stringify({
       schemaVersion: 1,

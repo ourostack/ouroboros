@@ -9,6 +9,12 @@ import {
   readReturnObligation,
   type Obligation,
 } from "../arc/obligations"
+import {
+  completePonderPacket,
+  listPonderPacketsByRelatedObligationId,
+  listPonderPacketsByRelatedReturnObligationId,
+  type PonderPacket,
+} from "../arc/packets"
 import type { ToolDefinition } from "./tools-base"
 
 /**
@@ -41,6 +47,42 @@ interface LetGoArgs {
   reason?: string
 }
 
+function completeRelatedPacket(agentRoot: string, packet: PonderPacket, relation: Record<string, string>): void {
+  try {
+    completePonderPacket(agentRoot, packet.id)
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.packet_completed_for_released_obligation",
+      message: "linked packet completed for released return obligation",
+      meta: { ...relation, packetId: packet.id },
+    })
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "repertoire",
+      event: "repertoire.packet_completion_for_released_obligation_failed",
+      message: "failed to complete linked packet for released return obligation",
+      meta: {
+        ...relation,
+        packetId: packet.id,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+}
+
+function completePacketsForReturnObligation(agentRoot: string, returnObligationId: string): void {
+  for (const packet of listPonderPacketsByRelatedReturnObligationId(agentRoot, returnObligationId)) {
+    completeRelatedPacket(agentRoot, packet, { returnObligationId })
+  }
+}
+
+function completePacketsForObligation(agentRoot: string, obligationId: string): void {
+  for (const packet of listPonderPacketsByRelatedObligationId(agentRoot, obligationId)) {
+    completeRelatedPacket(agentRoot, packet, { obligationId })
+  }
+}
+
 function letGo(args: LetGoArgs, agentRoot: string, agentName: string): string {
   if (typeof args.id !== "string" || args.id.trim().length === 0) {
     return JSON.stringify({ error: "id is required" })
@@ -54,6 +96,7 @@ function letGo(args: LetGoArgs, agentRoot: string, agentName: string): string {
   const ret = readReturnObligation(agentName, id)
   if (ret) {
     if (ret.status === "returned" || ret.status === "deferred") {
+      completePacketsForReturnObligation(agentRoot, id)
       return JSON.stringify({ kind: "return_obligation", id, already: ret.status })
     }
     advanceReturnObligation(agentName, id, {
@@ -61,6 +104,7 @@ function letGo(args: LetGoArgs, agentRoot: string, agentName: string): string {
       returnedAt: Date.now(),
       returnTarget: "surface",
     })
+    completePacketsForReturnObligation(agentRoot, id)
     emitNervesEvent({
       component: "repertoire",
       event: "repertoire.obligation_let_go",
@@ -74,9 +118,11 @@ function letGo(args: LetGoArgs, agentRoot: string, agentName: string): string {
   const outer = readOuterObligation(agentRoot, id)
   if (outer) {
     if (outer.status === "fulfilled") {
+      completePacketsForObligation(agentRoot, id)
       return JSON.stringify({ kind: "obligation", id, already: "fulfilled" })
     }
     fulfillObligation(agentRoot, id)
+    completePacketsForObligation(agentRoot, id)
     if (reason !== null) {
       // Persist the dismissal reason as the obligation's latestNote so future-me
       // can read why this was released (the nerves event also captures it).
