@@ -8724,6 +8724,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (!command.agent) throw new Error("work sentinel requires --agent <name>")
     const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
     const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
+    if (command.kind === "work.sentinel.refresh") {
+      await refreshProviderCredentialPool(command.agent, { preserveCachedOnFailure: true })
+    }
     const sentinel = command.kind === "work.sentinel.refresh"
       ? await refreshContextLossSentinel(command.agent, agentRoot, { trigger: "manual_cli", homeDir: deps.homeDir })
       : readContextLossSentinelView(agentRoot, { limit: 20 })
@@ -8975,6 +8978,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       fetchImpl: deps.fetchImpl ?? fetch,
       socketPath: deps.socketPath,
       bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+      daemonLogsDir: path.join(getOuroCliHome(deps.homeDir), "daemon", "logs"),
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
       platform: process.platform,

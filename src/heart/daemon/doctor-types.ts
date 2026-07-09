@@ -59,6 +59,8 @@ export interface DoctorDeps {
   socketPath: string
   /** Root directory containing `<agent>.ouro` bundles (e.g., ~/AgentBundles). */
   bundlesRoot: string
+  /** Optional machine-local daemon log directory (e.g., ~/.ouro-cli/daemon/logs). */
+  daemonLogsDir?: string
   /** Home directory for the current user. */
   homedir: string
   /** Current PATH string used to resolve the `ouro` command. */

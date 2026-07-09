@@ -1,7 +1,41 @@
 import * as fs from "fs"
 import * as path from "path"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+const mockProviderCredentials = vi.hoisted(() => ({
+  pools: new Map<string, any>(),
+  refreshProviderCredentialPool: vi.fn(async (agentName: string) => {
+    const result = mockProviderCredentials.pools.get(agentName) ?? {
+      ok: true,
+      poolPath: `vault:${agentName}:providers/*`,
+      pool: {
+        schemaVersion: 1,
+        updatedAt: "2026-06-09T20:00:00.000Z",
+        providers: {},
+      },
+    }
+    mockProviderCredentials.pools.set(agentName, result)
+    return result
+  }),
+  readProviderCredentialPool: vi.fn((agentName: string) => {
+    return mockProviderCredentials.pools.get(agentName) ?? {
+      ok: false,
+      reason: "missing",
+      poolPath: `vault:${agentName}:providers/*`,
+      error: "provider credentials have not been loaded from vault",
+    }
+  }),
+}))
+
+vi.mock("../../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+  return {
+    ...actual,
+    refreshProviderCredentialPool: mockProviderCredentials.refreshProviderCredentialPool,
+    readProviderCredentialPool: mockProviderCredentials.readProviderCredentialPool,
+  }
+})
 
 import {
   parseOuroCommand,
@@ -18,6 +52,7 @@ import {
   readContextLossSentinelView,
   refreshContextLossSentinel,
 } from "../../../heart/context-loss-sentinel"
+import type { AgentProvider } from "../../../heart/identity"
 import type { AgentProviderVisibility } from "../../../heart/provider-visibility"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
@@ -122,6 +157,23 @@ function sentinelFileStats(rootDir: string): Record<string, { mtimeMs: number; s
   visit(rootDir)
   return stats
 }
+
+function providerRecord(provider: AgentProvider): Record<string, unknown> {
+  return {
+    provider,
+    revision: `vault_${provider}`,
+    updatedAt: "2026-06-09T20:00:00.000Z",
+    credentials: provider === "openai-codex" ? { oauthAccessToken: "token" } : { apiKey: "token" },
+    config: {},
+    provenance: { source: "manual", updatedAt: "2026-06-09T20:00:00.000Z" },
+  }
+}
+
+afterEach(() => {
+  mockProviderCredentials.pools.clear()
+  mockProviderCredentials.refreshProviderCredentialPool.mockClear()
+  mockProviderCredentials.readProviderCredentialPool.mockClear()
+})
 
 describe("ouro work card CLI", () => {
   it("parses work card and gauntlet text and JSON formats", () => {
@@ -311,6 +363,17 @@ describe("ouro work card CLI", () => {
   it("refreshes Sentinel explicitly with the manual_cli trigger", async () => {
     const tmp = createTmpBundle({ agentName: "slugger" })
     try {
+      mockProviderCredentials.pools.set("slugger", {
+        ok: true,
+        poolPath: "vault:slugger:providers/*",
+        pool: {
+          schemaVersion: 1,
+          updatedAt: "2026-06-09T20:00:00.000Z",
+          providers: {
+            minimax: providerRecord("minimax"),
+          },
+        },
+      })
       const writeStdout = vi.fn()
       const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, writeStdout })
 
@@ -320,6 +383,8 @@ describe("ouro work card CLI", () => {
 
       expect(parsed.agent).toBe("slugger")
       expect(parsed.trigger).toBe("manual_cli")
+      expect(JSON.stringify(parsed.signals)).not.toContain("credentials not loaded")
+      expect(mockProviderCredentials.refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
       expect(view.latest?.trigger).toBe("manual_cli")
       expect(view.history.map((receipt) => receipt.id)).toContain(parsed.id)
       expect(deps.sendCommand).not.toHaveBeenCalled()

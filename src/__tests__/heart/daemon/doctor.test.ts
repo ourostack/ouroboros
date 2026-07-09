@@ -1864,6 +1864,51 @@ describe("checkLifecycle", () => {
     expect(activity?.detail).toContain("silent or stopped")
   })
 
+  it("uses the machine-local daemon log when bundle-local daemon logs are stale", () => {
+    const staleTs = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const deps = createMockDeps({
+      daemonLogsDir: "/tmp/ouro/daemon/logs",
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson",
+        "/tmp/ouro/daemon/logs/daemon.ndjson",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": ndjsonLine(staleTs, "heart.mailbox_session_envelope_read"),
+        "/tmp/ouro/daemon/logs/daemon.ndjson": ndjsonLine(recentTs, "daemon.command_received"),
+      }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+    expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("warns when the machine-local daemon log is unreadable even if bundle logs are readable", () => {
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const deps = createMockDeps({
+      daemonLogsDir: "/tmp/ouro/daemon/logs",
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson",
+        "/tmp/ouro/daemon/logs/daemon.ndjson",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: (p: string) => {
+        if (p === "/tmp/ouro/daemon/logs/daemon.ndjson") throw new Error("EACCES")
+        return ndjsonLine(recentTs, "daemon.command_received")
+      },
+    })
+    const cat = checkLifecycle(deps)
+    const readable = cat.checks.find((c) => c.label === "daemon log readable")
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(readable?.status).toBe("warn")
+    expect(readable?.detail).toContain("EACCES")
+    expect(activity?.status).toBe("pass")
+  })
+
   it("counts daemon restarts in the last hour", () => {
     const now = Date.now()
     const log = [
