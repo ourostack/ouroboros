@@ -4,7 +4,7 @@ import { runPrivateRuntimeTurn, type PreparedHabitContext } from "./private-runt
 import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { emitNervesEvent } from "../nerves/runtime"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
 import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
@@ -21,9 +21,17 @@ import {
 } from "../arc/flight-recorder"
 import { readHabitSessionSummary } from "../heart/habits/habit-session-summary"
 import { FileFriendStore } from "@ouro.bot/friends"
+import type { UsageData } from "../mind/context"
 import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition, type ToolRiskProfile } from "../repertoire/tools-base"
 import { surfaceToolDefinition } from "../repertoire/tools-surface"
 import { riskProfileForTool } from "../repertoire/tools"
+import {
+  appendRunLedgerRecordNonFatal,
+  createRunLedgerRecord,
+  runLedgerHash,
+  usageMetadataFromUsageData,
+  type RunLedgerLifecycle,
+} from "../heart/run-ledger"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -89,6 +97,75 @@ interface PreparedHabitRun {
   errors: string[]
   producedRefs: HabitRunReceipt["producedRefs"]
   surfaceAttempts: HabitRunReceipt["surfaceAttempts"]
+}
+
+function isUsageData(value: unknown): value is UsageData {
+  const usage = value as Partial<UsageData> | null
+  return !!usage
+    && typeof usage.input_tokens === "number"
+    && typeof usage.output_tokens === "number"
+    && typeof usage.total_tokens === "number"
+}
+
+function extractUsageFromHabitResults(results: unknown[]): UsageData | undefined {
+  const aggregate: UsageData = {
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0,
+    total_tokens: 0,
+  }
+  let found = false
+  for (const result of results) {
+    if (!result || typeof result !== "object") continue
+    const usage = (result as { usage?: unknown }).usage
+    if (!isUsageData(usage)) continue
+    found = true
+    aggregate.input_tokens += usage.input_tokens
+    aggregate.output_tokens += usage.output_tokens
+    aggregate.reasoning_tokens += typeof usage.reasoning_tokens === "number" ? usage.reasoning_tokens : 0
+    aggregate.total_tokens += usage.total_tokens
+  }
+  return found ? aggregate : undefined
+}
+
+function habitRunLedgerBase(habitRun: PreparedHabitRun) {
+  const target = {
+    habitName: habitRun.habit.name,
+    runId: habitRun.runId,
+    trigger: habitRun.trigger,
+    operationId: habitRun.operationId,
+  }
+  return {
+    agent: getAgentName(),
+    triggerType: "habit" as const,
+    sourceKind: "private-runtime" as const,
+    senseOrHabit: habitRun.habit.name,
+    startedAt: habitRun.startedAt,
+    target,
+    idempotencyScope: target,
+    provider: "unknown",
+    model: "unknown",
+    sessionRef: {
+      channel: "inner",
+      keyHash: runLedgerHash({ habitName: habitRun.habit.name, runId: habitRun.runId }),
+    },
+  }
+}
+
+function recordHabitRunLedger(
+  habitRun: PreparedHabitRun,
+  lifecycle: RunLedgerLifecycle,
+  endedAt?: string,
+): void {
+  const usage = extractUsageFromHabitResults(habitRun.results)
+  appendRunLedgerRecordNonFatal(habitRun.agentRoot, createRunLedgerRecord({
+    ...habitRunLedgerBase(habitRun),
+    lifecycle,
+    ...(endedAt ? { endedAt } : {}),
+    ...(lifecycle === "completed" || lifecycle === "error"
+      ? { usage: usageMetadataFromUsageData(usage, usage ? "provider" : "none") }
+      : {}),
+  }))
 }
 
 /**
@@ -317,12 +394,21 @@ export function createPrivateRuntimeWorker(
   const queue: QueueEntry[] = []
   const lastFireByHabit = new Map<string, number>()
   const recentHabitFires: number[] = []
+  const startedHabitLedgerRunIds = new Set<string>()
   let heartbeatOkRestedAt: number | null = null
+
+  function recordHabitStartIfNeeded(habitRun: PreparedHabitRun): void {
+    if (startedHabitLedgerRunIds.has(habitRun.runId)) return
+    recordHabitRunLedger(habitRun, "started")
+    startedHabitLedgerRunIds.add(habitRun.runId)
+  }
 
   function recordHabitCompletion(
     habitRun: PreparedHabitRun,
     endedAt = habitRun.startedAt,
   ): void {
+    recordHabitStartIfNeeded(habitRun)
+    recordHabitRunLedger(habitRun, habitRun.errors.length > 0 ? "error" : "completed", endedAt)
     completeHabitRun({
       agentRoot: habitRun.agentRoot,
       habit: habitRun.habit,
@@ -458,6 +544,9 @@ export function createPrivateRuntimeWorker(
         }
         let turnResult: unknown
         try {
+          if (currentHabitRun) {
+            recordHabitStartIfNeeded(currentHabitRun)
+          }
           const turnOptions: PrivateRuntimeWorkerRunOptions = {
             reason: nextReason,
             taskId: nextTaskId,

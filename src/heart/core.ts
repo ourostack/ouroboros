@@ -371,6 +371,8 @@ export interface RunAgentOptions {
   orientationFrame?: OrientationFrame;
   /** Habit-session policy envelope for private habit turns. */
   habitSession?: HabitSessionToolContext;
+  /** Content-free same-turn context packet ids linked to this provider run. */
+  contextPacketIds?: string[];
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
