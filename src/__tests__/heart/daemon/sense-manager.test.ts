@@ -261,6 +261,69 @@ describe("daemon sense manager", () => {
     }))
   })
 
+  it("reports stale Workbench MCP entries as cleanup state when the senses block is absent", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-workbench-no-senses-stale-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      mcpServers: {
+        ouro_workbench: { command: 42, args: [] },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "workbench",
+      enabled: true,
+      status: "needs_config",
+      detail: "stale agent.json Workbench entry; run 'ouro connect workbench' to clean it and use runtime injection",
+    }))
+  })
+
+  it("reports Workbench as runtime-injected when no senses block and no stale MCP entry exist", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-workbench-no-senses-clean-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "workbench",
+      enabled: false,
+      status: "disabled",
+      detail: "runtime-injected by Workbench app; no agent.json entry required",
+    }))
+  })
+
   it("builds A2A managed process args from defaults when machine config is missing or malformed", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {

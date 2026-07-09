@@ -862,6 +862,72 @@ describe("buildSystem", () => {
     expect(result).toContain("Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
   })
 
+  it("marks raw Workbench MCP-only bundle placeholders as stale state", async () => {
+    setupReadFileSync({ mcpServers: { ouro_workbench: { command: 42 } } })
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        workbench: { enabled: false },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)")
+  })
+
+  it("does not mark raw Workbench-free bundle config as stale state", async () => {
+    setupReadFileSync({ senses: {}, mcpServers: {} })
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        workbench: { enabled: false },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Workbench: disabled (runtime-injected when launched by Workbench app)")
+  })
+
   it("marks persisted Workbench MCP registration as stale bundle state", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({

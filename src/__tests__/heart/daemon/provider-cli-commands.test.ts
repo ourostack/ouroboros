@@ -1534,6 +1534,7 @@ describe("provider CLI command execution", () => {
         existing_server: { command: "/usr/bin/true", args: ["--ok"] },
         ouro_workbench: { command: 42, args: [] },
       }
+      config.sync = { enabled: true, remote: "origin" }
     })
     const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
     fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
@@ -1546,6 +1547,7 @@ describe("provider CLI command execution", () => {
     }
 
     expect(result).toContain("agent.json: removed stale senses.workbench / mcpServers.ouro_workbench entries")
+    expect(result).toContain("bundle sync: could not push bundle changes")
     expect(config.mcpServers?.existing_server).toEqual({ command: "/usr/bin/true", args: ["--ok"] })
     expect(config.mcpServers?.ouro_workbench).toBeUndefined()
     expect(config.senses?.workbench).toBeUndefined()
@@ -1577,12 +1579,13 @@ describe("provider CLI command execution", () => {
         existing_server: { command: "/usr/bin/true", args: ["--ok"] },
         ouro_workbench: { command: "/missing/OuroWorkbenchMCP", args: [] },
       }
+      config.sync = { enabled: true, remote: "origin" }
     })
 
     await expect(runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       existsSync: () => false,
     })))
-      .rejects.toThrow("agent.json: removed stale senses.workbench / mcpServers.ouro_workbench entries")
+      .rejects.toThrow(/agent\.json: removed stale senses\.workbench \/ mcpServers\.ouro_workbench entries[\s\S]*bundle sync: could not push bundle changes/)
     const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
       senses?: Record<string, unknown>
       mcpServers?: Record<string, unknown>
@@ -1624,6 +1627,37 @@ describe("provider CLI command execution", () => {
     expect(prompt).toContain("stale bundle entry detected: remove senses.workbench")
     expect(prompt).toContain("mcpServers.ouro_workbench; Workbench tools are injected at runtime instead")
     expect(prompt).toContain("OuroWorkbenchMCP not found in ~/Applications or /Applications")
+  })
+
+  it("surfaces installed stale Workbench bundle config as needs attention in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu workbench installed stale")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-installed-stale-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-workbench-installed-stale-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        workbench: { enabled: false },
+      }
+    })
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "needs attention")
+    expect(prompt).toContain("OuroWorkbenchMCP found:")
+    expect(prompt).toContain("Workbench.app/Contents/MacOS/OuroWorkbenchMCP")
+    expect(prompt).toContain("stale bundle entry detected: remove senses.workbench")
   })
 
   it("shows installed Workbench runtime injection as ready without a bundle sense", async () => {

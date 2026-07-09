@@ -457,8 +457,13 @@ function rawWorkbenchBundleEntryPresent(): boolean | null {
     const raw = JSON.parse(fs.readFileSync(path.join(getAgentRoot(), "agent.json"), "utf-8")) as Record<string, unknown>
     const senses = recordOrUndefined(raw.senses)
     const mcpServers = recordOrUndefined(raw.mcpServers)
-    return Object.prototype.hasOwnProperty.call(senses ?? {}, "workbench")
-      || Object.prototype.hasOwnProperty.call(mcpServers ?? {}, "ouro_workbench")
+    const hasWorkbenchSense = senses
+      ? Object.prototype.hasOwnProperty.call(senses, "workbench")
+      : false
+    const hasWorkbenchMcp = mcpServers
+      ? Object.prototype.hasOwnProperty.call(mcpServers, "ouro_workbench")
+      : false
+    return hasWorkbenchSense || hasWorkbenchMcp
   } catch {
     return null
   }
