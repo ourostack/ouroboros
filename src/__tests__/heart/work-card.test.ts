@@ -384,6 +384,67 @@ describe("Work Card projection", () => {
     })
   })
 
+  it("does not count a drafting packet as active when its linked return obligation is terminal", () => {
+    const agentRoot = makeAgentRoot()
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations", "inner"), { recursive: true })
+    createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve stale held work",
+      summary: "The linked held return is already fulfilled.",
+      successCriteria: ["No active work-card packet"],
+      relatedReturnObligationId: "ret-fulfilled",
+      payload: {},
+    })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "inner", "ret-fulfilled.json"), JSON.stringify({
+      id: "ret-fulfilled",
+      status: "fulfilled",
+      delegatedContent: "legacy terminal return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: 1775976317954,
+    }), "utf-8")
+
+    const card = buildWorkCard("slugger", agentRoot, {
+      now: () => new Date("2026-06-08T12:00:00.000Z"),
+      homeDir: agentRoot,
+    })
+
+    expect(card.counts.activePackets).toBe(0)
+    expect(card.activeWork).toEqual([])
+    expect(card.nextAction.actor).toBe("unknown")
+  })
+
+  it("uses the injected clock consistently when pruning aged linked return packets", () => {
+    const agentRoot = makeAgentRoot()
+    const nowMs = 2_000_000_000_000
+    const dayMs = 24 * 60 * 60 * 1000
+    fs.mkdirSync(path.join(agentRoot, "arc", "obligations", "inner"), { recursive: true })
+    createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Resolve aged held work",
+      summary: "The linked held return is queued but aged out relative to the injected clock.",
+      successCriteria: ["No active work-card packet under fixed now"],
+      relatedReturnObligationId: "ret-aged",
+      payload: {},
+    })
+    fs.writeFileSync(path.join(agentRoot, "arc", "obligations", "inner", "ret-aged.json"), JSON.stringify({
+      id: "ret-aged",
+      status: "queued",
+      delegatedContent: "aged queued return",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      createdAt: nowMs - 30 * dayMs,
+    }), "utf-8")
+
+    const card = buildWorkCard("slugger", agentRoot, {
+      now: () => new Date(nowMs),
+      nowMs: () => nowMs,
+      homeDir: agentRoot,
+    })
+
+    expect(card.counts.returnObligations).toBe(0)
+    expect(card.counts.activePackets).toBe(0)
+    expect(card.activeWork).toEqual([])
+  })
+
   it("chooses non-blocked active packet work when nothing is waiting", () => {
     const agentRoot = makeAgentRoot()
     createPonderPacket(agentRoot, {

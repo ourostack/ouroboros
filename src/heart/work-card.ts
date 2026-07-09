@@ -9,7 +9,7 @@ import {
   type ObligationStatus,
   type ReturnObligationStatus,
 } from "../arc/obligations"
-import { listPonderPackets } from "../arc/packets"
+import { listActivePonderPackets } from "../arc/packets"
 import type { TaskStatus } from "../arc/task-lifecycle"
 import { readFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder"
 
@@ -108,15 +108,6 @@ export interface BuildWorkCardOptions {
   homeDir?: string
   flightRecorderResume?: FlightRecorderResume
 }
-
-const ACTIVE_PACKET_STATUSES: ReadonlySet<TaskStatus> = new Set([
-  "drafting",
-  "processing",
-  "validating",
-  "collaborating",
-  "paused",
-  "blocked",
-])
 
 function isoFromMs(ms: number): string {
   return new Date(ms).toISOString()
@@ -394,9 +385,7 @@ export function buildWorkCard(agentName: string, agentRoot: string, options: Bui
   const sourceIssues = scanArcSourceIssues(agentRoot)
   const owed = readPendingObligations(agentRoot).map(obligationItem)
   const returnObligations = listActiveReturnObligationsForRoot(agentRoot, { now: options.nowMs }).map(returnObligationItem)
-  const activePackets = listPonderPackets(agentRoot)
-    .filter((packet) => ACTIVE_PACKET_STATUSES.has(packet.status))
-    .map(packetItem)
+  const activePackets = listActivePonderPackets(agentRoot, { now: options.nowMs }).map(packetItem)
   const evolutionCases = listOpenEvolutionCases(agentRoot).map(evolutionItem)
   const activeWork = [...activePackets, ...evolutionCases]
   const waiting = waitingOnHuman([...owed, ...returnObligations, ...activeWork])

@@ -3,6 +3,7 @@ import { capStructuredRecordString, capStructuredRecordStringArray, capStructure
 import { emitNervesEvent } from "../nerves/runtime"
 import { isTaskStatus, type TaskStatus, validateTransition } from "./task-lifecycle"
 import { generateTimestampId, readJsonDir, readJsonFile, writeJsonFile } from "./json-store"
+import { isActiveReturnObligationRecord, readObligation, readReturnObligationForRoot } from "./obligations"
 import {
   addEvolutionEvidence,
   appendEvolutionTraceEvent,
@@ -98,6 +99,49 @@ function isPonderPacket(value: unknown): value is PonderPacket {
     && typeof packet.updatedAt === "number"
 }
 
+export const ACTIVE_PONDER_PACKET_STATUSES: ReadonlySet<TaskStatus> = new Set([
+  "drafting",
+  "processing",
+  "validating",
+  "collaborating",
+  "paused",
+  "blocked",
+])
+
+export function isActivePonderPacketStatus(status: TaskStatus): boolean {
+  return ACTIVE_PONDER_PACKET_STATUSES.has(status)
+}
+
+export interface ActivePonderPacketOptions {
+  now?: () => number
+}
+
+function hasInactiveLinkedReturnObligation(
+  agentRoot: string,
+  packet: PonderPacket,
+  options: ActivePonderPacketOptions = {},
+): boolean {
+  if (!packet.relatedReturnObligationId) return false
+  const obligation = readReturnObligationForRoot(agentRoot, packet.relatedReturnObligationId)
+  return !isActiveReturnObligationRecord(obligation, options)
+}
+
+function hasFulfilledLinkedObligation(agentRoot: string, packet: PonderPacket): boolean {
+  if (!packet.relatedObligationId) return false
+  const obligation = readObligation(agentRoot, packet.relatedObligationId)
+  return obligation?.status === "fulfilled"
+}
+
+export function isActivePonderPacket(
+  agentRoot: string,
+  packet: PonderPacket,
+  options: ActivePonderPacketOptions = {},
+): boolean {
+  return isActivePonderPacketStatus(packet.status)
+    && !hasInactiveLinkedReturnObligation(agentRoot, packet, options)
+    && !hasFulfilledLinkedObligation(agentRoot, packet)
+}
+
 function payloadString(payload: Record<string, unknown>, key: string): string | null {
   const value = payload[key]
   return typeof value === "string" && value.trim().length > 0 ? value : null
@@ -179,9 +223,37 @@ export function listPonderPackets(agentRoot: string): PonderPacket[] {
     .sort((left, right) => left.createdAt - right.createdAt)
 }
 
+export function listActivePonderPackets(
+  agentRoot: string,
+  options: ActivePonderPacketOptions = {},
+): PonderPacket[] {
+  return listPonderPackets(agentRoot).filter((packet) => isActivePonderPacket(agentRoot, packet, options))
+}
+
 export function readPonderPacket(agentRoot: string, packetId: string): PonderPacket | null {
   const packet = readJsonFile<PonderPacket>(packetsDir(agentRoot), packetId)
   return isPonderPacket(packet) ? packet : null
+}
+
+export function findPonderPacketByRelatedReturnObligationId(
+  agentRoot: string,
+  relatedReturnObligationId: string,
+): PonderPacket | null {
+  return listPonderPacketsByRelatedReturnObligationId(agentRoot, relatedReturnObligationId)[0] ?? null
+}
+
+export function listPonderPacketsByRelatedReturnObligationId(
+  agentRoot: string,
+  relatedReturnObligationId: string,
+): PonderPacket[] {
+  return listPonderPackets(agentRoot).filter((packet) => packet.relatedReturnObligationId === relatedReturnObligationId)
+}
+
+export function listPonderPacketsByRelatedObligationId(
+  agentRoot: string,
+  relatedObligationId: string,
+): PonderPacket[] {
+  return listPonderPackets(agentRoot).filter((packet) => packet.relatedObligationId === relatedObligationId)
 }
 
 export function createPonderPacket(agentRoot: string, input: CreatePonderPacketInput): PonderPacket {

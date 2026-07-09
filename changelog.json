@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.696",
+      "changes": [
+        "Prevent completed return-work packets from re-entering active Arc state."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.695",
       "changes": [
         "Prevent daemon-health context-loss Sentinel checks from treating Sentinel-authored flight-recorder cleanup as bundle dirt.",
