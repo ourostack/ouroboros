@@ -63,4 +63,6 @@ export interface DoctorDeps {
   homedir: string
   /** Current PATH string used to resolve the `ouro` command. */
   envPath?: string
+  /** Current Node platform. Used for platform-specific diagnostics. */
+  platform: string
 }
