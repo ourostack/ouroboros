@@ -94,17 +94,18 @@ When a human runs bare `ouro` in a TTY, Ouro opens the same command family from 
 
 `ouro connect voice` describes the current voice foundation and the required config fields. Voice is one sense with multiple transports. Spoken voice belongs to the agent's identity, but the product should expose one coherent current phone voice rather than asking people to reconcile multiple provider voices. `voice.openaiRealtimeVoice` is the current native Realtime phone voice, `voice.openaiRealtimeVoiceStyle` is the spoken identity target applied from the first audible greeting, and `voice.openaiRealtimeVoiceSpeed` is a small cadence nudge. ElevenLabs TTS credentials (`integrations.elevenLabsApiKey` and `integrations.elevenLabsVoiceId`) remain portable runtime config for the legacy cascade path, not a second canonical phone identity. Whisper.cpp STT uses this machine's `voice.whisperCliPath` and `voice.whisperModelPath` in `runtime/machines/<machine-id>/config`. Enabling `senses.voice.enabled` gives the agent first-class `voice` sessions; those sessions are transcript-first and appear in Ouro Mailbox as text. Meeting links have URL intake plus BlackHole/Multi-Output readiness checks. The managed Twilio phone transport attaches to the Voice entrypoint when this machine has `voice.twilioPublicUrl`; its default managed route is `/voice/agents/<agent>/twilio/incoming`. `voice.twilioTransportMode=record-play` keeps the conservative Twilio Record -> Whisper.cpp -> voice session -> tool-delivered `speak`/`settle` text -> ElevenLabs -> Twilio Play path. `voice.twilioTransportMode=media-stream` can run the cascade stream path or `voice.twilioConversationEngine=openai-realtime`. Native Realtime paths route Twilio audio through OpenAI Realtime speech-to-speech, use a compact voice-native identity prompt with recent transcript instead of the full general prompt, expose action tools plus `voice_end_call` and `voice_play_audio`, and keep turn detection separate from permission to speak by using Ouro floor-control over manual `response.create`. That floor-control contract is replayable: trace fixtures can assert floor-state and speech-policy events before a transport change reaches a live call. `voice.twilioConversationEngine=openai-sip` is the preferred low-latency inbound phone path when a phone-number transport can speak SIP: Twilio answers the existing number and returns `<Dial><Sip>` to OpenAI's project SIP endpoint, OpenAI sends `realtime.call.incoming` webhooks to Ouro at `/voice/agents/<agent>/sip/openai`, and Ouro verifies, accepts, monitors, transcripts, tools, and hangs up the call while keeping the same stable voice session. When SIP is paired with `media-stream`, outbound defaults to native OpenAI Realtime Media Streams to avoid the current Twilio outbound `<Dial><Sip>` post-pickup ringback; `voice.twilioOutboundConversationEngine` may override that default. Voice phone transports resolve known callers through the canonical friend record, preferring an existing explicit friend id and otherwise matching normalized phone numbers with `imessage-handle`, so trust and tool permissions stay consistent with text and mail. SIP exposes `voice_end_call` and model-rendered `voice_play_audio` tone cues; arbitrary URL/file clip bytes still need a media bridge such as a Twilio Conference/SIP mixer before the transport can inject raw audio while keeping the Realtime leg alive. Twilio phone sessions are keyed to the stable phone voice channel (friend/caller plus dialed line when available), while CallSid/OpenAI call id stay transport metadata for per-call artifacts. `voice.twilioPlaybackMode=buffered` remains available for local Record/Play compatibility testing. Live browser join/injection remains a handoff edge until provider automation lands.
 
-Ouro Workbench is a local machine sense for terminal/TUI agents. Enabling
-`senses.workbench.enabled` declares that the native Workbench room is part of
-the agent's local awareness. The matching `mcpServers.ouro_workbench` entry
-points at the installed `OuroWorkbenchMCP` executable and exposes bounded tools
-for status, sense rendering, transcript tail/search, recovery drills, and
-audited native action requests. Register or repair it with
-`ouro connect workbench --agent <agent>` or the native app. Workbench setup
-does not require provider secrets beyond the selected boss agent's existing
-vault-backed provider lanes;
-browser login, MFA, raw secret entry, and Apple Developer notarization remain
-human-required when they are actually needed.
+Ouro Workbench is a local machine sense for terminal/TUI agents, but it is not
+enabled by a synced `agent.json` entry. When the native Workbench app launches a
+boss agent, it starts `ouro mcp-serve --agent <agent> --workbench-mcp`, which
+injects the `ouro_workbench` tools for that served turn without writing
+`senses.workbench.enabled` or `mcpServers.ouro_workbench` into the bundle. The
+authoritative active signal is the presence of `workbench_*` tools in that turn.
+`ouro connect workbench --agent <agent>` verifies the installed
+`OuroWorkbenchMCP` binary and removes stale Workbench bundle entries left by old
+setups; it does not persist a Workbench server or sense. Workbench setup does
+not require provider secrets beyond the selected boss agent's existing
+vault-backed provider lanes; browser login, MFA, raw secret entry, and Apple
+Developer notarization remain human-required when they are actually needed.
 
 When a CLI auth/connect/vault repair command mutates the bundle, such as writing vault coordinates or enabling BlueBubbles in `agent.json`, Ouro runs the existing bundle sync path if `sync.enabled` is true. A successful command stays successful even if the bundle push fails, but the output includes a compact `bundle sync` line so the human and agent know whether the bundle change reached the remote.
 

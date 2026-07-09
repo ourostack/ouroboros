@@ -452,6 +452,26 @@ function recordOrUndefined(value: unknown): Record<string, unknown> | undefined 
   return !!value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
 }
 
+function rawWorkbenchBundleEntryPresent(): boolean | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(getAgentRoot(), "agent.json"), "utf-8")) as Record<string, unknown>
+    const senses = recordOrUndefined(raw.senses)
+    const mcpServers = recordOrUndefined(raw.mcpServers)
+    return Object.prototype.hasOwnProperty.call(senses ?? {}, "workbench")
+      || Object.prototype.hasOwnProperty.call(mcpServers ?? {}, "ouro_workbench")
+  } catch {
+    return null
+  }
+}
+
+function hasStaleWorkbenchBundleEntry(config: { senses?: Partial<AgentSensesConfig>; mcpServers?: Record<string, unknown> }): boolean {
+  return rawWorkbenchBundleEntryPresent()
+    ?? (
+      config.senses?.workbench?.enabled === true
+      || Object.prototype.hasOwnProperty.call(config.mcpServers ?? {}, "ouro_workbench")
+    )
+}
+
 function localSenseStatusLines(): string[] {
   const config = loadAgentConfig()
   const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
@@ -477,6 +497,7 @@ function localSenseStatusLines(): string[] {
   const portableVoice = recordOrUndefined(runtimePayload.voice) ?? recordOrUndefined(payload.voice)
   const integrations = recordOrUndefined(runtimePayload.integrations) ?? recordOrUndefined(payload.integrations)
   const privateKeys = mailroom?.privateKeys
+  const workbenchHasStaleBundleEntry = hasStaleWorkbenchBundleEntry(config)
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
@@ -487,8 +508,7 @@ function localSenseStatusLines(): string[] {
       && hasTextField(voice, "whisperCliPath")
       && hasTextField(voice, "whisperModelPath"),
     a2a: true,
-    workbench: typeof config.mcpServers?.ouro_workbench?.command === "string"
-      && config.mcpServers.ouro_workbench.command.trim().length > 0,
+    workbench: false,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -517,13 +537,13 @@ function localSenseStatusLines(): string[] {
       label: "Workbench",
       // Workbench can be injected at runtime (the Workbench app spawns
       // `ouro mcp-serve --workbench-mcp` for its boss) with NO agent.json entry.
-      // A disabled/needs_config row here does NOT mean the tools are absent —
+      // A disabled/stale row here does NOT mean the tools are absent —
       // the authoritative signal is whether `workbench_*` tools are in the
       // toolset this turn. The annotation prevents the agent from misreading the
       // row as "blocked".
-      status: !senses.workbench.enabled
-        ? "disabled (runtime-injected when launched by Workbench app)"
-        : configured.workbench ? "ready" : "needs_config",
+      status: workbenchHasStaleBundleEntry
+        ? "stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)"
+        : "disabled (runtime-injected when launched by Workbench app)",
     },
   ]
 
@@ -545,7 +565,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
   lines.push("a2a setup truth: run `ouro connect a2a --agent <agent>` to enable the A2A sense, `ouro a2a card --agent <agent> --base-url <public-url>` to publish an agent card, and `ouro a2a onboard --agent <agent> --card-url <peer-card-url>` to add a peer as an agent friend. A2A uses the existing friend trust model, not a separate trust registry.")
-  lines.push("workbench setup truth: Ouro Workbench is the local machine sense for terminal/TUI agents. When the Workbench app launches me as its boss it injects the `ouro_workbench` MCP into my turn at runtime (it spawns `ouro mcp-serve --agent <me> --workbench-mcp`), so I receive the tools for the served session without any `agent.json` `mcpServers.ouro_workbench` entry — nothing is written to the bundle, so this stays path-free and cross-machine clean. The authoritative signal that Workbench is active is simply that the `workbench_*` tools are present in my toolset this turn; the sense table or `agent.json` may still read as disabled/needs_config because no bundle entry exists, and that is expected under runtime injection — I do NOT treat that as blocked or as a trust-level problem. I observe and queue auditable Workbench actions through `workbench_status`, `workbench_sense`, `workbench_transcript_tail`, `workbench_search_transcripts`, `workbench_recovery_drill`, and `workbench_request_action`; raw provider secrets remain in the agent vault, and Apple notarization is unrelated to local use. The explicit `ouro connect workbench --agent <me>` command still writes a persistent bundle entry as an opt-in escape hatch, but the boss does not need it.")
+  lines.push("workbench setup truth: Ouro Workbench is the local machine sense for terminal/TUI agents. When the Workbench app launches me as its boss it injects the `ouro_workbench` MCP into my turn at runtime (it spawns `ouro mcp-serve --agent <me> --workbench-mcp`), so I receive the tools for the served session without any `agent.json` `mcpServers.ouro_workbench` entry — nothing is written to the bundle, so this stays path-free and cross-machine clean. The authoritative signal that Workbench is active is simply that the `workbench_*` tools are present in my toolset this turn; the sense table may read as disabled when no bundle entry exists, or as `stale_bundle_entry` when legacy bundle config needs cleanup, and neither state proves the runtime-injected tools are absent — I do NOT treat that as blocked or as a trust-level problem. I observe and queue auditable Workbench actions through `workbench_status`, `workbench_sense`, `workbench_transcript_tail`, `workbench_search_transcripts`, `workbench_recovery_drill`, and `workbench_request_action`; raw provider secrets remain in the agent vault, and Apple notarization is unrelated to local use. The explicit `ouro connect workbench --agent <me>` command verifies the installed MCP binary and removes stale Workbench bundle entries; it does not enable `senses.workbench` or write `mcpServers.ouro_workbench`.")
   lines.push("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist. I guide the flow end-to-end: name the current phase, run agent-runnable commands myself with shell/tools when available, ask the human only for human-required facts or browser actions, wait for their reply, verify the result, then continue.")
   lines.push("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. Say what I am about to run, run it myself, and report the result. If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue; I do not offload CLI operation to the human.")
   lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. For the full work substrate account, the agent-runnable command is `ouro account ensure --agent <agent> --owner-email <email> --source hey`; use `ouro connect mail --agent <agent> --owner-email <email> --source hey` for mail-only repair/provisioning, or `--no-delegated-source` for native-only mail. The detailed runbook is `docs/agent-mail-setup.md`.")

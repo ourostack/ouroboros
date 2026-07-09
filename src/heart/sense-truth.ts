@@ -51,6 +51,9 @@ function resolveStatus(
     return "disabled"
   }
   if (!daemonManaged) {
+    if (runtimeInfo?.configured === false) {
+      return "needs_config"
+    }
     return "interactive"
   }
   if (runtimeInfo?.runtime === "error") {

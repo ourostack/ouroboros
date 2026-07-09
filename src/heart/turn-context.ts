@@ -192,6 +192,26 @@ function recordOrUndefined(value: unknown): Record<string, unknown> | undefined 
   return !!value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
 }
 
+function rawWorkbenchBundleEntryPresent(): boolean | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(getAgentRoot(), "agent.json"), "utf-8")) as Record<string, unknown>
+    const senses = recordOrUndefined(raw.senses)
+    const mcpServers = recordOrUndefined(raw.mcpServers)
+    return Object.prototype.hasOwnProperty.call(senses ?? {}, "workbench")
+      || Object.prototype.hasOwnProperty.call(mcpServers ?? {}, "ouro_workbench")
+  } catch {
+    return null
+  }
+}
+
+function hasStaleWorkbenchBundleEntry(config: { senses?: Partial<AgentSensesConfig>; mcpServers?: Record<string, unknown> }): boolean {
+  return rawWorkbenchBundleEntryPresent()
+    ?? (
+      config.senses?.workbench?.enabled === true
+      || Object.prototype.hasOwnProperty.call(config.mcpServers ?? {}, "ouro_workbench")
+    )
+}
+
 function readSenseStatusLines(): string[] {
   const config = loadAgentConfig()
   const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
@@ -240,6 +260,7 @@ function readSenseStatusLines(): string[] {
     && hasTextField(voice, "whisperCliPath")
     && hasTextField(voice, "whisperModelPath")
   const privateKeys = mailroom?.privateKeys
+  const workbenchHasStaleBundleEntry = hasStaleWorkbenchBundleEntry(config)
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
@@ -252,8 +273,7 @@ function readSenseStatusLines(): string[] {
         ? openAIRealtimeVoiceReady
         : cascadeVoiceReady,
     a2a: true,
-    workbench: typeof config.mcpServers?.ouro_workbench?.command === "string"
-      && config.mcpServers.ouro_workbench.command.trim().length > 0,
+    workbench: false,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -282,13 +302,13 @@ function readSenseStatusLines(): string[] {
       label: "Workbench",
       // Workbench can be injected at runtime (the Workbench app spawns
       // `ouro mcp-serve --workbench-mcp` for its boss) with NO agent.json entry.
-      // A disabled/needs_config row here does NOT mean the tools are absent —
+      // A disabled/stale row here does NOT mean the tools are absent —
       // the authoritative signal is whether `workbench_*` tools are in the
       // toolset this turn. The annotation prevents the agent from misreading the
       // row as "blocked".
-      status: !senses.workbench.enabled
-        ? "disabled (runtime-injected when launched by Workbench app)"
-        : configured.workbench ? "ready" : "needs_config",
+      status: workbenchHasStaleBundleEntry
+        ? "stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)"
+        : "disabled (runtime-injected when launched by Workbench app)",
     },
   ]
 

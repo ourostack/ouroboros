@@ -419,7 +419,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro connect a2a --agent <agent>",
   },
   "connect workbench": {
-    description: "Attach native Ouro Workbench on this machine and register its MCP sense",
+    description: "Verify native Ouro Workbench runtime injection and clean stale bundle entries",
     usage: "ouro connect workbench [--agent <name>]",
     example: "ouro connect workbench --agent <agent>",
   },
