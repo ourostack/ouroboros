@@ -276,6 +276,79 @@ function runChildVitest(testPath: string, env: Record<string, string>): Promise<
   })
 }
 
+function commitBundleBaseline(agentRoot: string): void {
+  fs.writeFileSync(path.join(agentRoot, ".gitignore"), "state/\n", "utf-8")
+  execFileSync("git", ["init", "--initial-branch=main"], { cwd: agentRoot, stdio: "pipe" })
+  execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: agentRoot, stdio: "pipe" })
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: agentRoot, stdio: "pipe" })
+  execFileSync("git", ["add", "-A"], { cwd: agentRoot, stdio: "pipe" })
+  execFileSync("git", ["commit", "-m", "baseline"], { cwd: agentRoot, stdio: "pipe" })
+}
+
+function trackEmptyFlightRecorderDay(agentRoot: string, day = "2026-06-08"): void {
+  const eventsDir = path.join(agentRoot, "arc", "flight-recorder", "events")
+  fs.mkdirSync(eventsDir, { recursive: true })
+  const eventPath = path.join(eventsDir, `${day}.jsonl`)
+  if (!fs.existsSync(eventPath)) fs.writeFileSync(eventPath, "", "utf-8")
+}
+
+function appendSentinelFlightRecorderEvent(
+  agentRoot: string,
+  event: { id: string; recordedAt: string; receiptId: string },
+): void {
+  const eventsDir = path.join(agentRoot, "arc", "flight-recorder", "events")
+  fs.mkdirSync(eventsDir, { recursive: true })
+  fs.appendFileSync(
+    path.join(eventsDir, `${event.recordedAt.slice(0, 10)}.jsonl`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      id: event.id,
+      kind: "agent_note",
+      recordedAt: event.recordedAt,
+      summary: "context-loss Sentinel checkpoint event",
+      blockedBecause: [],
+      producedRefs: [{
+        kind: "arc",
+        locator: `arc/flight-recorder/context-loss-sentinel/receipts/${event.receiptId}.json`,
+      }],
+      meta: {
+        source: "context-loss-sentinel",
+        receiptId: event.receiptId,
+        resolution: "blocked-signals-recovered",
+      },
+    })}\n`,
+    "utf-8",
+  )
+}
+
+function appendSentinelBlockerEvent(
+  agentRoot: string,
+  event: { id: string; recordedAt: string; receiptId: string },
+): void {
+  const eventsDir = path.join(agentRoot, "arc", "flight-recorder", "events")
+  fs.mkdirSync(eventsDir, { recursive: true })
+  fs.appendFileSync(
+    path.join(eventsDir, `${event.recordedAt.slice(0, 10)}.jsonl`),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      id: event.id,
+      kind: "blocker_detected",
+      recordedAt: event.recordedAt,
+      summary: "context-loss Sentinel blocked recovery",
+      blockedBecause: ["context-loss Sentinel blocked: provider:outward: unavailable"],
+      producedRefs: [{
+        kind: "arc",
+        locator: `arc/flight-recorder/context-loss-sentinel/receipts/${event.receiptId}.json`,
+      }],
+      meta: {
+        source: "context-loss-sentinel",
+        receiptId: event.receiptId,
+      },
+    })}\n`,
+    "utf-8",
+  )
+}
+
 afterEach(() => {
   vi.useRealTimers()
   for (const dir of tempDirs.splice(0)) {
@@ -692,6 +765,689 @@ describe("context-loss Sentinel core", () => {
 
     expect(defaultStatus).toBe("?? arc/\n")
     expect(expandedStatus).toBe("?? arc/flight-recorder/context-loss-sentinel/receipts/sentinel-existing.json\n")
+  })
+
+  it("discounts context-loss Sentinel-authored flight-recorder dirt during daemon-health bundle checks", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-self-recorder-ready-anchor",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    trackEmptyFlightRecorderDay(agentRoot)
+    commitBundleBaseline(agentRoot)
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-sentinel-self-recorder-blocker",
+      kind: "blocker_detected",
+      recordedAt: "2026-06-08T20:11:00.000Z",
+      summary: "context-loss Sentinel blocked recovery",
+      blockedBecause: ["context-loss Sentinel blocked: sense:sense-probe:mcp-canary:slugger: timeout"],
+      producedRefs: [{
+        kind: "arc",
+        locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-self-recorder-blocked.json",
+      }],
+      meta: {
+        source: "context-loss-sentinel",
+        receiptId: "sentinel-self-recorder-blocked",
+      },
+    })
+
+    const recovered = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-self-recorder-recovered",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(recovered.verdict).toBe("ready")
+    expect(signal(recovered.signals, "bundle:git")).toMatchObject({
+      status: "pass",
+      verdictImpact: "none",
+    })
+    expect(readFlightRecorderResume(agentRoot).blockedBecause).toEqual([])
+
+    const stabilized = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:13:00.000Z"),
+      createReceiptId: () => "sentinel-self-recorder-stabilized",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(stabilized.verdict).toBe("ready")
+    expect(signal(stabilized.signals, "bundle:git")).toMatchObject({
+      status: "pass",
+      verdictImpact: "none",
+    })
+
+    const paths = contextLossSentinelPaths(agentRoot)
+    const before = sentinelFileSnapshot(paths.rootDir)
+    const beforeMetadata = sentinelFileMetadataSnapshot(paths.rootDir)
+    const coalesced = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:14:00.000Z"),
+      createReceiptId: () => "sentinel-self-recorder-coalesced",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(coalesced.id).toBe(stabilized.id)
+    expect(sentinelFileSnapshot(paths.rootDir)).toEqual(before)
+    expect(sentinelFileMetadataSnapshot(paths.rootDir)).toEqual(beforeMetadata)
+    expect(fs.existsSync(path.join(paths.receiptsDir, "sentinel-self-recorder-coalesced.json"))).toBe(false)
+  })
+
+  it("keeps mixed replacement flight-recorder event dirt visible during daemon-health checks", async () => {
+    const agentRoot = makeAgentRoot()
+    const eventsDir = path.join(agentRoot, "arc", "flight-recorder", "events")
+    fs.mkdirSync(eventsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(eventsDir, "2026-06-08.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-human-baseline",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:15:00.000Z",
+        summary: "ordinary baseline event",
+        meta: { source: "human" },
+      })}\n`,
+      "utf-8",
+    )
+    commitBundleBaseline(agentRoot)
+    fs.writeFileSync(
+      path.join(eventsDir, "2026-06-08.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-sentinel-replaced-ordinary-line",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:16:00.000Z",
+        summary: "context-loss Sentinel event cannot hide replaced ordinary history",
+        producedRefs: [{
+          kind: "arc",
+          locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-replaced.json",
+        }],
+        meta: {
+          source: "context-loss-sentinel",
+          receiptId: "sentinel-replaced",
+        },
+      })}\n`,
+      "utf-8",
+    )
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:17:00.000Z"),
+      createReceiptId: () => "sentinel-mixed-replacement-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/events/2026-06-08.jsonl"],
+      },
+    })
+  })
+
+  it("keeps flight-recorder event dirt visible when existing history is changed before Sentinel appends", async () => {
+    const agentRoot = makeAgentRoot()
+    const eventsDir = path.join(agentRoot, "arc", "flight-recorder", "events")
+    fs.mkdirSync(eventsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(eventsDir, "2026-06-08.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-human-prefix-baseline",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:17:30.000Z",
+        summary: "ordinary prefix baseline event",
+        meta: { source: "human" },
+      })}\n`,
+      "utf-8",
+    )
+    commitBundleBaseline(agentRoot)
+    fs.writeFileSync(
+      path.join(eventsDir, "2026-06-08.jsonl"),
+      [
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "fr-human-prefix-changed",
+          kind: "agent_note",
+          recordedAt: "2026-06-08T20:17:30.000Z",
+          summary: "ordinary prefix was changed before Sentinel appended",
+          meta: { source: "human" },
+        }),
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "fr-sentinel-after-prefix-change",
+          kind: "agent_note",
+          recordedAt: "2026-06-08T20:18:00.000Z",
+          summary: "context-loss Sentinel append cannot hide prior content changes",
+          producedRefs: [{
+            kind: "arc",
+            locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-after-prefix-change.json",
+          }],
+          meta: {
+            source: "context-loss-sentinel",
+            receiptId: "sentinel-after-prefix-change",
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf-8",
+    )
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:18:30.000Z"),
+      createReceiptId: () => "sentinel-prefix-change-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/events/2026-06-08.jsonl"],
+      },
+    })
+  })
+
+  it("keeps staged Sentinel flight-recorder event dirt visible during daemon-health checks", async () => {
+    const agentRoot = makeAgentRoot()
+    trackEmptyFlightRecorderDay(agentRoot)
+    commitBundleBaseline(agentRoot)
+    fs.appendFileSync(
+      path.join(agentRoot, "arc", "flight-recorder", "events", "2026-06-08.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-sentinel-staged-note",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:18:00.000Z",
+        summary: "context-loss Sentinel staged note stays visible",
+        producedRefs: [{
+          kind: "arc",
+          locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-staged.json",
+        }],
+        meta: {
+          source: "context-loss-sentinel",
+          receiptId: "sentinel-staged",
+        },
+      })}\n`,
+      "utf-8",
+    )
+    execFileSync("git", ["add", "arc/flight-recorder/events/2026-06-08.jsonl"], { cwd: agentRoot, stdio: "pipe" })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:19:00.000Z"),
+      createReceiptId: () => "sentinel-staged-event-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: ["M  arc/flight-recorder/events/2026-06-08.jsonl"],
+      },
+    })
+  })
+
+  it("keeps ordinary flight-recorder dirt visible during daemon-health bundle checks", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:20:00.000Z"),
+      createReceiptId: () => "sentinel-ordinary-recorder-ready-anchor",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    trackEmptyFlightRecorderDay(agentRoot)
+    commitBundleBaseline(agentRoot)
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-human-recorder-note",
+      kind: "agent_note",
+      recordedAt: "2026-06-08T20:21:00.000Z",
+      summary: "ordinary flight-recorder note",
+      producedRefs: [{
+        kind: "arc",
+        locator: "arc/notes/human-note.json",
+      }],
+      meta: {
+        source: "human",
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:22:00.000Z"),
+      createReceiptId: () => "sentinel-ordinary-recorder-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: expect.arrayContaining([
+          " M arc/flight-recorder/events/2026-06-08.jsonl",
+          " M arc/flight-recorder/latest.json",
+        ]),
+      },
+    })
+  })
+
+  it("keeps flight-recorder dirt visible when Sentinel ownership cannot be proven", async () => {
+    const agentRoot = makeAgentRoot()
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:30:00.000Z",
+        sourceEventIds: ["fr-sentinel-uncommitted-recovered"],
+      },
+    })
+    const eventsDir = path.join(agentRoot, "arc", "flight-recorder", "events")
+    fs.mkdirSync(eventsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(eventsDir, "2026-06-08.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-sentinel-uncommitted-recovered",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:30:00.000Z",
+        summary: "context-loss Sentinel cleared its prior recovery blocker",
+        producedRefs: [{
+          kind: "arc",
+          locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-uncommitted.json",
+        }],
+        meta: {
+          source: "context-loss-sentinel",
+          receiptId: "sentinel-uncommitted",
+        },
+      })}\n`,
+      "utf-8",
+    )
+    fs.writeFileSync(path.join(eventsDir, "bad.jsonl"), "not-json\n", "utf-8")
+    fs.writeFileSync(
+      path.join(eventsDir, "bad-ref.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-sentinel-bad-produced-ref",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:30:30.000Z",
+        summary: "context-loss Sentinel event with unprovable produced ref",
+        producedRefs: [{}],
+        meta: {
+          source: "context-loss-sentinel",
+          receiptId: "sentinel-bad-produced-ref",
+        },
+      })}\n`,
+      "utf-8",
+    )
+    fs.writeFileSync(
+      path.join(eventsDir, "bad-null-ref.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-sentinel-bad-null-produced-ref",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:30:45.000Z",
+        summary: "context-loss Sentinel event with null produced ref",
+        producedRefs: [null],
+        meta: {
+          source: "context-loss-sentinel",
+          receiptId: "sentinel-bad-null-produced-ref",
+        },
+      })}\n`,
+      "utf-8",
+    )
+    fs.writeFileSync(
+      path.join(eventsDir, "bad-string-ref.jsonl"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        id: "fr-sentinel-bad-string-produced-ref",
+        kind: "agent_note",
+        recordedAt: "2026-06-08T20:30:50.000Z",
+        summary: "context-loss Sentinel event with string produced ref",
+        producedRefs: "not-array",
+        meta: {
+          source: "context-loss-sentinel",
+          receiptId: "sentinel-bad-string-produced-ref",
+        },
+      })}\n`,
+      "utf-8",
+    )
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:31:00.000Z"),
+      createReceiptId: () => "sentinel-unproven-recorder-dirt",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: [
+          " M arc/flight-recorder/latest.json",
+          " D arc/flight-recorder/events/deleted.jsonl",
+          " M arc/flight-recorder/events/2026-06-08.jsonl",
+          "?? arc/flight-recorder/events/bad.jsonl",
+          "?? arc/flight-recorder/events/bad-ref.jsonl",
+          "?? arc/flight-recorder/events/bad-null-ref.jsonl",
+          "?? arc/flight-recorder/events/bad-string-ref.jsonl",
+          "?? arc/flight-recorder/events/missing.jsonl",
+        ].join("\n"),
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [
+          " M arc/flight-recorder/latest.json",
+          " D arc/flight-recorder/events/deleted.jsonl",
+          " M arc/flight-recorder/events/2026-06-08.jsonl",
+          "?? arc/flight-recorder/events/bad.jsonl",
+          "?? arc/flight-recorder/events/bad-ref.jsonl",
+          "?? arc/flight-recorder/events/bad-null-ref.jsonl",
+          "?? arc/flight-recorder/events/bad-string-ref.jsonl",
+          "?? arc/flight-recorder/events/missing.jsonl",
+        ],
+      },
+    })
+  })
+
+  it("keeps deleted, untracked, and staged flight-recorder latest dirt visible during daemon-health checks", async () => {
+    const agentRoot = makeAgentRoot()
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:32:00.000Z"),
+      createReceiptId: () => "sentinel-latest-delete-untracked-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: [
+          " D arc/flight-recorder/latest.json",
+          "?? arc/flight-recorder/latest.json",
+          "M  arc/flight-recorder/latest.json",
+        ].join("\n"),
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [
+          " D arc/flight-recorder/latest.json",
+          "?? arc/flight-recorder/latest.json",
+          "M  arc/flight-recorder/latest.json",
+        ],
+      },
+    })
+  })
+
+  it("keeps flight-recorder latest dirt visible when checkpoint events are missing", async () => {
+    const agentRoot = makeAgentRoot()
+    commitBundleBaseline(agentRoot)
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:33:00.000Z",
+        sourceEventIds: ["fr-sentinel-fake"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:34:00.000Z"),
+      createReceiptId: () => "sentinel-latest-missing-event-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: " M arc/flight-recorder/latest.json",
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/latest.json"],
+      },
+    })
+  })
+
+  it("keeps flight-recorder latest dirt visible when HEAD cannot prove the baseline", async () => {
+    const agentRoot = makeAgentRoot()
+    appendSentinelFlightRecorderEvent(agentRoot, {
+      id: "fr-sentinel-no-head-baseline",
+      recordedAt: "2026-06-08T20:34:10.000Z",
+      receiptId: "sentinel-no-head-baseline",
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:34:10.000Z",
+        sourceEventIds: ["fr-sentinel-no-head-baseline"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:34:20.000Z"),
+      createReceiptId: () => "sentinel-latest-no-head-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: " M arc/flight-recorder/latest.json",
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/latest.json"],
+      },
+    })
+  })
+
+  it("keeps blocked flight-recorder latest dirt visible when it points at a recovery event", async () => {
+    const agentRoot = makeAgentRoot()
+    commitBundleBaseline(agentRoot)
+    appendSentinelFlightRecorderEvent(agentRoot, {
+      id: "fr-sentinel-recovery-cannot-prove-blocked",
+      recordedAt: "2026-06-08T20:34:30.000Z",
+      receiptId: "sentinel-recovery-cannot-prove-blocked",
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume({
+        canContinue: false,
+        blockedBecause: ["context-loss Sentinel blocked: provider:outward: unavailable"],
+      }),
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:34:30.000Z",
+        sourceEventIds: ["fr-sentinel-recovery-cannot-prove-blocked"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:34:40.000Z"),
+      createReceiptId: () => "sentinel-latest-blocked-wrong-event-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: " M arc/flight-recorder/latest.json",
+      }),
+    })
+
+    expect(receipt.verdict).toBe("blocked")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/latest.json"],
+      },
+    })
+  })
+
+  it("keeps cleared flight-recorder latest dirt visible when it points at a blocker event", async () => {
+    const agentRoot = makeAgentRoot()
+    commitBundleBaseline(agentRoot)
+    appendSentinelBlockerEvent(agentRoot, {
+      id: "fr-sentinel-blocker-cannot-prove-cleared",
+      recordedAt: "2026-06-08T20:34:50.000Z",
+      receiptId: "sentinel-blocker-cannot-prove-cleared",
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:34:50.000Z",
+        sourceEventIds: ["fr-sentinel-blocker-cannot-prove-cleared"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:34:55.000Z"),
+      createReceiptId: () => "sentinel-latest-cleared-wrong-event-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: " M arc/flight-recorder/latest.json",
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/latest.json"],
+      },
+    })
+  })
+
+  it("keeps flight-recorder latest dirt visible when HEAD is not a valid resume", async () => {
+    const agentRoot = makeAgentRoot()
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "latest.json"), "{not-json\n", "utf-8")
+    commitBundleBaseline(agentRoot)
+    appendSentinelFlightRecorderEvent(agentRoot, {
+      id: "fr-sentinel-bad-head-recovered",
+      recordedAt: "2026-06-08T20:35:00.000Z",
+      receiptId: "sentinel-bad-head-recovered",
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:35:00.000Z",
+        sourceEventIds: ["fr-sentinel-bad-head-recovered"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:36:00.000Z"),
+      createReceiptId: () => "sentinel-latest-bad-head-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: " M arc/flight-recorder/latest.json",
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/latest.json"],
+      },
+    })
+  })
+
+  it("keeps flight-recorder latest dirt visible when Sentinel changed non-checkpoint resume state", async () => {
+    const agentRoot = makeAgentRoot()
+    commitBundleBaseline(agentRoot)
+    appendSentinelFlightRecorderEvent(agentRoot, {
+      id: "fr-sentinel-material-change",
+      recordedAt: "2026-06-08T20:37:00.000Z",
+      receiptId: "sentinel-material-change",
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume({
+        currentAsk: {
+          value: "new current ask should stay visible",
+          confidence: "current",
+          sourceEventIds: ["fr-new-ask"],
+        },
+      }),
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "codex/session",
+        recordedAt: "2026-06-08T20:37:00.000Z",
+        sourceEventIds: ["fr-sentinel-material-change"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:38:00.000Z"),
+      createReceiptId: () => "sentinel-latest-material-visible",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: " M arc/flight-recorder/latest.json",
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+      meta: {
+        dirtyEntries: [" M arc/flight-recorder/latest.json"],
+      },
+    })
   })
 
   it("uses coalesced daemon-health order watermarks for older delayed refreshes", async () => {

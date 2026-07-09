@@ -585,21 +585,35 @@ describe("daemon entrypoint", () => {
     })
     expect(habitSchedulerTriggerJobMock).toHaveBeenCalledWith("slugger:heartbeat:cadence", "cron")
 
+    const originalSetTimeout = globalThis.setTimeout
+    const forcedExitTimers: Array<ReturnType<typeof setTimeout>> = []
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: any, timeout?: any, ...args: any[]) => {
+      const timer = originalSetTimeout(handler, timeout, ...args)
+      if (timeout === 5_000) forcedExitTimers.push(timer)
+      return timer
+    }) as typeof setTimeout)
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
     onHandlers.SIGINT?.()
     await Promise.resolve()
     expect(stop).toHaveBeenCalled()
     // HabitScheduler should be stopped on SIGINT
     expect(habitSchedulerStopMock).toHaveBeenCalled()
     expect(exitSpy).toHaveBeenCalledWith(0)
+    expect(forcedExitTimers).toHaveLength(1)
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
     // Tombstone is now written on SIGINT (regression: previous behavior was
     // to set _gracefulShutdown=true and skip the tombstone, leaving signal-driven
     // shutdowns invisible in the death log)
     expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigint", expect.any(Error))
 
     writeDaemonTombstoneMock.mockClear()
+    clearTimeoutSpy.mockClear()
+    forcedExitTimers.splice(0)
     onHandlers.SIGTERM?.()
     await Promise.resolve()
     expect(exitSpy).toHaveBeenCalledWith(0)
+    expect(forcedExitTimers).toHaveLength(1)
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
     // Same fix for SIGTERM — was the more common silent-death cause because
     // killOrphanProcesses, launchd policies, and the OOM killer all use SIGTERM
     expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigterm", expect.any(Error))
@@ -1242,6 +1256,14 @@ describe("daemon entrypoint", () => {
     const daemonCtor = vi.fn()
     const processManagerCtor = vi.fn()
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    const originalSetTimeout = globalThis.setTimeout
+    const forcedExitTimers: Array<ReturnType<typeof setTimeout>> = []
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: any, timeout?: any, ...args: any[]) => {
+      const timer = originalSetTimeout(handler, timeout, ...args)
+      if (timeout === 5_000) forcedExitTimers.push(timer)
+      return timer
+    }) as typeof setTimeout)
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
     vi.spyOn(process, "on").mockImplementation(((
       _event: string,
       _cb: () => void,
@@ -1293,6 +1315,8 @@ describe("daemon entrypoint", () => {
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
     expect(daemonCtor).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalled()
+    expect(forcedExitTimers).toHaveLength(1)
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
     expect(exitSpy).toHaveBeenCalledWith(1)
 
     argvSpy.mockRestore()

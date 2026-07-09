@@ -131,6 +131,7 @@ export interface ReadContextLossSentinelViewOptions {
 }
 
 const CONTEXT_LOSS_SENTINEL_RECEIPT_FILE_LIMIT = 512
+const CONTEXT_LOSS_SENTINEL_GIT_STATUS_TIMEOUT_MS = 5_000
 
 interface ContextLossSentinelOrder {
   generatedAt: string
@@ -755,7 +756,7 @@ function defaultGitStatus(agentRoot: string): ContextLossSentinelGitStatus {
       cwd: agentRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 1_000,
+      timeout: CONTEXT_LOSS_SENTINEL_GIT_STATUS_TIMEOUT_MS,
     })
     return { ok: true, porcelain }
   } catch (error) {
@@ -809,9 +810,179 @@ function isSentinelGitStatusEntry(entry: string): boolean {
   })
 }
 
+function isContextLossSentinelBlockerText(value: string): boolean {
+  return value.startsWith("context-loss Sentinel blocked:")
+}
+
+function hasContextLossSentinelCheckpointEvents(agentRoot: string, resume: FlightRecorderResume): boolean {
+  const events = readFlightRecorderEventsByIds(agentRoot, resume.lastSafeCheckpoint.sourceEventIds)
+  const foundEventIds = new Set(events.map((event) => event.id))
+  if (resume.lastSafeCheckpoint.sourceEventIds.some((eventId) => !foundEventIds.has(eventId))) return false
+  return resume.blockedBecause.length > 0
+    ? events.every(isContextLossSentinelBlockerEvent)
+    : events.every(isContextLossSentinelRecoveryEvent)
+}
+
+function isContextLossSentinelCheckpoint(agentRoot: string, resume: FlightRecorderResume): boolean {
+  return resume.lastSafeCheckpoint.sourceEventIds.length > 0
+    && resume.lastSafeCheckpoint.sourceEventIds.every((eventId) => eventId.startsWith("fr-sentinel-"))
+    && resume.blockedBecause.every(isContextLossSentinelBlockerText)
+    && hasContextLossSentinelCheckpointEvents(agentRoot, resume)
+}
+
+function neutralizeSentinelCheckpoint(resume: FlightRecorderResume): FlightRecorderResume {
+  return {
+    ...resume,
+    canContinue: true,
+    blockedBecause: [],
+    lastSafeCheckpoint: {
+      turnId: null,
+      sessionRef: null,
+      recordedAt: null,
+      sourceEventIds: [],
+    },
+    recorderHealth: { status: "ok", issues: [] },
+  }
+}
+
+function isContextLossSentinelProducedRef(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  if (record.kind !== "arc" || typeof record.locator !== "string") return false
+  const sentinelRoot = relativeSentinelRoot()
+  return record.locator === sentinelRoot || record.locator.startsWith(`${sentinelRoot}/`)
+}
+
+function isContextLossSentinelFlightRecorderEvent(value: unknown): value is FlightRecorderEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  const meta = record.meta as Record<string, unknown> | undefined
+  const producedRefs = record.producedRefs
+  return typeof record.id === "string"
+    && record.id.startsWith("fr-sentinel-")
+    && (record.kind === "blocker_detected" || record.kind === "agent_note")
+    && meta?.source === "context-loss-sentinel"
+    && Array.isArray(producedRefs)
+    && producedRefs.length > 0
+    && producedRefs.every(isContextLossSentinelProducedRef)
+}
+
+function isContextLossSentinelBlockerEvent(event: FlightRecorderEvent): boolean {
+  return isContextLossSentinelFlightRecorderEvent(event)
+    && event.kind === "blocker_detected"
+    && Array.isArray(event.blockedBecause)
+    && event.blockedBecause.length > 0
+    && event.blockedBecause.every(isContextLossSentinelBlockerText)
+}
+
+function isContextLossSentinelRecoveryEvent(event: FlightRecorderEvent): boolean {
+  return isContextLossSentinelFlightRecorderEvent(event)
+    && event.kind === "agent_note"
+    && Array.isArray(event.blockedBecause)
+    && event.blockedBecause.length === 0
+    && event.meta?.resolution === "blocked-signals-recovered"
+}
+
+function gitShowHeadFile(agentRoot: string, entryPath: string): string | null {
+  try {
+    return execFileSync("git", ["show", `HEAD:${entryPath}`], {
+      cwd: agentRoot,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: CONTEXT_LOSS_SENTINEL_GIT_STATUS_TIMEOUT_MS,
+    })
+  } catch {
+    return null
+  }
+}
+
+function nonEmptyLines(text: string): string[] {
+  return text.split(/\r?\n/).filter((line) => line.trim().length > 0)
+}
+
+function isFlightRecorderEventsPath(entryPath: string): boolean {
+  return /^arc\/flight-recorder\/events\/[^/]+\.jsonl$/.test(entryPath)
+}
+
+function isFlightRecorderLatestPath(entryPath: string): boolean {
+  return entryPath === "arc/flight-recorder/latest.json"
+}
+
+function isDeletedGitStatusEntry(entry: string): boolean {
+  return entry.slice(0, 2).includes("D")
+}
+
+function isUntrackedGitStatusEntry(entry: string): boolean {
+  return entry.startsWith("??")
+}
+
+function isWorktreeOnlyModifiedGitStatusEntry(entry: string): boolean {
+  return entry.slice(0, 2) === " M"
+}
+
+function parseJsonLine(line: string): unknown | null {
+  try {
+    return JSON.parse(line) as unknown
+  } catch {
+    return null
+  }
+}
+
+function isContextLossSentinelEventFileDirty(agentRoot: string, entry: string, entryPath: string): boolean {
+  if (isDeletedGitStatusEntry(entry)) return false
+  const filePath = path.join(agentRoot, entryPath)
+  if (isUntrackedGitStatusEntry(entry)) {
+    const candidateLines = fs.existsSync(filePath) ? nonEmptyLines(fs.readFileSync(filePath, "utf-8")) : []
+    return candidateLines.length > 0
+      && candidateLines.every((line) => isContextLossSentinelFlightRecorderEvent(parseJsonLine(line)))
+  }
+  if (!isWorktreeOnlyModifiedGitStatusEntry(entry) || !fs.existsSync(filePath)) return false
+  const headText = gitShowHeadFile(agentRoot, entryPath)
+  if (headText === null) return false
+  const headLines = nonEmptyLines(headText)
+  const currentLines = nonEmptyLines(fs.readFileSync(filePath, "utf-8"))
+  if (currentLines.length <= headLines.length) return false
+  if (!headLines.every((line, index) => currentLines[index] === line)) return false
+  const appendedLines = currentLines.slice(headLines.length)
+  return appendedLines.every((line) => isContextLossSentinelFlightRecorderEvent(parseJsonLine(line)))
+}
+
+function isContextLossSentinelLatestDirty(agentRoot: string, entry: string, entryPath: string): boolean {
+  if (isDeletedGitStatusEntry(entry) || isUntrackedGitStatusEntry(entry)) return false
+  if (!isWorktreeOnlyModifiedGitStatusEntry(entry)) return false
+  const current = readJson(path.join(agentRoot, entryPath))
+  if (!current.ok || !isFlightRecorderResume(current.value) || !isContextLossSentinelCheckpoint(agentRoot, current.value)) {
+    return false
+  }
+  const headText = gitShowHeadFile(agentRoot, entryPath)
+  if (headText === null) return false
+  const head = parseJsonLine(headText)
+  if (!isFlightRecorderResume(head)) return false
+  return JSON.stringify(neutralizeSentinelCheckpoint(current.value))
+    === JSON.stringify(neutralizeSentinelCheckpoint(head))
+}
+
+function isContextLossSentinelFlightRecorderGitStatusEntry(agentRoot: string, entry: string): boolean {
+  return gitStatusPaths(entry).every((entryPath) => (
+    isFlightRecorderEventsPath(entryPath)
+      ? isContextLossSentinelEventFileDirty(agentRoot, entry, entryPath)
+      : isFlightRecorderLatestPath(entryPath)
+        ? isContextLossSentinelLatestDirty(agentRoot, entry, entryPath)
+        : false
+  ))
+}
+
+function isContextLossSentinelOwnedGitStatusEntry(
+  entry: string,
+  options: { agentRoot: string },
+): boolean {
+  return isSentinelGitStatusEntry(entry)
+    || isContextLossSentinelFlightRecorderGitStatusEntry(options.agentRoot, entry)
+}
+
 function bundleSignal(
   status: ContextLossSentinelGitStatus,
-  options: { ignoreSentinelDirtyEntries?: boolean } = {},
+  options: { ignoreSentinelDirtyEntries?: boolean; agentRoot: string },
 ): ContextLossSentinelSignal {
   const gitStatusCommand = "git status --porcelain=v1 -uall"
   if (!status.ok) {
@@ -827,7 +998,7 @@ function bundleSignal(
     }
   }
   const dirtyEntries = gitStatusEntries(status.porcelain)
-    .filter((entry) => !(options.ignoreSentinelDirtyEntries && isSentinelGitStatusEntry(entry)))
+    .filter((entry) => !(options.ignoreSentinelDirtyEntries && isContextLossSentinelOwnedGitStatusEntry(entry, options)))
   if (dirtyEntries.length > 0) {
     return {
       id: "bundle:git",
@@ -971,6 +1142,7 @@ function makeReceipt(
     ...healthSignals(options.daemonHealthResults ?? []),
     bundleSignal((options.gitStatus ?? (() => defaultGitStatus(agentRoot)))(), {
       ignoreSentinelDirtyEntries: options.trigger === "daemon_health",
+      agentRoot,
     }),
   ]
   const verdict = sentinelVerdict(signals)

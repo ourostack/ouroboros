@@ -704,9 +704,14 @@ void preloadProviderCredentialPools().then(() => daemon.start()).then(async () =
     message: "daemon entrypoint failed",
     meta: { error: error.message },
   })
-  setTimeout(() => process.exit(1), 5_000).unref()
-  await daemon.stop()
-  process.exit(1)
+  const forcedExit = setTimeout(() => process.exit(1), 5_000)
+  forcedExit.unref()
+  try {
+    await daemon.stop()
+  } finally {
+    clearTimeout(forcedExit)
+    process.exit(1)
+  }
 })
 
 process.on("SIGINT", () => {
@@ -720,16 +725,36 @@ process.on("SIGINT", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
   stopEntryRuntime()
-  setTimeout(() => process.exit(1), 5_000).unref()
-  void daemon.stop().then(() => process.exit(0))
+  const forcedExit = setTimeout(() => process.exit(1), 5_000)
+  forcedExit.unref()
+  void daemon.stop().then(
+    () => {
+      clearTimeout(forcedExit)
+      process.exit(0)
+    },
+    () => {
+      clearTimeout(forcedExit)
+      process.exit(1)
+    },
+  )
 })
 
 process.on("SIGTERM", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
   stopEntryRuntime()
-  setTimeout(() => process.exit(1), 5_000).unref()
-  void daemon.stop().then(() => process.exit(0))
+  const forcedExit = setTimeout(() => process.exit(1), 5_000)
+  forcedExit.unref()
+  void daemon.stop().then(
+    () => {
+      clearTimeout(forcedExit)
+      process.exit(0)
+    },
+    () => {
+      clearTimeout(forcedExit)
+      process.exit(1)
+    },
+  )
 })
 /* v8 ignore stop */
 
@@ -774,8 +799,12 @@ process.on("uncaughtException", (error) => {
       message: `daemon exiting: ${_uncaughtCount} uncaught exceptions in ${CIRCUIT_BREAKER_WINDOW_MS / 1000}s`,
       meta: { uncaughtCount: _uncaughtCount },
     })
-    setTimeout(() => process.exit(1), 5_000).unref()
-    void daemon.stop().then(() => process.exit(1))
+    const forcedExit = setTimeout(() => process.exit(1), 5_000)
+    forcedExit.unref()
+    void daemon.stop().finally(() => {
+      clearTimeout(forcedExit)
+      process.exit(1)
+    })
   }
 })
 
