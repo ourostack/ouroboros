@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core"
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
@@ -68,6 +68,10 @@ function refreshableReaderMock<T extends { resolveMailroomReader: () => unknown 
     resolveMailroomReaderWithRefresh: async () => mock.resolveMailroomReader(),
   }
 }
+
+beforeEach(() => {
+  process.env.HOME = tempDir()
+})
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME

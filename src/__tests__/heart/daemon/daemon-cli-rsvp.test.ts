@@ -624,6 +624,37 @@ describe("ouro rsvp CLI execution", () => {
     }
   })
 
+  it("discovers the default RSVP legacy root and runs cutover preflight without injected deps", async () => {
+    const tmp = seedRsvpOperationalBundle()
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-rsvp-doctor-home-"))
+    const legacyRoot = path.join(homeDir, "Projects", "rsvp-tracker")
+    fs.mkdirSync(legacyRoot, { recursive: true })
+    fs.writeFileSync(path.join(legacyRoot, "config.json"), JSON.stringify({
+      bluebubbles: { enabled: false },
+    }), "utf-8")
+    const deps = createMockDeps({
+      bundlesRoot: tmp.bundlesRoot,
+      homeDir,
+    })
+    try {
+      const result = await runOuroCli(["rsvp", "doctor", "--agent", "slugger", "--json"], deps)
+      const parsed = JSON.parse(result)
+      const rsvpCategory = (parsed.doctor.categories as Array<{ name?: string; checks: unknown[] }>)
+        .find((category) => category.name === "RSVP")
+
+      expect(rsvpCategory?.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "rsvp.cutover.live_send_preflight",
+          detail: expect.stringContaining("legacyConfigSendInactive=true"),
+        }),
+      ]))
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true })
+      tmp.cleanup()
+    }
+  })
+
   it("reports passing RSVP doctor checks when no agent has RSVP configured", async () => {
     const tmp = createTmpBundle({ agentName: "plain" })
     const setExitCode = vi.fn()

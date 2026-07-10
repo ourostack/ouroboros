@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.697",
       "changes": [
-        "Add BlueBubbles same-thread context, native RSVP habit, autonomy budgets, run ledger attribution, diagnostics, cutover, and verification guardrails."
+        "Add BlueBubbles same-thread context, native RSVP habit, autonomy budgets, run ledger attribution, diagnostics, cutover, and verification guardrails.",
+        "Harden Twilio phone agent-root resolution so test and runtime callers use explicit bundle roots without falling back to the host AgentBundles tree."
       ]
     },
     {

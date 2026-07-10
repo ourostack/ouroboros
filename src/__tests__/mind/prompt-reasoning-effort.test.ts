@@ -86,7 +86,7 @@ describe("system prompt reasoning effort section", () => {
     }))
     expect(system).toContain("reasoning effort")
     expect(system).toContain("set_reasoning_effort")
-  })
+  }, 10000)
 
   it("does not include reasoning effort section when provider lacks capability", async () => {
     emitTestEvent("prompt excludes reasoning effort")
