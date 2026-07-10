@@ -24,7 +24,25 @@ function makeAgentRoot(): string {
   fs.mkdirSync(path.join(agentRoot, "state", "rsvp", "outbound"), { recursive: true })
   fs.mkdirSync(path.join(agentRoot, "state", "rsvp", "snapshots"), { recursive: true })
   fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ version: 2, enabled: true }), "utf-8")
-  fs.writeFileSync(path.join(agentRoot, "habits", "rsvp-ari-rachel.md"), "---\nname: rsvp-ari-rachel\nstatus: active\ncadence: 0 10 * * *\n---\n", "utf-8")
+  fs.writeFileSync(path.join(agentRoot, "habits", "rsvp-ari-rachel.md"), [
+    "---",
+    "name: rsvp-ari-rachel",
+    "status: active",
+    "cadence: 0 10 * * *",
+    "rsvp:",
+    "  policyVersion: rsvp-habit/v1",
+    "  mode: shadow",
+    "  sense: bluebubbles",
+    "  source: aisleplanner",
+    "  routeRef: rsvp/config.json#bluebubblesRoute",
+    "  snapshotRef: state/rsvp/snapshots/latest.json",
+    "  outboundStateRef: state/rsvp/outbound-state.json",
+    "  budgetRef: state/rsvp/spend-ledger.json",
+    "  idempotencyRef: state/rsvp/outbound-state.json",
+    "  liveSendEligible: false",
+    "---",
+    "",
+  ].join("\n"), "utf-8")
   fs.writeFileSync(path.join(agentRoot, "rsvp", "config.json"), JSON.stringify({
     schemaVersion: 1,
     policyVersion: "rsvp-config/v1",

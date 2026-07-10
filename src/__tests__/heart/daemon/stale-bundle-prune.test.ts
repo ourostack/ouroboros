@@ -88,6 +88,42 @@ describe("pruneStaleEphemeralBundles", () => {
     )
   })
 
+  it("preserves task-doc-only bundles without agent.json", () => {
+    vi.mocked(deps.readdirSync).mockReturnValue([
+      makeDirent("codex.ouro", true),
+      makeDirent("stale.ouro", true),
+    ])
+    vi.mocked(deps.existsSync).mockImplementation((target: string) => {
+      if (target === "/mock/AgentBundles/codex.ouro/tasks") return true
+      return false
+    })
+
+    const result = pruneStaleEphemeralBundles(deps)
+
+    expect(result).toEqual(["stale.ouro"])
+    expect(deps.rmSync).toHaveBeenCalledTimes(1)
+    expect(deps.rmSync).toHaveBeenCalledWith("/mock/AgentBundles/stale.ouro", { recursive: true, force: true })
+  })
+
+  it("preserves bundles with durable state markers even when agent.json is absent", () => {
+    vi.mocked(deps.readdirSync).mockReturnValue([
+      makeDirent("arc-only.ouro", true),
+      makeDirent("git-backed.ouro", true),
+      makeDirent("markerless.ouro", true),
+    ])
+    vi.mocked(deps.existsSync).mockImplementation((target: string) => {
+      if (target === "/mock/AgentBundles/arc-only.ouro/arc") return true
+      if (target === "/mock/AgentBundles/git-backed.ouro/.git") return true
+      return false
+    })
+
+    const result = pruneStaleEphemeralBundles(deps)
+
+    expect(result).toEqual(["markerless.ouro"])
+    expect(deps.rmSync).toHaveBeenCalledTimes(1)
+    expect(deps.rmSync).toHaveBeenCalledWith("/mock/AgentBundles/markerless.ouro", { recursive: true, force: true })
+  })
+
   it("ignores non-.ouro directories", () => {
     vi.mocked(deps.readdirSync).mockReturnValue([
       makeDirent("notes", true),

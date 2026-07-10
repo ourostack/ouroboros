@@ -426,6 +426,14 @@ describe("ouro rsvp operational CLI wiring", () => {
     fs.rmSync(outputPath, { force: true })
   })
 
+  it("rejects unknown RSVP CLI command payloads without dispatching", async () => {
+    const deps = createMockDeps()
+
+    await expect(runRsvpCliCommand({ kind: "rsvp.future" } as never, deps))
+      .rejects.toThrow(/unsupported RSVP CLI command: rsvp\.future/)
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
   it("surfaces unsuccessful legacy state imports without falling back to config migration", async () => {
     mockRuntimeCredentials()
     const tmp = seedBundle()

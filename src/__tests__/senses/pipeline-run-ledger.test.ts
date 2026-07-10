@@ -315,4 +315,73 @@ describe("handleInboundTurn run ledger attribution", () => {
     expect(serialized).not.toContain("You are helpful")
     expect(mockRecordFlightRecorderEvent).toHaveBeenCalled()
   })
+
+  it("records content-free error rows when the model turn throws", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+
+    await expect(handleInboundTurn(makeInput({
+      runAgent: vi.fn().mockRejectedValue(new Error("model blew up")),
+    }))).rejects.toThrow("model blew up")
+
+    const rows = readRunLedger(agentRoot)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({
+      agent: "slugger",
+      triggerType: "inbound",
+      sourceKind: "sense",
+      senseOrHabit: "bluebubbles",
+      lifecycle: "started",
+      contentStored: false,
+      contextPacketIds: ["scp_same_thread"],
+    })
+    expect(rows[1]).toMatchObject({
+      agent: "slugger",
+      triggerType: "inbound",
+      sourceKind: "sense",
+      senseOrHabit: "bluebubbles",
+      lifecycle: "error",
+      contentStored: false,
+      usage: {
+        source: "reported-unavailable",
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0,
+      },
+      errorName: "Error",
+      contextPacketIds: ["scp_same_thread"],
+    })
+    const serialized = JSON.stringify(rows)
+    expect(serialized).not.toContain("who is pending")
+    expect(serialized).not.toContain("model blew up")
+  })
+
+  it("records non-Error thrown model turns without storing thrown content", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+
+    await expect(handleInboundTurn(makeInput({
+      runAgent: vi.fn().mockRejectedValue("string failure"),
+    }))).rejects.toBe("string failure")
+
+    const rows = readRunLedger(agentRoot)
+    expect(rows[1]).toMatchObject({
+      lifecycle: "error",
+      contentStored: false,
+      usage: { source: "reported-unavailable" },
+      errorName: "NonErrorThrown",
+    })
+    expect(JSON.stringify(rows)).not.toContain("string failure")
+  })
+
+  it("rethrows model errors when run ledger preparation is unavailable", async () => {
+    mockGetAgentRoot.mockImplementation(() => {
+      throw new Error("bundle root unavailable")
+    })
+
+    await expect(handleInboundTurn(makeInput({
+      runAgent: vi.fn().mockRejectedValue(new Error("model blew up without ledger")),
+    }))).rejects.toThrow("model blew up without ledger")
+  })
 })

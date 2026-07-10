@@ -10,6 +10,13 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
 }))
 
+vi.mock("../../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
+  sendDaemonCommand: vi.fn().mockResolvedValue({ ok: true }),
+  checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
+
 vi.mock("../../../heart/identity", () => ({
   getAgentName: () => "testagent",
   getAgentRoot: (...args: any[]) => mockGetAgentRoot(...args),
@@ -131,6 +138,19 @@ function repairedMessage(messageGuid: string) {
   }
 }
 
+function repairedMessageWithoutRoute(messageGuid: string) {
+  const repaired = repairedMessage(messageGuid)
+  return {
+    ...repaired,
+    chat: {
+      isGroup: false,
+      sessionKey: "chat:route-missing",
+      sendTarget: { kind: "chat_identifier" as const, value: "route-missing" },
+      participantHandles: [],
+    },
+  }
+}
+
 describe("BlueBubbles recovery autonomy budget", () => {
   beforeEach(() => {
     vi.resetAllMocks()
@@ -166,5 +186,67 @@ describe("BlueBubbles recovery autonomy budget", () => {
     expect(runAgent).not.toHaveBeenCalled()
     expect(fs.readdirSync(autonomyReceiptsDir(agentRoot)).some((name) => name.endsWith(".json"))).toBe(true)
     expect(JSON.stringify(result)).not.toContain("who is pending")
+  })
+
+  it("releases the in-flight marker when over-budget recovery skips a repaired message", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.senseRecoveryPaidTurnsPer15m; index++) {
+      reserveAutonomyBudget(agentRoot, {
+        agent: "testagent",
+        triggerType: "recovery",
+        sourceKind: "sense",
+        senseOrHabit: "bluebubbles",
+        target: { messageGuid: `prior-release-${index}`, text: "do not store prior text" },
+        idempotencyKey: `bb-recovery:prior-release-${index}`,
+        now: "2026-07-09T17:00:00.000Z",
+      })
+    }
+    recordBlueBubblesMutation("testagent", mutation("blocked-release-guid"))
+    const repairEvent = vi.fn(async () => repairedMessage("blocked-release-guid"))
+
+    const first = await recoverMissedBlueBubblesMessages({
+      getAgentName: () => "testagent",
+      createClient: () => ({ repairEvent } as any),
+      runAgent: vi.fn() as any,
+    })
+    const second = await recoverMissedBlueBubblesMessages({
+      getAgentName: () => "testagent",
+      createClient: () => ({ repairEvent } as any),
+      runAgent: vi.fn() as any,
+    })
+
+    expect(first).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
+    expect(second).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
+    expect(repairEvent).toHaveBeenCalledTimes(2)
+  })
+
+  it("skips over-budget recovery safely even when repaired route coordinates are missing", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.senseRecoveryPaidTurnsPer15m; index++) {
+      reserveAutonomyBudget(agentRoot, {
+        agent: "testagent",
+        triggerType: "recovery",
+        sourceKind: "sense",
+        senseOrHabit: "bluebubbles",
+        target: { messageGuid: `prior-route-missing-${index}`, text: "do not store prior text" },
+        idempotencyKey: `bb-recovery:prior-route-missing-${index}`,
+        now: "2026-07-09T17:00:00.000Z",
+      })
+    }
+    recordBlueBubblesMutation("testagent", mutation("route-missing-guid"))
+    const runAgent = vi.fn()
+
+    const result = await recoverMissedBlueBubblesMessages({
+      getAgentName: () => "testagent",
+      createClient: () => ({
+        repairEvent: vi.fn(async () => repairedMessageWithoutRoute("route-missing-guid")),
+      } as any),
+      runAgent: runAgent as any,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
+    expect(runAgent).not.toHaveBeenCalled()
   })
 })

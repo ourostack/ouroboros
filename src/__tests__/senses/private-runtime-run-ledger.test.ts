@@ -156,4 +156,33 @@ describe("private-runtime habit run ledger attribution", () => {
     expect(serialized).not.toContain("Guests updated")
     expect(serialized).not.toContain("AislePlanner RSVP state")
   })
+
+  it("normalizes missing provider reasoning token usage to zero", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    const runTurn = vi.fn().mockResolvedValue({
+      turnOutcome: "settled",
+      usage: {
+        input_tokens: 21,
+        output_tokens: 8,
+        total_tokens: 29,
+      },
+      messages: [{ role: "assistant", content: "Guests updated." }],
+    })
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-07-09T17:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "rsvp", trigger: "scheduled" })
+
+    const rows = readRunLedger(agentRoot)
+    expect(rows[1]).toMatchObject({
+      lifecycle: "completed",
+      usage: {
+        source: "provider",
+        inputTokens: 21,
+        outputTokens: 8,
+        reasoningTokens: 0,
+        totalTokens: 29,
+      },
+    })
+  })
 })

@@ -1500,10 +1500,8 @@ async function handleBlueBubblesNormalizedEvent(
       storm: blueBubblesRecoveryStormInput(agentName, event, source),
     })
     if (!decision.allowed) {
-      if (ownsInFlightMessage && inFlightKey) {
-        endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
-        ownsInFlightMessage = false
-      }
+      endBlueBubblesMessageInFlight(inFlightKey!.sessionKey, inFlightKey!.messageGuid)
+      ownsInFlightMessage = false
       return { handled: true, notifiedAgent: false, kind: event.kind, reason: "autonomy_budget_blocked" }
     }
   }

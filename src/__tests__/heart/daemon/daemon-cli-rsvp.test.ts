@@ -70,7 +70,25 @@ function seedRsvpOperationalBundle(): ReturnType<typeof createTmpBundle> {
   fs.mkdirSync(path.join(tmp.agentRoot, "state", "rsvp", "snapshots"), { recursive: true })
   fs.writeFileSync(
     path.join(tmp.agentRoot, "habits", "rsvp-ari-rachel.md"),
-    "---\nname: rsvp-ari-rachel\nstatus: active\ncadence: 0 10 * * *\n---\n",
+    [
+      "---",
+      "name: rsvp-ari-rachel",
+      "status: active",
+      "cadence: 0 10 * * *",
+      "rsvp:",
+      "  policyVersion: rsvp-habit/v1",
+      "  mode: shadow",
+      "  sense: bluebubbles",
+      "  source: aisleplanner",
+      "  routeRef: rsvp/config.json#bluebubblesRoute",
+      "  snapshotRef: state/rsvp/snapshots/latest.json",
+      "  outboundStateRef: state/rsvp/outbound-state.json",
+      "  budgetRef: state/rsvp/spend-ledger.json",
+      "  idempotencyRef: state/rsvp/outbound-state.json",
+      "  liveSendEligible: false",
+      "---",
+      "",
+    ].join("\n"),
     "utf-8",
   )
   fs.writeFileSync(path.join(tmp.agentRoot, "rsvp", "config.json"), JSON.stringify({
@@ -260,10 +278,90 @@ describe("ouro rsvp CLI parsing", () => {
 
   it("rejects unsafe or malformed RSVP invocations with focused guidance", () => {
     expect(() => parseOuroCommand(["rsvp"])).toThrow(/Usage: ouro rsvp/)
+    expect(() => parseOuroCommand(["rsvp", "bogus"])).toThrow(/Usage: ouro rsvp/)
+    expect(() => parseOuroCommand(["rsvp", "config", "bad"])).toThrow(/Usage: ouro rsvp config import-legacy/)
+    expect(() => parseOuroCommand(["rsvp", "habit", "bad"])).toThrow(/Usage: ouro rsvp habit stage/)
+    expect(parseOuroCommand(["rsvp", "doctor", "--output", "/tmp/rsvp-doctor.json"])).toEqual({
+      kind: "rsvp.doctor",
+      outputPath: "/tmp/rsvp-doctor.json",
+    })
+    expect(() => parseOuroCommand(["rsvp", "doctor", "--output", "\n"])).toThrow(/requires a non-empty path/)
+    expect(() => parseOuroCommand(["rsvp", "doctor", "--wat"])).toThrow(/Usage: ouro rsvp doctor/)
+    expect(() => parseOuroCommand(["rsvp", "incident", "--wat"])).toThrow(/Usage: ouro rsvp incident/)
+    expect(parseOuroCommand(["rsvp", "replay", "--fixture", "/tmp/replay.json", "--output", "/tmp/replay-output.json"])).toEqual({
+      kind: "rsvp.replay",
+      fixturePath: "/tmp/replay.json",
+      outputPath: "/tmp/replay-output.json",
+    })
+    expect(() => parseOuroCommand(["rsvp", "replay"])).toThrow(/requires --fixture/)
     expect(() => parseOuroCommand(["rsvp", "config", "import-legacy", "--agent", "slugger", "--mode", "shadow"])).toThrow(/legacy-root/)
+    expect(parseOuroCommand([
+      "rsvp",
+      "config",
+      "import-legacy",
+      "--legacy-root",
+      "/tmp/legacy-rsvp",
+      "--mode",
+      "live",
+      "--yes",
+      "--output",
+      "/tmp/import.json",
+    ])).toEqual({
+      kind: "rsvp.config.import-legacy",
+      legacyRoot: "/tmp/legacy-rsvp",
+      mode: "live",
+      yes: true,
+      outputPath: "/tmp/import.json",
+    })
+    expect(() => parseOuroCommand(["rsvp", "config", "import-legacy", "--legacy-root", "/tmp/legacy-rsvp", "--mode", "preflight"])).toThrow(/mode must be shadow or live/)
+    expect(() => parseOuroCommand(["rsvp", "config", "import-legacy", "--legacy-root", "/tmp/legacy-rsvp"])).toThrow(/requires --mode/)
+    expect(parseOuroCommand(["rsvp", "cutover", "--legacy-root", "/tmp/legacy-rsvp", "--action", "check", "--output", "/tmp/cutover.json"])).toEqual({
+      kind: "rsvp.cutover",
+      legacyRoot: "/tmp/legacy-rsvp",
+      action: "check",
+      outputPath: "/tmp/cutover.json",
+    })
+    expect(parseOuroCommand(["rsvp", "cutover", "--legacy-root", "/tmp/legacy-rsvp", "--action", "quarantine-launchd", "--yes"])).toEqual({
+      kind: "rsvp.cutover",
+      legacyRoot: "/tmp/legacy-rsvp",
+      action: "quarantine-launchd",
+      yes: true,
+    })
+    expect(() => parseOuroCommand(["rsvp", "cutover", "--action", "check"])).toThrow(/requires --legacy-root/)
+    expect(() => parseOuroCommand(["rsvp", "cutover", "--legacy-root", "/tmp/legacy-rsvp"])).toThrow(/requires --action/)
+    expect(() => parseOuroCommand(["rsvp", "cutover", "--legacy-root", "/tmp/legacy-rsvp", "--action", "delete-everything"])).toThrow(/action must be/)
+    expect(() => parseOuroCommand(["rsvp", "cutover", "--legacy-root", "/tmp/legacy-rsvp", "--action", "check", "--wat"])).toThrow(/Usage: ouro rsvp cutover/)
+    expect(parseOuroCommand(["rsvp", "legacy-render", "--agent", "slugger", "--legacy-root", "/tmp/legacy-rsvp"])).toEqual({
+      kind: "rsvp.legacy-render",
+      agent: "slugger",
+      legacyRoot: "/tmp/legacy-rsvp",
+    })
+    expect(() => parseOuroCommand(["rsvp", "legacy-render"])).toThrow(/requires --legacy-root/)
+    expect(() => parseOuroCommand(["rsvp", "legacy-render", "--legacy-root", "/tmp/legacy-rsvp", "--wat"])).toThrow(/Usage: ouro rsvp legacy-render/)
+    expect(() => parseOuroCommand(["rsvp", "config", "import-legacy", "--legacy-root", "/tmp/legacy-rsvp", "--mode", "shadow", "--wat"])).toThrow(/Usage: ouro rsvp config import-legacy/)
+    expect(() => parseOuroCommand(["rsvp", "replay", "--fixture", "/tmp/replay.json", "--wat"])).toThrow(/Usage: ouro rsvp replay/)
+    expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--mode", "shadow", "--cadence", "0 10 * * *", "--wat"])).toThrow(/Usage: ouro rsvp habit stage/)
     expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--allow-send", "--no-send"])).toThrow(/allow-send/)
+    expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "preflight"])).toThrow(/mode must be shadow or live/)
     expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--allow-send"])).toThrow(/shadow.*allow-send/)
+    expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "live"])).toThrow(/live requires --allow-send/)
+    expect(parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "live", "--allow-send"])).toEqual({
+      kind: "rsvp.refresh",
+      agent: "slugger",
+      mode: "live",
+      allowSend: true,
+    })
+    expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--wat"])).toThrow(/Usage: ouro rsvp refresh/)
+    expect(() => parseOuroCommand(["rsvp", "compare", "--legacy", "/tmp/legacy.json"])).toThrow(/requires --native/)
+    expect(() => parseOuroCommand(["rsvp", "compare", "--native", "/tmp/native.json"])).toThrow(/requires --legacy/)
+    expect(() => parseOuroCommand(["rsvp", "compare", "--native", "/tmp/native.json", "--legacy", "/tmp/legacy.json", "--wat"])).toThrow(/Usage: ouro rsvp compare/)
+    expect(() => parseOuroCommand(["rsvp", "smoke", "--mode", "shadow", "--surface", "bluebubbles"])).toThrow(/preflight or live/)
+    expect(() => parseOuroCommand(["rsvp", "smoke", "--mode", "preflight", "--surface", "sms"])).toThrow(/surface must be bluebubbles/)
+    expect(() => parseOuroCommand(["rsvp", "smoke", "--mode", "preflight"])).toThrow(/requires --surface/)
+    expect(() => parseOuroCommand(["rsvp", "smoke", "--surface", "bluebubbles", "--wat"])).toThrow(/Usage: ouro rsvp smoke/)
     expect(() => parseOuroCommand(["rsvp", "smoke", "--agent", "slugger", "--mode", "live", "--surface", "bluebubbles"])).toThrow(/--allow-send/)
+    expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--mode", "preflight", "--cadence", "0 10 * * *"])).toThrow(/mode must be shadow or live/)
+    expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--cadence", "0 10 * * *"])).toThrow(/requires --mode/)
     expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--agent", "slugger", "--mode", "live", "--cadence", "daily"])).toThrow(/cadence/)
   })
 })
@@ -275,7 +373,6 @@ describe("ouro rsvp CLI execution", () => {
       { argv: ["rsvp", "doctor", "--agent", "slugger", "--json"], kind: "rsvp.doctor" },
       { argv: ["rsvp", "incident", "--agent", "slugger", "--json"], kind: "rsvp.incident" },
       { argv: ["rsvp", "cutover", "--agent", "slugger", "--legacy-root", "/tmp/legacy-rsvp", "--action", "check", "--json"], kind: "rsvp.cutover" },
-      { argv: ["rsvp", "habit", "stage", "--agent", "slugger", "--mode", "shadow", "--cadence", "0 10 * * *", "--json"], kind: "rsvp.habit.stage" },
       { argv: ["rsvp", "import-legacy", "--agent", "slugger", "--legacy-root", "/tmp/legacy-rsvp", "--mode", "shadow", "--json"], kind: "rsvp.import-legacy" },
       { argv: ["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], kind: "rsvp.refresh" },
       { argv: ["rsvp", "compare", "--agent", "slugger", "--native", "/tmp/native.json", "--legacy", "/tmp/legacy.json", "--json"], kind: "rsvp.compare" },
@@ -286,12 +383,35 @@ describe("ouro rsvp CLI execution", () => {
       const result = await runOuroCli(command.argv, deps)
       const parsed = JSON.parse(result)
       expect(parsed).toMatchObject({
-        ok: true,
         command: command.kind,
         sideEffect: false,
       })
+      expect(typeof parsed.ok).toBe("boolean")
     }
 
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("fails RSVP habit staging closed when no agent is supplied", async () => {
+    const deps = createMockDeps()
+
+    const result = JSON.parse(await runOuroCli([
+      "rsvp",
+      "habit",
+      "stage",
+      "--mode",
+      "shadow",
+      "--cadence",
+      "0 10 * * *",
+      "--json",
+    ], deps))
+
+    expect(result).toMatchObject({
+      ok: false,
+      command: "rsvp.habit.stage",
+      sideEffect: false,
+      requires: "--agent",
+    })
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
@@ -500,6 +620,28 @@ describe("ouro rsvp CLI execution", () => {
       } else {
         process.env.PATH = originalPath
       }
+      tmp.cleanup()
+    }
+  })
+
+  it("reports passing RSVP doctor checks when no agent has RSVP configured", async () => {
+    const tmp = createTmpBundle({ agentName: "plain" })
+    const setExitCode = vi.fn()
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, setExitCode })
+    try {
+      const result = JSON.parse(await runOuroCli(["rsvp", "doctor", "--agent", "plain", "--json", "--strict"], deps))
+
+      expect(result).toMatchObject({
+        ok: true,
+        command: "rsvp.doctor",
+        agent: "plain",
+        sideEffect: false,
+        strict: true,
+        message: "RSVP doctor checks passed",
+      })
+      expect(setExitCode).not.toHaveBeenCalled()
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
       tmp.cleanup()
     }
   })

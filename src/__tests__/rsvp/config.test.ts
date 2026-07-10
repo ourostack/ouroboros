@@ -173,7 +173,7 @@ describe("native RSVP config", () => {
       },
       bluebubbles: {
         server_url: "http://localhost:1234",
-        secrets_path: "~/.agentsecrets/slugger/secrets.json",
+        secrets_path: "/tmp/legacy-rsvp-bluebubbles-secrets.json",
         chat_guid: "any;+;wedding-chat",
       },
     }), "utf-8")

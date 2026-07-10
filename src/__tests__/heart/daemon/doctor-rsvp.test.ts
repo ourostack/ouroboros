@@ -290,6 +290,54 @@ describe("RSVP doctor checks", () => {
     expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
   })
 
+  it("passes native live-send preflight once the legacy sender is inactive", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeRsvpHabit(agentRoot)
+    writeNativeRsvpConfig(agentRoot)
+    seedRuntime()
+    const { legacyRoot } = writeLegacyRsvpRoot()
+    const configPath = path.join(legacyRoot, "config.json")
+    const legacyConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"))
+    legacyConfig.bluebubbles.send_enabled = false
+    fs.writeFileSync(configPath, JSON.stringify(legacyConfig), "utf-8")
+    const deps = {
+      ...depsFor(bundlesRoot),
+      rsvpCutoverLegacyRoot: legacyRoot,
+      rsvpCutoverDeps: {
+        existsSync: fs.existsSync,
+        readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
+        getLaunchAgentState: vi.fn(async () => ({
+          label: legacyLabel,
+          loaded: false,
+          source: "injected",
+        })),
+        getLegacyProcessState: vi.fn(async () => ({
+          running: false,
+          count: 0,
+          source: "injected",
+        })),
+        checkNativeBlueBubblesCredential: vi.fn(async () => ({
+          ok: true,
+          detail: "native BlueBubbles credential healthy",
+        })),
+      },
+    } as DoctorDeps
+
+    const category = await checkRsvp(deps)
+
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "slugger.ouro RSVP legacy live-send preflight",
+        status: "pass",
+        detail: expect.stringContaining("sendAllowed=true"),
+      }),
+    ]))
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacySecret)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyChatGuid)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
+  })
+
   it("emits stable RSVP doctor ids for operational health surfaces", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
@@ -367,6 +415,30 @@ describe("RSVP doctor checks", () => {
 
     expect(result.categories).toHaveLength(1)
     expect(result.categories[0]).toMatchObject({
+      name: "RSVP",
+      checks: [expect.objectContaining({
+        label: "plain.ouro RSVP",
+        status: "pass",
+        detail: "not configured",
+      })],
+    })
+  })
+
+  it("stays quiet when an unreadable habits directory prevents RSVP signal discovery", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "plain")
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    const deps = depsFor(bundlesRoot)
+    const category = await checkRsvp({
+      ...deps,
+      readdirSync: (entry) => {
+        if (entry === habitsDir) throw new Error("permission denied")
+        return fs.readdirSync(entry)
+      },
+    })
+
+    expect(category).toMatchObject({
       name: "RSVP",
       checks: [expect.objectContaining({
         label: "plain.ouro RSVP",

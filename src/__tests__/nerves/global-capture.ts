@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "fs"
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "fs"
 import { createHash } from "crypto"
 import { homedir, tmpdir } from "os"
 import { dirname, join, resolve } from "path"
@@ -178,8 +178,9 @@ afterEach((ctx) => {
 // 2. At worker teardown (`afterAll` without a describe context — runs once
 //    per worker after every test in that worker), re-read the dir and
 //    compare.
-// 3. Any NEW entry that wasn't in the snapshot is a leak — force-remove it
-//    and emit a loud console.error naming the entry.
+// 3. Any NEW entry that wasn't in the snapshot is a leak — fail loudly and
+//    preserve the entry for inspection. Never delete real-home AgentBundles
+//    entries from a test teardown.
 //
 // This intentionally does NOT track modifications to existing entries
 // (slugger.ouro, ouroboros.ouro, etc. get legitimate writes from tests
@@ -189,9 +190,8 @@ afterEach((ctx) => {
 //
 // False-positive risk: if the developer runs a real `ouro` command in a
 // separate terminal during the test run and that command creates a new
-// agent bundle, the guard would delete it. Acceptable because (a) that
-// would be an unusual timing coincidence and (b) the warning names the
-// entry loudly so the human can recreate it.
+// agent bundle, the guard fails the test run. That is intentional: failing
+// is noisy and reversible; deleting an operator bundle is not.
 
 const AGENT_BUNDLES_ROOT = join(homedir(), "AgentBundles")
 
@@ -218,19 +218,18 @@ afterAll(() => {
   for (const entry of current) {
     if (_prodPathSnapshot.has(entry)) continue
     leaked.push(entry)
-    const full = join(AGENT_BUNDLES_ROOT, entry)
-    try { rmSync(full, { recursive: true, force: true }) } catch { /* best effort */ }
   }
   if (leaked.length > 0) {
-    // eslint-disable-next-line no-console
-    console.error(
+    const message =
       `[prod-path-leak-guard] test run leaked ${leaked.length} new entries under ` +
-      `~/AgentBundles/: ${leaked.join(", ")}. Forcibly removed. ` +
+      `~/AgentBundles/: ${leaked.join(", ")}. Preserved on disk for inspection. ` +
       `Find the production code path that routed a write to ~/AgentBundles without ` +
       `a bundlesRoot override or a mocked fs — it's almost always a silent ` +
       `agentName fallback to "default" or an un-mocked singleton (see PR #372 for ` +
-      `a prior example in src/repertoire/coding/manager.ts).`,
-    )
+      `a prior example in src/repertoire/coding/manager.ts).`
+    // eslint-disable-next-line no-console
+    console.error(message)
+    throw new Error(message)
   }
 })
 

@@ -75,6 +75,12 @@ function isVitestProcess(): boolean {
   return process.argv.some((arg) => typeof arg === "string" && arg.includes("vitest"))
 }
 
+export function messageFromHabitPokeError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  /* v8 ignore next -- defensive fallback for hostile/non-Error throws from filesystem or parsers @preserve */
+  return String(error)
+}
+
 /**
  * Scan `ps -eo pid,ppid,command` output for daemon-owned entry points whose
  * parent has died (PPID reparented to init/PID 1). Returns the list of PIDs
@@ -1458,7 +1464,7 @@ export class OuroDaemon {
       try {
         parsedHabit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
       } catch (error) {
-        return { skipReason: `RSVP habit metadata invalid: ${error instanceof Error ? error.message : String(error)}` }
+        return { skipReason: `RSVP habit metadata invalid: ${messageFromHabitPokeError(error)}` }
       }
       if (!parsedHabit.rsvp) return { skipReason: "RSVP habit metadata is required before private runtime wake" }
     }

@@ -1,3 +1,5 @@
+import { emitNervesEvent } from "../nerves/runtime"
+
 export const RSVP_HABIT_POLICY_VERSION = "rsvp-habit/v1" as const
 export const RSVP_HABIT_NAME = "rsvp-ari-rachel" as const
 export const RSVP_HABIT_ALLOWED_TOOLS = ["rsvp_query", "rsvp_summary"] as const
@@ -81,8 +83,21 @@ export function parseRsvpHabitMetadata(raw: unknown): RsvpHabitMetadata | null {
 }
 
 export function rsvpHabitRuntimePolicy(metadata: RsvpHabitMetadata): RsvpHabitRuntimePolicy {
-  return {
+  const policy = {
     ...metadata,
     sendAllowed: metadata.mode === "live" && metadata.liveSendEligible,
   }
+  emitNervesEvent({
+    component: "rsvp",
+    event: "rsvp.habit_policy_resolved",
+    message: "resolved RSVP habit runtime policy",
+    meta: {
+      mode: metadata.mode,
+      sense: metadata.sense,
+      source: metadata.source,
+      sendAllowed: policy.sendAllowed,
+      liveSendEligible: metadata.liveSendEligible,
+    },
+  })
+  return policy
 }

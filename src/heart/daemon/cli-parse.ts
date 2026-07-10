@@ -1692,8 +1692,8 @@ function isRsvpSmokeSurface(value: unknown): value is RsvpSmokeSurface {
   return value === "bluebubbles"
 }
 
-function rsvpPath(value: string | undefined, label: string): string {
-  const trimmed = value?.trim() ?? ""
+function rsvpPath(value: string, label: string): string {
+  const trimmed = value.trim()
   if (!trimmed || /[\r\n\t]/.test(trimmed)) throw new Error(`rsvp ${label} requires a non-empty path`)
   return trimmed
 }
