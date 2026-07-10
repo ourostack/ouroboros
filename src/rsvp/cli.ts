@@ -21,6 +21,9 @@ interface RsvpCliPayload {
   result?: JsonValue
 }
 
+type RsvpImportLegacyCommand = Extract<RsvpCliCommand, { kind: "rsvp.config.import-legacy" | "rsvp.import-legacy" }>
+type RsvpPlannedCommand = Exclude<RsvpCliCommand, RsvpImportLegacyCommand>
+
 function commandJson(command: RsvpCliCommand): boolean {
   return "json" in command && command.json === true
 }
@@ -91,7 +94,7 @@ function basePayload(
   }
 }
 
-async function executeImportLegacy(command: Extract<RsvpCliCommand, { kind: "rsvp.config.import-legacy" | "rsvp.import-legacy" }>, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+async function executeImportLegacy(command: RsvpImportLegacyCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
   if (!command.yes) {
     return basePayload(command, false, "legacy RSVP import preview only; pass --yes to write native config and runtime/config", {
       requires: "--yes",
@@ -126,7 +129,7 @@ async function executeImportLegacy(command: Extract<RsvpCliCommand, { kind: "rsv
   })
 }
 
-function plannedPayload(command: RsvpCliCommand): RsvpCliPayload {
+function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
   switch (command.kind) {
     case "rsvp.doctor":
       return basePayload(command, false, "RSVP doctor command registered; full readiness checks run in the RSVP doctor unit", {
@@ -169,9 +172,6 @@ function plannedPayload(command: RsvpCliCommand): RsvpCliPayload {
           replayOutputPath: command.replayOutputPath ?? null,
         },
       })
-    case "rsvp.config.import-legacy":
-    case "rsvp.import-legacy":
-      throw new Error("import legacy is handled separately")
   }
 }
 

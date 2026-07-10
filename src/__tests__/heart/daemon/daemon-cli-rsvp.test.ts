@@ -231,6 +231,26 @@ describe("ouro rsvp CLI execution", () => {
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
+  it("writes explicit RSVP output files and supports text mode without daemon access", async () => {
+    const outputPath = path.join(os.tmpdir(), `rsvp-cli-incident-${process.pid}-${Date.now()}.json`)
+    const deps = createMockDeps()
+    try {
+      const result = await runOuroCli(["rsvp", "incident", "--agent", "slugger", "--output", outputPath], deps)
+
+      expect(result).toBe("rsvp.incident: dry run agent=slugger")
+      expect(JSON.parse(fs.readFileSync(outputPath, "utf-8"))).toMatchObject({
+        ok: true,
+        command: "rsvp.incident",
+        sideEffect: false,
+        agent: "slugger",
+      })
+      expect(deps.writeStdout).toHaveBeenCalledWith(result)
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(outputPath, { force: true })
+    }
+  })
+
   it("requires --yes before legacy config import mutates native RSVP config", async () => {
     const tmp = createTmpBundle({ agentName: "slugger" })
     const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-rsvp-cli-"))
@@ -299,6 +319,31 @@ describe("ouro rsvp CLI execution", () => {
       tmp.cleanup()
       fs.rmSync(legacyRoot, { recursive: true, force: true })
     }
+  })
+
+  it("rejects confirmed legacy config import when no agent is selected", async () => {
+    const deps = createMockDeps()
+
+    const result = await runOuroCli([
+      "rsvp",
+      "config",
+      "import-legacy",
+      "--legacy-root",
+      "/tmp/legacy-rsvp",
+      "--mode",
+      "shadow",
+      "--yes",
+      "--json",
+    ], deps)
+
+    expect(JSON.parse(result)).toMatchObject({
+      ok: false,
+      command: "rsvp.config.import-legacy",
+      sideEffect: false,
+      requires: "--agent",
+    })
+    expect(mockRsvpConfig.importLegacyRsvpConfig).not.toHaveBeenCalled()
+    expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
   it("only marks live smoke as send-capable when --allow-send is explicit", async () => {
