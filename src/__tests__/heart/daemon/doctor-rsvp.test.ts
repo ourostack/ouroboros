@@ -33,6 +33,10 @@ import { checkRsvp, runDoctorChecks } from "../../../heart/daemon/doctor"
 import { RSVP_CONFIG_POLICY_VERSION, rsvpConfigPath } from "../../../rsvp/config"
 
 const tempRoots: string[] = []
+const legacyLabel = "com.arimendelow.rsvp-tracker"
+const forbiddenLegacyChatGuid = "any;+;legacy-secret-chat-guid"
+const forbiddenLegacyServerUrl = "http://127.0.0.1:1234"
+const forbiddenLegacySecret = "legacy-shared-bluebubbles-password"
 
 function makeBundlesRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-doctor-rsvp-"))
@@ -83,6 +87,44 @@ function writeNativeRsvpConfig(agentRoot: string, overrides: Record<string, unkn
   }), "utf-8")
 }
 
+function writeLegacyRsvpRoot(): { legacyRoot: string; sharedSecretsPath: string } {
+  const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-doctor-legacy-rsvp-"))
+  tempRoots.push(legacyRoot)
+  const sharedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-doctor-legacy-rsvp-secrets-"))
+  tempRoots.push(sharedRoot)
+  const sharedSecretsPath = path.join(sharedRoot, "bluebubbles.json")
+  fs.writeFileSync(sharedSecretsPath, JSON.stringify({
+    bluebubbles: {
+      password: forbiddenLegacySecret,
+    },
+  }, null, 2), "utf-8")
+  fs.writeFileSync(path.join(legacyRoot, "config.json"), JSON.stringify({
+    aisleplanner: {
+      username: "ari@example.com",
+      password: "aisleplanner-password",
+      wedding_id: "484532",
+      event_id: "2081539",
+    },
+    bluebubbles: {
+      server_url: forbiddenLegacyServerUrl,
+      chat_guid: forbiddenLegacyChatGuid,
+      secrets_path: sharedSecretsPath,
+      send_enabled: true,
+    },
+  }, null, 2), "utf-8")
+  fs.writeFileSync(path.join(legacyRoot, `${legacyLabel}.plist`), [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<plist version=\"1.0\">",
+    "<dict>",
+    "<key>Label</key>",
+    `<string>${legacyLabel}</string>`,
+    "</dict>",
+    "</plist>",
+    "",
+  ].join("\n"), "utf-8")
+  return { legacyRoot, sharedSecretsPath }
+}
+
 function depsFor(bundlesRoot: string): DoctorDeps {
   return {
     existsSync: fs.existsSync,
@@ -96,6 +138,31 @@ function depsFor(bundlesRoot: string): DoctorDeps {
     envPath: "/usr/bin",
     platform: "darwin",
   }
+}
+
+function withRsvpCutoverDeps(deps: DoctorDeps, legacyRoot: string): DoctorDeps {
+  return {
+    ...deps,
+    rsvpCutoverLegacyRoot: legacyRoot,
+    rsvpCutoverDeps: {
+      existsSync: fs.existsSync,
+      readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
+      getLaunchAgentState: vi.fn(async () => ({
+        label: legacyLabel,
+        loaded: true,
+        source: "injected",
+      })),
+      getLegacyProcessState: vi.fn(async () => ({
+        running: true,
+        count: 1,
+        source: "injected",
+      })),
+      checkNativeBlueBubblesCredential: vi.fn(async () => ({
+        ok: true,
+        detail: "native BlueBubbles credential healthy",
+      })),
+    },
+  } as DoctorDeps
 }
 
 function seedRuntime(agent = "slugger"): void {
@@ -169,6 +236,32 @@ describe("RSVP doctor checks", () => {
     ]))
     expect(JSON.stringify(category)).not.toContain("aisleplanner-secret")
     expect(JSON.stringify(category)).not.toContain("bluebubbles-secret")
+  })
+
+  it("adds a native live-send preflight that blocks while the legacy sender is still live", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeRsvpHabit(agentRoot)
+    writeNativeRsvpConfig(agentRoot)
+    seedRuntime()
+    const { legacyRoot } = writeLegacyRsvpRoot()
+
+    const category = await checkRsvp(withRsvpCutoverDeps(depsFor(bundlesRoot), legacyRoot))
+
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "slugger.ouro RSVP legacy live-send preflight",
+        status: "fail",
+        detail: expect.stringContaining("sendAllowed=false"),
+      }),
+    ]))
+    const preflight = category.checks.find((check) => check.label === "slugger.ouro RSVP legacy live-send preflight")
+    expect(preflight?.detail).toContain("launchAgentInactive=false")
+    expect(preflight?.detail).toContain("legacyProcessInactive=false")
+    expect(preflight?.detail).toContain("legacyConfigSendInactive=false")
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacySecret)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyChatGuid)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
   })
 
   it("surfaces missing runtime credentials and route coordinates as actionable checks", async () => {
