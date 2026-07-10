@@ -295,6 +295,7 @@ export async function refreshProviderCredentialPool(
   options: RefreshProviderCredentialPoolOptions = {},
 ): Promise<ProviderCredentialPoolReadResult> {
   const providersToRead = selectedProviders(options.providers)
+  const requiresAllSelectedProviders = !!options.providers && options.providers.length > 0
   try {
     const store = getCredentialStore(agentName)
     options.onProgress?.(`reading vault items for ${agentName}...`)
@@ -319,6 +320,20 @@ export async function refreshProviderCredentialPool(
     }
 
     options.onProgress?.("parsing provider credentials...")
+    const missingRequestedProviders = requiresAllSelectedProviders
+      ? providersToRead.filter((provider) => !providers[provider])
+      : []
+    if (missingRequestedProviders.length > 0) {
+      const cached = cachedPools.get(agentName)
+      const result: ProviderCredentialPoolReadResult = {
+        ok: false,
+        reason: "missing",
+        poolPath: providerCredentialsVaultPath(agentName),
+        error: `requested provider credentials missing from ${providerCredentialsVaultPath(agentName)}: ${missingRequestedProviders.join(", ")}`,
+      }
+      if (options.preserveCachedOnFailure && cached?.ok) return cached
+      return options.skipCache ? result : cacheResult(agentName, result)
+    }
     const pool: ProviderCredentialPool = {
       schemaVersion: 1,
       updatedAt,

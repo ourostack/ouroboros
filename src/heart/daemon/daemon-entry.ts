@@ -36,9 +36,16 @@ import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
-import { readProviderCredentialPool, refreshProviderCredentialPool, type ProviderCredentialRecord } from "../provider-credentials"
+import {
+  cacheProviderCredentialRecords,
+  readProviderCredentialPool,
+  refreshProviderCredentialPool,
+  type ProviderCredentialRecord,
+} from "../provider-credentials"
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { readAgentConfigForAgent } from "../auth/auth-flow"
+import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 
 function parseSocketPath(argv: string[]): string {
@@ -497,20 +504,123 @@ function writeStopCommandHealthState(): void {
   }
 }
 
+function providerPreloadTargets(agent: string): AgentProvider[] {
+  try {
+    const { config } = readAgentConfigForAgent(agent, getAgentBundlesRoot())
+    return [...new Set([config.humanFacing.provider, config.agentFacing.provider])]
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.provider_preload_skipped",
+      message: "skipping provider credential preload because agent config could not be read",
+      meta: {
+        agent,
+        error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error config-read failures @preserve */ String(error),
+      },
+    })
+    return []
+  }
+}
+
+function providerPreloadMissingTargets(
+  result: Extract<Awaited<ReturnType<typeof refreshProviderCredentialPool>>, { ok: true }>,
+  providers: AgentProvider[],
+): AgentProvider[] {
+  return providers.filter((provider) => !result.pool.providers[provider])
+}
+
 async function preloadProviderCredentialPools(): Promise<void> {
-  await Promise.all(managedAgents.map((agent) =>
-    refreshProviderCredentialPool(agent, { preserveCachedOnFailure: true }),
-  ))
+  await Promise.all(managedAgents.map(async (agent) => {
+    const providers = providerPreloadTargets(agent)
+    if (providers.length === 0) return
+    const result = await refreshProviderCredentialPool(agent, { preserveCachedOnFailure: true, providers, skipCache: true })
+    if (result.ok) {
+      const missingProviders = providerPreloadMissingTargets(result, providers)
+      if (missingProviders.length > 0) {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.provider_preload_unavailable",
+          message: "provider credential preload returned an incomplete selected provider cache",
+          meta: {
+            agent,
+            reason: "missing",
+            error: `missing selected providers: ${missingProviders.join(", ")}`,
+          },
+        })
+        return
+      }
+      const records = Object.values(result.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
+      cacheProviderCredentialRecords(agent, records, new Date(result.pool.updatedAt))
+      return
+    }
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.provider_preload_unavailable",
+      message: "provider credential preload could not refresh selected provider cache",
+      meta: {
+        agent,
+        reason: result.reason,
+        error: result.error,
+      },
+    })
+  }))
+}
+
+function startProviderCredentialPoolPreload(): Promise<void> {
+  return preloadProviderCredentialPools().catch((error) => {
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.provider_preload_error",
+      message: "provider credential preload failed after daemon startup",
+      meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error provider preload failures @preserve */ String(error) },
+    })
+  })
+}
+
+function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Promise<void>): void {
+  void preload.then(async () => {
+    const result = await refreshDaemonSentinel(agent, "daemon_startup")
+    if (result.status === "critical") {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.startup_sentinel_error",
+        message: "startup Sentinel refresh reported critical after provider preload",
+        meta: {
+          agent,
+          error: result.message,
+        },
+      })
+    }
+  /* v8 ignore start -- refreshDaemonSentinel handles ordinary Sentinel failures; this is a promise-chain guard. @preserve */
+  }).catch((error) => {
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.startup_sentinel_error",
+      message: "startup Sentinel refresh failed after provider preload",
+      meta: {
+        agent,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  })
+  /* v8 ignore stop */
 }
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
-void preloadProviderCredentialPools().then(() => daemon.start()).then(async () => {
+void daemon.start().then(async () => {
+  const providerPreload = startProviderCredentialPoolPreload()
   const bundlesRoot = getAgentBundlesRoot()
   const ouroPath = resolveOuroBinaryPath()
   const osCronDeps = createRealOsCronDeps()
 
   for (const agent of managedAgents) {
-    await refreshDaemonSentinel(agent, "daemon_startup")
+    scheduleStartupSentinelAfterProviderPreload(agent, providerPreload)
     const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
     const habitsDir = path.join(bundleRoot, "habits")
     const degradedComponent = `habits:${agent}`

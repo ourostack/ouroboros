@@ -19,7 +19,7 @@ function snapshot(label: string, guests: Record<string, { first_name?: string; l
 }
 
 describe("RSVP diff renderer", () => {
-  it("computes deterministic deltas and renders intentional native copy", () => {
+  it("computes deterministic deltas and preserves the legacy notification skeleton", () => {
     const previous = snapshot("10:00", {
       "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7, attending_status: null },
       "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: "attending" },
@@ -55,8 +55,8 @@ describe("RSVP diff renderer", () => {
     expect(report).toContain("  • Unnamed guest (via Ari Mendelow) (declined)")
     expect(report).toContain("Guests removed:")
     expect(report).toContain("1 attending / 2 declined / 1 pending")
-    expect(report).not.toContain("Beep boop")
-    expect(report).not.toContain("script")
+    expect(report).toContain("🤖 Beep boop! Automated RSVP update from Slugger — no need to reply here!")
+    expect(report).not.toContain("I'm a script, not Slugger")
   })
 
   it("renders first-run and no-change summaries without model calls", () => {
@@ -67,12 +67,14 @@ describe("RSVP diff renderer", () => {
     })
 
     const firstRun = renderRsvpReport(computeRsvpDelta(null, current))
-    expect(firstRun).toContain("First native RSVP check — current summary:")
+    expect(firstRun).toContain("First check — here's the current summary:")
     expect(firstRun).toContain("1 attending / 0 declined / 1 pending / 1 unknown")
+    expect(firstRun).toContain("🤖 Beep boop! Automated RSVP update from Slugger — no need to reply here!")
 
     const noChange = renderRsvpReport(computeRsvpDelta(current, current))
     expect(noChange).toContain("No changes since last check.")
     expect(noChange).toContain("1 attending / 0 declined / 1 pending / 1 unknown")
+    expect(noChange).toContain("🤖 Beep boop! Automated RSVP update from Slugger — no need to reply here!")
   })
 
   it("renders sparse change sections and unnamed guests without a group peer", () => {

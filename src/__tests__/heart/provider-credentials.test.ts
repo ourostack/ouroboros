@@ -333,7 +333,7 @@ describe("provider credentials vault store", () => {
     })
 
     const result = await refreshProviderCredentialPool("slugger", {
-      providers: ["minimax", "openai-codex", "minimax"],
+      providers: ["minimax", "minimax"],
       skipCache: true,
     })
 
@@ -346,14 +346,56 @@ describe("provider credentials vault store", () => {
       },
     })
     expect(result.ok && result.pool.providers.azure).toBeUndefined()
-    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(2)
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(1)
     expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("minimax"), "password")
-    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("openai-codex"), "password")
     expect(readProviderCredentialPool("slugger")).toMatchObject({
       ok: false,
       reason: "missing",
       poolPath: "vault:slugger:providers/*",
     })
+  })
+
+  it("treats missing explicitly requested providers as a refresh failure and preserves cache", async () => {
+    emitTestEvent("provider credential targeted refresh requires selected providers")
+    const minimax = createProviderCredentialRecord({
+      provider: "minimax",
+      credentials: { apiKey: "cached-minimax-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:00:00.000Z"),
+    })
+    const openaiCodex = createProviderCredentialRecord({
+      provider: "openai-codex",
+      credentials: { oauthAccessToken: "cached-openai-token" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:01:00.000Z"),
+    })
+    const cached = cacheProviderCredentialRecords("slugger", [minimax, openaiCodex])
+    mockCredentialStore.items.set(providerCredentialItemName("minimax"), {
+      username: "minimax",
+      password: validPayload("minimax"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+
+    const preserved = await refreshProviderCredentialPool("slugger", {
+      providers: ["minimax", "openai-codex"],
+      preserveCachedOnFailure: true,
+    })
+
+    expect(preserved).toBe(cached)
+    expect(readProviderCredentialPool("slugger")).toBe(cached)
+
+    resetProviderCredentialCache()
+    const failed = await refreshProviderCredentialPool("slugger", {
+      providers: ["minimax", "openai-codex"],
+    })
+    expect(failed).toMatchObject({
+      ok: false,
+      reason: "missing",
+      error: "requested provider credentials missing from vault:slugger:providers/*: openai-codex",
+    })
+    expect(readProviderCredentialPool("slugger")).toBe(failed)
   })
 
   it("treats direct item 'not found' errors as missing provider credentials during refresh", async () => {
@@ -457,6 +499,42 @@ describe("provider credentials vault store", () => {
       ok: false,
       reason: "unavailable",
       error: "vault unavailable during targeted check",
+    })
+    expect(readProviderCredentialPool("slugger")).toBe(cached)
+  })
+
+  it("does not cache a targeted skip-cache refresh when a selected provider is missing", async () => {
+    emitTestEvent("provider credential skip-cache missing selected provider stays local")
+    const minimax = createProviderCredentialRecord({
+      provider: "minimax",
+      credentials: { apiKey: "cached-minimax-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:00:00.000Z"),
+    })
+    const openaiCodex = createProviderCredentialRecord({
+      provider: "openai-codex",
+      credentials: { oauthAccessToken: "cached-openai-token" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:01:00.000Z"),
+    })
+    const cached = cacheProviderCredentialRecords("slugger", [minimax, openaiCodex])
+    mockCredentialStore.items.set(providerCredentialItemName("minimax"), {
+      username: "minimax",
+      password: validPayload("minimax"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+
+    const result = await refreshProviderCredentialPool("slugger", {
+      providers: ["minimax", "openai-codex"],
+      skipCache: true,
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "missing",
+      error: "requested provider credentials missing from vault:slugger:providers/*: openai-codex",
     })
     expect(readProviderCredentialPool("slugger")).toBe(cached)
   })

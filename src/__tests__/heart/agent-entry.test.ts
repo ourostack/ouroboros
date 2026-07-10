@@ -47,6 +47,20 @@ function mockProviderCredentialModule(overrides: Record<string, unknown> = {}) {
   return module
 }
 
+function mockAgentConfigProvider(options: {
+  humanProvider?: string
+  agentProvider?: string
+} = {}) {
+  const readAgentConfigForAgent = vi.fn(() => ({
+    config: {
+      humanFacing: { provider: options.humanProvider ?? "minimax", model: "MiniMax-M2.5" },
+      agentFacing: { provider: options.agentProvider ?? "minimax", model: "MiniMax-M2.5" },
+    },
+  }))
+  vi.doMock("../../heart/auth/auth-flow", () => ({ readAgentConfigForAgent }))
+  return { readAgentConfigForAgent }
+}
+
 function createWorkerControllerMock() {
   return {
     run: vi.fn(async () => undefined),
@@ -400,6 +414,7 @@ describe("agent entrypoint", () => {
       readProviderCredentialPool,
       refreshProviderCredentialPool,
     })
+    mockAgentConfigProvider()
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
     vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
       readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
@@ -417,7 +432,10 @@ describe("agent entrypoint", () => {
       await import("../../heart/agent-entry")
 
       await vi.waitFor(() => {
-        expect(refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+        expect(refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", {
+          preserveCachedOnFailure: true,
+          providers: ["minimax"],
+        })
       })
       messageHandler?.({ type: "poke", taskId: "testflight-feedback" })
       expect(startPrivateRuntimeWorker).not.toHaveBeenCalled()
@@ -433,6 +451,121 @@ describe("agent entrypoint", () => {
     } finally {
       argvSpy.mockRestore()
       processOnSpy.mockRestore()
+    }
+  })
+
+  it("refreshes selected lane providers when cached provider credentials are incomplete", async () => {
+    vi.resetModules()
+
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker, { mockProviderCredentials: false })
+    const configureCliRuntimeLogger = vi.fn()
+    const refreshProviderCredentialPool = vi.fn(async () => providerCredentialPool())
+    mockProviderCredentialModule({
+      readProviderCredentialPool: vi.fn(() => ({
+        ok: true,
+        poolPath: "vault:slugger:providers/*",
+        pool: {
+          schemaVersion: 1,
+          updatedAt: "2026-07-07T00:00:00.000Z",
+          providers: {
+            anthropic: {
+              provider: "anthropic",
+              revision: "vault_anthropic",
+              updatedAt: "2026-07-07T00:00:00.000Z",
+              credentials: { setupToken: "test-token" },
+              config: {},
+              provenance: { source: "manual", updatedAt: "2026-07-07T00:00:00.000Z" },
+            },
+          },
+        },
+      })),
+      refreshProviderCredentialPool,
+    })
+    mockAgentConfigProvider({ humanProvider: "minimax", agentProvider: "openai-codex" })
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", {
+          preserveCachedOnFailure: true,
+          providers: ["minimax", "openai-codex"],
+        })
+      })
+      expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
+    } finally {
+      argvSpy.mockRestore()
+    }
+  })
+
+  it("continues startup without provider refresh when selected lane providers cannot be read", async () => {
+    vi.resetModules()
+
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker, { mockProviderCredentials: false })
+    const configureCliRuntimeLogger = vi.fn()
+    const emitNervesEvent = vi.fn()
+    const refreshProviderCredentialPool = vi.fn(async () => providerCredentialPool())
+    mockProviderCredentialModule({
+      readProviderCredentialPool: vi.fn(() => ({
+        ok: false,
+        reason: "missing",
+        poolPath: "vault:slugger:providers/*",
+        error: "provider credentials have not been loaded from vault",
+      })),
+      refreshProviderCredentialPool,
+    })
+    vi.doMock("../../heart/auth/auth-flow", () => ({
+      readAgentConfigForAgent: vi.fn(() => {
+        throw new Error("agent config missing")
+      }),
+    }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+          level: "warn",
+          event: "senses.provider_refresh_skipped",
+          meta: expect.objectContaining({
+            agentName: "slugger",
+            error: "agent config missing",
+          }),
+        }))
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
+      })
+      expect(refreshProviderCredentialPool).not.toHaveBeenCalled()
+    } finally {
+      argvSpy.mockRestore()
     }
   })
 
@@ -455,6 +588,7 @@ describe("agent entrypoint", () => {
       })),
       refreshProviderCredentialPool,
     })
+    mockAgentConfigProvider()
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
     vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
       readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
@@ -472,7 +606,10 @@ describe("agent entrypoint", () => {
       await import("../../heart/agent-entry")
 
       await vi.waitFor(() => {
-        expect(refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+        expect(refreshProviderCredentialPool).toHaveBeenCalledWith("slugger", {
+          preserveCachedOnFailure: true,
+          providers: ["minimax"],
+        })
         expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
       })
     } finally {

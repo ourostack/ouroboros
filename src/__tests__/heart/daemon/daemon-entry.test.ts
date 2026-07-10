@@ -111,10 +111,55 @@ describe("daemon entrypoint", () => {
   let testHomeRoot: string
   let originalHome: string | undefined
 
+  function writeAgentConfig(
+    agentName: string,
+    options: {
+      humanProvider?: string
+      humanModel?: string
+      agentProvider?: string
+      agentModel?: string
+    } = {},
+  ): void {
+    const agentRoot = path.join(testHomeRoot, "AgentBundles", `${agentName}.ouro`)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({
+      version: 2,
+      enabled: true,
+      humanFacing: {
+        provider: options.humanProvider ?? "minimax",
+        model: options.humanModel ?? "MiniMax-M2.5",
+      },
+      agentFacing: {
+        provider: options.agentProvider ?? "minimax",
+        model: options.agentModel ?? "MiniMax-M2.5",
+      },
+      phrases: { thinking: ["thinking"], tool: ["tool"], followup: ["followup"] },
+    }, null, 2)}\n`, "utf-8")
+  }
+
   beforeEach(() => {
     originalHome = process.env.HOME
     testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-test-home-"))
     process.env.HOME = testHomeRoot
+    refreshProviderCredentialPoolMock.mockReset()
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: true,
+      poolPath: "vault:slugger:providers/*",
+      pool: {
+        schemaVersion: 1,
+        updatedAt: "2026-04-13T00:00:00.000Z",
+        providers: {
+          minimax: {
+            provider: "minimax",
+            revision: "vault_preload",
+            updatedAt: "2026-04-13T00:00:00.000Z",
+            credentials: { apiKey: "test-key" },
+            config: {},
+            provenance: { source: "manual", updatedAt: "2026-04-13T00:00:00.000Z" },
+          },
+        },
+      },
+    })
     habitSchedulerListJobsMock.mockReturnValue([])
     habitSchedulerTriggerJobMock.mockResolvedValue({ ok: false, message: "unhandled habit trigger" })
   })
@@ -151,6 +196,7 @@ describe("daemon entrypoint", () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
     readPrivateRuntimeConfigMock.mockReturnValue(privateRuntimeConfig)
+    writeAgentConfig("slugger")
 
     const start = vi.fn(async () => undefined)
     const stop = vi.fn(async () => undefined)
@@ -225,9 +271,8 @@ describe("daemon entrypoint", () => {
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
 
-    expect(start).toHaveBeenCalledTimes(1)
     expect(daemonCtor).toHaveBeenCalledTimes(1)
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
 
@@ -636,7 +681,13 @@ describe("daemon entrypoint", () => {
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
     expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
-    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+    await vi.waitFor(() => {
+      expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
+        preserveCachedOnFailure: true,
+        providers: ["minimax"],
+        skipCache: true,
+      })
+    })
     expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toMatchObject({
       agentName: "slugger",
       runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
@@ -652,6 +703,378 @@ describe("daemon entrypoint", () => {
     runtimeCredentials.resetRuntimeCredentialConfigCache()
     providerCredentials.resetProviderCredentialCache()
     expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toBeNull()
+  })
+
+  it("opens the daemon before provider credential warm-up resolves", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    writeAgentConfig("slugger")
+    let resolveProviderRefresh!: (value: {
+      ok: true
+      poolPath: string
+      pool: { schemaVersion: 1; updatedAt: string; providers: {} }
+    }) => void
+    refreshProviderCredentialPoolMock.mockImplementation(() => new Promise((resolve) => {
+      resolveProviderRefresh = resolve
+    }))
+
+    const start = vi.fn(async () => undefined)
+    const refreshContextLossSentinel = vi.fn(async () => ({
+      verdict: "ready",
+      summary: "deterministic recovery is ready",
+    }))
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        start = start
+        stop = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel,
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+
+    await import("../../../heart/daemon/daemon-entry")
+
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => {
+      expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
+        preserveCachedOnFailure: true,
+        providers: ["minimax"],
+        skipCache: true,
+      })
+    })
+    expect(refreshContextLossSentinel).not.toHaveBeenCalled()
+
+    resolveProviderRefresh({
+      ok: true,
+      poolPath: "vault:slugger:providers/*",
+      pool: { schemaVersion: 1, updatedAt: "2026-04-13T00:00:00.000Z", providers: {} },
+    })
+    await vi.waitFor(() => {
+      expect(refreshContextLossSentinel).toHaveBeenCalledWith("slugger", expect.any(String), expect.objectContaining({ trigger: "daemon_startup" }))
+    })
+  })
+
+  it("skips provider credential warm-up when agent config is unreadable", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    const emitNervesEvent = vi.fn()
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        start = vi.fn(async () => undefined)
+        stop = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+
+    await import("../../../heart/daemon/daemon-entry")
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.provider_preload_skipped",
+      }))
+    })
+    expect(refreshProviderCredentialPoolMock).not.toHaveBeenCalled()
+  })
+
+  it("logs provider credential warm-up failures after daemon startup", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    writeAgentConfig("slugger")
+    refreshProviderCredentialPoolMock.mockRejectedValue(new Error("vault timeout"))
+    const emitNervesEvent = vi.fn()
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        start = vi.fn(async () => undefined)
+        stop = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+
+    await import("../../../heart/daemon/daemon-entry")
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.provider_preload_error",
+        meta: { error: "vault timeout" },
+      }))
+    })
+  })
+
+  it("logs unavailable provider credential warm-up results after daemon startup", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    writeAgentConfig("slugger")
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:slugger:providers/*",
+      error: "vault timeout",
+    })
+    const emitNervesEvent = vi.fn()
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        start = vi.fn(async () => undefined)
+        stop = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+
+    await import("../../../heart/daemon/daemon-entry")
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.provider_preload_unavailable",
+        meta: {
+          agent: "slugger",
+          reason: "unavailable",
+          error: "vault timeout",
+        },
+      }))
+    })
+  })
+
+  it("does not replace the provider cache when warm-up returns incomplete selected providers", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    writeAgentConfig("slugger", { humanProvider: "minimax", agentProvider: "openai-codex" })
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: true,
+      poolPath: "vault:slugger:providers/*",
+      pool: {
+        schemaVersion: 1,
+        updatedAt: "2026-04-13T00:00:00.000Z",
+        providers: {
+          minimax: {
+            provider: "minimax",
+            revision: "vault_partial",
+            updatedAt: "2026-04-13T00:00:00.000Z",
+            credentials: { apiKey: "partial-key" },
+            config: {},
+            provenance: { source: "manual", updatedAt: "2026-04-13T00:00:00.000Z" },
+          },
+        },
+      },
+    })
+    const emitNervesEvent = vi.fn()
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        start = vi.fn(async () => undefined)
+        stop = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+
+    const providerCredentials = await import("../../../heart/provider-credentials")
+    providerCredentials.resetProviderCredentialCache()
+    const minimax = providerCredentials.createProviderCredentialRecord({
+      provider: "minimax",
+      credentials: { apiKey: "cached-minimax-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:00:00.000Z"),
+    })
+    const openaiCodex = providerCredentials.createProviderCredentialRecord({
+      provider: "openai-codex",
+      credentials: { oauthAccessToken: "cached-openai-token" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:01:00.000Z"),
+    })
+    const cached = providerCredentials.cacheProviderCredentialRecords("slugger", [minimax, openaiCodex])
+
+    await import("../../../heart/daemon/daemon-entry")
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.provider_preload_unavailable",
+        meta: {
+          agent: "slugger",
+          reason: "missing",
+          error: "missing selected providers: openai-codex",
+        },
+      }))
+    })
+    expect(providerCredentials.readProviderCredentialPool("slugger")).toBe(cached)
+  })
+
+  it("logs startup Sentinel failures after provider credential warm-up settles", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    writeAgentConfig("slugger")
+    const emitNervesEvent = vi.fn()
+
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
+    vi.spyOn(process.stdout, "on").mockImplementation(((_event: string, _cb: () => void) => process.stdout) as any)
+    vi.spyOn(process.stderr, "on").mockImplementation(((_event: string, _cb: () => void) => process.stderr) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: class MockOuroDaemon {
+        start = vi.fn(async () => undefined)
+        stop = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => {
+        throw "sentinel offline"
+      }),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+
+    await import("../../../heart/daemon/daemon-entry")
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "error",
+        event: "daemon.startup_sentinel_error",
+        meta: {
+          agent: "slugger",
+          error: "Sentinel refresh failed: sentinel offline",
+        },
+      }))
+    })
   })
 
   it("routes pulse alerts through canonical private wake commands", async () => {

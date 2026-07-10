@@ -224,8 +224,20 @@ function readBaselineSnapshot(agentRoot: string): RsvpSnapshot | null {
     : null
 }
 
-function readLatestSnapshot(agentRoot: string): RsvpSnapshot {
-  return parseSnapshotFromFile(latestSnapshotPath(agentRoot))
+function resolveLatestSnapshot(agentRoot: string): { ok: true; snapshot: RsvpSnapshot } | { ok: false; path: string; message: string } {
+  const filePath = latestSnapshotPath(agentRoot)
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, path: filePath, message: "latest RSVP snapshot missing; run `ouro rsvp refresh --mode shadow --no-send` first" }
+  }
+  try {
+    return { ok: true, snapshot: parseSnapshotFromFile(filePath) }
+  } catch (error) {
+    return {
+      ok: false,
+      path: filePath,
+      message: error instanceof Error ? error.message : /* v8 ignore next -- fs and snapshot parsing failures are Error instances. @preserve */ String(error),
+    }
+  }
 }
 
 function machineIdForCli(): string {
@@ -683,7 +695,19 @@ async function executeSmoke(command: RsvpSmokeCommand, deps: OuroCliDeps): Promi
       result: configResult as unknown as JsonValue,
     })
   }
-  const snapshot = readLatestSnapshot(agentRoot)
+  const snapshotResult = resolveLatestSnapshot(agentRoot)
+  if (!snapshotResult.ok) {
+    return {
+      ...basePayload(command, false, "RSVP smoke requires latest RSVP snapshot before follow-up can run", {
+        allowSend: command.allowSend === true,
+        sendAllowed: false,
+        requires: "latest RSVP snapshot",
+        result: snapshotResult as unknown as JsonValue,
+      }),
+      ok: false,
+    }
+  }
+  const snapshot = snapshotResult.snapshot
   const question = command.question ?? "who is pending?"
   const answer = queryRsvpSnapshot(snapshot, { query: question })
   const wantsLiveSend = command.mode === "live" && command.allowSend === true

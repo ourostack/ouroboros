@@ -420,6 +420,53 @@ describe("RSVP doctor checks", () => {
     expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
   })
 
+  it("skips RSVP cutover preflight when no configured or default legacy root exists", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const homedir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-doctor-rsvp-no-legacy-home-"))
+    tempRoots.push(homedir)
+    writeRsvpHabit(agentRoot)
+    writeNativeRsvpConfig(agentRoot)
+    seedRuntime()
+
+    const category = await checkRsvp({ ...depsFor(bundlesRoot), homedir })
+
+    expect(category.checks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "rsvp.cutover.live_send_preflight" }),
+    ]))
+  })
+
+  it("uses the default RSVP legacy root for cutover preflight when config omits one", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const homedir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-doctor-rsvp-default-legacy-home-"))
+    const legacyRoot = path.join(homedir, "Projects", "rsvp-tracker")
+    tempRoots.push(homedir)
+    fs.mkdirSync(legacyRoot, { recursive: true })
+    fs.writeFileSync(path.join(legacyRoot, "config.json"), JSON.stringify({ bluebubbles: { enabled: false } }), "utf-8")
+    writeRsvpHabit(agentRoot)
+    writeNativeRsvpConfig(agentRoot)
+    seedRuntime()
+    const deps = {
+      ...depsFor(bundlesRoot),
+      homedir,
+      rsvpCutoverDeps: {
+        existsSync: fs.existsSync,
+        readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
+        getLaunchAgentState: vi.fn(async () => ({ label: legacyLabel, loaded: false, source: "injected" })),
+        getLegacyProcessState: vi.fn(async () => ({ running: false, count: 0, source: "injected" })),
+        checkNativeBlueBubblesCredential: vi.fn(async () => ({ ok: true, detail: "healthy" })),
+      },
+    } as DoctorDeps
+
+    const category = await checkRsvp(deps)
+
+    expect(deps.rsvpCutoverDeps.getLaunchAgentState).toHaveBeenCalledWith(expect.objectContaining({ legacyRoot }))
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "rsvp.cutover.live_send_preflight", status: "pass" }),
+    ]))
+  })
+
   it("fails RSVP habit schedule health when the active habit lacks typed metadata", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
