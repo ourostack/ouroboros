@@ -23,6 +23,8 @@ import {
 } from "../../../heart/daemon/daemon-cli"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
+const forbiddenCliIncidentChatGuid = "any;+;rsvp-cli-secret-chat"
+
 function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
   return {
     socketPath: "/tmp/ouro-test.sock",
@@ -34,6 +36,46 @@ function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
     fallbackPendingMessage: vi.fn().mockReturnValue("pending"),
     ...overrides,
   }
+}
+
+function seedRsvpOperationalBundle(): ReturnType<typeof createTmpBundle> {
+  const tmp = createTmpBundle({ agentName: "slugger" })
+  fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+  fs.mkdirSync(path.join(tmp.agentRoot, "rsvp"), { recursive: true })
+  fs.mkdirSync(path.join(tmp.agentRoot, "state", "senses", "context-packets"), { recursive: true })
+  fs.mkdirSync(path.join(tmp.agentRoot, "state", "rsvp", "outbound"), { recursive: true })
+  fs.mkdirSync(path.join(tmp.agentRoot, "state", "rsvp", "snapshots"), { recursive: true })
+  fs.writeFileSync(
+    path.join(tmp.agentRoot, "habits", "rsvp-ari-rachel.md"),
+    "---\nname: rsvp-ari-rachel\nstatus: active\ncadence: 0 10 * * *\n---\n",
+    "utf-8",
+  )
+  fs.writeFileSync(path.join(tmp.agentRoot, "rsvp", "config.json"), JSON.stringify({
+    schemaVersion: 1,
+    policyVersion: "rsvp-config/v1",
+    agent: "slugger",
+    mode: "shadow",
+    source: { kind: "aisleplanner", weddingId: "484532", eventId: "2081539" },
+    credentialRef: { runtimeConfigItem: "runtime/config", runtimeConfigPath: "rsvp.aisleplanner" },
+    bluebubblesRoute: { chatGuid: forbiddenCliIncidentChatGuid, chatIdentifier: "wedding-chat" },
+  }), "utf-8")
+  fs.writeFileSync(path.join(tmp.agentRoot, "state", "senses", "context-packets", "ledger.jsonl"), `${JSON.stringify({
+    id: "ctx_cli_1",
+    sense: "bluebubbles",
+    scope: "same-chat",
+    createdAt: "2026-07-09T18:00:00.000Z",
+  })}\n`, "utf-8")
+  fs.writeFileSync(path.join(tmp.agentRoot, "state", "rsvp", "outbound", "ledger.json"), JSON.stringify({
+    reservations: [{ idempotencyKey: "rsvp:cli", status: "accepted" }],
+  }), "utf-8")
+  fs.writeFileSync(path.join(tmp.agentRoot, "state", "rsvp", "snapshots", "latest.json"), JSON.stringify({
+    snapshotId: "snap_cli_latest",
+    counts: { attending: 149, declined: 123, pending: 1 },
+  }), "utf-8")
+  fs.writeFileSync(path.join(tmp.agentRoot, "state", "rsvp", "spend-ledger.json"), JSON.stringify({
+    runs: [{ operationId: "habit_cli_1", provider: "none", tokens: 0 }],
+  }), "utf-8")
+  return tmp
 }
 
 afterEach(() => {
@@ -248,6 +290,77 @@ describe("ouro rsvp CLI execution", () => {
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(outputPath, { force: true })
+    }
+  })
+
+  it("runs RSVP doctor locally with stable check ids instead of returning a placeholder registration", async () => {
+    const tmp = seedRsvpOperationalBundle()
+    const setExitCode = vi.fn()
+    const deps = createMockDeps({ bundlesRoot: tmp.bundleRoot, setExitCode })
+    try {
+      const result = await runOuroCli(["rsvp", "doctor", "--agent", "slugger", "--json", "--strict"], deps)
+      const parsed = JSON.parse(result)
+
+      expect(parsed).toMatchObject({
+        ok: false,
+        command: "rsvp.doctor",
+        agent: "slugger",
+        sideEffect: false,
+        strict: true,
+        doctor: {
+          summary: expect.objectContaining({ failed: expect.any(Number) }),
+          categories: [
+            expect.objectContaining({
+              name: "RSVP",
+              checks: expect.arrayContaining([
+                expect.objectContaining({ id: "rsvp.native_config" }),
+                expect.objectContaining({ id: "rsvp.context_packet_ledger" }),
+                expect.objectContaining({ id: "rsvp.habit.schedule" }),
+                expect.objectContaining({ id: "rsvp.latest_fetch" }),
+                expect.objectContaining({ id: "rsvp.delivery.reconciliation" }),
+                expect.objectContaining({ id: "rsvp.spend_timeline" }),
+              ]),
+            }),
+          ],
+        },
+      })
+      expect(result).not.toMatch(/registered|planned/i)
+      expect(setExitCode).toHaveBeenCalledWith(1)
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("writes the real RSVP incident bundle from the CLI without leaking raw BlueBubbles coordinates", async () => {
+    const tmp = seedRsvpOperationalBundle()
+    const outputPath = path.join(os.tmpdir(), `rsvp-cli-incident-real-${process.pid}-${Date.now()}.json`)
+    const deps = createMockDeps({ bundlesRoot: tmp.bundleRoot })
+    try {
+      const result = await runOuroCli(["rsvp", "incident", "--agent", "slugger", "--output", outputPath], deps)
+      const written = JSON.parse(fs.readFileSync(outputPath, "utf-8"))
+
+      expect(result).toContain(outputPath)
+      expect(result).not.toMatch(/registered|planned/i)
+      expect(written).toMatchObject({
+        schemaVersion: 1,
+        agent: "slugger",
+        sideEffect: false,
+        doctor: {
+          summary: expect.objectContaining({ failed: expect.any(Number) }),
+        },
+        contextPacketLedger: {
+          latestPacketId: "ctx_cli_1",
+        },
+        habitSchedule: {
+          activeHabit: "rsvp-ari-rachel",
+        },
+      })
+      expect(JSON.stringify(written)).not.toContain(forbiddenCliIncidentChatGuid)
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(outputPath, { force: true })
+      tmp.cleanup()
     }
   })
 

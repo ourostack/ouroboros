@@ -264,6 +264,32 @@ describe("RSVP doctor checks", () => {
     expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
   })
 
+  it("emits stable RSVP doctor ids for operational health surfaces", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeRsvpHabit(agentRoot)
+    writeNativeRsvpConfig(agentRoot)
+    seedRuntime()
+    const { legacyRoot } = writeLegacyRsvpRoot()
+
+    const category = await checkRsvp(withRsvpCutoverDeps(depsFor(bundlesRoot), legacyRoot))
+
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "rsvp.native_config", label: "slugger.ouro RSVP native config", status: "pass" }),
+      expect.objectContaining({ id: "rsvp.aisleplanner.credentials", label: "slugger.ouro RSVP AislePlanner credentials", status: "pass" }),
+      expect.objectContaining({ id: "rsvp.bluebubbles.attachment_identity", label: "slugger.ouro RSVP BlueBubbles attachment identity", status: "pass" }),
+      expect.objectContaining({ id: "rsvp.context_packet_ledger", label: "slugger.ouro RSVP context packet ledger" }),
+      expect.objectContaining({ id: "rsvp.habit.schedule", label: "slugger.ouro RSVP habit schedule" }),
+      expect.objectContaining({ id: "rsvp.cutover.live_send_preflight", label: "slugger.ouro RSVP legacy live-send preflight", status: "fail" }),
+      expect.objectContaining({ id: "rsvp.latest_fetch", label: "slugger.ouro RSVP latest fetch" }),
+      expect.objectContaining({ id: "rsvp.delivery.reconciliation", label: "slugger.ouro RSVP delivery reconciliation" }),
+      expect.objectContaining({ id: "rsvp.spend_timeline", label: "slugger.ouro RSVP spend timeline" }),
+    ]))
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacySecret)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyChatGuid)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
+  })
+
   it("surfaces missing runtime credentials and route coordinates as actionable checks", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
