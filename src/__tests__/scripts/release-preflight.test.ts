@@ -2,15 +2,19 @@ import * as path from "path"
 import * as fs from "fs"
 import * as os from "os"
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const {
   assessChangelogFreshness,
   assessWrapperPublishSync,
   collectChangedFiles,
   classifyOperationalContractChange,
+  parseArgs,
   pathRequiresChangelogFreshness,
+  runReleasePreflightCli,
+  runReleasePreflightCliIfMain,
   runReleasePreflight,
+  runRootDependencyAudit,
   versionBumpRequired,
   wrapperPackageChanged,
 } = require(path.resolve(__dirname, "../../../scripts/release-preflight.cjs"))
@@ -185,6 +189,10 @@ describe("release-preflight", () => {
     expect(pathRequiresChangelogFreshness("src/__tests__/scripts/release-preflight.test.ts")).toBe(false)
   })
 
+  it("requires a value for --base-ref", () => {
+    expect(() => parseArgs(["--base-ref"])).toThrow("--base-ref requires a value")
+  })
+
   it("classifies persisted RSVP operational contracts for release preflight visibility", () => {
     expect(classifyOperationalContractChange("src/rsvp/snapshot.ts")).toEqual({
       kind: "persisted-schema",
@@ -194,9 +202,25 @@ describe("release-preflight", () => {
       kind: "replay-fixture",
       message: "replay fixture changed: src/__fixtures__/rsvp/july-9-context/manifest.json",
     })
+    expect(classifyOperationalContractChange("fixtures/rsvp.fixture.json")).toEqual({
+      kind: "replay-fixture",
+      message: "replay fixture changed: fixtures/rsvp.fixture.json",
+    })
+    expect(classifyOperationalContractChange("fixtures/voice.trace.json")).toEqual({
+      kind: "replay-fixture",
+      message: "replay fixture changed: fixtures/voice.trace.json",
+    })
     expect(classifyOperationalContractChange("src/heart/daemon/doctor.ts")).toEqual({
       kind: "doctor-category",
       message: "doctor category/check surface changed: src/heart/daemon/doctor.ts",
+    })
+    expect(classifyOperationalContractChange("src/rsvp/diagnostics.ts")).toEqual({
+      kind: "doctor-category",
+      message: "doctor category/check surface changed: src/rsvp/diagnostics.ts",
+    })
+    expect(classifyOperationalContractChange("src/rsvp/incident-bundle.ts")).toEqual({
+      kind: "doctor-category",
+      message: "doctor category/check surface changed: src/rsvp/incident-bundle.ts",
     })
     expect(classifyOperationalContractChange("docs/testing-guide.md")).toBeNull()
   })
@@ -204,6 +228,7 @@ describe("release-preflight", () => {
   it("detects wrapper package changes separately from general release bumps", () => {
     expect(wrapperPackageChanged(["packages/ouro.bot/index.js"])).toBe(true)
     expect(wrapperPackageChanged(["src/heart/daemon/daemon-cli.ts"])).toBe(false)
+    expect(wrapperPackageChanged([])).toBe(false)
   })
 
   it("collects committed, working-tree, and untracked changes for local preflight runs", () => {
@@ -242,6 +267,21 @@ describe("release-preflight", () => {
     expect(result.messages).toContain("root npm audit: pass (found 0 vulnerabilities)")
     expect(result.messages).toContain("package assets verified")
     expect(result.messages.join("\n")).toContain("npm trusted-publisher local contract:")
+  })
+
+  it("can run with repo default read paths and package root", () => {
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: ["docs/auth-and-providers.md"],
+        }),
+      },
+    )
+
+    expect(result.baseRef).toBe("origin/main")
+    expect(result.changedFiles).toContain("docs/auth-and-providers.md")
+    expect(result.messages).toContain("wrapper package unchanged")
   })
 
   it("surfaces RSVP persisted schema, replay fixture, and doctor category contract changes", () => {
@@ -295,6 +335,17 @@ describe("release-preflight", () => {
     expect(result.errors.join("\n")).toContain("3 moderate severity vulnerabilities")
   })
 
+  it("reports root npm audit failures even when npm prints no details", () => {
+    const result = runRootDependencyAudit("/tmp/ouro", () => {
+      throw new Error("audit failed")
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      message: "root npm audit failed: npm audit --audit-level=moderate reported vulnerable dependencies",
+    })
+  })
+
   it("fails when release preflight package assets are missing", () => {
     const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-preflight-assets-"))
     const result = runReleasePreflight(
@@ -311,6 +362,30 @@ describe("release-preflight", () => {
 
     expect(result.ok).toBe(false)
     expect(result.errors.join("\n")).toContain("missing required package assets")
+  })
+
+  it("fails when the npm trusted-publisher local contract is invalid", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: ["docs/auth-and-providers.md"],
+        }),
+        readFileSyncImpl: (filePath: string) => {
+          if (filePath.endsWith("/.github/workflows/coverage.yml")) {
+            return "publish:\n  permissions:\n    contents: read\n"
+          }
+          return makeReadFileSyncImpl()(filePath)
+        },
+        packageRoot,
+      },
+    )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("coverage publish workflow must include id-token: write")
+    expect(result.errors.join("\n")).toContain("coverage publish workflow must document the npm trusted publishing runtime floor")
   })
 
   it("fails when releasable changes reuse an already-published cli version", () => {
@@ -392,6 +467,51 @@ describe("release-preflight", () => {
     })
   })
 
+  it("truncates long freshness path lists in changelog guidance", () => {
+    const changedFiles = [
+      "src/path/a.ts",
+      "src/path/b.ts",
+      "src/path/c.ts",
+      "src/path/d.ts",
+      "src/path/e.ts",
+      "src/path/f.ts",
+      "src/path/g.ts",
+      "src/path/h.ts",
+      "src/path/i.ts",
+    ]
+    const result = assessChangelogFreshness({
+      baseRef: "origin/main",
+      changedFiles,
+      currentVersion: "0.1.0-alpha.407",
+      changelog: {
+        versions: [{ version: "0.1.0-alpha.407", changes: ["old entry"] }],
+      },
+      execSyncImpl: makeExecSyncImpl(),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("src/path/a.ts, src/path/b.ts, src/path/c.ts, src/path/d.ts, src/path/e.ts, src/path/f.ts, src/path/g.ts, src/path/h.ts, and 1 more")
+  })
+
+  it("fails when uncommitted releasable changes are newer than a committed changelog", () => {
+    const result = assessChangelogFreshness({
+      baseRef: "origin/main",
+      changedFiles: ["src/mailroom/core.ts", "changelog.json"],
+      currentVersion: "0.1.0-alpha.407",
+      changelog: {
+        versions: [{ version: "0.1.0-alpha.407", changes: ["mailroom runtime update"] }],
+      },
+      execSyncImpl: makeExecSyncImpl({
+        workingTreeChangedFiles: ["src/mailroom/core.ts"],
+      }),
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      message: "changelog.json must be updated in the working tree after uncommitted releasable changes: src/mailroom/core.ts",
+    })
+  })
+
   it("fails when the current version is not the top changelog entry for releasable changes", () => {
     const result = assessChangelogFreshness({
       baseRef: "origin/main",
@@ -420,6 +540,28 @@ describe("release-preflight", () => {
       },
       execSyncImpl: makeExecSyncImpl({
         workingTreeChangedFiles: ["src/mailroom/core.ts", "changelog.json"],
+      }),
+    })
+
+    expect(result).toEqual({ ok: true, message: "changelog freshness: pass" })
+  })
+
+  it("passes changelog freshness when committed implementation changes are older than changelog", () => {
+    const result = assessChangelogFreshness({
+      baseRef: "origin/main",
+      changedFiles: ["src/senses/voice/twilio-phone.ts", "changelog.json"],
+      currentVersion: "0.1.0-alpha.407",
+      changelog: {
+        versions: [{ version: "0.1.0-alpha.407", changes: ["fresh voice tuning"] }],
+      },
+      execSyncImpl: makeExecSyncImpl({
+        latestCommits: {
+          "changelog.json": "newer",
+          "src/senses/voice/twilio-phone.ts": "older",
+        },
+        ancestorChecks: {
+          "older..newer": true,
+        },
       }),
     })
 
@@ -484,6 +626,18 @@ describe("release-preflight", () => {
     })
   })
 
+  it("passes when the wrapper changed and its local version is unpublished", () => {
+    expect(assessWrapperPublishSync({
+      changedFiles: ["packages/ouro.bot/index.js"],
+      localVersion: "0.1.0-alpha.407",
+      cliVersion: "0.1.0-alpha.407",
+      publishedVersion: "",
+    })).toEqual({
+      ok: true,
+      message: "wrapper package changed and local wrapper version is unpublished",
+    })
+  })
+
   it("fails when the wrapper package changed but the wrapper version is already published", () => {
     const packageRoot = makePackageRootWithRequiredAssets()
     const result = runReleasePreflight(
@@ -503,5 +657,87 @@ describe("release-preflight", () => {
     expect(result.errors).toContain(
       "ouro.bot wrapper changed but ouro.bot@0.1.0-alpha.407 is already published; bump packages/ouro.bot/package.json before merging",
     )
+  })
+
+  it("runs the command-line wrapper success, failure, and argument-error paths", () => {
+    const out: string[] = []
+    const err: string[] = []
+    const exits: number[] = []
+    const deps = {
+      consoleLog: (line: string) => out.push(line),
+      consoleError: (line: string) => err.push(line),
+      exit: (code: number) => {
+        exits.push(code)
+        return code
+      },
+    }
+
+    expect(runReleasePreflightCli(["--base-ref", "origin/main"], {
+      ...deps,
+      runReleasePreflightImpl: (options: { baseRef: string }) => ({
+        ok: true,
+        baseRef: options.baseRef,
+        changedFiles: [],
+        releasableChanged: false,
+        messages: ["preflight ok"],
+        errors: [],
+      }),
+    })).toBe(0)
+    expect(out).toContain("preflight ok")
+    expect(out).toContain("release preflight: pass")
+
+    expect(runReleasePreflightCli([], {
+      ...deps,
+      runReleasePreflightImpl: () => ({
+        ok: false,
+        baseRef: "origin/main",
+        changedFiles: [],
+        releasableChanged: false,
+        messages: ["preflight checked"],
+        errors: ["broken contract"],
+      }),
+    })).toBe(1)
+    expect(err).toContain("release preflight: FAIL")
+    expect(err).toContain("broken contract")
+
+    expect(runReleasePreflightCli(["--unknown"], deps)).toBe(1)
+    expect(err).toContain("unknown argument: --unknown")
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    try {
+      expect(runReleasePreflightCli(["--still-unknown"], {
+        exit: (code: number) => code,
+      })).toBe(1)
+      expect(consoleError).toHaveBeenCalledWith("release preflight: FAIL")
+      expect(consoleError).toHaveBeenCalledWith("unknown argument: --still-unknown")
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it("only runs the command-line wrapper when invoked as main", () => {
+    const moduleRef = { filename: "release-preflight.cjs" }
+    expect(runReleasePreflightCliIfMain(moduleRef, { main: null })).toBeUndefined()
+    expect(runReleasePreflightCliIfMain(moduleRef, { main: moduleRef }, () => 0)).toBe(0)
+  })
+
+  it("uses default command-line loggers on successful CLI runs", () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined)
+    try {
+      expect(runReleasePreflightCli(["--base-ref", "origin/main"], {
+        runReleasePreflightImpl: () => ({
+          ok: true,
+          baseRef: "origin/main",
+          changedFiles: [],
+          releasableChanged: false,
+          messages: ["default logger path"],
+          errors: [],
+        }),
+      })).toBe(0)
+      expect(consoleLog).toHaveBeenCalledWith("default logger path")
+      expect(consoleLog).toHaveBeenCalledWith("release preflight: pass")
+    } finally {
+      consoleLog.mockRestore()
+    }
   })
 })
