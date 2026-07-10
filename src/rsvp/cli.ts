@@ -242,6 +242,8 @@ async function executeIncident(command: RsvpIncidentCommand, deps: OuroCliDeps):
     existsSync: (filePath: string) => fs.existsSync(filePath),
     readFileSync: (filePath: string) => fs.readFileSync(filePath, "utf-8"),
     readdirSync: (dirPath: string) => fs.readdirSync(dirPath),
+    statSync: (filePath: string) => fs.statSync(filePath),
+    checkSocketAlive: deps.checkSocketAlive,
     runDoctorChecks: () => runDoctorChecks(doctorDepsFor(deps), { category: "RSVP" }),
   }
   const outputPath = commandOutputPath(command)

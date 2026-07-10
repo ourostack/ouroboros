@@ -14,6 +14,8 @@ import {
 } from "./diagnostics"
 
 export interface RsvpIncidentBundleDeps extends RsvpDiagnosticsDeps {
+  statSync: (filePath: string) => { mode: number; size: number }
+  checkSocketAlive: (socketPath: string) => Promise<boolean>
   now?: () => Date
   runDoctorChecks?: () => Promise<DoctorResult>
 }
@@ -57,8 +59,8 @@ async function doctorResult(input: BuildRsvpIncidentBundleInput): Promise<Doctor
     existsSync: input.deps.existsSync,
     readFileSync: input.deps.readFileSync,
     readdirSync: input.deps.readdirSync,
-    statSync: (filePath: string) => fs.statSync(filePath),
-    checkSocketAlive: async () => false,
+    statSync: input.deps.statSync,
+    checkSocketAlive: input.deps.checkSocketAlive,
     socketPath: "",
     bundlesRoot: bundleRoot,
     homedir: path.dirname(bundleRoot),

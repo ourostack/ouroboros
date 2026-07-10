@@ -58,11 +58,22 @@ function makeAgentRoot(): string {
   return agentRoot
 }
 
+function makeBareAgentRoot(): string {
+  const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-rsvp-incident-bare-"))
+  tempRoots.push(bundlesRoot)
+  const agentRoot = path.join(bundlesRoot, "slugger.ouro")
+  fs.mkdirSync(agentRoot, { recursive: true })
+  fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ version: 2, enabled: true }), "utf-8")
+  return agentRoot
+}
+
 function incidentDeps(): Parameters<typeof buildRsvpIncidentBundle>[0]["deps"] {
   return {
     existsSync: fs.existsSync,
     readFileSync: (filePath) => fs.readFileSync(filePath, "utf-8"),
     readdirSync: (dirPath) => fs.readdirSync(dirPath),
+    statSync: (filePath) => fs.statSync(filePath),
+    checkSocketAlive: vi.fn(async () => false),
     now: () => new Date("2026-07-09T19:30:00.000Z"),
     runDoctorChecks: vi.fn(async () => ({
       categories: [{
@@ -154,5 +165,43 @@ describe("RSVP incident bundle", () => {
       sideEffect: false,
     })
     expectRedacted(written)
+  })
+
+  it("falls back to the side-effect-free RSVP doctor category when no doctor runner is injected", async () => {
+    const agentRoot = makeBareAgentRoot()
+    const depsWithoutDoctor = incidentDeps()
+    delete depsWithoutDoctor.runDoctorChecks
+
+    const bundle = await buildRsvpIncidentBundle({
+      agent: "slugger",
+      agentRoot,
+      deps: depsWithoutDoctor,
+    })
+
+    expect(bundle.doctor).toMatchObject({
+      categories: [
+        expect.objectContaining({
+          name: "RSVP",
+        }),
+      ],
+    })
+    expect(bundle.sideEffect).toBe(false)
+    expectRedacted(bundle)
+  })
+
+  it("uses the current time when an incident clock is not injected", async () => {
+    const agentRoot = makeAgentRoot()
+    const depsWithoutClock = incidentDeps()
+    delete depsWithoutClock.now
+
+    const bundle = await buildRsvpIncidentBundle({
+      agent: "slugger",
+      agentRoot,
+      deps: depsWithoutClock,
+    })
+
+    expect(Number.isFinite(Date.parse(bundle.generatedAt))).toBe(true)
+    expect(bundle.generatedAt).not.toBe("2026-07-09T19:30:00.000Z")
+    expectRedacted(bundle)
   })
 })

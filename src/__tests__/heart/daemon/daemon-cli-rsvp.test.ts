@@ -392,6 +392,21 @@ describe("ouro rsvp CLI execution", () => {
     }
   })
 
+  it("rejects RSVP incident bundle execution without an agent before reading bundle state", async () => {
+    const deps = createMockDeps()
+
+    const result = await runOuroCli(["rsvp", "incident", "--json"], deps)
+    const parsed = JSON.parse(result)
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      command: "rsvp.incident",
+      sideEffect: false,
+      requires: "--agent",
+    })
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
   it("requires --yes before legacy config import mutates native RSVP config", async () => {
     const tmp = createTmpBundle({ agentName: "slugger" })
     const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-rsvp-cli-"))
