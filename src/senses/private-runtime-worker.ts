@@ -32,6 +32,7 @@ import {
   usageMetadataFromUsageData,
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
+import { reserveAutonomyBudget, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -166,6 +167,23 @@ function recordHabitRunLedger(
       ? { usage: usageMetadataFromUsageData(usage, usage ? "provider" : "none") }
       : {}),
   }))
+}
+
+function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string): AutonomyBudgetDecision {
+  return reserveAutonomyBudget(habitRun.agentRoot, {
+    agent: getAgentName(),
+    triggerType: "habit",
+    sourceKind: "private-runtime",
+    senseOrHabit: habitRun.habit.name,
+    target: {
+      habitName: habitRun.habit.name,
+      runId: habitRun.runId,
+      trigger: habitRun.trigger,
+      operationId: habitRun.operationId,
+    },
+    idempotencyKey: `habit:${habitRun.habit.name}:${habitRun.runId}`,
+    now: nowIso,
+  })
 }
 
 /**
@@ -543,41 +561,54 @@ export function createPrivateRuntimeWorker(
           clearHeartbeatRestShield()
         }
         let turnResult: unknown
+        let blockedAutonomyTurn = false
         try {
-          if (currentHabitRun) {
-            recordHabitStartIfNeeded(currentHabitRun)
-          }
-          const turnOptions: PrivateRuntimeWorkerRunOptions = {
-            reason: nextReason,
-            taskId: nextTaskId,
-            habitName: nextHabitName,
-            awaitName: nextAwaitName,
-            ...(nextPrivateTurnDecision ? { privateTurnDecision: nextPrivateTurnDecision } : {}),
-            ...(currentHabitRun
-              ? {
-                trigger: currentHabitRun.trigger,
-                preparedHabit: {
-                  runId: currentHabitRun.runId,
+          const turnStartedAt = new Date(nowSource()).toISOString()
+          const autonomyDecision = currentHabitRun ? reserveHabitAutonomyBudget(currentHabitRun, turnStartedAt) : null
+          if (currentHabitRun) recordHabitStartIfNeeded(currentHabitRun)
+          if (autonomyDecision && !autonomyDecision.allowed) {
+            blockedAutonomyTurn = true
+            const reason = `autonomy budget blocked: ${autonomyDecision.reason}`
+            turnErrors.push(reason)
+            turnResult = {
+              turnOutcome: "blocked",
+              reason,
+              autonomyReceiptId: autonomyDecision.receiptId,
+            }
+            clearHeartbeatRestShield()
+          } else {
+            const turnOptions: PrivateRuntimeWorkerRunOptions = {
+              reason: nextReason,
+              taskId: nextTaskId,
+              habitName: nextHabitName,
+              awaitName: nextAwaitName,
+              ...(nextPrivateTurnDecision ? { privateTurnDecision: nextPrivateTurnDecision } : {}),
+              ...(currentHabitRun
+                ? {
                   trigger: currentHabitRun.trigger,
-                  operationId: currentHabitRun.operationId,
-                  habit: currentHabitRun.habit,
-                  priorSessionSummary: currentHabitRun.priorSessionSummary,
-                },
-                habitSession: {
-                  runId: currentHabitRun.runId,
-                  sessionPath: currentHabitRun.paths.sessionPath,
-                  pendingDir: currentHabitRun.paths.pendingDir,
-                  permissionEnvelope: currentHabitRun.permissionEnvelope,
-                  toolPolicy: currentHabitRun.toolPolicy,
-                  friendStore: currentHabitRun.friendStore,
-                  recordProducedRef: (ref) => { currentHabitRun.producedRefs.push(ref) },
-                  recordSurfaceAttempt: (attempt) => { currentHabitRun.surfaceAttempts.push(attempt) },
-                  recordError: (error) => { currentHabitRun.errors.push(error) },
-                },
-              }
-              : {}),
+                  preparedHabit: {
+                    runId: currentHabitRun.runId,
+                    trigger: currentHabitRun.trigger,
+                    operationId: currentHabitRun.operationId,
+                    habit: currentHabitRun.habit,
+                    priorSessionSummary: currentHabitRun.priorSessionSummary,
+                  },
+                  habitSession: {
+                    runId: currentHabitRun.runId,
+                    sessionPath: currentHabitRun.paths.sessionPath,
+                    pendingDir: currentHabitRun.paths.pendingDir,
+                    permissionEnvelope: currentHabitRun.permissionEnvelope,
+                    toolPolicy: currentHabitRun.toolPolicy,
+                    friendStore: currentHabitRun.friendStore,
+                    recordProducedRef: (ref) => { currentHabitRun.producedRefs.push(ref) },
+                    recordSurfaceAttempt: (attempt) => { currentHabitRun.surfaceAttempts.push(attempt) },
+                    recordError: (error) => { currentHabitRun.errors.push(error) },
+                  },
+                }
+                : {}),
+            }
+            turnResult = await runTurn(turnOptions)
           }
-          turnResult = await runTurn(turnOptions)
         } catch (error) {
           clearHeartbeatRestShield()
           turnErrors.push(error instanceof Error ? error.message : String(error))
@@ -621,6 +652,11 @@ export function createPrivateRuntimeWorker(
           nextPrivateTurnDecision = next.privateTurnDecision
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
+        }
+
+        if (blockedAutonomyTurn) {
+          finalizeCurrentHabitRun()
+          break
         }
 
         // Then check hasPendingWork fallback. This is the loop site: any

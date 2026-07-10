@@ -11,6 +11,7 @@ const {
   mockCreateHabitRunId,
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
+  mockReserveAutonomyBudget,
   mockApplyHabitRuntimeState,
   mockReadHabitSessionSummary,
   mockReadFileSync,
@@ -26,6 +27,7 @@ const {
   mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
+  mockReserveAutonomyBudget: vi.fn(),
   mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
   mockReadHabitSessionSummary: vi.fn(() => null),
   mockReadFileSync: vi.fn(),
@@ -89,6 +91,10 @@ vi.mock("../../arc/flight-recorder", () => ({
   writeHabitRunReceipt: (...args: any[]) => mockWriteHabitRunReceipt(...args),
 }))
 
+vi.mock("../../heart/autonomy-budget", () => ({
+  reserveAutonomyBudget: (...args: any[]) => mockReserveAutonomyBudget(...args),
+}))
+
 import { createPrivateRuntimeWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startPrivateRuntimeWorker } from "../../senses/private-runtime-worker"
 
 describe("private-runtime-worker", () => {
@@ -105,6 +111,19 @@ describe("private-runtime-worker", () => {
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
     mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
+    mockReserveAutonomyBudget.mockReset().mockReturnValue({
+      allowed: true,
+      status: "allowed",
+      actor: "agent-runnable",
+      reason: "budget reserved",
+      decidedAt: "2026-06-08T12:00:00.000Z",
+      agent: "slugger",
+      triggerType: "habit",
+      sourceKind: "private-runtime",
+      senseOrHabit: "heartbeat",
+      targetHash: "sha256:test",
+      idempotencyKey: "habit:test",
+    })
     mockApplyHabitRuntimeState.mockReset().mockImplementation((_agentRoot: string, habit: any) => habit)
     mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
     mockEmitNervesEvent.mockReset()

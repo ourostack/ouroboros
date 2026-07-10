@@ -54,6 +54,11 @@ import {
   readLatestVisibleSenseContextPacket,
   writeSenseContextPacket,
 } from "../context-packet-ledger"
+import {
+  recordAutonomyFailure,
+  reserveAutonomyBudget,
+  type AutonomyStormInput,
+} from "../../heart/autonomy-budget"
 
 const bbFailoverStates = new Map<string, FailoverState>()
 
@@ -176,7 +181,7 @@ export interface BlueBubblesHandleResult {
   handled: boolean
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked"
 }
 
 function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string {
@@ -308,6 +313,7 @@ const BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS = 10 * 60 * 1000
 
 interface BlueBubblesHandleOptions {
   timeoutMs?: number
+  autonomyBudgetTrigger?: "recovery"
   preclaimedInFlight?: {
     sessionKey: string
     messageGuid: string
@@ -658,6 +664,69 @@ function getBlueBubblesContinuityIngressTexts(event: BlueBubblesNormalizedEvent)
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex")
+}
+
+function timestampIsoForAutonomy(event: BlueBubblesNormalizedEvent): string {
+  return Number.isFinite(event.timestamp)
+    ? new Date(event.timestamp).toISOString()
+    : new Date().toISOString()
+}
+
+function blueBubblesAutonomyTarget(event: BlueBubblesNormalizedEvent): Record<string, string | undefined> {
+  return {
+    messageGuid: event.messageGuid,
+    sessionKeyHash: sha256Hex(event.chat.sessionKey),
+    chatGuidHash: event.chat.chatGuid ? sha256Hex(event.chat.chatGuid) : undefined,
+    chatIdentifierHash: event.chat.chatIdentifier ? sha256Hex(event.chat.chatIdentifier) : undefined,
+  }
+}
+
+function blueBubblesRecoveryStormInput(
+  agentName: string,
+  event: BlueBubblesNormalizedEvent,
+  source: BlueBubblesInboundSource,
+): AutonomyStormInput {
+  return {
+    agent: agentName,
+    triggerType: "recovery",
+    sourceKind: "sense",
+    senseOrHabit: "bluebubbles",
+    provider: "bluebubbles-recovery",
+    target: blueBubblesAutonomyTarget(event),
+    normalizedErrorName: "BlueBubblesRecoveryError",
+    normalizedErrorCode: "RECOVERY_FAILED",
+    codeLocation: `senses/bluebubbles/${source}`,
+    idempotencyBucket: `bluebubbles-recovery:${source}`,
+  }
+}
+
+function shouldUseBlueBubblesRecoveryBudget(
+  source: BlueBubblesInboundSource,
+  options: BlueBubblesHandleOptions,
+): boolean {
+  return options.autonomyBudgetTrigger === "recovery"
+    || source === "mutation-recovery"
+    || source === "upstream-catchup"
+    || source === "recovery-bootstrap"
+}
+
+function shouldCountBlueBubblesRecoveryResultAsSkipped(reason: BlueBubblesHandleResult["reason"]): boolean {
+  return reason === "already_processed" || reason === "autonomy_budget_blocked"
+}
+
+function recordBlueBubblesRecoveryFailureForBudget(
+  agentName: string,
+  event: BlueBubblesNormalizedEvent,
+  source: BlueBubblesInboundSource,
+): void {
+  try {
+    recordAutonomyFailure(getAgentRoot(agentName), {
+      ...blueBubblesRecoveryStormInput(agentName, event, source),
+      occurredAt: timestampIsoForAutonomy(event),
+    })
+  } catch {
+    // Autonomy failure accounting must not turn a recovery error into a broader sense outage.
+  }
 }
 
 function chatKeyForContext(event: BlueBubblesNormalizedMessage): string {
@@ -1417,6 +1486,26 @@ async function handleBlueBubblesNormalizedEvent(
       return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
     }
     ownsInFlightMessage = true
+  }
+
+  if (event.kind === "message" && shouldUseBlueBubblesRecoveryBudget(source, options)) {
+    const decision = reserveAutonomyBudget(getAgentRoot(agentName), {
+      agent: agentName,
+      triggerType: "recovery",
+      sourceKind: "sense",
+      senseOrHabit: "bluebubbles",
+      target: blueBubblesAutonomyTarget(event),
+      idempotencyKey: `bluebubbles-recovery:${source}:${event.messageGuid}`,
+      now: timestampIsoForAutonomy(event),
+      storm: blueBubblesRecoveryStormInput(agentName, event, source),
+    })
+    if (!decision.allowed) {
+      if (ownsInFlightMessage && inFlightKey) {
+        endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
+        ownsInFlightMessage = false
+      }
+      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "autonomy_budget_blocked" }
+    }
   }
 
   try {
@@ -2331,14 +2420,16 @@ export async function catchUpMissedBlueBubblesMessages(
 
       const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "upstream-catchup", {
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+        autonomyBudgetTrigger: "recovery",
       })
-      if (handled.reason === "already_processed") {
+      if (shouldCountBlueBubblesRecoveryResultAsSkipped(handled.reason)) {
         result.skipped++
       } else {
         result.recovered++
         result.lastRecoveredMessageGuid = repaired.messageGuid
       }
     } catch (error) {
+      recordBlueBubblesRecoveryFailureForBudget(agentName, event, "upstream-catchup")
       result.failed++
       emitNervesEvent({
         level: "warn",
@@ -2442,13 +2533,15 @@ export async function recoverCapturedBlueBubblesInboundMessages(
 
       const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, entry.source, {
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+        autonomyBudgetTrigger: "recovery",
       })
-      if (handled.reason === "already_processed") {
+      if (shouldCountBlueBubblesRecoveryResultAsSkipped(handled.reason)) {
         result.skipped++
       } else {
         result.recovered++
       }
     } catch (error) {
+      recordBlueBubblesRecoveryFailureForBudget(agentName, inboundEntryToRecoveryEvent(entry), entry.source)
       result.failed++
       emitNervesEvent({
         level: "warn",
@@ -2494,13 +2587,15 @@ export async function recoverMissedBlueBubblesMessages(
 
       const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "mutation-recovery", {
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+        autonomyBudgetTrigger: "recovery",
       })
-      if (handled.reason === "already_processed") {
+      if (shouldCountBlueBubblesRecoveryResultAsSkipped(handled.reason)) {
         result.skipped++
       } else {
         result.recovered++
       }
     } catch (error) {
+      recordBlueBubblesRecoveryFailureForBudget(agentName, mutationEntryToEvent(candidate), "mutation-recovery")
       result.failed++
       emitNervesEvent({
         level: "warn",

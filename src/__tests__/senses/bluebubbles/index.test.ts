@@ -3574,6 +3574,8 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("continues paginating catch-up until the upstream backlog is drained", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
     const now = Date.now()
     const firstPage = Array.from({ length: 50 }, (_, index) => makeCatchUpMessage({
       messageGuid: index < 2 ? "page-one-duplicate" : `page-one-from-me-${index}`,
