@@ -160,10 +160,7 @@ function readLatestSnapshot(agentRoot: string): RsvpSnapshot {
   return parseSnapshotFromFile(latestSnapshotPath(agentRoot))
 }
 
-function machineIdForCli(deps: OuroCliDeps): string {
-  if (deps.homeDir || deps.bundlesRoot || deps.agentBundleRoot) {
-    return "cli-test-machine"
-  }
+function machineIdForCli(): string {
   return loadOrCreateMachineIdentity().machineId
 }
 
@@ -216,16 +213,16 @@ function writePayload(command: RsvpCliCommand, deps: OuroCliDeps, payload: RsvpC
   return text
 }
 
-function writeIncidentText(deps: OuroCliDeps, command: RsvpIncidentCommand, bundle: RsvpIncidentBundle, outputPath?: string): string {
+function writeIncidentText(deps: OuroCliDeps, command: RsvpIncidentCommand, agent: string, bundle: RsvpIncidentBundle, outputPath?: string): string {
   const text = command.json === true
     ? JSON.stringify({
         ok: bundle.doctor.summary.failed === 0,
         command: command.kind,
-        agent: command.agent,
+        agent,
         sideEffect: false,
         incidentBundle: bundle as unknown as JsonValue,
       }, null, 2)
-    : `rsvp.incident: wrote side-effect-free bundle${command.agent ? ` agent=${command.agent}` : ""}${outputPath ? ` output=${outputPath}` : ""}`
+    : `rsvp.incident: wrote side-effect-free bundle agent=${agent}${outputPath ? ` output=${outputPath}` : ""}`
   deps.writeStdout(text)
   emitNervesEvent({
     component: "rsvp",
@@ -235,7 +232,7 @@ function writeIncidentText(deps: OuroCliDeps, command: RsvpIncidentCommand, bund
       command: command.kind,
       sideEffect: false,
       outputPath,
-      agent: command.agent,
+      agent,
     },
   })
   return text
@@ -349,7 +346,7 @@ function doctorDepsFor(deps: OuroCliDeps): DoctorDeps {
     existsSync: (filePath: string) => fs.existsSync(filePath),
     readFileSync: (filePath: string) => fs.readFileSync(filePath, "utf-8"),
     readdirSync: (dirPath: string) => fs.readdirSync(dirPath),
-    statSync: (filePath: string) => fs.statSync(filePath),
+    statSync: fs.statSync,
     checkSocketAlive: deps.checkSocketAlive,
     fetchImpl: deps.fetchImpl ?? fetch,
     socketPath: deps.socketPath,
@@ -389,7 +386,7 @@ async function executeIncident(command: RsvpIncidentCommand, deps: OuroCliDeps):
     existsSync: (filePath: string) => fs.existsSync(filePath),
     readFileSync: (filePath: string) => fs.readFileSync(filePath, "utf-8"),
     readdirSync: (dirPath: string) => fs.readdirSync(dirPath),
-    statSync: (filePath: string) => fs.statSync(filePath),
+    statSync: fs.statSync,
     checkSocketAlive: deps.checkSocketAlive,
     runDoctorChecks: () => runDoctorChecks(doctorDepsFor(deps), { category: "RSVP" }),
   }
@@ -397,7 +394,7 @@ async function executeIncident(command: RsvpIncidentCommand, deps: OuroCliDeps):
   const bundle = outputPath
     ? (await writeRsvpIncidentBundle({ agent: command.agent, agentRoot, outputPath, deps: diagnosticsDeps })).bundle
     : await buildRsvpIncidentBundle({ agent: command.agent, agentRoot, deps: diagnosticsDeps })
-  return writeIncidentText(deps, command, bundle, outputPath)
+  return writeIncidentText(deps, command, command.agent, bundle, outputPath)
 }
 
 async function executeLegacyRender(command: RsvpLegacyRenderCommand, deps: OuroCliDeps): Promise<string> {
@@ -442,7 +439,7 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
     })
   }
   const runtimeConfig = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
-  const machineRuntimeConfig = await refreshMachineRuntimeCredentialConfig(command.agent, machineIdForCli(deps), { preserveCachedOnFailure: true })
+  const machineRuntimeConfig = await refreshMachineRuntimeCredentialConfig(command.agent, machineIdForCli(), { preserveCachedOnFailure: true })
   const readiness = validateRsvpReadiness({
     agent: command.agent,
     agentRoot,

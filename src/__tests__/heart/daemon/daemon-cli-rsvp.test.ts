@@ -325,6 +325,35 @@ describe("ouro rsvp CLI execution", () => {
     }
   })
 
+  it("supports legacy-render JSON mode with a generated output path", async () => {
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rsvp-cli-legacy-render-json-"))
+    fs.writeFileSync(path.join(legacyRoot, "guests.json"), JSON.stringify({
+      guests: {
+        pending_1: { first_name: "Casey", last_name: "Pending", attending_status: "pending" },
+      },
+    }), "utf-8")
+    const deps = createMockDeps()
+    try {
+      const result = await runOuroCli(["rsvp", "legacy-render", "--legacy-root", legacyRoot, "--json"], deps)
+      const parsed = JSON.parse(result)
+
+      expect(parsed).toMatchObject({
+        ok: true,
+        command: "rsvp.legacy-render",
+        sideEffect: false,
+        result: {
+          sideEffect: false,
+          outputPath: expect.stringContaining("ouro-rsvp-legacy-render-"),
+        },
+      })
+      expect(fs.existsSync(parsed.result.outputPath)).toBe(true)
+      fs.rmSync(parsed.result.outputPath, { force: true })
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(legacyRoot, { recursive: true, force: true })
+    }
+  })
+
   it("executes RSVP replay fixtures without daemon or live endpoint access", async () => {
     const tmp = seedRsvpOperationalBundle()
     const fixturePath = path.join(os.tmpdir(), `rsvp-cli-fixture-${process.pid}-${Date.now()}.json`)
@@ -390,6 +419,9 @@ describe("ouro rsvp CLI execution", () => {
       })
       expect(deps.writeStdout).toHaveBeenCalledWith(result)
       expect(deps.sendCommand).not.toHaveBeenCalled()
+
+      const textOnly = await runOuroCli(["rsvp", "incident", "--agent", "slugger"], deps)
+      expect(textOnly).toBe("rsvp.incident: wrote side-effect-free bundle agent=slugger")
     } finally {
       fs.rmSync(outputPath, { force: true })
       tmp.cleanup()
@@ -431,6 +463,42 @@ describe("ouro rsvp CLI execution", () => {
       expect(setExitCode).toHaveBeenCalledWith(1)
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("runs RSVP doctor with injected cutover deps even when PATH is unavailable", async () => {
+    const tmp = seedRsvpOperationalBundle()
+    const originalPath = process.env.PATH
+    const deps = createMockDeps({
+      bundlesRoot: tmp.bundlesRoot,
+      rsvpCutoverDeps: {
+        getLaunchAgentState: vi.fn(async () => ({ label: "com.arimendelow.rsvp-tracker", loaded: false, source: "injected" })),
+        getLegacyProcessState: vi.fn(async () => ({ running: false, count: 0, source: "injected" })),
+        checkNativeBlueBubblesCredential: vi.fn(async () => ({ ok: true, detail: "healthy" })),
+      },
+    })
+    try {
+      delete process.env.PATH
+      const result = await runOuroCli(["rsvp", "doctor", "--agent", "slugger", "--json"], deps)
+      const parsed = JSON.parse(result)
+
+      expect(parsed).toMatchObject({
+        command: "rsvp.doctor",
+        sideEffect: false,
+        doctor: {
+          categories: [
+            expect.objectContaining({ name: "RSVP" }),
+          ],
+        },
+      })
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH
+      } else {
+        process.env.PATH = originalPath
+      }
       tmp.cleanup()
     }
   })
@@ -552,6 +620,45 @@ describe("ouro rsvp CLI execution", () => {
     }
   })
 
+  it("surfaces unsuccessful legacy config imports from the local RSVP CLI", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-rsvp-cli-failure-"))
+    mockRsvpConfig.importLegacyRsvpConfig.mockResolvedValue({
+      ok: false,
+      reason: "missing_secret",
+      actor: "human-required",
+      message: "legacy RSVP secret is missing",
+    })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    try {
+      const result = await runOuroCli([
+        "rsvp",
+        "config",
+        "import-legacy",
+        "--agent",
+        "slugger",
+        "--legacy-root",
+        legacyRoot,
+        "--mode",
+        "shadow",
+        "--yes",
+        "--json",
+      ], deps)
+
+      expect(JSON.parse(result)).toMatchObject({
+        ok: true,
+        command: "rsvp.config.import-legacy",
+        sideEffect: true,
+        message: "legacy RSVP secret is missing",
+        result: { ok: false, reason: "missing_secret" },
+      })
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+      fs.rmSync(legacyRoot, { recursive: true, force: true })
+    }
+  })
+
   it("rejects confirmed legacy config import when no agent is selected", async () => {
     const deps = createMockDeps()
 
@@ -575,6 +682,42 @@ describe("ouro rsvp CLI execution", () => {
     })
     expect(mockRsvpConfig.importLegacyRsvpConfig).not.toHaveBeenCalled()
     expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("passes no-agent cutover previews through injected cutover deps and preserves the --yes gate", async () => {
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rsvp-cli-cutover-no-agent-"))
+    const deps = createMockDeps({
+      rsvpCutoverDeps: {
+        existsSync: vi.fn(() => true),
+        readFileSync: vi.fn(() => JSON.stringify({ bluebubbles: { enabled: false } })),
+        getLaunchAgentState: vi.fn(async () => ({ label: "com.arimendelow.rsvp-tracker", loaded: false, source: "injected" })),
+        getLegacyProcessState: vi.fn(async () => ({ running: false, count: 0, source: "injected" })),
+        checkNativeBlueBubblesCredential: vi.fn(async () => ({ ok: true, detail: "healthy" })),
+      },
+    })
+    try {
+      const result = JSON.parse(await runOuroCli([
+        "rsvp",
+        "cutover",
+        "--legacy-root",
+        legacyRoot,
+        "--action",
+        "retire-legacy-send-config",
+        "--json",
+      ], deps))
+
+      expect(result).toMatchObject({
+        ok: false,
+        command: "rsvp.cutover",
+        sideEffect: false,
+        action: "retire-legacy-send-config",
+        requires: "--yes",
+      })
+      expect(result).not.toHaveProperty("agent")
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(legacyRoot, { recursive: true, force: true })
+    }
   })
 
   it("only marks live smoke as send-capable when --allow-send is explicit", async () => {
