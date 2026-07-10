@@ -22,11 +22,13 @@ const mockParseCadenceToCron = vi.fn()
 const mockParseCadenceToMs = vi.fn()
 const mockEvaluateCadenceDue = vi.fn()
 const mockCadenceFallbackDelayMs = vi.fn()
+const mockNextCadenceRunAt = vi.fn()
 vi.mock("../../../heart/daemon/cadence", () => ({
   parseCadenceToCron: (...args: any[]) => mockParseCadenceToCron(...args),
   parseCadenceToMs: (...args: any[]) => mockParseCadenceToMs(...args),
   evaluateCadenceDue: (...args: any[]) => mockEvaluateCadenceDue(...args),
   cadenceFallbackDelayMs: (...args: any[]) => mockCadenceFallbackDelayMs(...args),
+  nextCadenceRunAt: (...args: any[]) => mockNextCadenceRunAt(...args),
 }))
 
 import { HabitScheduler, type HabitSchedulerOptions, type HabitSchedulerDeps } from "../../../heart/habits/habit-scheduler"
@@ -165,6 +167,10 @@ describe("HabitScheduler", () => {
       if (raw === "7d") return 7 * 24 * 60 * 60 * 1000
       if (raw === "2h") return 2 * 60 * 60 * 1000
       if (raw === "0 10 * * *") return 60 * 1000
+      return null
+    })
+    mockNextCadenceRunAt.mockImplementation((raw: string) => {
+      if (raw === "0 10 * * *") return "2026-07-09T17:00:00.000Z"
       return null
     })
   })
@@ -677,6 +683,101 @@ describe("HabitScheduler", () => {
       expect(scheduler.getDegradedHabits()).toEqual([
         { name: "rsvp-ari-rachel", reason: "cron registration failed — using timer fallback" },
       ])
+      scheduler.stop()
+    })
+
+    it("falls back to initial timer delay and legacy occurrence ids when cadence timing is degraded", () => {
+      vi.useFakeTimers()
+      const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => "content"),
+        now: vi.fn(() => nowMs),
+      })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+      mockCadenceFallbackDelayMs
+        .mockReturnValueOnce(30 * 60 * 1000)
+        .mockReturnValueOnce(null)
+      mockEvaluateCadenceDue.mockReturnValue({
+        due: true,
+        elapsedMs: Infinity,
+        occurrenceId: null,
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify: vi.fn(() => ""),
+        platform: "darwin",
+      })
+
+      scheduler.start()
+      vi.advanceTimersByTime(30 * 60 * 1000)
+
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", {
+        occurrenceId: expect.stringMatching(/^timer:heartbeat:cadence-ms:1800000:slot:/),
+      })
+      scheduler.stop()
+    })
+
+    it("falls back to first-run overdue occurrence ids when due state has no occurrence id", () => {
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => "content"),
+      })
+      mockParseHabitFile.mockReturnValue({
+        ...makeHeartbeatHabit(),
+        lastRun: null,
+      })
+      mockEvaluateCadenceDue.mockReturnValue({
+        due: true,
+        elapsedMs: Infinity,
+        occurrenceId: null,
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue", {
+        occurrenceId: "overdue:first-run:30m",
+      })
+    })
+
+    it("records unknown timer slots when fixed cadence next-run computation is unavailable", () => {
+      vi.useFakeTimers()
+      deps = makeDeps({
+        readdir: vi.fn(() => ["rsvp-ari-rachel.md"]),
+        readFile: vi.fn(() => "content"),
+      })
+      mockParseHabitFile.mockReturnValue(makeRsvpHabit())
+      mockNextCadenceRunAt.mockReturnValueOnce(null)
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify: vi.fn(() => ""),
+        platform: "darwin",
+      })
+
+      scheduler.start()
+      vi.advanceTimersByTime(60 * 1000)
+
+      expect(onHabitFire).toHaveBeenCalledWith("rsvp-ari-rachel", "overdue", {
+        occurrenceId: "timer:rsvp-ari-rachel:cadence:0 10 * * *:slot:unknown",
+      })
       scheduler.stop()
     })
   })

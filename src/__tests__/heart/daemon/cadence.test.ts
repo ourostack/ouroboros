@@ -119,6 +119,64 @@ describe("fixed-time cadence helpers", () => {
       occurrenceId: null,
     })
   })
+
+  it("reuses interval semantics for next-run, fallback, and overdue helpers", () => {
+    const start = new Date("2026-07-09T12:00:00.000Z")
+
+    expect(nextCadenceRunAt("30m", start)).toBe("2026-07-09T12:30:00.000Z")
+    expect(cadenceFallbackDelayMs("30m", start.getTime())).toBe(30 * 60 * 1000)
+    expect(evaluateCadenceDue("30m", null, start.getTime())).toEqual({
+      due: true,
+      elapsedMs: Infinity,
+      occurrenceId: "overdue:first-run:30m",
+    })
+    expect(evaluateCadenceDue("30m", "not-a-date", start.getTime())).toEqual({
+      due: false,
+      elapsedMs: 0,
+      occurrenceId: null,
+    })
+    expect(evaluateCadenceDue("30m", "2026-07-09T11:00:00.000Z", start.getTime())).toEqual({
+      due: true,
+      elapsedMs: 60 * 60 * 1000,
+      occurrenceId: "overdue:last-run:2026-07-09T11:00:00.000Z:cadence:30m",
+    })
+    expect(evaluateCadenceDue("30m", "2026-07-09T11:45:00.000Z", start.getTime())).toEqual({
+      due: false,
+      elapsedMs: 15 * 60 * 1000,
+      occurrenceId: null,
+    })
+  })
+
+  it("rejects invalid fixed daily cron shapes in timing helpers", () => {
+    const now = new Date(2026, 6, 9, 9, 30, 0, 0)
+
+    expect(nextCadenceRunAt(null as never, now)).toBeNull()
+    expect(nextCadenceRunAt("nonsense", now.toISOString())).toBeNull()
+    expect(nextCadenceRunAt("0 10 1 * *", now.getTime())).toBeNull()
+    expect(nextCadenceRunAt("*/10 10 * * *", now.getTime())).toBeNull()
+    expect(nextCadenceRunAt("0 x * * *", now.getTime())).toBeNull()
+    expect(nextCadenceRunAt("60 10 * * *", now.getTime())).toBeNull()
+    expect(nextCadenceRunAt("0 24 * * *", now.getTime())).toBeNull()
+    expect(nextCadenceRunAt("0 10 * * *", "bad-date")).toBeNull()
+    expect(cadenceFallbackDelayMs("not-cron", now.getTime())).toBeNull()
+    expect(evaluateCadenceDue("not-cron", null, now.getTime())).toBeNull()
+  })
+
+  it("uses the previous local fixed occurrence before today's configured time", () => {
+    const beforeTen = new Date(2026, 6, 9, 9, 5, 0, 0).getTime()
+    const previousOccurrence = new Date(2026, 6, 8, 10, 0, 0, 0).toISOString()
+
+    expect(evaluateCadenceDue("0 10 * * *", new Date(2026, 6, 8, 9, 59, 0, 0).toISOString(), beforeTen)).toEqual({
+      due: true,
+      elapsedMs: beforeTen - new Date(previousOccurrence).getTime(),
+      occurrenceId: `fixed-daily:${previousOccurrence}:cadence:0 10 * * *`,
+    })
+    expect(evaluateCadenceDue("0 10 * * *", null, beforeTen)).toEqual({
+      due: false,
+      elapsedMs: Infinity,
+      occurrenceId: null,
+    })
+  })
 })
 
 describe("DEFAULT_CADENCE_MS", () => {
