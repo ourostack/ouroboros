@@ -66,4 +66,25 @@ describe("RSVP native habit staging", () => {
       tmp.cleanup()
     }
   })
+
+  it("uses the current time when no staging timestamp is injected", () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const result = stageRsvpHabit({
+        agent: "slugger",
+        agentRoot: tmp.agentRoot,
+        mode: "live",
+        cadence: "0 10 * * *",
+      })
+      const content = fs.readFileSync(result.habitPath, "utf-8")
+
+      expect(result.name).toBe("rsvp-ari-rachel")
+      expect(result.mode).toBe("live")
+      expect(content).toMatch(/created: \d{4}-\d{2}-\d{2}T/)
+      expect(content).toContain("mode: live")
+      expect(content).toContain("tools: [rsvp_query, rsvp_summary]")
+    } finally {
+      tmp.cleanup()
+    }
+  })
 })

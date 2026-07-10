@@ -876,6 +876,28 @@ describe("HabitScheduler", () => {
       expect(overdue[1].elapsedMs).toBe(24 * 60 * 60 * 1000)
     })
 
+    it("does not list untyped RSVP habits as overdue", () => {
+      const readdir = vi.fn(() => ["rsvp-ari-rachel.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockReturnValueOnce(makeRsvpHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      expect(scheduler.listOverdueHabits()).toEqual([])
+      expect(scheduler.getParseErrors()).toEqual([{
+        file: "rsvp-ari-rachel.md",
+        error: "RSVP habit metadata is required before scheduling",
+      }])
+      expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()
+    })
+
     it("excludes non-overdue habits", () => {
       const nowMs = new Date("2026-03-27T10:10:00.000Z").getTime()
       const readdir = vi.fn(() => ["heartbeat.md"])

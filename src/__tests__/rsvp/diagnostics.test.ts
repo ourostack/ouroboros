@@ -98,7 +98,24 @@ describe("RSVP diagnostics", () => {
       JSON.stringify({ packetId: "ctx_new", anchorTimestamp: "2026-07-09T18:00:00.000Z" }),
       "",
     ].join("\n"))
-    writeFile(agentRoot, "habits/rsvp-active.md", "---\nname: rsvp-active\nstatus: active\n---\n")
+    writeFile(agentRoot, "habits/rsvp-active.md", [
+      "---",
+      "name: rsvp-active",
+      "status: active",
+      "rsvp:",
+      "  policyVersion: rsvp-habit/v1",
+      "  mode: shadow",
+      "  sense: bluebubbles",
+      "  source: aisleplanner",
+      "  routeRef: rsvp/config.json#bluebubblesRoute",
+      "  snapshotRef: state/rsvp/snapshots/latest.json",
+      "  outboundStateRef: state/rsvp/outbound-state.json",
+      "  budgetRef: state/rsvp/spend-ledger.json",
+      "  idempotencyRef: state/rsvp/outbound-state.json",
+      "  liveSendEligible: false",
+      "---",
+      "",
+    ].join("\n"))
     writeFile(agentRoot, "state/rsvp/snapshots/latest.json", JSON.stringify({
       snapshotId: "snap_summary",
       summary: { attending: 1, declined: 2, pending: 3 },
@@ -193,6 +210,25 @@ describe("RSVP diagnostics", () => {
     expect(modernDiagnostics.deliveryReconciliation).toMatchObject({
       status: "pass",
       accepted: 0,
+    })
+  })
+
+  it("counts accepted entries in legacy outbound ledgers", () => {
+    const agentRoot = makeAgentRoot()
+    writeFile(agentRoot, "state/rsvp/outbound/ledger.json", JSON.stringify({
+      reservations: [
+        { status: "accepted" },
+        { status: "failed" },
+        { status: "accepted" },
+        "ignored",
+      ],
+    }))
+
+    const diagnostics = collectRsvpDiagnostics(agentRoot, deps())
+
+    expect(diagnostics.deliveryReconciliation).toMatchObject({
+      status: "pass",
+      accepted: 2,
     })
   })
 
