@@ -20,7 +20,7 @@
         "messageGuid": "msg-rsvp-script-1",
         "timestamp": "2026-07-09T17:00:00.000Z",
         "authorLabel": "Slugger",
-        "body": "RSVP Update — Ari & Rachel\nNew guests added:\n• Casey Pending (pending)\n\n149 attending / 123 declined / 1 pending\n\nScript notice: automated RSVP update."
+        "body": "RSVP Update — Ari & Rachel\nNew guests added:\n• Casey Pending (pending)\n\n149 attending / 123 declined / 1 pending\n\n🤖 Beep boop! I'm a script, not Slugger — no need to reply here!"
       },
       {
         "messageGuid": "msg-user-who-pending",

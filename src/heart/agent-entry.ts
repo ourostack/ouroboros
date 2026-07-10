@@ -12,6 +12,7 @@ const agentName = parsedAgentName
 import { configureCliRuntimeLogger } from "../nerves/cli-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { PrivateRuntimeWorkerController } from "../senses/private-runtime-worker"
+import type { AgentProvider } from "./identity"
 
 configureCliRuntimeLogger("self")
 
@@ -103,6 +104,38 @@ emitNervesEvent({
   meta: { entry: "private-runtime", agentName },
 })
 
+async function selectedProviderTargets(agentName: string): Promise<AgentProvider[]> {
+  try {
+    const [{ readAgentConfigForAgent }, { getAgentBundlesRoot }] = await Promise.all([
+      import("./auth/auth-flow"),
+      import("./identity"),
+    ])
+    const { config } = readAgentConfigForAgent(agentName, getAgentBundlesRoot())
+    return [...new Set([config.humanFacing.provider, config.agentFacing.provider])]
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.provider_refresh_skipped",
+      message: "skipping private-runtime provider credential refresh because agent config could not be read",
+      meta: {
+        entry: "private-runtime",
+        agentName,
+        error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error agent-config failures @preserve */ String(error),
+      },
+    })
+    return []
+  }
+}
+
+function providerPoolMissingTargets(
+  providerPool: ReturnType<typeof import("./provider-credentials")["readProviderCredentialPool"]>,
+  providers: AgentProvider[],
+): boolean {
+  if (!providerPool.ok) return true
+  return providers.some((provider) => !providerPool.pool.providers[provider])
+}
+
 // Dynamic import: agent-entry is process-start wiring that starts a sense process.
 // Using dynamic import avoids a static heart/ -> senses/ dependency.
 import("./runtime-credentials")
@@ -128,8 +161,9 @@ import("./runtime-credentials")
       void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
     const providerPool = readProviderCredentialPool(agentName)
-    if (!providerPool.ok || Object.keys(providerPool.pool.providers).length === 0) {
-      await refreshProviderCredentialPool(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    const providerTargets = await selectedProviderTargets(agentName)
+    if (providerTargets.length > 0 && providerPoolMissingTargets(providerPool, providerTargets)) {
+      await refreshProviderCredentialPool(agentName, { preserveCachedOnFailure: true, providers: providerTargets }).catch(() => undefined)
     }
     /* v8 ignore next 7 -- process-start best-effort machine credential refresh runs in a child entrypoint and is covered operationally by daemon startup tests @preserve */
     if (!readMachineRuntimeCredentialConfig(agentName).ok) {
