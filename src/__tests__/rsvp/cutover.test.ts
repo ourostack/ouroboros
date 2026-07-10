@@ -211,6 +211,30 @@ describe("RSVP legacy cutover checks", () => {
     expectRedacted(report)
   })
 
+  it("uses the default process uid when probing launchd without injected cutover deps", async () => {
+    const { legacyRoot } = makeLegacyRoot({ sendEnabled: false })
+    const spawnSync = vi.fn(() => ({ status: 1, stdout: "", stderr: "" }))
+
+    const report = await checkRsvpCutover({
+      agent: "slugger",
+      legacyRoot,
+      deps: baseFsDeps({
+        platform: "darwin",
+        spawnSync,
+        checkNativeBlueBubblesCredential: vi.fn(async () => ({
+          ok: true,
+          detail: "native BlueBubbles credential healthy",
+        })),
+      }),
+    })
+
+    expect(report.checks.launchAgentInactive).toBe(true)
+    expect(spawnSync).toHaveBeenCalledWith("launchctl", [
+      "print",
+      `gui/${process.getuid!()}/${legacyLabel}`,
+    ], expect.objectContaining({ encoding: "utf-8", timeout: 5_000 }))
+  })
+
   it("requires --yes before retiring legacy send config and does not mutate shared Slugger secrets", async () => {
     const { legacyRoot, sharedSecretsPath } = makeLegacyRoot({ sendEnabled: true })
     const configPath = path.join(legacyRoot, "config.json")
