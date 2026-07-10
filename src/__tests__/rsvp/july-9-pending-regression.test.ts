@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { replayJuly9PendingAnswerFixture } from "../../rsvp/replay"
 
-const manifestPath = path.resolve(__dirname, "../fixtures/rsvp/july-9-context/manifest.json")
+const manifestPath = path.resolve(__dirname, "../../__fixtures__/rsvp/july-9-context/manifest.json")
 
 describe("July 9 RSVP pending-answer regression", () => {
   it("answers who is pending from native RSVP state without query_session", async () => {

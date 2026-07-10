@@ -52,6 +52,20 @@ export interface LegacyRsvpOfflineRenderResult {
   pendingGuests: string[]
 }
 
+export interface ReplayJuly9PendingAnswerFixtureInput {
+  manifestPath: string
+  deps?: {
+    querySession?: (...args: unknown[]) => unknown
+  }
+}
+
+export interface July9PendingAnswerReplayResult {
+  sideEffect: false
+  usedNativeRsvpState: true
+  answer: string
+  counts: { attending: number; declined: number; pending: number }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
 }
@@ -89,6 +103,17 @@ function fixturePendingGuests(fixture: Record<string, unknown>): string[] {
   const snapshot = isRecord(fixture.snapshot) ? fixture.snapshot : null
   const raw = snapshot && Array.isArray(snapshot.pendingGuests) ? snapshot.pendingGuests : []
   return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+}
+
+function countsFrom(value: unknown): { attending: number; declined: number; pending: number } {
+  if (!isRecord(value)) throw new Error("RSVP counts missing")
+  const attending = value.attending
+  const declined = value.declined
+  const pending = value.pending
+  if (typeof attending !== "number" || typeof declined !== "number" || typeof pending !== "number") {
+    throw new Error("RSVP counts must be numeric")
+  }
+  return { attending, declined, pending }
 }
 
 function fixtureAllowsOfflineReplay(fixture: Record<string, unknown>): void {
@@ -190,6 +215,34 @@ export async function renderLegacyRsvpSnapshotOffline(input: RenderLegacyRsvpSna
     event: "rsvp.legacy_offline_rendered",
     message: "rendered legacy RSVP snapshot offline",
     meta: { legacyRoot: input.legacyRoot, outputPath: input.outputPath, pendingGuests: pendingGuests.length },
+  })
+  return result
+}
+
+export async function replayJuly9PendingAnswerFixture(
+  input: ReplayJuly9PendingAnswerFixtureInput,
+): Promise<July9PendingAnswerReplayResult> {
+  const manifest = readJsonFile(input.manifestPath)
+  if (!isRecord(manifest) || manifest.schemaVersion !== 1 || manifest.policyVersion !== "july-9-rsvp-regression/v1") {
+    throw new Error("unsupported July 9 RSVP replay manifest")
+  }
+  const rsvpState = isRecord(manifest.rsvpState) ? manifest.rsvpState : null
+  if (!rsvpState) throw new Error("July 9 RSVP state missing")
+  const pendingGuests = Array.isArray(rsvpState.pendingGuests)
+    ? rsvpState.pendingGuests.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : []
+  const counts = countsFrom(rsvpState.counts)
+  const result = {
+    sideEffect: false as const,
+    usedNativeRsvpState: true as const,
+    answer: answerForPendingGuests(pendingGuests),
+    counts,
+  }
+  emitNervesEvent({
+    component: "rsvp",
+    event: "rsvp.july9_pending_answer_replayed",
+    message: "replayed July 9 pending RSVP answer fixture",
+    meta: { pendingGuests: pendingGuests.length, pendingCount: counts.pending },
   })
   return result
 }

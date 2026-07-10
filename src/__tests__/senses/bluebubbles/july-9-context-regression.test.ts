@@ -2,7 +2,7 @@ import * as path from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
 
-const manifestPath = path.resolve(__dirname, "../../fixtures/rsvp/july-9-context/manifest.json")
+const manifestPath = path.resolve(__dirname, "../../../__fixtures__/rsvp/july-9-context/manifest.json")
 
 describe("July 9 BlueBubbles context regression", () => {
   it("bundles prior same-chat RSVP script context into the model input before Slugger answers", async () => {
