@@ -1,6 +1,7 @@
 import * as path from "node:path"
 import { parseHabitFile } from "../heart/habits/habit-parser"
 import { emitNervesEvent } from "../nerves/runtime"
+import { isRsvpHabitName } from "./habit-policy"
 
 export type RsvpDiagnosticStatus = "pass" | "warn" | "fail"
 
@@ -23,6 +24,14 @@ export interface RsvpHabitScheduleHealth {
   detail: string
   activeHabit?: string
   cadence?: string
+  policyVersion?: string
+  sense?: string
+  source?: string
+  routeRef?: string
+  snapshotRef?: string
+  outboundStateRef?: string
+  budgetRef?: string
+  idempotencyRef?: string
 }
 
 export interface RsvpLatestFetchHealth {
@@ -133,19 +142,34 @@ function habitScheduleHealth(agentRoot: string, deps: RsvpDiagnosticsDeps): Rsvp
   if (!deps.existsSync(habitsDir)) return { status: "warn", detail: "habits directory missing" }
   try {
     const rsvpHabits = deps.readdirSync(habitsDir)
-      .filter((name) => name.endsWith(".md") && name.toLowerCase().includes("rsvp"))
+      .filter((name) => name.endsWith(".md") && isRsvpHabitName(name.replace(/\.md$/, "")))
       .map((name) => {
         const filePath = path.join(habitsDir, name)
         return parseHabitFile(deps.readFileSync(filePath), filePath)
       })
     const active = rsvpHabits.find((habit) => habit.status === "active")
     if (!active) return { status: "warn", detail: "no active RSVP habit found" }
+    if (!active.rsvp) return { status: "fail", detail: `activeHabit=${active.name}; typed RSVP habit metadata missing` }
     const cadence = active.cadence ?? "unspecified"
     return {
       status: "pass",
-      detail: `activeHabit=${active.name}; cadence=${cadence}`,
+      detail: [
+        `activeHabit=${active.name}`,
+        `cadence=${cadence}`,
+        `sense=${active.rsvp.sense}`,
+        `source=${active.rsvp.source}`,
+        `snapshotRef=${active.rsvp.snapshotRef}`,
+      ].join("; "),
       activeHabit: active.name,
       cadence,
+      policyVersion: active.rsvp.policyVersion,
+      sense: active.rsvp.sense,
+      source: active.rsvp.source,
+      routeRef: active.rsvp.routeRef,
+      snapshotRef: active.rsvp.snapshotRef,
+      outboundStateRef: active.rsvp.outboundStateRef,
+      budgetRef: active.rsvp.budgetRef,
+      idempotencyRef: active.rsvp.idempotencyRef,
     }
   } catch (error) {
     return { status: "fail", detail: `habit schedule unreadable: ${error instanceof Error ? error.message : String(error)}` }

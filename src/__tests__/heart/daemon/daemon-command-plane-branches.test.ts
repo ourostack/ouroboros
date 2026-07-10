@@ -1356,6 +1356,38 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
+  it("skips manual RSVP habit pokes with untyped metadata before policy evaluation", async () => {
+    const socketPath = tmpSocketPath("daemon-rsvp-habit-poke-untyped")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-rsvp-habit-poke-untyped-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `rsvp-habit-poke-untyped-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeHabitFile({
+      bundlesRoot,
+      agent: "slugger",
+      habitName: "rsvp-ari-rachel",
+      cadence: "0 10 * * *",
+      lastRun: null,
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "rsvp-ari-rachel",
+      trigger: "manual",
+    })
+
+    expect(poke).toEqual({
+      ok: true,
+      message: "skipped scheduled habit rsvp-ari-rachel for slugger: RSVP habit metadata is required before private runtime wake",
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
   it("rejects malformed habit-poke payloads before policy evaluation", async () => {
     const socketPath = tmpSocketPath("daemon-habit-poke-invalid")
     const ledgerPath = path.join(os.tmpdir(), `habit-poke-invalid-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)

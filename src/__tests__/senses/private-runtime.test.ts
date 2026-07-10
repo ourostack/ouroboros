@@ -2459,6 +2459,44 @@ describe("private runtime", () => {
     expect(content).toMatch(/not found|missing|could not read/i)
   })
 
+  it("rejects direct RSVP habit turns with malformed metadata before provider execution", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      [
+        "---",
+        "title: RSVP Ari & Rachel",
+        "cadence: 0 10 * * *",
+        "rsvp:",
+        "  policyVersion: rsvp-habit/v1",
+        "  mode: shadow",
+        "  channel: bluebubbles",
+        "  source: aisleplanner",
+        "  routeRef: rsvp/config.json#bluebubblesRoute",
+        "  snapshotRef: state/rsvp/snapshots/latest.json",
+        "  outboundStateRef: state/rsvp/outbound-state.json",
+        "  budgetRef: state/rsvp/spend-ledger.json",
+        "  idempotencyRef: state/rsvp/outbound-state.json",
+        "  liveSendEligible: false",
+        "---",
+        "",
+        "Refresh native RSVP state.",
+        "",
+      ].join("\n"),
+      "utf8",
+    )
+
+    await expect(runApprovedPrivateRuntimeTurn({
+      reason: "habit",
+      habitName: "rsvp-ari-rachel",
+      now: () => new Date("2026-07-09T17:00:00.000Z"),
+    })).rejects.toThrow(/RSVP habit metadata.*sense, not channel/i)
+
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+  })
+
   it("heartbeat habit without file still calls buildHabitTurnMessage (missing file path)", async () => {
     // No habit file created -- should fall through to "could not be read" message
     mockLoadSession.mockReturnValue({

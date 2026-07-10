@@ -27,6 +27,7 @@ import { surfaceToolDefinition } from "../repertoire/tools-surface"
 import { riskProfileForTool } from "../repertoire/tools"
 import {
   RSVP_HABIT_ALLOWED_TOOLS,
+  isRsvpHabitName,
   rsvpHabitRuntimePolicy,
   type RsvpHabitRuntimePolicy,
 } from "../rsvp/habit-policy"
@@ -99,6 +100,7 @@ interface PreparedHabitRun {
   permissionEnvelope: HabitRunReceipt["permissionEnvelope"]
   toolPolicy: HabitRunReceipt["toolPolicy"]
   rsvpPolicy?: RsvpHabitRuntimePolicy
+  blockedReason?: string
   friendStore: FileFriendStore
   results: unknown[]
   errors: string[]
@@ -358,6 +360,10 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const agentRoot = getAgentRoot()
   const errors: string[] = []
   const habit = applyHabitRuntimeState(agentRoot, readHabitForRun(agentRoot, habitName, errors))
+  const blockedReason = isRsvpHabitName(habitName) && !habit.rsvp
+    ? "RSVP habit metadata is required before private runtime execution"
+    : null
+  if (blockedReason && !errors.includes(blockedReason)) errors.push(blockedReason)
   const runId = createHabitRunId(habitName, new Date(startedAt))
   const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
   const priorSessionSummary = readPriorSessionSummary(agentRoot, operationId)
@@ -365,7 +371,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
   const rsvpPolicy = habit.rsvp ? rsvpHabitRuntimePolicy(habit.rsvp) : undefined
-  const requestedTools = habit.rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : habit.tools ?? null
+  const requestedTools = blockedReason ? [] : habit.rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : habit.tools ?? null
   const toolPolicy = filterHabitToolsForEnvelope(
     [...baseToolDefinitions, surfaceToolDefinition],
     requestedTools,
@@ -384,6 +390,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     permissionEnvelope,
     toolPolicy,
     ...(rsvpPolicy ? { rsvpPolicy } : {}),
+    ...(blockedReason ? { blockedReason } : {}),
     friendStore,
     results: [],
     errors,
@@ -579,9 +586,18 @@ export function createPrivateRuntimeWorker(
         let blockedAutonomyTurn = false
         try {
           const turnStartedAt = new Date(nowSource()).toISOString()
-          const autonomyDecision = currentHabitRun ? reserveHabitAutonomyBudget(currentHabitRun, turnStartedAt) : null
+          const autonomyDecision = currentHabitRun && !currentHabitRun.blockedReason
+            ? reserveHabitAutonomyBudget(currentHabitRun, turnStartedAt)
+            : null
           if (currentHabitRun) recordHabitStartIfNeeded(currentHabitRun)
-          if (autonomyDecision && !autonomyDecision.allowed) {
+          if (currentHabitRun?.blockedReason) {
+            blockedAutonomyTurn = true
+            turnResult = {
+              turnOutcome: "blocked",
+              reason: currentHabitRun.blockedReason,
+            }
+            clearHeartbeatRestShield()
+          } else if (autonomyDecision && !autonomyDecision.allowed) {
             blockedAutonomyTurn = true
             const reason = `autonomy budget blocked: ${autonomyDecision.reason}`
             turnErrors.push(reason)

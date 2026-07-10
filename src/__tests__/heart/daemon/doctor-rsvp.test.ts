@@ -60,7 +60,33 @@ function writeAgent(root: string, agent = "slugger"): string {
 function writeRsvpHabit(agentRoot: string): void {
   const habitsDir = path.join(agentRoot, "habits")
   fs.mkdirSync(habitsDir, { recursive: true })
-  fs.writeFileSync(path.join(habitsDir, "rsvp-ari-rachel.md"), "---\nname: rsvp-ari-rachel\nstatus: active\n---\n", "utf-8")
+  fs.writeFileSync(path.join(habitsDir, "rsvp-ari-rachel.md"), [
+    "---",
+    "name: rsvp-ari-rachel",
+    "status: active",
+    "cadence: 0 10 * * *",
+    "rsvp:",
+    "  policyVersion: rsvp-habit/v1",
+    "  mode: shadow",
+    "  sense: bluebubbles",
+    "  source: aisleplanner",
+    "  routeRef: rsvp/config.json#bluebubblesRoute",
+    "  snapshotRef: state/rsvp/snapshots/latest.json",
+    "  outboundStateRef: state/rsvp/outbound-state.json",
+    "  budgetRef: state/rsvp/spend-ledger.json",
+    "  idempotencyRef: state/rsvp/outbound-state.json",
+    "  liveSendEligible: false",
+    "---",
+    "",
+    "Refresh native RSVP state.",
+    "",
+  ].join("\n"), "utf-8")
+}
+
+function writeMalformedRsvpHabit(agentRoot: string): void {
+  const habitsDir = path.join(agentRoot, "habits")
+  fs.mkdirSync(habitsDir, { recursive: true })
+  fs.writeFileSync(path.join(habitsDir, "rsvp-ari-rachel.md"), "---\nname: rsvp-ari-rachel\nstatus: active\ncadence: 0 10 * * *\n---\n", "utf-8")
 }
 
 function writeNativeRsvpConfig(agentRoot: string, overrides: Record<string, unknown> = {}): void {
@@ -288,6 +314,25 @@ describe("RSVP doctor checks", () => {
     expect(JSON.stringify(category)).not.toContain(forbiddenLegacySecret)
     expect(JSON.stringify(category)).not.toContain(forbiddenLegacyChatGuid)
     expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
+  })
+
+  it("fails RSVP habit schedule health when the active habit lacks typed metadata", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMalformedRsvpHabit(agentRoot)
+    writeNativeRsvpConfig(agentRoot)
+    seedRuntime()
+
+    const category = await checkRsvp(depsFor(bundlesRoot))
+
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "rsvp.habit.schedule",
+        label: "slugger.ouro RSVP habit schedule",
+        status: "fail",
+        detail: expect.stringMatching(/typed RSVP habit metadata/i),
+      }),
+    ]))
   })
 
   it("surfaces missing runtime credentials and route coordinates as actionable checks", async () => {
