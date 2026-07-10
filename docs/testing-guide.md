@@ -159,6 +159,17 @@ ouro connect bluebubbles --agent <agent>
 ouro connect voice --agent <agent>
 ```
 
+### RSVP habit triage
+
+Slugger's daily RSVP dogfood habit has a dedicated runbook at `docs/rsvp-triage.md`. Start with:
+
+```bash
+ouro rsvp doctor --agent slugger --json --strict
+ouro rsvp incident --agent slugger --output /tmp/rsvp-incident.json --json
+```
+
+Use that guide for no-send replay, shadow refresh, preflight smoke, receipt and ledger locations, and redaction rules before any live send.
+
 ### Voice
 
 Voice is a single transcript-first sense with multiple transports. The Twilio phone transport has two modes. `record-play` is the conservative phone smoke path: Twilio records the caller, Ouro downloads the recording, Whisper.cpp transcribes it, the normal stable `voice` session turn runs, ElevenLabs generates MP3 audio from tool-delivered `speak`/`settle` text, and Twilio plays that response before listening again. `media-stream` is the lower-latency conversational path. In cascade mode it opens a bidirectional Twilio Media Stream, frames caller utterances with VAD, uses Whisper.cpp plus ElevenLabs `ulaw_8000`, and clears playback on barge-in. In native Realtime mode it routes Twilio audio through OpenAI Realtime speech-to-speech, keeps the same stable voice transcript/session key, exposes action tools plus `voice_end_call`, and uses a compact voice-native identity prompt rather than the full general-purpose prompt. For phone-number lanes that can route SIP, `voice.twilioConversationEngine=openai-sip` is the preferred inbound smoke path: Twilio returns `<Dial><Sip>` to OpenAI, OpenAI calls Ouro's SIP webhook, and Ouro owns the Realtime control socket, transcript, tools, and hangup. When SIP is paired with `media-stream`, outbound defaults to OpenAI Realtime Media Streams so pickup goes straight to the agent instead of making the human hear Twilio-to-SIP ringback after answering.

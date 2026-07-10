@@ -53,6 +53,54 @@ function pathRequiresChangelogFreshness(file) {
     (file.startsWith("packages/ouro.bot/") && file !== "packages/ouro.bot/package.json")
 }
 
+function classifyOperationalContractChange(file) {
+  const persistedSchemaPaths = [
+    "src/rsvp/snapshot.ts",
+    "src/rsvp/migration.ts",
+    "src/rsvp/config.ts",
+    "src/rsvp/outbound-state.ts",
+    "src/senses/context-packets.ts",
+    "src/senses/bluebubbles/outbound-state.ts",
+    "src/heart/run-ledger.ts",
+    "src/heart/autonomy-budget.ts",
+  ]
+  if (persistedSchemaPaths.includes(file)) {
+    return {
+      kind: "persisted-schema",
+      message: `persisted schema changed: ${file}`,
+    }
+  }
+
+  if (file.startsWith("src/__fixtures__/") || file.endsWith(".fixture.json") || file.endsWith(".trace.json")) {
+    return {
+      kind: "replay-fixture",
+      message: `replay fixture changed: ${file}`,
+    }
+  }
+
+  if (
+    file === "src/heart/daemon/doctor.ts" ||
+    file === "src/rsvp/diagnostics.ts" ||
+    file === "src/rsvp/incident-bundle.ts"
+  ) {
+    return {
+      kind: "doctor-category",
+      message: `doctor category/check surface changed: ${file}`,
+    }
+  }
+
+  return null
+}
+
+function summarizeOperationalContractChanges(changedFiles) {
+  const changes = changedFiles
+    .map(classifyOperationalContractChange)
+    .filter(Boolean)
+  const priority = ["persisted-schema", "replay-fixture", "doctor-category"]
+  const kinds = priority.filter((kind) => changes.some((change) => change.kind === kind))
+  return { kinds, messages: changes.map((change) => change.message) }
+}
+
 function shellQuote(value) {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
@@ -307,6 +355,12 @@ function runReleasePreflight(options = {}, deps = {}) {
     messages.push(wrapperResult.message)
   }
 
+  const operationalContracts = summarizeOperationalContractChanges(changedFiles)
+  if (operationalContracts.kinds.length > 0) {
+    messages.push(`operational contracts: ${operationalContracts.kinds.join(", ")}`)
+    messages.push(...operationalContracts.messages)
+  }
+
   const auditResult = runRootDependencyAudit(packageRoot, execSyncImpl)
   if (!auditResult.ok) {
     errors.push(auditResult.message)
@@ -370,6 +424,7 @@ if (require.main === module) {
 module.exports = {
   assessChangelogFreshness,
   assessWrapperPublishSync,
+  classifyOperationalContractChange,
   collectChangedFiles,
   parseArgs,
   pathRequiresChangelogFreshness,

@@ -162,7 +162,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   rsvp: {
     category: "Habits",
-    description: "AislePlanner-backed RSVP habit operations, migration checks, refreshes, and smoke tests",
+    description: "AislePlanner-backed RSVP habit operations, triage, receipts, ledgers, migration checks, refreshes, and smoke tests",
     usage: "ouro rsvp <doctor|incident|cutover|legacy-render|replay|config|habit|import-legacy|refresh|compare|smoke> ...",
     example: "ouro rsvp doctor --agent slugger --json",
     subcommands: [
@@ -468,12 +468,12 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro habit summary --agent slugger --operation-id habit:standup --which latest --json",
   },
   "rsvp doctor": {
-    description: "Check native RSVP configuration, credentials, BlueBubbles attachment, and migration readiness without sending messages",
+    description: "Check native RSVP configuration, credentials, BlueBubbles attachment, ledgers, receipts, and migration readiness without sending messages; use --json --strict in triage",
     usage: "ouro rsvp doctor [--agent <name>] [--strict] [--output <path>] [--json]",
     example: "ouro rsvp doctor --agent slugger --strict --json",
   },
   "rsvp incident": {
-    description: "Collect a local RSVP diagnostic incident bundle summary without contacting the daemon",
+    description: "Collect a redacted local RSVP diagnostic incident bundle with doctor status, receipts, and ledger pointers without contacting the daemon",
     usage: "ouro rsvp incident [--agent <name>] [--output <path>] [--json]",
     example: "ouro rsvp incident --agent slugger --output /tmp/rsvp-incident.json",
   },
@@ -488,7 +488,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro rsvp legacy-render --legacy-root ~/Projects/rsvp-tracker --output /tmp/legacy.json",
   },
   "rsvp replay": {
-    description: "Replay a captured native RSVP fixture through deterministic report and query logic",
+    description: "Replay an offline fixture through deterministic native RSVP report/query logic without live BlueBubbles or AislePlanner access",
     usage: "ouro rsvp replay [--agent <name>] --fixture <path> [--output <path>] [--json]",
     example: "ouro rsvp replay --agent slugger --fixture /tmp/rsvp-replay.json --json",
   },
@@ -508,7 +508,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro rsvp import-legacy --agent slugger --legacy-root ~/Projects/rsvp-tracker --mode shadow --yes",
   },
   "rsvp refresh": {
-    description: "Run the native RSVP refresh path; defaults to dry-run behavior unless --allow-send is explicit",
+    description: "Run the native RSVP refresh path and write receipts; defaults to dry-run behavior unless --allow-send is explicit",
     usage: "ouro rsvp refresh [--agent <name>] --mode shadow|live [--no-send|--allow-send] [--output <path>] [--json]",
     example: "ouro rsvp refresh --agent slugger --mode shadow --no-send --json",
   },
@@ -518,7 +518,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro rsvp compare --agent slugger --native /tmp/native.json --legacy /tmp/legacy.json",
   },
   "rsvp smoke": {
-    description: "Smoke-test RSVP follow-up behavior through a target sense; live mode requires --allow-send",
+    description: "Smoke-test RSVP follow-up behavior through a target sense; preflight is no-send and live mode requires --allow-send",
     usage: "ouro rsvp smoke [--agent <name>] --mode preflight|live --surface bluebubbles [--question <text>] [--allow-send] [--output <path>] [--replay-output <path>] [--json]",
     example: "ouro rsvp smoke --agent slugger --mode preflight --surface bluebubbles --question 'who is pending?'",
   },
