@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execSync } from "child_process"
 import * as fs from "fs"
 import * as path from "path"
 import { DaemonProcessManager, type RuntimeCredentialBootstrap } from "./process-manager"
@@ -254,10 +255,39 @@ const taskScheduler = new TaskDrivenScheduler({
 const habitSchedulers: HabitScheduler[] = []
 const awaitSchedulers: AwaitScheduler[] = []
 
+function habitCronLabelOwner(agent: string): (label: string) => boolean {
+  const agentPrefix = `bot.ouro.${agent}.`
+  const awaitPrefix = `${agentPrefix}await.`
+  return (label) => label.startsWith(agentPrefix) && !label.startsWith(awaitPrefix)
+}
+
+function awaitCronLabelOwner(agent: string): (label: string) => boolean {
+  const awaitPrefix = `bot.ouro.${agent}.await.`
+  return (label) => label.startsWith(awaitPrefix)
+}
+
+function verifyOsCron(command: string): string {
+  return execSync(command, { encoding: "utf-8" })
+}
+
 const scheduler = {
   listJobs: () => [
     ...taskScheduler.listJobs(),
     ...habitSchedulers.flatMap((habitScheduler) => habitScheduler.listJobs()),
+  ],
+  listDegradedJobs: () => [
+    ...habitSchedulers.flatMap((habitScheduler) =>
+      habitScheduler.getDegradedHabits().map((habit) => ({
+        id: `habit:${habit.name}`,
+        reason: habit.reason,
+      })),
+    ),
+    ...awaitSchedulers.flatMap((awaitScheduler) =>
+      awaitScheduler.getDegradedAwaits().map((awaitItem) => ({
+        id: `await:${awaitItem.name}`,
+        reason: awaitItem.reason,
+      })),
+    ),
   ],
   triggerJob: (jobId: string) => taskScheduler.triggerJob(jobId),
   triggerHabitJob: async (jobId: string) => {
@@ -629,7 +659,7 @@ void daemon.start().then(async () => {
       // Migrate old tasks/habits/ to habits/ at bundle root
       migrateHabitsFromTaskSystem(bundleRoot)
 
-      const osCronManager = new LaunchdCronManager(osCronDeps)
+      const osCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
       const scheduler = new HabitScheduler({
         agent,
         habitsDir,
@@ -662,6 +692,7 @@ void daemon.start().then(async () => {
           ouroPath,
           watch: (dir, cb) => fs.watch(dir, cb),
         },
+        execForVerify: verifyOsCron,
       })
 
       try {
@@ -703,7 +734,7 @@ void daemon.start().then(async () => {
     const awaitsDir = path.join(bundleRoot, "awaiting")
     const awaitDegradedComponent = `awaits:${agent}`
     try {
-      const awaitOsCronManager = new LaunchdCronManager(osCronDeps)
+      const awaitOsCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
       const awaitScheduler = new AwaitScheduler({
         agent,
         awaitsDir,
@@ -766,6 +797,7 @@ void daemon.start().then(async () => {
           ouroPath,
           watch: (dir, cb) => fs.watch(dir, cb),
         },
+        execForVerify: verifyOsCron,
       })
       try {
         awaitScheduler.start()

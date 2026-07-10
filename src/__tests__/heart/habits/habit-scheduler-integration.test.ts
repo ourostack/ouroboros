@@ -247,7 +247,7 @@ describe("LaunchdCronManager real plist integration", () => {
       exec: () => {},
     }
 
-    const manager = new LaunchdCronManager(testDeps)
+    const manager = new LaunchdCronManager(testDeps, { ownsLabel: () => true })
 
     manager.sync([
       {
@@ -319,7 +319,7 @@ describe("LaunchdCronManager real plist integration", () => {
 
     const realDeps = createRealOsCronDeps()
     const testDeps = { ...realDeps, homeDir: tempHome, exec: () => {} }
-    const manager = new LaunchdCronManager(testDeps)
+    const manager = new LaunchdCronManager(testDeps, { ownsLabel: () => true })
 
     // Initial sync with 2 jobs
     manager.sync([

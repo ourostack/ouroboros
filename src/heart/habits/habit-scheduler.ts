@@ -116,6 +116,7 @@ export class HabitScheduler {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
       if (this.rejectInvalidRsvpHabit(habit)) continue
+      if (this.rejectReservedCronNamespaceHabit(habit)) continue
 
       const nowMs = this.deps.now()
       const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
@@ -159,6 +160,7 @@ export class HabitScheduler {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
       if (this.rejectInvalidRsvpHabit(habit)) continue
+      if (this.rejectReservedCronNamespaceHabit(habit)) continue
 
       const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
       if (dueState?.due) overdue.push({ name: habit.name, elapsedMs: dueState.elapsedMs })
@@ -402,6 +404,7 @@ export class HabitScheduler {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
       if (this.rejectInvalidRsvpHabit(habit)) continue
+      if (this.rejectReservedCronNamespaceHabit(habit)) continue
 
       const cronSchedule = parseCadenceToCron(habit.cadence)
       if (cronSchedule === null) continue
@@ -426,6 +429,16 @@ export class HabitScheduler {
     this.recordHabitParseError(
       `${habit.name}.md`,
       "RSVP habit metadata is required before scheduling",
+    )
+    return true
+  }
+
+  private rejectReservedCronNamespaceHabit(habit: HabitFile): boolean {
+    if (!habit.name.startsWith("await.")) return false
+
+    this.recordHabitParseError(
+      `${habit.name}.md`,
+      "habit names cannot start with reserved cron namespace 'await.'",
     )
     return true
   }

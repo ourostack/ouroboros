@@ -145,7 +145,7 @@ describe("os-cron helpers", () => {
 describe("LaunchdCronManager", () => {
   it("sync writes plists and loads them", () => {
     const deps = makeLaunchdDeps({ envPath: "/opt/homebrew/bin:/usr/bin:/bin" } as Partial<OsCronDeps>)
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
     const job = makeJob()
 
     manager.sync([job])
@@ -164,7 +164,7 @@ describe("LaunchdCronManager", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.slugger.heartbeat.plist", "bot.ouro.slugger.old-task.plist"]),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     manager.sync([makeJob()])
 
@@ -174,11 +174,64 @@ describe("LaunchdCronManager", () => {
     expect(deps.removeFile).toHaveBeenCalledTimes(1)
   })
 
+  it("scoped sync leaves plists outside the manager namespace alone", () => {
+    const deps = makeLaunchdDeps({
+      listDir: vi.fn(() => [
+        "bot.ouro.slugger.heartbeat.plist",
+        "bot.ouro.slugger.old-task.plist",
+        "bot.ouro.slugger.await.vendor-reply.plist",
+        "bot.ouro.other.heartbeat.plist",
+      ]),
+    })
+    const manager = new LaunchdCronManager(deps, {
+      ownsLabel: (label) => label.startsWith("bot.ouro.slugger.") && !label.startsWith("bot.ouro.slugger.await."),
+    })
+
+    manager.sync([makeJob()])
+
+    expect(deps.removeFile).toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.old-task.plist",
+    )
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.await.vendor-reply.plist",
+    )
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.other.heartbeat.plist",
+    )
+    expect(deps.removeFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("scoped await sync does not remove habit plists when no awaits are registered", () => {
+    const deps = makeLaunchdDeps({
+      listDir: vi.fn(() => [
+        "bot.ouro.slugger.heartbeat.plist",
+        "bot.ouro.slugger.rsvp-ari-rachel.plist",
+        "bot.ouro.slugger.await.vendor-reply.plist",
+      ]),
+    })
+    const manager = new LaunchdCronManager(deps, {
+      ownsLabel: (label) => label.startsWith("bot.ouro.slugger.await."),
+    })
+
+    manager.sync([])
+
+    expect(deps.removeFile).toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.await.vendor-reply.plist",
+    )
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.heartbeat.plist",
+    )
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.rsvp-ari-rachel.plist",
+    )
+    expect(deps.removeFile).toHaveBeenCalledTimes(1)
+  })
+
   it("sync does not remove the daemon launch agent plist as a stale habit", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.daemon.plist", "bot.ouro.slugger.heartbeat.plist"]),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     manager.sync([makeJob()])
 
@@ -194,7 +247,7 @@ describe("LaunchdCronManager", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.slugger.heartbeat.plist", "bot.ouro.ouroboros.task.plist"]),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     manager.removeAll()
 
@@ -206,7 +259,7 @@ describe("LaunchdCronManager", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.daemon.plist", "bot.ouro.slugger.heartbeat.plist"]),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     manager.removeAll()
 
@@ -219,11 +272,37 @@ describe("LaunchdCronManager", () => {
     expect(deps.removeFile).toHaveBeenCalledTimes(1)
   })
 
+  it("scoped removeAll only unloads and removes owned plists", () => {
+    const deps = makeLaunchdDeps({
+      listDir: vi.fn(() => [
+        "bot.ouro.slugger.heartbeat.plist",
+        "bot.ouro.slugger.await.vendor-reply.plist",
+        "bot.ouro.daemon.plist",
+      ]),
+    })
+    const manager = new LaunchdCronManager(deps, {
+      ownsLabel: (label) => label.startsWith("bot.ouro.slugger.await."),
+    })
+
+    manager.removeAll()
+
+    expect(deps.removeFile).toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.await.vendor-reply.plist",
+    )
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.heartbeat.plist",
+    )
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.daemon.plist",
+    )
+    expect(deps.removeFile).toHaveBeenCalledTimes(1)
+  })
+
   it("list returns labels of existing plists", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.slugger.heartbeat.plist", "com.other.plist"]),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     expect(manager.list()).toEqual(["bot.ouro.slugger.heartbeat"])
   })
@@ -232,14 +311,14 @@ describe("LaunchdCronManager", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.daemon.plist", "bot.ouro.slugger.heartbeat.plist"]),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     expect(manager.list()).toEqual(["bot.ouro.slugger.heartbeat"])
   })
 
   it("list returns empty when LaunchAgents dir missing", () => {
     const deps = makeLaunchdDeps({ existsFile: vi.fn(() => false) })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     expect(manager.list()).toEqual([])
   })
@@ -248,7 +327,7 @@ describe("LaunchdCronManager", () => {
     const deps = makeLaunchdDeps({
       exec: vi.fn(() => { throw new Error("launchctl failed") }),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     expect(() => manager.sync([makeJob()])).not.toThrow()
   })
@@ -258,7 +337,7 @@ describe("LaunchdCronManager", () => {
       listDir: vi.fn(() => ["bot.ouro.slugger.heartbeat.plist"]),
       exec: vi.fn(() => { throw new Error("launchctl failed") }),
     })
-    const manager = new LaunchdCronManager(deps)
+    const manager = new LaunchdCronManager(deps, { ownsLabel: () => true })
 
     expect(() => manager.removeAll()).not.toThrow()
   })
@@ -361,7 +440,7 @@ describe("CrontabCronManager", () => {
 
 describe("createOsCronManager", () => {
   it("uses process.platform when no platform specified", () => {
-    const manager = createOsCronManager()
+    const manager = createOsCronManager({ launchdOptions: { ownsLabel: () => true } })
     // On macOS (darwin), should return LaunchdCronManager
     // On Linux, should return CrontabCronManager
     // Either way, it should be an OsCronManager instance
@@ -372,8 +451,14 @@ describe("createOsCronManager", () => {
   })
 
   it("returns LaunchdCronManager for darwin", () => {
-    const manager = createOsCronManager({ platform: "darwin" })
+    const manager = createOsCronManager({ platform: "darwin", launchdOptions: { ownsLabel: () => true } })
     expect(manager).toBeInstanceOf(LaunchdCronManager)
+  })
+
+  it("rejects darwin manager creation without explicit label ownership", () => {
+    expect(() => createOsCronManager({ platform: "darwin" })).toThrow(
+      "LaunchdCronManager requires explicit label ownership via launchdOptions.ownsLabel",
+    )
   })
 
   it("returns CrontabCronManager for linux", () => {
@@ -388,7 +473,11 @@ describe("createOsCronManager", () => {
 
   it("uses provided deps for darwin", () => {
     const deps = makeLaunchdDeps()
-    const manager = createOsCronManager({ platform: "darwin", launchdDeps: deps })
+    const manager = createOsCronManager({
+      platform: "darwin",
+      launchdDeps: deps,
+      launchdOptions: { ownsLabel: () => true },
+    })
     manager.sync([makeJob()])
     expect(deps.writeFile).toHaveBeenCalled()
   })
@@ -401,7 +490,7 @@ describe("createOsCronManager", () => {
   })
 
   it("uses default fallback deps for darwin when no launchdDeps provided", () => {
-    const manager = createOsCronManager({ platform: "darwin" })
+    const manager = createOsCronManager({ platform: "darwin", launchdOptions: { ownsLabel: () => true } })
     expect(manager).toBeInstanceOf(LaunchdCronManager)
     // Exercise default deps: list calls existsFile (returns false), sync calls mkdirp + listDir
     expect(manager.list()).toEqual([])

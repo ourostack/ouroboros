@@ -19,6 +19,10 @@ export interface OsCronDeps {
   envPath?: string
 }
 
+export interface LaunchdCronManagerOptions {
+  ownsLabel: (label: string) => boolean
+}
+
 export interface CrontabCronDeps {
   execOutput: (cmd: string) => string
   execWrite: (cmd: string, stdin: string) => void
@@ -125,9 +129,11 @@ function generatePlistXml(job: ScheduledTaskJob, envPath?: string): string {
 
 export class LaunchdCronManager implements OsCronManager {
   private readonly deps: OsCronDeps
+  private readonly ownsLabel: (label: string) => boolean
 
-  constructor(deps: OsCronDeps) {
+  constructor(deps: OsCronDeps, options: LaunchdCronManagerOptions) {
     this.deps = deps
+    this.ownsLabel = options.ownsLabel
   }
 
   private get launchAgentsDir(): string {
@@ -182,7 +188,8 @@ export class LaunchdCronManager implements OsCronManager {
     return this.deps.listDir(this.launchAgentsDir).filter((f) =>
       f.startsWith(PLIST_PREFIX) &&
       f.endsWith(".plist") &&
-      f !== DAEMON_PLIST_FILENAME,
+      f !== DAEMON_PLIST_FILENAME &&
+      this.ownsLabel(f.replace(".plist", "")),
     )
   }
 }
@@ -251,6 +258,7 @@ export class CrontabCronManager implements OsCronManager {
 export interface CreateOsCronManagerOptions {
   platform?: string
   launchdDeps?: OsCronDeps
+  launchdOptions?: LaunchdCronManagerOptions
   crontabDeps?: CrontabCronDeps
 }
 
@@ -269,7 +277,10 @@ export function createOsCronManager(options: CreateOsCronManagerOptions = {}): O
       envPath: process.env.PATH ?? "",
     }
     /* v8 ignore stop */
-    return new LaunchdCronManager(deps)
+    if (!options.launchdOptions) {
+      throw new Error("LaunchdCronManager requires explicit label ownership via launchdOptions.ownsLabel")
+    }
+    return new LaunchdCronManager(deps, options.launchdOptions)
   }
 
   const deps: CrontabCronDeps = options.crontabDeps ?? {
