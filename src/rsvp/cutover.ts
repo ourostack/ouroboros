@@ -62,8 +62,12 @@ export interface RsvpCutoverDeps {
   mkdirSync?: (dirPath: string) => void
   renameSync?: (oldPath: string, newPath: string) => void
   copyFileSync?: (sourcePath: string, targetPath: string) => void
-  rmSync?: (filePath: string) => void
   now?: () => Date
+  spawnSync?: SpawnSyncLike
+  platform?: NodeJS.Platform
+  getUid?: () => number | null
+  homeDir?: () => string
+  fetchImpl?: typeof fetch
   getLaunchAgentState?: (input: { label: string; legacyRoot: string }) => Promise<RsvpCutoverLaunchAgentState>
   getLegacyProcessState?: (input: { legacyRoot: string }) => Promise<RsvpCutoverProcessState>
   checkNativeBlueBubblesCredential?: (input: { agent?: string }) => Promise<RsvpCutoverCredentialHealth>
@@ -82,6 +86,30 @@ export interface RunRsvpCutoverInput extends CheckRsvpCutoverInput {
 }
 
 type JsonRecord = Record<string, unknown>
+type SpawnSyncLike = (
+  command: string,
+  args: string[],
+  options: { encoding: "utf-8"; timeout: number },
+) => { status: number | null; stdout?: string }
+
+interface NormalizedRsvpCutoverDeps {
+  existsSync: (filePath: string) => boolean
+  readFileSync: (filePath: string) => string
+  writeFileSync: (filePath: string, contents: string) => void
+  mkdirSync: (dirPath: string) => void
+  renameSync: (oldPath: string, newPath: string) => void
+  copyFileSync: (sourcePath: string, targetPath: string) => void
+  now: () => Date
+  spawnSync: SpawnSyncLike
+  platform: NodeJS.Platform
+  getUid: () => number | null
+  homeDir: () => string
+  fetchImpl: typeof fetch
+  getLaunchAgentState?: RsvpCutoverDeps["getLaunchAgentState"]
+  getLegacyProcessState?: RsvpCutoverDeps["getLegacyProcessState"]
+  checkNativeBlueBubblesCredential?: RsvpCutoverDeps["checkNativeBlueBubblesCredential"]
+  unloadLaunchAgent?: RsvpCutoverDeps["unloadLaunchAgent"]
+}
 
 const LEGACY_LAUNCH_AGENT_LABEL = "com.arimendelow.rsvp-tracker"
 const EMPTY_ROLLBACK: RsvpCutoverRollback = {
@@ -90,7 +118,7 @@ const EMPTY_ROLLBACK: RsvpCutoverRollback = {
   manifestPath: "",
 }
 
-function normalizeDeps(deps: RsvpCutoverDeps = {}): Required<Omit<RsvpCutoverDeps, "getLaunchAgentState" | "getLegacyProcessState" | "checkNativeBlueBubblesCredential" | "unloadLaunchAgent">> & Pick<RsvpCutoverDeps, "getLaunchAgentState" | "getLegacyProcessState" | "checkNativeBlueBubblesCredential" | "unloadLaunchAgent"> {
+function normalizeDeps(deps: RsvpCutoverDeps = {}): NormalizedRsvpCutoverDeps {
   return {
     existsSync: deps.existsSync ?? fs.existsSync,
     readFileSync: deps.readFileSync ?? ((filePath) => fs.readFileSync(filePath, "utf-8")),
@@ -98,8 +126,12 @@ function normalizeDeps(deps: RsvpCutoverDeps = {}): Required<Omit<RsvpCutoverDep
     mkdirSync: deps.mkdirSync ?? ((dirPath) => fs.mkdirSync(dirPath, { recursive: true })),
     renameSync: deps.renameSync ?? fs.renameSync,
     copyFileSync: deps.copyFileSync ?? fs.copyFileSync,
-    rmSync: deps.rmSync ?? ((filePath) => fs.rmSync(filePath, { recursive: true, force: true })),
     now: deps.now ?? (() => new Date()),
+    spawnSync: deps.spawnSync ?? spawnSync,
+    platform: deps.platform ?? process.platform,
+    getUid: deps.getUid ?? (() => process.getuid!()),
+    homeDir: deps.homeDir ?? os.homedir,
+    fetchImpl: deps.fetchImpl ?? fetch,
     getLaunchAgentState: deps.getLaunchAgentState,
     getLegacyProcessState: deps.getLegacyProcessState,
     checkNativeBlueBubblesCredential: deps.checkNativeBlueBubblesCredential,
@@ -132,7 +164,7 @@ function buildBlueBubblesHealthUrl(baseUrl: string, password: string): string {
   return url.toString()
 }
 
-function readLegacyConfig(legacyRoot: string, deps: ReturnType<typeof normalizeDeps>): { status: "missing" | "malformed" | "ok"; config?: JsonRecord } {
+function readLegacyConfig(legacyRoot: string, deps: NormalizedRsvpCutoverDeps): { status: "missing" | "malformed" | "ok"; config?: JsonRecord } {
   const configPath = path.join(legacyRoot, "config.json")
   if (!deps.existsSync(configPath)) return { status: "missing" }
   try {
@@ -144,7 +176,7 @@ function readLegacyConfig(legacyRoot: string, deps: ReturnType<typeof normalizeD
   }
 }
 
-function legacyConfigSendInactive(legacyRoot: string, deps: ReturnType<typeof normalizeDeps>): boolean {
+function legacyConfigSendInactive(legacyRoot: string, deps: NormalizedRsvpCutoverDeps): boolean {
   const legacy = readLegacyConfig(legacyRoot, deps)
   if (legacy.status === "missing") return true
   if (legacy.status !== "ok") return false
@@ -157,13 +189,13 @@ function legacyConfigSendInactive(legacyRoot: string, deps: ReturnType<typeof no
   return !hasLiveCoordinates
 }
 
-async function defaultLaunchAgentState(input: { label: string; legacyRoot: string }): Promise<RsvpCutoverLaunchAgentState> {
-  if (process.platform !== "darwin") {
+async function defaultLaunchAgentState(input: { label: string; legacyRoot: string }, deps: NormalizedRsvpCutoverDeps): Promise<RsvpCutoverLaunchAgentState> {
+  if (deps.platform !== "darwin") {
     return { label: input.label, loaded: false, source: "unavailable" }
   }
-  const uid = typeof process.getuid === "function" ? process.getuid() : null
+  const uid = deps.getUid()
   if (uid === null) return { label: input.label, loaded: false, source: "unavailable" }
-  const result = spawnSync("launchctl", ["print", `gui/${uid}/${input.label}`], {
+  const result = deps.spawnSync("launchctl", ["print", `gui/${uid}/${input.label}`], {
     encoding: "utf-8",
     timeout: 5_000,
   })
@@ -172,14 +204,14 @@ async function defaultLaunchAgentState(input: { label: string; legacyRoot: strin
     loaded: result.status === 0,
     plistPath: firstExistingPath([
       path.join(input.legacyRoot, `${input.label}.plist`),
-      path.join(os.homedir(), "Library", "LaunchAgents", `${input.label}.plist`),
-    ], { existsSync: fs.existsSync }),
+      path.join(deps.homeDir(), "Library", "LaunchAgents", `${input.label}.plist`),
+    ], deps),
     source: "launchctl",
   }
 }
 
-async function defaultLegacyProcessState(input: { legacyRoot: string }): Promise<RsvpCutoverProcessState> {
-  const result = spawnSync("ps", ["-axo", "pid=,command="], {
+async function defaultLegacyProcessState(input: { legacyRoot: string }, deps: NormalizedRsvpCutoverDeps): Promise<RsvpCutoverProcessState> {
+  const result = deps.spawnSync("ps", ["-axo", "pid=,command="], {
     encoding: "utf-8",
     timeout: 5_000,
   })
@@ -195,11 +227,11 @@ async function defaultLegacyProcessState(input: { legacyRoot: string }): Promise
   return { running: count > 0, count, source: "ps" }
 }
 
-async function defaultNativeBlueBubblesCredentialHealth(input: { agent?: string }): Promise<RsvpCutoverCredentialHealth> {
+async function defaultNativeBlueBubblesCredentialHealth(input: { agent?: string }, deps: NormalizedRsvpCutoverDeps): Promise<RsvpCutoverCredentialHealth> {
   if (!input.agent) {
     return { ok: false, detail: "native BlueBubbles credential check requires an agent" }
   }
-  const machineId = loadOrCreateMachineIdentity({ homeDir: os.homedir() }).machineId
+  const machineId = loadOrCreateMachineIdentity({ homeDir: deps.homeDir() }).machineId
   const runtimeConfig = await refreshMachineRuntimeCredentialConfig(input.agent, machineId, { preserveCachedOnFailure: true })
   if (!runtimeConfig.ok) {
     return { ok: false, detail: "machine runtime/config unavailable" }
@@ -215,7 +247,7 @@ async function defaultNativeBlueBubblesCredentialHealth(input: { agent?: string 
     ? bluebubblesSense.requestTimeoutMs
     : 30_000
   try {
-    const response = await fetch(buildBlueBubblesHealthUrl(serverUrl, password), {
+    const response = await deps.fetchImpl(buildBlueBubblesHealthUrl(serverUrl, password), {
       method: "GET",
       signal: AbortSignal.timeout(requestTimeoutMs),
     })
@@ -227,17 +259,17 @@ async function defaultNativeBlueBubblesCredentialHealth(input: { agent?: string 
   }
 }
 
-async function defaultUnloadLaunchAgent(input: { label: string; plistPath?: string }): Promise<{ ok: boolean; detail?: string }> {
-  if (process.platform !== "darwin") return { ok: true, detail: "launchd not applicable on this platform" }
-  const uid = typeof process.getuid === "function" ? process.getuid() : null
+async function defaultUnloadLaunchAgent(input: { label: string; plistPath?: string }, deps: NormalizedRsvpCutoverDeps): Promise<{ ok: boolean; detail?: string }> {
+  if (deps.platform !== "darwin") return { ok: true, detail: "launchd not applicable on this platform" }
+  const uid = deps.getUid()
   if (uid === null) return { ok: false, detail: "current uid unavailable" }
-  const bootout = spawnSync("launchctl", ["bootout", `gui/${uid}/${input.label}`], {
+  const bootout = deps.spawnSync("launchctl", ["bootout", `gui/${uid}/${input.label}`], {
     encoding: "utf-8",
     timeout: 5_000,
   })
   if (bootout.status === 0) return { ok: true }
   if (input.plistPath) {
-    const unload = spawnSync("launchctl", ["unload", "-w", input.plistPath], {
+    const unload = deps.spawnSync("launchctl", ["unload", "-w", input.plistPath], {
       encoding: "utf-8",
       timeout: 5_000,
     })
@@ -246,15 +278,15 @@ async function defaultUnloadLaunchAgent(input: { label: string; plistPath?: stri
   return { ok: true, detail: "legacy LaunchAgent was not loaded or launchctl did not report it as loaded" }
 }
 
-function firstExistingPath(candidates: Array<string | undefined>, deps: Pick<ReturnType<typeof normalizeDeps>, "existsSync">): string | undefined {
+function firstExistingPath(candidates: Array<string | undefined>, deps: Pick<NormalizedRsvpCutoverDeps, "existsSync">): string | undefined {
   return candidates.find((candidate): candidate is string => !!candidate && deps.existsSync(candidate))
 }
 
-function launchAgentPlistCandidates(legacyRoot: string, state: RsvpCutoverLaunchAgentState, deps: ReturnType<typeof normalizeDeps>): string[] {
+function launchAgentPlistCandidates(legacyRoot: string, state: RsvpCutoverLaunchAgentState, deps: NormalizedRsvpCutoverDeps): string[] {
   const candidates = [
     state.plistPath,
     path.join(legacyRoot, `${LEGACY_LAUNCH_AGENT_LABEL}.plist`),
-    path.join(os.homedir(), "Library", "LaunchAgents", `${LEGACY_LAUNCH_AGENT_LABEL}.plist`),
+    path.join(deps.homeDir(), "Library", "LaunchAgents", `${LEGACY_LAUNCH_AGENT_LABEL}.plist`),
   ]
   return [...new Set(candidates.filter((candidate): candidate is string => !!candidate && deps.existsSync(candidate)))]
 }
@@ -301,7 +333,7 @@ function report(input: {
   }
 }
 
-async function buildChecks(input: CheckRsvpCutoverInput, deps: ReturnType<typeof normalizeDeps>): Promise<RsvpCutoverChecks> {
+async function buildChecks(input: CheckRsvpCutoverInput, deps: NormalizedRsvpCutoverDeps): Promise<RsvpCutoverChecks> {
   if (!deps.existsSync(input.legacyRoot)) {
     return {
       launchAgentInactive: true,
@@ -312,18 +344,23 @@ async function buildChecks(input: CheckRsvpCutoverInput, deps: ReturnType<typeof
     }
   }
 
-  const launchAgentState = await (deps.getLaunchAgentState ?? defaultLaunchAgentState)({
-    label: LEGACY_LAUNCH_AGENT_LABEL,
-    legacyRoot: input.legacyRoot,
-  })
-  const processState = await (deps.getLegacyProcessState ?? defaultLegacyProcessState)({
-    legacyRoot: input.legacyRoot,
-  })
+  const launchAgentState = deps.getLaunchAgentState
+    ? await deps.getLaunchAgentState({
+      label: LEGACY_LAUNCH_AGENT_LABEL,
+      legacyRoot: input.legacyRoot,
+    })
+    : await defaultLaunchAgentState({
+      label: LEGACY_LAUNCH_AGENT_LABEL,
+      legacyRoot: input.legacyRoot,
+    }, deps)
+  const processState = deps.getLegacyProcessState
+    ? await deps.getLegacyProcessState({ legacyRoot: input.legacyRoot })
+    : await defaultLegacyProcessState({ legacyRoot: input.legacyRoot }, deps)
   const configInactive = legacyConfigSendInactive(input.legacyRoot, deps)
   const liveInactive = !launchAgentState.loaded && !processState.running && configInactive
-  const nativeCredential = await (deps.checkNativeBlueBubblesCredential ?? defaultNativeBlueBubblesCredentialHealth)({
-    agent: input.agent,
-  })
+  const nativeCredential = deps.checkNativeBlueBubblesCredential
+    ? await deps.checkNativeBlueBubblesCredential({ agent: input.agent })
+    : await defaultNativeBlueBubblesCredentialHealth({ agent: input.agent }, deps)
   return {
     launchAgentInactive: !launchAgentState.loaded,
     legacyProcessInactive: !processState.running,
@@ -359,7 +396,7 @@ export async function checkRsvpCutover(input: CheckRsvpCutoverInput): Promise<Rs
 function writeRollbackManifest(input: {
   legacyRoot: string
   action: RsvpCutoverAction
-  deps: ReturnType<typeof normalizeDeps>
+  deps: NormalizedRsvpCutoverDeps
   rollback: Partial<RsvpCutoverRollback>
 }): RsvpCutoverRollback {
   const manifestPath = path.join(rollbackDir(input.legacyRoot, input.deps.now()), `${input.action}-rollback.json`)
@@ -378,7 +415,7 @@ function writeRollbackManifest(input: {
   return rollback
 }
 
-async function retireLegacySendConfig(input: RunRsvpCutoverInput, deps: ReturnType<typeof normalizeDeps>): Promise<RsvpCutoverRollback> {
+async function retireLegacySendConfig(input: RunRsvpCutoverInput, deps: NormalizedRsvpCutoverDeps): Promise<RsvpCutoverRollback> {
   const configPath = path.join(input.legacyRoot, "config.json")
   const backupPath = path.join(rollbackDir(input.legacyRoot, deps.now()), "config.json")
   deps.mkdirSync(path.dirname(backupPath))
@@ -401,18 +438,30 @@ async function retireLegacySendConfig(input: RunRsvpCutoverInput, deps: ReturnTy
   })
 }
 
-async function quarantineLaunchAgent(input: RunRsvpCutoverInput, deps: ReturnType<typeof normalizeDeps>): Promise<RsvpCutoverRollback> {
-  const state = await (deps.getLaunchAgentState ?? defaultLaunchAgentState)({
-    label: LEGACY_LAUNCH_AGENT_LABEL,
-    legacyRoot: input.legacyRoot,
-  })
+async function quarantineLaunchAgent(input: RunRsvpCutoverInput, deps: NormalizedRsvpCutoverDeps): Promise<RsvpCutoverRollback> {
+  const state = deps.getLaunchAgentState
+    ? await deps.getLaunchAgentState({
+      label: LEGACY_LAUNCH_AGENT_LABEL,
+      legacyRoot: input.legacyRoot,
+    })
+    : await defaultLaunchAgentState({
+      label: LEGACY_LAUNCH_AGENT_LABEL,
+      legacyRoot: input.legacyRoot,
+    }, deps)
   const candidates = launchAgentPlistCandidates(input.legacyRoot, state, deps)
   const plistPath = candidates[0]
-  await (deps.unloadLaunchAgent ?? defaultUnloadLaunchAgent)({
-    label: LEGACY_LAUNCH_AGENT_LABEL,
-    legacyRoot: input.legacyRoot,
-    ...(plistPath ? { plistPath } : {}),
-  })
+  if (deps.unloadLaunchAgent) {
+    await deps.unloadLaunchAgent({
+      label: LEGACY_LAUNCH_AGENT_LABEL,
+      legacyRoot: input.legacyRoot,
+      ...(plistPath ? { plistPath } : {}),
+    })
+  } else {
+    await defaultUnloadLaunchAgent({
+      label: LEGACY_LAUNCH_AGENT_LABEL,
+      ...(plistPath ? { plistPath } : {}),
+    }, deps)
+  }
   let backupPath = ""
   if (plistPath) {
     backupPath = path.join(rollbackDir(input.legacyRoot, deps.now()), path.basename(plistPath))
