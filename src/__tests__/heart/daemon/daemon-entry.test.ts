@@ -30,7 +30,7 @@ vi.mock("../../../heart/provider-credentials", async () => {
   }
 })
 
-const { habitSchedulerOptionsMock, habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock, habitSchedulerListJobsMock, habitSchedulerTriggerJobMock } = vi.hoisted(() => ({
+const { habitSchedulerOptionsMock, habitSchedulerStartMock, habitSchedulerStopMock, habitSchedulerWatchMock, habitSchedulerStopWatchMock, habitSchedulerStartPeriodicReconciliationMock, habitSchedulerListJobsMock, habitSchedulerGetDegradedHabitsMock, habitSchedulerTriggerJobMock } = vi.hoisted(() => ({
   habitSchedulerOptionsMock: vi.fn(),
   habitSchedulerStartMock: vi.fn(),
   habitSchedulerStopMock: vi.fn(),
@@ -38,7 +38,18 @@ const { habitSchedulerOptionsMock, habitSchedulerStartMock, habitSchedulerStopMo
   habitSchedulerStopWatchMock: vi.fn(),
   habitSchedulerStartPeriodicReconciliationMock: vi.fn(),
   habitSchedulerListJobsMock: vi.fn(),
+  habitSchedulerGetDegradedHabitsMock: vi.fn(() => [] as Array<{ name: string; reason: string }>),
   habitSchedulerTriggerJobMock: vi.fn(),
+}))
+
+const { awaitSchedulerOptionsMock, awaitSchedulerStartMock, awaitSchedulerStopMock, awaitSchedulerWatchMock, awaitSchedulerStopWatchMock, awaitSchedulerStartPeriodicReconciliationMock, awaitSchedulerGetDegradedAwaitsMock } = vi.hoisted(() => ({
+  awaitSchedulerOptionsMock: vi.fn(),
+  awaitSchedulerStartMock: vi.fn(),
+  awaitSchedulerStopMock: vi.fn(),
+  awaitSchedulerWatchMock: vi.fn(),
+  awaitSchedulerStopWatchMock: vi.fn(),
+  awaitSchedulerStartPeriodicReconciliationMock: vi.fn(),
+  awaitSchedulerGetDegradedAwaitsMock: vi.fn(() => [] as Array<{ name: string; reason: string }>),
 }))
 
 const { migrateHabitsFromTaskSystemMock } = vi.hoisted(() => ({
@@ -56,7 +67,22 @@ vi.mock("../../../heart/habits/habit-scheduler", () => ({
     stopWatching = habitSchedulerStopWatchMock
     startPeriodicReconciliation = habitSchedulerStartPeriodicReconciliationMock
     listJobs = habitSchedulerListJobsMock
+    getDegradedHabits = habitSchedulerGetDegradedHabitsMock
     triggerJob = habitSchedulerTriggerJobMock
+  },
+}))
+
+vi.mock("../../../heart/awaiting/await-scheduler", () => ({
+  AwaitScheduler: class MockAwaitScheduler {
+    constructor(public options: unknown) {
+      awaitSchedulerOptionsMock(options)
+    }
+    start = awaitSchedulerStartMock
+    stop = awaitSchedulerStopMock
+    watchForChanges = awaitSchedulerWatchMock
+    stopWatching = awaitSchedulerStopWatchMock
+    startPeriodicReconciliation = awaitSchedulerStartPeriodicReconciliationMock
+    getDegradedAwaits = awaitSchedulerGetDegradedAwaitsMock
   },
 }))
 
@@ -161,6 +187,8 @@ describe("daemon entrypoint", () => {
       },
     })
     habitSchedulerListJobsMock.mockReturnValue([])
+    habitSchedulerGetDegradedHabitsMock.mockReturnValue([])
+    awaitSchedulerGetDegradedAwaitsMock.mockReturnValue([])
     habitSchedulerTriggerJobMock.mockResolvedValue({ ok: false, message: "unhandled habit trigger" })
   })
 
@@ -177,7 +205,17 @@ describe("daemon entrypoint", () => {
     habitSchedulerStopWatchMock.mockReset()
     habitSchedulerStartPeriodicReconciliationMock.mockReset()
     habitSchedulerListJobsMock.mockReset()
+    habitSchedulerGetDegradedHabitsMock.mockReset()
+    habitSchedulerGetDegradedHabitsMock.mockReturnValue([])
     habitSchedulerTriggerJobMock.mockReset()
+    awaitSchedulerOptionsMock.mockReset()
+    awaitSchedulerStartMock.mockReset()
+    awaitSchedulerStopMock.mockReset()
+    awaitSchedulerWatchMock.mockReset()
+    awaitSchedulerStopWatchMock.mockReset()
+    awaitSchedulerStartPeriodicReconciliationMock.mockReset()
+    awaitSchedulerGetDegradedAwaitsMock.mockReset()
+    awaitSchedulerGetDegradedAwaitsMock.mockReturnValue([])
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     createMcpStatusCanaryProbeMock.mockReset()
@@ -620,6 +658,31 @@ describe("daemon entrypoint", () => {
     await vi.waitFor(() => expect(habitSchedulerStartMock).toHaveBeenCalled())
     // Migration should be called before scheduler start
     expect(migrateHabitsFromTaskSystemMock).toHaveBeenCalled()
+    expect(habitSchedulerOptionsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ execForVerify: expect.any(Function) }),
+    )
+    const habitSchedulerOptions = habitSchedulerOptionsMock.mock.calls[0][0] as {
+      osCronManager: { ownsLabel: (label: string) => boolean }
+    }
+    expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.heartbeat")).toBe(true)
+    expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.await.vendor-reply")).toBe(false)
+    expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.other.heartbeat")).toBe(false)
+    await vi.waitFor(() => expect(awaitSchedulerOptionsMock).toHaveBeenCalled())
+    const awaitSchedulerOptions = awaitSchedulerOptionsMock.mock.calls[0][0] as {
+      osCronManager: { ownsLabel: (label: string) => boolean }
+    }
+    expect(awaitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.await.vendor-reply")).toBe(true)
+    expect(awaitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.heartbeat")).toBe(false)
+    habitSchedulerGetDegradedHabitsMock.mockReturnValueOnce([
+      { name: "heartbeat", reason: "cron registration failed — using timer fallback" },
+    ])
+    awaitSchedulerGetDegradedAwaitsMock.mockReturnValueOnce([
+      { name: "vendor-reply", reason: "cron registration failed — using timer fallback" },
+    ])
+    expect(daemonOptions.scheduler.listDegradedJobs()).toEqual([
+      { id: "habit:heartbeat", reason: "cron registration failed — using timer fallback" },
+      { id: "await:vendor-reply", reason: "cron registration failed — using timer fallback" },
+    ])
     habitSchedulerTriggerJobMock.mockResolvedValueOnce({
       ok: true,
       message: "triggered habit slugger:heartbeat:cadence",

@@ -44,6 +44,7 @@ describe("daemon command plane branches", () => {
 
     const scheduler = {
       listJobs: vi.fn(() => []),
+      listDegradedJobs: vi.fn(() => []),
       triggerJob: vi.fn(async (jobId: string) => ({ ok: true, message: `triggered ${jobId}` })),
       reconcile: vi.fn(async () => undefined),
       recordTaskRun: vi.fn(async (_agent: string, _taskId: string) => undefined),
@@ -570,6 +571,57 @@ describe("daemon command plane branches", () => {
     expect(status.data).toEqual(expect.objectContaining({
       overview: expect.objectContaining({ health: "warn" }),
       healthChecks: [canaryFailure],
+    }))
+  })
+
+  it("overlays degraded scheduler jobs into daemon status before health monitor runs", async () => {
+    const socketPath = tmpSocketPath("daemon-status-cron-degraded")
+    const isolatedBundles = path.join(os.tmpdir(), `daemon-status-cron-degraded-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    fs.mkdirSync(isolatedBundles, { recursive: true })
+    const { daemon, scheduler, healthMonitor } = make(socketPath, isolatedBundles)
+    healthMonitor.getLastResults.mockReturnValueOnce([])
+    scheduler.listDegradedJobs.mockReturnValueOnce([
+      { id: "habit:rsvp-ari-rachel", reason: "cron registration failed — using timer fallback" },
+    ])
+
+    const status = await daemon.handleCommand({ kind: "daemon.status" })
+
+    expect(status.summary).toContain("health=warn")
+    expect(status.summary).toContain("health-check:cron-health:warn")
+    expect(status.data).toEqual(expect.objectContaining({
+      overview: expect.objectContaining({ health: "warn" }),
+      healthChecks: [
+        {
+          name: "cron-health",
+          status: "warn",
+          message: "cron jobs degraded; timer fallback active: habit:rsvp-ari-rachel (cron registration failed — using timer fallback)",
+        },
+      ],
+    }))
+  })
+
+  it("replaces cached cron-health status when scheduler jobs are degraded", async () => {
+    const socketPath = tmpSocketPath("daemon-status-cron-health-replace")
+    const isolatedBundles = path.join(os.tmpdir(), `daemon-status-cron-health-replace-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    fs.mkdirSync(isolatedBundles, { recursive: true })
+    const { daemon, scheduler, healthMonitor } = make(socketPath, isolatedBundles)
+    healthMonitor.getLastResults.mockReturnValueOnce([
+      { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
+    ])
+    scheduler.listDegradedJobs.mockReturnValueOnce([
+      { id: "await:vendor-reply", reason: "cron registration failed — using timer fallback" },
+    ])
+
+    const status = await daemon.handleCommand({ kind: "daemon.status" })
+
+    expect(status.data).toEqual(expect.objectContaining({
+      healthChecks: [
+        {
+          name: "cron-health",
+          status: "warn",
+          message: "cron jobs degraded; timer fallback active: await:vendor-reply (cron registration failed — using timer fallback)",
+        },
+      ],
     }))
   })
 

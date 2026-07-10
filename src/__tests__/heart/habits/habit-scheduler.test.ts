@@ -510,6 +510,34 @@ describe("HabitScheduler", () => {
       expect(onHabitFire).not.toHaveBeenCalled()
     })
 
+    it("rejects habit names in the reserved await cron namespace", () => {
+      const readdir = vi.fn(() => ["await.vendor-reply.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockReturnValueOnce({
+        ...makeHeartbeatHabit(),
+        name: "await.vendor-reply",
+        title: "Await Vendor Reply",
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(cronManager.sync).toHaveBeenCalledWith([])
+      expect(scheduler.getParseErrors()).toContainEqual({
+        file: "await.vendor-reply.md",
+        error: "habit names cannot start with reserved cron namespace 'await.'",
+      })
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
     it("does not fire paused habits even if overdue", () => {
       const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
       const readdir = vi.fn(() => ["weekly-review.md"])
@@ -975,6 +1003,32 @@ describe("HabitScheduler", () => {
       expect(overdue[0].name).toBe("heartbeat")
       // elapsedMs should be Infinity for null lastRun
       expect(overdue[0].elapsedMs).toBe(Infinity)
+    })
+
+    it("excludes habit names in the reserved await cron namespace from overdue checks", () => {
+      const readdir = vi.fn(() => ["await.vendor-reply.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockReturnValueOnce({
+        ...makeHeartbeatHabit(),
+        name: "await.vendor-reply",
+        title: "Await Vendor Reply",
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      expect(scheduler.listOverdueHabits()).toEqual([])
+      expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()
+      expect(scheduler.getParseErrors()).toContainEqual({
+        file: "await.vendor-reply.md",
+        error: "habit names cannot start with reserved cron namespace 'await.'",
+      })
     })
 
     it("excludes paused habits from overdue list", () => {

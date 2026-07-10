@@ -63,6 +63,31 @@ describe("HealthMonitor", () => {
     expect(alertSink).not.toHaveBeenCalled()
   })
 
+  it("warns when scheduler jobs are only covered by timer fallback", async () => {
+    const monitor = new HealthMonitor({
+      processManager: {
+        listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+      },
+      scheduler: {
+        listJobs: () => [{ id: "slugger:rsvp-ari-rachel:cadence", lastRun: null }],
+        listDegradedJobs: () => [{
+          id: "habit:rsvp-ari-rachel",
+          reason: "cron registration failed — using timer fallback",
+        }],
+      },
+    })
+
+    await expect(monitor.runChecks()).resolves.toEqual([
+      { name: "agent-processes", status: "ok", message: "all managed agents running" },
+      {
+        name: "cron-health",
+        status: "warn",
+        message: "cron jobs degraded; timer fallback active: habit:rsvp-ari-rachel (cron registration failed — using timer fallback)",
+      },
+      { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
+    ])
+  })
+
   it("uses the default no-op alert sink when critical status is detected", async () => {
     const monitor = new HealthMonitor({
       processManager: {

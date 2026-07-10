@@ -19,6 +19,7 @@ export interface HealthMonitorOptions {
   }
   scheduler: {
     listJobs: () => Array<{ id: string; lastRun: string | null }>
+    listDegradedJobs?: () => Array<{ id: string; reason: string }>
   }
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number
@@ -140,11 +141,19 @@ export class HealthMonitor {
     }
 
     const jobs = this.scheduler.listJobs()
-    const neverRan = jobs.filter((job) => !job.lastRun)
-    const firstRunSuffix = neverRan.length > 0
-      ? `; pending first run: ${neverRan.map((job) => job.id).join(", ")}`
-      : ""
-    results.push({ name: "cron-health", status: "ok", message: `cron jobs are healthy${firstRunSuffix}` })
+    const degradedJobs = this.scheduler.listDegradedJobs?.() ?? []
+    if (degradedJobs.length > 0) {
+      const degradedSummary = degradedJobs
+        .map((job) => `${job.id} (${job.reason})`)
+        .join(", ")
+      results.push({ name: "cron-health", status: "warn", message: `cron jobs degraded; timer fallback active: ${degradedSummary}` })
+    } else {
+      const neverRan = jobs.filter((job) => !job.lastRun)
+      const firstRunSuffix = neverRan.length > 0
+        ? `; pending first run: ${neverRan.map((job) => job.id).join(", ")}`
+        : ""
+      results.push({ name: "cron-health", status: "ok", message: `cron jobs are healthy${firstRunSuffix}` })
+    }
 
     const diskPercent = this.diskUsagePercent()
     if (diskPercent >= 90) {

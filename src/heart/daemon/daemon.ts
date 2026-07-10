@@ -402,6 +402,7 @@ export interface DaemonProcessManagerLike {
 
 export interface DaemonSchedulerLike {
   listJobs(): DaemonCronJobSummary[]
+  listDegradedJobs?: () => Array<{ id: string; reason: string }>
   triggerJob(jobId: string): Promise<{ ok: boolean; message: string }>
   triggerHabitJob?(jobId: string): Promise<{ ok: boolean; message: string }>
   start?: () => void
@@ -837,7 +838,7 @@ export class OuroDaemon {
     const snapshots = this.processManager.listAgentSnapshots()
     const workers = buildWorkerRows(snapshots)
     const senses = this.senseManager?.listSenseRows() ?? []
-    const healthChecks = this.healthMonitor.getLastResults?.() ?? []
+    const healthChecks = this.overlaySchedulerHealth(this.healthMonitor.getLastResults?.() ?? [])
     const repoRoot = getRepoRoot()
     const sync = listBundleSyncRows({ bundlesRoot: this.bundlesRoot })
     const agents = listAllBundleAgents({ bundlesRoot: this.bundlesRoot })
@@ -870,6 +871,27 @@ export class OuroDaemon {
       agents,
       ...(providers.length > 0 ? { providers } : {}),
     }
+  }
+
+  private overlaySchedulerHealth(healthChecks: DaemonHealthResult[]): DaemonHealthResult[] {
+    const degradedJobs = this.scheduler.listDegradedJobs?.() ?? []
+    if (degradedJobs.length === 0) return healthChecks
+
+    const cronHealth: DaemonHealthResult = {
+      name: "cron-health",
+      status: "warn",
+      message: `cron jobs degraded; timer fallback active: ${degradedJobs
+        .map((job) => `${job.id} (${job.reason})`)
+        .join(", ")}`,
+    }
+    const next = healthChecks.map((check) => ({ ...check }))
+    const existingIndex = next.findIndex((check) => check.name === "cron-health")
+    if (existingIndex === -1) {
+      next.push(cronHealth)
+    } else {
+      next[existingIndex] = cronHealth
+    }
+    return next
   }
 
   async start(): Promise<void> {

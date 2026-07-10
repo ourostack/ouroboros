@@ -621,16 +621,15 @@ describe("agent entrypoint", () => {
     vi.resetModules()
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
+    const exitError = new Error("process.exit")
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => { throw exitError }) as never)
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "agent-entry.js"])
 
-    await import("../../heart/agent-entry")
-    await vi.waitFor(() => {
-      expect(exitSpy).toHaveBeenCalledWith(1)
-      expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining("Missing required --agent"),
-      )
-    })
+    await expect(import("../../heart/agent-entry")).rejects.toBe(exitError)
+    expect(exitSpy).toHaveBeenCalledWith(1)
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("Missing required --agent"),
+    )
 
     argvSpy.mockRestore()
     exitSpy.mockRestore()

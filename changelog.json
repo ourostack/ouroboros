@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.700",
+      "changes": [
+        "Scope macOS habit and await LaunchAgent cleanup to their own labels so await reconciliation cannot remove active habit plists.",
+        "Verify production OS cron registration for habits and awaits and surface timer fallback as daemon health warning instead of silent ok."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.699",
       "changes": [
         "Populate the daemon provider credential cache during selected-provider warm-up so status and context-loss Sentinel report the same provider truth as live provider checks.",
