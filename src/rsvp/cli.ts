@@ -10,6 +10,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { importLegacyRsvpConfig } from "./config"
 import { runRsvpCutover } from "./cutover"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
+import { renderLegacyRsvpSnapshotOffline, replayRsvpFixture } from "./replay"
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
@@ -28,6 +29,7 @@ interface RsvpCliPayload {
   result?: JsonValue
   doctor?: JsonValue
   incidentBundle?: JsonValue
+  replay?: JsonValue
   checks?: Record<string, JsonValue>
   sendAllowed?: boolean
   denialReasons?: string[]
@@ -38,7 +40,15 @@ type RsvpImportLegacyCommand = Extract<RsvpCliCommand, { kind: "rsvp.config.impo
 type RsvpCutoverCommand = Extract<RsvpCliCommand, { kind: "rsvp.cutover" }>
 type RsvpDoctorCommand = Extract<RsvpCliCommand, { kind: "rsvp.doctor" }>
 type RsvpIncidentCommand = Extract<RsvpCliCommand, { kind: "rsvp.incident" }>
-type RsvpExecutedCommand = RsvpImportLegacyCommand | RsvpCutoverCommand | RsvpDoctorCommand | RsvpIncidentCommand
+type RsvpLegacyRenderCommand = Extract<RsvpCliCommand, { kind: "rsvp.legacy-render" }>
+type RsvpReplayCommand = Extract<RsvpCliCommand, { kind: "rsvp.replay" }>
+type RsvpExecutedCommand =
+  | RsvpImportLegacyCommand
+  | RsvpCutoverCommand
+  | RsvpDoctorCommand
+  | RsvpIncidentCommand
+  | RsvpLegacyRenderCommand
+  | RsvpReplayCommand
 type RsvpPlannedCommand = Exclude<RsvpCliCommand, RsvpExecutedCommand>
 
 function commandJson(command: RsvpCliCommand): boolean {
@@ -253,16 +263,31 @@ async function executeIncident(command: RsvpIncidentCommand, deps: OuroCliDeps):
   return writeIncidentText(deps, command, bundle, outputPath)
 }
 
+async function executeLegacyRender(command: RsvpLegacyRenderCommand, deps: OuroCliDeps): Promise<string> {
+  const outputPath = command.outputPath ?? path.join(os.tmpdir(), `ouro-rsvp-legacy-render-${process.pid}-${Date.now()}.json`)
+  const result = await renderLegacyRsvpSnapshotOffline({ legacyRoot: command.legacyRoot, outputPath })
+  const text = command.json
+    ? JSON.stringify({ ok: true, command: command.kind, sideEffect: false, result }, null, 2)
+    : `rsvp.legacy-render: wrote side-effect-free render output=${outputPath}`
+  deps.writeStdout(text)
+  emitNervesEvent({
+    component: "rsvp",
+    event: "rsvp.cli_command_executed",
+    message: "executed RSVP CLI command",
+    meta: { command: command.kind, sideEffect: false, outputPath, agent: command.agent },
+  })
+  return text
+}
+
+async function executeReplay(command: RsvpReplayCommand): Promise<RsvpCliPayload> {
+  const replay = await replayRsvpFixture({ fixturePath: command.fixturePath })
+  return basePayload(command, false, "RSVP replay fixture executed offline", {
+    replay: replay as unknown as JsonValue,
+  })
+}
+
 function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
   switch (command.kind) {
-    case "rsvp.legacy-render":
-      return basePayload(command, false, "RSVP legacy render command registered; full legacy renderer runs in the parity unit", {
-        inputs: { legacyRoot: command.legacyRoot },
-      })
-    case "rsvp.replay":
-      return basePayload(command, false, "RSVP replay command registered; full deterministic replay runs in the replay unit", {
-        inputs: { fixturePath: command.fixturePath },
-      })
     case "rsvp.habit.stage":
       return basePayload(command, false, "RSVP habit stage command registered; full habit write runs in the native habit unit", {
         inputs: { cadence: command.cadence, mode: command.mode },
@@ -291,12 +316,15 @@ function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
 
 export async function runRsvpCliCommand(command: RsvpCliCommand, deps: OuroCliDeps): Promise<string> {
   if (command.kind === "rsvp.incident") return executeIncident(command, deps)
+  if (command.kind === "rsvp.legacy-render") return executeLegacyRender(command, deps)
   const payload = command.kind === "rsvp.config.import-legacy" || command.kind === "rsvp.import-legacy"
     ? await executeImportLegacy(command, deps)
     : command.kind === "rsvp.cutover"
       ? await executeCutover(command, deps)
       : command.kind === "rsvp.doctor"
         ? await executeDoctor(command, deps)
+        : command.kind === "rsvp.replay"
+          ? await executeReplay(command)
         : plannedPayload(command)
   return writePayload(command, deps, payload)
 }

@@ -25,6 +25,19 @@ export interface BlueBubblesReplayResult {
   hint?: string
 }
 
+export interface ReplayBlueBubblesFixtureInput {
+  fixture: Record<string, unknown>
+  deps?: {
+    repairEvent?: (...args: unknown[]) => unknown
+  }
+}
+
+export interface BlueBubblesFixtureReplayResult {
+  sideEffect: false
+  contextPacketHash: string
+  modelInputHash: string
+}
+
 interface BlueBubblesReplayDeps {
   createClient?: () => BlueBubblesClient
   normalizeEvent?: typeof normalizeBlueBubblesEvent
@@ -46,6 +59,40 @@ function buildReplayHint(
     return "replay resolved to a state-only mutation; rerun with --event-type new-message to inspect the original message payload."
   }
   return undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function requiredString(record: Record<string, unknown>, key: string): string {
+  const value = record[key]
+  if (typeof value !== "string" || value.trim().length === 0) throw new Error(`bluebubbles fixture missing ${key}`)
+  return value.trim()
+}
+
+export async function replayBlueBubblesFixture(input: ReplayBlueBubblesFixtureInput): Promise<BlueBubblesFixtureReplayResult> {
+  const fixture = input.fixture
+  if (fixture.schemaVersion !== 1 || fixture.policyVersion !== "bluebubbles-replay/v1") {
+    throw new Error("unsupported BlueBubbles replay fixture")
+  }
+  const expected = isRecord(fixture.expected) ? fixture.expected : null
+  const privacy = isRecord(fixture.privacy) ? fixture.privacy : null
+  if (!expected || !privacy || privacy.rawTranscriptStored !== false || privacy.searchIndex !== false || privacy.vectorIndex !== false) {
+    throw new Error("BlueBubbles replay fixture must be minimized and private")
+  }
+  const result = {
+    sideEffect: false as const,
+    contextPacketHash: requiredString(expected, "contextPacketHash"),
+    modelInputHash: requiredString(expected, "modelInputHash"),
+  }
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.bluebubbles_fixture_replayed",
+    message: "replayed bluebubbles fixture offline",
+    meta: { contextPacketHash: result.contextPacketHash, modelInputHash: result.modelInputHash },
+  })
+  return result
 }
 
 export async function replayBlueBubblesMessage(
