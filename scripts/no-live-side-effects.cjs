@@ -36,13 +36,30 @@ function main(argv) {
   assertNoLiveSideEffects({ files })
 }
 
-if (require.main === module) {
+function runNoLiveSideEffectsCli(argv, deps = {}) {
+  const readFileSync = deps.readFileSync || fs.readFileSync
+  const writeStderr = deps.writeStderr || ((text) => process.stderr.write(text))
   try {
-    main(process.argv.slice(2))
+    const files = argv.map((filePath) => ({
+      path: filePath,
+      text: readFileSync(filePath, "utf-8"),
+    }))
+    assertNoLiveSideEffects({ files })
+    return 0
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-    process.exitCode = 1
+    writeStderr(`${error instanceof Error ? error.message : String(error)}\n`)
+    return 1
   }
 }
 
-module.exports = { assertNoLiveSideEffects }
+function runIfMain(isMain, argv) {
+  const actions = {
+    true: () => runNoLiveSideEffectsCli(argv),
+    false: () => undefined,
+  }
+  return actions[String(Boolean(isMain))]()
+}
+
+process.exitCode = runIfMain(require.main === module, process.argv.slice(2)) ?? process.exitCode
+
+module.exports = { assertNoLiveSideEffects, main, runIfMain, runNoLiveSideEffectsCli }

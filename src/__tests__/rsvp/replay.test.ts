@@ -115,4 +115,105 @@ describe("RSVP offline replay", () => {
     expect(fs.readdirSync(legacyRoot).map((name) => [name, fs.readFileSync(path.join(legacyRoot, name), "utf-8")])).toEqual(before)
     expect(forbiddenLegacyHelper).not.toHaveBeenCalled()
   })
+
+  it("rejects unsupported or non-private replay fixture manifests", async () => {
+    const fixtureRoot = makeTempRoot("rsvp-replay-invalid-")
+    const fixturePath = writeFixture(fixtureRoot)
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf-8"))
+
+    fs.writeFileSync(fixturePath, JSON.stringify({ ...fixture, policyVersion: "old" }), "utf-8")
+    await expect(replayRsvpFixture({ fixturePath })).rejects.toThrow("unsupported RSVP replay fixture")
+
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      ...fixture,
+      privacy: { rawLiveTranscriptStored: true, searchIndex: false, vectorIndex: false },
+    }), "utf-8")
+    await expect(replayRsvpFixture({ fixturePath })).rejects.toThrow("minimized and private")
+
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      ...fixture,
+      privacy: null,
+    }), "utf-8")
+    await expect(replayRsvpFixture({ fixturePath })).rejects.toThrow("minimized and private")
+
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      ...fixture,
+      expected: {},
+    }), "utf-8")
+    await expect(replayRsvpFixture({ fixturePath })).rejects.toThrow("expected hashes")
+
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      ...fixture,
+      expected: null,
+    }), "utf-8")
+    await expect(replayRsvpFixture({ fixturePath })).rejects.toThrow("expected hashes")
+
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      ...fixture,
+      expected: { contextPacketHash: "sha256:fixture-context" },
+    }), "utf-8")
+    await expect(replayRsvpFixture({ fixturePath })).rejects.toThrow("expected hashes")
+
+    fs.writeFileSync(fixturePath, "[]", "utf-8")
+    await expect(replayRsvpFixture({ fixturePath })).rejects.toThrow("must be an object")
+  })
+
+  it("replays empty pending fixtures without indexing or live calls", async () => {
+    const fixtureRoot = makeTempRoot("rsvp-replay-empty-")
+    const fixturePath = writeFixture(fixtureRoot)
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf-8"))
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      ...fixture,
+      snapshot: { snapshotId: "snap_empty", pendingGuests: [] },
+    }), "utf-8")
+
+    const result = await replayRsvpFixture({ fixturePath })
+
+    expect(result.answer).toBe("No pending guests in the replay fixture.")
+    expect(result.indexPolicy).toEqual({ search: false, vector: false })
+
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      ...fixture,
+      snapshot: null,
+    }), "utf-8")
+    const noSnapshotResult = await replayRsvpFixture({ fixturePath })
+
+    expect(noSnapshotResult.answer).toBe("No pending guests in the replay fixture.")
+  })
+
+  it("supports legacy rows with displayName and status fields", async () => {
+    const legacyRoot = makeTempRoot("rsvp-legacy-display-")
+    const outputPath = path.join(makeTempRoot("rsvp-legacy-display-output-"), "legacy-render.json")
+    fs.writeFileSync(path.join(legacyRoot, "guests.json"), JSON.stringify({
+      guests: {
+        pending_1: { displayName: "Display Pending", status: "pending" },
+        accepted_1: { displayName: "Accepted Guest", status: "accepted" },
+      },
+    }), "utf-8")
+
+    const result = await renderLegacyRsvpSnapshotOffline({ legacyRoot, outputPath })
+
+    expect(result.pendingGuests).toEqual(["Display Pending"])
+  })
+
+  it("handles directories, first-name-only rows, nameless rows, and missing legacy guest maps", async () => {
+    const legacyRoot = makeTempRoot("rsvp-legacy-branches-")
+    const outputPath = path.join(makeTempRoot("rsvp-legacy-branches-output-"), "legacy-render.json")
+    fs.mkdirSync(path.join(legacyRoot, "nested"), { recursive: true })
+    fs.writeFileSync(path.join(legacyRoot, "guests.json"), JSON.stringify({
+      guests: {
+        pending_1: { first_name: "FirstOnly", attending_status: "pending" },
+        pending_2: { attending_status: "pending" },
+      },
+    }), "utf-8")
+
+    const result = await renderLegacyRsvpSnapshotOffline({ legacyRoot, outputPath })
+
+    expect(result.pendingGuests).toEqual(["FirstOnly"])
+
+    fs.writeFileSync(path.join(legacyRoot, "guests.json"), "[]", "utf-8")
+    const emptyResult = await renderLegacyRsvpSnapshotOffline({ legacyRoot, outputPath })
+
+    expect(emptyResult.pendingGuests).toEqual([])
+  })
 })

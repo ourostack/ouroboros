@@ -502,4 +502,48 @@ describe("BlueBubbles replay helper", () => {
     })
     expect(repairEvent).not.toHaveBeenCalled()
   })
+
+  it("rejects stale or non-private BlueBubbles replay fixtures before repair", async () => {
+    const { replayBlueBubblesFixture } = await import("../../../senses/bluebubbles/replay")
+
+    await expect(replayBlueBubblesFixture({
+      fixture: { schemaVersion: 1, policyVersion: "old" },
+    })).rejects.toThrow("unsupported BlueBubbles replay fixture")
+
+    await expect(replayBlueBubblesFixture({
+      fixture: {
+        schemaVersion: 1,
+        policyVersion: "bluebubbles-replay/v1",
+        expected: { contextPacketHash: "sha256:context-fixture", modelInputHash: "sha256:model-input-fixture" },
+        privacy: { rawTranscriptStored: true, searchIndex: false, vectorIndex: false },
+      },
+    })).rejects.toThrow("minimized and private")
+
+    await expect(replayBlueBubblesFixture({
+      fixture: {
+        schemaVersion: 1,
+        policyVersion: "bluebubbles-replay/v1",
+        expected: {},
+        privacy: { rawTranscriptStored: false, searchIndex: false, vectorIndex: false },
+      },
+    })).rejects.toThrow("contextPacketHash")
+
+    await expect(replayBlueBubblesFixture({
+      fixture: {
+        schemaVersion: 1,
+        policyVersion: "bluebubbles-replay/v1",
+        expected: null,
+        privacy: { rawTranscriptStored: false, searchIndex: false, vectorIndex: false },
+      },
+    })).rejects.toThrow("minimized and private")
+
+    await expect(replayBlueBubblesFixture({
+      fixture: {
+        schemaVersion: 1,
+        policyVersion: "bluebubbles-replay/v1",
+        expected: { contextPacketHash: "sha256:context-fixture", modelInputHash: "sha256:model-input-fixture" },
+        privacy: null,
+      },
+    })).rejects.toThrow("minimized and private")
+  })
 })
