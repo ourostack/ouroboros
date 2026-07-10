@@ -274,22 +274,27 @@ describe("ouro rsvp CLI execution", () => {
   })
 
   it("writes explicit RSVP output files and supports text mode without daemon access", async () => {
+    const tmp = seedRsvpOperationalBundle()
     const outputPath = path.join(os.tmpdir(), `rsvp-cli-incident-${process.pid}-${Date.now()}.json`)
-    const deps = createMockDeps()
+    const deps = createMockDeps({ bundlesRoot: tmp.bundleRoot })
     try {
       const result = await runOuroCli(["rsvp", "incident", "--agent", "slugger", "--output", outputPath], deps)
+      const written = JSON.parse(fs.readFileSync(outputPath, "utf-8"))
 
-      expect(result).toBe("rsvp.incident: dry run agent=slugger")
-      expect(JSON.parse(fs.readFileSync(outputPath, "utf-8"))).toMatchObject({
-        ok: true,
-        command: "rsvp.incident",
-        sideEffect: false,
+      expect(result).toContain(outputPath)
+      expect(written).toMatchObject({
+        schemaVersion: 1,
         agent: "slugger",
+        sideEffect: false,
+        latestFetch: {
+          snapshotId: "snap_cli_latest",
+        },
       })
       expect(deps.writeStdout).toHaveBeenCalledWith(result)
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(outputPath, { force: true })
+      tmp.cleanup()
     }
   })
 
