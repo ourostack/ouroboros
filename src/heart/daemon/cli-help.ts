@@ -478,8 +478,8 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro rsvp incident --agent slugger --output /tmp/rsvp-incident.json",
   },
   "rsvp cutover": {
-    description: "Inspect, stage, verify, or roll back native RSVP cutover state against the legacy script",
-    usage: "ouro rsvp cutover [--agent <name>] --legacy-root <path> --action check|stage|verify|rollback [--output <path>] [--json]",
+    description: "Inspect or retire legacy RSVP sender state before native live send",
+    usage: "ouro rsvp cutover [--agent <name>] --legacy-root <path> --action check|quarantine-launchd|retire-legacy-send-config [--yes] [--output <path>] [--json]",
     example: "ouro rsvp cutover --agent slugger --legacy-root ~/Projects/rsvp-tracker --action check --json",
   },
   "rsvp legacy-render": {

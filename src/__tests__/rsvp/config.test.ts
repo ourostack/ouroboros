@@ -217,8 +217,15 @@ describe("native RSVP config", () => {
     const rawNativeConfig = fs.readFileSync(rsvpConfigPath(agentRoot), "utf-8")
     expect(rawNativeConfig).toContain("484532")
     expect(rawNativeConfig).toContain("any;+;wedding-chat")
+    expect(rawNativeConfig).toContain(legacyRoot)
     expect(rawNativeConfig).not.toContain("legacy-secret")
     expect(rawNativeConfig).not.toContain("secrets_path")
+    expect(readRsvpConfig(agentRoot)).toMatchObject({
+      ok: true,
+      config: {
+        cutover: { legacyRoot },
+      },
+    })
     expect(JSON.stringify(result)).not.toContain("legacy-secret")
   })
 
@@ -302,6 +309,8 @@ describe("native RSVP config", () => {
       { ...readyConfig(), bluebubblesRoute: { chatGuid: 42 } },
       { ...readyConfig(), bluebubblesRoute: { chatGuid: "chat", chatIdentifier: 42 } },
       { ...readyConfig(), bluebubblesRoute: { chatGuid: "chat", accountId: 42 } },
+      { ...readyConfig(), cutover: [] },
+      { ...readyConfig(), cutover: { legacyRoot: 42 } },
     ]
 
     for (const invalid of invalids) {

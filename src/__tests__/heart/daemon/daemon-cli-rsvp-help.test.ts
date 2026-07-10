@@ -77,6 +77,8 @@ describe("ouro rsvp CLI help", () => {
   it("documents explicit safety flags for commands that can mutate or send", () => {
     expect(getCommandHelp("rsvp config import-legacy")).toContain("--yes")
     expect(getCommandHelp("rsvp import-legacy")).toContain("--yes")
+    expect(getCommandHelp("rsvp cutover")).toContain("check|quarantine-launchd|retire-legacy-send-config")
+    expect(getCommandHelp("rsvp cutover")).toContain("--yes")
     expect(getCommandHelp("rsvp refresh")).toContain("--no-send")
     expect(getCommandHelp("rsvp refresh")).toContain("--allow-send")
     expect(getCommandHelp("rsvp smoke")).toContain("--allow-send")

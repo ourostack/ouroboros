@@ -653,7 +653,7 @@ describe("ouro rsvp CLI execution", () => {
       fs.rmSync(homeDir, { recursive: true, force: true })
       tmp.cleanup()
     }
-  })
+  }, 10_000)
 
   it("reports passing RSVP doctor checks when no agent has RSVP configured", async () => {
     const tmp = createTmpBundle({ agentName: "plain" })

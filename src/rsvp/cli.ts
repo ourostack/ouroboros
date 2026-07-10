@@ -12,8 +12,8 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { createBlueBubblesClient } from "../senses/bluebubbles/client"
 import type { BlueBubblesChatRef } from "../senses/bluebubbles/model"
 import { fetchAislePlannerRsvps } from "./aisleplanner-client"
-import { importLegacyRsvpConfig, readRsvpConfig, validateRsvpReadiness } from "./config"
-import { runRsvpCutover } from "./cutover"
+import { importLegacyRsvpConfig, readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig } from "./config"
+import { checkRsvpCutover, runRsvpCutover, type RsvpCutoverReport } from "./cutover"
 import { computeRsvpDelta, renderRsvpReport } from "./diff-renderer"
 import { stageRsvpHabit } from "./habit-stage"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
@@ -122,6 +122,70 @@ function fallbackReadRsvpConfig(agentRoot: string): ReturnType<typeof readRsvpCo
 
 function resolveRsvpConfig(agentRoot: string): ReturnType<typeof readRsvpConfig> {
   return readRsvpConfig(agentRoot) ?? fallbackReadRsvpConfig(agentRoot)
+}
+
+function localText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function defaultLegacyRoot(deps: OuroCliDeps): string {
+  return path.join(deps.homeDir ?? os.homedir(), "Projects", "rsvp-tracker")
+}
+
+function resolveCutoverLegacyRoot(config: RsvpNativeConfig, deps: OuroCliDeps): string | null {
+  const configured = localText(config.cutover?.legacyRoot)
+  if (configured) return configured
+  const fallback = defaultLegacyRoot(deps)
+  return fs.existsSync(path.join(fallback, "config.json")) ? fallback : null
+}
+
+async function checkLiveSendCutover(input: {
+  agent: string
+  config: RsvpNativeConfig
+  deps: OuroCliDeps
+}): Promise<RsvpCutoverReport | null> {
+  const legacyRoot = resolveCutoverLegacyRoot(input.config, input.deps)
+  if (!legacyRoot) return null
+  return checkRsvpCutover({
+    agent: input.agent,
+    legacyRoot,
+    ...(input.deps.rsvpCutoverDeps ? { deps: input.deps.rsvpCutoverDeps } : {}),
+  })
+}
+
+function blockedLiveSendPayload(
+  command: RsvpRefreshCommand | RsvpSmokeCommand,
+  message: string,
+  extra: Omit<Partial<RsvpCliPayload>, "ok" | "command" | "sideEffect" | "message" | "allowSend" | "sendAllowed" | "requires"> = {},
+): RsvpCliPayload {
+  return basePayload(command, false, message, {
+    ok: false,
+    allowSend: command.allowSend === true,
+    sendAllowed: false,
+    requires: "passing RSVP cutover check",
+    ...extra,
+  } as Omit<Partial<RsvpCliPayload>, "command" | "sideEffect" | "message">)
+}
+
+function cutoverPayload(cutover: RsvpCutoverReport | null): Record<string, JsonValue> {
+  if (!cutover) {
+    return {
+      cutover: {
+        ok: false,
+        sendAllowed: false,
+        denialReasons: ["no RSVP legacy root found for live-send cutover proof"],
+      },
+    }
+  }
+  return {
+    legacyRoot: cutover.legacyRoot,
+    cutover: {
+      ok: cutover.ok,
+      sendAllowed: cutover.sendAllowed,
+      checks: cutover.checks as unknown as JsonValue,
+      denialReasons: cutover.denialReasons,
+    },
+  }
 }
 
 function rsvpStateRoot(agentRoot: string): string {
@@ -525,7 +589,25 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
   const delta = computeRsvpDelta(previousSnapshot, currentSnapshot)
   const reportText = renderRsvpReport(delta)
   const outboundDecision = decideRsvpOutboundReport({ agentRoot, currentSnapshot, reportText })
-  const sendAllowed = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
+  const wantsLiveSend = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
+  if (wantsLiveSend) {
+    const cutover = await checkLiveSendCutover({
+      agent: command.agent,
+      config: configResult.config,
+      deps,
+    })
+    if (cutover?.sendAllowed !== true) {
+      return blockedLiveSendPayload(command, "RSVP live refresh send blocked by cutover gates", {
+        ...cutoverPayload(cutover),
+        refresh: {
+          snapshotId: currentSnapshot.snapshotId,
+          reportText,
+          outboundDecision: outboundDecision as unknown as JsonValue,
+        },
+      })
+    }
+  }
+  const sendAllowed = wantsLiveSend
   let delivery: JsonValue | undefined
   if (sendAllowed) {
     const sent = await createBlueBubblesClient().sendText({
@@ -604,7 +686,24 @@ async function executeSmoke(command: RsvpSmokeCommand, deps: OuroCliDeps): Promi
   const snapshot = readLatestSnapshot(agentRoot)
   const question = command.question ?? "who is pending?"
   const answer = queryRsvpSnapshot(snapshot, { query: question })
-  const sendAllowed = command.mode === "live" && command.allowSend === true
+  const wantsLiveSend = command.mode === "live" && command.allowSend === true
+  if (wantsLiveSend) {
+    const cutover = await checkLiveSendCutover({
+      agent: command.agent,
+      config: configResult.config,
+      deps,
+    })
+    if (cutover?.sendAllowed !== true) {
+      const blocked = blockedLiveSendPayload(command, "RSVP live smoke send blocked by cutover gates", {
+        ...cutoverPayload(cutover),
+        answer: answer.text,
+        result: answer as unknown as JsonValue,
+      })
+      if (command.replayOutputPath) writeJsonFile(command.replayOutputPath, blocked)
+      return blocked
+    }
+  }
+  const sendAllowed = wantsLiveSend
   let delivery: JsonValue | undefined
   if (sendAllowed) {
     const sent = await createBlueBubblesClient().sendText({

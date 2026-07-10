@@ -31,6 +31,9 @@ export interface RsvpNativeConfig {
     chatIdentifier?: string
     accountId?: string
   }
+  cutover?: {
+    legacyRoot: string
+  }
 }
 
 export type RsvpConfigReadResult =
@@ -152,6 +155,9 @@ function parseRsvpConfig(value: unknown): RsvpNativeConfig | null {
   if (!route || typeof route.chatGuid !== "string") return null
   if (route.chatIdentifier !== undefined && typeof route.chatIdentifier !== "string") return null
   if (route.accountId !== undefined && typeof route.accountId !== "string") return null
+  const cutover = value.cutover === undefined ? undefined : isRecord(value.cutover) ? value.cutover : null
+  if (cutover === null) return null
+  if (cutover && typeof cutover.legacyRoot !== "string") return null
   return value as unknown as RsvpNativeConfig
 }
 
@@ -368,6 +374,9 @@ export async function importLegacyRsvpConfig(input: ImportLegacyRsvpConfigInput)
     bluebubblesRoute: {
       chatGuid,
       ...(optionalText(bluebubbles?.account_id) ? { accountId: optionalText(bluebubbles?.account_id) } : {}),
+    },
+    cutover: {
+      legacyRoot: input.legacyRoot,
     },
   }
 
