@@ -134,6 +134,81 @@ describe("BlueBubbles durable outbound state", () => {
     })
   })
 
+  it("treats participant drift and account-only attachment drift as identity mismatches", async () => {
+    const {
+      reserveBlueBubblesOutbound,
+    } = await import("../../../senses/bluebubbles/outbound-state")
+
+    const first = reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: "manual:ari:rsvp:participant-drift",
+      chat,
+      attachment,
+      text: "same report",
+      tempGuid: "temp-drift-1",
+      now: "2026-07-09T17:00:00.000Z",
+    })
+    const drift = reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: "manual:ari:rsvp:participant-drift",
+      chat: { ...chat, participantHandles: ["+15555550100", "+15555550200"] },
+      attachment: { ...attachment, accountId: "secondary" },
+      text: "same report",
+      tempGuid: "temp-drift-2",
+      now: "2026-07-09T17:01:00.000Z",
+    })
+
+    expect(first.status).toBe("reserved")
+    expect(drift).toMatchObject({
+      status: "pending-manual-verification",
+      reason: "identity-proof-mismatch",
+      record: expect.objectContaining({
+        status: "pending-manual-verification",
+        tempGuid: "temp-drift-1",
+      }),
+    })
+  })
+
+  it("supports sparse route proofs, reply-target hashes, and accountless attachments without storing secrets", async () => {
+    const {
+      readBlueBubblesOutboundRecord,
+      reserveBlueBubblesOutbound,
+    } = await import("../../../senses/bluebubbles/outbound-state")
+
+    const sparseChat: BlueBubblesChatRef = {
+      isGroup: false,
+      sessionKey: "chat_identifier:+15555550100",
+      sendTarget: { kind: "chat_identifier", value: "+15555550100" },
+      participantHandles: [],
+    }
+    const reserved = reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: "manual:ari:rsvp:sparse-route",
+      chat: sparseChat,
+      attachment: { serverUrl: "http://bluebubbles.local/path-is-ignored" },
+      text: "reply target proof",
+      tempGuid: "temp-sparse-route",
+      replyToMessageGuid: "incoming-guid-1",
+    })
+    const record = readBlueBubblesOutboundRecord(agentRoot, reserved.record.recordId)
+
+    expect(record).toMatchObject({
+      routeProof: {
+        chatGuid: null,
+        chatIdentifier: null,
+        sessionKey: "chat_identifier:+15555550100",
+        rawParticipantHandlesStored: false,
+      },
+      attachmentProof: {
+        endpointOrigin: "http://bluebubbles.local",
+        accountId: null,
+        secretStored: false,
+      },
+      contentStored: false,
+    })
+    expect(record?.replyToMessageGuidHash).toMatch(/^sha256:/)
+  })
+
   it("tracks accepted, enqueued, local-visible, delivered, failed, and pending-manual-verification states", async () => {
     const {
       markBlueBubblesOutboundAccepted,
@@ -213,5 +288,84 @@ describe("BlueBubbles durable outbound state", () => {
       tempGuid: "temp-rsvp-state",
       manualVerificationReason: "local-visibility-timeout",
     })
+  })
+
+  it("allows local visibility and delivery reconciliation when tempGuid or messageGuid is absent", async () => {
+    const {
+      markBlueBubblesOutboundDelivered,
+      markBlueBubblesOutboundLocalVisible,
+      reserveBlueBubblesOutbound,
+    } = await import("../../../senses/bluebubbles/outbound-state")
+
+    const reservation = reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: "habit:slugger:rsvp:optional-reconcile",
+      chat,
+      attachment,
+      text: "RSVP Update",
+      tempGuid: "temp-optional-reconcile",
+      now: "2026-07-09T17:00:00.000Z",
+    })
+    const visible = markBlueBubblesOutboundLocalVisible({
+      agentRoot,
+      recordId: reservation.record.recordId,
+      visibleAt: "2026-07-09T17:00:03.000Z",
+      messageGuid: "local-guid-optional",
+    })
+    const delivered = markBlueBubblesOutboundDelivered({
+      agentRoot,
+      recordId: reservation.record.recordId,
+      deliveredAt: "2026-07-09T17:00:04.000Z",
+    })
+
+    expect(visible.tempGuid).toBe("temp-optional-reconcile")
+    expect(delivered.messageGuid).toBe("local-guid-optional")
+  })
+
+  it("fails closed when an existing reservation file is unreadable", async () => {
+    const {
+      blueBubblesOutboundRecordPath,
+      reserveBlueBubblesOutbound,
+    } = await import("../../../senses/bluebubbles/outbound-state")
+
+    const reserved = reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: "habit:slugger:rsvp:unreadable-existing",
+      chat,
+      attachment,
+      text: "RSVP Update",
+      tempGuid: "temp-unreadable",
+      now: "2026-07-09T17:00:00.000Z",
+    })
+    fs.writeFileSync(blueBubblesOutboundRecordPath(agentRoot, reserved.record.recordId), "{not-json", "utf-8")
+
+    expect(() => reserveBlueBubblesOutbound({
+      agentRoot,
+      idempotencyKey: "habit:slugger:rsvp:unreadable-existing",
+      chat,
+      attachment,
+      text: "RSVP Update",
+      tempGuid: "temp-unreadable-2",
+      now: "2026-07-09T17:01:00.000Z",
+    })).toThrow("bluebubbles outbound reservation is unreadable")
+  })
+
+  it("throws on status reconciliation for missing records instead of inventing delivery state", async () => {
+    const {
+      markBlueBubblesOutboundAccepted,
+      markBlueBubblesOutboundPendingManualVerification,
+    } = await import("../../../senses/bluebubbles/outbound-state")
+
+    expect(() => markBlueBubblesOutboundAccepted({
+      agentRoot,
+      recordId: "bbout_missing",
+      acceptedAt: "2026-07-09T17:00:00.000Z",
+    })).toThrow("bluebubbles outbound record not found: bbout_missing")
+    expect(() => markBlueBubblesOutboundPendingManualVerification({
+      agentRoot,
+      recordId: "bbout_missing",
+      decidedAt: "2026-07-09T17:00:00.000Z",
+      reason: "missing-local-visible-message",
+    })).toThrow("bluebubbles outbound record not found: bbout_missing")
   })
 })

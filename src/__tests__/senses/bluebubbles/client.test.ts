@@ -130,6 +130,35 @@ describe("BlueBubbles client", () => {
     expect(request).not.toHaveProperty("selectedMessageGuid")
   })
 
+  it("uses a caller-owned tempGuid when durable outbound state reserved one before send", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    await client.sendText({
+      chat: dmChat,
+      text: "durably reserved send",
+      tempGuid: "temp-from-ledger",
+    })
+
+    const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
+    expect(request.tempGuid).toBe("temp-from-ledger")
+  })
+
   it("edits outbound messages through the BlueBubbles edit endpoint", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
 

@@ -15,6 +15,7 @@ export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
   text: string
   replyToMessageGuid?: string
+  tempGuid?: string
 }
 
 export interface BlueBubblesSendTextResult {
@@ -318,7 +319,7 @@ export function createBlueBubblesClient(
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/text", config.password)
       const body: Record<string, unknown> = {
         chatGuid: resolvedChatGuid,
-        tempGuid: randomUUID(),
+        tempGuid: params.tempGuid?.trim() || randomUUID(),
         message: trimmedText,
       }
       if (params.replyToMessageGuid?.trim()) {
