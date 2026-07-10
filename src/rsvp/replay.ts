@@ -116,6 +116,24 @@ function countsFrom(value: unknown): { attending: number; declined: number; pend
   return { attending, declined, pending }
 }
 
+function july9PrivacyViolations(manifest: Record<string, unknown>): string[] {
+  const privacy = isRecord(manifest.privacy) ? manifest.privacy : null
+  if (!privacy) return ["privacy"]
+  const violations: string[] = []
+  if (privacy.rawLiveTranscriptStored !== false) violations.push("rawLiveTranscriptStored")
+  if (privacy.credentialsStored !== false) violations.push("credentialsStored")
+  if (privacy.searchIndex !== false) violations.push("searchIndex")
+  if (privacy.vectorIndex !== false) violations.push("vectorIndex")
+  return violations
+}
+
+function assertJuly9ReplayPrivacy(manifest: Record<string, unknown>): void {
+  const violations = july9PrivacyViolations(manifest)
+  if (violations.length > 0) {
+    throw new Error(`July 9 RSVP replay fixture must be repo-safe and non-indexed: ${violations.join(", ")}`)
+  }
+}
+
 function fixtureAllowsOfflineReplay(fixture: Record<string, unknown>): void {
   if (fixture.schemaVersion !== 1 || fixture.policyVersion !== RSVP_REPLAY_POLICY_VERSION) {
     throw new Error("unsupported RSVP replay fixture")
@@ -226,6 +244,7 @@ export async function replayJuly9PendingAnswerFixture(
   if (!isRecord(manifest) || manifest.schemaVersion !== 1 || manifest.policyVersion !== "july-9-rsvp-regression/v1") {
     throw new Error("unsupported July 9 RSVP replay manifest")
   }
+  assertJuly9ReplayPrivacy(manifest)
   const rsvpState = isRecord(manifest.rsvpState) ? manifest.rsvpState : null
   if (!rsvpState) throw new Error("July 9 RSVP state missing")
   const pendingGuests = Array.isArray(rsvpState.pendingGuests)

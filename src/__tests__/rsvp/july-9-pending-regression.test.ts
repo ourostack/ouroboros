@@ -28,16 +28,49 @@ describe("July 9 RSVP pending-answer regression", () => {
     expect(querySession).not.toHaveBeenCalled()
   })
 
-  it("rejects stale manifests, missing RSVP state, and malformed counts", async () => {
+  it("rejects stale or unsafe manifests, missing RSVP state, and malformed counts", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "july9-rsvp-"))
     const variantPath = path.join(root, "manifest.json")
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"))
+    const querySession = vi.fn(() => {
+      throw new Error("query_session must not be used while replaying malformed fixtures")
+    })
     try {
       fs.writeFileSync(variantPath, JSON.stringify({ ...manifest, policyVersion: "old" }), "utf-8")
       await expect(replayJuly9PendingAnswerFixture({ manifestPath: variantPath })).rejects.toThrow("unsupported July 9 RSVP replay manifest")
 
+      const unsafePrivacyVariants = [
+        { privacy: null, expectedViolation: "privacy" },
+        {
+          privacy: { ...manifest.privacy, rawLiveTranscriptStored: true },
+          expectedViolation: "rawLiveTranscriptStored",
+        },
+        {
+          privacy: { ...manifest.privacy, credentialsStored: true },
+          expectedViolation: "credentialsStored",
+        },
+        {
+          privacy: { ...manifest.privacy, searchIndex: true },
+          expectedViolation: "searchIndex",
+        },
+        {
+          privacy: { ...manifest.privacy, vectorIndex: true },
+          expectedViolation: "vectorIndex",
+        },
+      ]
+      for (const variant of unsafePrivacyVariants) {
+        fs.writeFileSync(variantPath, JSON.stringify({ ...manifest, privacy: variant.privacy }), "utf-8")
+        await expect(replayJuly9PendingAnswerFixture({
+          manifestPath: variantPath,
+          deps: { querySession },
+        })).rejects.toThrow(variant.expectedViolation)
+      }
+
       fs.writeFileSync(variantPath, JSON.stringify({ ...manifest, rsvpState: null }), "utf-8")
-      await expect(replayJuly9PendingAnswerFixture({ manifestPath: variantPath })).rejects.toThrow("RSVP state missing")
+      await expect(replayJuly9PendingAnswerFixture({
+        manifestPath: variantPath,
+        deps: { querySession },
+      })).rejects.toThrow("RSVP state missing")
 
       fs.writeFileSync(variantPath, JSON.stringify({
         ...manifest,
@@ -46,7 +79,10 @@ describe("July 9 RSVP pending-answer regression", () => {
           counts: null,
         },
       }), "utf-8")
-      await expect(replayJuly9PendingAnswerFixture({ manifestPath: variantPath })).rejects.toThrow("counts missing")
+      await expect(replayJuly9PendingAnswerFixture({
+        manifestPath: variantPath,
+        deps: { querySession },
+      })).rejects.toThrow("counts missing")
 
       fs.writeFileSync(variantPath, JSON.stringify({
         ...manifest,
@@ -55,7 +91,10 @@ describe("July 9 RSVP pending-answer regression", () => {
           counts: { attending: 149, declined: "bad", pending: 1 },
         },
       }), "utf-8")
-      await expect(replayJuly9PendingAnswerFixture({ manifestPath: variantPath })).rejects.toThrow("counts must be numeric")
+      await expect(replayJuly9PendingAnswerFixture({
+        manifestPath: variantPath,
+        deps: { querySession },
+      })).rejects.toThrow("counts must be numeric")
 
       fs.writeFileSync(variantPath, JSON.stringify({
         ...manifest,
@@ -64,8 +103,12 @@ describe("July 9 RSVP pending-answer regression", () => {
           pendingGuests: null,
         },
       }), "utf-8")
-      const result = await replayJuly9PendingAnswerFixture({ manifestPath: variantPath })
+      const result = await replayJuly9PendingAnswerFixture({
+        manifestPath: variantPath,
+        deps: { querySession },
+      })
       expect(result.answer).toBe("No pending guests in the replay fixture.")
+      expect(querySession).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

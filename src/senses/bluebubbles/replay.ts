@@ -122,16 +122,40 @@ function manifestExpected(manifest: Record<string, unknown>): Record<string, unk
   return expected
 }
 
+function july9PrivacyViolations(manifest: Record<string, unknown>): string[] {
+  const privacy = isRecord(manifest.privacy) ? manifest.privacy : null
+  if (!privacy) return ["privacy"]
+  const violations: string[] = []
+  if (privacy.rawLiveTranscriptStored !== false) violations.push("rawLiveTranscriptStored")
+  if (privacy.credentialsStored !== false) violations.push("credentialsStored")
+  if (privacy.searchIndex !== false) violations.push("searchIndex")
+  if (privacy.vectorIndex !== false) violations.push("vectorIndex")
+  return violations
+}
+
+function assertJuly9ReplayPrivacy(manifest: Record<string, unknown>): void {
+  const violations = july9PrivacyViolations(manifest)
+  if (violations.length > 0) {
+    throw new Error(`July 9 replay fixture must be repo-safe and non-indexed: ${violations.join(", ")}`)
+  }
+}
+
 function manifestMessages(manifest: Record<string, unknown>): Array<Record<string, unknown>> {
   const conversation = isRecord(manifest.conversation) ? manifest.conversation : null
   const messages = conversation && Array.isArray(conversation.messages) ? conversation.messages : []
   return messages.filter(isRecord)
 }
 
-function messageLine(message: Record<string, unknown>): string {
-  const timestamp = requiredString(message, "timestamp")
-  const author = requiredString(message, "authorLabel")
-  const body = requiredString(message, "body")
+function optionalString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key]
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+}
+
+function messageLine(message: Record<string, unknown>): string | null {
+  const timestamp = optionalString(message, "timestamp")
+  const author = optionalString(message, "authorLabel")
+  const body = optionalString(message, "body")
+  if (!timestamp || !author || !body) return null
   return `[${timestamp}] ${author}: ${body}`
 }
 
@@ -142,8 +166,12 @@ export async function replayJuly9BlueBubblesContextFixture(
   if (manifest.schemaVersion !== 1 || manifest.policyVersion !== "july-9-rsvp-regression/v1") {
     throw new Error("unsupported July 9 replay manifest")
   }
+  assertJuly9ReplayPrivacy(manifest)
   const expected = manifestExpected(manifest)
-  const modelInput = manifestMessages(manifest).map(messageLine).join("\n\n")
+  const modelInput = manifestMessages(manifest)
+    .map(messageLine)
+    .filter((line): line is string => !!line)
+    .join("\n\n")
   const result = {
     sideEffect: false as const,
     contextPacketHash: requiredString(expected, "contextPacketHash"),
