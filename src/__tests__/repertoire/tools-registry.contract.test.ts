@@ -239,6 +239,10 @@ describe("tool registry contract", () => {
     // Added in habit session continuity: 1 read-only session summary tool
     expect(names).toContain("session_summary");
 
+    // Added in native RSVP habit work: 2 read-only RSVP snapshot tools
+    expect(names).toContain("rsvp_query");
+    expect(names).toContain("rsvp_summary");
+
     // Added in A2A + commerce substrate: 3 A2A tools and 4 commerce authority tools
     expect(names).toContain("a2a_list_peers");
     expect(names).toContain("a2a_send_message");
@@ -254,7 +258,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("list_delegations");
     expect(names).toContain("send_result");
 
-    // Exact count: 113 tools
-    expect(names).toHaveLength(113);
+    // Exact count: 115 tools
+    expect(names).toHaveLength(115);
   });
 });

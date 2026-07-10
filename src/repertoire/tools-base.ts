@@ -29,6 +29,7 @@ import { obligationToolDefinitions } from "./tools-obligations"
 import { evolutionToolDefinitions } from "./tools-evolution"
 import { runtimeToolDefinitions } from "./tools-runtime"
 import { orientationToolDefinitions } from "./tools-orientation"
+import { rsvpToolDefinitions } from "./tools-rsvp"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
@@ -170,6 +171,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...evolutionToolDefinitions,
   ...orientationToolDefinitions,
   ...runtimeToolDefinitions,
+  ...rsvpToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).
