@@ -1936,6 +1936,7 @@ function parseRsvpRefreshCommand(args: string[]): OuroCliCommand {
     throw new Error("Usage: ouro rsvp refresh [--agent <name>] --mode shadow|live [--no-send|--allow-send] [--output <path>] [--json]")
   }
   if (noSend && allowSend) throw new Error("rsvp refresh cannot combine --allow-send and --no-send")
+  if (mode === "shadow" && allowSend) throw new Error("rsvp refresh --mode shadow cannot use --allow-send; use --no-send or omit send flags")
   if (mode === "live" && !allowSend) throw new Error("rsvp refresh --mode live requires --allow-send, or use --no-send for a dry run")
   return {
     kind: "rsvp.refresh",

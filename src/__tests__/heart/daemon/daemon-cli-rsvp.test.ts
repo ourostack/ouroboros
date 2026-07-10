@@ -262,6 +262,7 @@ describe("ouro rsvp CLI parsing", () => {
     expect(() => parseOuroCommand(["rsvp"])).toThrow(/Usage: ouro rsvp/)
     expect(() => parseOuroCommand(["rsvp", "config", "import-legacy", "--agent", "slugger", "--mode", "shadow"])).toThrow(/legacy-root/)
     expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--allow-send", "--no-send"])).toThrow(/allow-send/)
+    expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--allow-send"])).toThrow(/shadow.*allow-send/)
     expect(() => parseOuroCommand(["rsvp", "smoke", "--agent", "slugger", "--mode", "live", "--surface", "bluebubbles"])).toThrow(/--allow-send/)
     expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--agent", "slugger", "--mode", "live", "--cadence", "daily"])).toThrow(/cadence/)
   })

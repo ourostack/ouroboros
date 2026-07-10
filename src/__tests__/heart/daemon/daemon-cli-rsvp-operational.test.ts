@@ -106,6 +106,7 @@ vi.mock("../../../heart/runtime-credentials", async () => {
 })
 
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
+import { runRsvpCliCommand } from "../../../rsvp/cli"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
 function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
@@ -603,6 +604,53 @@ describe("ouro rsvp operational CLI wiring", () => {
           delivery: { guid: "bluebubbles-guid", messageGuid: "bluebubbles-guid" },
         },
       })
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("refuses to send refresh reports in shadow mode even if the lower adapter receives allowSend directly", async () => {
+    mockRuntimeCredentials()
+    const tmp = seedBundle()
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: rsvpConfig })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({
+      status: "ready",
+      credentials: { username: "user@example.com", password: "secret" },
+      checks: [],
+    })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: previousSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({ currentSnapshotId: "snap_current", newRsvps: [], statusChanges: [], newGuests: [], removedGuests: [], summary: currentSnapshot.summary })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nShadow must not send.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:shadow" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    try {
+      const result = JSON.parse(await runRsvpCliCommand({
+        kind: "rsvp.refresh",
+        agent: "slugger",
+        mode: "shadow",
+        allowSend: true,
+        json: true,
+      }, deps))
+
+      expect(result).toMatchObject({
+        ok: true,
+        command: "rsvp.refresh",
+        sideEffect: false,
+        allowSend: false,
+        sendAllowed: false,
+        refresh: {
+          outboundDecision: { action: "send", idempotencyKey: "rsvp:shadow" },
+        },
+      })
+      expect(rsvpMocks.sendText).not.toHaveBeenCalled()
+      expect(rsvpMocks.recordRsvpOutboundAttempt).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
     }

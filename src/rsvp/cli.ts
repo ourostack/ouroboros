@@ -499,7 +499,7 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
   const delta = computeRsvpDelta(previousSnapshot, currentSnapshot)
   const reportText = renderRsvpReport(delta)
   const outboundDecision = decideRsvpOutboundReport({ agentRoot, currentSnapshot, reportText })
-  const sendAllowed = command.allowSend === true && outboundDecision.action === "send"
+  const sendAllowed = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
   let delivery: JsonValue | undefined
   if (sendAllowed) {
     const sent = await createBlueBubblesClient().sendText({
