@@ -467,6 +467,31 @@ describe("HabitScheduler", () => {
       })
     })
 
+    it("does not register active RSVP cron jobs unless typed RSVP metadata is present", () => {
+      const nowMs = new Date(2026, 6, 9, 9, 55, 0, 0).getTime()
+      const readdir = vi.fn(() => ["rsvp-ari-rachel.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile, now: vi.fn(() => nowMs) })
+      mockParseHabitFile.mockReturnValueOnce(makeRsvpHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(cronManager.sync).toHaveBeenCalledWith([])
+      expect(scheduler.getParseErrors()).toEqual([{
+        file: "rsvp-ari-rachel.md",
+        error: expect.stringMatching(/RSVP habit metadata/i),
+      }])
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
     it("does not fire paused habits even if overdue", () => {
       const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
       const readdir = vi.fn(() => ["weekly-review.md"])

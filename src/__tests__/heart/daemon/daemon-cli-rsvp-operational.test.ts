@@ -797,4 +797,58 @@ describe("ouro rsvp operational CLI wiring", () => {
       fs.rmSync(legacyPath, { force: true })
     }
   })
+
+  it("executes rsvp habit stage by writing the native typed RSVP habit file", async () => {
+    mockRuntimeCredentials()
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    const outputPath = path.join(os.tmpdir(), `rsvp-habit-stage-${process.pid}-${Date.now()}.json`)
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    try {
+      const text = await runOuroCli([
+        "rsvp",
+        "habit",
+        "stage",
+        "--agent",
+        "slugger",
+        "--mode",
+        "shadow",
+        "--cadence",
+        "0 10 * * *",
+        "--output",
+        outputPath,
+        "--json",
+      ], deps)
+      const parsed = JSON.parse(text)
+      const written = JSON.parse(fs.readFileSync(outputPath, "utf-8"))
+      const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-ari-rachel.md")
+      const habitContent = fs.readFileSync(habitPath, "utf-8")
+
+      expect(parsed).toMatchObject({
+        ok: true,
+        command: "rsvp.habit.stage",
+        sideEffect: true,
+        agent: "slugger",
+        mode: "shadow",
+        habit: {
+          name: "rsvp-ari-rachel",
+          cadence: "0 10 * * *",
+          rsvp: {
+            policyVersion: "rsvp-habit/v1",
+            mode: "shadow",
+            sense: "bluebubbles",
+            liveSendEligible: false,
+          },
+        },
+      })
+      expect(written).toEqual(parsed)
+      expect(habitContent).toContain("tools: [rsvp_query, rsvp_summary]")
+      expect(habitContent).toContain("sense: bluebubbles")
+      expect(habitContent).toContain("snapshotRef: state/rsvp/snapshots/latest.json")
+      expect(habitContent).not.toMatch(/registered|planned|script, not slugger/i)
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(outputPath, { force: true })
+      tmp.cleanup()
+    }
+  })
 })

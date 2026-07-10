@@ -942,6 +942,99 @@ describe("private-runtime-worker", () => {
       }))
     })
 
+    it("derives RSVP runtime policy from typed metadata instead of trusting freeform tool declarations", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/rsvp-ari-rachel.md")) {
+          return [
+            "---",
+            "title: RSVP Ari & Rachel",
+            "cadence: 0 10 * * *",
+            "tools: [shell]",
+            "continuity:",
+            "  mode: stateful",
+            "rsvp:",
+            "  policyVersion: rsvp-habit/v1",
+            "  mode: shadow",
+            "  sense: bluebubbles",
+            "  source: aisleplanner",
+            "  routeRef: rsvp/config.json#bluebubblesRoute",
+            "  snapshotRef: state/rsvp/snapshots/latest.json",
+            "  outboundStateRef: state/rsvp/outbound-state.json",
+            "  budgetRef: state/rsvp/spend-ledger.json",
+            "  idempotencyRef: state/rsvp/outbound-state.json",
+            "  liveSendEligible: false",
+            "surface:",
+            "  family: false",
+            "  originator: false",
+            "---",
+            "",
+            "Refresh native RSVP state and answer follow-ups from the snapshot.",
+            "",
+          ].join("\n")
+        }
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "rsvp-ari-rachel", trigger: "launchd" })
+
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+        preparedHabit: expect.objectContaining({
+          habit: expect.objectContaining({
+            name: "rsvp-ari-rachel",
+            tools: ["rsvp_query", "rsvp_summary"],
+            rsvp: expect.objectContaining({
+              policyVersion: "rsvp-habit/v1",
+              mode: "shadow",
+              sense: "bluebubbles",
+              snapshotRef: "state/rsvp/snapshots/latest.json",
+              outboundStateRef: "state/rsvp/outbound-state.json",
+              budgetRef: "state/rsvp/spend-ledger.json",
+              idempotencyRef: "state/rsvp/outbound-state.json",
+              liveSendEligible: false,
+            }),
+          }),
+        }),
+        habitSession: expect.objectContaining({
+          rsvpPolicy: expect.objectContaining({
+            mode: "shadow",
+            sendAllowed: false,
+            liveSendEligible: false,
+            sense: "bluebubbles",
+            routeRef: "rsvp/config.json#bluebubblesRoute",
+            snapshotRef: "state/rsvp/snapshots/latest.json",
+            budgetRef: "state/rsvp/spend-ledger.json",
+            idempotencyRef: "state/rsvp/outbound-state.json",
+          }),
+          toolPolicy: expect.objectContaining({
+            requestedTools: ["rsvp_query", "rsvp_summary"],
+            grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
+            deniedTools: [],
+            outwardMessagingAllowed: false,
+          }),
+        }),
+      }))
+      expect(mockReserveAutonomyBudget).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        senseOrHabit: "rsvp-ari-rachel",
+        target: expect.objectContaining({
+          habitName: "rsvp-ari-rachel",
+          rsvpSnapshotRef: "state/rsvp/snapshots/latest.json",
+          rsvpBudgetRef: "state/rsvp/spend-ledger.json",
+          rsvpIdempotencyRef: "state/rsvp/outbound-state.json",
+        }),
+        idempotencyKey: expect.stringContaining("rsvp-ari-rachel"),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "rsvp-ari-rachel",
+        toolPolicy: expect.objectContaining({
+          requestedTools: ["rsvp_query", "rsvp_summary"],
+          grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
+          deniedTools: [],
+        }),
+      }))
+    })
+
     it("records non-Error habit file read failures losslessly", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
         if (String(filePath).includes("/habits/")) throw "habit missing as string"
