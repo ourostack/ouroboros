@@ -433,6 +433,182 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("repairs a stale loaded launchd label when kickstart fails", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-stale-label-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const checkDaemonSocketAlive = vi.fn(async () => true)
+    const spawn = vi.fn()
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) return "    pid = 8642\n"
+      if (cmd.includes("launchctl kickstart")) throw new Error("service disappeared during kickstart")
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("../../../heart/daemon/socket-client", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/daemon/socket-client")>("../../../heart/daemon/socket-client")
+        return { ...actual, checkDaemonSocketAlive }
+      })
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: 8642 })
+
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl kickstart -k gui/"), { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl bootout gui/"), { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
+      expect(spawn).not.toHaveBeenCalled()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.launchd_kickstart_recovering",
+        meta: expect.objectContaining({
+          label: "bot.ouro.daemon",
+          error: "service disappeared during kickstart",
+        }),
+      }))
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.launchd_bootstrap_end",
+      }))
+    } finally {
+      vi.doUnmock("../../../heart/daemon/socket-client")
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("does not fall back to detached spawn when stale launchd label repair fails", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-repair-fails-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const spawn = vi.fn()
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) return "    pid = 9753\n"
+      if (cmd.includes("launchctl kickstart")) throw "kickstart lost service"
+      if (cmd.includes("launchctl bootstrap")) throw "bootstrap refused stale label"
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: 9753 })
+
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl kickstart -k gui/"), { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl bootout gui/"), { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
+      expect(spawn).not.toHaveBeenCalled()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.launchd_kickstart_recovery_error",
+        meta: expect.objectContaining({
+          label: "bot.ouro.daemon",
+          kickstartError: "kickstart lost service",
+          recoveryError: "bootstrap refused stale label",
+        }),
+      }))
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("does not fall back to detached spawn when stale launchd label bootout repair throws", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-launchd-bootout-throws-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const emitNervesEvent = vi.fn()
+    const spawn = vi.fn()
+    const bootoutLaunchAgentByLabel = vi.fn(() => {
+      throw new Error("bootout helper crashed")
+    })
+    const execSync = vi.fn((cmd: string) => {
+      if (cmd.includes("launchctl print")) return "    pid = 6420\n"
+      if (cmd.includes("launchctl kickstart")) throw new Error("kickstart lost service")
+      return ""
+    })
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/daemon/launchd", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/daemon/launchd")>("../../../heart/daemon/launchd")
+        return { ...actual, bootoutLaunchAgentByLabel }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: 6420 })
+
+      expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl kickstart -k gui/"), { stdio: "ignore" })
+      expect(bootoutLaunchAgentByLabel).toHaveBeenCalledOnce()
+      expect(execSync).not.toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
+      expect(spawn).not.toHaveBeenCalled()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "daemon.launchd_kickstart_recovery_error",
+        meta: expect.objectContaining({
+          label: "bot.ouro.daemon",
+          kickstartError: "kickstart lost service",
+          recoveryError: "bootout helper crashed",
+        }),
+      }))
+    } finally {
+      vi.doUnmock("../../../heart/daemon/launchd")
+      vi.doUnmock("../../../nerves/runtime")
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("keeps launchd as daemon owner when the post-start pid probe fails", async () => {
     vi.resetModules()
 

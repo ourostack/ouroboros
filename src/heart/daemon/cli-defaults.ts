@@ -270,6 +270,25 @@ function readDaemonLaunchAgentPid(): number | null {
   }
 }
 
+function launchdExec(cmd: string): void {
+  execSync(cmd, { stdio: "ignore" })
+}
+
+function bootstrapDaemonLaunchAgent(domain: string, plistPath: string): void {
+  launchdExec(`launchctl bootstrap ${domain} "${plistPath}"`)
+}
+
+function kickstartDaemonLaunchAgent(domain: string): void {
+  launchdExec(`launchctl kickstart -k ${domain}/${DAEMON_PLIST_LABEL}`)
+}
+
+function bootoutDaemonLaunchAgentLabel(userUid: number): void {
+  bootoutLaunchAgentByLabel({
+    exec: launchdExec,
+    userUid,
+  })
+}
+
 interface BootstrappedSocketWaitDeps {
   checkSocketAlive?: (socketPath: string) => Promise<boolean>
   now?: () => number
@@ -332,10 +351,38 @@ async function startDaemonProcessViaLaunchd(socketPath: string): Promise<{ pid: 
       message: "starting daemon launch agent for current login session",
       meta: { plistPath, label: DAEMON_PLIST_LABEL },
     })
-    if (isDaemonLaunchAgentLoaded({ exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) }, userUid })) {
-      execSync(`launchctl kickstart -k ${domain}/${DAEMON_PLIST_LABEL}`, { stdio: "ignore" })
+    if (isDaemonLaunchAgentLoaded({ exec: launchdExec, userUid })) {
+      try {
+        kickstartDaemonLaunchAgent(domain)
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.launchd_kickstart_recovering",
+          message: "daemon launch agent kickstart failed; clearing label and bootstrapping from plist",
+          meta: { plistPath, label: DAEMON_PLIST_LABEL, error: error instanceof Error ? error.message : String(error) },
+        })
+        try {
+          bootoutDaemonLaunchAgentLabel(userUid)
+          bootstrapDaemonLaunchAgent(domain, plistPath)
+        } catch (repairError) {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.launchd_kickstart_recovery_error",
+            message: "daemon launch agent kickstart recovery failed; preserving launchd ownership instead of falling back to detached spawn",
+            meta: {
+              plistPath,
+              label: DAEMON_PLIST_LABEL,
+              kickstartError: error instanceof Error ? error.message : String(error),
+              recoveryError: repairError instanceof Error ? repairError.message : String(repairError),
+            },
+          })
+          return { pid: readDaemonLaunchAgentPid() }
+        }
+      }
     } else {
-      execSync(`launchctl bootstrap ${domain} "${plistPath}"`, { stdio: "ignore" })
+      bootstrapDaemonLaunchAgent(domain, plistPath)
     }
     emitNervesEvent({
       component: "daemon",
@@ -365,7 +412,7 @@ async function defaultEnsureDaemonBootPersistence(socketPath: string): Promise<v
   const plistPath = writeDaemonBootPlist(socketPath)
 
   const userUid = currentUserUid()
-  if (isDaemonLaunchAgentLoaded({ exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) }, userUid })) {
+  if (isDaemonLaunchAgentLoaded({ exec: launchdExec, userUid })) {
     emitNervesEvent({
       component: "daemon",
       event: "daemon.launchd_bootstrap_skipped_loaded",
@@ -382,7 +429,7 @@ function defaultPrepareDaemonRuntimeReplacement(): void {
   }
 
   bootoutLaunchAgentByLabel({
-    exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) },
+    exec: launchdExec,
     userUid: process.getuid?.() ?? 0,
   })
   // launchctl bootout may return before the old daemon's SIGTERM cleanup has

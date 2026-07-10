@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.701",
+      "changes": [
+        "Retry daemon launchd bootstrap when stale labels make kickstart fail so runtime replacement does not fall back to an unlabelled daemon process.",
+        "Keep daemon restart persistence verifiable after native habit scheduler installs launchd jobs."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.700",
       "changes": [
         "Scope macOS habit and await LaunchAgent cleanup to their own labels so await reconciliation cannot remove active habit plists.",
