@@ -8,6 +8,7 @@ const {
   assessChangelogFreshness,
   assessWrapperPublishSync,
   collectChangedFiles,
+  classifyOperationalContractChange,
   pathRequiresChangelogFreshness,
   runReleasePreflight,
   versionBumpRequired,
@@ -184,6 +185,22 @@ describe("release-preflight", () => {
     expect(pathRequiresChangelogFreshness("src/__tests__/scripts/release-preflight.test.ts")).toBe(false)
   })
 
+  it("classifies persisted RSVP operational contracts for release preflight visibility", () => {
+    expect(classifyOperationalContractChange("src/rsvp/snapshot.ts")).toEqual({
+      kind: "persisted-schema",
+      message: "persisted schema changed: src/rsvp/snapshot.ts",
+    })
+    expect(classifyOperationalContractChange("src/__fixtures__/rsvp/july-9-context/manifest.json")).toEqual({
+      kind: "replay-fixture",
+      message: "replay fixture changed: src/__fixtures__/rsvp/july-9-context/manifest.json",
+    })
+    expect(classifyOperationalContractChange("src/heart/daemon/doctor.ts")).toEqual({
+      kind: "doctor-category",
+      message: "doctor category/check surface changed: src/heart/daemon/doctor.ts",
+    })
+    expect(classifyOperationalContractChange("docs/testing-guide.md")).toBeNull()
+  })
+
   it("detects wrapper package changes separately from general release bumps", () => {
     expect(wrapperPackageChanged(["packages/ouro.bot/index.js"])).toBe(true)
     expect(wrapperPackageChanged(["src/heart/daemon/daemon-cli.ts"])).toBe(false)
@@ -225,6 +242,33 @@ describe("release-preflight", () => {
     expect(result.messages).toContain("root npm audit: pass (found 0 vulnerabilities)")
     expect(result.messages).toContain("package assets verified")
     expect(result.messages.join("\n")).toContain("npm trusted-publisher local contract:")
+  })
+
+  it("surfaces RSVP persisted schema, replay fixture, and doctor category contract changes", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: [
+            "src/rsvp/snapshot.ts",
+            "src/__fixtures__/rsvp/july-9-context/manifest.json",
+            "src/heart/daemon/doctor.ts",
+            "changelog.json",
+          ],
+        }),
+        readFileSyncImpl: makeReadFileSyncImpl({
+          changelogChanges: ["RSVP operational contracts updated"],
+        }),
+        packageRoot,
+      },
+    )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+
+    expect(result.messages).toContain("operational contracts: persisted-schema, replay-fixture, doctor-category")
+    expect(result.messages).toContain("persisted schema changed: src/rsvp/snapshot.ts")
+    expect(result.messages).toContain("replay fixture changed: src/__fixtures__/rsvp/july-9-context/manifest.json")
+    expect(result.messages).toContain("doctor category/check surface changed: src/heart/daemon/doctor.ts")
   })
 
   it("fails when the root npm dependency audit reports moderate-or-higher vulnerabilities", () => {

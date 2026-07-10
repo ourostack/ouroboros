@@ -83,6 +83,21 @@ describe("ouro rsvp CLI help", () => {
     expect(getCommandHelp("rsvp smoke")).toContain("preflight|live")
   })
 
+  it("documents the RSVP operator triage workflow in command help", () => {
+    const umbrella = getCommandHelp("rsvp") ?? ""
+    expect(umbrella).toContain("doctor")
+    expect(umbrella).toContain("incident")
+    expect(umbrella).toContain("replay")
+    expect(umbrella).toContain("receipts")
+    expect(umbrella).toContain("ledgers")
+
+    expect(getCommandHelp("rsvp doctor")).toContain("--json --strict")
+    expect(getCommandHelp("rsvp incident")).toContain("--output")
+    expect(getCommandHelp("rsvp replay")).toContain("offline fixture")
+    expect(getCommandHelp("rsvp refresh")).toContain("receipts")
+    expect(getCommandHelp("rsvp smoke")).toContain("preflight")
+  })
+
   it("routes `rsvp --help` and `help rsvp smoke` through the help registry without daemon access", async () => {
     const deps = createMockDeps()
 
