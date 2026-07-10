@@ -21,6 +21,7 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { parseHabitFile } from "../habits/habit-parser"
 import { parseCadenceToCron } from "./cadence"
 import { DEFAULT_MAX_LOG_SIZE_BYTES } from "../../nerves"
+import { readRsvpConfig, validateRsvpReadiness, type RsvpReadinessCheck } from "../../rsvp/config"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 
@@ -419,6 +420,69 @@ export function checkHabits(deps: DoctorDeps): DoctorCategory {
   }
 
   return { name: "Habits", checks }
+}
+
+function hasRsvpHabitSignal(deps: DoctorDeps, agentPath: string): boolean {
+  const habitsDir = `${agentPath}/habits`
+  if (!deps.existsSync(habitsDir)) return false
+  try {
+    return deps.readdirSync(habitsDir).some((name) => name.toLowerCase().includes("rsvp") && name.endsWith(".md"))
+  } catch {
+    return false
+  }
+}
+
+function rsvpDoctorLabel(agentDir: string, checkId: RsvpReadinessCheck["id"]): string {
+  const suffix: Record<RsvpReadinessCheck["id"], string> = {
+    "rsvp.native_config": "RSVP native config",
+    "rsvp.aisleplanner_source": "RSVP AislePlanner source",
+    "rsvp.aisleplanner_credentials": "RSVP AislePlanner credentials",
+    "rsvp.bluebubbles_route": "RSVP BlueBubbles route",
+    "rsvp.bluebubbles_attachment": "RSVP BlueBubbles attachment",
+  }
+  return `${agentDir} ${suffix[checkId]}`
+}
+
+export async function checkRsvp(deps: DoctorDeps): Promise<DoctorCategory> {
+  const checks: DoctorCheck[] = []
+  const agents = discoverAgents(deps)
+
+  if (agents.length === 0) {
+    checks.push({ label: "RSVP", status: "warn", detail: "no agent bundles found" })
+    return { name: "RSVP", checks }
+  }
+
+  for (const agentDir of agents) {
+    const agentName = agentDir.replace(/\.ouro$/, "")
+    const agentPath = `${deps.bundlesRoot}/${agentDir}`
+    const config = readRsvpConfig(agentPath)
+    const hasRsvpSignal = config.ok || hasRsvpHabitSignal(deps, agentPath)
+    if (!hasRsvpSignal) {
+      checks.push({ label: `${agentDir} RSVP`, status: "pass", detail: "not configured" })
+      continue
+    }
+
+    const machineId = loadOrCreateMachineIdentity({ homeDir: deps.homedir }).machineId
+    const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true })
+    const machineRuntimeConfig = await refreshMachineRuntimeCredentialConfig(agentName, machineId, { preserveCachedOnFailure: true })
+    const readiness = validateRsvpReadiness({
+      agent: agentName,
+      agentRoot: agentPath,
+      runtimeConfig,
+      machineRuntimeConfig,
+      config,
+    })
+
+    for (const readinessCheck of readiness.checks) {
+      checks.push({
+        label: rsvpDoctorLabel(agentDir, readinessCheck.id),
+        status: readinessCheck.status === "pass" ? "pass" : "fail",
+        detail: readinessCheck.detail,
+      })
+    }
+  }
+
+  return { name: "RSVP", checks }
 }
 
 export function checkSecurity(deps: DoctorDeps): DoctorCategory {
@@ -961,6 +1025,7 @@ const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
   { name: "Agents", fn: checkAgents },
   { name: "Senses", fn: checkSenses },
   { name: "Habits", fn: checkHabits },
+  { name: "RSVP", fn: checkRsvp },
   { name: "Security", fn: checkSecurity },
   { name: "Trips", fn: checkTrips },
   { name: "Mailroom", fn: checkMailroom },
