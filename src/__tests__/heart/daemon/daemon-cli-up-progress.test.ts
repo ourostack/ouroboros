@@ -400,6 +400,54 @@ describe("ouro up: UpProgress integration", () => {
     expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("final daemon check", "daemon answered")
   })
 
+  it("waits for a transient final socket miss before handing off", async () => {
+    mocks.upProgressStartPhase.mockClear()
+    mocks.upProgressUpdateDetail.mockClear()
+    mocks.upProgressCompletePhase.mockClear()
+    let now = 0
+    let finalPhaseStarted = false
+    let finalSocketChecks = 0
+    const sleep = vi.fn(async (ms: number) => {
+      now += ms
+    })
+    mocks.upProgressStartPhase.mockImplementation((phase: string) => {
+      if (phase === "final daemon check") finalPhaseStarted = true
+    })
+    const checkSocketAlive = vi.fn(async () => {
+      if (!finalPhaseStarted) return true
+      finalSocketChecks += 1
+      return finalSocketChecks > 1
+    })
+    const deps = makeDeps({
+      now: () => now,
+      sleep,
+      finalDaemonHealthSettleTimeoutMs: 1_000,
+      finalDaemonHealthSettlePollIntervalMs: 100,
+      checkSocketAlive,
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") return daemonStatusOk()
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    let result = ""
+    try {
+      result = await runOuroCli(["up"], deps)
+    } finally {
+      mocks.upProgressStartPhase.mockReset()
+    }
+
+    expect(result).not.toContain("background service stopped before boot finished")
+    expect(checkSocketAlive).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(checkSocketAlive.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(finalSocketChecks).toBe(2)
+    expect(sleep).toHaveBeenCalled()
+    expect(mocks.upProgressUpdateDetail).toHaveBeenCalledWith(
+      "the daemon socket is no longer answering\nwaiting for enabled senses to prove healthy",
+    )
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("final daemon check", "daemon answered")
+  })
+
   it("waits through a full periodic health cycle by default before failing final handoff", async () => {
     mocks.upProgressCompletePhase.mockClear()
     let now = 0

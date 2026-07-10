@@ -989,10 +989,13 @@ async function verifyDaemonReadyForHandoffOnce(
 ): Promise<FinalDaemonCheckResult> {
   const socketAlive = await deps.checkSocketAlive(deps.socketPath)
   if (!socketAlive) {
+    const reason = "the daemon socket is no longer answering"
     return {
       ok: false,
       summary: "background service stopped",
-      message: finalDaemonFailureMessage(deps, "the daemon socket is no longer answering"),
+      message: finalDaemonFailureMessage(deps, reason),
+      retryable: true,
+      reason,
     }
   }
 
