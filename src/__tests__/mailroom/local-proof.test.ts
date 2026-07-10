@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as net from "node:net"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { readMailView } from "../../heart/mailbox/readers/mail"
 import { resetIdentity, setAgentName } from "../../heart/identity"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
@@ -16,6 +16,7 @@ import { mailToolDefinitions } from "../../repertoire/tools-mail"
 import type { ToolContext } from "../../repertoire/tools-base"
 
 const tempRoots: string[] = []
+const originalHome = process.env.HOME
 
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-mail-local-proof-"))
@@ -120,7 +121,13 @@ function friendContext(): ToolContext {
   return ctx
 }
 
+beforeEach(() => {
+  process.env.HOME = tempDir()
+})
+
 afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME
+  else process.env.HOME = originalHome
   resetIdentity()
   resetRuntimeCredentialConfigCache()
   for (const dir of tempRoots.splice(0)) {

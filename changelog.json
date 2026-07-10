@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.697",
+      "changes": [
+        "Add BlueBubbles same-thread context, native RSVP habit, autonomy budgets, run ledger attribution, diagnostics, cutover, and verification guardrails.",
+        "Harden Twilio phone agent-root resolution so test and runtime callers use explicit bundle roots without falling back to the host AgentBundles tree.",
+        "Gate native RSVP live sends on a current passing legacy cutover check so refreshes and smoke tests cannot compete with the old RSVP sender.",
+        "Align RSVP doctor cutover preflight with the native config's legacy root so triage reports the same sender state enforced by live sends."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.696",
       "changes": [
         "Prevent completed return-work packets from re-entering active Arc state."

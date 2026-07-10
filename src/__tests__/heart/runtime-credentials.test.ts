@@ -51,6 +51,7 @@ import {
   cacheMachineRuntimeCredentialConfig,
   cacheRuntimeCredentialConfig,
   machineRuntimeConfigItemName,
+  mergeRuntimeCredentialConfig,
   mergeMachineRuntimeCredentialConfig,
   readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
@@ -425,6 +426,89 @@ describe("runtime credentials vault config", () => {
       updatedAt: "2026-04-14T12:00:00.000Z",
     })
     expect(readRuntimeCredentialConfig("slugger")).toEqual(refreshed)
+  })
+
+  it("merges partial runtime/config patches into the portable runtime vault item", async () => {
+    emitTestEvent("runtime credentials portable merge")
+
+    await upsertRuntimeCredentialConfig("slugger", {
+      mailroom: { mailboxAddress: "slugger@ouro.bot" },
+      rsvp: { existing: true },
+    }, new Date("2026-04-14T12:00:00.000Z"))
+
+    const merged = await mergeRuntimeCredentialConfig("slugger", {
+      rsvp: {
+        aisleplanner: {
+          username: "ari@example.com",
+          password: "rsvp-secret",
+        },
+      },
+    }, new Date("2026-04-14T13:00:00.000Z"))
+
+    expect(merged).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/config",
+      config: {
+        mailroom: { mailboxAddress: "slugger@ouro.bot" },
+        rsvp: {
+          existing: true,
+          aisleplanner: {
+            username: "ari@example.com",
+            password: "rsvp-secret",
+          },
+        },
+      },
+      updatedAt: "2026-04-14T13:00:00.000Z",
+    })
+  })
+
+  it("creates portable runtime/config when merging into a missing vault item", async () => {
+    emitTestEvent("runtime credentials portable merge missing base")
+
+    const merged = await mergeRuntimeCredentialConfig("slugger", {
+      rsvp: {
+        aisleplanner: {
+          username: "ari@example.com",
+          password: "rsvp-secret",
+        },
+      },
+    }, new Date("2026-04-14T13:00:00.000Z"))
+
+    expect(merged).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/config",
+      config: {
+        rsvp: {
+          aisleplanner: {
+            username: "ari@example.com",
+            password: "rsvp-secret",
+          },
+        },
+      },
+    })
+  })
+
+  it("refuses portable runtime/config merge when the current vault payload is invalid", async () => {
+    emitTestEvent("runtime credentials portable merge invalid base")
+
+    mockCredentialStore.items.set(RUNTIME_CONFIG_ITEM_NAME, {
+      username: "runtime/config",
+      password: JSON.stringify({ schemaVersion: 1, kind: "wrong", updatedAt: "2026-04-14T12:00:00.000Z", config: {} }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+
+    await expect(mergeRuntimeCredentialConfig("slugger", {
+      rsvp: { aisleplanner: { username: "ari@example.com", password: "rsvp-secret" } },
+    })).rejects.toThrow("cannot merge runtime config at vault:slugger:runtime/config")
+
+    mockCredentialStore.items.set(RUNTIME_CONFIG_ITEM_NAME, {
+      username: "runtime/config",
+      password: JSON.stringify({ schemaVersion: 2, kind: "runtime-config", updatedAt: "2026-04-14T12:00:00.000Z", config: {} }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+    await expect(mergeRuntimeCredentialConfig("slugger", {
+      rsvp: { aisleplanner: { username: "ari@example.com", password: "rsvp-secret" } },
+    })).rejects.toThrow("schemaVersion must be 1")
   })
 
   it("classifies missing and invalid vault payloads without leaking values", async () => {

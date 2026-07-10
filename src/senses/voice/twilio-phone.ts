@@ -158,6 +158,10 @@ export interface TwilioPhoneBridgeOptions {
   openaiSip?: OpenAISipPhoneOptions
 }
 
+export function resolveTwilioPhoneAgentRoot(options: Pick<TwilioPhoneBridgeOptions, "agentName" | "agentRoot">): string {
+  return options.agentRoot ?? getAgentRoot(options.agentName)
+}
+
 export interface OpenAIRealtimeTwilioOptions {
   apiKey: string
   apiKeySource?: string
@@ -550,7 +554,7 @@ async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, inpu
   remotePhone?: string
   callSid: string
 }): Promise<ResolvedVoiceFriendContext> {
-  const agentRoot = options.agentRoot ?? getAgentRoot(options.agentName)
+  const agentRoot = resolveTwilioPhoneAgentRoot(options)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const explicitFriendId = input.friendId?.trim()
   if (explicitFriendId) {
@@ -1306,7 +1310,7 @@ class TwilioMediaStreamSession {
 
   private async playPreparedAudio(request: VoiceCallAudioRequest): Promise<VoiceCallAudioResult> {
     const prepared = await prepareVoiceCallAudio(request, {
-      agentRoot: this.options.agentRoot ?? getAgentRoot(this.options.agentName),
+      agentRoot: resolveTwilioPhoneAgentRoot(this.options),
     })
     const generation = this.startPlayback()
     for (let offset = 0; offset < prepared.audio.byteLength; offset += 160) {
@@ -2160,7 +2164,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
 
   private async buildInstructions(): Promise<string> {
     setAgentName(this.options.agentName)
-    const agentRoot = this.options.agentRoot ?? getAgentRoot(this.options.agentName)
+    const agentRoot = resolveTwilioPhoneAgentRoot(this.options)
     const sessionDir = path.join(agentRoot, "state", "sessions", this.friendId, "voice")
     await fs.mkdir(sessionDir, { recursive: true })
     this.sessionPath = path.join(sessionDir, `${sanitizeKey(this.sessionKey)}.json`)
@@ -2851,7 +2855,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       throw new Error("voice call media stream is not ready")
     }
     const prepared = await prepareVoiceCallAudio(request, {
-      agentRoot: this.options.agentRoot ?? getAgentRoot(this.options.agentName),
+      agentRoot: resolveTwilioPhoneAgentRoot(this.options),
     })
     this.playbackMarks.clear()
     this.playbackState = undefined
@@ -3257,7 +3261,7 @@ class OpenAISipPhoneSession {
 
   private async buildInstructions(): Promise<string> {
     setAgentName(this.options.agentName)
-    const agentRoot = this.options.agentRoot ?? getAgentRoot(this.options.agentName)
+    const agentRoot = resolveTwilioPhoneAgentRoot(this.options)
     const sessionDir = path.join(agentRoot, "state", "sessions", this.friendId, "voice")
     await fs.mkdir(sessionDir, { recursive: true })
     this.sessionPath = path.join(sessionDir, `${sanitizeKey(this.sessionKey)}.json`)

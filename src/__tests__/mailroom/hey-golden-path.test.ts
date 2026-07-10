@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { decryptMessages, FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { importMboxToStore } from "../../mailroom/mbox-import"
@@ -12,6 +12,7 @@ import { mailToolDefinitions } from "../../repertoire/tools-mail"
 import type { ToolContext } from "../../repertoire/tools-base"
 
 const tempRoots: string[] = []
+const originalHome = process.env.HOME
 
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-hey-golden-"))
@@ -75,7 +76,13 @@ function friendContext(): ToolContext {
   return ctx
 }
 
+beforeEach(() => {
+  process.env.HOME = tempDir()
+})
+
 afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME
+  else process.env.HOME = originalHome
   resetIdentity()
   resetRuntimeCredentialConfigCache()
   for (const dir of tempRoots.splice(0)) {

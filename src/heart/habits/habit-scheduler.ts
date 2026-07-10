@@ -2,7 +2,8 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { parseHabitFile, type HabitFile } from "./habit-parser"
 import { applyHabitRuntimeState } from "./habit-runtime-state"
-import { parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
+import { cadenceFallbackDelayMs, evaluateCadenceDue, nextCadenceRunAt, parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
+import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import type { OsCronManager } from "../daemon/os-cron"
 import type { ScheduledTaskJob } from "../daemon/task-scheduler"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
@@ -114,36 +115,21 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
-
-      const cadenceMs = parseCadenceToMs(habit.cadence)
-      if (cadenceMs === null) continue
+      if (this.rejectInvalidRsvpHabit(habit)) continue
 
       const nowMs = this.deps.now()
+      const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
+      if (dueState === null) continue
 
-      if (habit.lastRun === null) {
+      if (dueState.due) {
         emitNervesEvent({
           component: "daemon",
           event: "daemon.habit_fire",
-          message: "firing overdue habit (never run)",
-          meta: { habitName: habit.name, agent: this.agent },
+          message: habit.lastRun === null ? "firing overdue habit (never run)" : "firing overdue habit",
+          meta: { habitName: habit.name, agent: this.agent, elapsedMs: dueState.elapsedMs },
         })
         this.onHabitFire(habit.name, "overdue", {
-          occurrenceId: this.overdueOccurrenceId(habit),
-        })
-        continue
-      }
-
-      const lastRunMs = new Date(habit.lastRun).getTime()
-      const elapsed = nowMs - lastRunMs
-      if (elapsed >= cadenceMs) {
-        emitNervesEvent({
-          component: "daemon",
-          event: "daemon.habit_fire",
-          message: "firing overdue habit",
-          meta: { habitName: habit.name, agent: this.agent, elapsedMs: elapsed },
-        })
-        this.onHabitFire(habit.name, "overdue", {
-          occurrenceId: this.overdueOccurrenceId(habit),
+          occurrenceId: dueState.occurrenceId ?? this.overdueOccurrenceId(habit),
         })
       }
     }
@@ -172,20 +158,10 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
+      if (this.rejectInvalidRsvpHabit(habit)) continue
 
-      const cadenceMs = parseCadenceToMs(habit.cadence)
-      if (cadenceMs === null) continue
-
-      if (habit.lastRun === null) {
-        overdue.push({ name: habit.name, elapsedMs: Infinity })
-        continue
-      }
-
-      const lastRunMs = new Date(habit.lastRun).getTime()
-      const elapsed = nowMs - lastRunMs
-      if (elapsed >= cadenceMs) {
-        overdue.push({ name: habit.name, elapsedMs: elapsed })
-      }
+      const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
+      if (dueState?.due) overdue.push({ name: habit.name, elapsedMs: dueState.elapsedMs })
     }
 
     return overdue
@@ -317,9 +293,9 @@ export class HabitScheduler {
 
         // Parse cadence from the original habit file for timer interval
         const habitFile = this.getHabitFile(job.taskId)
-        const ms = habitFile?.cadence ? parseCadenceToMs(habitFile.cadence) : null
+        const ms = habitFile?.cadence ? cadenceFallbackDelayMs(habitFile.cadence, this.deps.now()) : null
         if (ms !== null) {
-          this.createTimerFallback(job.taskId, ms)
+          this.createTimerFallback(job.taskId, habitFile!.cadence!, ms)
         }
 
         this.degradedHabitNames.set(job.taskId, "cron registration failed — using timer fallback")
@@ -357,14 +333,15 @@ export class HabitScheduler {
     return verified
   }
 
-  private createTimerFallback(habitName: string, cadenceMs: number): void {
+  private createTimerFallback(habitName: string, cadence: string, firstDelayMs: number): void {
     const schedule = (): void => {
+      const delayMs = cadenceFallbackDelayMs(cadence, this.deps.now()) ?? firstDelayMs
       const timer = setTimeout(() => {
         this.onHabitFire(habitName, "overdue", {
-          occurrenceId: this.timerOccurrenceId(habitName, cadenceMs),
+          occurrenceId: this.timerOccurrenceId(habitName, cadence),
         })
         schedule()
-      }, cadenceMs)
+      }, delayMs)
       this.timerFallbacks.set(habitName, timer)
     }
     schedule()
@@ -424,6 +401,7 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
+      if (this.rejectInvalidRsvpHabit(habit)) continue
 
       const cronSchedule = parseCadenceToCron(habit.cadence)
       if (cronSchedule === null) continue
@@ -442,6 +420,29 @@ export class HabitScheduler {
     return jobs
   }
 
+  private rejectInvalidRsvpHabit(habit: HabitFile): boolean {
+    if (!isRsvpHabitName(habit.name) || habit.rsvp) return false
+
+    this.recordHabitParseError(
+      `${habit.name}.md`,
+      "RSVP habit metadata is required before scheduling",
+    )
+    return true
+  }
+
+  private recordHabitParseError(file: string, error: string): void {
+    if (this.parseErrors.some((existing) => existing.file === file && existing.error === error)) return
+
+    this.parseErrors.push({ file, error })
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.habit_parse_error",
+      message: "failed to parse habit file",
+      meta: { file, error, agent: this.agent },
+    })
+  }
+
   private overdueOccurrenceId(habit: HabitFile): string {
     if (habit.lastRun === null) return `overdue:first-run:${habit.cadence}`
     return `overdue:last-run:${habit.lastRun}:cadence:${habit.cadence}`
@@ -451,8 +452,13 @@ export class HabitScheduler {
     return `job:${job.id}:${trigger}:last-run:${job.lastRun ?? "never"}`
   }
 
-  private timerOccurrenceId(habitName: string, cadenceMs: number): string {
-    const slot = Math.floor(this.deps.now() / cadenceMs)
-    return `timer:${habitName}:cadence-ms:${cadenceMs}:slot:${slot}`
+  private timerOccurrenceId(habitName: string, cadence: string): string {
+    const cadenceMs = parseCadenceToMs(cadence)
+    if (cadenceMs !== null) {
+      const slot = Math.floor(this.deps.now() / cadenceMs)
+      return `timer:${habitName}:cadence-ms:${cadenceMs}:slot:${slot}`
+    }
+    const slot = nextCadenceRunAt(cadence, this.deps.now()) ?? "unknown"
+    return `timer:${habitName}:cadence:${cadence}:slot:${slot}`
   }
 }

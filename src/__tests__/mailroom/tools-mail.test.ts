@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { buildNativeMailAutonomyPolicy } from "../../mailroom/autonomy"
 import { FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
@@ -177,6 +177,10 @@ async function seedNativeMail(storePath: string) {
 // to land an undecryptable message on the local store. Encryption + missing-
 // key behavior is exercised against the cloud blob store in blob-store.test.ts
 // and core.test.ts.
+
+beforeEach(() => {
+  process.env.HOME = tempDir()
+})
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME

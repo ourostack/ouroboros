@@ -15,6 +15,7 @@ export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
   text: string
   replyToMessageGuid?: string
+  tempGuid?: string
 }
 
 export interface BlueBubblesSendTextResult {
@@ -43,6 +44,9 @@ export interface BlueBubblesClient {
 export interface BlueBubblesListRecentMessagesParams {
   limit?: number
   offset?: number
+  chatGuid?: string
+  chatIdentifier?: string
+  beforeTimestamp?: number
 }
 
 type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
@@ -315,7 +319,7 @@ export function createBlueBubblesClient(
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/text", config.password)
       const body: Record<string, unknown> = {
         chatGuid: resolvedChatGuid,
-        tempGuid: randomUUID(),
+        tempGuid: params.tempGuid?.trim() || randomUUID(),
         message: trimmedText,
       }
       if (params.replyToMessageGuid?.trim()) {
@@ -493,15 +497,22 @@ export function createBlueBubblesClient(
         meta: { limit, offset },
       })
 
+      const body = {
+        limit,
+        offset,
+        sort: "DESC",
+        ...(params.chatGuid?.trim() ? { chatGuid: params.chatGuid.trim() } : {}),
+        ...(params.chatIdentifier?.trim() ? { chatIdentifier: params.chatIdentifier.trim() } : {}),
+        ...(typeof params.beforeTimestamp === "number" && Number.isFinite(params.beforeTimestamp)
+          ? { beforeTimestamp: params.beforeTimestamp }
+          : {}),
+        with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
+      }
+
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          limit,
-          offset,
-          sort: "DESC",
-          with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
       })
 

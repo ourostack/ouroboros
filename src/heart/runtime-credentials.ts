@@ -327,16 +327,29 @@ export async function refreshMachineRuntimeCredentialConfig(
   return refreshRuntimeCredentialConfigItem(agentName, machineRuntimeConfigItemName(machineId), cacheMachineResult, options)
 }
 
-function mergeRuntimeCredentialConfig(base: RuntimeCredentialConfig, patch: RuntimeCredentialConfig): RuntimeCredentialConfig {
+function mergeRuntimeCredentialConfigObjects(base: RuntimeCredentialConfig, patch: RuntimeCredentialConfig): RuntimeCredentialConfig {
   const next: RuntimeCredentialConfig = { ...base }
   for (const key of Object.keys(patch)) {
     const baseValue = next[key]
     const patchValue = patch[key]
     next[key] = isRecord(baseValue) && isRecord(patchValue)
-      ? mergeRuntimeCredentialConfig(baseValue, patchValue)
+      ? mergeRuntimeCredentialConfigObjects(baseValue, patchValue)
       : patchValue
   }
   return next
+}
+
+export async function mergeRuntimeCredentialConfig(
+  agentName: string,
+  patch: RuntimeCredentialConfig,
+  now: Date = new Date(),
+): Promise<RuntimeCredentialConfigReadSuccess> {
+  const current = await refreshRuntimeCredentialConfig(agentName)
+  if (!current.ok && current.reason !== "missing") {
+    throw new Error(`cannot merge runtime config at ${current.itemPath}: ${current.error}`)
+  }
+  const base = current.ok ? current.config : {}
+  return upsertRuntimeCredentialConfig(agentName, mergeRuntimeCredentialConfigObjects(base, patch), now)
 }
 
 export async function upsertRuntimeCredentialConfig(
@@ -410,7 +423,7 @@ export async function mergeMachineRuntimeCredentialConfig(
     throw new Error(`cannot merge machine runtime config at ${current.itemPath}: ${current.error}`)
   }
   const base = current.ok ? current.config : {}
-  return upsertMachineRuntimeCredentialConfig(agentName, machineId, mergeRuntimeCredentialConfig(base, patch), now)
+  return upsertMachineRuntimeCredentialConfig(agentName, machineId, mergeRuntimeCredentialConfigObjects(base, patch), now)
 }
 
 export function resetRuntimeCredentialConfigCache(): void {

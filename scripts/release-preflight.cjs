@@ -53,6 +53,60 @@ function pathRequiresChangelogFreshness(file) {
     (file.startsWith("packages/ouro.bot/") && file !== "packages/ouro.bot/package.json")
 }
 
+function classifyOperationalContractChange(file) {
+  const persistedSchemaPaths = [
+    "src/rsvp/snapshot.ts",
+    "src/rsvp/migration.ts",
+    "src/rsvp/config.ts",
+    "src/rsvp/outbound-state.ts",
+    "src/senses/context-packets.ts",
+    "src/senses/bluebubbles/outbound-state.ts",
+    "src/heart/run-ledger.ts",
+    "src/heart/autonomy-budget.ts",
+  ]
+  if (persistedSchemaPaths.includes(file)) {
+    return {
+      kind: "persisted-schema",
+      message: `persisted schema changed: ${file}`,
+    }
+  }
+
+  if (file.startsWith("src/__fixtures__/") || file.endsWith(".fixture.json") || file.endsWith(".trace.json")) {
+    return {
+      kind: "replay-fixture",
+      message: `replay fixture changed: ${file}`,
+    }
+  }
+
+  if (
+    file === "src/heart/daemon/doctor.ts" ||
+    file === "src/rsvp/diagnostics.ts" ||
+    file === "src/rsvp/incident-bundle.ts"
+  ) {
+    return {
+      kind: "doctor-category",
+      message: `doctor category/check surface changed: ${file}`,
+    }
+  }
+
+  return null
+}
+
+function summarizeOperationalContractChanges(changedFiles) {
+  const changes = changedFiles
+    .map(classifyOperationalContractChange)
+    .filter(Boolean)
+  const priority = ["persisted-schema", "replay-fixture", "doctor-category"]
+  const kinds = priority.filter((kind) => changes.some((change) => change.kind === kind))
+  return { kinds, messages: changes.map((change) => change.message) }
+}
+
+function formatOperationalContractMessages(operationalContracts) {
+  return operationalContracts.kinds.length > 0
+    ? [`operational contracts: ${operationalContracts.kinds.join(", ")}`, ...operationalContracts.messages]
+    : []
+}
+
 function shellQuote(value) {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
@@ -129,36 +183,44 @@ function assessChangelogFreshness(input) {
     }
   }
 
-  if (changelogUncommitted) {
-    return { ok: true, message: "changelog freshness: pass" }
-  }
+  return changelogUncommitted
+    ? { ok: true, message: "changelog freshness: pass" }
+    : assessCommittedChangelogFreshness({
+      baseRef: input.baseRef,
+      freshnessFiles,
+      execSyncImpl: input.execSyncImpl,
+    })
+}
 
+function assessCommittedChangelogFreshness(input) {
   const changelogCommit = latestCommitForPath(input.baseRef, "changelog.json", input.execSyncImpl)
-  if (!changelogCommit) {
-    return {
+  return changelogCommit
+    ? assessCommittedChangelogOrder({
+      baseRef: input.baseRef,
+      freshnessFiles: input.freshnessFiles,
+      changelogCommit,
+      execSyncImpl: input.execSyncImpl,
+    })
+    : {
       ok: false,
       message:
-        `changelog.json must be committed on this branch alongside releasable implementation changes: ${formatPathList(freshnessFiles)}`,
+        `changelog.json must be committed on this branch alongside releasable implementation changes: ${formatPathList(input.freshnessFiles)}`,
     }
-  }
+}
 
-  const staleFiles = freshnessFiles.filter((file) => {
-    if (uncommittedFiles.has(file)) {
-      return false
-    }
+function assessCommittedChangelogOrder(input) {
+  const staleFiles = input.freshnessFiles.filter((file) => {
     const fileCommit = latestCommitForPath(input.baseRef, file, input.execSyncImpl)
-    return fileCommit && !isAncestorCommit(fileCommit, changelogCommit, input.execSyncImpl)
+    return fileCommit && !isAncestorCommit(fileCommit, input.changelogCommit, input.execSyncImpl)
   })
 
-  if (staleFiles.length > 0) {
-    return {
+  return staleFiles.length > 0
+    ? {
       ok: false,
       message:
         `changelog.json is older than releasable implementation changes; update it after touching: ${formatPathList(staleFiles)}`,
     }
-  }
-
-  return { ok: true, message: "changelog freshness: pass" }
+    : { ok: true, message: "changelog freshness: pass" }
 }
 
 function collectChangedFiles(baseRef, execSyncImpl) {
@@ -229,8 +291,8 @@ function runRootDependencyAudit(packageRoot, execSyncImpl) {
       "no moderate-or-higher vulnerabilities"
     return { ok: true, message: `root npm audit: pass (${summary})` }
   } catch (error) {
-    const stdout = typeof error?.stdout?.toString === "function" ? error.stdout.toString() : ""
-    const stderr = typeof error?.stderr?.toString === "function" ? error.stderr.toString() : ""
+    const stdout = errorOutputText(error?.stdout)
+    const stderr = errorOutputText(error?.stderr)
     const details = splitLines(`${stdout}\n${stderr}`).slice(-10).join("\n")
     return {
       ok: false,
@@ -239,6 +301,10 @@ function runRootDependencyAudit(packageRoot, execSyncImpl) {
         (details ? `\n${details}` : ""),
     }
   }
+}
+
+function errorOutputText(value) {
+  return value && typeof value.toString === "function" ? value.toString() : ""
 }
 
 function runReleasePreflight(options = {}, deps = {}) {
@@ -307,6 +373,9 @@ function runReleasePreflight(options = {}, deps = {}) {
     messages.push(wrapperResult.message)
   }
 
+  const operationalContracts = summarizeOperationalContractChanges(changedFiles)
+  messages.push(...formatOperationalContractMessages(operationalContracts))
+
   const auditResult = runRootDependencyAudit(packageRoot, execSyncImpl)
   if (!auditResult.ok) {
     errors.push(auditResult.message)
@@ -341,38 +410,52 @@ function runReleasePreflight(options = {}, deps = {}) {
   }
 }
 
-if (require.main === module) {
+function runReleasePreflightCli(argv = process.argv.slice(2), deps = {}) {
+  const consoleLog = deps.consoleLog ?? console.log
+  const consoleError = deps.consoleError ?? console.error
+  const exit = deps.exit ?? process.exit
+  const runReleasePreflightImpl = deps.runReleasePreflightImpl ?? runReleasePreflight
   let options
   try {
-    options = parseArgs(process.argv.slice(2))
+    options = parseArgs(argv)
   } catch (error) {
-    console.error(`release preflight: FAIL`)
-    console.error(error instanceof Error ? error.message : String(error))
-    process.exit(1)
+    consoleError(`release preflight: FAIL`)
+    consoleError(error instanceof Error ? error.message : String(error))
+    return exit(1)
   }
 
-  const result = runReleasePreflight(options)
+  const result = runReleasePreflightImpl(options)
   for (const message of result.messages) {
-    console.log(message)
+    consoleLog(message)
   }
 
-  if (!result.ok) {
-    console.error("release preflight: FAIL")
+  if (result.ok) {
+    consoleLog("release preflight: pass")
+    return 0
+  } else {
+    consoleError("release preflight: FAIL")
     for (const error of result.errors) {
-      console.error(error)
+      consoleError(error)
     }
-    process.exit(1)
+    return exit(1)
   }
-
-  console.log("release preflight: pass")
 }
+
+function runReleasePreflightCliIfMain(moduleRef = module, requireRef = require, runCli = runReleasePreflightCli) {
+  return requireRef.main !== moduleRef ? undefined : runCli()
+}
+
+runReleasePreflightCliIfMain()
 
 module.exports = {
   assessChangelogFreshness,
   assessWrapperPublishSync,
+  classifyOperationalContractChange,
   collectChangedFiles,
   parseArgs,
   pathRequiresChangelogFreshness,
+  runReleasePreflightCli,
+  runReleasePreflightCliIfMain,
   runReleasePreflight,
   runRootDependencyAudit,
   splitLines,

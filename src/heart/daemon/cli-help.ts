@@ -160,6 +160,25 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro habit list",
     subcommands: ["list", "create", "runs", "inspect", "summary", "poke"],
   },
+  rsvp: {
+    category: "Habits",
+    description: "AislePlanner-backed RSVP habit operations, triage, receipts, ledgers, migration checks, refreshes, and smoke tests",
+    usage: "ouro rsvp <doctor|incident|cutover|legacy-render|replay|config|habit|import-legacy|refresh|compare|smoke> ...",
+    example: "ouro rsvp doctor --agent slugger --json",
+    subcommands: [
+      "doctor",
+      "incident",
+      "cutover",
+      "legacy-render",
+      "replay",
+      "config import-legacy",
+      "habit stage",
+      "import-legacy",
+      "refresh",
+      "compare",
+      "smoke",
+    ],
+  },
   desk: {
     category: "Tasks",
     description: "Manage the agent's desk — tasks, tracks, friction, lessons, search, and recall (routes through the desk MCP server).",
@@ -447,6 +466,61 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Read a habit run summary from receipts and session artifacts without contacting the daemon",
     usage: "ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
     example: "ouro habit summary --agent slugger --operation-id habit:standup --which latest --json",
+  },
+  "rsvp doctor": {
+    description: "Check native RSVP configuration, credentials, BlueBubbles attachment, ledgers, receipts, and migration readiness without sending messages; use --json --strict in triage",
+    usage: "ouro rsvp doctor [--agent <name>] [--strict] [--output <path>] [--json]",
+    example: "ouro rsvp doctor --agent slugger --strict --json",
+  },
+  "rsvp incident": {
+    description: "Collect a redacted local RSVP diagnostic incident bundle with doctor status, receipts, and ledger pointers without contacting the daemon",
+    usage: "ouro rsvp incident [--agent <name>] [--output <path>] [--json]",
+    example: "ouro rsvp incident --agent slugger --output /tmp/rsvp-incident.json",
+  },
+  "rsvp cutover": {
+    description: "Inspect or retire legacy RSVP sender state before native live send",
+    usage: "ouro rsvp cutover [--agent <name>] --legacy-root <path> --action check|quarantine-launchd|retire-legacy-send-config [--yes] [--output <path>] [--json]",
+    example: "ouro rsvp cutover --agent slugger --legacy-root ~/Projects/rsvp-tracker --action check --json",
+  },
+  "rsvp legacy-render": {
+    description: "Render the legacy RSVP script's local snapshot/report shape for comparison without mutating native state",
+    usage: "ouro rsvp legacy-render --legacy-root <path> [--agent <name>] [--output <path>] [--json]",
+    example: "ouro rsvp legacy-render --legacy-root ~/Projects/rsvp-tracker --output /tmp/legacy.json",
+  },
+  "rsvp replay": {
+    description: "Replay an offline fixture through deterministic native RSVP report/query logic without live BlueBubbles or AislePlanner access",
+    usage: "ouro rsvp replay [--agent <name>] --fixture <path> [--output <path>] [--json]",
+    example: "ouro rsvp replay --agent slugger --fixture /tmp/rsvp-replay.json --json",
+  },
+  "rsvp config import-legacy": {
+    description: "Import legacy RSVP coordinates into native config and vault-backed runtime/config; mutates only with --yes",
+    usage: "ouro rsvp config import-legacy [--agent <name>] --legacy-root <path> --mode shadow|live [--yes] [--output <path>] [--json]",
+    example: "ouro rsvp config import-legacy --agent slugger --legacy-root ~/Projects/rsvp-tracker --mode shadow --yes",
+  },
+  "rsvp habit stage": {
+    description: "Stage the daily RSVP refresh habit with a fixed cron cadence, usually the 10 AM dogfood run",
+    usage: "ouro rsvp habit stage [--agent <name>] --mode shadow|live --cadence '<cron>' [--output <path>] [--json]",
+    example: "ouro rsvp habit stage --agent slugger --mode shadow --cadence '0 10 * * *'",
+  },
+  "rsvp import-legacy": {
+    description: "Compatibility alias for `ouro rsvp config import-legacy`; mutates only with --yes",
+    usage: "ouro rsvp import-legacy [--agent <name>] --legacy-root <path> --mode shadow|live [--yes] [--output <path>] [--json]",
+    example: "ouro rsvp import-legacy --agent slugger --legacy-root ~/Projects/rsvp-tracker --mode shadow --yes",
+  },
+  "rsvp refresh": {
+    description: "Run the native RSVP refresh path and write receipts; defaults to dry-run behavior unless --allow-send is explicit",
+    usage: "ouro rsvp refresh [--agent <name>] --mode shadow|live [--no-send|--allow-send] [--output <path>] [--json]",
+    example: "ouro rsvp refresh --agent slugger --mode shadow --no-send --json",
+  },
+  "rsvp compare": {
+    description: "Compare native and legacy RSVP render outputs for migration verification",
+    usage: "ouro rsvp compare [--agent <name>] --native <path> --legacy <path> [--output <path>] [--json]",
+    example: "ouro rsvp compare --agent slugger --native /tmp/native.json --legacy /tmp/legacy.json",
+  },
+  "rsvp smoke": {
+    description: "Smoke-test RSVP follow-up behavior through a target sense; preflight is no-send and live mode requires --allow-send",
+    usage: "ouro rsvp smoke [--agent <name>] --mode preflight|live --surface bluebubbles [--question <text>] [--allow-send] [--output <path>] [--replay-output <path>] [--json]",
+    example: "ouro rsvp smoke --agent slugger --mode preflight --surface bluebubbles --question 'who is pending?'",
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",

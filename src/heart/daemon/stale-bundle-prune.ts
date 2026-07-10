@@ -11,13 +11,16 @@ export interface PruneDeps {
 }
 
 /**
- * Scan the bundles root for `.ouro` directories that have no `agent.json`
- * file (definitively dead ephemeral bundles) and delete them.
+ * Scan the bundles root for `.ouro` directories that have no bundle contract
+ * or durable state markers (definitively dead ephemeral bundles) and delete
+ * them.
  *
  * Returns a list of pruned bundle directory names (e.g. `["stale.ouro"]`)
  * for display purposes. Bundles that have `agent.json` -- even if disabled
- * -- are never deleted. Errors on individual bundles are swallowed so that
- * one permission-denied doesn't block pruning the rest.
+ * -- are never deleted. Task-doc-only bundles are also durable work state, so
+ * directories with state roots such as `tasks`, `desk`, `arc`, `state`, or
+ * `.git` are preserved. Errors on individual bundles are swallowed so that one
+ * permission-denied doesn't block pruning the rest.
  */
 export function pruneStaleEphemeralBundles(deps: PruneDeps = {}): string[] {
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
@@ -38,9 +41,8 @@ export function pruneStaleEphemeralBundles(deps: PruneDeps = {}): string[] {
     if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
 
     const bundlePath = path.join(bundlesRoot, entry.name)
-    const agentJsonPath = path.join(bundlePath, "agent.json")
 
-    if (existsSync(agentJsonPath)) continue
+    if (hasDurableBundleMarker(bundlePath, existsSync)) continue
 
     try {
       rmSync(bundlePath, { recursive: true, force: true })
@@ -68,4 +70,21 @@ export function pruneStaleEphemeralBundles(deps: PruneDeps = {}): string[] {
   }
 
   return pruned
+}
+
+const DURABLE_BUNDLE_MARKERS = [
+  "agent.json",
+  "tasks",
+  "desk",
+  "arc",
+  "state",
+  "habits",
+  "friends",
+  "facts",
+  "vault",
+  ".git",
+]
+
+function hasDurableBundleMarker(bundlePath: string, existsSync: (target: string) => boolean): boolean {
+  return DURABLE_BUNDLE_MARKERS.some((marker) => existsSync(path.join(bundlePath, marker)))
 }

@@ -19,7 +19,7 @@ import {
 import type { FriendStore, FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ToolDefinition, ToolRiskProfile } from "../../repertoire/tools-base"
-import { parseCadenceToMs } from "../daemon/cadence"
+import { nextCadenceRunAt } from "../daemon/cadence"
 import type { HabitFile } from "./habit-parser"
 import { recordHabitRun } from "./habit-runtime-state"
 
@@ -568,10 +568,9 @@ export function filterHabitToolsForEnvelope(
 
 function computeNextRunAt(habit: HabitFile, endedAt: string): string | null {
   if (habit.status !== "active" || !habit.cadence) return null
-  const cadenceMs = parseCadenceToMs(habit.cadence)
   const endedMs = Date.parse(endedAt)
-  if (cadenceMs === null || !Number.isFinite(endedMs)) return null
-  return new Date(endedMs + cadenceMs).toISOString()
+  if (!Number.isFinite(endedMs)) return null
+  return nextCadenceRunAt(habit.cadence, endedMs)
 }
 
 function defaultSummarySnapshot(input: BuildHabitRunReceiptInput): HabitRunSummarySnapshot {

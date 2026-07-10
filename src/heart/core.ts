@@ -12,6 +12,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 import { trimMessages } from "../mind/context";
+import { applyPromptBudget } from "../mind/prompt-budget";
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt";
 import type { SystemPrompt } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
@@ -371,6 +372,8 @@ export interface RunAgentOptions {
   orientationFrame?: OrientationFrame;
   /** Habit-session policy envelope for private habit turns. */
   habitSession?: HabitSessionToolContext;
+  /** Content-free same-turn context packet ids linked to this provider run. */
+  contextPacketIds?: string[];
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -1228,6 +1231,16 @@ export async function runAgent(
         callbacks.onModelStart();
         habitCallbackBufferRef.current = habitSession ? createHabitCallbackBuffer(callbacks) : null;
         try {
+          const promptBudget = applyPromptBudget({
+            messages,
+            provider: providerRuntime.id,
+            model: providerRuntime.model,
+            contextWindowTokens: getContextConfig().maxTokens,
+          });
+          if (promptBudget.status !== "within_budget") {
+            messages.splice(0, messages.length, ...promptBudget.messages);
+            providerRuntime.resetTurnState(messages);
+          }
           return await providerRuntime.streamTurn({
             messages,
             activeTools,

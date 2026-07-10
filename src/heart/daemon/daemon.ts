@@ -51,6 +51,7 @@ import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from
 import { parseHabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
+import { isRsvpHabitName } from "../../rsvp/habit-policy"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -72,6 +73,12 @@ function isVitestProcess(): boolean {
   /* v8 ignore next -- defensive: process and process.argv always exist in node @preserve */
   if (typeof process === "undefined" || !Array.isArray(process.argv)) return false
   return process.argv.some((arg) => typeof arg === "string" && arg.includes("vitest"))
+}
+
+export function messageFromHabitPokeError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  /* v8 ignore next -- defensive fallback for hostile/non-Error throws from filesystem or parsers @preserve */
+  return String(error)
 }
 
 /**
@@ -1448,13 +1455,25 @@ export class OuroDaemon {
     command: Extract<DaemonCommand, { kind: "habit.poke" }>,
     trigger: HabitRunTrigger,
   ): string | { skipReason: string } | undefined {
-    if (trigger === "poke" || trigger === "manual") return undefined
-
     const agentRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
     const habitPath = path.join(agentRoot, "habits", `${command.habitName}.md`)
+    let parsedHabit: ReturnType<typeof parseHabitFile> | null = null
+
+    if (isRsvpHabitName(command.habitName)) {
+      if (!fs.existsSync(habitPath)) return { skipReason: "RSVP habit file not found" }
+      try {
+        parsedHabit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+      } catch (error) {
+        return { skipReason: `RSVP habit metadata invalid: ${messageFromHabitPokeError(error)}` }
+      }
+      if (!parsedHabit.rsvp) return { skipReason: "RSVP habit metadata is required before private runtime wake" }
+    }
+
+    if (trigger === "poke" || trigger === "manual") return undefined
+
     if (!fs.existsSync(habitPath)) return { skipReason: "habit file not found" }
 
-    const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+    const habit = parsedHabit ?? applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
     if (habit.cadence === null) return { skipReason: "habit has no cadence" }
     const cadence = habit.cadence
     if (habit.lastRun === null) return `${trigger}:first-run:${cadence}`

@@ -34,6 +34,13 @@ import {
   type FailoverSwitchValidationResult,
 } from "../heart/provider-failover"
 import { refreshOpenAICodexProviderCredentials } from "../heart/providers/openai-codex-token"
+import {
+  appendRunLedgerRecordNonFatal,
+  createRunLedgerRecord,
+  runLedgerHash,
+  usageMetadataFromUsageData,
+  type RunLedgerLifecycle,
+} from "../heart/run-ledger"
 import type { ProviderLane } from "../heart/provider-lanes"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
@@ -524,6 +531,71 @@ function prependTurnSections(
 
 let _lastSessionKey: string | null = null
 
+function runAgentOptionContextPacketIds(options: RunAgentOptions): string[] {
+  return Array.isArray(options.contextPacketIds) ? options.contextPacketIds : []
+}
+
+function buildInboundRunLedgerInput(input: {
+  agentName: string
+  channel: Channel
+  senseType: string
+  sessionKey: string
+  sessionPath: string
+  friendId: string
+  currentUserMessage?: string
+  startedAt: string
+  runAgentOptions: RunAgentOptions
+}) {
+  const target = {
+    channel: input.channel,
+    senseType: input.senseType,
+    sessionKey: input.sessionKey,
+    sessionPath: input.sessionPath,
+    friendId: input.friendId,
+    currentUserHash: input.currentUserMessage ? runLedgerHash(input.currentUserMessage) : null,
+    traceId: input.runAgentOptions.traceId ?? null,
+  }
+  return {
+    agent: input.agentName,
+    triggerType: "inbound" as const,
+    sourceKind: "sense" as const,
+    senseOrHabit: String(input.channel),
+    startedAt: input.startedAt,
+    target,
+    idempotencyScope: {
+      channel: input.channel,
+      sessionKey: input.sessionKey,
+      friendId: input.friendId,
+      currentUserHash: target.currentUserHash,
+      traceId: input.runAgentOptions.traceId ?? null,
+    },
+    provider: "unknown",
+    model: "unknown",
+    sessionRef: {
+      channel: String(input.channel),
+      keyHash: runLedgerHash(input.sessionKey),
+    },
+    contextPacketIds: runAgentOptionContextPacketIds(input.runAgentOptions),
+  }
+}
+
+function prepareInboundRunLedger(input: Omit<Parameters<typeof buildInboundRunLedgerInput>[0], "agentName">): {
+  agentRoot: string
+  recordInput: ReturnType<typeof buildInboundRunLedgerInput>
+} | null {
+  try {
+    return {
+      agentRoot: getAgentRoot(),
+      recordInput: buildInboundRunLedgerInput({
+        ...input,
+        agentName: getAgentName(),
+      }),
+    }
+  } catch {
+    return null
+  }
+}
+
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
   // Reset session-scoped state when the session changes
   const sessionKey = `${input.channel}/${input.sessionKey ?? "session"}`
@@ -979,13 +1051,50 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     },
   }
 
-  const result = await input.runAgent(
-    sessionMessages,
-    input.callbacks,
-    input.channel,
-    input.signal,
+  const runLedger = prepareInboundRunLedger({
+    channel: input.channel,
+    senseType: input.capabilities.senseType,
+    sessionKey: currentSession.key,
+    sessionPath: session.sessionPath,
+    friendId: resolvedContext.friend.id,
+    currentUserMessage,
+    startedAt: new Date().toISOString(),
     runAgentOptions,
-  )
+  })
+  if (runLedger) appendRunLedgerRecordNonFatal(runLedger.agentRoot, createRunLedgerRecord({
+    ...runLedger.recordInput,
+    lifecycle: "started",
+  }))
+
+  let result: Awaited<ReturnType<InboundTurnInput["runAgent"]>>
+  try {
+    result = await input.runAgent(
+      sessionMessages,
+      input.callbacks,
+      input.channel,
+      input.signal,
+      runAgentOptions,
+    )
+  } catch (error) {
+    if (runLedger) appendRunLedgerRecordNonFatal(runLedger.agentRoot, createRunLedgerRecord({
+      ...runLedger.recordInput,
+      lifecycle: "error",
+      endedAt: new Date().toISOString(),
+      usage: usageMetadataFromUsageData(undefined, "reported-unavailable"),
+      errorName: error instanceof Error ? error.name : "NonErrorThrown",
+    }))
+    throw error
+  }
+
+  const runLedgerLifecycle: RunLedgerLifecycle = result.outcome === "errored" ? "error" : "completed"
+  if (runLedger) appendRunLedgerRecordNonFatal(runLedger.agentRoot, createRunLedgerRecord({
+    ...runLedger.recordInput,
+    lifecycle: runLedgerLifecycle,
+    endedAt: new Date().toISOString(),
+    usage: usageMetadataFromUsageData(result.usage, result.usage ? "provider" : "none"),
+    ...(result.error ? { errorName: result.error.name } : {}),
+    ...(result.errorClassification ? { errorCode: result.errorClassification } : {}),
+  }))
 
   // Step 5b: Failover on terminal error
   if (result.outcome === "errored" && input.failoverState) {

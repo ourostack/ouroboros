@@ -3,6 +3,7 @@ import type { Integration, ResolvedContext, FriendStore } from "@ouro.bot/friend
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import type { ActiveWorkFrame } from "../heart/active-work";
 import type { FlightRecorderProducedRef, HabitPermissionEnvelope, HabitSurfaceAttempt, HabitToolPolicy } from "../arc/flight-recorder";
+import type { RsvpHabitRuntimePolicy } from "../rsvp/habit-policy";
 
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
@@ -29,6 +30,7 @@ import { obligationToolDefinitions } from "./tools-obligations"
 import { evolutionToolDefinitions } from "./tools-evolution"
 import { runtimeToolDefinitions } from "./tools-runtime"
 import { orientationToolDefinitions } from "./tools-orientation"
+import { rsvpToolDefinitions } from "./tools-rsvp"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
@@ -75,6 +77,7 @@ export interface HabitSessionToolContext {
   pendingDir?: string;
   permissionEnvelope: HabitPermissionEnvelope;
   toolPolicy: HabitToolPolicy;
+  rsvpPolicy?: RsvpHabitRuntimePolicy;
   friendStore?: FriendStore;
   recordProducedRef?: (ref: FlightRecorderProducedRef) => void;
   recordSurfaceAttempt?: (attempt: HabitSurfaceAttempt) => void;
@@ -170,6 +173,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...evolutionToolDefinitions,
   ...orientationToolDefinitions,
   ...runtimeToolDefinitions,
+  ...rsvpToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).

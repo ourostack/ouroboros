@@ -21,6 +21,7 @@ import {
   openAISipWebhookUrl,
   outboundCallAnsweredPrompt,
   readRecentTwilioOutboundCallJobs,
+  resolveTwilioPhoneAgentRoot,
   twilioOutboundCallAmdCallbackUrl,
   twilioOutboundCallJobPath,
   twilioOutboundCallStatusCallbackUrl,
@@ -192,6 +193,7 @@ function baseBridgeOptions(outputDir: string) {
 
   return {
     agentName: "slugger",
+    agentRoot: path.join(outputDir, "slugger.ouro"),
     publicBaseUrl: "https://voice.example.com/base/",
     outputDir,
     transcriber,
@@ -210,6 +212,24 @@ describe("Twilio phone voice bridge", () => {
       .toBe("https://voice.example.com/voice/agents/slugger/twilio/incoming")
     expect(() => normalizeTwilioPhoneBasePath("   ")).toThrow("Twilio phone webhook base path is empty")
     expect(() => normalizeTwilioPhoneBasePath("/voice//twilio")).toThrow("invalid Twilio phone webhook base path")
+  })
+
+  it("resolves Twilio phone agent roots from explicit and bundle-default options", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-home-"))
+    const originalHome = process.env.HOME
+    try {
+      process.env.HOME = homeDir
+      expect(resolveTwilioPhoneAgentRoot({ agentName: "slugger", agentRoot: "/tmp/slugger.ouro" }))
+        .toBe("/tmp/slugger.ouro")
+      expect(resolveTwilioPhoneAgentRoot({ agentName: "slugger" }))
+        .toBe(path.join(homeDir, "AgentBundles", "slugger.ouro"))
+      expect(resolveTwilioPhoneAgentRoot({ agentName: "slugger", agentRoot: null as unknown as string }))
+        .toBe(path.join(homeDir, "AgentBundles", "slugger.ouro"))
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME
+      else process.env.HOME = originalHome
+      await fs.rm(homeDir, { recursive: true, force: true })
+    }
   })
 
   it("normalizes playback mode and keys sessions to the phone voice channel", () => {

@@ -587,6 +587,21 @@ describe("test isolation contract", () => {
     ].join("\n")).toEqual([])
   })
 
+  it("prod-path leak guard must preserve real AgentBundles entries", () => {
+    const guardPath = join(TESTS_ROOT, "nerves", "global-capture.ts")
+    const content = readFileSync(guardPath, "utf-8")
+    const start = content.indexOf("// ---------- runtime prod-path leak guard ----------")
+    const end = content.indexOf("// ---------- global ndjson capture ----------")
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const prodPathGuard = content.slice(start, end)
+
+    expect(prodPathGuard).toContain("Preserved on disk for inspection")
+    expect(prodPathGuard).toContain("throw new Error(message)")
+    expect(prodPathGuard).not.toMatch(/rmSync\s*\([^)]*recursive\s*:\s*true/)
+    expect(prodPathGuard).not.toContain("Forcibly removed")
+  })
+
   it("agent-callable production code must not use recursive rm (Directive A)", () => {
     // Rule: production code under `src/` (NOT `src/__tests__/`) must not
     // call `fs.rmSync(..., { recursive: true })` or shell out to `rm -rf`.

@@ -327,8 +327,9 @@ describe("listActiveReturnObligations", () => {
     const legacy = { id: "l", status: "fulfilled" /* not in ReturnObligationStatus */, createdAt: nowMs - 1000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "old" }
     vi.mocked(fs.readdirSync).mockReturnValue(["v.json", "l.json"] as any)
     vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
-      if ((p as string).includes("v")) return JSON.stringify(valid)
-      if ((p as string).includes("l")) return JSON.stringify(legacy)
+      const fileName = path.basename(p as string)
+      if (fileName === "v.json") return JSON.stringify(valid)
+      if (fileName === "l.json") return JSON.stringify(legacy)
       throw new Error("ENOENT")
     }) as any)
 
