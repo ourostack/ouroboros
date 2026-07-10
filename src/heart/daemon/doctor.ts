@@ -23,6 +23,7 @@ import { parseCadenceToCron } from "./cadence"
 import { DEFAULT_MAX_LOG_SIZE_BYTES } from "../../nerves"
 import { readRsvpConfig, validateRsvpReadiness, type RsvpReadinessCheck } from "../../rsvp/config"
 import { checkRsvpCutover, type RsvpCutoverChecks } from "../../rsvp/cutover"
+import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/diagnostics"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 
@@ -444,6 +445,27 @@ function rsvpDoctorLabel(agentDir: string, checkId: RsvpReadinessCheck["id"]): s
   return `${agentDir} ${suffix[checkId]}`
 }
 
+function rsvpDoctorId(checkId: RsvpReadinessCheck["id"]): string {
+  const ids: Record<RsvpReadinessCheck["id"], string> = {
+    "rsvp.native_config": "rsvp.native_config",
+    "rsvp.aisleplanner_source": "rsvp.aisleplanner.source",
+    "rsvp.aisleplanner_credentials": "rsvp.aisleplanner.credentials",
+    "rsvp.bluebubbles_route": "rsvp.bluebubbles.route",
+    "rsvp.bluebubbles_attachment": "rsvp.bluebubbles.attachment",
+  }
+  return ids[checkId]
+}
+
+function rsvpDoctorDetail(readinessCheck: RsvpReadinessCheck): string {
+  return readinessCheck.id === "rsvp.bluebubbles_route" && readinessCheck.status === "pass"
+    ? "configured"
+    : readinessCheck.detail
+}
+
+function doctorStatus(status: RsvpDiagnosticStatus): DoctorCheck["status"] {
+  return status
+}
+
 function discoverRsvpCutoverLegacyRoot(deps: DoctorDeps): string | null {
   if (deps.rsvpCutoverLegacyRoot) return deps.rsvpCutoverLegacyRoot
   const candidate = `${deps.homedir}/Projects/rsvp-tracker`
@@ -494,11 +516,56 @@ export async function checkRsvp(deps: DoctorDeps): Promise<DoctorCategory> {
 
     for (const readinessCheck of readiness.checks) {
       checks.push({
+        id: rsvpDoctorId(readinessCheck.id),
         label: rsvpDoctorLabel(agentDir, readinessCheck.id),
         status: readinessCheck.status === "pass" ? "pass" : "fail",
-        detail: readinessCheck.detail,
+        detail: rsvpDoctorDetail(readinessCheck),
       })
     }
+
+    const attachment = readiness.checks.find((check) => check.id === "rsvp.bluebubbles_attachment")
+    if (attachment) {
+      checks.push({
+        id: "rsvp.bluebubbles.attachment_identity",
+        label: `${agentDir} RSVP BlueBubbles attachment identity`,
+        status: attachment.status === "pass" ? "pass" : "fail",
+        detail: attachment.status === "pass" ? "machine attachment credential present" : attachment.detail,
+      })
+    }
+
+    const diagnostics = collectRsvpDiagnostics(agentPath, deps)
+    checks.push(
+      {
+        id: "rsvp.context_packet_ledger",
+        label: `${agentDir} RSVP context packet ledger`,
+        status: doctorStatus(diagnostics.contextPacketLedger.status),
+        detail: diagnostics.contextPacketLedger.detail,
+      },
+      {
+        id: "rsvp.habit.schedule",
+        label: `${agentDir} RSVP habit schedule`,
+        status: doctorStatus(diagnostics.habitSchedule.status),
+        detail: diagnostics.habitSchedule.detail,
+      },
+      {
+        id: "rsvp.latest_fetch",
+        label: `${agentDir} RSVP latest fetch`,
+        status: doctorStatus(diagnostics.latestFetch.status),
+        detail: diagnostics.latestFetch.detail,
+      },
+      {
+        id: "rsvp.delivery.reconciliation",
+        label: `${agentDir} RSVP delivery reconciliation`,
+        status: doctorStatus(diagnostics.deliveryReconciliation.status),
+        detail: diagnostics.deliveryReconciliation.detail,
+      },
+      {
+        id: "rsvp.spend_timeline",
+        label: `${agentDir} RSVP spend timeline`,
+        status: doctorStatus(diagnostics.spendTimeline.status),
+        detail: diagnostics.spendTimeline.detail,
+      },
+    )
 
     const legacyRoot = discoverRsvpCutoverLegacyRoot(deps)
     if (config.ok && legacyRoot) {
@@ -508,6 +575,7 @@ export async function checkRsvp(deps: DoctorDeps): Promise<DoctorCategory> {
         ...(deps.rsvpCutoverDeps ? { deps: deps.rsvpCutoverDeps } : {}),
       })
       checks.push({
+        id: "rsvp.cutover.live_send_preflight",
         label: `${agentDir} RSVP legacy live-send preflight`,
         status: cutover.sendAllowed ? "pass" : "fail",
         detail: rsvpCutoverDetail(cutover.checks, cutover.sendAllowed, cutover.denialReasons.length),

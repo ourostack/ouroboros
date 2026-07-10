@@ -16,6 +16,29 @@ vi.mock("../../../rsvp/config", async () => {
   }
 })
 
+vi.mock("../../../heart/runtime-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
+  return {
+    ...actual,
+    refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => ({
+      ok: false,
+      reason: "missing",
+      itemPath: `vault:${agentName}:runtime/config`,
+      error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+    })),
+    refreshMachineRuntimeCredentialConfig: vi.fn(async (agentName: string, machineId: string) => ({
+      ok: false,
+      reason: "missing",
+      itemPath: `vault:${agentName}:runtime/machines/${machineId}/config`,
+      error: `no machine runtime credentials stored at vault:${agentName}:runtime/machines/${machineId}/config`,
+    })),
+  }
+})
+
+vi.mock("../../../heart/machine-identity", () => ({
+  loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine_test" })),
+}))
+
 import {
   parseOuroCommand,
   runOuroCli,
@@ -276,7 +299,7 @@ describe("ouro rsvp CLI execution", () => {
   it("writes explicit RSVP output files and supports text mode without daemon access", async () => {
     const tmp = seedRsvpOperationalBundle()
     const outputPath = path.join(os.tmpdir(), `rsvp-cli-incident-${process.pid}-${Date.now()}.json`)
-    const deps = createMockDeps({ bundlesRoot: tmp.bundleRoot })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
     try {
       const result = await runOuroCli(["rsvp", "incident", "--agent", "slugger", "--output", outputPath], deps)
       const written = JSON.parse(fs.readFileSync(outputPath, "utf-8"))
@@ -301,7 +324,7 @@ describe("ouro rsvp CLI execution", () => {
   it("runs RSVP doctor locally with stable check ids instead of returning a placeholder registration", async () => {
     const tmp = seedRsvpOperationalBundle()
     const setExitCode = vi.fn()
-    const deps = createMockDeps({ bundlesRoot: tmp.bundleRoot, setExitCode })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, setExitCode })
     try {
       const result = await runOuroCli(["rsvp", "doctor", "--agent", "slugger", "--json", "--strict"], deps)
       const parsed = JSON.parse(result)
@@ -340,7 +363,7 @@ describe("ouro rsvp CLI execution", () => {
   it("writes the real RSVP incident bundle from the CLI without leaking raw BlueBubbles coordinates", async () => {
     const tmp = seedRsvpOperationalBundle()
     const outputPath = path.join(os.tmpdir(), `rsvp-cli-incident-real-${process.pid}-${Date.now()}.json`)
-    const deps = createMockDeps({ bundlesRoot: tmp.bundleRoot })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
     try {
       const result = await runOuroCli(["rsvp", "incident", "--agent", "slugger", "--output", outputPath], deps)
       const written = JSON.parse(fs.readFileSync(outputPath, "utf-8"))

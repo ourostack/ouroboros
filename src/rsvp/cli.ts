@@ -1,11 +1,15 @@
 import * as fs from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 
 import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
+import { runDoctorChecks } from "../heart/daemon/doctor"
+import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { importLegacyRsvpConfig } from "./config"
 import { runRsvpCutover } from "./cutover"
+import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
@@ -22,6 +26,8 @@ interface RsvpCliPayload {
   message: string
   inputs?: Record<string, JsonValue>
   result?: JsonValue
+  doctor?: JsonValue
+  incidentBundle?: JsonValue
   checks?: Record<string, JsonValue>
   sendAllowed?: boolean
   denialReasons?: string[]
@@ -30,7 +36,9 @@ interface RsvpCliPayload {
 
 type RsvpImportLegacyCommand = Extract<RsvpCliCommand, { kind: "rsvp.config.import-legacy" | "rsvp.import-legacy" }>
 type RsvpCutoverCommand = Extract<RsvpCliCommand, { kind: "rsvp.cutover" }>
-type RsvpExecutedCommand = RsvpImportLegacyCommand | RsvpCutoverCommand
+type RsvpDoctorCommand = Extract<RsvpCliCommand, { kind: "rsvp.doctor" }>
+type RsvpIncidentCommand = Extract<RsvpCliCommand, { kind: "rsvp.incident" }>
+type RsvpExecutedCommand = RsvpImportLegacyCommand | RsvpCutoverCommand | RsvpDoctorCommand | RsvpIncidentCommand
 type RsvpPlannedCommand = Exclude<RsvpCliCommand, RsvpExecutedCommand>
 
 function commandJson(command: RsvpCliCommand): boolean {
@@ -81,6 +89,31 @@ function writePayload(command: RsvpCliCommand, deps: OuroCliDeps, payload: RsvpC
       sideEffect: payload.sideEffect,
       outputPath,
       agent: payload.agent,
+    },
+  })
+  return text
+}
+
+function writeIncidentText(deps: OuroCliDeps, command: RsvpIncidentCommand, bundle: RsvpIncidentBundle, outputPath?: string): string {
+  const text = command.json === true
+    ? JSON.stringify({
+        ok: bundle.doctor.summary.failed === 0,
+        command: command.kind,
+        agent: command.agent,
+        sideEffect: false,
+        incidentBundle: bundle as unknown as JsonValue,
+      }, null, 2)
+    : `rsvp.incident: wrote side-effect-free bundle${command.agent ? ` agent=${command.agent}` : ""}${outputPath ? ` output=${outputPath}` : ""}`
+  deps.writeStdout(text)
+  emitNervesEvent({
+    component: "rsvp",
+    event: "rsvp.cli_command_executed",
+    message: "executed RSVP CLI command",
+    meta: {
+      command: command.kind,
+      sideEffect: false,
+      outputPath,
+      agent: command.agent,
     },
   })
   return text
@@ -163,14 +196,63 @@ async function executeCutover(command: RsvpCutoverCommand, deps: OuroCliDeps): P
   }
 }
 
+function doctorDepsFor(deps: OuroCliDeps): DoctorDeps {
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  return {
+    existsSync: (filePath: string) => fs.existsSync(filePath),
+    readFileSync: (filePath: string) => fs.readFileSync(filePath, "utf-8"),
+    readdirSync: (dirPath: string) => fs.readdirSync(dirPath),
+    statSync: (filePath: string) => fs.statSync(filePath),
+    checkSocketAlive: deps.checkSocketAlive,
+    fetchImpl: deps.fetchImpl ?? fetch,
+    socketPath: deps.socketPath,
+    bundlesRoot,
+    daemonLogsDir: path.join(deps.homeDir ?? os.homedir(), ".ouro-cli", "daemon", "logs"),
+    homedir: deps.homeDir ?? os.homedir(),
+    envPath: process.env.PATH ?? "",
+    platform: process.platform,
+    ...(deps.rsvpCutoverDeps ? { rsvpCutoverDeps: deps.rsvpCutoverDeps } : {}),
+  }
+}
+
+async function executeDoctor(command: RsvpDoctorCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+  const doctor = await runDoctorChecks(doctorDepsFor(deps), { category: "RSVP" })
+  const ok = doctor.summary.warnings === 0 && doctor.summary.failed === 0
+  if (command.strict && !ok) deps.setExitCode?.(1)
+  return basePayload(command, false, ok ? "RSVP doctor checks passed" : "RSVP doctor checks found issues", {
+    ok,
+    inputs: { strict: command.strict === true },
+    doctor: doctor as unknown as JsonValue,
+    strict: command.strict === true,
+  } as Omit<Partial<RsvpCliPayload>, "ok" | "command" | "sideEffect" | "message">)
+}
+
+async function executeIncident(command: RsvpIncidentCommand, deps: OuroCliDeps): Promise<string> {
+  const agentRoot = maybeAgentRoot(command, deps)
+  if (!command.agent || !agentRoot) {
+    return writePayload(command, deps, {
+      ok: false,
+      command: command.kind,
+      sideEffect: false,
+      message: "RSVP incident bundle requires --agent <name>",
+      requires: "--agent",
+    })
+  }
+  const diagnosticsDeps = {
+    existsSync: (filePath: string) => fs.existsSync(filePath),
+    readFileSync: (filePath: string) => fs.readFileSync(filePath, "utf-8"),
+    readdirSync: (dirPath: string) => fs.readdirSync(dirPath),
+    runDoctorChecks: () => runDoctorChecks(doctorDepsFor(deps), { category: "RSVP" }),
+  }
+  const outputPath = commandOutputPath(command)
+  const bundle = outputPath
+    ? (await writeRsvpIncidentBundle({ agent: command.agent, agentRoot, outputPath, deps: diagnosticsDeps })).bundle
+    : await buildRsvpIncidentBundle({ agent: command.agent, agentRoot, deps: diagnosticsDeps })
+  return writeIncidentText(deps, command, bundle, outputPath)
+}
+
 function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
   switch (command.kind) {
-    case "rsvp.doctor":
-      return basePayload(command, false, "RSVP doctor command registered; full readiness checks run in the RSVP doctor unit", {
-        inputs: { strict: command.strict === true },
-      })
-    case "rsvp.incident":
-      return basePayload(command, false, "RSVP incident command registered; full incident bundle capture runs in the health unit")
     case "rsvp.legacy-render":
       return basePayload(command, false, "RSVP legacy render command registered; full legacy renderer runs in the parity unit", {
         inputs: { legacyRoot: command.legacyRoot },
@@ -206,10 +288,13 @@ function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
 }
 
 export async function runRsvpCliCommand(command: RsvpCliCommand, deps: OuroCliDeps): Promise<string> {
+  if (command.kind === "rsvp.incident") return executeIncident(command, deps)
   const payload = command.kind === "rsvp.config.import-legacy" || command.kind === "rsvp.import-legacy"
     ? await executeImportLegacy(command, deps)
     : command.kind === "rsvp.cutover"
       ? await executeCutover(command, deps)
-      : plannedPayload(command)
+      : command.kind === "rsvp.doctor"
+        ? await executeDoctor(command, deps)
+        : plannedPayload(command)
   return writePayload(command, deps, payload)
 }

@@ -12,6 +12,8 @@ export type DoctorCheckStatus = "pass" | "warn" | "fail"
 
 /** A single health check result. */
 export interface DoctorCheck {
+  /** Stable machine-readable check identifier for automation and incident bundles. */
+  id?: string
   /** Human-readable label for this check (e.g., "daemon socket exists"). */
   label: string
   /** Result status: pass, warn, or fail. */
