@@ -464,4 +464,42 @@ describe("BlueBubbles replay helper", () => {
     expect(resetIdentity).toHaveBeenCalledTimes(1)
     expect(result.hint).toContain("--event-type new-message")
   })
+
+  it("replays minimized fixture manifests with expected packet and model-input hashes without live repair", async () => {
+    const { replayBlueBubblesFixture } = await import("../../../senses/bluebubbles/replay")
+    const fixture = {
+      schemaVersion: 1,
+      policyVersion: "bluebubbles-replay/v1",
+      agent: "slugger",
+      expected: {
+        contextPacketHash: "sha256:context-fixture",
+        modelInputHash: "sha256:model-input-fixture",
+      },
+      privacy: {
+        rawTranscriptStored: false,
+        searchIndex: false,
+        vectorIndex: false,
+      },
+      inbound: {
+        messageGuid: "fixture-message",
+        chatGuidHash: "sha256:chat-hash",
+        text: "who is pending?",
+      },
+    }
+    const repairEvent = vi.fn()
+
+    const result = await replayBlueBubblesFixture({
+      fixture,
+      deps: {
+        repairEvent,
+      },
+    })
+
+    expect(result).toMatchObject({
+      sideEffect: false,
+      contextPacketHash: "sha256:context-fixture",
+      modelInputHash: "sha256:model-input-fixture",
+    })
+    expect(repairEvent).not.toHaveBeenCalled()
+  })
 })

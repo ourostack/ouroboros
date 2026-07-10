@@ -274,8 +274,6 @@ describe("ouro rsvp CLI execution", () => {
       { argv: ["rsvp", "doctor", "--agent", "slugger", "--json"], kind: "rsvp.doctor" },
       { argv: ["rsvp", "incident", "--agent", "slugger", "--json"], kind: "rsvp.incident" },
       { argv: ["rsvp", "cutover", "--agent", "slugger", "--legacy-root", "/tmp/legacy-rsvp", "--action", "check", "--json"], kind: "rsvp.cutover" },
-      { argv: ["rsvp", "legacy-render", "--legacy-root", "/tmp/legacy-rsvp", "--json"], kind: "rsvp.legacy-render" },
-      { argv: ["rsvp", "replay", "--agent", "slugger", "--fixture", "/tmp/replay.json", "--json"], kind: "rsvp.replay" },
       { argv: ["rsvp", "habit", "stage", "--agent", "slugger", "--mode", "shadow", "--cadence", "0 10 * * *", "--json"], kind: "rsvp.habit.stage" },
       { argv: ["rsvp", "import-legacy", "--agent", "slugger", "--legacy-root", "/tmp/legacy-rsvp", "--mode", "shadow", "--json"], kind: "rsvp.import-legacy" },
       { argv: ["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], kind: "rsvp.refresh" },
@@ -294,6 +292,83 @@ describe("ouro rsvp CLI execution", () => {
     }
 
     expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("executes RSVP legacy-render offline and leaves the legacy root byte-unchanged", async () => {
+    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rsvp-cli-legacy-render-"))
+    const outputPath = path.join(os.tmpdir(), `rsvp-cli-legacy-render-${process.pid}-${Date.now()}.json`)
+    fs.writeFileSync(path.join(legacyRoot, "guests.json"), JSON.stringify({
+      guests: {
+        pending_1: { first_name: "Casey", last_name: "Pending", attending_status: "pending" },
+      },
+    }), "utf-8")
+    const before = fs.readdirSync(legacyRoot).map((name) => [name, fs.readFileSync(path.join(legacyRoot, name), "utf-8")])
+    const deps = createMockDeps()
+    try {
+      const result = await runOuroCli(["rsvp", "legacy-render", "--legacy-root", legacyRoot, "--output", outputPath], deps)
+      const rendered = JSON.parse(fs.readFileSync(outputPath, "utf-8"))
+
+      expect(result).toContain(outputPath)
+      expect(result).not.toMatch(/registered|planned/i)
+      expect(rendered).toMatchObject({
+        schemaVersion: 1,
+        sideEffect: false,
+        legacyRootHashBefore: expect.any(String),
+        legacyRootHashAfter: expect.any(String),
+      })
+      expect(rendered.legacyRootHashAfter).toBe(rendered.legacyRootHashBefore)
+      expect(fs.readdirSync(legacyRoot).map((name) => [name, fs.readFileSync(path.join(legacyRoot, name), "utf-8")])).toEqual(before)
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(legacyRoot, { recursive: true, force: true })
+      fs.rmSync(outputPath, { force: true })
+    }
+  })
+
+  it("executes RSVP replay fixtures without daemon or live endpoint access", async () => {
+    const tmp = seedRsvpOperationalBundle()
+    const fixturePath = path.join(os.tmpdir(), `rsvp-cli-fixture-${process.pid}-${Date.now()}.json`)
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      schemaVersion: 1,
+      policyVersion: "rsvp-replay/v1",
+      agent: "slugger",
+      expected: {
+        contextPacketHash: "sha256:fixture-context",
+        modelInputHash: "sha256:fixture-model-input",
+      },
+      privacy: {
+        rawLiveTranscriptStored: false,
+        searchIndex: false,
+        vectorIndex: false,
+      },
+      question: "who is pending?",
+      snapshot: {
+        snapshotId: "snap_cli_latest",
+        pendingGuests: ["Casey Pending"],
+      },
+    }), "utf-8")
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    try {
+      const result = await runOuroCli(["rsvp", "replay", "--agent", "slugger", "--fixture", fixturePath, "--json"], deps)
+      const parsed = JSON.parse(result)
+
+      expect(parsed).toMatchObject({
+        ok: true,
+        command: "rsvp.replay",
+        agent: "slugger",
+        sideEffect: false,
+        replay: {
+          contextPacketHash: "sha256:fixture-context",
+          modelInputHash: "sha256:fixture-model-input",
+          answer: expect.stringContaining("Casey Pending"),
+        },
+      })
+      expect(result).not.toMatch(/registered|planned/i)
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(fixturePath, { force: true })
+      tmp.cleanup()
+    }
   })
 
   it("writes explicit RSVP output files and supports text mode without daemon access", async () => {
