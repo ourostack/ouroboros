@@ -141,15 +141,10 @@ export class HealthMonitor {
 
     const jobs = this.scheduler.listJobs()
     const neverRan = jobs.filter((job) => !job.lastRun)
-    if (neverRan.length > 0) {
-      results.push({
-        name: "cron-health",
-        status: "warn",
-        message: `jobs never run: ${neverRan.map((job) => job.id).join(", ")}`,
-      })
-    } else {
-      results.push({ name: "cron-health", status: "ok", message: "cron jobs are healthy" })
-    }
+    const firstRunSuffix = neverRan.length > 0
+      ? `; pending first run: ${neverRan.map((job) => job.id).join(", ")}`
+      : ""
+    results.push({ name: "cron-health", status: "ok", message: `cron jobs are healthy${firstRunSuffix}` })
 
     const diskPercent = this.diskUsagePercent()
     if (diskPercent >= 90) {

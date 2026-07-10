@@ -534,7 +534,7 @@ async function preloadProviderCredentialPools(): Promise<void> {
   await Promise.all(managedAgents.map(async (agent) => {
     const providers = providerPreloadTargets(agent)
     if (providers.length === 0) return
-    const result = await refreshProviderCredentialPool(agent, { preserveCachedOnFailure: true, providers, skipCache: true })
+    const result = await refreshProviderCredentialPool(agent, { preserveCachedOnFailure: true, providers })
     if (result.ok) {
       const missingProviders = providerPreloadMissingTargets(result, providers)
       if (missingProviders.length > 0) {

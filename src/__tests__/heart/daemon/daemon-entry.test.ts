@@ -685,7 +685,6 @@ describe("daemon entrypoint", () => {
       expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
         preserveCachedOnFailure: true,
         providers: ["minimax"],
-        skipCache: true,
       })
     })
     expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toMatchObject({
@@ -761,7 +760,6 @@ describe("daemon entrypoint", () => {
       expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
         preserveCachedOnFailure: true,
         providers: ["minimax"],
-        skipCache: true,
       })
     })
     expect(refreshContextLossSentinel).not.toHaveBeenCalled()

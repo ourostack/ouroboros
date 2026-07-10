@@ -42,7 +42,7 @@ describe("HealthMonitor", () => {
     })
   })
 
-  it("reports warnings for never-run jobs and high disk without paging alerts", async () => {
+  it("treats never-run jobs as pending first run without paging alerts", async () => {
     const alertSink = vi.fn(async () => undefined)
     const monitor = new HealthMonitor({
       processManager: {
@@ -57,7 +57,7 @@ describe("HealthMonitor", () => {
 
     await expect(monitor.runChecks()).resolves.toEqual([
       { name: "agent-processes", status: "ok", message: "all managed agents running" },
-      { name: "cron-health", status: "warn", message: "jobs never run: habit-hourly" },
+      { name: "cron-health", status: "ok", message: "cron jobs are healthy; pending first run: habit-hourly" },
       { name: "disk-space", status: "warn", message: "disk usage high (85%)" },
     ])
     expect(alertSink).not.toHaveBeenCalled()
