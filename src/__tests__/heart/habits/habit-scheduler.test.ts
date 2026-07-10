@@ -20,9 +20,13 @@ vi.mock("../../../heart/habits/habit-runtime-state", () => ({
 
 const mockParseCadenceToCron = vi.fn()
 const mockParseCadenceToMs = vi.fn()
+const mockEvaluateCadenceDue = vi.fn()
+const mockCadenceFallbackDelayMs = vi.fn()
 vi.mock("../../../heart/daemon/cadence", () => ({
   parseCadenceToCron: (...args: any[]) => mockParseCadenceToCron(...args),
   parseCadenceToMs: (...args: any[]) => mockParseCadenceToMs(...args),
+  evaluateCadenceDue: (...args: any[]) => mockEvaluateCadenceDue(...args),
+  cadenceFallbackDelayMs: (...args: any[]) => mockCadenceFallbackDelayMs(...args),
 }))
 
 import { HabitScheduler, type HabitSchedulerOptions, type HabitSchedulerDeps } from "../../../heart/habits/habit-scheduler"
@@ -96,6 +100,18 @@ function makeNoCadenceHabit() {
   }
 }
 
+function makeRsvpHabit() {
+  return {
+    name: "rsvp-ari-rachel",
+    title: "RSVP Ari & Rachel",
+    cadence: "0 10 * * *",
+    status: "active" as const,
+    lastRun: "2026-07-08T17:01:00.000Z",
+    created: "2026-07-09",
+    body: "Check AislePlanner and render an RSVP update.",
+  }
+}
+
 describe("HabitScheduler", () => {
   let cronManager: OsCronManager
   let deps: HabitSchedulerDeps
@@ -113,6 +129,7 @@ describe("HabitScheduler", () => {
       if (raw === "1d") return "0 0 */1 * *"
       if (raw === "7d") return "0 0 */7 * *"
       if (raw === "2h") return "0 */2 * * *"
+      if (raw === "0 10 * * *") return "0 10 * * *"
       return null
     })
     mockParseCadenceToMs.mockImplementation((raw: string) => {
@@ -120,6 +137,34 @@ describe("HabitScheduler", () => {
       if (raw === "1d") return 24 * 60 * 60 * 1000
       if (raw === "7d") return 7 * 24 * 60 * 60 * 1000
       if (raw === "2h") return 2 * 60 * 60 * 1000
+      return null
+    })
+    mockEvaluateCadenceDue.mockImplementation((raw: string, lastRun: string | null, nowMs: number) => {
+      const intervalMs = mockParseCadenceToMs(raw)
+      if (intervalMs !== null) {
+        if (lastRun === null) return { due: true, elapsedMs: Infinity, occurrenceId: `overdue:first-run:${raw}` }
+        const elapsedMs = nowMs - new Date(lastRun).getTime()
+        return {
+          due: elapsedMs >= intervalMs,
+          elapsedMs,
+          occurrenceId: elapsedMs >= intervalMs ? `overdue:last-run:${lastRun}:cadence:${raw}` : null,
+        }
+      }
+      if (raw === "0 10 * * *") {
+        return {
+          due: true,
+          elapsedMs: 5 * 60 * 1000,
+          occurrenceId: "fixed-daily:2026-07-09T17:00:00.000Z:cadence:0 10 * * *",
+        }
+      }
+      return null
+    })
+    mockCadenceFallbackDelayMs.mockImplementation((raw: string) => {
+      if (raw === "30m") return 30 * 60 * 1000
+      if (raw === "1d") return 24 * 60 * 60 * 1000
+      if (raw === "7d") return 7 * 24 * 60 * 60 * 1000
+      if (raw === "2h") return 2 * 60 * 60 * 1000
+      if (raw === "0 10 * * *") return 60 * 1000
       return null
     })
   })
@@ -394,6 +439,28 @@ describe("HabitScheduler", () => {
       })
     })
 
+    it("fires fixed daily cron habits after their civil occurrence with a civil-date occurrence id", () => {
+      const nowMs = new Date(2026, 6, 9, 10, 5, 0, 0).getTime()
+      const readdir = vi.fn(() => ["rsvp-ari-rachel.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile, now: vi.fn(() => nowMs) })
+      mockParseHabitFile.mockReturnValueOnce(makeRsvpHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(onHabitFire).toHaveBeenCalledWith("rsvp-ari-rachel", "overdue", {
+        occurrenceId: "fixed-daily:2026-07-09T17:00:00.000Z:cadence:0 10 * * *",
+      })
+    })
+
     it("does not fire paused habits even if overdue", () => {
       const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
       const readdir = vi.fn(() => ["weekly-review.md"])
@@ -573,6 +640,44 @@ describe("HabitScheduler", () => {
       scheduler.reconcile()
 
       expect(onHabitFire).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("timer fallback", () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it("creates timer fallbacks for fixed daily cron habits when launchd verification fails", () => {
+      vi.useFakeTimers()
+      const nowMs = new Date(2026, 6, 9, 9, 59, 0, 0).getTime()
+      deps = makeDeps({
+        readdir: vi.fn(() => ["rsvp-ari-rachel.md"]),
+        readFile: vi.fn(() => "content"),
+        now: vi.fn(() => nowMs),
+      })
+      mockParseHabitFile.mockReturnValue(makeRsvpHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify: vi.fn(() => ""),
+        platform: "darwin",
+      })
+
+      scheduler.start()
+      vi.advanceTimersByTime(60 * 1000)
+
+      expect(onHabitFire).toHaveBeenCalledWith("rsvp-ari-rachel", "overdue", {
+        occurrenceId: "timer:rsvp-ari-rachel:cadence:0 10 * * *:slot:2026-07-09T17:00:00.000Z",
+      })
+      expect(scheduler.getDegradedHabits()).toEqual([
+        { name: "rsvp-ari-rachel", reason: "cron registration failed — using timer fallback" },
+      ])
+      scheduler.stop()
     })
   })
 

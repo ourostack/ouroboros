@@ -694,6 +694,31 @@ describe("habit-session helpers", () => {
       .toBe("2026-06-12T00:00:00.000Z")
   })
 
+  it("computes nextRunAt for fixed daily cron habits from the next local civil occurrence", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+    const endedAt = new Date(2026, 6, 9, 10, 1, 0, 0).toISOString()
+
+    const receipt = buildHabitRunReceipt({
+      agentRoot,
+      habit: makeHabit({ name: "rsvp-ari-rachel", cadence: "0 10 * * *" }),
+      runId: "2026-07-09T17-01-00-000Z-rsvp-ari-rachel-abc123ef",
+      trigger: "launchd",
+      startedAt: new Date(2026, 6, 9, 10, 0, 0, 0).toISOString(),
+      endedAt,
+      outcome: "no_change",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+
+    expect(receipt.nextRunAt).toBe(new Date(2026, 6, 10, 10, 0, 0, 0).toISOString())
+  })
+
   it("reconstructs latest habit session state from Arc receipts and runtime state without reading transcripts", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
       origin: { friendId: "ari", channel: "cli", key: "main" },

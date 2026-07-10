@@ -897,6 +897,51 @@ describe("private-runtime-worker", () => {
       }))
     })
 
+    it("grants RSVP read tools while denying generic shell for RSVP habit sessions", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/rsvp-ari-rachel.md")) {
+          return [
+            "---",
+            "title: RSVP Ari & Rachel",
+            "cadence: 0 10 * * *",
+            "tools: [rsvp_query, rsvp_summary, shell]",
+            "surface:",
+            "  family: false",
+            "  originator: false",
+            "---",
+            "",
+            "Check RSVP state with native tools only.",
+            "",
+          ].join("\n")
+        }
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "rsvp-ari-rachel", trigger: "launchd" })
+
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+        habitSession: expect.objectContaining({
+          toolPolicy: expect.objectContaining({
+            requestedTools: ["rsvp_query", "rsvp_summary", "shell"],
+            grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
+            deniedTools: expect.arrayContaining(["shell"]),
+            outwardMessagingAllowed: false,
+          }),
+        }),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "rsvp-ari-rachel",
+        toolPolicy: expect.objectContaining({
+          requestedTools: ["rsvp_query", "rsvp_summary", "shell"],
+          grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
+          deniedTools: expect.arrayContaining(["shell"]),
+          outwardMessagingAllowed: false,
+        }),
+      }))
+    })
+
     it("records non-Error habit file read failures losslessly", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
         if (String(filePath).includes("/habits/")) throw "habit missing as string"

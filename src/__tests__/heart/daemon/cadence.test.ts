@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest"
 import {
   parseCadenceToCron,
   parseCadenceToMs,
+  cadenceFallbackDelayMs,
   DEFAULT_CADENCE_MS,
+  evaluateCadenceDue,
+  nextCadenceRunAt,
 } from "../../../heart/daemon/cadence"
 
 describe("parseCadenceToCron", () => {
@@ -83,6 +86,38 @@ describe("parseCadenceToMs", () => {
   it("handles whitespace in input", () => {
     expect(parseCadenceToMs("  30m  ")).toBe(30 * 60 * 1000)
     expect(parseCadenceToMs("  ")).toBeNull()
+  })
+})
+
+describe("fixed-time cadence helpers", () => {
+  it("computes next local run times for fixed daily cron cadences", () => {
+    const beforeTen = new Date(2026, 6, 9, 9, 30, 0, 0).getTime()
+    const afterTen = new Date(2026, 6, 9, 10, 30, 0, 0).getTime()
+
+    expect(nextCadenceRunAt("0 10 * * *", beforeTen)).toBe(new Date(2026, 6, 9, 10, 0, 0, 0).toISOString())
+    expect(nextCadenceRunAt("0 10 * * *", afterTen)).toBe(new Date(2026, 6, 10, 10, 0, 0, 0).toISOString())
+    expect(cadenceFallbackDelayMs("0 10 * * *", beforeTen)).toBe(30 * 60 * 1000)
+  })
+
+  it("detects fixed daily overdue windows using the civil occurrence, not elapsed intervals", () => {
+    const now = new Date(2026, 6, 9, 10, 5, 0, 0).getTime()
+    const occurrence = new Date(2026, 6, 9, 10, 0, 0, 0).toISOString()
+
+    expect(evaluateCadenceDue("0 10 * * *", null, now)).toEqual({
+      due: true,
+      elapsedMs: Infinity,
+      occurrenceId: `fixed-daily:${occurrence}:cadence:0 10 * * *`,
+    })
+    expect(evaluateCadenceDue("0 10 * * *", new Date(2026, 6, 9, 9, 59, 0, 0).toISOString(), now)).toEqual({
+      due: true,
+      elapsedMs: 5 * 60 * 1000,
+      occurrenceId: `fixed-daily:${occurrence}:cadence:0 10 * * *`,
+    })
+    expect(evaluateCadenceDue("0 10 * * *", new Date(2026, 6, 9, 10, 1, 0, 0).toISOString(), now)).toEqual({
+      due: false,
+      elapsedMs: 5 * 60 * 1000,
+      occurrenceId: null,
+    })
   })
 })
 
