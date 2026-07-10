@@ -824,6 +824,7 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       readRecentDaemonLogLines: vi.fn(() => ["daemon crashed hard"]),
+      finalDaemonHealthSettleTimeoutMs: 0,
     }
 
     const result = await runOuroCli(["up"], deps)

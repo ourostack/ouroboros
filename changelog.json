@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.702",
+      "changes": [
+        "Retry transient daemon socket misses during the final ouro up handoff instead of failing while launchd-owned senses are still settling.",
+        "Keep hard failure diagnostics when the daemon socket remains unavailable beyond the handoff settle window."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.701",
       "changes": [
         "Retry daemon launchd bootstrap when stale labels make kickstart fail so runtime replacement does not fall back to an unlabelled daemon process.",
