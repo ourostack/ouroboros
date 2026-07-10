@@ -5,6 +5,8 @@
  * grouped categories, and the aggregated result.
  */
 
+import type { RsvpCutoverDeps } from "../../rsvp/cutover"
+
 /** Result status for a single health check. */
 export type DoctorCheckStatus = "pass" | "warn" | "fail"
 
@@ -67,4 +69,8 @@ export interface DoctorDeps {
   envPath?: string
   /** Current Node platform. Used for platform-specific diagnostics. */
   platform: string
+  /** Optional legacy RSVP root used for native live-send cutover preflight. */
+  rsvpCutoverLegacyRoot?: string
+  /** Optional injection for side-effect-free legacy RSVP cutover probes. */
+  rsvpCutoverDeps?: RsvpCutoverDeps
 }

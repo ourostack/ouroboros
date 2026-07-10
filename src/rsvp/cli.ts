@@ -5,6 +5,7 @@ import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { importLegacyRsvpConfig } from "./config"
+import { runRsvpCutover } from "./cutover"
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
@@ -14,15 +15,23 @@ interface RsvpCliPayload {
   sideEffect: boolean
   agent?: string
   mode?: string
+  action?: string
+  legacyRoot?: string
   allowSend?: boolean
   requires?: string
   message: string
   inputs?: Record<string, JsonValue>
   result?: JsonValue
+  checks?: Record<string, JsonValue>
+  sendAllowed?: boolean
+  denialReasons?: string[]
+  rollback?: Record<string, JsonValue>
 }
 
 type RsvpImportLegacyCommand = Extract<RsvpCliCommand, { kind: "rsvp.config.import-legacy" | "rsvp.import-legacy" }>
-type RsvpPlannedCommand = Exclude<RsvpCliCommand, RsvpImportLegacyCommand>
+type RsvpCutoverCommand = Extract<RsvpCliCommand, { kind: "rsvp.cutover" }>
+type RsvpExecutedCommand = RsvpImportLegacyCommand | RsvpCutoverCommand
+type RsvpPlannedCommand = Exclude<RsvpCliCommand, RsvpExecutedCommand>
 
 function commandJson(command: RsvpCliCommand): boolean {
   return "json" in command && command.json === true
@@ -129,6 +138,31 @@ async function executeImportLegacy(command: RsvpImportLegacyCommand, deps: OuroC
   })
 }
 
+async function executeCutover(command: RsvpCutoverCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+  const result = await runRsvpCutover({
+    ...(command.agent ? { agent: command.agent } : {}),
+    legacyRoot: command.legacyRoot,
+    action: command.action,
+    yes: command.yes === true,
+    ...(deps.rsvpCutoverDeps ? { deps: deps.rsvpCutoverDeps } : {}),
+  })
+
+  return {
+    ok: result.ok,
+    command: command.kind,
+    sideEffect: result.sideEffect,
+    ...(command.agent ? { agent: command.agent } : {}),
+    action: result.action,
+    legacyRoot: result.legacyRoot,
+    message: result.message,
+    ...(result.requires ? { requires: result.requires } : {}),
+    checks: result.checks as unknown as Record<string, JsonValue>,
+    sendAllowed: result.sendAllowed,
+    denialReasons: result.denialReasons,
+    rollback: result.rollback as unknown as Record<string, JsonValue>,
+  }
+}
+
 function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
   switch (command.kind) {
     case "rsvp.doctor":
@@ -137,10 +171,6 @@ function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
       })
     case "rsvp.incident":
       return basePayload(command, false, "RSVP incident command registered; full incident bundle capture runs in the health unit")
-    case "rsvp.cutover":
-      return basePayload(command, false, "RSVP cutover command registered; full cutover orchestration runs in the cutover unit", {
-        inputs: { legacyRoot: command.legacyRoot, action: command.action },
-      })
     case "rsvp.legacy-render":
       return basePayload(command, false, "RSVP legacy render command registered; full legacy renderer runs in the parity unit", {
         inputs: { legacyRoot: command.legacyRoot },
@@ -178,6 +208,8 @@ function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
 export async function runRsvpCliCommand(command: RsvpCliCommand, deps: OuroCliDeps): Promise<string> {
   const payload = command.kind === "rsvp.config.import-legacy" || command.kind === "rsvp.import-legacy"
     ? await executeImportLegacy(command, deps)
-    : plannedPayload(command)
+    : command.kind === "rsvp.cutover"
+      ? await executeCutover(command, deps)
+      : plannedPayload(command)
   return writePayload(command, deps, payload)
 }

@@ -1681,7 +1681,7 @@ function isRsvpMode(value: unknown): value is RsvpCliMode {
 }
 
 function isRsvpCutoverAction(value: unknown): value is RsvpCutoverAction {
-  return value === "check" || value === "stage" || value === "verify" || value === "rollback"
+  return value === "check" || value === "quarantine-launchd" || value === "retire-legacy-send-config"
 }
 
 function isRsvpSmokeMode(value: unknown): value is RsvpSmokeMode {
@@ -1775,6 +1775,7 @@ function parseRsvpCutoverCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
   let legacyRoot: string | undefined
   let action: RsvpCutoverAction | undefined
+  let yes = false
   let json = false
   let outputPath: string | undefined
   for (let i = 0; i < rest.length; i += 1) {
@@ -1782,21 +1783,23 @@ function parseRsvpCutoverCommand(args: string[]): OuroCliCommand {
     if (token === "--legacy-root" && rest[i + 1]) { legacyRoot = rsvpPath(rest[++i], "--legacy-root"); continue }
     if (token === "--action" && rest[i + 1]) {
       const value = rest[++i]
-      if (!isRsvpCutoverAction(value)) throw new Error("rsvp cutover --action must be check, stage, verify, or rollback")
+      if (!isRsvpCutoverAction(value)) throw new Error("rsvp cutover --action must be check, quarantine-launchd, or retire-legacy-send-config")
       action = value
       continue
     }
+    if (token === "--yes") { yes = true; continue }
     if (token === "--json") { json = true; continue }
     if (token === "--output" && rest[i + 1]) { outputPath = rsvpPath(rest[++i], "--output"); continue }
-    throw new Error("Usage: ouro rsvp cutover [--agent <name>] --legacy-root <path> --action check|stage|verify|rollback [--output <path>] [--json]")
+    throw new Error("Usage: ouro rsvp cutover [--agent <name>] --legacy-root <path> --action check|quarantine-launchd|retire-legacy-send-config [--yes] [--output <path>] [--json]")
   }
   if (!legacyRoot) throw new Error("rsvp cutover requires --legacy-root <path>")
-  if (!action) throw new Error("rsvp cutover requires --action check|stage|verify|rollback")
+  if (!action) throw new Error("rsvp cutover requires --action check|quarantine-launchd|retire-legacy-send-config")
   return {
     kind: "rsvp.cutover",
     ...(agent ? { agent } : {}),
     legacyRoot,
     action,
+    ...(yes ? { yes: true } : {}),
     ...(json ? { json: true } : {}),
     ...(outputPath ? { outputPath } : {}),
   }
