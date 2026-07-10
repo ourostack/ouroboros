@@ -3,6 +3,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { parseHabitFile, type HabitFile } from "./habit-parser"
 import { applyHabitRuntimeState } from "./habit-runtime-state"
 import { cadenceFallbackDelayMs, evaluateCadenceDue, nextCadenceRunAt, parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
+import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import type { OsCronManager } from "../daemon/os-cron"
 import type { ScheduledTaskJob } from "../daemon/task-scheduler"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
@@ -114,6 +115,7 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
+      if (this.rejectInvalidRsvpHabit(habit)) continue
 
       const nowMs = this.deps.now()
       const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
@@ -156,6 +158,7 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
+      if (this.rejectInvalidRsvpHabit(habit)) continue
 
       const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
       if (dueState?.due) overdue.push({ name: habit.name, elapsedMs: dueState.elapsedMs })
@@ -398,6 +401,7 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
+      if (this.rejectInvalidRsvpHabit(habit)) continue
 
       const cronSchedule = parseCadenceToCron(habit.cadence)
       if (cronSchedule === null) continue
@@ -414,6 +418,29 @@ export class HabitScheduler {
     }
 
     return jobs
+  }
+
+  private rejectInvalidRsvpHabit(habit: HabitFile): boolean {
+    if (!isRsvpHabitName(habit.name) || habit.rsvp) return false
+
+    this.recordHabitParseError(
+      `${habit.name}.md`,
+      "RSVP habit metadata is required before scheduling",
+    )
+    return true
+  }
+
+  private recordHabitParseError(file: string, error: string): void {
+    if (this.parseErrors.some((existing) => existing.file === file && existing.error === error)) return
+
+    this.parseErrors.push({ file, error })
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.habit_parse_error",
+      message: "failed to parse habit file",
+      meta: { file, error, agent: this.agent },
+    })
   }
 
   private overdueOccurrenceId(habit: HabitFile): string {

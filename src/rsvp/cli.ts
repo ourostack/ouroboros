@@ -15,6 +15,7 @@ import { fetchAislePlannerRsvps } from "./aisleplanner-client"
 import { importLegacyRsvpConfig, readRsvpConfig, validateRsvpReadiness } from "./config"
 import { runRsvpCutover } from "./cutover"
 import { computeRsvpDelta, renderRsvpReport } from "./diff-renderer"
+import { stageRsvpHabit } from "./habit-stage"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
 import { importLegacyRsvpState } from "./migration"
 import { decideRsvpOutboundReport, recordRsvpOutboundAttempt } from "./outbound-state"
@@ -41,6 +42,7 @@ interface RsvpCliPayload {
   incidentBundle?: JsonValue
   replay?: JsonValue
   migration?: JsonValue
+  habit?: JsonValue
   refresh?: JsonValue
   compare?: JsonValue
   answer?: string
@@ -58,6 +60,7 @@ type RsvpDoctorCommand = Extract<RsvpCliCommand, { kind: "rsvp.doctor" }>
 type RsvpIncidentCommand = Extract<RsvpCliCommand, { kind: "rsvp.incident" }>
 type RsvpLegacyRenderCommand = Extract<RsvpCliCommand, { kind: "rsvp.legacy-render" }>
 type RsvpReplayCommand = Extract<RsvpCliCommand, { kind: "rsvp.replay" }>
+type RsvpHabitStageCommand = Extract<RsvpCliCommand, { kind: "rsvp.habit.stage" }>
 type RsvpRefreshCommand = Extract<RsvpCliCommand, { kind: "rsvp.refresh" }>
 type RsvpCompareCommand = Extract<RsvpCliCommand, { kind: "rsvp.compare" }>
 type RsvpSmokeCommand = Extract<RsvpCliCommand, { kind: "rsvp.smoke" }>
@@ -68,6 +71,7 @@ type RsvpExecutedCommand =
   | RsvpIncidentCommand
   | RsvpLegacyRenderCommand
   | RsvpReplayCommand
+  | RsvpHabitStageCommand
   | RsvpRefreshCommand
   | RsvpCompareCommand
   | RsvpSmokeCommand
@@ -420,6 +424,28 @@ async function executeReplay(command: RsvpReplayCommand): Promise<RsvpCliPayload
   })
 }
 
+async function executeHabitStage(command: RsvpHabitStageCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+  const agentRoot = maybeAgentRoot(command, deps)
+  if (!command.agent || !agentRoot) {
+    return {
+      ok: false,
+      command: command.kind,
+      sideEffect: false,
+      message: "RSVP habit staging requires --agent <name>",
+      requires: "--agent",
+    }
+  }
+  const result = stageRsvpHabit({
+    agent: command.agent,
+    agentRoot,
+    mode: command.mode,
+    cadence: command.cadence,
+  })
+  return basePayload(command, true, "native RSVP habit staged", {
+    habit: result as unknown as JsonValue,
+  })
+}
+
 async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
   const agentRoot = maybeAgentRoot(command, deps)
   if (!command.agent || !agentRoot) {
@@ -599,12 +625,7 @@ async function executeSmoke(command: RsvpSmokeCommand, deps: OuroCliDeps): Promi
 }
 
 function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
-  switch (command.kind) {
-    case "rsvp.habit.stage":
-      return basePayload(command, false, "RSVP habit stage command registered; full habit write runs in the native habit unit", {
-        inputs: { cadence: command.cadence, mode: command.mode },
-      })
-  }
+  throw new Error(`unsupported RSVP CLI command: ${String((command as RsvpCliCommand).kind)}`)
 }
 
 export async function runRsvpCliCommand(command: RsvpCliCommand, deps: OuroCliDeps): Promise<string> {
@@ -618,12 +639,14 @@ export async function runRsvpCliCommand(command: RsvpCliCommand, deps: OuroCliDe
         ? await executeDoctor(command, deps)
         : command.kind === "rsvp.replay"
           ? await executeReplay(command)
-          : command.kind === "rsvp.refresh"
-            ? await executeRefresh(command, deps)
-            : command.kind === "rsvp.compare"
-              ? await executeCompare(command)
-              : command.kind === "rsvp.smoke"
-                ? await executeSmoke(command, deps)
-                : plannedPayload(command)
+          : command.kind === "rsvp.habit.stage"
+            ? await executeHabitStage(command, deps)
+            : command.kind === "rsvp.refresh"
+              ? await executeRefresh(command, deps)
+              : command.kind === "rsvp.compare"
+                ? await executeCompare(command)
+                : command.kind === "rsvp.smoke"
+                  ? await executeSmoke(command, deps)
+                  : plannedPayload(command)
   return writePayload(command, deps, payload)
 }

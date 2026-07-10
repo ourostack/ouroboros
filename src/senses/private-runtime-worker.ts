@@ -26,6 +26,11 @@ import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition,
 import { surfaceToolDefinition } from "../repertoire/tools-surface"
 import { riskProfileForTool } from "../repertoire/tools"
 import {
+  RSVP_HABIT_ALLOWED_TOOLS,
+  rsvpHabitRuntimePolicy,
+  type RsvpHabitRuntimePolicy,
+} from "../rsvp/habit-policy"
+import {
   appendRunLedgerRecordNonFatal,
   createRunLedgerRecord,
   runLedgerHash,
@@ -93,6 +98,7 @@ interface PreparedHabitRun {
   paths: ReturnType<typeof createHabitSessionPaths>
   permissionEnvelope: HabitRunReceipt["permissionEnvelope"]
   toolPolicy: HabitRunReceipt["toolPolicy"]
+  rsvpPolicy?: RsvpHabitRuntimePolicy
   friendStore: FileFriendStore
   results: unknown[]
   errors: string[]
@@ -170,17 +176,23 @@ function recordHabitRunLedger(
 }
 
 function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string): AutonomyBudgetDecision {
+  const target: Record<string, unknown> = {
+    habitName: habitRun.habit.name,
+    runId: habitRun.runId,
+    trigger: habitRun.trigger,
+    operationId: habitRun.operationId,
+  }
+  if (habitRun.rsvpPolicy) {
+    target.rsvpSnapshotRef = habitRun.rsvpPolicy.snapshotRef
+    target.rsvpBudgetRef = habitRun.rsvpPolicy.budgetRef
+    target.rsvpIdempotencyRef = habitRun.rsvpPolicy.idempotencyRef
+  }
   return reserveAutonomyBudget(habitRun.agentRoot, {
     agent: getAgentName(),
     triggerType: "habit",
     sourceKind: "private-runtime",
     senseOrHabit: habitRun.habit.name,
-    target: {
-      habitName: habitRun.habit.name,
-      runId: habitRun.runId,
-      trigger: habitRun.trigger,
-      operationId: habitRun.operationId,
-    },
+    target,
     idempotencyKey: `habit:${habitRun.habit.name}:${habitRun.runId}`,
     now: nowIso,
   })
@@ -352,9 +364,11 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const paths = createHabitSessionPaths(agentRoot, runId, habit.name)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
+  const rsvpPolicy = habit.rsvp ? rsvpHabitRuntimePolicy(habit.rsvp) : undefined
+  const requestedTools = habit.rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : habit.tools ?? null
   const toolPolicy = filterHabitToolsForEnvelope(
     [...baseToolDefinitions, surfaceToolDefinition],
-    habit.tools ?? null,
+    requestedTools,
     permissionEnvelope,
     riskProfileForHabitPolicy,
   )
@@ -369,6 +383,7 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     paths,
     permissionEnvelope,
     toolPolicy,
+    ...(rsvpPolicy ? { rsvpPolicy } : {}),
     friendStore,
     results: [],
     errors,
@@ -599,6 +614,7 @@ export function createPrivateRuntimeWorker(
                     pendingDir: currentHabitRun.paths.pendingDir,
                     permissionEnvelope: currentHabitRun.permissionEnvelope,
                     toolPolicy: currentHabitRun.toolPolicy,
+                    ...(currentHabitRun.rsvpPolicy ? { rsvpPolicy: currentHabitRun.rsvpPolicy } : {}),
                     friendStore: currentHabitRun.friendStore,
                     recordProducedRef: (ref) => { currentHabitRun.producedRefs.push(ref) },
                     recordSurfaceAttempt: (attempt) => { currentHabitRun.surfaceAttempts.push(attempt) },

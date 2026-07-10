@@ -114,6 +114,24 @@ function makeRsvpHabit() {
   }
 }
 
+function makeTypedRsvpHabit() {
+  return {
+    ...makeRsvpHabit(),
+    rsvp: {
+      policyVersion: "rsvp-habit/v1",
+      mode: "shadow" as const,
+      sense: "bluebubbles" as const,
+      source: "aisleplanner" as const,
+      routeRef: "rsvp/config.json#bluebubblesRoute",
+      snapshotRef: "state/rsvp/snapshots/latest.json",
+      outboundStateRef: "state/rsvp/outbound-state.json",
+      budgetRef: "state/rsvp/spend-ledger.json",
+      idempotencyRef: "state/rsvp/outbound-state.json",
+      liveSendEligible: false,
+    },
+  }
+}
+
 describe("HabitScheduler", () => {
   let cronManager: OsCronManager
   let deps: HabitSchedulerDeps
@@ -450,7 +468,7 @@ describe("HabitScheduler", () => {
       const readdir = vi.fn(() => ["rsvp-ari-rachel.md"])
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile, now: vi.fn(() => nowMs) })
-      mockParseHabitFile.mockReturnValueOnce(makeRsvpHabit())
+      mockParseHabitFile.mockReturnValueOnce(makeTypedRsvpHabit())
 
       const scheduler = new HabitScheduler({
         agent: "slugger",
@@ -687,7 +705,7 @@ describe("HabitScheduler", () => {
         readFile: vi.fn(() => "content"),
         now: vi.fn(() => nowMs),
       })
-      mockParseHabitFile.mockReturnValue(makeRsvpHabit())
+      mockParseHabitFile.mockReturnValue(makeTypedRsvpHabit())
 
       const scheduler = new HabitScheduler({
         agent: "slugger",
@@ -784,7 +802,7 @@ describe("HabitScheduler", () => {
         readdir: vi.fn(() => ["rsvp-ari-rachel.md"]),
         readFile: vi.fn(() => "content"),
       })
-      mockParseHabitFile.mockReturnValue(makeRsvpHabit())
+      mockParseHabitFile.mockReturnValue(makeTypedRsvpHabit())
       mockNextCadenceRunAt.mockReturnValueOnce(null)
 
       const scheduler = new HabitScheduler({

@@ -3,6 +3,7 @@ import type { Integration, ResolvedContext, FriendStore } from "@ouro.bot/friend
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import type { ActiveWorkFrame } from "../heart/active-work";
 import type { FlightRecorderProducedRef, HabitPermissionEnvelope, HabitSurfaceAttempt, HabitToolPolicy } from "../arc/flight-recorder";
+import type { RsvpHabitRuntimePolicy } from "../rsvp/habit-policy";
 
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
@@ -76,6 +77,7 @@ export interface HabitSessionToolContext {
   pendingDir?: string;
   permissionEnvelope: HabitPermissionEnvelope;
   toolPolicy: HabitToolPolicy;
+  rsvpPolicy?: RsvpHabitRuntimePolicy;
   friendStore?: FriendStore;
   recordProducedRef?: (ref: FlightRecorderProducedRef) => void;
   recordSurfaceAttempt?: (attempt: HabitSurfaceAttempt) => void;

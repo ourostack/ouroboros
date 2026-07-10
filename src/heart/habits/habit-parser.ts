@@ -1,6 +1,11 @@
 import * as path from "path"
 import { parseFrontmatter } from "../../util/frontmatter"
 import { emitNervesEvent } from "../../nerves/runtime"
+import {
+  RSVP_HABIT_ALLOWED_TOOLS,
+  parseRsvpHabitMetadata,
+  type RsvpHabitMetadata,
+} from "../../rsvp/habit-policy"
 
 export type HabitStatus = "active" | "paused"
 
@@ -30,6 +35,7 @@ export interface HabitFile {
   lastRun: string | null
   created: string | null
   tools: string[] | undefined
+  rsvp?: RsvpHabitMetadata
   origin: HabitOrigin | null
   surface: HabitSurface
   continuity: HabitContinuity
@@ -169,7 +175,8 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const rawCreated = frontmatter.created
   const created = typeof rawCreated === "string" && rawCreated.length > 0 ? rawCreated : null
 
-  const tools = parseToolsField(frontmatter.tools)
+  const rsvp = parseRsvpHabitMetadata(frontmatter.rsvp)
+  const tools = rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : parseToolsField(frontmatter.tools)
   const origin = parseOrigin(frontmatter.origin)
   const surface = parseSurface(frontmatter.surface)
   const continuity = parseContinuity(frontmatter.continuity)
@@ -182,6 +189,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     lastRun,
     created,
     tools,
+    ...(rsvp ? { rsvp } : {}),
     origin,
     surface,
     continuity,
