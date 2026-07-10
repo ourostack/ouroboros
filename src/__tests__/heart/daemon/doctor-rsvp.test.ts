@@ -338,6 +338,62 @@ describe("RSVP doctor checks", () => {
     expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
   })
 
+  it("uses the native RSVP config cutover root for doctor live-send preflight", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeRsvpHabit(agentRoot)
+    const configuredLegacy = writeLegacyRsvpRoot()
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-doctor-rsvp-home-"))
+    tempRoots.push(homeDir)
+    const defaultLegacyRoot = path.join(homeDir, "Projects", "rsvp-tracker")
+    fs.mkdirSync(defaultLegacyRoot, { recursive: true })
+    fs.writeFileSync(path.join(defaultLegacyRoot, "config.json"), JSON.stringify({
+      bluebubbles: { enabled: false, send_enabled: false },
+    }), "utf-8")
+    writeNativeRsvpConfig(agentRoot, {
+      cutover: { legacyRoot: configuredLegacy.legacyRoot },
+    })
+    seedRuntime()
+    const deps = {
+      ...depsFor(bundlesRoot),
+      homedir: homeDir,
+      rsvpCutoverDeps: {
+        existsSync: fs.existsSync,
+        readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
+        getLaunchAgentState: vi.fn(async (input: { legacyRoot: string }) => ({
+          label: legacyLabel,
+          loaded: input.legacyRoot === configuredLegacy.legacyRoot,
+          source: "injected",
+        })),
+        getLegacyProcessState: vi.fn(async (input: { legacyRoot: string }) => ({
+          running: input.legacyRoot === configuredLegacy.legacyRoot,
+          count: input.legacyRoot === configuredLegacy.legacyRoot ? 1 : 0,
+          source: "injected",
+        })),
+        checkNativeBlueBubblesCredential: vi.fn(async () => ({
+          ok: true,
+          detail: "native BlueBubbles credential healthy",
+        })),
+      },
+    } as DoctorDeps
+
+    const category = await checkRsvp(deps)
+
+    expect(deps.rsvpCutoverDeps.getLaunchAgentState).toHaveBeenCalledWith(expect.objectContaining({
+      legacyRoot: configuredLegacy.legacyRoot,
+    }))
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "rsvp.cutover.live_send_preflight",
+        status: "fail",
+        detail: expect.stringContaining("legacyProcessInactive=false"),
+      }),
+    ]))
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacySecret)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyChatGuid)
+    expect(JSON.stringify(category)).not.toContain(forbiddenLegacyServerUrl)
+  })
+
   it("emits stable RSVP doctor ids for operational health surfaces", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)

@@ -21,7 +21,7 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { parseHabitFile } from "../habits/habit-parser"
 import { parseCadenceToCron } from "./cadence"
 import { DEFAULT_MAX_LOG_SIZE_BYTES } from "../../nerves"
-import { readRsvpConfig, validateRsvpReadiness, type RsvpReadinessCheck } from "../../rsvp/config"
+import { readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig, type RsvpReadinessCheck } from "../../rsvp/config"
 import { checkRsvpCutover, type RsvpCutoverChecks } from "../../rsvp/cutover"
 import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/diagnostics"
 
@@ -466,7 +466,9 @@ function doctorStatus(status: RsvpDiagnosticStatus): DoctorCheck["status"] {
   return status
 }
 
-function discoverRsvpCutoverLegacyRoot(deps: DoctorDeps): string | null {
+function discoverRsvpCutoverLegacyRoot(deps: DoctorDeps, config?: RsvpNativeConfig): string | null {
+  const configured = typeof config?.cutover?.legacyRoot === "string" ? config.cutover.legacyRoot.trim() : ""
+  if (configured) return configured
   if (deps.rsvpCutoverLegacyRoot) return deps.rsvpCutoverLegacyRoot
   const candidate = `${deps.homedir}/Projects/rsvp-tracker`
   return deps.existsSync(`${candidate}/config.json`) ? candidate : null
@@ -567,7 +569,7 @@ export async function checkRsvp(deps: DoctorDeps): Promise<DoctorCategory> {
       },
     )
 
-    const legacyRoot = discoverRsvpCutoverLegacyRoot(deps)
+    const legacyRoot = discoverRsvpCutoverLegacyRoot(deps, config.ok ? config.config : undefined)
     if (config.ok && legacyRoot) {
       const cutover = await checkRsvpCutover({
         agent: agentName,
