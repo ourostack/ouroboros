@@ -6,11 +6,21 @@ import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
 import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import { getAgentBundlesRoot } from "../heart/identity"
+import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
+import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
-import { importLegacyRsvpConfig } from "./config"
+import { createBlueBubblesClient } from "../senses/bluebubbles/client"
+import type { BlueBubblesChatRef } from "../senses/bluebubbles/model"
+import { fetchAislePlannerRsvps } from "./aisleplanner-client"
+import { importLegacyRsvpConfig, readRsvpConfig, validateRsvpReadiness } from "./config"
 import { runRsvpCutover } from "./cutover"
+import { computeRsvpDelta, renderRsvpReport } from "./diff-renderer"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
+import { importLegacyRsvpState } from "./migration"
+import { decideRsvpOutboundReport, recordRsvpOutboundAttempt } from "./outbound-state"
+import { queryRsvpSnapshot } from "./query"
 import { renderLegacyRsvpSnapshotOffline, replayRsvpFixture } from "./replay"
+import { buildRsvpSnapshot, parseRsvpSnapshot, type RsvpSnapshot } from "./snapshot"
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
@@ -30,10 +40,16 @@ interface RsvpCliPayload {
   doctor?: JsonValue
   incidentBundle?: JsonValue
   replay?: JsonValue
+  migration?: JsonValue
+  refresh?: JsonValue
+  compare?: JsonValue
+  answer?: string
+  delivery?: JsonValue
   checks?: Record<string, JsonValue>
   sendAllowed?: boolean
   denialReasons?: string[]
   rollback?: Record<string, JsonValue>
+  strict?: boolean
 }
 
 type RsvpImportLegacyCommand = Extract<RsvpCliCommand, { kind: "rsvp.config.import-legacy" | "rsvp.import-legacy" }>
@@ -42,6 +58,9 @@ type RsvpDoctorCommand = Extract<RsvpCliCommand, { kind: "rsvp.doctor" }>
 type RsvpIncidentCommand = Extract<RsvpCliCommand, { kind: "rsvp.incident" }>
 type RsvpLegacyRenderCommand = Extract<RsvpCliCommand, { kind: "rsvp.legacy-render" }>
 type RsvpReplayCommand = Extract<RsvpCliCommand, { kind: "rsvp.replay" }>
+type RsvpRefreshCommand = Extract<RsvpCliCommand, { kind: "rsvp.refresh" }>
+type RsvpCompareCommand = Extract<RsvpCliCommand, { kind: "rsvp.compare" }>
+type RsvpSmokeCommand = Extract<RsvpCliCommand, { kind: "rsvp.smoke" }>
 type RsvpExecutedCommand =
   | RsvpImportLegacyCommand
   | RsvpCutoverCommand
@@ -49,6 +68,9 @@ type RsvpExecutedCommand =
   | RsvpIncidentCommand
   | RsvpLegacyRenderCommand
   | RsvpReplayCommand
+  | RsvpRefreshCommand
+  | RsvpCompareCommand
+  | RsvpSmokeCommand
 type RsvpPlannedCommand = Exclude<RsvpCliCommand, RsvpExecutedCommand>
 
 function commandJson(command: RsvpCliCommand): boolean {
@@ -76,6 +98,96 @@ function maybeAgentRoot(command: RsvpCliCommand, deps: OuroCliDeps): string | un
 function writeJsonFile(filePath: string, payload: RsvpCliPayload): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8")
+}
+
+function readJsonFile(filePath: string): unknown {
+  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown
+}
+
+function fallbackReadRsvpConfig(agentRoot: string): ReturnType<typeof readRsvpConfig> {
+  const configPath = path.join(agentRoot, "rsvp", "config.json")
+  if (!fs.existsSync(configPath)) {
+    return { ok: false, reason: "missing", path: configPath, message: "missing native RSVP config" }
+  }
+  try {
+    return { ok: true, config: readJsonFile(configPath) as Extract<ReturnType<typeof readRsvpConfig>, { ok: true }>["config"], path: configPath }
+  } catch {
+    return { ok: false, reason: "malformed", path: configPath, message: "native RSVP config is not valid JSON" }
+  }
+}
+
+function resolveRsvpConfig(agentRoot: string): ReturnType<typeof readRsvpConfig> {
+  return readRsvpConfig(agentRoot) ?? fallbackReadRsvpConfig(agentRoot)
+}
+
+function rsvpStateRoot(agentRoot: string): string {
+  return path.join(agentRoot, "state", "rsvp")
+}
+
+function latestSnapshotPath(agentRoot: string): string {
+  return path.join(rsvpStateRoot(agentRoot), "snapshots", "latest.json")
+}
+
+function snapshotFilePath(agentRoot: string, snapshotId: string): string {
+  return path.join(rsvpStateRoot(agentRoot), "snapshots", `${snapshotId}.json`)
+}
+
+function writeSnapshotFiles(agentRoot: string, snapshot: RsvpSnapshot): void {
+  fs.mkdirSync(path.join(rsvpStateRoot(agentRoot), "snapshots"), { recursive: true })
+  fs.writeFileSync(snapshotFilePath(agentRoot, snapshot.snapshotId), `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8")
+  fs.writeFileSync(latestSnapshotPath(agentRoot), `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8")
+}
+
+function parseSnapshotFromFile(filePath: string): RsvpSnapshot {
+  const result = parseRsvpSnapshot(readJsonFile(filePath))
+  if (!result.ok) throw new Error(`invalid RSVP snapshot at ${filePath}: ${result.reason}`)
+  return result.snapshot
+}
+
+function readBaselineSnapshot(agentRoot: string): RsvpSnapshot | null {
+  const baselinePath = path.join(rsvpStateRoot(agentRoot), "baseline.json")
+  if (!fs.existsSync(baselinePath)) return null
+  const baseline = readJsonFile(baselinePath)
+  const snapshotId = baseline && typeof baseline === "object" && !Array.isArray(baseline)
+    ? (baseline as Record<string, unknown>).nativeSnapshotId
+    : null
+  return typeof snapshotId === "string" && fs.existsSync(snapshotFilePath(agentRoot, snapshotId))
+    ? parseSnapshotFromFile(snapshotFilePath(agentRoot, snapshotId))
+    : null
+}
+
+function readLatestSnapshot(agentRoot: string): RsvpSnapshot {
+  return parseSnapshotFromFile(latestSnapshotPath(agentRoot))
+}
+
+function machineIdForCli(deps: OuroCliDeps): string {
+  if (deps.homeDir || deps.bundlesRoot || deps.agentBundleRoot) {
+    return "cli-test-machine"
+  }
+  return loadOrCreateMachineIdentity().machineId
+}
+
+function blueBubblesChatFor(config: { bluebubblesRoute: { chatGuid: string; chatIdentifier?: string } }): BlueBubblesChatRef {
+  const sendTarget = config.bluebubblesRoute.chatIdentifier
+    ? { kind: "chat_identifier" as const, value: config.bluebubblesRoute.chatIdentifier }
+    : { kind: "chat_guid" as const, value: config.bluebubblesRoute.chatGuid }
+  return {
+    chatGuid: config.bluebubblesRoute.chatGuid,
+    ...(config.bluebubblesRoute.chatIdentifier ? { chatIdentifier: config.bluebubblesRoute.chatIdentifier } : {}),
+    displayName: "RSVP",
+    isGroup: true,
+    sessionKey: `bluebubbles:rsvp:${config.bluebubblesRoute.chatIdentifier ?? config.bluebubblesRoute.chatGuid}`,
+    sendTarget,
+    participantHandles: [],
+  }
+}
+
+function normalizeDelivery(value: unknown): JsonValue {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  return {
+    ...(typeof record.guid === "string" ? { guid: record.guid } : {}),
+    ...(typeof record.messageGuid === "string" ? { guid: record.messageGuid, messageGuid: record.messageGuid } : {}),
+  }
 }
 
 function textSummary(payload: RsvpCliPayload): string {
@@ -166,6 +278,31 @@ async function executeImportLegacy(command: RsvpImportLegacyCommand, deps: OuroC
       message: "legacy RSVP import requires --agent <name>",
       requires: "--agent",
     }
+  }
+
+  if (command.kind === "rsvp.import-legacy") {
+    const configResult = resolveRsvpConfig(agentRoot)
+    if (!configResult.ok) {
+      return {
+        ok: false,
+        command: command.kind,
+        sideEffect: false,
+        agent: command.agent,
+        message: configResult.message,
+        requires: "native RSVP config",
+      }
+    }
+    const result = importLegacyRsvpState({
+      agent: command.agent,
+      agentRoot,
+      legacyRoot: command.legacyRoot,
+      weddingId: configResult.config.source.weddingId,
+      eventId: configResult.config.source.eventId,
+      importedAt: new Date().toISOString(),
+    })
+    return basePayload(command, true, result.ok ? "legacy RSVP state imported" : result.message, {
+      migration: result as unknown as JsonValue,
+    })
   }
 
   const result = await importLegacyRsvpConfig({
@@ -286,30 +423,189 @@ async function executeReplay(command: RsvpReplayCommand): Promise<RsvpCliPayload
   })
 }
 
+async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+  const agentRoot = maybeAgentRoot(command, deps)
+  if (!command.agent || !agentRoot) {
+    return {
+      ok: false,
+      command: command.kind,
+      sideEffect: false,
+      message: "RSVP refresh requires --agent <name>",
+      requires: "--agent",
+    }
+  }
+  const configResult = resolveRsvpConfig(agentRoot)
+  if (!configResult.ok) {
+    return basePayload(command, false, "RSVP refresh requires native RSVP config before live work can run", {
+      requires: "native RSVP config",
+      result: configResult as unknown as JsonValue,
+    })
+  }
+  const runtimeConfig = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+  const machineRuntimeConfig = await refreshMachineRuntimeCredentialConfig(command.agent, machineIdForCli(deps), { preserveCachedOnFailure: true })
+  const readiness = validateRsvpReadiness({
+    agent: command.agent,
+    agentRoot,
+    config: configResult,
+    runtimeConfig,
+    machineRuntimeConfig,
+  })
+  const readinessOk = (readiness as { ok?: boolean }).ok === true || readiness.status === "ready"
+  if (!readinessOk) {
+    return {
+      ok: false,
+      command: command.kind,
+      sideEffect: false,
+      agent: command.agent,
+      mode: command.mode,
+      message: "RSVP refresh blocked by readiness checks",
+      checks: { readiness: readiness as unknown as JsonValue },
+    }
+  }
+  const credentials = "credentials" in readiness
+    ? readiness.credentials
+    : { username: "", password: "" }
+  const fetched = await fetchAislePlannerRsvps({
+    agent: command.agent,
+    weddingId: configResult.config.source.weddingId,
+    eventId: configResult.config.source.eventId,
+    credentials,
+    ...(deps.fetchImpl ? { fetchFn: deps.fetchImpl } : {}),
+  })
+  if (!fetched.ok) {
+    return {
+      ok: false,
+      command: command.kind,
+      sideEffect: false,
+      agent: command.agent,
+      mode: command.mode,
+      message: fetched.message,
+      result: fetched as unknown as JsonValue,
+    }
+  }
+
+  const previousSnapshot = readBaselineSnapshot(agentRoot)
+  const currentSnapshot = buildRsvpSnapshot({
+    agent: command.agent,
+    fetchedAt: fetched.fetchedAt,
+    source: {
+      kind: "aisleplanner",
+      weddingId: configResult.config.source.weddingId,
+      eventId: configResult.config.source.eventId,
+      adapter: "aisleplanner-api-v1",
+    },
+    guests: fetched.guests,
+    allGuests: fetched.allGuests,
+    provenance: { kind: "live-fetch", fetchedBy: "ouro rsvp refresh" },
+  })
+  writeSnapshotFiles(agentRoot, currentSnapshot)
+  const delta = computeRsvpDelta(previousSnapshot, currentSnapshot)
+  const reportText = renderRsvpReport(delta)
+  const outboundDecision = decideRsvpOutboundReport({ agentRoot, currentSnapshot, reportText })
+  const sendAllowed = command.allowSend === true && outboundDecision.action === "send"
+  let delivery: JsonValue | undefined
+  if (sendAllowed) {
+    const sent = await createBlueBubblesClient().sendText({
+      chat: blueBubblesChatFor(configResult.config),
+      text: reportText,
+      tempGuid: outboundDecision.idempotencyKey,
+    })
+    delivery = normalizeDelivery(sent)
+    recordRsvpOutboundAttempt({
+      agentRoot,
+      currentSnapshot,
+      reportText,
+      bluebubblesRecord: {
+        recordId: outboundDecision.idempotencyKey,
+        status: "accepted",
+        tempGuid: outboundDecision.idempotencyKey,
+        ...((delivery as Record<string, unknown>).guid ? { messageGuid: String((delivery as Record<string, unknown>).guid) } : {}),
+      },
+      recordedAt: new Date().toISOString(),
+    })
+  }
+
+  return basePayload(command, sendAllowed, "RSVP refresh completed", {
+    allowSend: sendAllowed,
+    sendAllowed,
+    refresh: {
+      snapshotId: currentSnapshot.snapshotId,
+      reportText,
+      outboundDecision: outboundDecision as unknown as JsonValue,
+      ...(delivery ? { delivery } : {}),
+    },
+  })
+}
+
+async function executeCompare(command: RsvpCompareCommand): Promise<RsvpCliPayload> {
+  if (!fs.existsSync(command.nativePath) || !fs.existsSync(command.legacyPath)) {
+    return basePayload(command, false, "RSVP compare requires readable native and legacy snapshot files", {
+      requires: "readable snapshots",
+      inputs: { nativePath: command.nativePath, legacyPath: command.legacyPath },
+    })
+  }
+  const nativeSnapshot = parseSnapshotFromFile(command.nativePath)
+  const legacySnapshot = parseSnapshotFromFile(command.legacyPath)
+  const delta = computeRsvpDelta(legacySnapshot, nativeSnapshot)
+  const reportText = renderRsvpReport(delta)
+  return basePayload(command, false, "RSVP native/legacy comparison completed", {
+    compare: {
+      nativeSnapshotId: nativeSnapshot.snapshotId,
+      legacySnapshotId: legacySnapshot.snapshotId,
+      reportText,
+      delta: delta as unknown as JsonValue,
+    },
+  })
+}
+
+async function executeSmoke(command: RsvpSmokeCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+  const agentRoot = maybeAgentRoot(command, deps)
+  if (!command.agent || !agentRoot) {
+    return {
+      ok: false,
+      command: command.kind,
+      sideEffect: false,
+      message: "RSVP smoke requires --agent <name>",
+      requires: "--agent",
+    }
+  }
+  const configResult = resolveRsvpConfig(agentRoot)
+  if (!configResult.ok) {
+    return basePayload(command, command.allowSend === true, "RSVP smoke requires native RSVP config before follow-up can run", {
+      allowSend: command.allowSend === true,
+      sendAllowed: false,
+      requires: "native RSVP config",
+      result: configResult as unknown as JsonValue,
+    })
+  }
+  const snapshot = readLatestSnapshot(agentRoot)
+  const question = command.question ?? "who is pending?"
+  const answer = queryRsvpSnapshot(snapshot, { query: question })
+  const sendAllowed = command.mode === "live" && command.allowSend === true
+  let delivery: JsonValue | undefined
+  if (sendAllowed) {
+    const sent = await createBlueBubblesClient().sendText({
+      chat: blueBubblesChatFor(configResult.config),
+      text: answer.text,
+    })
+    delivery = normalizeDelivery(sent)
+  }
+  const payload = basePayload(command, sendAllowed, sendAllowed ? "RSVP live smoke completed" : "RSVP smoke preflight completed", {
+    allowSend: sendAllowed,
+    sendAllowed,
+    answer: answer.text,
+    result: answer as unknown as JsonValue,
+    ...(delivery ? { delivery } : {}),
+  })
+  if (command.replayOutputPath) writeJsonFile(command.replayOutputPath, payload)
+  return payload
+}
+
 function plannedPayload(command: RsvpPlannedCommand): RsvpCliPayload {
   switch (command.kind) {
     case "rsvp.habit.stage":
       return basePayload(command, false, "RSVP habit stage command registered; full habit write runs in the native habit unit", {
         inputs: { cadence: command.cadence, mode: command.mode },
-      })
-    case "rsvp.refresh":
-      return basePayload(command, command.allowSend === true, "RSVP refresh command registered; full refresh/send path runs in the refresh unit", {
-        allowSend: command.allowSend === true,
-        inputs: { mode: command.mode, noSend: command.noSend === true },
-      })
-    case "rsvp.compare":
-      return basePayload(command, false, "RSVP compare command registered; full parity comparison runs in the compare unit", {
-        inputs: { nativePath: command.nativePath, legacyPath: command.legacyPath },
-      })
-    case "rsvp.smoke":
-      return basePayload(command, command.allowSend === true, "RSVP smoke command registered; full smoke path runs in the smoke unit", {
-        allowSend: command.allowSend === true,
-        inputs: {
-          mode: command.mode,
-          surface: command.surface,
-          question: command.question ?? null,
-          replayOutputPath: command.replayOutputPath ?? null,
-        },
       })
   }
 }
@@ -325,6 +621,12 @@ export async function runRsvpCliCommand(command: RsvpCliCommand, deps: OuroCliDe
         ? await executeDoctor(command, deps)
         : command.kind === "rsvp.replay"
           ? await executeReplay(command)
-        : plannedPayload(command)
+          : command.kind === "rsvp.refresh"
+            ? await executeRefresh(command, deps)
+            : command.kind === "rsvp.compare"
+              ? await executeCompare(command)
+              : command.kind === "rsvp.smoke"
+                ? await executeSmoke(command, deps)
+                : plannedPayload(command)
   return writePayload(command, deps, payload)
 }
