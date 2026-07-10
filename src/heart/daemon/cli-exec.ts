@@ -119,6 +119,7 @@ import type {
   ThoughtsCliCommand,
   CloneCliCommand,
   DoctorCliCommand,
+  RsvpCliCommand,
   HelpCliCommand,
   RuntimeConfigScope,
   A2ACliCommand,
@@ -208,10 +209,27 @@ const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
+const RSVP_CLI_KINDS = new Set<RsvpCliCommand["kind"]>([
+  "rsvp.doctor",
+  "rsvp.incident",
+  "rsvp.cutover",
+  "rsvp.legacy-render",
+  "rsvp.replay",
+  "rsvp.config.import-legacy",
+  "rsvp.habit.stage",
+  "rsvp.import-legacy",
+  "rsvp.refresh",
+  "rsvp.compare",
+  "rsvp.smoke",
+])
 const CONNECT_PROVIDER_ORIENTATION_PING_OPTIONS = {
   attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
   timeoutMs: 5_000,
 } satisfies Pick<ProviderPingOptions, "attemptPolicy" | "timeoutMs">
+
+function isRsvpCliCommand(command: OuroCliCommand): command is RsvpCliCommand {
+  return RSVP_CLI_KINDS.has(command.kind as RsvpCliCommand["kind"])
+}
 
 function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string {
   const normalized = error.trim().toLowerCase()
@@ -1748,7 +1766,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -7024,6 +7042,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       : formatBlueBubblesReplayText(replay)
     deps.writeStdout(text)
     return text
+  }
+
+  if (isRsvpCliCommand(command)) {
+    const { runRsvpCliCommand } = await import("../../rsvp/cli")
+    return runRsvpCliCommand(command, deps)
   }
 
   if (command.kind === "connect") {
