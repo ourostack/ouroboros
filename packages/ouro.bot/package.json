@@ -1,6 +1,6 @@
 {
   "name": "ouro.bot",
-  "version": "0.1.0-alpha.702",
+  "version": "0.1.0-alpha.703",
   "description": "npx-friendly wrapper for @ouro.bot/cli",
   "bin": {
     "ouro.bot": "index.js"

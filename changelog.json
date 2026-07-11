@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.703",
+      "changes": [
+        "Let ouro up hand off when the daemon and enabled senses are healthy but only advisory health checks, such as context-loss-sentinel warnings, remain.",
+        "Keep final handoff blocking on degraded enabled senses and health checks that affect daemon, cron, or sense readiness."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.702",
       "changes": [
         "Retry transient daemon socket misses during the final ouro up handoff instead of failing while launchd-owned senses are still settling.",

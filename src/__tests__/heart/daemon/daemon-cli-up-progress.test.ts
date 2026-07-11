@@ -340,6 +340,220 @@ describe("ouro up: UpProgress integration", () => {
     expect(result).toContain("slugger/bluebubbles: error - listener unreachable")
   })
 
+  it("hands off when runtime health only has advisory health warnings", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            summary: "running",
+            data: {
+              overview: {
+                daemon: "running",
+                health: "warn",
+                socketPath: "/tmp/ouro-test.sock",
+                version: "0.1.0-alpha.20",
+                lastUpdated: "2026-03-09T11:00:00.000Z",
+                workerCount: 2,
+                senseCount: 1,
+              },
+              senses: [
+                {
+                  agent: "slugger",
+                  sense: "bluebubbles",
+                  enabled: true,
+                  status: "running",
+                  detail: ":18790 /bluebubbles-webhook",
+                },
+              ],
+              workers: [
+                {
+                  agent: "slugger",
+                  worker: "private-runtime",
+                  autoStart: true,
+                  status: "running",
+                  pid: 123,
+                  restartCount: 0,
+                  startedAt: "2026-03-09T11:00:00.000Z",
+                  lastExitCode: null,
+                  lastSignal: null,
+                  errorReason: null,
+                  fixHint: null,
+                },
+                {
+                  agent: "slugger",
+                  worker: "parked-runtime",
+                  autoStart: false,
+                  status: "stopped",
+                  pid: null,
+                  restartCount: 0,
+                  startedAt: null,
+                  lastExitCode: null,
+                  lastSignal: null,
+                  errorReason: null,
+                  fixHint: null,
+                },
+              ],
+              healthChecks: [
+                {
+                  name: "disk-space",
+                  status: "ok",
+                  message: "disk usage healthy (10%)",
+                },
+                {
+                  name: "context-loss-sentinel:slugger",
+                  status: "warn",
+                  message: "Sentinel watch: deterministic recovery can continue, but one or more signals need attention",
+                },
+              ],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).not.toContain("background service stopped before boot finished")
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "final daemon check",
+      "daemon answered with advisory health warnings",
+    )
+  })
+
+  it("does not hand off when runtime health includes a blocking health check warning", async () => {
+    const deps = makeDeps({
+      finalDaemonHealthSettleTimeoutMs: 0,
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            summary: "running",
+            data: {
+              overview: {
+                daemon: "running",
+                health: "warn",
+                socketPath: "/tmp/ouro-test.sock",
+                version: "0.1.0-alpha.20",
+                lastUpdated: "2026-03-09T11:00:00.000Z",
+                workerCount: 0,
+                senseCount: 1,
+              },
+              senses: [
+                {
+                  agent: "slugger",
+                  sense: "bluebubbles",
+                  enabled: true,
+                  status: "running",
+                  detail: ":18790 /bluebubbles-webhook",
+                },
+              ],
+              workers: [],
+              healthChecks: [
+                {
+                  name: "cron-health",
+                  status: "warn",
+                  message: "cron jobs degraded; timer fallback active: slugger:rsvp-ari-rachel:cadence",
+                },
+                {
+                  name: "context-loss-sentinel:slugger",
+                  status: "critical",
+                  message: "Sentinel blocked: provider:outward live check failed",
+                },
+              ],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain(
+      "cron-health: warn - cron jobs degraded; timer fallback active: slugger:rsvp-ari-rachel:cadence",
+    )
+    expect(result).toContain(
+      "context-loss-sentinel:slugger: critical - Sentinel blocked: provider:outward live check failed",
+    )
+  })
+
+  it("does not hand off when runtime health is degraded by a worker row before health checks populate", async () => {
+    const deps = makeDeps({
+      finalDaemonHealthSettleTimeoutMs: 0,
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            summary: "running",
+            data: {
+              overview: {
+                daemon: "running",
+                health: "warn",
+                socketPath: "/tmp/ouro-test.sock",
+                version: "0.1.0-alpha.20",
+                lastUpdated: "2026-03-09T11:00:00.000Z",
+                workerCount: 2,
+                senseCount: 1,
+              },
+              senses: [
+                {
+                  agent: "slugger",
+                  sense: "bluebubbles",
+                  enabled: true,
+                  status: "running",
+                  detail: ":18790 /bluebubbles-webhook",
+                },
+              ],
+              workers: [
+                {
+                  agent: "slugger",
+                  worker: "private-runtime",
+                  autoStart: true,
+                  status: "starting",
+                  pid: 123,
+                  restartCount: 0,
+                  startedAt: "2026-03-09T11:00:00.000Z",
+                  lastExitCode: null,
+                  lastSignal: null,
+                  errorReason: "booting",
+                  fixHint: "wait for startup",
+                },
+                {
+                  agent: "ouroboros",
+                  worker: "private-runtime",
+                  autoStart: true,
+                  status: "starting",
+                  pid: 456,
+                  restartCount: 0,
+                  startedAt: "2026-03-09T11:00:00.000Z",
+                  lastExitCode: null,
+                  lastSignal: null,
+                  errorReason: null,
+                  fixHint: null,
+                },
+              ],
+              healthChecks: [],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("slugger/private-runtime: starting - booting; fix: wait for startup")
+    expect(result).toContain("ouroboros/private-runtime: starting")
+  })
+
   it("waits for transient degraded runtime health before handing off", async () => {
     mocks.upProgressUpdateDetail.mockClear()
     mocks.upProgressCompletePhase.mockClear()
