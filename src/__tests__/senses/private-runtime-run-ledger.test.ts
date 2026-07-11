@@ -75,6 +75,7 @@ vi.mock("../../arc/flight-recorder", () => ({
 }))
 
 import { readRunLedger } from "../../heart/run-ledger"
+import { readRsvpSpendLedger } from "../../rsvp/spend-ledger"
 import { createPrivateRuntimeWorker } from "../../senses/private-runtime-worker"
 
 function tempAgentRoot(): string {
@@ -88,6 +89,32 @@ function tempAgentRoot(): string {
     "---",
     "",
     "Check the private AislePlanner RSVP state without leaking guest text.",
+  ].join("\n"), "utf-8")
+  return agentRoot
+}
+
+function tempTypedRsvpAgentRoot(): string {
+  const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-rsvp-ledger-"))
+  fs.mkdirSync(path.join(agentRoot, "habits"), { recursive: true })
+  fs.writeFileSync(path.join(agentRoot, "habits", "rsvp-ari-rachel.md"), [
+    "---",
+    "title: RSVP Ari & Rachel",
+    "cadence: 0 10 * * *",
+    "tools: [rsvp_query, rsvp_summary]",
+    "rsvp:",
+    "  policyVersion: rsvp-habit/v1",
+    "  mode: shadow",
+    "  sense: bluebubbles",
+    "  source: aisleplanner",
+    "  routeRef: rsvp/config.json#bluebubblesRoute",
+    "  snapshotRef: state/rsvp/snapshots/latest.json",
+    "  outboundStateRef: state/rsvp/outbound-state.json",
+    "  budgetRef: state/rsvp/spend-ledger.json",
+    "  idempotencyRef: state/rsvp/outbound-state.json",
+    "  liveSendEligible: false",
+    "---",
+    "",
+    "Refresh native RSVP state.",
   ].join("\n"), "utf-8")
   return agentRoot
 }
@@ -184,5 +211,46 @@ describe("private-runtime habit run ledger attribution", () => {
         totalTokens: 29,
       },
     })
+  })
+
+  it("mirrors typed RSVP habit wrapper rows into the RSVP spend ledger", async () => {
+    const agentRoot = tempTypedRsvpAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    const runTurn = vi.fn().mockResolvedValue({
+      turnOutcome: "settled",
+      usage: {
+        input_tokens: 21,
+        output_tokens: 8,
+        reasoning_tokens: 1,
+        total_tokens: 30,
+      },
+      messages: [{ role: "assistant", content: "RSVP work complete." }],
+    })
+    const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-07-09T17:00:00.000Z").getTime())
+
+    await worker.handleMessage({ type: "habit", habitName: "rsvp-ari-rachel", trigger: "scheduled" })
+
+    const rows = readRunLedger(agentRoot)
+    const spendLedger = readRsvpSpendLedger(agentRoot)
+    expect(spendLedger.runs).toHaveLength(2)
+    expect(spendLedger.runs.map((row) => row.lifecycle)).toEqual(["started", "completed"])
+    expect(spendLedger.runs[0]).toMatchObject({
+      runId: rows[0]?.runId,
+      habitName: "rsvp-ari-rachel",
+      contentStored: false,
+    })
+    expect(spendLedger.runs[1]).toMatchObject({
+      runId: rows[1]?.runId,
+      habitName: "rsvp-ari-rachel",
+      usage: {
+        source: "provider",
+        inputTokens: 21,
+        outputTokens: 8,
+        reasoningTokens: 1,
+        totalTokens: 30,
+      },
+      contentStored: false,
+    })
+    expect(JSON.stringify(spendLedger)).not.toContain("RSVP work complete")
   })
 })

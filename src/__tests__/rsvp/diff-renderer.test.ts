@@ -55,8 +55,8 @@ describe("RSVP diff renderer", () => {
     expect(report).toContain("  • Unnamed guest (via Ari Mendelow) (declined)")
     expect(report).toContain("Guests removed:")
     expect(report).toContain("1 attending / 2 declined / 1 pending")
-    expect(report).toContain("🤖 Beep boop! Automated RSVP update from Slugger — no need to reply here!")
-    expect(report).not.toContain("I'm a script, not Slugger")
+    expect(report).toContain("🤖 Beep boop! I'm a script, not Slugger — no need to reply here!")
+    expect(report).not.toContain("Automated RSVP update from Slugger")
   })
 
   it("renders first-run and no-change summaries without model calls", () => {
@@ -69,12 +69,12 @@ describe("RSVP diff renderer", () => {
     const firstRun = renderRsvpReport(computeRsvpDelta(null, current))
     expect(firstRun).toContain("First check — here's the current summary:")
     expect(firstRun).toContain("1 attending / 0 declined / 1 pending / 1 unknown")
-    expect(firstRun).toContain("🤖 Beep boop! Automated RSVP update from Slugger — no need to reply here!")
+    expect(firstRun).toContain("🤖 Beep boop! I'm a script, not Slugger — no need to reply here!")
 
     const noChange = renderRsvpReport(computeRsvpDelta(current, current))
     expect(noChange).toContain("No changes since last check.")
     expect(noChange).toContain("1 attending / 0 declined / 1 pending / 1 unknown")
-    expect(noChange).toContain("🤖 Beep boop! Automated RSVP update from Slugger — no need to reply here!")
+    expect(noChange).toContain("🤖 Beep boop! I'm a script, not Slugger — no need to reply here!")
   })
 
   it("renders sparse change sections and unnamed guests without a group peer", () => {

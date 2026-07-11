@@ -3,6 +3,8 @@ import * as path from "node:path"
 
 import { renderHabitFile } from "../heart/habits/habit-parser"
 import { emitNervesEvent } from "../nerves/runtime"
+import { ensureRsvpOutboundState } from "./outbound-state"
+import { ensureRsvpSpendLedger } from "./spend-ledger"
 import {
   RSVP_HABIT_ALLOWED_TOOLS,
   RSVP_HABIT_NAME,
@@ -56,11 +58,12 @@ function stagedHabitBody(): string {
 export function stageRsvpHabit(input: StageRsvpHabitInput): StageRsvpHabitResult {
   const habitPath = path.join(input.agentRoot, "habits", `${RSVP_HABIT_NAME}.md`)
   const rsvp = defaultRsvpHabitMetadata(input.mode)
+  const created = (input.now ?? new Date()).toISOString()
   const content = renderHabitFile({
     title: "RSVP Ari & Rachel",
     status: "active",
     cadence: input.cadence,
-    created: (input.now ?? new Date()).toISOString(),
+    created,
     tools: [...RSVP_HABIT_ALLOWED_TOOLS],
     continuity: { mode: "stateful" },
     rsvp,
@@ -68,6 +71,8 @@ export function stageRsvpHabit(input: StageRsvpHabitInput): StageRsvpHabitResult
 
   fs.mkdirSync(path.dirname(habitPath), { recursive: true })
   fs.writeFileSync(habitPath, content, "utf-8")
+  ensureRsvpOutboundState(input.agentRoot, created)
+  ensureRsvpSpendLedger(input.agentRoot, created)
   emitNervesEvent({
     component: "rsvp",
     event: "rsvp.habit_staged",

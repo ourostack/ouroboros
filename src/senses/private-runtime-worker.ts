@@ -31,6 +31,7 @@ import {
   rsvpHabitRuntimePolicy,
   type RsvpHabitRuntimePolicy,
 } from "../rsvp/habit-policy"
+import { recordRsvpSpendLedgerRun } from "../rsvp/spend-ledger"
 import {
   appendRunLedgerRecordNonFatal,
   createRunLedgerRecord,
@@ -167,14 +168,28 @@ function recordHabitRunLedger(
   endedAt?: string,
 ): void {
   const usage = extractUsageFromHabitResults(habitRun.results)
-  appendRunLedgerRecordNonFatal(habitRun.agentRoot, createRunLedgerRecord({
+  const record = createRunLedgerRecord({
     ...habitRunLedgerBase(habitRun),
     lifecycle,
     ...(endedAt ? { endedAt } : {}),
     ...(lifecycle === "completed" || lifecycle === "error"
       ? { usage: usageMetadataFromUsageData(usage, usage ? "provider" : "none") }
       : {}),
-  }))
+  })
+  appendRunLedgerRecordNonFatal(habitRun.agentRoot, record)
+  if (habitRun.rsvpPolicy) {
+    try {
+      recordRsvpSpendLedgerRun(habitRun.agentRoot, record)
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "rsvp",
+        event: "rsvp.spend_ledger_record_error",
+        message: "failed to record RSVP spend ledger row",
+        meta: { runId: record.runId, lifecycle, error: error instanceof Error ? error.message : String(error) },
+      })
+    }
+  }
 }
 
 function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string): AutonomyBudgetDecision {

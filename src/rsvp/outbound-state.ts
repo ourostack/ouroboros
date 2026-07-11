@@ -168,6 +168,19 @@ function writeState(agentRoot: string, state: RsvpOutboundState): RsvpOutboundSt
   return state
 }
 
+export function ensureRsvpOutboundState(agentRoot: string, now: string = new Date().toISOString()): RsvpOutboundState {
+  const filePath = rsvpOutboundStatePath(agentRoot)
+  if (fs.existsSync(filePath)) return readRsvpOutboundState(agentRoot)
+  const state = writeState(agentRoot, emptyState(now))
+  emitNervesEvent({
+    component: "rsvp",
+    event: "rsvp.outbound_state_initialized",
+    message: "initialized RSVP outbound state",
+    meta: { updatedAt: state.updatedAt },
+  })
+  return state
+}
+
 export function writeRsvpBaseline(input: {
   agentRoot: string
   snapshot: RsvpSnapshot
