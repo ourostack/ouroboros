@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.704",
       "changes": [
-        "Restore RSVP notification copy and harden RSVP run ledgers."
+        "Restore RSVP notification copy and harden RSVP run ledgers.",
+        "Preserve loose RSVP spend-ledger history while adding cold-start state coverage."
       ]
     },
     {
