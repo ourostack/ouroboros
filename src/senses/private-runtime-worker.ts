@@ -186,7 +186,7 @@ function recordHabitRunLedger(
         component: "rsvp",
         event: "rsvp.spend_ledger_record_error",
         message: "failed to record RSVP spend ledger row",
-        meta: { runId: record.runId, lifecycle, error: error instanceof Error ? error.message : String(error) },
+        meta: { runId: record.runId, lifecycle, error: String(error) },
       })
     }
   }

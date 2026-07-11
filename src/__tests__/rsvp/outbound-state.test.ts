@@ -118,6 +118,28 @@ describe("RSVP outbound baseline state", () => {
     expect(readRsvpOutboundState(agentRoot)).toMatchObject({ pendingReports: [] })
   })
 
+  it("does not overwrite an existing RSVP outbound state during cold-start initialization", async () => {
+    const {
+      ensureRsvpOutboundState,
+      writeRsvpBaseline,
+    } = await import("../../rsvp/outbound-state")
+
+    writeRsvpBaseline({
+      agentRoot,
+      snapshot: previous,
+      recordedAt: "2026-07-09T16:00:00.000Z",
+      reason: "legacy-import",
+    })
+
+    const state = ensureRsvpOutboundState(agentRoot, "2026-07-09T17:00:00.000Z")
+
+    expect(state.baseline).toMatchObject({
+      snapshotId: previous.snapshotId,
+      recordedAt: "2026-07-09T16:00:00.000Z",
+      reason: "legacy-import",
+    })
+  })
+
   it("advances the baseline only after an accepted-or-better outbound proof", async () => {
     const {
       decideRsvpOutboundReport,

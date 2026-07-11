@@ -65,6 +65,15 @@ describe("RSVP spend ledger", () => {
     expect(readRsvpSpendLedger(agentRoot)).toEqual(ledger)
   })
 
+  it("does not overwrite an existing spend ledger during cold-start initialization", () => {
+    const agentRoot = tempRoot()
+    const first = ensureRsvpSpendLedger(agentRoot, "2026-07-09T20:00:00.000Z")
+
+    const second = ensureRsvpSpendLedger(agentRoot, "2026-07-10T20:00:00.000Z")
+
+    expect(second).toEqual(first)
+  })
+
   it("records RSVP habit run lifecycle rows without storing message content", () => {
     const agentRoot = tempRoot()
     const started = runRecord("started")
@@ -139,6 +148,56 @@ describe("RSVP spend ledger", () => {
       habitName: "rsvp-ari-rachel",
       lifecycle: "started",
       contentStored: false,
+    })
+  })
+
+  it("migrates loose legacy ledgers without timestamps and drops non-object runs", () => {
+    const agentRoot = tempRoot()
+    fs.mkdirSync(path.dirname(spendLedgerPath(agentRoot)), { recursive: true })
+    fs.writeFileSync(spendLedgerPath(agentRoot), `${JSON.stringify({
+      runs: [
+        null,
+        "bad",
+        {
+          runId: "legacy-run",
+          lifecycle: "completed",
+          contentStored: false,
+        },
+      ],
+    }, null, 2)}\n`, "utf-8")
+
+    const ledger = readRsvpSpendLedger(agentRoot)
+
+    expect(ledger.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(ledger.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(ledger.runs).toEqual([
+      expect.objectContaining({
+        runId: "legacy-run",
+        lifecycle: "completed",
+        contentStored: false,
+      }),
+    ])
+  })
+
+  it("treats shape-invalid spend ledgers as empty", () => {
+    const agentRoot = tempRoot()
+    fs.mkdirSync(path.dirname(spendLedgerPath(agentRoot)), { recursive: true })
+    fs.writeFileSync(spendLedgerPath(agentRoot), "[]", "utf-8")
+
+    expect(readRsvpSpendLedger(agentRoot).runs).toEqual([])
+
+    fs.writeFileSync(spendLedgerPath(agentRoot), JSON.stringify({ createdAt: "2026-07-09T20:00:00.000Z" }), "utf-8")
+    expect(readRsvpSpendLedger(agentRoot).runs).toEqual([])
+  })
+
+  it("treats malformed spend ledgers as empty instead of throwing", () => {
+    const agentRoot = tempRoot()
+    fs.mkdirSync(path.dirname(spendLedgerPath(agentRoot)), { recursive: true })
+    fs.writeFileSync(spendLedgerPath(agentRoot), "{not-json", "utf-8")
+
+    expect(readRsvpSpendLedger(agentRoot)).toMatchObject({
+      policyVersion: "rsvp-spend-ledger/v1",
+      runs: [],
     })
   })
 })
