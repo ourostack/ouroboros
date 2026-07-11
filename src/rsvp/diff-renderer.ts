@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import type { RsvpGuestSnapshotRow, RsvpGuestStatus, RsvpSnapshot, RsvpSnapshotSummary } from "./snapshot"
 
-const RSVP_REPORT_FOOTER = "🤖 Beep boop! Automated RSVP update from Slugger — no need to reply here!"
+const RSVP_REPORT_FOOTER = "🤖 Beep boop! I'm a script, not Slugger — no need to reply here!"
 
 export interface RsvpDeltaGuest {
   id: string

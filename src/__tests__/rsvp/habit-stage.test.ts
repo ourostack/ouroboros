@@ -19,8 +19,12 @@ describe("RSVP native habit staging", () => {
         now: new Date("2026-07-09T20:00:00.000Z"),
       })
       const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-ari-rachel.md")
+      const outboundStatePath = path.join(tmp.agentRoot, "state", "rsvp", "outbound-state.json")
+      const spendLedgerPath = path.join(tmp.agentRoot, "state", "rsvp", "spend-ledger.json")
       const content = fs.readFileSync(habitPath, "utf-8")
       const parsed = parseHabitFile(content, habitPath) as ReturnType<typeof parseHabitFile> & { rsvp?: Record<string, unknown> }
+      const outboundState = JSON.parse(fs.readFileSync(outboundStatePath, "utf-8")) as Record<string, unknown>
+      const spendLedger = JSON.parse(fs.readFileSync(spendLedgerPath, "utf-8")) as Record<string, unknown>
 
       expect(result).toMatchObject({
         ok: true,
@@ -62,6 +66,17 @@ describe("RSVP native habit staging", () => {
         },
       })
       expect(content).not.toMatch(/beep boop|script, not slugger|no need to reply/i)
+      expect(outboundState).toMatchObject({
+        policyVersion: "rsvp-outbound-state/v1",
+        updatedAt: "2026-07-09T20:00:00.000Z",
+        pendingReports: [],
+      })
+      expect(spendLedger).toMatchObject({
+        policyVersion: "rsvp-spend-ledger/v1",
+        createdAt: "2026-07-09T20:00:00.000Z",
+        updatedAt: "2026-07-09T20:00:00.000Z",
+        runs: [],
+      })
     } finally {
       tmp.cleanup()
     }
