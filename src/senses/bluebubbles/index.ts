@@ -46,14 +46,16 @@ import {
 import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
 import {
-  buildSenseContextPacket,
   renderSenseContextPacketForPrompt,
-  type SenseContextPacketInputMessage,
 } from "../context-packets"
 import {
   readLatestVisibleSenseContextPacket,
   writeSenseContextPacket,
 } from "../context-packet-ledger"
+import {
+  blueBubblesContextChatKeyHash,
+  buildBlueBubblesContextPacket,
+} from "./context-packet"
 import {
   recordAutonomyFailure,
   reserveAutonomyBudget,
@@ -303,8 +305,6 @@ const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
 const BLUEBUBBLES_SILENCE_WATCHDOG_MS = 75_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
-const BLUEBUBBLES_CONTEXT_PACKET_LIMIT = 40
-const BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS = 48 * 60 * 60 * 1000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
@@ -729,42 +729,6 @@ function recordBlueBubblesRecoveryFailureForBudget(
   }
 }
 
-function chatKeyForContext(event: BlueBubblesNormalizedMessage): string {
-  return event.chat.chatGuid ?? event.chat.chatIdentifier ?? event.chat.sessionKey
-}
-
-function isSameBlueBubblesChat(candidate: BlueBubblesNormalizedMessage, anchor: BlueBubblesNormalizedMessage): boolean {
-  return candidate.chat.sessionKey === anchor.chat.sessionKey
-    || (!!candidate.chat.chatGuid && candidate.chat.chatGuid === anchor.chat.chatGuid)
-    || (!!candidate.chat.chatIdentifier && candidate.chat.chatIdentifier === anchor.chat.chatIdentifier)
-}
-
-function contextAuthorLabel(event: BlueBubblesNormalizedMessage): string {
-  if (event.fromMe) return "Slugger"
-  return event.sender.displayName || event.sender.externalId || "Unknown"
-}
-
-function messageToContextInput(
-  event: BlueBubblesNormalizedMessage,
-  chatGuidHash: string,
-): SenseContextPacketInputMessage {
-  return {
-    timestamp: new Date(event.timestamp).toISOString(),
-    authorLabel: contextAuthorLabel(event),
-    body: event.textForAgent || event.text,
-    sourceRef: {
-      sense: "bluebubbles",
-      adapter: "bluebubbles-api-v1",
-      service: "imessage",
-      chatGuid: event.chat.chatGuid,
-      chatGuidHash,
-      messageGuid: event.messageGuid,
-      senderExternalIdHash: sha256Hex(event.sender.externalId || event.sender.rawId || "unknown"),
-      observedAt: new Date(event.timestamp).toISOString(),
-    },
-  }
-}
-
 function insertEphemeralContextMessages(
   messages: OpenAI.ChatCompletionMessageParam[],
   contextMessages: OpenAI.ChatCompletionMessageParam[],
@@ -787,42 +751,17 @@ async function buildBlueBubblesContextMessages(input: {
   if (input.event.kind !== "message") return []
   const event = input.event
   if (!Number.isFinite(event.timestamp)) return []
-  const chatKey = chatKeyForContext(event)
-  const chatGuidHash = sha256Hex(chatKey)
+  const chatGuidHash = blueBubblesContextChatKeyHash(event)
   const anchorTimestamp = new Date(event.timestamp).toISOString()
   try {
-    const query = {
-      beforeTimestamp: event.timestamp,
-      limit: BLUEBUBBLES_CONTEXT_PACKET_LIMIT,
-      offset: 0,
-      ...(event.chat.chatGuid ? { chatGuid: event.chat.chatGuid } : {}),
-      ...(!event.chat.chatGuid && event.chat.chatIdentifier ? { chatIdentifier: event.chat.chatIdentifier } : {}),
-    }
-    const candidates = input.client.listRecentMessages
-      ? await input.client.listRecentMessages(query)
-      : []
-    const history = candidates
-      .filter((candidate): candidate is BlueBubblesNormalizedMessage => candidate.kind === "message")
-      .filter((candidate) => isSameBlueBubblesChat(candidate, event))
-      .filter((candidate) => candidate.messageGuid !== event.messageGuid)
-      .filter((candidate) => candidate.timestamp <= event.timestamp)
-      .filter((candidate) => event.timestamp - candidate.timestamp <= BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS)
-    if (history.length === 0) return []
-    const packet = buildSenseContextPacket({
-      agent: input.agentName,
-      sense: "bluebubbles",
-      sessionKey: event.chat.sessionKey,
-      chatKeyHash: chatGuidHash,
-      anchorMessageGuid: event.messageGuid,
-      anchorTimestamp,
-      windowBeforeMessages: BLUEBUBBLES_CONTEXT_PACKET_LIMIT,
-      windowBeforeMs: BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS,
-      messages: history.map((candidate) => messageToContextInput(candidate, chatGuidHash)),
+    const result = await buildBlueBubblesContextPacket({
+      agentName: input.agentName,
+      client: input.client,
+      event,
     })
+    if (!result) return []
+    const { packet, rendered, historyCount } = result
     writeSenseContextPacket(input.agentRoot, packet)
-    const rendered = renderSenseContextPacketForPrompt(packet, {
-      redactionPatterns: [/password=[^\s]+/gi],
-    })
     emitNervesEvent({
       component: "senses",
       event: "senses.bluebubbles_context_packet_injected",
@@ -830,7 +769,7 @@ async function buildBlueBubblesContextMessages(input: {
       meta: {
         packetId: packet.packetId,
         messageGuid: event.messageGuid,
-        contextMessages: history.length,
+        contextMessages: historyCount,
       },
     })
     return [{ role: "system", content: rendered.text }]

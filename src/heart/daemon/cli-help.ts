@@ -375,9 +375,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   bluebubbles: {
     category: "System",
     description: "BlueBubbles integration commands",
-    usage: "ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type <type>] [--json]",
-    example: "ouro bluebubbles replay --message-guid abc123",
-    subcommands: ["replay"],
+    usage: [
+      "ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type <type>] [--json]",
+      "ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
+    ].join("\n"),
+    example: "ouro bluebubbles context-smoke --agent slugger --message-guid abc123 --persist --json",
+    subcommands: ["replay", "context-smoke"],
   },
 }
 
