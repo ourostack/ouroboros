@@ -34,6 +34,7 @@ import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
 import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from "./habit-private-wake"
+import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
@@ -665,6 +666,25 @@ void daemon.start().then(async () => {
         habitsDir,
         osCronManager,
         onHabitFire: (habitName, trigger, context) => {
+          if (isRsvpHabitName(habitName)) {
+            sendDaemonCommand(socketPath, {
+              kind: "habit.poke",
+              agent,
+              habitName,
+              trigger,
+              ...(context?.occurrenceId ? { occurrenceId: context.occurrenceId } : {}),
+            }).catch((error) => {
+              emitHabitPrivateWakeDispatchError({
+                agent,
+                habitName,
+                trigger,
+                triggerSource: `habit-${trigger}` as HabitPrivateWakeTriggerSource,
+                socketPath,
+                error,
+              })
+            })
+            return
+          }
           const command = buildHabitPrivateWakeCommand({
             agent,
             habitName,

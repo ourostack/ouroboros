@@ -31,7 +31,12 @@ describe("daemon command plane branches", () => {
   const make = (
     socketPath: string,
     bundlesRoot?: string,
-    options?: { onStopCommandComplete?: () => void; privateRuntimePolicyDeps?: unknown; externalEventRoot?: string },
+    options?: {
+      onStopCommandComplete?: () => void
+      privateRuntimePolicyDeps?: unknown
+      externalEventRoot?: string
+      rsvpHabitRunner?: unknown
+    },
   ) => {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
@@ -77,6 +82,7 @@ describe("daemon command plane branches", () => {
       bundlesRoot,
       senseManager,
       privateRuntimePolicyDeps: options?.privateRuntimePolicyDeps,
+      rsvpHabitRunner: options?.rsvpHabitRunner,
       externalEventRoot: options?.externalEventRoot,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
@@ -1514,11 +1520,17 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
-  it("wakes private runtime for manual RSVP habit pokes with valid typed metadata", async () => {
+  it("runs manual RSVP habit pokes through the native RSVP runner with valid typed metadata", async () => {
     const socketPath = tmpSocketPath("daemon-rsvp-habit-poke-valid")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-rsvp-habit-poke-valid-bundles-"))
     const ledgerPath = path.join(os.tmpdir(), `rsvp-habit-poke-valid-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
     const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const rsvpHabitRunner = vi.fn(async () => ({
+      ok: true,
+      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      lifecycle: "completed",
+      runId: "rsvp-native-manual-run",
+    }))
     const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -1545,7 +1557,7 @@ describe("daemon command plane branches", () => {
       ].join("\n"),
       "utf-8",
     )
-    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps, rsvpHabitRunner })
     processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
 
     const poke = await daemon.handleCommand({
@@ -1557,27 +1569,88 @@ describe("daemon command plane branches", () => {
 
     expect(poke).toMatchObject({
       ok: true,
-      message: "woke private runtime for slugger",
+      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
       data: {
-        decision: expect.objectContaining({
-          result: "allow",
-          executable: true,
-          triggerSource: "habit-manual",
-        }),
+        lifecycle: "completed",
       },
     })
-    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
-    expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
-    expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
-    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", {
-      type: "habit",
+    expect(rsvpHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
+      agent: "slugger",
+      bundlesRoot,
       habitName: "rsvp-ari-rachel",
       trigger: "manual",
-      privateTurnDecision: expect.objectContaining({
-        result: "allow",
-        triggerSource: "habit-manual",
+    }))
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("runs typed RSVP habit pokes natively even when default private-runtime policy denies", async () => {
+    const socketPath = tmpSocketPath("daemon-rsvp-habit-poke-native")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-rsvp-habit-poke-native-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `rsvp-habit-poke-native-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
+    const rsvpHabitRunner = vi.fn(async () => ({
+      ok: true,
+      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      lifecycle: "completed",
+      runId: "rsvp-native-run",
+    }))
+    const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      [
+        "---",
+        "title: rsvp-ari-rachel",
+        "cadence: 0 10 * * *",
+        "status: active",
+        "rsvp:",
+        "  policyVersion: rsvp-habit/v1",
+        "  mode: live",
+        "  sense: bluebubbles",
+        "  source: aisleplanner",
+        "  routeRef: rsvp/config.json#bluebubblesRoute",
+        "  snapshotRef: state/rsvp/snapshots/latest.json",
+        "  outboundStateRef: state/rsvp/outbound-state.json",
+        "  budgetRef: state/rsvp/spend-ledger.json",
+        "  idempotencyRef: state/rsvp/outbound-state.json",
+        "  liveSendEligible: true",
+        "---",
+        "",
+        "Run the RSVP habit.",
+      ].join("\n"),
+      "utf-8",
+    )
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps, rsvpHabitRunner })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "rsvp-ari-rachel",
+      trigger: "launchd",
+    })
+
+    expect(poke).toMatchObject({
+      ok: true,
+      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      data: expect.objectContaining({
+        lifecycle: "completed",
       }),
     })
+    expect(rsvpHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
+      agent: "slugger",
+      bundlesRoot,
+      habitName: "rsvp-ari-rachel",
+      trigger: "launchd",
+      occurrenceId: "launchd:first-run:0 10 * * *",
+    }))
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
   it("rejects malformed habit-poke payloads before policy evaluation", async () => {

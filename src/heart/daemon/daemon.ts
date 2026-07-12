@@ -52,6 +52,7 @@ import { parseHabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
+import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -468,7 +469,7 @@ export type DaemonCommand =
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
-  | { kind: "habit.poke"; agent: string; habitName: string; trigger?: HabitRunTrigger }
+  | { kind: "habit.poke"; agent: string; habitName: string; trigger?: HabitRunTrigger; occurrenceId?: string }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
@@ -513,6 +514,8 @@ export interface OuroDaemonOptions {
   onStopCommandComplete?: () => void
   /** Test seam for external-event receipts. Defaults to ~/.ouro-cli/daemon/external-events. */
   externalEventRoot?: string
+  /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
+  rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
 }
 
 interface DaemonWorkerRow {
@@ -783,6 +786,7 @@ export class OuroDaemon {
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void) | null
   private readonly externalEventRoot: string | null
+  private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -797,6 +801,7 @@ export class OuroDaemon {
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
+    this.rsvpHabitRunner = options.rsvpHabitRunner
   }
 
   /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
@@ -1492,6 +1497,7 @@ export class OuroDaemon {
     }
 
     if (trigger === "poke" || trigger === "manual") return undefined
+    if (typeof command.occurrenceId === "string" && command.occurrenceId.trim().length > 0) return command.occurrenceId.trim()
 
     if (!fs.existsSync(habitPath)) return { skipReason: "habit file not found" }
 
@@ -1500,6 +1506,25 @@ export class OuroDaemon {
     const cadence = habit.cadence
     if (habit.lastRun === null) return `${trigger}:first-run:${cadence}`
     return `${trigger}:last-run:${habit.lastRun}:cadence:${cadence}`
+  }
+
+  private async runNativeRsvpHabit(command: Extract<DaemonCommand, { kind: "habit.poke" }>, trigger: HabitRunTrigger, occurrenceId?: string): Promise<DaemonResponse> {
+    const runner = this.rsvpHabitRunner ?? (async (input: RunNativeRsvpHabitInput): Promise<RunNativeRsvpHabitResult> => {
+      const { runNativeRsvpHabit } = await import("../../rsvp/native-habit-runner")
+      return runNativeRsvpHabit(input)
+    })
+    const result = await runner({
+      agent: command.agent,
+      bundlesRoot: this.bundlesRoot,
+      habitName: command.habitName,
+      trigger,
+      ...(occurrenceId ? { occurrenceId } : {}),
+    })
+    return {
+      ok: result.ok,
+      message: result.message,
+      data: result,
+    }
   }
 
   private buildPrivateRuntimeWorkerWakeMessage(
@@ -1928,7 +1953,7 @@ export class OuroDaemon {
         if (!isHabitRunTrigger(trigger)) {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
         }
-        if (!this.hasManagedPrivateRuntime(command.agent)) {
+        if (!isRsvpHabitName(command.habitName) && !this.hasManagedPrivateRuntime(command.agent)) {
           return {
             ok: false,
             error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
@@ -1940,6 +1965,9 @@ export class OuroDaemon {
             ok: true,
             message: `skipped scheduled habit ${command.habitName} for ${command.agent}: ${occurrenceId.skipReason}`,
           }
+        }
+        if (isRsvpHabitName(command.habitName)) {
+          return this.runNativeRsvpHabit(command, trigger, occurrenceId)
         }
         return this.handlePrivateRuntimeWake(buildHabitPrivateWakeCommand({
           agent: command.agent,
