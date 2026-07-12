@@ -5,9 +5,10 @@ import * as path from "node:path"
 import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
 import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
+import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
-import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
+import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig, type RuntimeCredentialConfigReadResult } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBlueBubblesClient } from "../senses/bluebubbles/client"
 import type { BlueBubblesChatRef } from "../senses/bluebubbles/model"
@@ -256,6 +257,56 @@ function blueBubblesChatFor(config: { bluebubblesRoute: { chatGuid: string; chat
     sessionKey: `bluebubbles:rsvp:${config.bluebubblesRoute.chatIdentifier ?? config.bluebubblesRoute.chatGuid}`,
     sendTarget,
     participantHandles: [],
+  }
+}
+
+function numberField(record: Record<string, unknown> | null, key: string, fallback: number): number {
+  const value = record?.[key]
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function stringArrayField(record: Record<string, unknown> | null, key: string): string[] {
+  const value = record?.[key]
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => typeof entry === "string" ? entry.trim() : "").filter(Boolean)
+}
+
+function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  const value = record[key]
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function rsvpBlueBubblesClientConfig(
+  nativeConfig: RsvpNativeConfig,
+  machineRuntimeConfig: RuntimeCredentialConfigReadResult,
+): { config: BlueBubblesConfig; channelConfig: BlueBubblesChannelConfig } {
+  if (!machineRuntimeConfig.ok) {
+    throw new Error(`BlueBubbles runtime config unavailable at ${machineRuntimeConfig.itemPath}: ${machineRuntimeConfig.error}`)
+  }
+  const bluebubbles = recordField(machineRuntimeConfig.config, "bluebubbles")
+  const bluebubblesChannel = recordField(machineRuntimeConfig.config, "bluebubblesChannel")
+  const serverUrl = localText(bluebubbles?.serverUrl)
+  const password = localText(bluebubbles?.password)
+  if (!serverUrl) {
+    throw new Error("bluebubbles.serverUrl is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
+  }
+  if (!password) {
+    throw new Error("bluebubbles.password is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
+  }
+  return {
+    config: {
+      serverUrl,
+      password,
+      accountId: localText(bluebubbles?.accountId) || localText(nativeConfig.bluebubblesRoute.accountId) || "default",
+      ownHandles: stringArrayField(bluebubbles, "ownHandles"),
+    },
+    channelConfig: {
+      port: numberField(bluebubblesChannel, "port", 18790),
+      webhookPath: localText(bluebubblesChannel?.webhookPath) || "/bluebubbles-webhook",
+      requestTimeoutMs: numberField(bluebubblesChannel, "requestTimeoutMs", 30_000),
+    },
   }
 }
 
@@ -622,7 +673,8 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
   const sendAllowed = wantsLiveSend
   let delivery: JsonValue | undefined
   if (sendAllowed) {
-    const sent = await createBlueBubblesClient().sendText({
+    const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, machineRuntimeConfig)
+    const sent = await createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig).sendText({
       chat: blueBubblesChatFor(configResult.config),
       text: reportText,
       tempGuid: outboundDecision.idempotencyKey,
@@ -730,7 +782,8 @@ async function executeSmoke(command: RsvpSmokeCommand, deps: OuroCliDeps): Promi
   const sendAllowed = wantsLiveSend
   let delivery: JsonValue | undefined
   if (sendAllowed) {
-    const sent = await createBlueBubblesClient().sendText({
+    const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, await refreshMachineRuntimeCredentialConfig(command.agent, machineIdForCli(), { preserveCachedOnFailure: true }))
+    const sent = await createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig).sendText({
       chat: blueBubblesChatFor(configResult.config),
       text: answer.text,
     })
