@@ -12,6 +12,21 @@ const mockBlueBubblesClient = vi.hoisted(() => ({
   sendText: vi.fn(async () => ({ guid: "TEST-RSVP-SMOKE-GUID" })),
 }))
 
+const mockRuntimeCredentialConfig = vi.hoisted(() => ({
+  refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => ({
+    ok: false,
+    reason: "missing",
+    itemPath: `vault:${agentName}:runtime/config`,
+    error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+  })),
+  refreshMachineRuntimeCredentialConfig: vi.fn(async (agentName: string, machineId: string) => ({
+    ok: false,
+    reason: "missing",
+    itemPath: `vault:${agentName}:runtime/machines/${machineId}/config`,
+    error: `no machine runtime credentials stored at vault:${agentName}:runtime/machines/${machineId}/config`,
+  })),
+}))
+
 vi.mock("../../../rsvp/config", async () => {
   const actual = await vi.importActual<typeof import("../../../rsvp/config")>("../../../rsvp/config")
   return {
@@ -24,18 +39,8 @@ vi.mock("../../../heart/runtime-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
   return {
     ...actual,
-    refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => ({
-      ok: false,
-      reason: "missing",
-      itemPath: `vault:${agentName}:runtime/config`,
-      error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
-    })),
-    refreshMachineRuntimeCredentialConfig: vi.fn(async (agentName: string, machineId: string) => ({
-      ok: false,
-      reason: "missing",
-      itemPath: `vault:${agentName}:runtime/machines/${machineId}/config`,
-      error: `no machine runtime credentials stored at vault:${agentName}:runtime/machines/${machineId}/config`,
-    })),
+    refreshRuntimeCredentialConfig: mockRuntimeCredentialConfig.refreshRuntimeCredentialConfig,
+    refreshMachineRuntimeCredentialConfig: mockRuntimeCredentialConfig.refreshMachineRuntimeCredentialConfig,
   }
 })
 
@@ -159,6 +164,8 @@ function seedRsvpOperationalBundle(): ReturnType<typeof createTmpBundle> {
 afterEach(() => {
   mockRsvpConfig.importLegacyRsvpConfig.mockReset()
   mockBlueBubblesClient.sendText.mockClear()
+  mockRuntimeCredentialConfig.refreshRuntimeCredentialConfig.mockClear()
+  mockRuntimeCredentialConfig.refreshMachineRuntimeCredentialConfig.mockClear()
 })
 
 describe("ouro rsvp CLI parsing", () => {
@@ -994,6 +1001,13 @@ describe("ouro rsvp CLI execution", () => {
         allowSend: false,
       })
 
+      mockRuntimeCredentialConfig.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({
+        ok: true,
+        config: {
+          bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret" },
+          bluebubblesChannel: { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30_000 },
+        },
+      })
       const live = await runOuroCli(["rsvp", "smoke", "--agent", "slugger", "--mode", "live", "--surface", "bluebubbles", "--allow-send", "--json"], deps)
       expect(JSON.parse(live)).toMatchObject({
         ok: true,

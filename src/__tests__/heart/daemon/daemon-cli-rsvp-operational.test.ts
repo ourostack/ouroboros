@@ -20,6 +20,7 @@ const rsvpMocks = vi.hoisted(() => ({
   decideRsvpOutboundReport: vi.fn(),
   recordRsvpOutboundAttempt: vi.fn(),
   queryRsvpSnapshot: vi.fn(),
+  createBlueBubblesClient: vi.fn(),
   sendText: vi.fn(),
 }))
 
@@ -94,7 +95,7 @@ vi.mock("../../../senses/bluebubbles/client", async () => {
   const actual = await vi.importActual<typeof import("../../../senses/bluebubbles/client")>("../../../senses/bluebubbles/client")
   return {
     ...actual,
-    createBlueBubblesClient: vi.fn(() => ({ sendText: rsvpMocks.sendText })),
+    createBlueBubblesClient: rsvpMocks.createBlueBubblesClient,
   }
 })
 
@@ -207,6 +208,10 @@ afterEach(() => {
 
 function mockRuntimeCredentials(): void {
   rsvpMocks.loadOrCreateMachineIdentity.mockReturnValue({ machineId: "machine_test" })
+  rsvpMocks.createBlueBubblesClient.mockImplementation((config, channelConfig) => {
+    if (!config || !channelConfig) throw new Error("RSVP must construct BlueBubbles clients from explicit agent runtime config")
+    return { sendText: rsvpMocks.sendText }
+  })
   rsvpMocks.refreshRuntimeCredentialConfig.mockResolvedValue({
     ok: true,
     config: {
@@ -218,9 +223,26 @@ function mockRuntimeCredentials(): void {
   rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValue({
     ok: true,
     config: {
-      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret" },
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret", accountId: "icloud", ownHandles: ["+15551234567", 42] },
+      bluebubblesChannel: { port: 19999, webhookPath: "/bb-hook", requestTimeoutMs: 12_345 },
     },
   })
+}
+
+function expectExplicitBlueBubblesClientConfig(): void {
+  expect(rsvpMocks.createBlueBubblesClient).toHaveBeenLastCalledWith(
+    {
+      serverUrl: "http://127.0.0.1:1234",
+      password: "secret",
+      accountId: "icloud",
+      ownHandles: ["+15551234567"],
+    },
+    {
+      port: 19999,
+      webhookPath: "/bb-hook",
+      requestTimeoutMs: 12_345,
+    },
+  )
 }
 
 describe("ouro rsvp operational CLI wiring", () => {
@@ -418,6 +440,7 @@ describe("ouro rsvp operational CLI wiring", () => {
         "--json",
       ], deps))
       expect(rsvpMocks.sendText).toHaveBeenCalledTimes(1)
+      expectExplicitBlueBubblesClientConfig()
       expect(live).toMatchObject({
         ok: true,
         command: "rsvp.smoke",
@@ -426,6 +449,144 @@ describe("ouro rsvp operational CLI wiring", () => {
         delivery: { guid: "sent-guid" },
       })
       expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("builds live smoke BlueBubbles clients from explicit runtime config fallbacks", async () => {
+    mockRuntimeCredentials()
+    const legacyRoot = seedLegacyCutoverRoot()
+    const tmp = seedBundle(legacyRoot)
+    rsvpMocks.readRsvpConfig.mockReturnValue({
+      ok: true,
+      config: {
+        ...configWithCutover(legacyRoot),
+        bluebubblesRoute: { ...rsvpConfig.bluebubblesRoute, accountId: "route-account" },
+      },
+    })
+    rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValue({
+      ok: true,
+      config: {
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret" },
+      },
+    })
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: currentSnapshot })
+    rsvpMocks.queryRsvpSnapshot.mockReturnValue({
+      ok: true,
+      status: "pending",
+      count: 1,
+      total: 273,
+      names: ["Casey Pending"],
+      text: "Pending (1/273): Casey Pending",
+    })
+    rsvpMocks.sendText.mockResolvedValue({ ok: true, guid: "sent-guid" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: cutoverDeps() })
+    try {
+      await runOuroCli([
+        "rsvp",
+        "smoke",
+        "--agent",
+        "slugger",
+        "--mode",
+        "live",
+        "--surface",
+        "bluebubbles",
+        "--question",
+        "who is pending?",
+        "--allow-send",
+        "--json",
+      ], deps)
+
+      expect(rsvpMocks.createBlueBubblesClient).toHaveBeenLastCalledWith(
+        {
+          serverUrl: "http://127.0.0.1:1234",
+          password: "secret",
+          accountId: "route-account",
+          ownHandles: [],
+        },
+        {
+          port: 18790,
+          webhookPath: "/bluebubbles-webhook",
+          requestTimeoutMs: 30_000,
+        },
+      )
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("fails live smoke before implicit BlueBubbles config fallback when runtime send config is invalid", async () => {
+    mockRuntimeCredentials()
+    const legacyRoot = seedLegacyCutoverRoot()
+    const tmp = seedBundle(legacyRoot)
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: configWithCutover(legacyRoot) })
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: currentSnapshot })
+    rsvpMocks.queryRsvpSnapshot.mockReturnValue({
+      ok: true,
+      status: "pending",
+      count: 1,
+      total: 273,
+      names: ["Casey Pending"],
+      text: "Pending (1/273): Casey Pending",
+    })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: cutoverDeps() })
+    try {
+      rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({
+        ok: false,
+        reason: "missing",
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "missing machine runtime config",
+      })
+      await expect(runOuroCli([
+        "rsvp",
+        "smoke",
+        "--agent",
+        "slugger",
+        "--mode",
+        "live",
+        "--surface",
+        "bluebubbles",
+        "--allow-send",
+        "--json",
+      ], deps)).rejects.toThrow("BlueBubbles runtime config unavailable at vault:slugger:runtime/machines/machine_test/config")
+
+      rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({
+        ok: true,
+        config: { bluebubbles: { password: "secret" } },
+      })
+      await expect(runOuroCli([
+        "rsvp",
+        "smoke",
+        "--agent",
+        "slugger",
+        "--mode",
+        "live",
+        "--surface",
+        "bluebubbles",
+        "--allow-send",
+        "--json",
+      ], deps)).rejects.toThrow("bluebubbles.serverUrl is required")
+
+      rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({
+        ok: true,
+        config: { bluebubbles: { serverUrl: "http://127.0.0.1:1234" } },
+      })
+      await expect(runOuroCli([
+        "rsvp",
+        "smoke",
+        "--agent",
+        "slugger",
+        "--mode",
+        "live",
+        "--surface",
+        "bluebubbles",
+        "--allow-send",
+        "--json",
+      ], deps)).rejects.toThrow("bluebubbles.password is required")
+
+      expect(rsvpMocks.createBlueBubblesClient).not.toHaveBeenCalled()
+      expect(rsvpMocks.sendText).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
     }
@@ -644,6 +805,7 @@ describe("ouro rsvp operational CLI wiring", () => {
         text: "RSVP Update\n\nCasey is pending.",
         tempGuid: "rsvp:snap_current:hash",
       })
+      expectExplicitBlueBubblesClientConfig()
       expect(rsvpMocks.recordRsvpOutboundAttempt).toHaveBeenCalledWith(expect.objectContaining({
         bluebubblesRecord: expect.objectContaining({
           recordId: "rsvp:snap_current:hash",
@@ -798,6 +960,7 @@ describe("ouro rsvp operational CLI wiring", () => {
         sideEffect: true,
         refresh: { delivery: {} },
       })
+      expectExplicitBlueBubblesClientConfig()
       expect(rsvpMocks.recordRsvpOutboundAttempt).toHaveBeenCalledWith(expect.objectContaining({
         bluebubblesRecord: {
           recordId: "rsvp:no-receipt",
@@ -858,6 +1021,7 @@ describe("ouro rsvp operational CLI wiring", () => {
         "bluebubbles",
         "--allow-send",
       ], deps)
+      expectExplicitBlueBubblesClientConfig()
       expect(liveText).toBe("rsvp.smoke: explicit side effects enabled agent=slugger")
     } finally {
       fs.rmSync(replayOutput, { force: true })
@@ -979,6 +1143,7 @@ describe("ouro rsvp operational CLI wiring", () => {
       ], deps))
 
       expect(rsvpMocks.sendText).toHaveBeenCalledTimes(1)
+      expectExplicitBlueBubblesClientConfig()
       expect(result).toMatchObject({
         ok: true,
         command: "rsvp.smoke",
