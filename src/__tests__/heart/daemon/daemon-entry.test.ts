@@ -1327,6 +1327,35 @@ describe("daemon entrypoint", () => {
     })
   })
 
+  it("routes RSVP scheduler fires through typed habit pokes instead of private-runtime wakes", async () => {
+    const { processManagerSendToAgent, schedulerOptions, sendDaemonCommand } = await importDaemonEntryWithHabitDispatch({
+      socketPath: "/tmp/ouro-rsvp-habit-poke.sock",
+    })
+
+    schedulerOptions.onHabitFire("rsvp-ari-rachel", "overdue", {
+      occurrenceId: "overdue:first-run:0 10 * * *",
+    })
+
+    expect(sendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/ouro-rsvp-habit-poke.sock",
+      {
+        kind: "habit.poke",
+        agent: "slugger",
+        habitName: "rsvp-ari-rachel",
+        trigger: "overdue",
+        occurrenceId: "overdue:first-run:0 10 * * *",
+      },
+    )
+    expect(sendDaemonCommand).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        kind: "private.wake",
+        originRefs: expect.arrayContaining([{ kind: "habit", id: "rsvp-ari-rachel" }]),
+      }),
+    )
+    expect(processManagerSendToAgent).not.toHaveBeenCalled()
+  })
+
   it("lets privateRuntime explicitly allow autonomous private-runtime startup", async () => {
     const { processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: true, source: "privateRuntime" })
