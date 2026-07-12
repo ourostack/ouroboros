@@ -113,6 +113,7 @@ export type OuroCliCommand =
   | { kind: "migrate-to-desk"; agent: string; root?: string; force?: boolean; dryRun?: boolean }
   | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
+  | { kind: "bluebubbles.context-smoke"; agent?: string; messageGuid: string; persist?: boolean; json?: boolean }
   | { kind: "rsvp.doctor"; agent?: string; json?: boolean; strict?: boolean; outputPath?: string }
   | { kind: "rsvp.incident"; agent?: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.cutover"; agent?: string; legacyRoot: string; action: RsvpCutoverAction; yes?: boolean; json?: boolean; outputPath?: string }

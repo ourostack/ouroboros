@@ -5,6 +5,11 @@ vi.mock("../../../senses/bluebubbles/replay", () => ({
   formatBlueBubblesReplayText: vi.fn(),
 }))
 
+vi.mock("../../../senses/bluebubbles/context-smoke", () => ({
+  smokeBlueBubblesContext: vi.fn(),
+  formatBlueBubblesContextSmokeText: vi.fn(),
+}))
+
 import {
   parseOuroCommand,
   runOuroCli,
@@ -14,6 +19,10 @@ import {
   replayBlueBubblesMessage,
   formatBlueBubblesReplayText,
 } from "../../../senses/bluebubbles/replay"
+import {
+  smokeBlueBubblesContext,
+  formatBlueBubblesContextSmokeText,
+} from "../../../senses/bluebubbles/context-smoke"
 
 function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
   return {
@@ -65,6 +74,34 @@ describe("ouro bluebubbles replay CLI parsing", () => {
     })
   })
 
+  it("parses context smoke arguments with optional persistence", () => {
+    expect(parseOuroCommand([
+      "bluebubbles",
+      "context-smoke",
+      "--agent",
+      "slugger",
+      "--message-guid",
+      "message-guid",
+      "--persist",
+      "--json",
+    ])).toEqual({
+      kind: "bluebubbles.context-smoke",
+      agent: "slugger",
+      messageGuid: "message-guid",
+      persist: true,
+      json: true,
+    })
+    expect(parseOuroCommand([
+      "bluebubbles",
+      "context-smoke",
+      "--message-guid",
+      "message-guid",
+    ])).toEqual({
+      kind: "bluebubbles.context-smoke",
+      messageGuid: "message-guid",
+    })
+  })
+
   it("ignores unknown trailing replay arguments after parsing known flags", () => {
     expect(parseOuroCommand([
       "bluebubbles",
@@ -84,6 +121,7 @@ describe("ouro bluebubbles replay CLI parsing", () => {
 
   it("rejects malformed replay arguments", () => {
     expect(() => parseOuroCommand(["bluebubbles", "replay", "--agent", "slugger"])).toThrow("message-guid")
+    expect(() => parseOuroCommand(["bluebubbles", "context-smoke", "--agent", "slugger"])).toThrow("message-guid")
     expect(parseOuroCommand(["bluebubbles", "replay", "--message-guid", "guid"])).toEqual({
       kind: "bluebubbles.replay",
       messageGuid: "guid",
@@ -110,6 +148,8 @@ describe("ouro bluebubbles replay CLI execution", () => {
   beforeEach(() => {
     vi.mocked(replayBlueBubblesMessage).mockReset()
     vi.mocked(formatBlueBubblesReplayText).mockReset()
+    vi.mocked(smokeBlueBubblesContext).mockReset()
+    vi.mocked(formatBlueBubblesContextSmokeText).mockReset()
   })
 
   it("renders formatted replay output in text mode", async () => {
@@ -279,5 +319,105 @@ describe("ouro bluebubbles replay CLI execution", () => {
     expect(formatBlueBubblesReplayText).not.toHaveBeenCalled()
     expect(result).toContain("\"eventType\": \"updated-message\"")
     expect(result).toContain("\"hint\": \"rerun with --event-type new-message\"")
+  })
+
+  it("runs context smoke in text mode", async () => {
+    vi.mocked(smokeBlueBubblesContext).mockResolvedValue({
+      ok: true,
+      sideEffect: "private-runtime-ledger-write",
+      agentName: "slugger",
+      messageGuid: "message-guid",
+      packetId: "scp_packet",
+      contextMessages: 2,
+      renderedMessages: 2,
+      renderedCharacters: 240,
+      omittedMessages: 0,
+      truncatedMessages: 0,
+      ledgerPath: "/agents/slugger.ouro/state/senses/context-packets/bluebubbles/ledger.jsonl",
+    })
+    vi.mocked(formatBlueBubblesContextSmokeText).mockReturnValue("formatted context smoke")
+    const deps = createMockDeps()
+
+    const result = await runOuroCli([
+      "bluebubbles",
+      "context-smoke",
+      "--agent",
+      "slugger",
+      "--message-guid",
+      "message-guid",
+      "--persist",
+    ], deps)
+
+    expect(smokeBlueBubblesContext).toHaveBeenCalledWith({
+      agentName: "slugger",
+      messageGuid: "message-guid",
+      persist: true,
+    })
+    expect(formatBlueBubblesContextSmokeText).toHaveBeenCalledTimes(1)
+    expect(result).toBe("formatted context smoke")
+    expect(deps.writeStdout).toHaveBeenCalledWith("formatted context smoke")
+  })
+
+  it("resolves the only discovered agent for context smoke when --agent is omitted", async () => {
+    vi.mocked(smokeBlueBubblesContext).mockResolvedValue({
+      ok: true,
+      sideEffect: false,
+      agentName: "slugger",
+      messageGuid: "message-guid",
+      packetId: "scp_packet",
+      contextMessages: 1,
+      renderedMessages: 1,
+      renderedCharacters: 120,
+      omittedMessages: 0,
+      truncatedMessages: 0,
+    })
+    vi.mocked(formatBlueBubblesContextSmokeText).mockReturnValue("formatted context smoke")
+    const deps = createMockDeps({
+      listDiscoveredAgents: vi.fn(() => ["slugger"]),
+    })
+
+    const result = await runOuroCli([
+      "bluebubbles",
+      "context-smoke",
+      "--message-guid",
+      "message-guid",
+    ], deps)
+
+    expect(smokeBlueBubblesContext).toHaveBeenCalledWith({
+      agentName: "slugger",
+      messageGuid: "message-guid",
+      persist: undefined,
+    })
+    expect(result).toBe("formatted context smoke")
+  })
+
+  it("prints structured context smoke json when requested", async () => {
+    vi.mocked(smokeBlueBubblesContext).mockResolvedValue({
+      ok: true,
+      sideEffect: false,
+      agentName: "slugger",
+      messageGuid: "message-guid",
+      packetId: "scp_packet",
+      contextMessages: 1,
+      renderedMessages: 1,
+      renderedCharacters: 120,
+      omittedMessages: 0,
+      truncatedMessages: 0,
+    })
+    const deps = createMockDeps()
+
+    const result = await runOuroCli([
+      "bluebubbles",
+      "context-smoke",
+      "--agent",
+      "slugger",
+      "--message-guid",
+      "message-guid",
+      "--json",
+    ], deps)
+
+    expect(formatBlueBubblesContextSmokeText).not.toHaveBeenCalled()
+    expect(result).toContain("\"packetId\": \"scp_packet\"")
+    expect(result).toContain("\"sideEffect\": false")
   })
 })

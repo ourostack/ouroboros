@@ -551,6 +551,7 @@ type MissingAgentResolvableKind =
   | "config.models"
   | "setup"
   | "bluebubbles.replay"
+  | "bluebubbles.context-smoke"
   | "thoughts"
   | "attention.list"
   | "attention.show"
@@ -671,6 +672,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "config.models":
     case "setup":
     case "bluebubbles.replay":
+    case "bluebubbles.context-smoke":
       return "throw"
     default:
       return undefined
@@ -1804,7 +1806,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -7078,6 +7080,20 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const text = command.json
       ? JSON.stringify(replay, null, 2)
       : formatBlueBubblesReplayText(replay)
+    deps.writeStdout(text)
+    return text
+  }
+
+  if (command.kind === "bluebubbles.context-smoke") {
+    const { smokeBlueBubblesContext, formatBlueBubblesContextSmokeText } = await import("../../senses/bluebubbles/context-smoke")
+    const smoke = await smokeBlueBubblesContext({
+      agentName: command.agent,
+      messageGuid: command.messageGuid,
+      persist: command.persist,
+    })
+    const text = command.json
+      ? JSON.stringify(smoke, null, 2)
+      : formatBlueBubblesContextSmokeText(smoke)
     deps.writeStdout(text)
     return text
   }

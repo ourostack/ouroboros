@@ -126,6 +126,7 @@ export function usage(): string {
     "  ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
+    "  ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
     "  ouro rsvp <doctor|incident|cutover|legacy-render|replay|config|habit|import-legacy|refresh|compare|smoke> ...",
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
@@ -1632,13 +1633,14 @@ function parseMigrateToDeskCommand(args: string[]): OuroCliCommand {
 
 function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
   const subcommand = args[0]
-  if (subcommand !== "replay") {
+  if (subcommand !== "replay" && subcommand !== "context-smoke") {
     throw new Error(`Usage\n${usage()}`)
   }
 
   let agent: string | undefined
   let messageGuid: string | undefined
   let eventType: "new-message" | "updated-message" = "new-message"
+  let persist = false
   let json = false
 
   for (let i = 1; i < args.length; i += 1) {
@@ -1658,13 +1660,26 @@ function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
       eventType = candidate
       continue
     }
+    if (args[i] === "--persist") {
+      persist = true
+      continue
+    }
     if (args[i] === "--json") {
       json = true
       continue
     }
   }
 
-  if (!messageGuid) throw new Error("bluebubbles replay requires --message-guid <guid>")
+  if (!messageGuid) throw new Error(`bluebubbles ${subcommand} requires --message-guid <guid>`)
+  if (subcommand === "context-smoke") {
+    return {
+      kind: "bluebubbles.context-smoke",
+      ...(agent ? { agent } : {}),
+      messageGuid,
+      ...(persist ? { persist: true } : {}),
+      ...(json ? { json: true } : {}),
+    }
+  }
   return {
     kind: "bluebubbles.replay",
     ...(agent ? { agent } : {}),
