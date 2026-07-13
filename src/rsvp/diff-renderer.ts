@@ -1,8 +1,6 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import type { RsvpGuestSnapshotRow, RsvpGuestStatus, RsvpSnapshot, RsvpSnapshotSummary } from "./snapshot"
 
-const RSVP_REPORT_FOOTER = "🤖 Beep boop! I'm a script, not Slugger — no need to reply here!"
-
 export interface RsvpDeltaGuest {
   id: string
   displayName: string
@@ -153,7 +151,7 @@ export function renderRsvpReport(delta: RsvpDelta): string {
   const lines: string[] = ["RSVP Update — Ari & Rachel", ""]
 
   if (delta.isFirstRun) {
-    lines.push("First check — here's the current summary:", "")
+    lines.push("Current RSVP summary:", "")
   } else if (!hasChanges(delta)) {
     lines.push("No changes since last check.", "")
   } else {
@@ -188,7 +186,6 @@ export function renderRsvpReport(delta: RsvpDelta): string {
   }
 
   lines.push(summaryLine(delta.summary))
-  lines.push("", RSVP_REPORT_FOOTER)
   const report = lines.join("\n")
   emitNervesEvent({
     component: "rsvp",
