@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.712",
+      "changes": [
+        "Render native RSVP habit updates without script-era first-check/disclaimer copy.",
+        "Use the native outbound RSVP baseline as the diff baseline when legacy baseline state is absent."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.711",
       "changes": [
         "Allow structured Bitwarden slash-name lookup to ignore malformed unrelated vault items while still failing malformed exact matches."

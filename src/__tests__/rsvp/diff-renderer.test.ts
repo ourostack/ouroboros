@@ -19,7 +19,7 @@ function snapshot(label: string, guests: Record<string, { first_name?: string; l
 }
 
 describe("RSVP diff renderer", () => {
-  it("computes deterministic deltas and preserves the legacy notification skeleton", () => {
+  it("computes deterministic deltas and renders the native habit notification", () => {
     const previous = snapshot("10:00", {
       "1": { first_name: "Ari", last_name: "Mendelow", group_id: 7, attending_status: null },
       "2": { first_name: "Rachel", last_name: "Example", group_id: 7, attending_status: "attending" },
@@ -55,7 +55,7 @@ describe("RSVP diff renderer", () => {
     expect(report).toContain("  • Unnamed guest (via Ari Mendelow) (declined)")
     expect(report).toContain("Guests removed:")
     expect(report).toContain("1 attending / 2 declined / 1 pending")
-    expect(report).toContain("🤖 Beep boop! I'm a script, not Slugger — no need to reply here!")
+    expect(report).not.toMatch(/beep boop|script, not slugger/i)
     expect(report).not.toContain("Automated RSVP update from Slugger")
   })
 
@@ -67,14 +67,14 @@ describe("RSVP diff renderer", () => {
     })
 
     const firstRun = renderRsvpReport(computeRsvpDelta(null, current))
-    expect(firstRun).toContain("First check — here's the current summary:")
+    expect(firstRun).toContain("Current RSVP summary:")
     expect(firstRun).toContain("1 attending / 0 declined / 1 pending / 1 unknown")
-    expect(firstRun).toContain("🤖 Beep boop! I'm a script, not Slugger — no need to reply here!")
+    expect(firstRun).not.toMatch(/first check|beep boop|script, not slugger/i)
 
     const noChange = renderRsvpReport(computeRsvpDelta(current, current))
     expect(noChange).toContain("No changes since last check.")
     expect(noChange).toContain("1 attending / 0 declined / 1 pending / 1 unknown")
-    expect(noChange).toContain("🤖 Beep boop! I'm a script, not Slugger — no need to reply here!")
+    expect(noChange).not.toMatch(/beep boop|script, not slugger/i)
   })
 
   it("renders sparse change sections and unnamed guests without a group peer", () => {

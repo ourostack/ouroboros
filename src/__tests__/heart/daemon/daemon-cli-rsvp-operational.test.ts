@@ -859,6 +859,92 @@ describe("ouro rsvp operational CLI wiring", () => {
     }
   })
 
+  it("uses the native outbound baseline as the previous RSVP snapshot when legacy baseline state is absent", async () => {
+    mockRuntimeCredentials()
+    const tmp = seedBundle()
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: rsvpConfig })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({ ok: true, checks: [] })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: previousSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({
+      currentSnapshotId: "snap_current",
+      newRsvps: [],
+      statusChanges: [],
+      newGuests: [],
+      removedGuests: [],
+      summary: currentSnapshot.summary,
+    })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nNo changes since last check.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "skip", reason: "no-send" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    const rsvpRoot = path.join(tmp.agentRoot, "state", "rsvp")
+    try {
+      fs.rmSync(path.join(rsvpRoot, "baseline.json"), { force: true })
+      fs.writeFileSync(path.join(rsvpRoot, "outbound-state.json"), JSON.stringify({
+        schemaVersion: 1,
+        policyVersion: "rsvp-outbound-state/v1",
+        updatedAt: "2026-07-09T16:00:00.000Z",
+        baseline: {
+          snapshotId: previousSnapshot.snapshotId,
+          contentHash: "sha256:previous",
+          recordedAt: "2026-07-09T16:00:00.000Z",
+          reason: "bluebubbles-outbound-accepted",
+        },
+        pendingReports: [],
+      }), "utf-8")
+
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+
+      expect(rsvpMocks.computeRsvpDelta).toHaveBeenCalledWith(previousSnapshot, currentSnapshot)
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("treats malformed native outbound baseline state as empty when legacy baseline state is absent", async () => {
+    mockRuntimeCredentials()
+    const tmp = seedBundle()
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: rsvpConfig })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({ ok: true, checks: [] })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.computeRsvpDelta.mockReturnValue({
+      currentSnapshotId: "snap_current",
+      newRsvps: [],
+      statusChanges: [],
+      newGuests: [],
+      removedGuests: [],
+      summary: currentSnapshot.summary,
+    })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nCurrent RSVP summary.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "skip", reason: "no-send" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    const rsvpRoot = path.join(tmp.agentRoot, "state", "rsvp")
+    try {
+      fs.rmSync(path.join(rsvpRoot, "baseline.json"), { force: true })
+      fs.writeFileSync(path.join(rsvpRoot, "outbound-state.json"), "{not-json", "utf-8")
+
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+
+      expect(rsvpMocks.computeRsvpDelta).toHaveBeenCalledWith(null, currentSnapshot)
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("sends refresh reports only with explicit live permission and records the accepted BlueBubbles receipt", async () => {
     mockRuntimeCredentials()
     const legacyRoot = seedLegacyCutoverRoot()

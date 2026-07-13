@@ -25,7 +25,7 @@ import { computeRsvpDelta, renderRsvpReport } from "./diff-renderer"
 import { stageRsvpHabit } from "./habit-stage"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
 import { importLegacyRsvpState } from "./migration"
-import { decideRsvpOutboundReport, recordRsvpOutboundAttempt } from "./outbound-state"
+import { decideRsvpOutboundReport, readRsvpOutboundState, recordRsvpOutboundAttempt } from "./outbound-state"
 import { queryRsvpSnapshot } from "./query"
 import { renderLegacyRsvpSnapshotOffline, replayRsvpFixture } from "./replay"
 import { buildRsvpSnapshot, parseRsvpSnapshot, type RsvpSnapshot } from "./snapshot"
@@ -220,12 +220,16 @@ function parseSnapshotFromFile(filePath: string): RsvpSnapshot {
 }
 
 function readBaselineSnapshot(agentRoot: string): RsvpSnapshot | null {
-  const baselinePath = path.join(rsvpStateRoot(agentRoot), "baseline.json")
-  if (!fs.existsSync(baselinePath)) return null
-  const baseline = readJsonFile(baselinePath)
-  const snapshotId = baseline && typeof baseline === "object" && !Array.isArray(baseline)
-    ? (baseline as Record<string, unknown>).nativeSnapshotId
+  const rsvpRoot = rsvpStateRoot(agentRoot)
+  const baselinePath = path.join(rsvpRoot, "baseline.json")
+  const legacyBaseline = fs.existsSync(baselinePath) ? readJsonFile(baselinePath) : null
+  const legacySnapshotId = legacyBaseline && typeof legacyBaseline === "object" && !Array.isArray(legacyBaseline)
+    ? (legacyBaseline as Record<string, unknown>).nativeSnapshotId
     : null
+  const outboundSnapshotId = readRsvpOutboundState(agentRoot).baseline?.snapshotId
+  const snapshotId = typeof legacySnapshotId === "string"
+    ? legacySnapshotId
+    : outboundSnapshotId
   return typeof snapshotId === "string" && fs.existsSync(snapshotFilePath(agentRoot, snapshotId))
     ? parseSnapshotFromFile(snapshotFilePath(agentRoot, snapshotId))
     : null
