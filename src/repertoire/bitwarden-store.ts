@@ -145,11 +145,6 @@ function shouldUseFullListForStructuredLookup(domain: string, appDataDir?: strin
   return domain.includes("/") && !appDataDir
 }
 
-function isBwItemNotFoundError(error: Error): boolean {
-  const message = error.message.toLowerCase()
-  return message.includes("not found") || message.includes("no item")
-}
-
 // ---------------------------------------------------------------------------
 // Cross-process bw CLI lock
 // ---------------------------------------------------------------------------
@@ -476,6 +471,18 @@ function parseBwItems(stdout: string, context: string): BwLoginItem[] {
     if (Array.isArray(parsed)) {
       throw new Error(`bw CLI error: invalid item from ${context}`)
     }
+    throw new Error(`bw CLI error: invalid JSON from ${context}`)
+  }
+}
+
+function parseBwSearchItems(stdout: string, context: string): unknown[] {
+  try {
+    const parsed = JSON.parse(stdout) as unknown
+    if (!Array.isArray(parsed)) {
+      throw new Error("expected item array")
+    }
+    return parsed
+  } catch {
     throw new Error(`bw CLI error: invalid JSON from ${context}`)
   }
 }
@@ -1081,7 +1088,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     options: { preferExactStructured?: boolean } = {},
   ): Promise<BwLoginItem | null> {
     if (options.preferExactStructured && shouldUseStructuredItemLookup(domain)) {
-      return this.findStructuredItemByName(domain, session)
+      return this.findStructuredItemBySearch(domain, session)
     }
     if (shouldUseFullListForStructuredLookup(domain, this.appDataDir)) {
       const items = await this.readStructuredItemCache(session)
@@ -1095,17 +1102,20 @@ export class BitwardenCredentialStore implements CredentialStore {
     return items.find((item) => item.name === domain) ?? null
   }
 
-  private async findStructuredItemByName(domain: string, session?: string): Promise<BwLoginItem | null> {
-    try {
-      const stdout = await this.execBw(["get", "item", domain], session)
-      const item = parseBwItem(stdout, "bw get item")
-      return item.name === domain ? item : null
-    } catch (error) {
-      /* v8 ignore next -- defensive: execBw rejects with Error instances @preserve */
-      const err = error instanceof Error ? error : new Error(String(error))
-      if (isBwItemNotFoundError(err)) return null
-      throw err
+  private async findStructuredItemBySearch(domain: string, session?: string): Promise<BwLoginItem | null> {
+    const stdout = await this.execBw(["list", "items", "--search", domain], session)
+    const items = parseBwSearchItems(stdout, "bw list items --search")
+    const exactItem = items.find((item) =>
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      (item as Record<string, unknown>).name === domain
+    )
+    if (!exactItem) return null
+    if (!isBwLoginItem(exactItem)) {
+      throw new Error("bw CLI error: invalid item from bw list items --search")
     }
+    return exactItem
   }
 
   private shouldSyncVaultAfterSession(status: { status?: string; serverUrl?: string; userEmail?: string }): boolean {
