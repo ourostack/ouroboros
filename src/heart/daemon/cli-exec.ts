@@ -109,6 +109,7 @@ import type {
   NervesReviewCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
+  McpDoctorCliCommand,
   SetupCliCommand,
   HookCliCommand,
   HabitLocalCliCommand,
@@ -200,7 +201,7 @@ import {
   requireVaultItemSecret,
   vaultItemTemplateSecretFields,
 } from "./vault-items"
-import { formatMcpStatusCanaryResult, runMcpStatusCanary } from "./mcp-canary"
+import { buildMcpBridgeRepairGuidance, buildMcpDoctorNextSteps, formatMcpStatusCanaryResult, formatMcpStatusDoctorResult, runMcpStatusCanary } from "./mcp-canary"
 
 // ── ensureDaemonRunning ──
 
@@ -208,6 +209,11 @@ const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 60_000
 const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
+
+function setupReloadNotice(tool: "claude-code" | "codex"): string {
+  const host = tool === "codex" ? "Codex" : "Claude Code"
+  return `  reload required: open a fresh ${host} session so the host launches the newly registered MCP bridge; existing MCP processes keep their old runtime`
+}
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
 const RSVP_CLI_KINDS = new Set<RsvpCliCommand["kind"]>([
   "rsvp.doctor",
@@ -1806,7 +1812,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -7981,7 +7987,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         fs.writeFileSync(claudeMdPath, existingClaudeMd + agentInstructions)
       }
 
-      const message = `setup complete: claude-code + ${setupAgent}\n  MCP server registered\n  hooks configured\n  conversation formatting instructions added`
+      const message = `setup complete: claude-code + ${setupAgent}\n  MCP server registered\n  hooks configured\n  conversation formatting instructions added\n${setupReloadNotice("claude-code")}`
       deps.writeStdout(message)
       return message
     } else {
@@ -7996,7 +8002,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         meta: { tool, agent: setupAgent, runtimeMode, platform },
       })
 
-      const message = `setup complete: codex + ${setupAgent}\n  MCP server registered`
+      const message = `setup complete: codex + ${setupAgent}\n  MCP server registered\n${setupReloadNotice("codex")}`
       deps.writeStdout(message)
       return message
     }
@@ -8020,6 +8026,32 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     })
     if (!result.ok) deps.setExitCode?.(1)
     const message = command.json ? JSON.stringify(result, null, 2) : formatMcpStatusCanaryResult(result)
+    deps.writeStdout(message)
+    return message
+  }
+
+  if (command.kind === "mcp.doctor") {
+    const canarySocketPath = command.socketOverride ?? deps.socketPath
+    const result = await runMcpStatusCanary({
+      agent: command.agent,
+      socketPath: canarySocketPath,
+      command: process.execPath,
+      commandArgs: [
+        path.join(__dirname, "ouro-bot-entry.js"),
+        "mcp-serve",
+        "--agent",
+        command.agent,
+        "--socket",
+        canarySocketPath,
+      ],
+    })
+    if (!result.ok) deps.setExitCode?.(1)
+    const jsonPayload = result.ok || result.repair
+      ? { ...result, repair: result.repair ?? buildMcpBridgeRepairGuidance(command.agent) }
+      : { ...result, nextSteps: buildMcpDoctorNextSteps(result, command.agent) }
+    const message = command.json
+      ? JSON.stringify(jsonPayload, null, 2)
+      : formatMcpStatusDoctorResult(result, command.agent)
     deps.writeStdout(message)
     return message
   }

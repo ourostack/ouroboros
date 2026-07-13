@@ -14,6 +14,7 @@ import { readDiaryEntries, searchDiaryEntries, type DiaryEntry } from "../../min
 import { resolveRecordDiaryRoot } from "../../mind/record-paths"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "./socket-client"
+import { buildMcpBridgeRepairGuidance } from "./mcp-canary"
 
 export interface AgentServiceParams {
   agent: string
@@ -131,6 +132,13 @@ interface RuntimeStatusSummary {
   error?: string
 }
 
+interface McpBridgeHealth {
+  mcpVersion: string | null
+  daemonVersion: string | null
+  versionMismatch: boolean
+  repair?: ReturnType<typeof buildMcpBridgeRepairGuidance>
+}
+
 function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -234,6 +242,7 @@ async function readRuntimeStatus(socketPath: string | undefined, agent: string):
 function formatRuntimeStatusLines(
   runtime: RuntimeStatusSummary | null,
   mcpVersion: string | null,
+  agent: string,
 ): string[] {
   if (!runtime) return mcpVersion ? [`mcpVersion=${mcpVersion}`] : []
   if (!runtime.daemonReachable) {
@@ -248,10 +257,16 @@ function formatRuntimeStatusLines(
     const versionPart = runtime.overview.version ? `\tdaemonVersion=${runtime.overview.version}` : ""
     const modePart = runtime.overview.mode ? `\tmode=${runtime.overview.mode}` : ""
     const mcpVersionPart = mcpVersion ? `\tmcpVersion=${mcpVersion}` : ""
-    const mismatchPart = mcpVersion && runtime.overview.version && mcpVersion !== runtime.overview.version
+    const hasVersionMismatch = !!(mcpVersion && runtime.overview.version && mcpVersion !== runtime.overview.version)
+    const mismatchPart = hasVersionMismatch
       ? `\tversionMismatch=mcp:${mcpVersion},daemon:${runtime.overview.version}`
       : ""
     lines.push(`daemon=${runtime.overview.daemon}\thealth=${runtime.overview.health}${versionPart}${modePart}${mcpVersionPart}${mismatchPart}`)
+    if (hasVersionMismatch) {
+      const repair = buildMcpBridgeRepairGuidance(agent)
+      lines.push(`mcpRepair=${repair.actor}\tcodex=${repair.commands[0]}\tclaudeCode=${repair.commands[1]}`)
+      lines.push(`mcpReload=required\treason=${repair.reload}`)
+    }
   }
   for (const worker of runtime.workers) {
     lines.push(`worker=${worker.worker}:${worker.status}`)
@@ -283,6 +298,21 @@ function formatRuntimeStatusLines(
   return lines
 }
 
+function summarizeMcpBridgeHealth(
+  agent: string,
+  runtime: RuntimeStatusSummary | null,
+  mcpVersion: string | null,
+): McpBridgeHealth {
+  const daemonVersion = runtime?.daemonReachable ? runtime.overview?.version ?? null : null
+  const versionMismatch = !!(mcpVersion && daemonVersion && mcpVersion !== daemonVersion)
+  return {
+    mcpVersion,
+    daemonVersion,
+    versionMismatch,
+    ...(versionMismatch ? { repair: buildMcpBridgeRepairGuidance(agent) } : {}),
+  }
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 export async function handleAgentStatus(params: AgentServiceParams): Promise<DaemonResponse> {
@@ -303,7 +333,8 @@ export async function handleAgentStatus(params: AgentServiceParams): Promise<Dae
     `sessionCount=${sessions.length}`,
     `diaryEntries=${facts.length}`,
   ].join("\t")
-  const runtimeLines = formatRuntimeStatusLines(runtime, mcpVersion)
+  const runtimeLines = formatRuntimeStatusLines(runtime, mcpVersion, params.agent)
+  const mcpHealth = summarizeMcpBridgeHealth(params.agent, runtime, mcpVersion)
   const message = [agentLine, ...runtimeLines].join("\n")
   return {
     ok: true,
@@ -317,6 +348,7 @@ export async function handleAgentStatus(params: AgentServiceParams): Promise<Dae
       factCount: facts.length,
       runtime,
       mcpVersion,
+      mcpHealth,
     },
   }
 }

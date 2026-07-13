@@ -146,6 +146,7 @@ export function usage(): string {
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
     "  ouro mcp call <server> <tool> [--args '{...}']",
+    "  ouro mcp doctor --agent <name> [--json]",
     "  ouro rollback [<version>]",
     "  ouro versions",
     "  ouro clone <remote> [--agent <name>]",
@@ -1450,6 +1451,30 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
       agent,
       ...(socketOverride ? { socketOverride } : {}),
       ...(requiredSenses.length > 0 ? { requiredSenses } : {}),
+      ...(json ? { json: true } : {}),
+    }
+  }
+
+  if (sub === "doctor") {
+    let socketOverride: string | undefined
+    let json = false
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--socket") {
+        if (!rest[i + 1]) throw new Error("mcp doctor requires a value after --socket")
+        socketOverride = rest[++i]
+        continue
+      }
+      if (rest[i] === "--json") {
+        json = true
+        continue
+      }
+      throw new Error(`Unknown mcp doctor flag: ${rest[i]}`)
+    }
+    if (!agent) throw new Error("mcp doctor requires --agent <name>")
+    return {
+      kind: "mcp.doctor",
+      agent,
+      ...(socketOverride ? { socketOverride } : {}),
       ...(json ? { json: true } : {}),
     }
   }

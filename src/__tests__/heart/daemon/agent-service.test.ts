@@ -166,6 +166,22 @@ describe("agent-service handlers", () => {
       const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
 
       expect(r.message).toContain("versionMismatch=mcp:0.1.0-alpha.528,daemon:0.1.0-alpha.529")
+      expect(r.message).toContain("mcpRepair=agent-runnable")
+      expect(r.message).toContain("codex=ouro setup --tool codex --agent test")
+      expect(r.message).toContain("claudeCode=ouro setup --tool claude-code --agent test")
+      expect(r.message).toContain("mcpReload=required")
+      expect(r.data).toMatchObject({
+        mcpHealth: {
+          versionMismatch: true,
+          repair: {
+            actor: "agent-runnable",
+            commands: [
+              "ouro setup --tool codex --agent test",
+              "ouro setup --tool claude-code --agent test",
+            ],
+          },
+        },
+      })
     })
 
     it("surfaces daemon status command failures with MCP version context", async () => {
