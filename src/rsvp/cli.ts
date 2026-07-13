@@ -227,9 +227,7 @@ function readBaselineSnapshot(agentRoot: string): RsvpSnapshot | null {
     ? (legacyBaseline as Record<string, unknown>).nativeSnapshotId
     : null
   const outboundSnapshotId = readRsvpOutboundState(agentRoot).baseline?.snapshotId
-  const snapshotId = typeof legacySnapshotId === "string"
-    ? legacySnapshotId
-    : outboundSnapshotId
+  const snapshotId = outboundSnapshotId ?? (typeof legacySnapshotId === "string" ? legacySnapshotId : undefined)
   return typeof snapshotId === "string" && fs.existsSync(snapshotFilePath(agentRoot, snapshotId))
     ? parseSnapshotFromFile(snapshotFilePath(agentRoot, snapshotId))
     : null
