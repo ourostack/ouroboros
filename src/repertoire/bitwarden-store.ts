@@ -451,24 +451,44 @@ function isBwLoginItem(value: unknown): value is BwLoginItem {
   return true
 }
 
-function parseBwItems(stdout: string, context: string): BwLoginItem[] {
+function parseBwItemArray(stdout: string, context: string): unknown[] {
   let parsed: unknown
   try {
     parsed = JSON.parse(stdout) as unknown
     if (!Array.isArray(parsed)) {
       throw new Error("expected item array")
     }
-    const items = parsed as unknown[]
-    if (!items.every(isBwLoginItem)) {
-      throw new Error("expected login items")
-    }
-    return items
   } catch {
-    if (Array.isArray(parsed)) {
-      throw new Error(`bw CLI error: invalid item from ${context}`)
-    }
     throw new Error(`bw CLI error: invalid JSON from ${context}`)
   }
+  return parsed
+}
+
+function parseBwItems(stdout: string, context: string): BwLoginItem[] {
+  const items = parseBwItemArray(stdout, context)
+  if (!items.every(isBwLoginItem)) {
+    throw new Error(`bw CLI error: invalid item from ${context}`)
+  }
+  return items
+}
+
+function parseStructuredBwItems(stdout: string, context: string): StructuredItemCache {
+  const rawItems = parseBwItemArray(stdout, context)
+  const items = new Map<string, BwLoginItem>()
+  const malformedNames = new Set<string>()
+
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) continue
+    const name = (rawItem as Record<string, unknown>).name
+    if (typeof name !== "string" || name.trim().length === 0) continue
+    if (isBwLoginItem(rawItem)) {
+      items.set(name, rawItem)
+    } else {
+      malformedNames.add(name)
+    }
+  }
+
+  return { items, malformedNames }
 }
 
 function parseBwItem(stdout: string, context: string): BwLoginItem {
@@ -520,6 +540,11 @@ interface BwStatus {
   userEmail?: string
 }
 
+type StructuredItemCache = {
+  items: Map<string, BwLoginItem>
+  malformedNames: Set<string>
+}
+
 // ---------------------------------------------------------------------------
 // BitwardenCredentialStore
 // ---------------------------------------------------------------------------
@@ -534,7 +559,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   private sessionToken: string | null = null
   private terminalLoginError: Error | null = null
   private bwBinaryPath = "bw"
-  private structuredItemCache: Map<string, BwLoginItem> | null = null
+  private structuredItemCache: StructuredItemCache | null = null
 
   constructor(
     serverUrl: string,
@@ -1071,8 +1096,13 @@ export class BitwardenCredentialStore implements CredentialStore {
 
   private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
     if (shouldUseStructuredItemLookup(domain)) {
-      const items = await this.readStructuredItemCache(session)
-      return items.get(domain) ?? null
+      const cache = await this.readStructuredItemCache(session)
+      if (cache.malformedNames.has(domain)) {
+        throw new Error("bw CLI error: invalid item from bw list items")
+      }
+      const item = cache.items.get(domain)
+      if (item) return item
+      return null
     }
 
     const stdout = await this.execBw(["list", "items", "--search", domain], session)
@@ -1120,11 +1150,10 @@ export class BitwardenCredentialStore implements CredentialStore {
     return parseBwItem(stdout, "bw get item")
   }
 
-  private async readStructuredItemCache(session?: string): Promise<Map<string, BwLoginItem>> {
+  private async readStructuredItemCache(session?: string): Promise<StructuredItemCache> {
     if (this.structuredItemCache) return this.structuredItemCache
     const stdout = await this.execBw(["list", "items"], session)
-    const items = parseBwItems(stdout, "bw list items")
-    this.structuredItemCache = new Map(items.map((item) => [item.name, item]))
+    this.structuredItemCache = parseStructuredBwItems(stdout, "bw list items")
     return this.structuredItemCache
   }
 

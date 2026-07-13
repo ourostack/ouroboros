@@ -1246,7 +1246,7 @@ describe("BitwardenCredentialStore", () => {
       expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "runtime/config")).toBeUndefined()
     })
 
-    it("uses exact names from full-list results when other valid structured items are nearby", async () => {
+    it("uses exact names from full-list results when malformed non-matching structured items are nearby", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -1256,10 +1256,15 @@ describe("BitwardenCredentialStore", () => {
         }
         if (args[0] === "list" && args[1] === "items") {
           cb(null, JSON.stringify([
+            null,
+            ["runtime/config"],
+            { id: "missing-name" },
+            { id: "numeric-name", name: 123 },
+            { id: "blank-name", name: "  " },
             {
-              id: "runtime-config-backup",
+              id: "malformed-neighbor",
               name: "runtime/config backup",
-              login: { username: "runtime/config backup", password: "backup-secret" },
+              login: null,
             },
             {
               id: "runtime-config",
@@ -1294,6 +1299,36 @@ describe("BitwardenCredentialStore", () => {
             name: "runtime/config",
             login: null,
           }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.getRawSecret("runtime/config", "password")).rejects.toThrow("bw CLI error: invalid item from bw list items")
+    })
+
+    it("throws when a malformed exact structured result is duplicated by a valid exact result", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "list" && args[1] === "items") {
+          cb(null, JSON.stringify([
+            {
+              id: "runtime-config-valid",
+              name: "runtime/config",
+              login: {
+                username: "runtime/config",
+                password: "runtime-secret",
+              },
+            },
+            {
+              id: "runtime-config-malformed",
+              name: "runtime/config",
+              login: null,
+            },
+          ]), "")
           return
         }
         cb(null, "", "")
