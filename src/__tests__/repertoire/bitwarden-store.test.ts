@@ -996,7 +996,7 @@ describe("BitwardenCredentialStore", () => {
       expect(result!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}/)
     })
 
-    it("uses search plus exact filtering for structured Ouro item names", async () => {
+    it("uses full-list exact filtering for structured Ouro item names", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -1023,11 +1023,12 @@ describe("BitwardenCredentialStore", () => {
       const result = await store.get("providers/openai-codex")
 
       expect(result?.domain).toBe("providers/openai-codex")
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search" && call[3] === "providers/openai-codex")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.includes("--search"))).toBeUndefined()
       expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/openai-codex")).toBeUndefined()
     })
 
-    it("uses search plus exact filtering for structured Ouro item names with isolated app data", async () => {
+    it("uses full-list exact filtering for structured Ouro item names with isolated app data", async () => {
       const calls: string[][] = []
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-structured-search-"))
       const isolatedStore = new BitwardenCredentialStore(
@@ -1063,14 +1064,15 @@ describe("BitwardenCredentialStore", () => {
         const result = await isolatedStore.get("providers/openai-codex")
 
         expect(result?.domain).toBe("providers/openai-codex")
-        expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search" && call[3] === "providers/openai-codex")).toBeDefined()
+        expect(calls.find((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toBeDefined()
+        expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.includes("--search"))).toBeUndefined()
         expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/openai-codex")).toBeUndefined()
       } finally {
         fs.rmSync(appDataDir, { recursive: true, force: true })
       }
     })
 
-    it("searches later structured reads independently without fuzzy matches", async () => {
+    it("reuses the full-list cache for later structured reads without fuzzy matches", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -1082,22 +1084,27 @@ describe("BitwardenCredentialStore", () => {
           cb(null, "session-token", "")
           return
         }
-        if (args[0] === "list" && args[3] === "providers/openai-codex") {
-          cb(null, JSON.stringify([{
-            id: "provider-item",
-            name: "providers/openai-codex",
-            login: { username: "openai-codex", password: "provider-token" },
-            revisionDate: "2026-04-20T05:01:00.000Z",
-          }]), "")
-          return
-        }
-        if (args[0] === "list" && args[3] === "providers/azure") {
-          cb(null, JSON.stringify([{
-            id: "azure-item",
-            name: "providers/azure",
-            login: { username: "azure", password: "azure-token" },
-            revisionDate: "2026-04-20T05:01:30.000Z",
-          }]), "")
+        if (args[0] === "list" && args[1] === "items") {
+          cb(null, JSON.stringify([
+            {
+              id: "provider-item",
+              name: "providers/openai-codex",
+              login: { username: "openai-codex", password: "provider-token" },
+              revisionDate: "2026-04-20T05:01:00.000Z",
+            },
+            {
+              id: "azure-fuzzy",
+              name: "providers/azure-dev",
+              login: { username: "azure-dev", password: "azure-dev-token" },
+              revisionDate: "2026-04-20T05:01:15.000Z",
+            },
+            {
+              id: "azure-item",
+              name: "providers/azure",
+              login: { username: "azure", password: "azure-token" },
+              revisionDate: "2026-04-20T05:01:30.000Z",
+            },
+          ]), "")
           return
         }
         cb(null, "", "")
@@ -1108,11 +1115,12 @@ describe("BitwardenCredentialStore", () => {
 
       expect(first?.domain).toBe("providers/openai-codex")
       expect(second?.domain).toBe("providers/azure")
-      expect(calls.filter((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search")).toHaveLength(2)
+      expect(calls.filter((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toHaveLength(1)
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.includes("--search"))).toBeUndefined()
       expect(calls.find((call) => call[0] === "get" && call[1] === "item")).toBeUndefined()
     })
 
-    it("rethrows structured search errors for structured Ouro item names", async () => {
+    it("rethrows full-list errors for structured Ouro item names", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -1132,7 +1140,8 @@ describe("BitwardenCredentialStore", () => {
       })
 
       await expect(store.get("providers/openai-codex")).rejects.toThrow("bw CLI error: server unavailable")
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.includes("--search"))).toBeUndefined()
       expect(calls.find((call) => call[0] === "get" && call[1] === "item")).toBeUndefined()
     })
 
@@ -1162,7 +1171,8 @@ describe("BitwardenCredentialStore", () => {
       const result = await store.get("providers/azure")
 
       expect(result).toBeNull()
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.includes("--search"))).toBeUndefined()
       expect(calls.find((call) => call[0] === "get" && call[1] === "item")).toBeUndefined()
     })
 
@@ -1192,11 +1202,12 @@ describe("BitwardenCredentialStore", () => {
       const result = await store.get("providers/openai-codex")
 
       expect(result).toBeNull()
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.includes("--search"))).toBeUndefined()
       expect(calls.find((call) => call[0] === "get" && call[1] === "item")).toBeUndefined()
     })
 
-    it("does not call timeout-prone exact get for runtime config slash names", async () => {
+    it("does not call timeout-prone exact get or search for runtime config slash names", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -1208,7 +1219,11 @@ describe("BitwardenCredentialStore", () => {
           cb(new Error("Command failed: bw get item"), "", "get item timed out")
           return
         }
-        if (args[0] === "list" && args[1] === "items" && args[3] === "runtime/config") {
+        if (args[0] === "list" && args[1] === "items" && args.includes("--search")) {
+          cb(new Error("Command failed: bw list items"), "", "search timed out")
+          return
+        }
+        if (args[0] === "list" && args[1] === "items") {
           cb(null, JSON.stringify([{
             id: "runtime-config",
             name: "runtime/config",
@@ -1226,11 +1241,12 @@ describe("BitwardenCredentialStore", () => {
       const secret = await store.getRawSecret("runtime/config", "password")
 
       expect(secret).toBe("runtime-secret")
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search" && call[3] === "runtime/config")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.includes("--search"))).toBeUndefined()
       expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "runtime/config")).toBeUndefined()
     })
 
-    it("ignores malformed non-matching structured search results", async () => {
+    it("uses exact names from full-list results when other valid structured items are nearby", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -1238,12 +1254,12 @@ describe("BitwardenCredentialStore", () => {
           cb(null, JSON.stringify({ status: "unlocked" }), "")
           return
         }
-        if (args[0] === "list" && args[1] === "items" && args[3] === "runtime/config") {
+        if (args[0] === "list" && args[1] === "items") {
           cb(null, JSON.stringify([
             {
-              id: "malformed-neighbor",
+              id: "runtime-config-backup",
               name: "runtime/config backup",
-              login: null,
+              login: { username: "runtime/config backup", password: "backup-secret" },
             },
             {
               id: "runtime-config",
@@ -1263,16 +1279,16 @@ describe("BitwardenCredentialStore", () => {
       const secret = await store.getRawSecret("runtime/config", "password")
 
       expect(secret).toBe("runtime-secret")
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[2] === "--search" && call[3] === "runtime/config")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && !call.includes("--search"))).toBeDefined()
     })
 
-    it("throws when the exact structured search result is malformed", async () => {
+    it("throws when full-list structured results are malformed", async () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({ status: "unlocked" }), "")
           return
         }
-        if (args[0] === "list" && args[1] === "items" && args[3] === "runtime/config") {
+        if (args[0] === "list" && args[1] === "items") {
           cb(null, JSON.stringify([{
             id: "runtime-config",
             name: "runtime/config",
@@ -1283,67 +1299,39 @@ describe("BitwardenCredentialStore", () => {
         cb(null, "", "")
       })
 
-      await expect(store.getRawSecret("runtime/config", "password")).rejects.toThrow("bw CLI error: invalid item from bw list items --search")
+      await expect(store.getRawSecret("runtime/config", "password")).rejects.toThrow("bw CLI error: invalid item from bw list items")
     })
 
-    it("ignores non-object structured search noise before the exact result", async () => {
+    it("throws when full-list structured lookup returns invalid JSON", async () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({ status: "unlocked" }), "")
           return
         }
-        if (args[0] === "list" && args[1] === "items" && args[3] === "runtime/config") {
-          cb(null, JSON.stringify([
-            null,
-            ["runtime/config"],
-            { id: "no-string-name", name: 123 },
-            {
-              id: "runtime-config",
-              name: "runtime/config",
-              login: {
-                username: "runtime/config",
-                password: "runtime-secret",
-              },
-            },
-          ]), "")
-          return
-        }
-        cb(null, "", "")
-      })
-
-      await expect(store.getRawSecret("runtime/config", "password")).resolves.toBe("runtime-secret")
-    })
-
-    it("throws when structured search returns invalid JSON", async () => {
-      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
-        if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "unlocked" }), "")
-          return
-        }
-        if (args[0] === "list" && args[1] === "items" && args[3] === "runtime/config") {
+        if (args[0] === "list" && args[1] === "items") {
           cb(null, "{not-json", "")
           return
         }
         cb(null, "", "")
       })
 
-      await expect(store.get("runtime/config")).rejects.toThrow("bw CLI error: invalid JSON from bw list items --search")
+      await expect(store.get("runtime/config")).rejects.toThrow("bw CLI error: invalid JSON from bw list items")
     })
 
-    it("throws when structured search returns a non-array JSON payload", async () => {
+    it("throws when full-list structured lookup returns a non-array JSON payload", async () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({ status: "unlocked" }), "")
           return
         }
-        if (args[0] === "list" && args[1] === "items" && args[3] === "runtime/config") {
+        if (args[0] === "list" && args[1] === "items") {
           cb(null, JSON.stringify({ id: "runtime-config", name: "runtime/config" }), "")
           return
         }
         cb(null, "", "")
       })
 
-      await expect(store.get("runtime/config")).rejects.toThrow("bw CLI error: invalid JSON from bw list items --search")
+      await expect(store.get("runtime/config")).rejects.toThrow("bw CLI error: invalid JSON from bw list items")
     })
 
     it("reuses the structured item cache for repeated legacy structured lookups", async () => {
