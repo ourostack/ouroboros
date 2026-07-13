@@ -9,6 +9,8 @@ const rsvpMocks = vi.hoisted(() => ({
   importLegacyRsvpConfig: vi.fn(),
   readRsvpConfig: vi.fn(),
   validateRsvpReadiness: vi.fn(),
+  readRuntimeCredentialConfig: vi.fn(),
+  readMachineRuntimeCredentialConfig: vi.fn(),
   refreshRuntimeCredentialConfig: vi.fn(),
   refreshMachineRuntimeCredentialConfig: vi.fn(),
   fetchAislePlannerRsvps: vi.fn(),
@@ -103,6 +105,8 @@ vi.mock("../../../heart/runtime-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
   return {
     ...actual,
+    readRuntimeCredentialConfig: rsvpMocks.readRuntimeCredentialConfig,
+    readMachineRuntimeCredentialConfig: rsvpMocks.readMachineRuntimeCredentialConfig,
     refreshRuntimeCredentialConfig: rsvpMocks.refreshRuntimeCredentialConfig,
     refreshMachineRuntimeCredentialConfig: rsvpMocks.refreshMachineRuntimeCredentialConfig,
   }
@@ -201,6 +205,22 @@ function cutoverDeps(options: { launchAgentLoaded?: boolean; processRunning?: bo
   }
 }
 
+function defaultCredentialCutoverDeps(): NonNullable<OuroCliDeps["rsvpCutoverDeps"]> {
+  return {
+    getLaunchAgentState: vi.fn(async () => ({
+      label: "com.arimendelow.rsvp-tracker",
+      loaded: false,
+      source: "injected" as const,
+    })),
+    getLegacyProcessState: vi.fn(async () => ({
+      running: false,
+      count: 0,
+      source: "injected" as const,
+    })),
+    fetchImpl: vi.fn(async () => new Response("{}", { status: 200 })),
+  }
+}
+
 afterEach(() => {
   for (const mock of Object.values(rsvpMocks)) mock.mockReset()
   for (const root of legacyCutoverRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
@@ -211,6 +231,21 @@ function mockRuntimeCredentials(): void {
   rsvpMocks.createBlueBubblesClient.mockImplementation((config, channelConfig) => {
     if (!config || !channelConfig) throw new Error("RSVP must construct BlueBubbles clients from explicit agent runtime config")
     return { sendText: rsvpMocks.sendText }
+  })
+  rsvpMocks.readRuntimeCredentialConfig.mockReturnValue({
+    ok: true,
+    config: {
+      rsvp: {
+        aisleplanner: { username: "user@example.com", password: "secret" },
+      },
+    },
+  })
+  rsvpMocks.readMachineRuntimeCredentialConfig.mockReturnValue({
+    ok: true,
+    config: {
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret", accountId: "icloud", ownHandles: ["+15551234567", 42] },
+      bluebubblesChannel: { port: 19999, webhookPath: "/bb-hook", requestTimeoutMs: 12_345 },
+    },
   })
   rsvpMocks.refreshRuntimeCredentialConfig.mockResolvedValue({
     ok: true,
@@ -322,7 +357,11 @@ describe("ouro rsvp operational CLI wiring", () => {
       const parsed = JSON.parse(result)
 
       expect(rsvpMocks.validateRsvpReadiness).toHaveBeenCalled()
-      expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", "machine_test", { preserveCachedOnFailure: true })
+      expect(rsvpMocks.readRuntimeCredentialConfig).toHaveBeenCalledWith("slugger")
+      expect(rsvpMocks.readMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger")
+      expect(rsvpMocks.loadOrCreateMachineIdentity).not.toHaveBeenCalled()
+      expect(rsvpMocks.refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+      expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
       expect(rsvpMocks.fetchAislePlannerRsvps).toHaveBeenCalled()
       expect(rsvpMocks.buildRsvpSnapshot).toHaveBeenCalled()
       expect(rsvpMocks.computeRsvpDelta).toHaveBeenCalledWith(previousSnapshot, currentSnapshot)
@@ -386,6 +425,48 @@ describe("ouro rsvp operational CLI wiring", () => {
     }
   })
 
+  it("falls back to runtime credential refresh only when RSVP credentials are not cached", async () => {
+    mockRuntimeCredentials()
+    const tmp = seedBundle()
+    rsvpMocks.readRuntimeCredentialConfig.mockReturnValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:slugger:runtime/config",
+      error: "runtime credentials have not been cached",
+    })
+    rsvpMocks.readMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:slugger:runtime/machines/<this-machine>/config",
+      error: "machine runtime credentials have not been cached",
+    })
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: rsvpConfig })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({ ok: true, checks: [] })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: previousSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({ currentSnapshotId: "snap_current", newRsvps: [], statusChanges: [], newGuests: [], removedGuests: [], summary: currentSnapshot.summary })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nNo changes since last check.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "skip", reason: "no-send" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    try {
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+
+      expect(rsvpMocks.readRuntimeCredentialConfig).toHaveBeenCalledWith("slugger")
+      expect(rsvpMocks.readMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger")
+      expect(rsvpMocks.loadOrCreateMachineIdentity).toHaveBeenCalledTimes(1)
+      expect(rsvpMocks.refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+      expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", "machine_test", { preserveCachedOnFailure: true })
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("runs smoke through RSVP follow-up query and only sends in live allow-send mode", async () => {
     mockRuntimeCredentials()
     const legacyRoot = seedLegacyCutoverRoot()
@@ -441,6 +522,7 @@ describe("ouro rsvp operational CLI wiring", () => {
       ], deps))
       expect(rsvpMocks.sendText).toHaveBeenCalledTimes(1)
       expectExplicitBlueBubblesClientConfig()
+      expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
       expect(live).toMatchObject({
         ok: true,
         command: "rsvp.smoke",
@@ -454,7 +536,7 @@ describe("ouro rsvp operational CLI wiring", () => {
     }
   })
 
-  it("builds live smoke BlueBubbles clients from explicit runtime config fallbacks", async () => {
+  it("builds live smoke BlueBubbles clients from explicit cached runtime config fallbacks", async () => {
     mockRuntimeCredentials()
     const legacyRoot = seedLegacyCutoverRoot()
     const tmp = seedBundle(legacyRoot)
@@ -465,7 +547,7 @@ describe("ouro rsvp operational CLI wiring", () => {
         bluebubblesRoute: { ...rsvpConfig.bluebubblesRoute, accountId: "route-account" },
       },
     })
-    rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValue({
+    rsvpMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce({
       ok: true,
       config: {
         bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret" },
@@ -511,6 +593,7 @@ describe("ouro rsvp operational CLI wiring", () => {
           requestTimeoutMs: 30_000,
         },
       )
+      expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
     }
@@ -532,6 +615,12 @@ describe("ouro rsvp operational CLI wiring", () => {
     })
     const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: cutoverDeps() })
     try {
+      rsvpMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce({
+        ok: false,
+        reason: "missing",
+        itemPath: "vault:slugger:runtime/machines/<this-machine>/config",
+        error: "missing cached machine runtime config",
+      })
       rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({
         ok: false,
         reason: "missing",
@@ -551,7 +640,7 @@ describe("ouro rsvp operational CLI wiring", () => {
         "--json",
       ], deps)).rejects.toThrow("BlueBubbles runtime config unavailable at vault:slugger:runtime/machines/machine_test/config")
 
-      rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({
+      rsvpMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce({
         ok: true,
         config: { bluebubbles: { password: "secret" } },
       })
@@ -568,7 +657,7 @@ describe("ouro rsvp operational CLI wiring", () => {
         "--json",
       ], deps)).rejects.toThrow("bluebubbles.serverUrl is required")
 
-      rsvpMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({
+      rsvpMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce({
         ok: true,
         config: { bluebubbles: { serverUrl: "http://127.0.0.1:1234" } },
       })
@@ -792,7 +881,8 @@ describe("ouro rsvp operational CLI wiring", () => {
     rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nCasey is pending.")
     rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:snap_current:hash" })
     rsvpMocks.sendText.mockResolvedValue({ ok: true, messageGuid: "bluebubbles-guid" })
-    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: cutoverDeps() })
+    const liveCutoverDeps = defaultCredentialCutoverDeps()
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: liveCutoverDeps })
     try {
       const result = JSON.parse(await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "live", "--allow-send", "--json"], deps))
 
@@ -821,6 +911,10 @@ describe("ouro rsvp operational CLI wiring", () => {
           delivery: { guid: "bluebubbles-guid", messageGuid: "bluebubbles-guid" },
         },
       })
+      expect(liveCutoverDeps.fetchImpl).toHaveBeenCalled()
+      expect(rsvpMocks.loadOrCreateMachineIdentity).not.toHaveBeenCalled()
+      expect(rsvpMocks.refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+      expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
     }
@@ -950,7 +1044,8 @@ describe("ouro rsvp operational CLI wiring", () => {
     rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nAccepted without receipt.")
     rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:no-receipt" })
     rsvpMocks.sendText.mockResolvedValue(null)
-    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: cutoverDeps() })
+    const liveCutoverDeps = defaultCredentialCutoverDeps()
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: liveCutoverDeps })
     try {
       const result = JSON.parse(await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "live", "--allow-send", "--json"], deps))
 
@@ -968,6 +1063,10 @@ describe("ouro rsvp operational CLI wiring", () => {
           tempGuid: "rsvp:no-receipt",
         },
       }))
+      expect(liveCutoverDeps.fetchImpl).toHaveBeenCalled()
+      expect(rsvpMocks.loadOrCreateMachineIdentity).not.toHaveBeenCalled()
+      expect(rsvpMocks.refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+      expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
     }

@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { spawnSync } from "node:child_process"
 
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
-import { refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
+import { readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export type RsvpCutoverAction = "check" | "quarantine-launchd" | "retire-legacy-send-config"
@@ -231,8 +231,10 @@ async function defaultNativeBlueBubblesCredentialHealth(input: { agent?: string 
   if (!input.agent) {
     return { ok: false, detail: "native BlueBubbles credential check requires an agent" }
   }
-  const machineId = loadOrCreateMachineIdentity({ homeDir: deps.homeDir() }).machineId
-  const runtimeConfig = await refreshMachineRuntimeCredentialConfig(input.agent, machineId, { preserveCachedOnFailure: true })
+  const cachedRuntimeConfig = readMachineRuntimeCredentialConfig(input.agent)
+  const runtimeConfig = cachedRuntimeConfig.ok
+    ? cachedRuntimeConfig
+    : await refreshMachineRuntimeCredentialConfig(input.agent, loadOrCreateMachineIdentity({ homeDir: deps.homeDir() }).machineId, { preserveCachedOnFailure: true })
   if (!runtimeConfig.ok) {
     return { ok: false, detail: "machine runtime/config unavailable" }
   }
