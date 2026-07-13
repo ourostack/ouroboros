@@ -908,6 +908,61 @@ describe("ouro rsvp operational CLI wiring", () => {
     }
   })
 
+  it("prefers the native outbound baseline over stale legacy baseline state", async () => {
+    mockRuntimeCredentials()
+    const tmp = seedBundle()
+    const nativeBaselineSnapshot = {
+      ...previousSnapshot,
+      snapshotId: "snap_native_outbound",
+      summary: { attending: 149, declined: 123, pending: 1, unknown: 0, total: 273 },
+    }
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: rsvpConfig })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({ ok: true, checks: [] })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot
+      .mockReturnValueOnce({ ok: true, snapshot: nativeBaselineSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({
+      currentSnapshotId: "snap_current",
+      newRsvps: [],
+      statusChanges: [],
+      newGuests: [],
+      removedGuests: [],
+      summary: currentSnapshot.summary,
+    })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nNo changes since last check.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "skip", reason: "no-send" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    const rsvpRoot = path.join(tmp.agentRoot, "state", "rsvp")
+    try {
+      fs.writeFileSync(path.join(rsvpRoot, "outbound-state.json"), JSON.stringify({
+        schemaVersion: 1,
+        policyVersion: "rsvp-outbound-state/v1",
+        updatedAt: "2026-07-09T16:30:00.000Z",
+        baseline: {
+          snapshotId: nativeBaselineSnapshot.snapshotId,
+          contentHash: "sha256:native",
+          recordedAt: "2026-07-09T16:30:00.000Z",
+          reason: "bluebubbles-outbound-accepted",
+        },
+        pendingReports: [],
+      }), "utf-8")
+      fs.writeFileSync(path.join(rsvpRoot, "snapshots", `${nativeBaselineSnapshot.snapshotId}.json`), JSON.stringify(nativeBaselineSnapshot), "utf-8")
+
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+
+      expect(rsvpMocks.computeRsvpDelta).toHaveBeenCalledWith(nativeBaselineSnapshot, currentSnapshot)
+      expect(rsvpMocks.computeRsvpDelta).not.toHaveBeenCalledWith(previousSnapshot, currentSnapshot)
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("treats malformed native outbound baseline state as empty when legacy baseline state is absent", async () => {
     mockRuntimeCredentials()
     const tmp = seedBundle()
