@@ -20,7 +20,7 @@
         "messageGuid": "msg-rsvp-script-1",
         "timestamp": "2026-07-09T17:00:00.000Z",
         "authorLabel": "RSVP Agent",
-        "body": "RSVP Update — Wedding\nNew guests added:\n• Casey Pending (pending)\n\n149 attending / 123 declined / 1 pending\n\nAutomated RSVP update."
+        "body": "RSVP Update\nNew guests added:\n• Casey Pending (pending)\n\n149 attending / 123 declined / 1 pending\n\nAutomated RSVP update."
       },
       {
         "messageGuid": "msg-user-who-pending",
