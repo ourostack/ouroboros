@@ -441,8 +441,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
   it("surfaces a clear post-save refresh failure when the vault write succeeded but the snapshot reload did not", async () => {
     installBwExecHarness()
-    bwHarness.failNextSearchWith = "access denied by vault policy"
-    bwHarness.failSearchAtCall = 3
+    bwHarness.failNextListAllWith = "access denied by vault policy"
+    bwHarness.failListAllAtCall = 3
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
