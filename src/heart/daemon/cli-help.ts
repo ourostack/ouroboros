@@ -164,7 +164,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Habits",
     description: "AislePlanner-backed RSVP habit operations, triage, receipts, ledgers, migration checks, refreshes, and smoke tests",
     usage: "ouro rsvp <doctor|incident|cutover|legacy-render|replay|config|habit|import-legacy|refresh|compare|smoke> ...",
-    example: "ouro rsvp doctor --agent slugger --json",
+    example: "ouro rsvp doctor --agent rsvp-agent --json",
     subcommands: [
       "doctor",
       "incident",
@@ -473,12 +473,12 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "rsvp doctor": {
     description: "Check native RSVP configuration, credentials, BlueBubbles attachment, ledgers, receipts, and migration readiness without sending messages; use --json --strict in triage",
     usage: "ouro rsvp doctor [--agent <name>] [--strict] [--output <path>] [--json]",
-    example: "ouro rsvp doctor --agent slugger --strict --json",
+    example: "ouro rsvp doctor --agent rsvp-agent --strict --json",
   },
   "rsvp incident": {
     description: "Collect a redacted local RSVP diagnostic incident bundle with doctor status, receipts, and ledger pointers without contacting the daemon",
     usage: "ouro rsvp incident [--agent <name>] [--output <path>] [--json]",
-    example: "ouro rsvp incident --agent slugger --output /tmp/rsvp-incident.json",
+    example: "ouro rsvp incident --agent rsvp-agent --output /tmp/rsvp-incident.json",
   },
   "rsvp cutover": {
     description: "Inspect or retire legacy RSVP sender state before native live send",
@@ -503,7 +503,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "rsvp habit stage": {
     description: "Stage an RSVP refresh habit with bundle-owned routine naming and report copy",
     usage: "ouro rsvp habit stage [--agent <name>] [--name <rsvp-name>] [--title <title>] [--report-title <title>] --mode shadow|live --cadence '<cron>' [--output <path>] [--json]",
-    example: "ouro rsvp habit stage --agent rsvp-agent --name rsvp-wedding --title 'Wedding RSVPs' --mode shadow --cadence '0 10 * * *'",
+    example: "ouro rsvp habit stage --agent rsvp-agent --name rsvp-updates --title 'RSVP Updates' --mode shadow --cadence '0 10 * * *'",
   },
   "rsvp import-legacy": {
     description: "Compatibility alias for `ouro rsvp config import-legacy`; mutates only with --yes",
@@ -513,17 +513,17 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "rsvp refresh": {
     description: "Run the native RSVP refresh path and write receipts; defaults to dry-run behavior unless --allow-send is explicit",
     usage: "ouro rsvp refresh [--agent <name>] [--habit <rsvp-name>] --mode shadow|live [--no-send|--allow-send] [--output <path>] [--json]",
-    example: "ouro rsvp refresh --agent rsvp-agent --habit rsvp-wedding --mode shadow --no-send --json",
+    example: "ouro rsvp refresh --agent rsvp-agent --habit rsvp-updates --mode shadow --no-send --json",
   },
   "rsvp compare": {
     description: "Compare native and legacy RSVP render outputs for migration verification",
     usage: "ouro rsvp compare [--agent <name>] --native <path> --legacy <path> [--output <path>] [--json]",
-    example: "ouro rsvp compare --agent slugger --native /tmp/native.json --legacy /tmp/legacy.json",
+    example: "ouro rsvp compare --agent rsvp-agent --native /tmp/native.json --legacy /tmp/legacy.json",
   },
   "rsvp smoke": {
     description: "Smoke-test RSVP follow-up behavior through a target sense; preflight is no-send and live mode requires --allow-send",
     usage: "ouro rsvp smoke [--agent <name>] --mode preflight|live --surface bluebubbles [--question <text>] [--allow-send] [--output <path>] [--replay-output <path>] [--json]",
-    example: "ouro rsvp smoke --agent slugger --mode preflight --surface bluebubbles --question 'who is pending?'",
+    example: "ouro rsvp smoke --agent rsvp-agent --mode preflight --surface bluebubbles --question 'who is pending?'",
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",
