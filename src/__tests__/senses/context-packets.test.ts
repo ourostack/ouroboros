@@ -47,7 +47,7 @@ function packetInput(overrides: Record<string, unknown> = {}) {
       {
         timestamp: "2026-07-09T19:20:00.000Z",
         authorLabel: "RSVP script",
-        body: "RSVP Update -- Ari & Rachel\n149 attending / 123 declined / 1 pending",
+        body: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
         sourceRef: blueBubblesRef("script-guid", 2),
       },
       {
@@ -96,7 +96,7 @@ describe("sense context packets", () => {
     ])
     expect(first.messages[0]).toMatchObject({
       bodyHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      bodyPreview: "RSVP Update -- Ari & Rachel\n149 attending / 123 declined / 1 pending",
+      bodyPreview: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
       renderedSourceRef: "bbmsg:chat-hash-ab:script-guid",
     })
     expect(JSON.stringify(first)).not.toContain("iMessage;-;chat-secret-guid")

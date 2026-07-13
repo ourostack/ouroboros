@@ -16,10 +16,10 @@ function seedRsvpHabit(mode: "shadow" | "live" = "live"): { bundlesRoot: string;
   const habitsDir = path.join(agentRoot, "habits")
   fs.mkdirSync(habitsDir, { recursive: true })
   fs.writeFileSync(
-    path.join(habitsDir, "rsvp-ari-rachel.md"),
+    path.join(habitsDir, "rsvp-wedding.md"),
     [
       "---",
-      "title: rsvp-ari-rachel",
+      "title: rsvp-wedding",
       "cadence: 0 10 * * *",
       "status: active",
       "rsvp:",
@@ -52,10 +52,10 @@ function seedHabitWithoutRsvp(): { bundlesRoot: string; agentRoot: string; clean
   const habitsDir = path.join(agentRoot, "habits")
   fs.mkdirSync(habitsDir, { recursive: true })
   fs.writeFileSync(
-    path.join(habitsDir, "rsvp-ari-rachel.md"),
+    path.join(habitsDir, "rsvp-wedding.md"),
     [
       "---",
-      "title: rsvp-ari-rachel",
+      "title: rsvp-wedding",
       "cadence: 0 10 * * *",
       "status: active",
       "---",
@@ -94,7 +94,7 @@ describe("native RSVP habit runner", () => {
         sendAllowed: true,
         refresh: {
           snapshotId: "snap-live-1",
-          reportText: "RSVP Update -- Ari & Rachel",
+          reportText: "RSVP Update -- Wedding",
           outboundDecision: { action: "send" },
           delivery: { guid: "bluebubbles-guid-1" },
         },
@@ -105,7 +105,7 @@ describe("native RSVP habit runner", () => {
       const result = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "launchd",
         occurrenceId: "launchd:first-run:0 10 * * *",
         now: () => "2026-07-12T17:00:05.000Z",
@@ -114,13 +114,14 @@ describe("native RSVP habit runner", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+        message: "native RSVP habit rsvp-wedding completed for slugger",
         lifecycle: "completed",
       })
       expect(runRefresh).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: "rsvp.refresh",
           agent: "slugger",
+          habitName: "rsvp-wedding",
           mode: "live",
           allowSend: true,
           json: true,
@@ -130,12 +131,12 @@ describe("native RSVP habit runner", () => {
           agentBundleRoot: tmp.agentRoot,
         }),
       )
-      expect(readHabitLastRun(tmp.agentRoot, "rsvp-ari-rachel")).toBe("2026-07-12T17:00:05.000Z")
+      expect(readHabitLastRun(tmp.agentRoot, "rsvp-wedding")).toBe("2026-07-12T17:00:05.000Z")
 
       const receipts = listHabitRunReceipts(tmp.agentRoot)
       expect(receipts).toHaveLength(1)
       expect(receipts[0]).toMatchObject({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "launchd",
         outcome: "surfaced",
         startedAt: "2026-07-12T17:00:05.000Z",
@@ -156,7 +157,7 @@ describe("native RSVP habit runner", () => {
         agent: "slugger",
         triggerType: "habit",
         sourceKind: "daemon",
-        senseOrHabit: "rsvp-ari-rachel",
+        senseOrHabit: "rsvp-wedding",
         usage: {
           source: "none",
           inputTokens: 0,
@@ -169,7 +170,7 @@ describe("native RSVP habit runner", () => {
       const spendLedger = readRsvpSpendLedger(tmp.agentRoot)
       expect(spendLedger.runs).toHaveLength(2)
       expect(spendLedger.runs[1]).toMatchObject({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         lifecycle: "completed",
         contentStored: false,
       })
@@ -194,7 +195,7 @@ describe("native RSVP habit runner", () => {
       const result = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         occurrenceId: "overdue:first-run:0 10 * * *",
         now: () => "2026-07-12T17:03:54.000Z",
@@ -209,15 +210,16 @@ describe("native RSVP habit runner", () => {
         expect.objectContaining({
           kind: "rsvp.refresh",
           agent: "slugger",
+          habitName: "rsvp-wedding",
           mode: "shadow",
           noSend: true,
           json: true,
         }),
         expect.any(Object),
       )
-      expect(readHabitLastRun(tmp.agentRoot, "rsvp-ari-rachel")).toBe("2026-07-12T17:03:54.000Z")
+      expect(readHabitLastRun(tmp.agentRoot, "rsvp-wedding")).toBe("2026-07-12T17:03:54.000Z")
       expect(listHabitRunReceipts(tmp.agentRoot)[0]).toMatchObject({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         outcome: "error",
         errors: ["RSVP refresh requires native RSVP config before live work can run"],
@@ -236,7 +238,7 @@ describe("native RSVP habit runner", () => {
       const result = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "launchd",
         occurrenceId: "launchd:first-run:0 10 * * *",
         now: () => "2026-07-12T17:00:05.000Z",
@@ -252,7 +254,7 @@ describe("native RSVP habit runner", () => {
       })
       expect(readRunLedger(tmp.agentRoot).map((row) => row.lifecycle)).toEqual(["started", "error"])
       expect(listHabitRunReceipts(tmp.agentRoot)[0]).toMatchObject({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "launchd",
         outcome: "error",
         surfaceAttempts: [
@@ -280,7 +282,7 @@ describe("native RSVP habit runner", () => {
       sendAllowed: false,
       refresh: {
         snapshotId: "snap-shadow-1",
-        reportText: "RSVP Update -- Ari & Rachel",
+        reportText: "RSVP Update -- Wedding",
         outboundDecision: { action: "suppress" },
       },
     }))
@@ -289,7 +291,7 @@ describe("native RSVP habit runner", () => {
       const result = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         now: () => "2026-07-12T17:03:54.000Z",
         runRefresh,
@@ -300,7 +302,7 @@ describe("native RSVP habit runner", () => {
         lifecycle: "completed",
       })
       expect(listHabitRunReceipts(tmp.agentRoot)[0]).toMatchObject({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         outcome: "no_change",
         operationId: expect.stringContaining(result.runId),
         producedRefs: [
@@ -329,7 +331,7 @@ describe("native RSVP habit runner", () => {
       const result = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         occurrenceId: "overdue:payload-error-without-message",
         runRefresh,
@@ -339,7 +341,7 @@ describe("native RSVP habit runner", () => {
         ok: false,
         lifecycle: "error",
       })
-      const lastRun = readHabitLastRun(tmp.agentRoot, "rsvp-ari-rachel")
+      const lastRun = readHabitLastRun(tmp.agentRoot, "rsvp-wedding")
       expect(lastRun).toMatch(/^\d{4}-\d{2}-\d{2}T/)
       expect(listHabitRunReceipts(tmp.agentRoot)[0]).toMatchObject({
         outcome: "error",
@@ -357,11 +359,11 @@ describe("native RSVP habit runner", () => {
       await expect(runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "manual",
         now: () => new Date("2026-07-12T17:00:05.000Z"),
         runRefresh: async () => JSON.stringify({ ok: true }),
-      })).rejects.toThrow("RSVP habit metadata is required before native execution: rsvp-ari-rachel")
+      })).rejects.toThrow("RSVP habit metadata is required before native execution: rsvp-wedding")
     } finally {
       tmp.cleanup()
     }
@@ -381,7 +383,7 @@ describe("native RSVP habit runner", () => {
       sendAllowed: true,
       refresh: {
         snapshotId: "snap-live-runtime-state-failure",
-        reportText: "RSVP Update -- Ari & Rachel",
+        reportText: "RSVP Update -- Wedding",
         outboundDecision: { action: "send" },
         delivery: { guid: "bluebubbles-guid-runtime-state-failure" },
       },
@@ -391,7 +393,7 @@ describe("native RSVP habit runner", () => {
       const result = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "launchd",
         now: () => "2026-07-12T17:00:05.000Z",
         runRefresh,
@@ -400,10 +402,10 @@ describe("native RSVP habit runner", () => {
       expect(result).toMatchObject({
         ok: false,
         lifecycle: "completed",
-        message: "native RSVP habit rsvp-ari-rachel failed for slugger: runtime state was not recorded",
+        message: "native RSVP habit rsvp-wedding failed for slugger: runtime state was not recorded",
       })
       expect(listHabitRunReceipts(tmp.agentRoot)[0]).toMatchObject({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         outcome: "surfaced",
       })
     } finally {
@@ -420,7 +422,7 @@ describe("native RSVP habit runner", () => {
       const malformedResult = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: malformed.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         occurrenceId: "overdue:malformed",
         now: () => "2026-07-12T17:03:54.000Z",
@@ -441,7 +443,7 @@ describe("native RSVP habit runner", () => {
       const stringThrownResult = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: stringThrown.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         occurrenceId: "overdue:string-error",
         now: () => "2026-07-12T17:03:55.000Z",
@@ -459,7 +461,7 @@ describe("native RSVP habit runner", () => {
       const blankErrorResult = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: blankError.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         occurrenceId: "overdue:blank-error",
         now: () => "2026-07-12T17:03:56.000Z",
@@ -501,7 +503,7 @@ describe("native RSVP habit runner", () => {
       sendAllowed: true,
       refresh: {
         snapshotId: "snap-live-2",
-        reportText: "RSVP Update -- Ari & Rachel",
+        reportText: "RSVP Update -- Wedding",
         outboundDecision: { action: "send" },
         delivery: { guid: "bluebubbles-guid-2" },
       },
@@ -511,7 +513,7 @@ describe("native RSVP habit runner", () => {
       const result = await runNativeRsvpHabit({
         agent: "slugger",
         bundlesRoot: tmp.bundlesRoot,
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "launchd",
         occurrenceId: "launchd:first-run:0 10 * * *",
         now: () => "2026-07-12T17:00:05.000Z",
@@ -521,7 +523,7 @@ describe("native RSVP habit runner", () => {
       expect(result.ok).toBe(true)
       expect(readRunLedger(tmp.agentRoot).map((row) => row.lifecycle)).toEqual(["started", "completed"])
       expect(listHabitRunReceipts(tmp.agentRoot)[0]).toMatchObject({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         outcome: "surfaced",
       })
       expect(events).toHaveLength(2)

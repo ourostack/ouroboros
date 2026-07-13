@@ -1332,7 +1332,7 @@ describe("daemon entrypoint", () => {
       socketPath: "/tmp/ouro-rsvp-habit-poke.sock",
     })
 
-    schedulerOptions.onHabitFire("rsvp-ari-rachel", "overdue", {
+    schedulerOptions.onHabitFire("rsvp-wedding", "overdue", {
       occurrenceId: "overdue:first-run:0 10 * * *",
     })
 
@@ -1341,7 +1341,7 @@ describe("daemon entrypoint", () => {
       {
         kind: "habit.poke",
         agent: "slugger",
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         trigger: "overdue",
         occurrenceId: "overdue:first-run:0 10 * * *",
       },
@@ -1350,7 +1350,7 @@ describe("daemon entrypoint", () => {
       expect.any(String),
       expect.objectContaining({
         kind: "private.wake",
-        originRefs: expect.arrayContaining([{ kind: "habit", id: "rsvp-ari-rachel" }]),
+        originRefs: expect.arrayContaining([{ kind: "habit", id: "rsvp-wedding" }]),
       }),
     )
     expect(processManagerSendToAgent).not.toHaveBeenCalled()

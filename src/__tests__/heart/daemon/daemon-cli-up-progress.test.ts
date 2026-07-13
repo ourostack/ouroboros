@@ -457,7 +457,7 @@ describe("ouro up: UpProgress integration", () => {
                 {
                   name: "cron-health",
                   status: "warn",
-                  message: "cron jobs degraded; timer fallback active: slugger:rsvp-ari-rachel:cadence",
+                  message: "cron jobs degraded; timer fallback active: slugger:rsvp-wedding:cadence",
                 },
                 {
                   name: "context-loss-sentinel:slugger",
@@ -476,7 +476,7 @@ describe("ouro up: UpProgress integration", () => {
 
     expect(result).toContain("background service stopped before boot finished")
     expect(result).toContain(
-      "cron-health: warn - cron jobs degraded; timer fallback active: slugger:rsvp-ari-rachel:cadence",
+      "cron-health: warn - cron jobs degraded; timer fallback active: slugger:rsvp-wedding:cadence",
     )
     expect(result).toContain(
       "context-loss-sentinel:slugger: critical - Sentinel blocked: provider:outward live check failed",

@@ -69,9 +69,9 @@ describe("HealthMonitor", () => {
         listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
       },
       scheduler: {
-        listJobs: () => [{ id: "slugger:rsvp-ari-rachel:cadence", lastRun: null }],
+        listJobs: () => [{ id: "slugger:rsvp-wedding:cadence", lastRun: null }],
         listDegradedJobs: () => [{
-          id: "habit:rsvp-ari-rachel",
+          id: "habit:rsvp-wedding",
           reason: "cron registration failed — using timer fallback",
         }],
       },
@@ -82,7 +82,7 @@ describe("HealthMonitor", () => {
       {
         name: "cron-health",
         status: "warn",
-        message: "cron jobs degraded; timer fallback active: habit:rsvp-ari-rachel (cron registration failed — using timer fallback)",
+        message: "cron jobs degraded; timer fallback active: habit:rsvp-wedding (cron registration failed — using timer fallback)",
       },
       { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
     ])

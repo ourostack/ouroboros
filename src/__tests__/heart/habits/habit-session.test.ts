@@ -706,8 +706,8 @@ describe("habit-session helpers", () => {
 
     const receipt = buildHabitRunReceipt({
       agentRoot,
-      habit: makeHabit({ name: "rsvp-ari-rachel", cadence: "0 10 * * *" }),
-      runId: "2026-07-09T17-01-00-000Z-rsvp-ari-rachel-abc123ef",
+      habit: makeHabit({ name: "rsvp-wedding", cadence: "0 10 * * *" }),
+      runId: "2026-07-09T17-01-00-000Z-rsvp-wedding-abc123ef",
       trigger: "launchd",
       startedAt: new Date(2026, 6, 9, 10, 0, 0, 0).toISOString(),
       endedAt,

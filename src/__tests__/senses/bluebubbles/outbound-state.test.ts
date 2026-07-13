@@ -56,7 +56,7 @@ describe("BlueBubbles durable outbound state", () => {
       idempotencyKey: "habit:slugger:rsvp:2026-07-09T17:00:00.000Z",
       chat,
       attachment,
-      text: "RSVP Update -- Ari & Rachel\n\nNo changes since last check.",
+      text: "RSVP Update -- Wedding\n\nNo changes since last check.",
       tempGuid: "temp-rsvp-1",
       now: "2026-07-09T17:00:00.000Z",
     })
@@ -65,7 +65,7 @@ describe("BlueBubbles durable outbound state", () => {
       idempotencyKey: "habit:slugger:rsvp:2026-07-09T17:00:00.000Z",
       chat,
       attachment,
-      text: "RSVP Update -- Ari & Rachel\n\nNo changes since last check.",
+      text: "RSVP Update -- Wedding\n\nNo changes since last check.",
       tempGuid: "temp-rsvp-1-retry",
       now: "2026-07-09T17:00:15.000Z",
     })

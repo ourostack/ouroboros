@@ -899,10 +899,10 @@ describe("private-runtime-worker", () => {
 
     it("blocks untyped RSVP habit sessions before provider or budget execution", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
-        if (String(filePath).includes("/habits/rsvp-ari-rachel.md")) {
+        if (String(filePath).includes("/habits/rsvp-wedding.md")) {
           return [
             "---",
-            "title: RSVP Ari & Rachel",
+            "title: Wedding RSVPs",
             "cadence: 0 10 * * *",
             "tools: [rsvp_query, rsvp_summary, shell]",
             "surface:",
@@ -919,12 +919,12 @@ describe("private-runtime-worker", () => {
       const runTurn = vi.fn().mockResolvedValue({ messages: [] })
       const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
 
-      await worker.handleMessage({ type: "habit", habitName: "rsvp-ari-rachel", trigger: "launchd" })
+      await worker.handleMessage({ type: "habit", habitName: "rsvp-wedding", trigger: "launchd" })
 
       expect(runTurn).not.toHaveBeenCalled()
       expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         outcome: "error",
         errors: [expect.stringMatching(/RSVP habit metadata is required/i)],
         toolPolicy: expect.objectContaining({
@@ -938,10 +938,10 @@ describe("private-runtime-worker", () => {
 
     it("blocks malformed RSVP habit frontmatter instead of falling back to a generic habit", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
-        if (String(filePath).includes("/habits/rsvp-ari-rachel.md")) {
+        if (String(filePath).includes("/habits/rsvp-wedding.md")) {
           return [
             "---",
-            "title: RSVP Ari & Rachel",
+            "title: Wedding RSVPs",
             "cadence: 0 10 * * *",
             "rsvp:",
             "  policyVersion: rsvp-habit/v1",
@@ -965,12 +965,12 @@ describe("private-runtime-worker", () => {
       const runTurn = vi.fn().mockResolvedValue({ messages: [] })
       const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
 
-      await worker.handleMessage({ type: "habit", habitName: "rsvp-ari-rachel", trigger: "manual" })
+      await worker.handleMessage({ type: "habit", habitName: "rsvp-wedding", trigger: "manual" })
 
       expect(runTurn).not.toHaveBeenCalled()
       expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         outcome: "error",
         errors: expect.arrayContaining([
           expect.stringMatching(/sense, not channel/i),
@@ -981,10 +981,10 @@ describe("private-runtime-worker", () => {
 
     it("derives RSVP runtime policy from typed metadata instead of trusting freeform tool declarations", async () => {
       mockReadFileSync.mockImplementation((filePath: any) => {
-        if (String(filePath).includes("/habits/rsvp-ari-rachel.md")) {
+        if (String(filePath).includes("/habits/rsvp-wedding.md")) {
           return [
             "---",
-            "title: RSVP Ari & Rachel",
+            "title: Wedding RSVPs",
             "cadence: 0 10 * * *",
             "tools: [shell]",
             "continuity:",
@@ -1014,12 +1014,12 @@ describe("private-runtime-worker", () => {
       const runTurn = vi.fn().mockResolvedValue({ messages: [] })
       const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
 
-      await worker.handleMessage({ type: "habit", habitName: "rsvp-ari-rachel", trigger: "launchd" })
+      await worker.handleMessage({ type: "habit", habitName: "rsvp-wedding", trigger: "launchd" })
 
       expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
         preparedHabit: expect.objectContaining({
           habit: expect.objectContaining({
-            name: "rsvp-ari-rachel",
+            name: "rsvp-wedding",
             tools: ["rsvp_query", "rsvp_summary"],
             rsvp: expect.objectContaining({
               policyVersion: "rsvp-habit/v1",
@@ -1053,17 +1053,17 @@ describe("private-runtime-worker", () => {
         }),
       }))
       expect(mockReserveAutonomyBudget).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        senseOrHabit: "rsvp-ari-rachel",
+        senseOrHabit: "rsvp-wedding",
         target: expect.objectContaining({
-          habitName: "rsvp-ari-rachel",
+          habitName: "rsvp-wedding",
           rsvpSnapshotRef: "state/rsvp/snapshots/latest.json",
           rsvpBudgetRef: "state/rsvp/spend-ledger.json",
           rsvpIdempotencyRef: "state/rsvp/outbound-state.json",
         }),
-        idempotencyKey: expect.stringContaining("rsvp-ari-rachel"),
+        idempotencyKey: expect.stringContaining("rsvp-wedding"),
       }))
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        habitName: "rsvp-ari-rachel",
+        habitName: "rsvp-wedding",
         toolPolicy: expect.objectContaining({
           requestedTools: ["rsvp_query", "rsvp_summary"],
           grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),

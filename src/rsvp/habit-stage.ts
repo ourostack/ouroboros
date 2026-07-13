@@ -6,9 +6,10 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { ensureRsvpOutboundState } from "./outbound-state"
 import { ensureRsvpSpendLedger } from "./spend-ledger"
 import {
+  DEFAULT_RSVP_HABIT_NAME,
   RSVP_HABIT_ALLOWED_TOOLS,
-  RSVP_HABIT_NAME,
   RSVP_HABIT_POLICY_VERSION,
+  isRsvpHabitName,
   type RsvpHabitMetadata,
   type RsvpHabitMode,
 } from "./habit-policy"
@@ -16,6 +17,9 @@ import {
 export interface StageRsvpHabitInput {
   agent: string
   agentRoot: string
+  habitName?: string
+  title?: string
+  reportTitle?: string
   mode: RsvpHabitMode
   cadence: string
   now?: Date
@@ -25,15 +29,15 @@ export interface StageRsvpHabitResult {
   ok: true
   sideEffect: true
   agent: string
-  name: typeof RSVP_HABIT_NAME
-  habitName: typeof RSVP_HABIT_NAME
+  name: string
+  habitName: string
   habitPath: string
   mode: RsvpHabitMode
   cadence: string
   rsvp: RsvpHabitMetadata
 }
 
-function defaultRsvpHabitMetadata(mode: RsvpHabitMode): RsvpHabitMetadata {
+function defaultRsvpHabitMetadata(mode: RsvpHabitMode, reportTitle: string): RsvpHabitMetadata {
   return {
     policyVersion: RSVP_HABIT_POLICY_VERSION,
     mode,
@@ -45,6 +49,7 @@ function defaultRsvpHabitMetadata(mode: RsvpHabitMode): RsvpHabitMetadata {
     budgetRef: "state/rsvp/spend-ledger.json",
     idempotencyRef: "state/rsvp/outbound-state.json",
     liveSendEligible: false,
+    reportTitle,
   }
 }
 
@@ -55,12 +60,22 @@ function stagedHabitBody(): string {
   ].join("\n\n")
 }
 
+function normalizeHabitName(name: string | undefined): string {
+  const normalized = name?.trim() || DEFAULT_RSVP_HABIT_NAME
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(normalized) || !isRsvpHabitName(normalized)) {
+    throw new Error("RSVP habit name must start with rsvp- and contain only letters, numbers, underscores, or hyphens")
+  }
+  return normalized
+}
+
 export function stageRsvpHabit(input: StageRsvpHabitInput): StageRsvpHabitResult {
-  const habitPath = path.join(input.agentRoot, "habits", `${RSVP_HABIT_NAME}.md`)
-  const rsvp = defaultRsvpHabitMetadata(input.mode)
+  const habitName = normalizeHabitName(input.habitName)
+  const title = input.title?.trim() || "RSVP Updates"
+  const rsvp = defaultRsvpHabitMetadata(input.mode, input.reportTitle?.trim() || title)
+  const habitPath = path.join(input.agentRoot, "habits", `${habitName}.md`)
   const created = (input.now ?? new Date()).toISOString()
   const content = renderHabitFile({
-    title: "RSVP Ari & Rachel",
+    title,
     status: "active",
     cadence: input.cadence,
     created,
@@ -77,14 +92,14 @@ export function stageRsvpHabit(input: StageRsvpHabitInput): StageRsvpHabitResult
     component: "rsvp",
     event: "rsvp.habit_staged",
     message: "staged native RSVP habit",
-    meta: { agent: input.agent, habitName: RSVP_HABIT_NAME, mode: input.mode, cadence: input.cadence },
+    meta: { agent: input.agent, habitName, mode: input.mode, cadence: input.cadence },
   })
   return {
     ok: true,
     sideEffect: true,
     agent: input.agent,
-    name: RSVP_HABIT_NAME,
-    habitName: RSVP_HABIT_NAME,
+    name: habitName,
+    habitName,
     habitPath,
     mode: input.mode,
     cadence: input.cadence,

@@ -1713,6 +1713,20 @@ function rsvpPath(value: string, label: string): string {
   return trimmed
 }
 
+function rsvpText(value: string, label: string): string {
+  const trimmed = value.trim()
+  if (!trimmed || /[\r\n\t]/.test(trimmed)) throw new Error(`rsvp ${label} requires non-empty text`)
+  return trimmed
+}
+
+function rsvpHabitName(value: string, label: string): string {
+  const trimmed = rsvpText(value, label)
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(trimmed) || !trimmed.startsWith("rsvp-")) {
+    throw new Error(`rsvp ${label} must start with rsvp- and contain only letters, numbers, underscores, or hyphens`)
+  }
+  return trimmed
+}
+
 function validRsvpCronCadence(value: string): boolean {
   const fields = value.trim().split(/\s+/)
   return fields.length === 5 && fields.every((field) => field.length > 0)
@@ -1730,7 +1744,7 @@ function parseRsvpCommand(args: string[]): OuroCliCommand {
 
   if (subcommand === "habit") {
     const nested = args[1]
-    if (nested !== "stage") throw new Error("Usage: ouro rsvp habit stage [--agent <name>] --mode shadow|live --cadence '<cron>' [--output <path>] [--json]")
+    if (nested !== "stage") throw new Error("Usage: ouro rsvp habit stage [--agent <name>] [--name <rsvp-name>] [--title <title>] [--report-title <title>] --mode shadow|live --cadence '<cron>' [--output <path>] [--json]")
     return parseRsvpHabitStageCommand(args.slice(2))
   }
 
@@ -1900,6 +1914,9 @@ function parseRsvpImportLegacyCommand(args: string[], kind: "rsvp.config.import-
 
 function parseRsvpHabitStageCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
+  let habitName: string | undefined
+  let title: string | undefined
+  let reportTitle: string | undefined
   let mode: RsvpCliMode | undefined
   let cadence: string | undefined
   let json = false
@@ -1912,16 +1929,22 @@ function parseRsvpHabitStageCommand(args: string[]): OuroCliCommand {
       mode = value
       continue
     }
+    if (token === "--name" && rest[i + 1]) { habitName = rsvpHabitName(rest[++i], "--name"); continue }
+    if (token === "--title" && rest[i + 1]) { title = rsvpText(rest[++i], "--title"); continue }
+    if (token === "--report-title" && rest[i + 1]) { reportTitle = rsvpText(rest[++i], "--report-title"); continue }
     if (token === "--cadence" && rest[i + 1]) { cadence = rest[++i]; continue }
     if (token === "--json") { json = true; continue }
     if (token === "--output" && rest[i + 1]) { outputPath = rsvpPath(rest[++i], "--output"); continue }
-    throw new Error("Usage: ouro rsvp habit stage [--agent <name>] --mode shadow|live --cadence '<cron>' [--output <path>] [--json]")
+    throw new Error("Usage: ouro rsvp habit stage [--agent <name>] [--name <rsvp-name>] [--title <title>] [--report-title <title>] --mode shadow|live --cadence '<cron>' [--output <path>] [--json]")
   }
   if (!mode) throw new Error("rsvp habit stage requires --mode shadow|live")
   if (!cadence || !validRsvpCronCadence(cadence)) throw new Error("rsvp habit stage --cadence must be a five-field cron cadence")
   return {
     kind: "rsvp.habit.stage",
     ...(agent ? { agent } : {}),
+    ...(habitName ? { habitName } : {}),
+    ...(title ? { title } : {}),
+    ...(reportTitle ? { reportTitle } : {}),
     mode,
     cadence,
     ...(json ? { json: true } : {}),
@@ -1931,6 +1954,7 @@ function parseRsvpHabitStageCommand(args: string[]): OuroCliCommand {
 
 function parseRsvpRefreshCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
+  let habitName: string | undefined
   let mode: RsvpCliMode = "shadow"
   let noSend = false
   let allowSend = false
@@ -1944,11 +1968,12 @@ function parseRsvpRefreshCommand(args: string[]): OuroCliCommand {
       mode = value
       continue
     }
+    if (token === "--habit" && rest[i + 1]) { habitName = rsvpHabitName(rest[++i], "--habit"); continue }
     if (token === "--no-send") { noSend = true; continue }
     if (token === "--allow-send") { allowSend = true; continue }
     if (token === "--json") { json = true; continue }
     if (token === "--output" && rest[i + 1]) { outputPath = rsvpPath(rest[++i], "--output"); continue }
-    throw new Error("Usage: ouro rsvp refresh [--agent <name>] --mode shadow|live [--no-send|--allow-send] [--output <path>] [--json]")
+    throw new Error("Usage: ouro rsvp refresh [--agent <name>] [--habit <rsvp-name>] --mode shadow|live [--no-send|--allow-send] [--output <path>] [--json]")
   }
   if (noSend && allowSend) throw new Error("rsvp refresh cannot combine --allow-send and --no-send")
   if (mode === "shadow" && allowSend) throw new Error("rsvp refresh --mode shadow cannot use --allow-send; use --no-send or omit send flags")
@@ -1956,6 +1981,7 @@ function parseRsvpRefreshCommand(args: string[]): OuroCliCommand {
   return {
     kind: "rsvp.refresh",
     ...(agent ? { agent } : {}),
+    ...(habitName ? { habitName } : {}),
     mode,
     ...(noSend ? { noSend: true } : {}),
     ...(allowSend ? { allowSend: true } : {}),

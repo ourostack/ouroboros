@@ -127,10 +127,10 @@ function seedRsvpOperationalBundle(): ReturnType<typeof createTmpBundle> {
   fs.mkdirSync(path.join(tmp.agentRoot, "state", "rsvp", "outbound"), { recursive: true })
   fs.mkdirSync(path.join(tmp.agentRoot, "state", "rsvp", "snapshots"), { recursive: true })
   fs.writeFileSync(
-    path.join(tmp.agentRoot, "habits", "rsvp-ari-rachel.md"),
+    path.join(tmp.agentRoot, "habits", "rsvp-wedding.md"),
     [
       "---",
-      "name: rsvp-ari-rachel",
+      "name: rsvp-wedding",
       "status: active",
       "cadence: 0 10 * * *",
       "rsvp:",
@@ -259,6 +259,12 @@ describe("ouro rsvp CLI parsing", () => {
       "stage",
       "--agent",
       "slugger",
+      "--name",
+      "rsvp-wedding",
+      "--title",
+      "Wedding RSVPs",
+      "--report-title",
+      "Wedding RSVP Update",
       "--mode",
       "shadow",
       "--cadence",
@@ -268,6 +274,9 @@ describe("ouro rsvp CLI parsing", () => {
     ])).toEqual({
       kind: "rsvp.habit.stage",
       agent: "slugger",
+      habitName: "rsvp-wedding",
+      title: "Wedding RSVPs",
+      reportTitle: "Wedding RSVP Update",
       mode: "shadow",
       cadence: "0 10 * * *",
       outputPath: "/tmp/habit.json",
@@ -290,9 +299,10 @@ describe("ouro rsvp CLI parsing", () => {
       mode: "shadow",
       outputPath: "/tmp/import-legacy.json",
     })
-    expect(parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--output", "/tmp/refresh.json"])).toEqual({
+    expect(parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--habit", "rsvp-wedding", "--mode", "shadow", "--no-send", "--output", "/tmp/refresh.json"])).toEqual({
       kind: "rsvp.refresh",
       agent: "slugger",
+      habitName: "rsvp-wedding",
       mode: "shadow",
       noSend: true,
       outputPath: "/tmp/refresh.json",
@@ -402,7 +412,10 @@ describe("ouro rsvp CLI parsing", () => {
     expect(() => parseOuroCommand(["rsvp", "config", "import-legacy", "--legacy-root", "/tmp/legacy-rsvp", "--mode", "shadow", "--wat"])).toThrow(/Usage: ouro rsvp config import-legacy/)
     expect(() => parseOuroCommand(["rsvp", "replay", "--fixture", "/tmp/replay.json", "--wat"])).toThrow(/Usage: ouro rsvp replay/)
     expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--mode", "shadow", "--cadence", "0 10 * * *", "--wat"])).toThrow(/Usage: ouro rsvp habit stage/)
+    expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--title", "\n", "--mode", "shadow", "--cadence", "0 10 * * *"])).toThrow(/requires non-empty text/)
+    expect(() => parseOuroCommand(["rsvp", "habit", "stage", "--name", "rsvp", "--mode", "shadow", "--cadence", "0 10 * * *"])).toThrow(/must start with rsvp-/)
     expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--allow-send", "--no-send"])).toThrow(/allow-send/)
+    expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--habit", "rsvp"])).toThrow(/must start with rsvp-/)
     expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "preflight"])).toThrow(/mode must be shadow or live/)
     expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--allow-send"])).toThrow(/shadow.*allow-send/)
     expect(() => parseOuroCommand(["rsvp", "refresh", "--agent", "slugger", "--mode", "live"])).toThrow(/live requires --allow-send/)
@@ -804,7 +817,7 @@ describe("ouro rsvp CLI execution", () => {
           latestPacketId: "ctx_cli_1",
         },
         habitSchedule: {
-          activeHabit: "rsvp-ari-rachel",
+          activeHabit: "rsvp-wedding",
         },
       })
       expect(JSON.stringify(written)).not.toContain(forbiddenCliIncidentChatGuid)

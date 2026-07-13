@@ -37,6 +37,37 @@ export interface RsvpDelta {
   summary: RsvpSnapshotSummary
 }
 
+export interface RsvpReportCopy {
+  title: string
+  firstRunLabel: string
+  noChangesLabel: string
+  newRsvpsLabel: string
+  statusChangesLabel: string
+  newGuestsLabel: string
+  removedGuestsLabel: string
+}
+
+export type RsvpReportCopyInput = Partial<RsvpReportCopy>
+
+export const DEFAULT_RSVP_REPORT_COPY: RsvpReportCopy = {
+  title: "RSVP Update",
+  firstRunLabel: "Current RSVP summary:",
+  noChangesLabel: "No changes since last check.",
+  newRsvpsLabel: "New RSVPs:",
+  statusChangesLabel: "Status changes:",
+  newGuestsLabel: "New guests added:",
+  removedGuestsLabel: "Guests removed:",
+}
+
+function reportCopy(input: RsvpReportCopyInput = {}): RsvpReportCopy {
+  return {
+    ...DEFAULT_RSVP_REPORT_COPY,
+    ...Object.fromEntries(
+      Object.entries(input).filter(([, value]) => typeof value === "string" && value.trim().length > 0),
+    ),
+  }
+}
+
 function byId(left: { id: string }, right: { id: string }): number {
   return left.id.localeCompare(right.id)
 }
@@ -147,37 +178,38 @@ function hasChanges(delta: RsvpDelta): boolean {
     || delta.removedGuests.length > 0
 }
 
-export function renderRsvpReport(delta: RsvpDelta): string {
-  const lines: string[] = ["RSVP Update — Ari & Rachel", ""]
+export function renderRsvpReport(delta: RsvpDelta, copyInput: RsvpReportCopyInput = {}): string {
+  const copy = reportCopy(copyInput)
+  const lines: string[] = [copy.title, ""]
 
   if (delta.isFirstRun) {
-    lines.push("Current RSVP summary:", "")
+    lines.push(copy.firstRunLabel, "")
   } else if (!hasChanges(delta)) {
-    lines.push("No changes since last check.", "")
+    lines.push(copy.noChangesLabel, "")
   } else {
     if (delta.newRsvps.length > 0) {
-      lines.push("New RSVPs:")
+      lines.push(copy.newRsvpsLabel)
       for (const guest of delta.newRsvps) {
         lines.push(`  • ${reportName(guest)} — ${statusLabel(guest.newStatus)}`)
       }
       lines.push("")
     }
     if (delta.statusChanges.length > 0) {
-      lines.push("Status changes:")
+      lines.push(copy.statusChangesLabel)
       for (const guest of delta.statusChanges) {
         lines.push(`  • ${reportName(guest)}: ${statusLabel(guest.oldStatus)} → ${statusLabel(guest.newStatus)}`)
       }
       lines.push("")
     }
     if (delta.newGuests.length > 0) {
-      lines.push("New guests added:")
+      lines.push(copy.newGuestsLabel)
       for (const guest of delta.newGuests) {
         lines.push(`  • ${reportName(guest)} (${statusLabel(guest.status)})`)
       }
       lines.push("")
     }
     if (delta.removedGuests.length > 0) {
-      lines.push("Guests removed:")
+      lines.push(copy.removedGuestsLabel)
       for (const guest of delta.removedGuests) {
         lines.push(`  • ${reportName(guest)}`)
       }

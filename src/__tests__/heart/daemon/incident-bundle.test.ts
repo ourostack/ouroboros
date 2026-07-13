@@ -24,9 +24,9 @@ function makeAgentRoot(): string {
   fs.mkdirSync(path.join(agentRoot, "state", "rsvp", "outbound"), { recursive: true })
   fs.mkdirSync(path.join(agentRoot, "state", "rsvp", "snapshots"), { recursive: true })
   fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ version: 2, enabled: true }), "utf-8")
-  fs.writeFileSync(path.join(agentRoot, "habits", "rsvp-ari-rachel.md"), [
+  fs.writeFileSync(path.join(agentRoot, "habits", "rsvp-wedding.md"), [
     "---",
-    "name: rsvp-ari-rachel",
+    "name: rsvp-wedding",
     "status: active",
     "cadence: 0 10 * * *",
     "rsvp:",
@@ -143,7 +143,7 @@ describe("RSVP incident bundle", () => {
       },
       habitSchedule: {
         status: "pass",
-        activeHabit: "rsvp-ari-rachel",
+        activeHabit: "rsvp-wedding",
         cadence: "0 10 * * *",
       },
       latestFetch: {

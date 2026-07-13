@@ -22,7 +22,7 @@ const baseMetadata = {
 
 describe("RSVP habit policy", () => {
   it("recognizes the canonical RSVP habit family", () => {
-    expect(isRsvpHabitName("rsvp-ari-rachel")).toBe(true)
+    expect(isRsvpHabitName("rsvp-wedding")).toBe(true)
     expect(isRsvpHabitName("rsvp-test")).toBe(true)
     expect(isRsvpHabitName("heartbeat")).toBe(false)
   })
@@ -36,6 +36,17 @@ describe("RSVP habit policy", () => {
   it("coerces string booleans for live-send eligibility", () => {
     expect(parseRsvpHabitMetadata({ ...baseMetadata, liveSendEligible: "true" })?.liveSendEligible).toBe(true)
     expect(parseRsvpHabitMetadata({ ...baseMetadata, liveSendEligible: "false" })?.liveSendEligible).toBe(false)
+  })
+
+  it("keeps routine-owned report copy in habit metadata", () => {
+    expect(parseRsvpHabitMetadata({
+      ...baseMetadata,
+      reportTitle: "Wedding RSVP Update",
+      noChangesLabel: "No guest changes since the last check.",
+    })).toMatchObject({
+      reportTitle: "Wedding RSVP Update",
+      noChangesLabel: "No guest changes since the last check.",
+    })
   })
 
   it("rejects stale channel terminology and invalid metadata values", () => {

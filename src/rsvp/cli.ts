@@ -6,6 +6,7 @@ import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
 import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
+import { parseHabitFile } from "../heart/habits/habit-parser"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import {
@@ -21,7 +22,8 @@ import type { BlueBubblesChatRef } from "../senses/bluebubbles/model"
 import { fetchAislePlannerRsvps } from "./aisleplanner-client"
 import { importLegacyRsvpConfig, readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig } from "./config"
 import { checkRsvpCutover, runRsvpCutover, type RsvpCutoverReport } from "./cutover"
-import { computeRsvpDelta, renderRsvpReport } from "./diff-renderer"
+import { computeRsvpDelta, renderRsvpReport, type RsvpReportCopyInput } from "./diff-renderer"
+import { isRsvpHabitName, type RsvpHabitMetadata } from "./habit-policy"
 import { stageRsvpHabit } from "./habit-stage"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
 import { importLegacyRsvpState } from "./migration"
@@ -211,6 +213,62 @@ function writeSnapshotFiles(agentRoot: string, snapshot: RsvpSnapshot): void {
   fs.mkdirSync(path.join(rsvpStateRoot(agentRoot), "snapshots"), { recursive: true })
   fs.writeFileSync(snapshotFilePath(agentRoot, snapshot.snapshotId), `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8")
   fs.writeFileSync(latestSnapshotPath(agentRoot), `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8")
+}
+
+type RsvpHabitLabelKey = Exclude<keyof RsvpReportCopyInput, "title">
+
+const RSVP_HABIT_REPORT_LABEL_KEYS: RsvpHabitLabelKey[] = [
+  "firstRunLabel",
+  "noChangesLabel",
+  "newRsvpsLabel",
+  "statusChangesLabel",
+  "newGuestsLabel",
+  "removedGuestsLabel",
+]
+
+function reportCopyFromHabit(title: string, rsvp: RsvpHabitMetadata): RsvpReportCopyInput {
+  const copy: RsvpReportCopyInput = { title: rsvp.reportTitle ?? title }
+  for (const key of RSVP_HABIT_REPORT_LABEL_KEYS) {
+    const value = rsvp[key]
+    if (value) copy[key] = value
+  }
+  return copy
+}
+
+function requireRsvpHabitReportCopy(agentRoot: string, habitName: string): RsvpReportCopyInput {
+  const habitPath = path.join(agentRoot, "habits", `${habitName}.md`)
+  if (!fs.existsSync(habitPath)) throw new Error(`RSVP habit ${habitName} not found at ${habitPath}`)
+  const habit = parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
+  if (!habit.rsvp) throw new Error(`RSVP habit ${habitName} metadata is required before explicit refresh`)
+  return reportCopyFromHabit(habit.title, habit.rsvp)
+}
+
+function activeRsvpHabitReportCopy(agentRoot: string): RsvpReportCopyInput | null {
+  const habitsDir = path.join(agentRoot, "habits")
+  if (!fs.existsSync(habitsDir)) return null
+  for (const entry of fs.readdirSync(habitsDir).filter((name) => name.endsWith(".md")).sort()) {
+    const habitPath = path.join(habitsDir, entry)
+    try {
+      const habit = parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
+      if (habit.status === "active" && habit.rsvp && isRsvpHabitName(habit.name)) {
+        return reportCopyFromHabit(habit.title, habit.rsvp)
+      }
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "rsvp",
+        event: "rsvp.habit_report_copy_error",
+        message: "failed to read RSVP habit report copy",
+        meta: { habitPath, error: String(error) },
+      })
+    }
+  }
+  return null
+}
+
+function resolveRsvpReportCopy(agentRoot: string, habitName: string | undefined): RsvpReportCopyInput {
+  if (habitName) return requireRsvpHabitReportCopy(agentRoot, habitName)
+  return activeRsvpHabitReportCopy(agentRoot) ?? {}
 }
 
 function parseSnapshotFromFile(filePath: string): RsvpSnapshot {
@@ -583,6 +641,9 @@ async function executeHabitStage(command: RsvpHabitStageCommand, deps: OuroCliDe
   const result = stageRsvpHabit({
     agent: command.agent,
     agentRoot,
+    ...(command.habitName ? { habitName: command.habitName } : {}),
+    ...(command.title ? { title: command.title } : {}),
+    ...(command.reportTitle ? { reportTitle: command.reportTitle } : {}),
     mode: command.mode,
     cadence: command.cadence,
   })
@@ -602,6 +663,7 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
       requires: "--agent",
     }
   }
+  const reportCopy = resolveRsvpReportCopy(agentRoot, command.habitName)
   const configResult = resolveRsvpConfig(agentRoot)
   if (!configResult.ok) {
     return basePayload(command, false, "RSVP refresh requires native RSVP config before live work can run", {
@@ -668,7 +730,7 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
   })
   writeSnapshotFiles(agentRoot, currentSnapshot)
   const delta = computeRsvpDelta(previousSnapshot, currentSnapshot)
-  const reportText = renderRsvpReport(delta)
+  const reportText = renderRsvpReport(delta, reportCopy)
   const outboundDecision = decideRsvpOutboundReport({ agentRoot, currentSnapshot, reportText })
   const wantsLiveSend = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
   if (wantsLiveSend) {

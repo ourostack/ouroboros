@@ -90,6 +90,7 @@ function refreshCommandFor(input: RunNativeRsvpHabitInput, sendAllowed: boolean,
   return {
     kind: "rsvp.refresh",
     agent: input.agent,
+    habitName: input.habitName,
     mode,
     json: true,
     ...(sendAllowed ? { allowSend: true } : { noSend: true }),
