@@ -96,9 +96,9 @@ function tempAgentRoot(): string {
 function tempTypedRsvpAgentRoot(): string {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-rsvp-ledger-"))
   fs.mkdirSync(path.join(agentRoot, "habits"), { recursive: true })
-  fs.writeFileSync(path.join(agentRoot, "habits", "rsvp-ari-rachel.md"), [
+  fs.writeFileSync(path.join(agentRoot, "habits", "rsvp-wedding.md"), [
     "---",
-    "title: RSVP Ari & Rachel",
+    "title: Wedding RSVPs",
     "cadence: 0 10 * * *",
     "tools: [rsvp_query, rsvp_summary]",
     "rsvp:",
@@ -228,7 +228,7 @@ describe("private-runtime habit run ledger attribution", () => {
     })
     const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-07-09T17:00:00.000Z").getTime())
 
-    await worker.handleMessage({ type: "habit", habitName: "rsvp-ari-rachel", trigger: "scheduled" })
+    await worker.handleMessage({ type: "habit", habitName: "rsvp-wedding", trigger: "scheduled" })
 
     const rows = readRunLedger(agentRoot)
     const spendLedger = readRsvpSpendLedger(agentRoot)
@@ -236,12 +236,12 @@ describe("private-runtime habit run ledger attribution", () => {
     expect(spendLedger.runs.map((row) => row.lifecycle)).toEqual(["started", "completed"])
     expect(spendLedger.runs[0]).toMatchObject({
       runId: rows[0]?.runId,
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       contentStored: false,
     })
     expect(spendLedger.runs[1]).toMatchObject({
       runId: rows[1]?.runId,
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       usage: {
         source: "provider",
         inputTokens: 21,

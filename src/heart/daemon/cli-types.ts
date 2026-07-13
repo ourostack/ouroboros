@@ -120,9 +120,9 @@ export type OuroCliCommand =
   | { kind: "rsvp.legacy-render"; agent?: string; legacyRoot: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.replay"; agent?: string; fixturePath: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.config.import-legacy"; agent?: string; legacyRoot: string; mode: RsvpCliMode; yes?: boolean; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.habit.stage"; agent?: string; mode: RsvpCliMode; cadence: string; json?: boolean; outputPath?: string }
+  | { kind: "rsvp.habit.stage"; agent?: string; habitName?: string; title?: string; reportTitle?: string; mode: RsvpCliMode; cadence: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.import-legacy"; agent?: string; legacyRoot: string; mode: RsvpCliMode; yes?: boolean; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.refresh"; agent?: string; mode: RsvpCliMode; noSend?: boolean; allowSend?: boolean; json?: boolean; outputPath?: string }
+  | { kind: "rsvp.refresh"; agent?: string; habitName?: string; mode: RsvpCliMode; noSend?: boolean; allowSend?: boolean; json?: boolean; outputPath?: string }
   | { kind: "rsvp.compare"; agent?: string; nativePath: string; legacyPath: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.smoke"; agent?: string; mode: RsvpSmokeMode; surface: RsvpSmokeSurface; question?: string; allowSend?: boolean; json?: boolean; outputPath?: string; replayOutputPath?: string }
   | { kind: "clone"; remote: string; agent?: string }

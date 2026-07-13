@@ -60,7 +60,7 @@ describe("RSVP outbound baseline state", () => {
     const decision = decideRsvpOutboundReport({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Ari & Rachel\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
       now: "2026-07-09T17:00:00.000Z",
     })
     recordRsvpOutboundAttempt({
@@ -106,7 +106,7 @@ describe("RSVP outbound baseline state", () => {
     expect(decideRsvpOutboundReport({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Ari & Rachel",
+      reportText: "RSVP Update -- Wedding",
     })).toMatchObject({ action: "send", currentSnapshotId: current.snapshotId })
 
     fs.writeFileSync(statePath, JSON.stringify({
@@ -157,7 +157,7 @@ describe("RSVP outbound baseline state", () => {
     const decision = decideRsvpOutboundReport({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Ari & Rachel\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
       now: "2026-07-09T17:00:00.000Z",
     })
     recordRsvpOutboundAttempt({
@@ -205,7 +205,7 @@ describe("RSVP outbound baseline state", () => {
     recordRsvpOutboundAttempt({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Ari & Rachel\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
       bluebubblesRecord: {
         recordId: "bb-out-local-visible",
         status: "local-visible",
@@ -227,7 +227,7 @@ describe("RSVP outbound baseline state", () => {
       readRsvpOutboundState,
       recordRsvpOutboundAttempt,
     } = await import("../../rsvp/outbound-state")
-    const reportText = "RSVP Update -- Ari & Rachel\n\nNew RSVPs:\n- Debra Edelson -- declined"
+    const reportText = "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined"
 
     recordRsvpOutboundAttempt({
       agentRoot,
@@ -271,7 +271,7 @@ describe("RSVP outbound baseline state", () => {
     recordRsvpOutboundAttempt({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Ari & Rachel",
+      reportText: "RSVP Update -- Wedding",
       bluebubblesRecord: {
         recordId: "bb-out-no-baseline",
         status: "reserved",
@@ -296,7 +296,7 @@ describe("RSVP outbound baseline state", () => {
     recordRsvpOutboundAttempt({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Ari & Rachel",
+      reportText: "RSVP Update -- Wedding",
       bluebubblesRecord: {
         recordId: "bb-out-pending-before-baseline",
         status: "failed",
@@ -330,7 +330,7 @@ describe("RSVP outbound baseline state", () => {
     const first = decideRsvpOutboundReport({
       agentRoot,
       currentSnapshot: current,
-      reportText: "RSVP Update -- Ari & Rachel\n\nNew RSVPs:\n- Debra Edelson -- declined",
+      reportText: "RSVP Update -- Wedding\n\nNew RSVPs:\n- Debra Edelson -- declined",
       now: "2026-07-09T17:00:00.000Z",
     })
     recordRsvpOutboundAttempt({

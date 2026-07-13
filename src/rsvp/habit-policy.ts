@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
 
 export const RSVP_HABIT_POLICY_VERSION = "rsvp-habit/v1" as const
-export const RSVP_HABIT_NAME = "rsvp-ari-rachel" as const
+export const DEFAULT_RSVP_HABIT_NAME = "rsvp-updates" as const
 export const RSVP_HABIT_ALLOWED_TOOLS = ["rsvp_query", "rsvp_summary"] as const
 
 export type RsvpHabitMode = "shadow" | "live"
@@ -19,6 +19,13 @@ export interface RsvpHabitMetadata {
   budgetRef: string
   idempotencyRef: string
   liveSendEligible: boolean
+  reportTitle?: string
+  firstRunLabel?: string
+  noChangesLabel?: string
+  newRsvpsLabel?: string
+  statusChangesLabel?: string
+  newGuestsLabel?: string
+  removedGuestsLabel?: string
 }
 
 export interface RsvpHabitRuntimePolicy extends RsvpHabitMetadata {
@@ -45,8 +52,13 @@ function requiredBoolean(record: Record<string, unknown>, key: string): boolean 
   throw new Error(`RSVP habit metadata requires boolean ${key}`)
 }
 
+function optionalString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
+}
+
 export function isRsvpHabitName(name: string): boolean {
-  return name === RSVP_HABIT_NAME || name.startsWith("rsvp-")
+  return name.startsWith("rsvp-")
 }
 
 export function parseRsvpHabitMetadata(raw: unknown): RsvpHabitMetadata | null {
@@ -68,7 +80,7 @@ export function parseRsvpHabitMetadata(raw: unknown): RsvpHabitMetadata | null {
   const source = requiredString(raw, "source")
   if (source !== "aisleplanner") throw new Error("RSVP habit metadata source must be aisleplanner")
 
-  return {
+  const parsed: RsvpHabitMetadata = {
     policyVersion: RSVP_HABIT_POLICY_VERSION,
     mode,
     sense,
@@ -80,6 +92,19 @@ export function parseRsvpHabitMetadata(raw: unknown): RsvpHabitMetadata | null {
     idempotencyRef: requiredString(raw, "idempotencyRef"),
     liveSendEligible: requiredBoolean(raw, "liveSendEligible"),
   }
+  for (const key of [
+    "reportTitle",
+    "firstRunLabel",
+    "noChangesLabel",
+    "newRsvpsLabel",
+    "statusChangesLabel",
+    "newGuestsLabel",
+    "removedGuestsLabel",
+  ] as const) {
+    const value = optionalString(raw, key)
+    if (value) parsed[key] = value
+  }
+  return parsed
 }
 
 export function rsvpHabitRuntimePolicy(metadata: RsvpHabitMetadata): RsvpHabitRuntimePolicy {

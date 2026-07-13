@@ -60,9 +60,9 @@ function writeAgent(root: string, agent = "slugger"): string {
 function writeRsvpHabit(agentRoot: string): void {
   const habitsDir = path.join(agentRoot, "habits")
   fs.mkdirSync(habitsDir, { recursive: true })
-  fs.writeFileSync(path.join(habitsDir, "rsvp-ari-rachel.md"), [
+  fs.writeFileSync(path.join(habitsDir, "rsvp-wedding.md"), [
     "---",
-    "name: rsvp-ari-rachel",
+    "name: rsvp-wedding",
     "status: active",
     "cadence: 0 10 * * *",
     "rsvp:",
@@ -86,7 +86,7 @@ function writeRsvpHabit(agentRoot: string): void {
 function writeMalformedRsvpHabit(agentRoot: string): void {
   const habitsDir = path.join(agentRoot, "habits")
   fs.mkdirSync(habitsDir, { recursive: true })
-  fs.writeFileSync(path.join(habitsDir, "rsvp-ari-rachel.md"), "---\nname: rsvp-ari-rachel\nstatus: active\ncadence: 0 10 * * *\n---\n", "utf-8")
+  fs.writeFileSync(path.join(habitsDir, "rsvp-wedding.md"), "---\nname: rsvp-wedding\nstatus: active\ncadence: 0 10 * * *\n---\n", "utf-8")
 }
 
 function writeNativeRsvpConfig(agentRoot: string, overrides: Record<string, unknown> = {}): void {

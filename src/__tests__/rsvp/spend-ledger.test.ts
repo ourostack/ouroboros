@@ -19,7 +19,7 @@ function runRecord(lifecycle: "started" | "completed" = "started") {
     agent: "slugger",
     triggerType: "habit",
     sourceKind: "private-runtime",
-    senseOrHabit: "rsvp-ari-rachel",
+    senseOrHabit: "rsvp-wedding",
     lifecycle,
     startedAt: "2026-07-09T17:00:00.000Z",
     ...(lifecycle === "completed" ? {
@@ -32,13 +32,13 @@ function runRecord(lifecycle: "started" | "completed" = "started") {
       }, "provider"),
     } : {}),
     target: {
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       runId: "habit-run-rsvp",
       trigger: "scheduled",
       operationId: "op_rsvp",
     },
     idempotencyScope: {
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       runId: "habit-run-rsvp",
       trigger: "scheduled",
       operationId: "op_rsvp",
@@ -85,13 +85,13 @@ describe("RSVP spend ledger", () => {
     expect(ledger.runs).toHaveLength(2)
     expect(ledger.runs[0]).toMatchObject({
       runId: started.runId,
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       lifecycle: "started",
       contentStored: false,
     })
     expect(ledger.runs[1]).toMatchObject({
       runId: completed.runId,
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       lifecycle: "completed",
       endedAt: "2026-07-09T17:00:10.000Z",
       usage: {
@@ -145,7 +145,7 @@ describe("RSVP spend ledger", () => {
       contentStored: false,
     })
     expect(ledger.runs[1]).toMatchObject({
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       lifecycle: "started",
       contentStored: false,
     })

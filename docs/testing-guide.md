@@ -161,11 +161,11 @@ ouro connect voice --agent <agent>
 
 ### RSVP habit triage
 
-Slugger's daily RSVP dogfood habit has a dedicated runbook at `docs/rsvp-triage.md`. Start with:
+RSVP habits have a dedicated runbook at `docs/rsvp-triage.md`. Start with:
 
 ```bash
-ouro rsvp doctor --agent slugger --json --strict
-ouro rsvp incident --agent slugger --output /tmp/rsvp-incident.json --json
+ouro rsvp doctor --agent <agent> --json --strict
+ouro rsvp incident --agent <agent> --output /tmp/rsvp-incident.json --json
 ```
 
 Use that guide for no-send replay, shadow refresh, preflight smoke, receipt and ledger locations, and redaction rules before any live send.

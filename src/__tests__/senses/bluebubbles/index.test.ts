@@ -7433,7 +7433,7 @@ describe("BlueBubbles sense runtime", () => {
         messageGuid: "script-report-guid",
         timestamp: dmTopLevelPayload.data.dateCreated - 3_000,
         fromMe: true,
-        textForAgent: "RSVP Update -- Ari & Rachel\n149 attending / 123 declined / 1 pending",
+        textForAgent: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
       }),
       makeCatchUpMessage({
         messageGuid: "ari-context-guid",
@@ -7467,14 +7467,14 @@ describe("BlueBubbles sense runtime", () => {
       && message.content.includes("top-level follow-up"))
     expect(contextIndex).toBeGreaterThanOrEqual(0)
     expect(userIndex).toBeGreaterThan(contextIndex)
-    expect(modelMessages[contextIndex].content).toContain("RSVP Update -- Ari & Rachel")
+    expect(modelMessages[contextIndex].content).toContain("RSVP Update -- Wedding")
     expect(modelMessages[contextIndex].content).toContain("slugger see the past messages")
     expect(modelMessages[contextIndex].content).toContain("same chat guid despite a repaired session key")
     expect(modelMessages[contextIndex].content).not.toContain("secret-token")
 
     const durableMessages = mocks.postTurnTrim.mock.calls[0]?.[0] ?? []
     expect(JSON.stringify(durableMessages)).not.toContain("Untrusted bluebubbles context")
-    expect(JSON.stringify(durableMessages)).not.toContain("RSVP Update -- Ari & Rachel")
+    expect(JSON.stringify(durableMessages)).not.toContain("RSVP Update -- Wedding")
   })
 
   it("builds same-chat context for identifier-only chats with fallback message fields", async () => {
@@ -7602,7 +7602,7 @@ describe("BlueBubbles sense runtime", () => {
       messages: [{
         timestamp: "2026-03-07T21:59:00.000Z",
         authorLabel: "Slugger",
-        body: "RSVP Update -- Ari & Rachel\n149 attending / 123 declined / 1 pending",
+        body: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
         sourceRef: {
           sense: "bluebubbles",
           adapter: "bluebubbles-api-v1",
@@ -7633,7 +7633,7 @@ describe("BlueBubbles sense runtime", () => {
       message.role === "system"
       && typeof message.content === "string"
       && message.content.includes("Untrusted bluebubbles context"))
-    expect(contextMessage?.content).toContain("RSVP Update -- Ari & Rachel")
+    expect(contextMessage?.content).toContain("RSVP Update -- Wedding")
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
       component: "senses",

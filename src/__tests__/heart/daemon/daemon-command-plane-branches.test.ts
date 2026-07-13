@@ -587,7 +587,7 @@ describe("daemon command plane branches", () => {
     const { daemon, scheduler, healthMonitor } = make(socketPath, isolatedBundles)
     healthMonitor.getLastResults.mockReturnValueOnce([])
     scheduler.listDegradedJobs.mockReturnValueOnce([
-      { id: "habit:rsvp-ari-rachel", reason: "cron registration failed — using timer fallback" },
+      { id: "habit:rsvp-wedding", reason: "cron registration failed — using timer fallback" },
     ])
 
     const status = await daemon.handleCommand({ kind: "daemon.status" })
@@ -600,7 +600,7 @@ describe("daemon command plane branches", () => {
         {
           name: "cron-health",
           status: "warn",
-          message: "cron jobs degraded; timer fallback active: habit:rsvp-ari-rachel (cron registration failed — using timer fallback)",
+          message: "cron jobs degraded; timer fallback active: habit:rsvp-wedding (cron registration failed — using timer fallback)",
         },
       ],
     }))
@@ -1398,13 +1398,13 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({
       kind: "habit.poke",
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "manual",
     })
 
     expect(poke).toEqual({
       ok: true,
-      message: "skipped scheduled habit rsvp-ari-rachel for slugger: RSVP habit file not found",
+      message: "skipped scheduled habit rsvp-wedding for slugger: RSVP habit file not found",
     })
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
     expect(fs.existsSync(ledgerPath)).toBe(false)
@@ -1452,7 +1452,7 @@ describe("daemon command plane branches", () => {
     writeHabitFile({
       bundlesRoot,
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       cadence: "0 10 * * *",
       lastRun: null,
     })
@@ -1462,13 +1462,13 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({
       kind: "habit.poke",
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "manual",
     })
 
     expect(poke).toEqual({
       ok: true,
-      message: "skipped scheduled habit rsvp-ari-rachel for slugger: RSVP habit metadata is required before private runtime wake",
+      message: "skipped scheduled habit rsvp-wedding for slugger: RSVP habit metadata is required before private runtime wake",
     })
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
     expect(fs.existsSync(ledgerPath)).toBe(false)
@@ -1484,10 +1484,10 @@ describe("daemon command plane branches", () => {
     const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      path.join(habitsDir, "rsvp-wedding.md"),
       [
         "---",
-        "title: rsvp-ari-rachel",
+        "title: rsvp-wedding",
         "cadence: 0 10 * * *",
         "status: active",
         "rsvp:",
@@ -1506,13 +1506,13 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({
       kind: "habit.poke",
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "manual",
     })
 
     expect(poke).toEqual({
       ok: true,
-      message: "skipped scheduled habit rsvp-ari-rachel for slugger: RSVP habit metadata invalid: RSVP habit metadata requires sense, not channel",
+      message: "skipped scheduled habit rsvp-wedding for slugger: RSVP habit metadata invalid: RSVP habit metadata requires sense, not channel",
     })
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
     expect(fs.existsSync(ledgerPath)).toBe(false)
@@ -1527,17 +1527,17 @@ describe("daemon command plane branches", () => {
     const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
     const rsvpHabitRunner = vi.fn(async () => ({
       ok: true,
-      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      message: "native RSVP habit rsvp-wedding completed for slugger",
       lifecycle: "completed",
       runId: "rsvp-native-manual-run",
     }))
     const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      path.join(habitsDir, "rsvp-wedding.md"),
       [
         "---",
-        "title: rsvp-ari-rachel",
+        "title: rsvp-wedding",
         "cadence: 0 10 * * *",
         "status: active",
         "rsvp:",
@@ -1563,13 +1563,13 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({
       kind: "habit.poke",
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "manual",
     })
 
     expect(poke).toMatchObject({
       ok: true,
-      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      message: "native RSVP habit rsvp-wedding completed for slugger",
       data: {
         lifecycle: "completed",
       },
@@ -1577,7 +1577,7 @@ describe("daemon command plane branches", () => {
     expect(rsvpHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
       agent: "slugger",
       bundlesRoot,
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "manual",
     }))
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
@@ -1594,10 +1594,10 @@ describe("daemon command plane branches", () => {
     const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      path.join(habitsDir, "rsvp-wedding.md"),
       [
         "---",
-        "title: rsvp-ari-rachel",
+        "title: rsvp-wedding",
         "cadence: 0 10 * * *",
         "status: active",
         "rsvp:",
@@ -1623,13 +1623,13 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({
       kind: "habit.poke",
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "launchd",
     })
 
     expect(poke).toMatchObject({
       ok: false,
-      message: "native RSVP habit rsvp-ari-rachel failed for slugger: RSVP refresh requires native RSVP config before live work can run",
+      message: "native RSVP habit rsvp-wedding failed for slugger: RSVP refresh requires native RSVP config before live work can run",
       data: expect.objectContaining({
         lifecycle: "error",
         payload: expect.objectContaining({
@@ -1651,17 +1651,17 @@ describe("daemon command plane branches", () => {
     const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
     const rsvpHabitRunner = vi.fn(async () => ({
       ok: true,
-      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      message: "native RSVP habit rsvp-wedding completed for slugger",
       lifecycle: "completed",
       runId: "rsvp-native-supplied-occurrence-run",
     }))
     const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      path.join(habitsDir, "rsvp-wedding.md"),
       [
         "---",
-        "title: rsvp-ari-rachel",
+        "title: rsvp-wedding",
         "cadence: 0 10 * * *",
         "status: active",
         "rsvp:",
@@ -1687,7 +1687,7 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({
       kind: "habit.poke",
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "launchd",
       occurrenceId: "  launchd:explicit-occurrence  ",
     })
@@ -1700,7 +1700,7 @@ describe("daemon command plane branches", () => {
     })
     expect(rsvpHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "launchd",
       occurrenceId: "launchd:explicit-occurrence",
     }))
@@ -1717,17 +1717,17 @@ describe("daemon command plane branches", () => {
     const policyDeps = privateRuntimePolicyDeps(ledgerPath, "deny")
     const rsvpHabitRunner = vi.fn(async () => ({
       ok: true,
-      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      message: "native RSVP habit rsvp-wedding completed for slugger",
       lifecycle: "completed",
       runId: "rsvp-native-run",
     }))
     const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      path.join(habitsDir, "rsvp-wedding.md"),
       [
         "---",
-        "title: rsvp-ari-rachel",
+        "title: rsvp-wedding",
         "cadence: 0 10 * * *",
         "status: active",
         "rsvp:",
@@ -1753,13 +1753,13 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({
       kind: "habit.poke",
       agent: "slugger",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "launchd",
     })
 
     expect(poke).toMatchObject({
       ok: true,
-      message: "native RSVP habit rsvp-ari-rachel completed for slugger",
+      message: "native RSVP habit rsvp-wedding completed for slugger",
       data: expect.objectContaining({
         lifecycle: "completed",
       }),
@@ -1767,7 +1767,7 @@ describe("daemon command plane branches", () => {
     expect(rsvpHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
       agent: "slugger",
       bundlesRoot,
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       trigger: "launchd",
       occurrenceId: "launchd:first-run:0 10 * * *",
     }))

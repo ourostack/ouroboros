@@ -205,7 +205,7 @@ describe("LaunchdCronManager", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => [
         "bot.ouro.slugger.heartbeat.plist",
-        "bot.ouro.slugger.rsvp-ari-rachel.plist",
+        "bot.ouro.slugger.rsvp-wedding.plist",
         "bot.ouro.slugger.await.vendor-reply.plist",
       ]),
     })
@@ -222,7 +222,7 @@ describe("LaunchdCronManager", () => {
       "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.heartbeat.plist",
     )
     expect(deps.removeFile).not.toHaveBeenCalledWith(
-      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.rsvp-ari-rachel.plist",
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.rsvp-wedding.plist",
     )
     expect(deps.removeFile).toHaveBeenCalledTimes(1)
   })

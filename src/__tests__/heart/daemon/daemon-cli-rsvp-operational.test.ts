@@ -336,6 +336,29 @@ describe("ouro rsvp operational CLI wiring", () => {
   it("runs refresh through config readiness, AislePlanner fetch, snapshot build, diff rendering, and no-send outbound decision", async () => {
     mockRuntimeCredentials()
     const tmp = seedBundle()
+    const habitsDir = path.join(tmp.agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(path.join(habitsDir, "rsvp-wedding.md"), [
+      "---",
+      "title: Wedding RSVPs",
+      "status: active",
+      "cadence: 0 10 * * *",
+      "rsvp:",
+      "  policyVersion: rsvp-habit/v1",
+      "  mode: shadow",
+      "  sense: bluebubbles",
+      "  source: aisleplanner",
+      "  routeRef: rsvp/config.json#bluebubblesRoute",
+      "  snapshotRef: state/rsvp/snapshots/latest.json",
+      "  outboundStateRef: state/rsvp/outbound-state.json",
+      "  budgetRef: state/rsvp/spend-ledger.json",
+      "  idempotencyRef: state/rsvp/outbound-state.json",
+      "  liveSendEligible: false",
+      "  reportTitle: Wedding RSVP Update",
+      "---",
+      "",
+      "Refresh RSVP state.",
+    ].join("\n"), "utf-8")
     rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: rsvpConfig })
     rsvpMocks.validateRsvpReadiness.mockReturnValue({ ok: true, checks: [] })
     rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
@@ -353,7 +376,7 @@ describe("ouro rsvp operational CLI wiring", () => {
     rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "skip", reason: "no-send" })
     const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
     try {
-      const result = await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+      const result = await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--habit", "rsvp-wedding", "--mode", "shadow", "--no-send", "--json"], deps)
       const parsed = JSON.parse(result)
 
       expect(rsvpMocks.validateRsvpReadiness).toHaveBeenCalled()
@@ -365,7 +388,9 @@ describe("ouro rsvp operational CLI wiring", () => {
       expect(rsvpMocks.fetchAislePlannerRsvps).toHaveBeenCalled()
       expect(rsvpMocks.buildRsvpSnapshot).toHaveBeenCalled()
       expect(rsvpMocks.computeRsvpDelta).toHaveBeenCalledWith(previousSnapshot, currentSnapshot)
-      expect(rsvpMocks.renderRsvpReport).toHaveBeenCalled()
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+        title: "Wedding RSVP Update",
+      }))
       expect(rsvpMocks.decideRsvpOutboundReport).toHaveBeenCalled()
       expect(rsvpMocks.sendText).not.toHaveBeenCalled()
       expect(parsed).toMatchObject({
@@ -381,6 +406,153 @@ describe("ouro rsvp operational CLI wiring", () => {
       })
       expect(result).not.toMatch(/registered|planned/i)
       expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("fails explicit refresh when the selected RSVP habit is missing or untyped", async () => {
+    mockRuntimeCredentials()
+    const tmp = seedBundle()
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    const habitsDir = path.join(tmp.agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    try {
+      await expect(runOuroCli([
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--habit",
+        "rsvp-missing",
+        "--mode",
+        "shadow",
+        "--no-send",
+        "--json",
+      ], deps)).rejects.toThrow(/RSVP habit rsvp-missing not found/)
+
+      fs.writeFileSync(path.join(habitsDir, "rsvp-plain.md"), "---\ntitle: Plain RSVP\n---\n\nPlain habit.\n", "utf-8")
+      await expect(runOuroCli([
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--habit",
+        "rsvp-plain",
+        "--mode",
+        "shadow",
+        "--no-send",
+        "--json",
+      ], deps)).rejects.toThrow(/RSVP habit rsvp-plain metadata is required/)
+
+      expect(rsvpMocks.fetchAislePlannerRsvps).not.toHaveBeenCalled()
+      expect(rsvpMocks.renderRsvpReport).not.toHaveBeenCalled()
+      expect(rsvpMocks.sendText).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("falls back to generic report copy when no active RSVP habit copy is available", async () => {
+    mockRuntimeCredentials()
+    const tmp = seedBundle()
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: rsvpConfig })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({ ok: true, checks: [] })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: previousSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({
+      currentSnapshotId: "snap_current",
+      newRsvps: [],
+      statusChanges: [],
+      newGuests: [],
+      removedGuests: [],
+      summary: currentSnapshot.summary,
+    })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nNo changes since last check.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "skip", reason: "no-send" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+    const habitsDir = path.join(tmp.agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    try {
+      fs.writeFileSync(path.join(habitsDir, "rsvp-plain.md"), "---\ntitle: Plain RSVP\nstatus: active\n---\n\nPlain habit.\n", "utf-8")
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenLastCalledWith(expect.any(Object), {})
+
+      const activeHabitPath = path.join(habitsDir, "rsvp-active.md")
+      fs.writeFileSync(activeHabitPath, [
+        "---",
+        "title: Active RSVPs",
+        "status: active",
+        "rsvp:",
+        "  policyVersion: rsvp-habit/v1",
+        "  mode: shadow",
+        "  sense: bluebubbles",
+        "  source: aisleplanner",
+        "  routeRef: rsvp/config.json#bluebubblesRoute",
+        "  snapshotRef: state/rsvp/snapshots/latest.json",
+        "  outboundStateRef: state/rsvp/outbound-state.json",
+        "  budgetRef: state/rsvp/spend-ledger.json",
+        "  idempotencyRef: state/rsvp/outbound-state.json",
+        "  liveSendEligible: false",
+        "  reportTitle: Active RSVP Update",
+        "  noChangesLabel: Quiet since last check.",
+        "---",
+        "",
+        "Active RSVP habit.",
+      ].join("\n"), "utf-8")
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({
+        title: "Active RSVP Update",
+        noChangesLabel: "Quiet since last check.",
+      }))
+      fs.rmSync(activeHabitPath, { force: true })
+
+      const titleOnlyHabitPath = path.join(habitsDir, "rsvp-title-only.md")
+      fs.writeFileSync(titleOnlyHabitPath, [
+        "---",
+        "title: Title Only RSVPs",
+        "status: active",
+        "rsvp:",
+        "  policyVersion: rsvp-habit/v1",
+        "  mode: shadow",
+        "  sense: bluebubbles",
+        "  source: aisleplanner",
+        "  routeRef: rsvp/config.json#bluebubblesRoute",
+        "  snapshotRef: state/rsvp/snapshots/latest.json",
+        "  outboundStateRef: state/rsvp/outbound-state.json",
+        "  budgetRef: state/rsvp/spend-ledger.json",
+        "  idempotencyRef: state/rsvp/outbound-state.json",
+        "  liveSendEligible: false",
+        "---",
+        "",
+        "Title-only RSVP habit.",
+      ].join("\n"), "utf-8")
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({
+        title: "Title Only RSVPs",
+      }))
+      fs.rmSync(titleOnlyHabitPath, { force: true })
+
+      fs.writeFileSync(path.join(habitsDir, "rsvp-broken.md"), [
+        "---",
+        "title: Broken RSVP",
+        "status: active",
+        "rsvp:",
+        "  policyVersion: rsvp-habit/v1",
+        "  mode: shadow",
+        "  channel: bluebubbles",
+        "---",
+        "",
+        "Broken RSVP habit.",
+      ].join("\n"), "utf-8")
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenLastCalledWith(expect.any(Object), {})
     } finally {
       tmp.cleanup()
     }
@@ -1557,6 +1729,7 @@ describe("ouro rsvp operational CLI wiring", () => {
     mockRuntimeCredentials()
     const tmp = createTmpBundle({ agentName: "slugger" })
     const outputPath = path.join(os.tmpdir(), `rsvp-habit-stage-${process.pid}-${Date.now()}.json`)
+    const defaultOutputPath = path.join(os.tmpdir(), `rsvp-habit-stage-default-${process.pid}-${Date.now()}.json`)
     const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
     try {
       const text = await runOuroCli([
@@ -1565,6 +1738,12 @@ describe("ouro rsvp operational CLI wiring", () => {
         "stage",
         "--agent",
         "slugger",
+        "--name",
+        "rsvp-wedding",
+        "--title",
+        "Wedding RSVPs",
+        "--report-title",
+        "Wedding RSVP Update",
         "--mode",
         "shadow",
         "--cadence",
@@ -1575,7 +1754,7 @@ describe("ouro rsvp operational CLI wiring", () => {
       ], deps)
       const parsed = JSON.parse(text)
       const written = JSON.parse(fs.readFileSync(outputPath, "utf-8"))
-      const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-ari-rachel.md")
+      const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-wedding.md")
       const habitContent = fs.readFileSync(habitPath, "utf-8")
 
       expect(parsed).toMatchObject({
@@ -1585,24 +1764,49 @@ describe("ouro rsvp operational CLI wiring", () => {
         agent: "slugger",
         mode: "shadow",
         habit: {
-          name: "rsvp-ari-rachel",
+          name: "rsvp-wedding",
           cadence: "0 10 * * *",
           rsvp: {
             policyVersion: "rsvp-habit/v1",
             mode: "shadow",
             sense: "bluebubbles",
             liveSendEligible: false,
+            reportTitle: "Wedding RSVP Update",
           },
         },
       })
       expect(written).toEqual(parsed)
+      expect(habitContent).toContain("title: Wedding RSVPs")
       expect(habitContent).toContain("tools: [rsvp_query, rsvp_summary]")
       expect(habitContent).toContain("sense: bluebubbles")
       expect(habitContent).toContain("snapshotRef: state/rsvp/snapshots/latest.json")
-      expect(habitContent).not.toMatch(/registered|planned|script, not slugger/i)
+
+      const defaultText = await runOuroCli([
+        "rsvp",
+        "habit",
+        "stage",
+        "--agent",
+        "slugger",
+        "--mode",
+        "shadow",
+        "--cadence",
+        "0 10 * * *",
+        "--output",
+        defaultOutputPath,
+        "--json",
+      ], deps)
+      const defaultParsed = JSON.parse(defaultText)
+      expect(defaultParsed).toMatchObject({
+        habit: {
+          name: "rsvp-updates",
+          rsvp: { reportTitle: "RSVP Updates" },
+        },
+      })
+      expect(fs.existsSync(path.join(tmp.agentRoot, "habits", "rsvp-updates.md"))).toBe(true)
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
       fs.rmSync(outputPath, { force: true })
+      fs.rmSync(defaultOutputPath, { force: true })
       tmp.cleanup()
     }
   })

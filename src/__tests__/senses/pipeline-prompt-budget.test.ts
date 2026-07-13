@@ -28,7 +28,7 @@ describe("pipeline-shaped prompt budgeting", () => {
       assistant("old answer " + "old ".repeat(80)),
       system([
         "Untrusted bluebubbles context for this same thread.",
-        "[bbmsg:chatabc:script] 2026-07-09T10:00:00.000Z Slugger: RSVP Update -- Ari & Rachel " + "guest ".repeat(90),
+        "[bbmsg:chatabc:script] 2026-07-09T10:00:00.000Z RSVP Agent: RSVP Update -- Wedding " + "guest ".repeat(90),
       ].join("\n")),
       system("## diagnostics\n" + "doctor detail ".repeat(100)),
       system("## habit receipt\nreceipt rsvp_2026_07_09 " + "receipt detail ".repeat(70)),

@@ -104,8 +104,8 @@ function makeNoCadenceHabit() {
 
 function makeRsvpHabit() {
   return {
-    name: "rsvp-ari-rachel",
-    title: "RSVP Ari & Rachel",
+    name: "rsvp-wedding",
+    title: "Wedding RSVPs",
     cadence: "0 10 * * *",
     status: "active" as const,
     lastRun: "2026-07-08T17:01:00.000Z",
@@ -465,7 +465,7 @@ describe("HabitScheduler", () => {
 
     it("fires fixed daily cron habits after their civil occurrence with a civil-date occurrence id", () => {
       const nowMs = new Date(2026, 6, 9, 10, 5, 0, 0).getTime()
-      const readdir = vi.fn(() => ["rsvp-ari-rachel.md"])
+      const readdir = vi.fn(() => ["rsvp-wedding.md"])
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile, now: vi.fn(() => nowMs) })
       mockParseHabitFile.mockReturnValueOnce(makeTypedRsvpHabit())
@@ -480,14 +480,14 @@ describe("HabitScheduler", () => {
 
       scheduler.start()
 
-      expect(onHabitFire).toHaveBeenCalledWith("rsvp-ari-rachel", "overdue", {
+      expect(onHabitFire).toHaveBeenCalledWith("rsvp-wedding", "overdue", {
         occurrenceId: "fixed-daily:2026-07-09T17:00:00.000Z:cadence:0 10 * * *",
       })
     })
 
     it("does not register active RSVP cron jobs unless typed RSVP metadata is present", () => {
       const nowMs = new Date(2026, 6, 9, 9, 55, 0, 0).getTime()
-      const readdir = vi.fn(() => ["rsvp-ari-rachel.md"])
+      const readdir = vi.fn(() => ["rsvp-wedding.md"])
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile, now: vi.fn(() => nowMs) })
       mockParseHabitFile.mockReturnValueOnce(makeRsvpHabit())
@@ -504,7 +504,7 @@ describe("HabitScheduler", () => {
 
       expect(cronManager.sync).toHaveBeenCalledWith([])
       expect(scheduler.getParseErrors()).toEqual([{
-        file: "rsvp-ari-rachel.md",
+        file: "rsvp-wedding.md",
         error: expect.stringMatching(/RSVP habit metadata/i),
       }])
       expect(onHabitFire).not.toHaveBeenCalled()
@@ -729,7 +729,7 @@ describe("HabitScheduler", () => {
       vi.useFakeTimers()
       const nowMs = new Date(2026, 6, 9, 9, 59, 0, 0).getTime()
       deps = makeDeps({
-        readdir: vi.fn(() => ["rsvp-ari-rachel.md"]),
+        readdir: vi.fn(() => ["rsvp-wedding.md"]),
         readFile: vi.fn(() => "content"),
         now: vi.fn(() => nowMs),
       })
@@ -748,11 +748,11 @@ describe("HabitScheduler", () => {
       scheduler.start()
       vi.advanceTimersByTime(60 * 1000)
 
-      expect(onHabitFire).toHaveBeenCalledWith("rsvp-ari-rachel", "overdue", {
-        occurrenceId: "timer:rsvp-ari-rachel:cadence:0 10 * * *:slot:2026-07-09T17:00:00.000Z",
+      expect(onHabitFire).toHaveBeenCalledWith("rsvp-wedding", "overdue", {
+        occurrenceId: "timer:rsvp-wedding:cadence:0 10 * * *:slot:2026-07-09T17:00:00.000Z",
       })
       expect(scheduler.getDegradedHabits()).toEqual([
-        { name: "rsvp-ari-rachel", reason: "cron registration failed — using timer fallback" },
+        { name: "rsvp-wedding", reason: "cron registration failed — using timer fallback" },
       ])
       scheduler.stop()
     })
@@ -827,7 +827,7 @@ describe("HabitScheduler", () => {
     it("records unknown timer slots when fixed cadence next-run computation is unavailable", () => {
       vi.useFakeTimers()
       deps = makeDeps({
-        readdir: vi.fn(() => ["rsvp-ari-rachel.md"]),
+        readdir: vi.fn(() => ["rsvp-wedding.md"]),
         readFile: vi.fn(() => "content"),
       })
       mockParseHabitFile.mockReturnValue(makeTypedRsvpHabit())
@@ -846,8 +846,8 @@ describe("HabitScheduler", () => {
       scheduler.start()
       vi.advanceTimersByTime(60 * 1000)
 
-      expect(onHabitFire).toHaveBeenCalledWith("rsvp-ari-rachel", "overdue", {
-        occurrenceId: "timer:rsvp-ari-rachel:cadence:0 10 * * *:slot:unknown",
+      expect(onHabitFire).toHaveBeenCalledWith("rsvp-wedding", "overdue", {
+        occurrenceId: "timer:rsvp-wedding:cadence:0 10 * * *:slot:unknown",
       })
       scheduler.stop()
     })
@@ -905,7 +905,7 @@ describe("HabitScheduler", () => {
     })
 
     it("does not list untyped RSVP habits as overdue", () => {
-      const readdir = vi.fn(() => ["rsvp-ari-rachel.md"])
+      const readdir = vi.fn(() => ["rsvp-wedding.md"])
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile })
       mockParseHabitFile.mockReturnValueOnce(makeRsvpHabit())
@@ -920,7 +920,7 @@ describe("HabitScheduler", () => {
 
       expect(scheduler.listOverdueHabits()).toEqual([])
       expect(scheduler.getParseErrors()).toEqual([{
-        file: "rsvp-ari-rachel.md",
+        file: "rsvp-wedding.md",
         error: "RSVP habit metadata is required before scheduling",
       }])
       expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()

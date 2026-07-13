@@ -2463,10 +2463,10 @@ describe("private runtime", () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
-      path.join(habitsDir, "rsvp-ari-rachel.md"),
+      path.join(habitsDir, "rsvp-wedding.md"),
       [
         "---",
-        "title: RSVP Ari & Rachel",
+        "title: Wedding RSVPs",
         "cadence: 0 10 * * *",
         "rsvp:",
         "  policyVersion: rsvp-habit/v1",
@@ -2489,7 +2489,7 @@ describe("private runtime", () => {
 
     await expect(runApprovedPrivateRuntimeTurn({
       reason: "habit",
-      habitName: "rsvp-ari-rachel",
+      habitName: "rsvp-wedding",
       now: () => new Date("2026-07-09T17:00:00.000Z"),
     })).rejects.toThrow(/RSVP habit metadata.*sense, not channel/i)
 

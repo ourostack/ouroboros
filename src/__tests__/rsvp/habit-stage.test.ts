@@ -8,17 +8,17 @@ import { stageRsvpHabit } from "../../rsvp/habit-stage"
 import { createTmpBundle } from "../test-helpers/tmpdir-bundle"
 
 describe("RSVP native habit staging", () => {
-  it("writes the Slugger RSVP habit as a native typed habit instead of a script placeholder", () => {
-    const tmp = createTmpBundle({ agentName: "slugger" })
+  it("writes a generic RSVP habit as a native typed habit instead of a script placeholder", () => {
+    const tmp = createTmpBundle({ agentName: "agent" })
     try {
       const result = stageRsvpHabit({
-        agent: "slugger",
+        agent: "agent",
         agentRoot: tmp.agentRoot,
         mode: "shadow",
         cadence: "0 10 * * *",
         now: new Date("2026-07-09T20:00:00.000Z"),
       })
-      const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-ari-rachel.md")
+      const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-updates.md")
       const outboundStatePath = path.join(tmp.agentRoot, "state", "rsvp", "outbound-state.json")
       const spendLedgerPath = path.join(tmp.agentRoot, "state", "rsvp", "spend-ledger.json")
       const content = fs.readFileSync(habitPath, "utf-8")
@@ -29,8 +29,8 @@ describe("RSVP native habit staging", () => {
       expect(result).toMatchObject({
         ok: true,
         sideEffect: true,
-        agent: "slugger",
-        habitName: "rsvp-ari-rachel",
+        agent: "agent",
+        habitName: "rsvp-updates",
         habitPath,
         mode: "shadow",
         cadence: "0 10 * * *",
@@ -45,11 +45,12 @@ describe("RSVP native habit staging", () => {
           budgetRef: "state/rsvp/spend-ledger.json",
           idempotencyRef: "state/rsvp/outbound-state.json",
           liveSendEligible: false,
+          reportTitle: "RSVP Updates",
         },
       })
       expect(parsed).toMatchObject({
-        name: "rsvp-ari-rachel",
-        title: "RSVP Ari & Rachel",
+        name: "rsvp-updates",
+        title: "RSVP Updates",
         cadence: "0 10 * * *",
         status: "active",
         tools: ["rsvp_query", "rsvp_summary"],
@@ -63,9 +64,9 @@ describe("RSVP native habit staging", () => {
           budgetRef: "state/rsvp/spend-ledger.json",
           idempotencyRef: "state/rsvp/outbound-state.json",
           liveSendEligible: false,
+          reportTitle: "RSVP Updates",
         },
       })
-      expect(content).not.toMatch(/beep boop|script, not slugger|no need to reply/i)
       expect(outboundState).toMatchObject({
         policyVersion: "rsvp-outbound-state/v1",
         updatedAt: "2026-07-09T20:00:00.000Z",
@@ -82,22 +83,61 @@ describe("RSVP native habit staging", () => {
     }
   })
 
-  it("uses the current time when no staging timestamp is injected", () => {
-    const tmp = createTmpBundle({ agentName: "slugger" })
+  it("lets the bundle own routine-specific naming and report title", () => {
+    const tmp = createTmpBundle({ agentName: "agent" })
     try {
       const result = stageRsvpHabit({
-        agent: "slugger",
+        agent: "agent",
+        agentRoot: tmp.agentRoot,
+        habitName: "rsvp-wedding",
+        title: "Wedding RSVPs",
+        reportTitle: "Wedding RSVP Update",
+        mode: "shadow",
+        cadence: "0 10 * * *",
+        now: new Date("2026-07-09T20:00:00.000Z"),
+      })
+      const content = fs.readFileSync(result.habitPath, "utf-8")
+
+      expect(result.name).toBe("rsvp-wedding")
+      expect(result.habitPath).toBe(path.join(tmp.agentRoot, "habits", "rsvp-wedding.md"))
+      expect(content).toContain("title: Wedding RSVPs")
+      expect(content).toContain("reportTitle: Wedding RSVP Update")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("uses the current time when no staging timestamp is injected", () => {
+    const tmp = createTmpBundle({ agentName: "agent" })
+    try {
+      const result = stageRsvpHabit({
+        agent: "agent",
         agentRoot: tmp.agentRoot,
         mode: "live",
         cadence: "0 10 * * *",
       })
       const content = fs.readFileSync(result.habitPath, "utf-8")
 
-      expect(result.name).toBe("rsvp-ari-rachel")
+      expect(result.name).toBe("rsvp-updates")
       expect(result.mode).toBe("live")
       expect(content).toMatch(/created: \d{4}-\d{2}-\d{2}T/)
       expect(content).toContain("mode: live")
       expect(content).toContain("tools: [rsvp_query, rsvp_summary]")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("rejects habit names outside the RSVP habit family", () => {
+    const tmp = createTmpBundle({ agentName: "agent" })
+    try {
+      expect(() => stageRsvpHabit({
+        agent: "agent",
+        agentRoot: tmp.agentRoot,
+        habitName: "rsvp",
+        mode: "shadow",
+        cadence: "0 10 * * *",
+      })).toThrow(/must start with rsvp-/)
     } finally {
       tmp.cleanup()
     }
