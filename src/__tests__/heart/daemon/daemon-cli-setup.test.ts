@@ -164,11 +164,24 @@ describe("ouro setup command", () => {
       const deps = createDefaultOuroCliDeps()
       deps.writeStdout = vi.fn()
 
-      await runOuroCli(["setup", "--tool", "codex", "--agent", "test-agent"], deps)
+      const result = await runOuroCli(["setup", "--tool", "codex", "--agent", "test-agent"], deps)
 
       expect(mockExecSync).toHaveBeenCalled()
       const calls = mockExecSync.mock.calls.map((c: any[]) => c[0])
       expect(calls.some((c: string) => c.includes("codex") && c.includes("mcp") && c.includes("add"))).toBe(true)
+      expect(result).toContain("reload required")
+      expect(result).toContain("fresh Codex session")
+    })
+
+    it("claude-code setup explains that existing MCP processes need a fresh session", async () => {
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      const result = await runOuroCli(["setup", "--tool", "claude-code", "--agent", "test-agent"], deps)
+
+      expect(result).toContain("reload required")
+      expect(result).toContain("fresh Claude Code session")
     })
 
     it("codex setup uses installed ouro command in dev mode", async () => {

@@ -33,6 +33,20 @@ export interface McpStatusCanaryResult {
   summary: string
   details: string[]
   parsed?: ParsedMcpStatus
+  repair?: McpBridgeRepairGuidance
+}
+
+export interface McpBridgeRepairGuidance {
+  actor: "agent-runnable"
+  commands: string[]
+  reload: string
+  verify: string
+}
+
+export interface McpDoctorNextSteps {
+  actor: "agent-runnable"
+  commands: string[]
+  note: string
 }
 
 const DEFAULT_CANARY_TIMEOUT_MS = 10_000
@@ -70,6 +84,70 @@ function parseFields(line: string): Record<string, string> {
   return parsed
 }
 
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9._/-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, "'\\''")}'`
+}
+
+export function buildMcpBridgeRepairGuidance(agent: string): McpBridgeRepairGuidance {
+  const agentArg = shellArg(agent)
+  return {
+    actor: "agent-runnable",
+    commands: [
+      `ouro setup --tool codex --agent ${agentArg}`,
+      `ouro setup --tool claude-code --agent ${agentArg}`,
+    ],
+    reload: "open a fresh dev-tool session after setup; existing MCP processes keep their old runtime",
+    verify: `ouro mcp doctor --agent ${agentArg}`,
+  }
+}
+
+export function formatMcpBridgeRepairDetails(repair: McpBridgeRepairGuidance): string[] {
+  return [
+    `repair actor=${repair.actor}`,
+    ...repair.commands.map((command) => `repair command=${command}`),
+    `reload required: ${repair.reload}`,
+    `verify command=${repair.verify}`,
+  ]
+}
+
+export function buildMcpDoctorNextSteps(result: Pick<McpStatusCanaryResult, "summary" | "details">, agent: string): McpDoctorNextSteps {
+  const agentArg = shellArg(agent)
+  const text = [result.summary, ...result.details].join("\n")
+  const daemonUnreachable = text.includes("daemon=unreachable")
+    || text.includes("ECONNREFUSED")
+    || text.includes("ENOENT")
+  if (daemonUnreachable) {
+    return {
+      actor: "agent-runnable",
+      commands: [
+        "ouro up",
+        `ouro mcp doctor --agent ${agentArg}`,
+      ],
+      note: "start or refresh the daemon before trusting bridge status",
+    }
+  }
+  return {
+    actor: "agent-runnable",
+    commands: [
+      "ouro doctor",
+      `ouro status --agent ${agentArg}`,
+      `ouro repair --agent ${agentArg}`,
+      `ouro mcp doctor --agent ${agentArg}`,
+    ],
+    note: "fix reported daemon or sense health before rerunning bridge registration repair",
+  }
+}
+
+export function formatMcpDoctorNextStepDetails(nextSteps: McpDoctorNextSteps): string[] {
+  return [
+    `next actor=${nextSteps.actor}`,
+    ...nextSteps.commands.map((command) => `next command=${command}`),
+    `next note=${nextSteps.note}`,
+  ]
+}
+
 export function parseMcpStatusText(text: string): ParsedMcpStatus {
   const daemon: Record<string, string> = {}
   const senses: Record<string, Record<string, string>> = {}
@@ -95,7 +173,7 @@ export function parseMcpStatusText(text: string): ParsedMcpStatus {
 function validateMcpStatus(
   parsed: ParsedMcpStatus,
   requiredSenses: string[],
-  options: Pick<McpStatusCanaryOptions, "ignoreOverviewHealth"> = {},
+  options: Partial<Pick<McpStatusCanaryOptions, "ignoreOverviewHealth" | "agent">> = {},
 ): McpStatusCanaryResult {
   const failures: string[] = []
   if (parsed.daemon.daemon !== "running") {
@@ -104,11 +182,12 @@ function validateMcpStatus(
   if (!options.ignoreOverviewHealth && parsed.daemon.health !== "ok") {
     failures.push(`health=${parsed.daemon.health ?? "missing"}`)
   }
-  if (
+  const hasVersionMismatch = !!(
     parsed.daemon.daemonVersion &&
     parsed.daemon.mcpVersion &&
     parsed.daemon.daemonVersion !== parsed.daemon.mcpVersion
-  ) {
+  )
+  if (hasVersionMismatch) {
     failures.push(`version mismatch daemon=${parsed.daemon.daemonVersion} mcp=${parsed.daemon.mcpVersion}`)
   }
 
@@ -135,12 +214,17 @@ function validateMcpStatus(
   const summary = failures.length === 0
     ? `mcp canary ok: daemon=${parsed.daemon.daemon} health=${parsed.daemon.health}${options.ignoreOverviewHealth ? " (overview ignored)" : ""} senses=${senseSummary}`
     : `mcp canary failed: ${failures.join("; ")}`
+  const repair = hasVersionMismatch && options.agent
+    ? buildMcpBridgeRepairGuidance(options.agent)
+    : undefined
+  const repairDetails = repair ? formatMcpBridgeRepairDetails(repair) : []
 
   return {
     ok: failures.length === 0,
     summary,
-    details: failures.length === 0 ? [parsed.raw] : [...failures, parsed.raw],
+    details: failures.length === 0 ? [parsed.raw] : [...failures, ...repairDetails, parsed.raw],
     parsed,
+    ...(repair ? { repair } : {}),
   }
 }
 
@@ -256,6 +340,7 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     }
     const parsed = parseMcpStatusText(responseText(statusResponse))
     const canary = validateMcpStatus(parsed, requiredSenses, {
+      agent: options.agent,
       ignoreOverviewHealth: options.ignoreOverviewHealth,
     })
     emitNervesEvent({
@@ -288,6 +373,28 @@ export function formatMcpStatusCanaryResult(result: McpStatusCanaryResult): stri
     result.summary,
     ...result.details.map((line) => `  ${line}`),
   ].join("\n")
+}
+
+export function formatMcpStatusDoctorResult(result: McpStatusCanaryResult, agent: string): string {
+  const rawDetails = result.details.filter((line) =>
+    !line.startsWith("repair ")
+    && !line.startsWith("reload required:")
+    && !line.startsWith("verify command="),
+  )
+  const lines = [
+    result.ok ? "mcp doctor: ok" : "mcp doctor: failed",
+    result.summary,
+    ...rawDetails.map((line) => `  ${line}`),
+  ]
+  if (result.ok || result.repair) {
+    const repair = result.repair ?? buildMcpBridgeRepairGuidance(agent)
+    lines.push("bridge registration path:")
+    lines.push(...formatMcpBridgeRepairDetails(repair).map((line) => `  ${line}`))
+  } else {
+    lines.push("next checks:")
+    lines.push(...formatMcpDoctorNextStepDetails(buildMcpDoctorNextSteps(result, agent)).map((line) => `  ${line}`))
+  }
+  return lines.join("\n")
 }
 
 export function createMcpStatusCanaryProbe(options: Omit<McpStatusCanaryOptions, "spawnImpl">): SenseProbe {

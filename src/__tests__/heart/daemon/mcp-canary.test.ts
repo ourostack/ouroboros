@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest"
 import { EventEmitter, PassThrough } from "node:stream"
 import type { ChildProcess, SpawnOptionsWithoutStdio } from "child_process"
 import {
+  buildMcpBridgeRepairGuidance,
   createMcpStatusCanaryProbe,
+  formatMcpStatusDoctorResult,
   formatMcpStatusCanaryResult,
   parseMcpStatusText,
   runMcpStatusCanary,
@@ -223,6 +225,17 @@ describe("mcp canary", () => {
     expect(result.summary).toContain("version mismatch daemon=2 mcp=1")
     expect(result.summary).toContain("required sense missing: bluebubbles")
     expect(result.summary).toContain("required sense unhealthy: mail:disabled")
+    expect(result.repair).toMatchObject({
+      actor: "agent-runnable",
+      commands: [
+        "ouro setup --tool codex --agent slugger",
+        "ouro setup --tool claude-code --agent slugger",
+      ],
+    })
+    expect(result.details).toContain("repair actor=agent-runnable")
+    expect(result.details).toContain("repair command=ouro setup --tool codex --agent slugger")
+    expect(result.details).toContain("repair command=ouro setup --tool claude-code --agent slugger")
+    expect(result.details).toContain("reload required: open a fresh dev-tool session after setup; existing MCP processes keep their old runtime")
   })
 
   it("uses the default node command and socket args when command args are omitted", async () => {
@@ -407,5 +420,71 @@ describe("mcp canary", () => {
       summary: "mcp canary failed: health=warn",
       details: ["health=warn"],
     })).toContain("mcp canary: failed")
+  })
+
+  it("formats doctor output with the any-agent repair path", () => {
+    const output = formatMcpStatusDoctorResult({
+      ok: true,
+      summary: "mcp canary ok",
+      details: ["daemon=running"],
+    }, "slugger")
+
+    expect(output).toContain("mcp doctor: ok")
+    expect(output).toContain("ouro setup --tool codex --agent slugger")
+    expect(output).toContain("ouro setup --tool claude-code --agent slugger")
+    expect(output).toContain("open a fresh dev-tool session")
+  })
+
+  it("formats failed doctor output without duplicating embedded repair lines", () => {
+    const output = formatMcpStatusDoctorResult({
+      ok: false,
+      summary: "mcp canary failed: version mismatch daemon=2 mcp=1",
+      details: [
+        "version mismatch daemon=2 mcp=1",
+        "repair actor=agent-runnable",
+        "repair command=ouro setup --tool codex --agent slugger",
+        "reload required: open a fresh dev-tool session after setup; existing MCP processes keep their old runtime",
+        "verify command=ouro mcp doctor --agent slugger",
+      ],
+      repair: buildMcpBridgeRepairGuidance("slugger"),
+    }, "slugger")
+
+    expect(output).toContain("mcp doctor: failed")
+    expect(output.match(/repair actor=agent-runnable/g)).toHaveLength(1)
+    expect(output).toContain("version mismatch daemon=2 mcp=1")
+  })
+
+  it("formats non-bridge doctor failures with daemon health next steps instead of setup", () => {
+    const output = formatMcpStatusDoctorResult({
+      ok: false,
+      summary: "mcp canary failed: daemon=unreachable; health=missing",
+      details: ["daemon=unreachable\terror=transport closed"],
+    }, "slugger")
+
+    expect(output).toContain("mcp doctor: failed")
+    expect(output).toContain("next checks:")
+    expect(output).toContain("next command=ouro up")
+    expect(output).toContain("next command=ouro mcp doctor --agent slugger")
+    expect(output).not.toContain("ouro setup --tool")
+  })
+
+  it("formats non-bridge doctor failures with general diagnostics when the daemon is reachable", () => {
+    const output = formatMcpStatusDoctorResult({
+      ok: false,
+      summary: "mcp canary failed: health=warn",
+      details: ["health=warn"],
+    }, "slugger")
+
+    expect(output).toContain("next command=ouro doctor")
+    expect(output).toContain("next command=ouro status --agent slugger")
+    expect(output).toContain("next command=ouro repair --agent slugger")
+    expect(output).not.toContain("bridge registration path:")
+  })
+
+  it("quotes unusual agent names in repair commands", () => {
+    const repair = buildMcpBridgeRepairGuidance("odd agent's")
+
+    expect(repair.commands[0]).toContain("ouro setup --tool codex --agent 'odd agent'\\''s'")
+    expect(repair.verify).toBe("ouro mcp doctor --agent 'odd agent'\\''s'")
   })
 })
