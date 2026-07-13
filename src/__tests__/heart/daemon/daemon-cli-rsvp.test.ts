@@ -13,6 +13,18 @@ const mockBlueBubblesClient = vi.hoisted(() => ({
 }))
 
 const mockRuntimeCredentialConfig = vi.hoisted(() => ({
+  readRuntimeCredentialConfig: vi.fn((agentName: string) => ({
+    ok: false,
+    reason: "missing",
+    itemPath: `vault:${agentName}:runtime/config`,
+    error: `no runtime credentials loaded for ${agentName}`,
+  })),
+  readMachineRuntimeCredentialConfig: vi.fn((agentName: string) => ({
+    ok: false,
+    reason: "missing",
+    itemPath: `vault:${agentName}:runtime/machines/<this-machine>/config`,
+    error: `no machine runtime credentials loaded for ${agentName}`,
+  })),
   refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => ({
     ok: false,
     reason: "missing",
@@ -39,6 +51,8 @@ vi.mock("../../../heart/runtime-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
   return {
     ...actual,
+    readRuntimeCredentialConfig: mockRuntimeCredentialConfig.readRuntimeCredentialConfig,
+    readMachineRuntimeCredentialConfig: mockRuntimeCredentialConfig.readMachineRuntimeCredentialConfig,
     refreshRuntimeCredentialConfig: mockRuntimeCredentialConfig.refreshRuntimeCredentialConfig,
     refreshMachineRuntimeCredentialConfig: mockRuntimeCredentialConfig.refreshMachineRuntimeCredentialConfig,
   }
@@ -164,6 +178,8 @@ function seedRsvpOperationalBundle(): ReturnType<typeof createTmpBundle> {
 afterEach(() => {
   mockRsvpConfig.importLegacyRsvpConfig.mockReset()
   mockBlueBubblesClient.sendText.mockClear()
+  mockRuntimeCredentialConfig.readRuntimeCredentialConfig.mockClear()
+  mockRuntimeCredentialConfig.readMachineRuntimeCredentialConfig.mockClear()
   mockRuntimeCredentialConfig.refreshRuntimeCredentialConfig.mockClear()
   mockRuntimeCredentialConfig.refreshMachineRuntimeCredentialConfig.mockClear()
 })

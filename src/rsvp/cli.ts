@@ -8,7 +8,13 @@ import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
-import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig, type RuntimeCredentialConfigReadResult } from "../heart/runtime-credentials"
+import {
+  readMachineRuntimeCredentialConfig,
+  readRuntimeCredentialConfig,
+  refreshMachineRuntimeCredentialConfig,
+  refreshRuntimeCredentialConfig,
+  type RuntimeCredentialConfigReadResult,
+} from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBlueBubblesClient } from "../senses/bluebubbles/client"
 import type { BlueBubblesChatRef } from "../senses/bluebubbles/model"
@@ -243,6 +249,16 @@ function resolveLatestSnapshot(agentRoot: string): { ok: true; snapshot: RsvpSna
 
 function machineIdForCli(): string {
   return loadOrCreateMachineIdentity().machineId
+}
+
+async function resolveRsvpRuntimeCredentialConfig(agent: string): Promise<RuntimeCredentialConfigReadResult> {
+  const cached = readRuntimeCredentialConfig(agent)
+  return cached.ok ? cached : refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+}
+
+async function resolveRsvpMachineRuntimeCredentialConfig(agent: string): Promise<RuntimeCredentialConfigReadResult> {
+  const cached = readMachineRuntimeCredentialConfig(agent)
+  return cached.ok ? cached : refreshMachineRuntimeCredentialConfig(agent, machineIdForCli(), { preserveCachedOnFailure: true })
 }
 
 function blueBubblesChatFor(config: { bluebubblesRoute: { chatGuid: string; chatIdentifier?: string } }): BlueBubblesChatRef {
@@ -591,8 +607,8 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
       result: configResult as unknown as JsonValue,
     })
   }
-  const runtimeConfig = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
-  const machineRuntimeConfig = await refreshMachineRuntimeCredentialConfig(command.agent, machineIdForCli(), { preserveCachedOnFailure: true })
+  const runtimeConfig = await resolveRsvpRuntimeCredentialConfig(command.agent)
+  const machineRuntimeConfig = await resolveRsvpMachineRuntimeCredentialConfig(command.agent)
   const readiness = validateRsvpReadiness({
     agent: command.agent,
     agentRoot,
@@ -782,7 +798,7 @@ async function executeSmoke(command: RsvpSmokeCommand, deps: OuroCliDeps): Promi
   const sendAllowed = wantsLiveSend
   let delivery: JsonValue | undefined
   if (sendAllowed) {
-    const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, await refreshMachineRuntimeCredentialConfig(command.agent, machineIdForCli(), { preserveCachedOnFailure: true }))
+    const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, await resolveRsvpMachineRuntimeCredentialConfig(command.agent))
     const sent = await createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig).sendText({
       chat: blueBubblesChatFor(configResult.config),
       text: answer.text,

@@ -5,20 +5,30 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 const mockMachineRuntimeConfig = vi.hoisted(() => ({
+  readResult: undefined as any,
   result: undefined as any,
-}))
-
-vi.mock("../../heart/machine-identity", () => ({
   loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine_test" })),
-}))
-
-vi.mock("../../heart/runtime-credentials", () => ({
+  readMachineRuntimeCredentialConfig: vi.fn(() => mockMachineRuntimeConfig.readResult ?? {
+    ok: false,
+    reason: "missing",
+    itemPath: "vault:slugger:runtime/machines/<this-machine>/config",
+    error: "missing cached machine config",
+  }),
   refreshMachineRuntimeCredentialConfig: vi.fn(async () => mockMachineRuntimeConfig.result ?? {
     ok: false,
     reason: "missing",
     itemPath: "vault:slugger:runtime/machines/machine_test/config",
     error: "missing machine config",
   }),
+}))
+
+vi.mock("../../heart/machine-identity", () => ({
+  loadOrCreateMachineIdentity: mockMachineRuntimeConfig.loadOrCreateMachineIdentity,
+}))
+
+vi.mock("../../heart/runtime-credentials", () => ({
+  readMachineRuntimeCredentialConfig: mockMachineRuntimeConfig.readMachineRuntimeCredentialConfig,
+  refreshMachineRuntimeCredentialConfig: mockMachineRuntimeConfig.refreshMachineRuntimeCredentialConfig,
 }))
 
 import {
@@ -136,7 +146,11 @@ function expectRedacted(value: unknown): void {
 }
 
 afterEach(() => {
+  mockMachineRuntimeConfig.readResult = undefined
   mockMachineRuntimeConfig.result = undefined
+  mockMachineRuntimeConfig.loadOrCreateMachineIdentity.mockClear()
+  mockMachineRuntimeConfig.readMachineRuntimeCredentialConfig.mockClear()
+  mockMachineRuntimeConfig.refreshMachineRuntimeCredentialConfig.mockClear()
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -209,6 +223,85 @@ describe("RSVP legacy cutover checks", () => {
       denialReasons: [],
     })
     expectRedacted(report)
+  })
+
+  it("uses cached native BlueBubbles machine config for the default cutover credential check", async () => {
+    const { legacyRoot } = makeLegacyRoot({ sendEnabled: false })
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 }))
+    mockMachineRuntimeConfig.readResult = {
+      ok: true,
+      config: {
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret" },
+        bluebubblesChannel: { requestTimeoutMs: 12_345 },
+      },
+    }
+
+    const report = await checkRsvpCutover({
+      agent: "slugger",
+      legacyRoot,
+      deps: baseFsDeps({
+        getLaunchAgentState: vi.fn(async () => ({
+          label: legacyLabel,
+          loaded: false,
+          source: "injected",
+        })),
+        getLegacyProcessState: vi.fn(async () => ({
+          running: false,
+          count: 0,
+          source: "injected",
+        })),
+        fetchImpl,
+      }),
+    })
+
+    expect(report).toMatchObject({
+      sendAllowed: true,
+      checks: {
+        nativeBlueBubblesCredentialHealthy: true,
+      },
+    })
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:1234/api/v1/message/count?password=secret",
+      expect.objectContaining({ method: "GET" }),
+    )
+    expect(mockMachineRuntimeConfig.readMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger")
+    expect(mockMachineRuntimeConfig.loadOrCreateMachineIdentity).not.toHaveBeenCalled()
+    expect(mockMachineRuntimeConfig.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
+  })
+
+  it("refreshes native BlueBubbles machine config only when no cached cutover config is loaded", async () => {
+    const { legacyRoot } = makeLegacyRoot({ sendEnabled: false })
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 }))
+    mockMachineRuntimeConfig.result = {
+      ok: true,
+      config: {
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "secret" },
+        bluebubblesChannel: { requestTimeoutMs: 12_345 },
+      },
+    }
+
+    const report = await checkRsvpCutover({
+      agent: "slugger",
+      legacyRoot,
+      deps: baseFsDeps({
+        getLaunchAgentState: vi.fn(async () => ({
+          label: legacyLabel,
+          loaded: false,
+          source: "injected",
+        })),
+        getLegacyProcessState: vi.fn(async () => ({
+          running: false,
+          count: 0,
+          source: "injected",
+        })),
+        fetchImpl,
+      }),
+    })
+
+    expect(report.sendAllowed).toBe(true)
+    expect(mockMachineRuntimeConfig.readMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger")
+    expect(mockMachineRuntimeConfig.loadOrCreateMachineIdentity).toHaveBeenCalledTimes(1)
+    expect(mockMachineRuntimeConfig.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", "machine_test", { preserveCachedOnFailure: true })
   })
 
   it("uses the default process uid when probing launchd without injected cutover deps", async () => {
