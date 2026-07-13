@@ -23,6 +23,9 @@ const bwHarness = vi.hoisted(() => {
     listAllCalls: 0,
     failListAllAtCall: 0,
     failNextListAllWith: null as string | null,
+    searchItemCalls: 0,
+    failSearchAtCall: 0,
+    failNextSearchWith: null as string | null,
     createCalls: 0,
     failCreateAtCall: 0,
     failNextCreateWith: null as string | null,
@@ -40,6 +43,9 @@ const bwHarness = vi.hoisted(() => {
       this.listAllCalls = 0
       this.failListAllAtCall = 0
       this.failNextListAllWith = null
+      this.searchItemCalls = 0
+      this.failSearchAtCall = 0
+      this.failNextSearchWith = null
       this.createCalls = 0
       this.failCreateAtCall = 0
       this.failNextCreateWith = null
@@ -156,6 +162,13 @@ function installBwExecHarness(): void {
         return
       }
       if (args.includes("--search")) {
+        bwHarness.searchItemCalls += 1
+        if (bwHarness.failNextSearchWith && bwHarness.searchItemCalls === bwHarness.failSearchAtCall) {
+          const failure = bwHarness.failNextSearchWith
+          bwHarness.failNextSearchWith = null
+          cb(new Error("Command failed: bw list items"), "", failure)
+          return
+        }
         const domain = args[args.length - 1]!
         const item = bwHarness.items.get(domain)
         cb(null, JSON.stringify(item ? [item] : []), "")
@@ -428,8 +441,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
   it("surfaces a clear post-save refresh failure when the vault write succeeded but the snapshot reload did not", async () => {
     installBwExecHarness()
-    bwHarness.failNextGetWith = "access denied by vault policy"
-    bwHarness.failGetAtCall = 3
+    bwHarness.failNextSearchWith = "access denied by vault policy"
+    bwHarness.failSearchAtCall = 3
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
