@@ -357,6 +357,163 @@ describe("sense context packets", () => {
     expect(serialized).not.toContain("iMessage;-;chat-secret-guid")
   })
 
+  it("sorts context packet summaries by anchor timestamp when createdAt is unavailable", async () => {
+    const { listSenseContextPacketSummaries } = await import("../../senses/context-packet-ledger")
+    const ledgerPath = path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "ledger.jsonl")
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true })
+    const row = (packetId: string, anchorTimestamp: string, createdAt: string) => ({
+      schemaVersion: 1,
+      policyVersion: "sense-context-packet/v1",
+      packetId,
+      sense: "bluebubbles",
+      agent: "slugger",
+      chatKeyHash: "chat-hash-abcdef123456",
+      anchorMessageGuid: `${packetId}-anchor`,
+      anchorTimestamp,
+      createdAt,
+      packetPath: path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "2026-07", `${packetId}.json`),
+      receiptPath: path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "receipts", `${packetId}.json`),
+      messageCount: 1,
+      sourceRefs: [`bbmsg:chat-hash-ab:${packetId}`],
+      bodyHashes: ["sha256:abc"],
+      rawBodyStored: false,
+      privacyClass: "private-runtime",
+      omittedMessages: 0,
+      truncatedMessages: 0,
+    })
+    fs.writeFileSync(ledgerPath, [
+      JSON.stringify(row("scp_older", "2026-07-09T17:00:00.000Z", "")),
+      JSON.stringify(row("scp_newer", "2026-07-09T19:00:00.000Z", "")),
+    ].join("\n") + "\n", "utf-8")
+
+    const summaries = listSenseContextPacketSummaries(agentRoot)
+
+    expect(summaries.items.map((item) => item.packetId)).toEqual(["scp_newer", "scp_older"])
+    expect(summaries.limit).toBe(20)
+  })
+
+  it("skips context packet sense entries that cannot be statted during discovery", async () => {
+    const { listSenseContextPacketSummaries } = await import("../../senses/context-packet-ledger")
+    const contextRoot = path.join(agentRoot, "state", "senses", "context-packets")
+    expect(listSenseContextPacketSummaries(agentRoot)).toEqual({
+      totalCount: 0,
+      limit: 20,
+      items: [],
+    })
+    fs.mkdirSync(contextRoot, { recursive: true })
+    fs.symlinkSync(path.join(agentRoot, "missing-context-packet-sense"), path.join(contextRoot, "broken-sense"))
+
+    expect(listSenseContextPacketSummaries(agentRoot)).toEqual({
+      totalCount: 0,
+      limit: 20,
+      items: [],
+    })
+  })
+
+  it("uses ledger fallbacks for packet detail metadata and rejects mismatched packet files", async () => {
+    const {
+      listSenseContextPacketSummaries,
+      readSenseContextPacketView,
+    } = await import("../../senses/context-packet-ledger")
+    const ledgerPath = path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "ledger.jsonl")
+    const packetDir = path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "2026-07")
+    fs.mkdirSync(packetDir, { recursive: true })
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true })
+    const fallbackPath = path.join(packetDir, "scp_fallback.json")
+    const mismatchPath = path.join(packetDir, "scp_mismatch.json")
+    fs.writeFileSync(fallbackPath, JSON.stringify({
+      packetId: "scp_fallback",
+      privacyClass: "unexpected",
+      messages: [{
+        timestamp: "2026-07-09T19:20:00.000Z",
+        authorLabel: "RSVP script",
+        bodyHash: "sha256:abc",
+        bodyPreview: "token=secret-value",
+        sourceRef: blueBubblesRef("fallback-guid", 4),
+        renderedSourceRef: "bbmsg:chat-hash-ab:fallback-guid",
+      }],
+      omittedMessages: "bad",
+      truncatedMessages: "bad",
+    }), "utf-8")
+    fs.writeFileSync(mismatchPath, JSON.stringify({
+      packetId: "scp_other",
+      messages: [],
+    }), "utf-8")
+    const row = (packetId: string, packetPath: string, anchorTimestamp: string, createdAt: string) => ({
+      schemaVersion: 1,
+      policyVersion: "sense-context-packet/v1",
+      packetId,
+      sense: "bluebubbles",
+      agent: "slugger",
+      chatKeyHash: "chat-hash-abcdef123456",
+      anchorMessageGuid: `${packetId}-anchor`,
+      anchorTimestamp,
+      createdAt,
+      packetPath,
+      receiptPath: path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "receipts", `${packetId}.json`),
+      messageCount: 1,
+      sourceRefs: [`bbmsg:chat-hash-ab:${packetId}`],
+      bodyHashes: ["sha256:abc"],
+      rawBodyStored: false,
+      privacyClass: "private-runtime",
+      omittedMessages: 7,
+      truncatedMessages: 8,
+    })
+    fs.writeFileSync(ledgerPath, [
+      JSON.stringify(row("scp_fallback", fallbackPath, "2026-07-09T19:20:00.000Z", "not-a-date")),
+      JSON.stringify(row("scp_mismatch", mismatchPath, "2026-07-09T18:20:00.000Z", "2026-07-09T18:21:00.000Z")),
+    ].join("\n") + "\n", "utf-8")
+
+    expect(listSenseContextPacketSummaries(agentRoot, { sense: "bluebubbles" }).items.map((item) => item.packetId))
+      .toEqual(["scp_mismatch", "scp_fallback"])
+    expect(readSenseContextPacketView(agentRoot, "scp_mismatch")).toBeNull()
+
+    const view = readSenseContextPacketView(agentRoot, "scp_fallback")
+
+    expect(view?.packet).toMatchObject({
+      packetId: "scp_fallback",
+      sense: "bluebubbles",
+      agent: "slugger",
+      privacyClass: "private-runtime",
+      omittedMessages: 7,
+      truncatedMessages: 8,
+      messages: [expect.objectContaining({
+        bodyPreview: "token=[redacted]",
+        sourceRef: expect.not.objectContaining({ chatGuid: expect.any(String) }),
+      })],
+    })
+
+    const stringErrorPath = path.join(packetDir, "scp_string_error.json")
+    const stringErrorPacket = JSON.stringify({ packetId: "scp_string_error", messages: [] })
+    fs.writeFileSync(stringErrorPath, stringErrorPacket, "utf-8")
+    fs.appendFileSync(ledgerPath, `${JSON.stringify(row(
+      "scp_string_error",
+      stringErrorPath,
+      "2026-07-09T20:20:00.000Z",
+      "2026-07-09T20:21:00.000Z",
+    ))}\n`, "utf-8")
+    const originalJsonParse = JSON.parse
+    const parseSpy = vi.spyOn(JSON, "parse").mockImplementation(((text: string, ...args: unknown[]) => {
+      if (text === stringErrorPacket) throw "string parse failure"
+      return (originalJsonParse as any)(text, ...args)
+    }) as any)
+
+    try {
+      expect(readSenseContextPacketView(agentRoot, "scp_string_error")).toBeNull()
+    } finally {
+      parseSpy.mockRestore()
+    }
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.context_packet_read_error",
+      meta: expect.objectContaining({
+        packetId: "scp_string_error",
+        reason: "string parse failure",
+      }),
+    }))
+  })
+
   it("returns null for missing, unsafe, or escaped context packet detail reads", async () => {
     const { buildSenseContextPacket } = await import("../../senses/context-packets")
     const {
@@ -395,6 +552,38 @@ describe("sense context packets", () => {
     })}\n`, "utf-8")
 
     expect(readSenseContextPacketView(agentRoot, "scp_unsafe")).toBeNull()
+
+    const brokenPath = path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "2026-07", "scp_broken.json")
+    fs.mkdirSync(path.dirname(brokenPath), { recursive: true })
+    fs.writeFileSync(brokenPath, "{bad json", "utf-8")
+    fs.appendFileSync(ledgerPath, `${JSON.stringify({
+      schemaVersion: 1,
+      policyVersion: "sense-context-packet/v1",
+      packetId: "scp_broken",
+      sense: "bluebubbles",
+      agent: "slugger",
+      chatKeyHash: "chat-hash-abcdef123456",
+      anchorMessageGuid: "anchor",
+      anchorTimestamp: "2026-07-09T19:23:00.000Z",
+      createdAt: "2026-07-09T19:24:00.000Z",
+      packetPath: brokenPath,
+      receiptPath: path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "receipts", "scp_broken.json"),
+      messageCount: 1,
+      sourceRefs: ["bbmsg:chat-hash-ab:anchor"],
+      bodyHashes: ["sha256:abc"],
+      rawBodyStored: false,
+      privacyClass: "private-runtime",
+      omittedMessages: 0,
+      truncatedMessages: 0,
+    })}\n`, "utf-8")
+
+    expect(readSenseContextPacketView(agentRoot, "scp_broken")).toBeNull()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.context_packet_read_error",
+      meta: expect.objectContaining({ packetId: "scp_broken" }),
+    }))
   })
 
   it("handles malformed timestamps, missing row ids, tight render budgets, and exported refs", async () => {

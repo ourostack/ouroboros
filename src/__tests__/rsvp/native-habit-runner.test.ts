@@ -400,6 +400,153 @@ describe("native RSVP habit runner", () => {
     }
   })
 
+  it("records failed live delivery attempts and malformed outbound decisions in generic trace steps", async () => {
+    const tmp = seedRsvpHabit("live")
+    const runRefresh = vi.fn(async () => JSON.stringify({
+      ok: true,
+      command: "rsvp.refresh",
+      sideEffect: true,
+      agent: "slugger",
+      mode: "live",
+      message: "RSVP refresh completed",
+      sendAllowed: true,
+      refresh: {
+        snapshotId: "snap-live-failed-delivery",
+        reportText: "RSVP Update -- Wedding",
+        outboundDecision: { action: 12 },
+        delivery: {
+          status: "failed",
+          error: "BlueBubbles rejected the send",
+        },
+      },
+    }))
+
+    try {
+      const result = await runNativeRsvpHabit({
+        agent: "slugger",
+        bundlesRoot: tmp.bundlesRoot,
+        habitName: "rsvp-wedding",
+        trigger: "launchd",
+        now: () => "2026-07-12T17:00:05.000Z",
+        runRefresh,
+      })
+
+      expect(result).toMatchObject({
+        ok: true,
+        lifecycle: "completed",
+      })
+      const receipt = listHabitRunReceipts(tmp.agentRoot)[0]
+      expect(receipt).toMatchObject({
+        surfaceAttempts: [
+          expect.objectContaining({
+            channel: "bluebubbles",
+            result: "failed",
+            rawStatus: "failed",
+            error: "BlueBubbles rejected the send",
+          }),
+        ],
+        traceSteps: expect.arrayContaining([
+          expect.objectContaining({
+            stepId: "decision",
+            decisions: ["mode=live", "sendAllowed=true", "outboundAction=unknown"],
+          }),
+          expect.objectContaining({
+            stepId: "surface-attempt",
+            kind: "surface_attempt",
+            status: "failed",
+            surfaceAttempt: expect.objectContaining({
+              result: "failed",
+              error: "BlueBubbles rejected the send",
+            }),
+          }),
+          expect.objectContaining({
+            stepId: "send",
+            kind: "send",
+            status: "failed",
+          }),
+        ]),
+      })
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("maps optional live delivery status variants into surface attempt evidence", async () => {
+    const noDelivery = seedRsvpHabit("live")
+    const queuedDelivery = seedRsvpHabit("live")
+    const messageOnlyFailure = seedRsvpHabit("live")
+    const statusOnlyFailure = seedRsvpHabit("live")
+
+    const runWithPayload = (payload: Record<string, unknown>) => runNativeRsvpHabit({
+      agent: "slugger",
+      bundlesRoot: payload.bundlesRoot as string,
+      habitName: "rsvp-wedding",
+      trigger: "launchd",
+      now: () => "2026-07-12T17:00:05.000Z",
+      runRefresh: async () => JSON.stringify(payload.refreshPayload),
+    })
+    const refreshPayload = (delivery?: Record<string, unknown>) => ({
+      ok: true,
+      command: "rsvp.refresh",
+      sideEffect: true,
+      agent: "slugger",
+      mode: "live",
+      message: "RSVP refresh completed",
+      sendAllowed: true,
+      refresh: {
+        snapshotId: "snap-live-delivery-status",
+        reportText: "RSVP Update -- Wedding",
+        outboundDecision: { action: "send" },
+        ...(delivery ? { delivery } : {}),
+      },
+    })
+
+    try {
+      await runWithPayload({
+        bundlesRoot: noDelivery.bundlesRoot,
+        refreshPayload: refreshPayload(),
+      })
+      expect(listHabitRunReceipts(noDelivery.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "sent",
+      }))
+      expect(listHabitRunReceipts(noDelivery.agentRoot)[0].surfaceAttempts[0]).not.toHaveProperty("rawStatus")
+
+      await runWithPayload({
+        bundlesRoot: queuedDelivery.bundlesRoot,
+        refreshPayload: refreshPayload({ status: "queued" }),
+      })
+      expect(listHabitRunReceipts(queuedDelivery.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "sent",
+        rawStatus: "queued",
+      }))
+
+      await runWithPayload({
+        bundlesRoot: messageOnlyFailure.bundlesRoot,
+        refreshPayload: refreshPayload({ result: "error", message: "provider returned an error" }),
+      })
+      expect(listHabitRunReceipts(messageOnlyFailure.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "failed",
+        rawStatus: "error",
+        error: "provider returned an error",
+      }))
+
+      await runWithPayload({
+        bundlesRoot: statusOnlyFailure.bundlesRoot,
+        refreshPayload: refreshPayload({ status: "failed" }),
+      })
+      expect(listHabitRunReceipts(statusOnlyFailure.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "failed",
+        rawStatus: "failed",
+        error: "failed",
+      }))
+    } finally {
+      noDelivery.cleanup()
+      queuedDelivery.cleanup()
+      messageOnlyFailure.cleanup()
+      statusOnlyFailure.cleanup()
+    }
+  })
+
   it("uses clock fallback and default payload error text when refresh returns an error without a message", async () => {
     const tmp = seedRsvpHabit("shadow")
     const runRefresh = vi.fn(async () => JSON.stringify({

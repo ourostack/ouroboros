@@ -145,11 +145,24 @@ function outboundAction(payload: Record<string, unknown>): string {
 
 function surfaceAttemptsFor(payload: Record<string, unknown>, requestedSend: boolean, errorMessage: string | null): HabitSurfaceAttempt[] {
   if (payload.sendAllowed === true) {
+    const delivery = (refreshRecord(payload)?.delivery ?? {}) as Record<string, unknown>
+    const rawStatus = stringField(delivery, "status") ?? stringField(delivery, "result")
+    if (rawStatus === "failed" || rawStatus === "error") {
+      return [{
+        recipient: "rsvp",
+        channel: "bluebubbles",
+        reason: "status",
+        result: "failed",
+        rawStatus,
+        error: stringField(delivery, "error") ?? stringField(delivery, "message") ?? rawStatus,
+      }]
+    }
     return [{
       recipient: "rsvp",
       channel: "bluebubbles",
       reason: "status",
       result: "sent",
+      ...(rawStatus ? { rawStatus } : {}),
     }]
   }
   if (requestedSend && errorMessage) {

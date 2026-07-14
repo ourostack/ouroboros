@@ -7514,6 +7514,41 @@ describe("BlueBubbles sense runtime", () => {
     expect(firstRunAgentOptions().contextPacketIds).toEqual([rows[0].packetId])
   })
 
+  it("builds same-chat context when the pipeline prepare hook does not provide known messages", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      const preparedOptions = await input.prepareRunAgentOptions?.({
+        currentUserMessages: input.messages,
+        resolvedContext: defaultFriendContext,
+        runAgentOptions: {},
+      })
+      return {
+        resolvedContext: defaultFriendContext,
+        gateResult: { allowed: true },
+        usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0 },
+        sessionPath: "/tmp/session.json",
+        messages: preparedOptions?.messages ?? [],
+      }
+    })
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "script-report-guid",
+        timestamp: dmTopLevelPayload.data.dateCreated - 3_000,
+        fromMe: true,
+        textForAgent: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    const { readSenseContextLedger } = await import("../../../senses/context-packet-ledger")
+    const rows = readSenseContextLedger(agentRoot, "bluebubbles")
+    expect(rows).toHaveLength(1)
+    expect(mocks.handleInboundTurn.mock.results[0]).toBeDefined()
+  })
+
   it("does not inject same-chat history already present in the provider session", async () => {
     const agentRoot = makeTempDir()
     mocks.getAgentRoot.mockReturnValue(agentRoot)

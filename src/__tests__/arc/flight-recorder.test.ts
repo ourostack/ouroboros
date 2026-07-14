@@ -1229,7 +1229,14 @@ describe("Arc flight recorder", () => {
             channel: "bluebubbles",
             reason: "status",
             result: "sent",
+            rawStatus: "delivered_now",
             routeKind: "originator",
+          },
+          meta: {
+            delivery: {
+              provider: "bluebubbles",
+              accepted: true,
+            },
           },
         },
         {
@@ -1284,11 +1291,30 @@ describe("Arc flight recorder", () => {
       receiptLocator: "arc/flight-recorder/habit-receipts/wrong-trace-ref.json",
       traceSteps: [{ schemaVersion: 1, stepId: "bad-ref", kind: "produced_ref", status: "succeeded", at: "2026-06-08T12:20:00.000Z", summary: "bad", refs: [{ kind: "", locator: "" }] }],
     }), "utf-8")
+    fs.writeFileSync(path.join(receiptDir, "wrong-trace-entry.json"), JSON.stringify({
+      ...receipt,
+      runId: "wrong-trace-entry",
+      sessionId: "wrong-trace-entry",
+      receiptLocator: "arc/flight-recorder/habit-receipts/wrong-trace-entry.json",
+      traceSteps: [null],
+    }), "utf-8")
 
     expect(recorder.readHabitRunReceipt(agentRoot, "missing-trace")).toMatchObject({ traceSteps: [] })
     expect(recorder.readHabitRunReceipt(agentRoot, "legacy-trace-default")).toMatchObject({ traceSteps: [] })
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-trace-kind")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-trace-ref")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "wrong-trace-entry")).toBeNull()
+    expect(recorder.decisionsFromHabitRunTraceSteps([
+      {
+        schemaVersion: 1,
+        stepId: "decision-empty",
+        kind: "decision",
+        status: "succeeded",
+        at: "2026-06-08T12:20:00.000Z",
+        summary: "Decision step included blank and duplicate decisions.",
+        decisions: ["  ", "Surface the update.", "Surface the update."],
+      },
+    ])).toEqual(["Surface the update."])
   })
 
   it("accepts every habit trigger and outcome variant in schema v2 receipts", async () => {

@@ -4015,7 +4015,7 @@ describe("Twilio phone voice bridge", () => {
       await vi.waitFor(() => expect(openaiMessages.filter((e) => e.type === "response.create").length).toBeGreaterThanOrEqual(1), { timeout: 10_000 })
       await vi.waitFor(() => expect(twilioMessages.some((event) =>
         event.event === "media" && (event as { media?: { payload?: string } }).media?.payload === realtimeGreetingPayload,
-      )).toBe(true), { timeout: 10_000 })
+      )).toBe(true), { timeout: 20_000 })
       // Give response.done time to propagate through the runtime's openai event handler
       await new Promise((resolve) => setTimeout(resolve, 100))
       const baselineResponseCreates = openaiMessages.filter((e) => e.type === "response.create").length

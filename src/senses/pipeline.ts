@@ -560,16 +560,21 @@ function mergeRunAgentContextPacketIds(
 function mergePreparedRunAgentOptions(base: RunAgentOptions, prepared: RunAgentOptions | void): RunAgentOptions {
   if (!prepared) return base
   const contextPacketIds = mergeRunAgentContextPacketIds(base.contextPacketIds, prepared.contextPacketIds)
+  const { contextPacketIds: _baseContextPacketIds, ...baseOptions } = base
+  const { contextPacketIds: _preparedContextPacketIds, ...preparedOptions } = prepared
   const merged: RunAgentOptions = {
-    ...base,
-    ...prepared,
+    ...baseOptions,
+    ...preparedOptions,
     ...(contextPacketIds ? { contextPacketIds } : {}),
   }
-  if (base.toolContext || prepared.toolContext) {
-    merged.toolContext = {
-      signin: async () => undefined,
+  if (prepared.toolContext) {
+    const toolContext = {
       ...base.toolContext,
       ...prepared.toolContext,
+    }
+    merged.toolContext = {
+      ...toolContext,
+      signin: toolContext.signin ?? (async () => undefined),
     }
   }
   return merged

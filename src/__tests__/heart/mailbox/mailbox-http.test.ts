@@ -1614,6 +1614,12 @@ describe("mailbox http", () => {
     expect(JSON.parse(listResponse.body.toString("utf8"))).toEqual(packetList)
     expect(hooks.readAgentContextPackets).toHaveBeenCalledWith("slugger", { limit: 1 })
 
+    const defaultLimitResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets"), defaultLimitResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(defaultLimitResponse.statusCode).toBe(200)
+    expect(hooks.readAgentContextPackets).toHaveBeenCalledWith("slugger")
+
     const invalidLimitResponse = createMockResponse()
     handler(createMockRequest("/api/agents/slugger/context-packets?limit=0"), invalidLimitResponse)
     await new Promise((resolve) => setImmediate(resolve))
@@ -1637,6 +1643,15 @@ describe("mailbox http", () => {
     expect(JSON.parse(missingResponse.body.toString("utf8"))).toEqual({
       ok: false,
       error: "context packet 'bad%2Fescape' not found",
+    })
+
+    const malformedPacketIdResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets/%E0%A4%A"), malformedPacketIdResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(malformedPacketIdResponse.statusCode).toBe(404)
+    expect(JSON.parse(malformedPacketIdResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "context packet '%E0%A4%A' not found",
     })
   })
 
