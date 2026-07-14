@@ -10,12 +10,14 @@ import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFrom
 import { recordRsvpSpendLedgerRun } from "./spend-ledger"
 import { RSVP_HABIT_ALLOWED_TOOLS, rsvpHabitRuntimePolicy } from "./habit-policy"
 import { emitNervesEvent } from "../nerves/runtime"
-import type {
-  FlightRecorderProducedRef,
-  HabitPermissionEnvelope,
-  HabitRunTrigger,
-  HabitSurfaceAttempt,
-  HabitToolPolicy,
+import {
+  decisionsFromHabitRunTraceSteps,
+  type FlightRecorderProducedRef,
+  type HabitPermissionEnvelope,
+  type HabitRunTraceStep,
+  type HabitRunTrigger,
+  type HabitSurfaceAttempt,
+  type HabitToolPolicy,
 } from "../arc/flight-recorder"
 
 type RsvpRefreshCommand = Extract<RsvpCliCommand, { kind: "rsvp.refresh" }>
@@ -134,13 +136,33 @@ function producedRefsFor(payload: Record<string, unknown>): FlightRecorderProduc
   return snapshotId ? [{ kind: "none", locator: `state/rsvp/snapshots/${snapshotId}.json` }] : []
 }
 
+function outboundAction(payload: Record<string, unknown>): string {
+  const refresh = refreshRecord(payload)
+  const decision = refresh?.outboundDecision
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) return "unknown"
+  return stringField(decision as Record<string, unknown>, "action") ?? "unknown"
+}
+
 function surfaceAttemptsFor(payload: Record<string, unknown>, requestedSend: boolean, errorMessage: string | null): HabitSurfaceAttempt[] {
   if (payload.sendAllowed === true) {
+    const delivery = (refreshRecord(payload)?.delivery ?? {}) as Record<string, unknown>
+    const rawStatus = stringField(delivery, "status") ?? stringField(delivery, "result")
+    if (rawStatus === "failed" || rawStatus === "error") {
+      return [{
+        recipient: "rsvp",
+        channel: "bluebubbles",
+        reason: "status",
+        result: "failed",
+        rawStatus,
+        error: stringField(delivery, "error") ?? stringField(delivery, "message") ?? rawStatus,
+      }]
+    }
     return [{
       recipient: "rsvp",
       channel: "bluebubbles",
       reason: "status",
       result: "sent",
+      ...(rawStatus ? { rawStatus } : {}),
     }]
   }
   if (requestedSend && errorMessage) {
@@ -160,6 +182,152 @@ function payloadError(payload: Record<string, unknown>): string | null {
     return stringField(payload, "message") ?? "RSVP refresh did not complete"
   }
   return null
+}
+
+function traceStatusForSurfaceAttempt(attempt: HabitSurfaceAttempt | undefined): HabitRunTraceStep["status"] {
+  if (!attempt) return "skipped"
+  if (attempt.result === "failed") return "failed"
+  if (attempt.result === "blocked" || attempt.result === "unavailable") return "blocked"
+  return "succeeded"
+}
+
+function nativeRsvpTraceSteps(input: {
+  habitName: string
+  trigger: HabitRunTrigger
+  mode: "shadow" | "live"
+  source: string
+  sendAllowed: boolean
+  startedAt: string
+  endedAt: string
+  payload: Record<string, unknown>
+  producedRefs: FlightRecorderProducedRef[]
+  surfaceAttempts: HabitSurfaceAttempt[]
+  errors: string[]
+  lifecycle: Extract<RunLedgerLifecycle, "completed" | "error">
+}): HabitRunTraceStep[] {
+  const refresh = refreshRecord(input.payload)
+  const snapshotId = stringField(refresh ?? {}, "snapshotId")
+  const reportText = stringField(refresh ?? {}, "reportText")
+  const action = outboundAction(input.payload)
+  const firstAttempt = input.surfaceAttempts[0]
+  const snapshotLocator = snapshotId ? `state/rsvp/snapshots/${snapshotId}.json` : null
+  const decisions = [
+    `mode=${input.mode}`,
+    `sendAllowed=${String(input.sendAllowed)}`,
+    `outboundAction=${action}`,
+  ]
+  return [
+    {
+      schemaVersion: 1,
+      stepId: "trigger",
+      kind: "trigger",
+      status: "succeeded",
+      at: input.startedAt,
+      summary: `${input.trigger} triggered ${input.habitName}.`,
+    },
+    {
+      schemaVersion: 1,
+      stepId: "habit-definition",
+      kind: "habit_definition",
+      status: "succeeded",
+      at: input.startedAt,
+      summary: `Loaded habit definition for ${input.habitName}.`,
+      refs: [{ kind: "habit_definition", locator: `habits/${input.habitName}.md`, label: input.habitName }],
+    },
+    {
+      schemaVersion: 1,
+      stepId: "fetch-refresh",
+      kind: "fetch",
+      status: input.errors.length > 0 ? "failed" : "succeeded",
+      at: input.endedAt,
+      summary: `Ran RSVP refresh in ${input.mode} mode.`,
+      refs: [{ kind: "source", locator: `rsvp/${input.source}` }],
+    },
+    {
+      schemaVersion: 1,
+      stepId: "snapshot",
+      kind: "snapshot",
+      status: snapshotLocator ? "succeeded" : "skipped",
+      at: input.endedAt,
+      summary: snapshotLocator ? "Recorded the RSVP snapshot reference." : "No RSVP snapshot reference was returned.",
+      ...(snapshotLocator ? { refs: [{ kind: "snapshot", locator: snapshotLocator }] } : {}),
+    },
+    {
+      schemaVersion: 1,
+      stepId: "render",
+      kind: "render",
+      status: reportText ? "succeeded" : "skipped",
+      at: input.endedAt,
+      summary: reportText ? "Rendered RSVP update text." : "No rendered RSVP update text was returned.",
+    },
+    {
+      schemaVersion: 1,
+      stepId: "decision",
+      kind: "decision",
+      status: input.errors.length > 0 ? "blocked" : "succeeded",
+      at: input.endedAt,
+      summary: `RSVP outbound decision: ${action}.`,
+      decisions,
+    },
+    {
+      schemaVersion: 1,
+      stepId: "produced-ref",
+      kind: "produced_ref",
+      status: input.producedRefs.length > 0 ? "succeeded" : "skipped",
+      at: input.endedAt,
+      summary: input.producedRefs.length > 0 ? "Recorded produced RSVP refs." : "No separate produced refs were recorded.",
+      ...(input.producedRefs.length > 0 ? { producedRefs: input.producedRefs } : {}),
+    },
+    {
+      schemaVersion: 1,
+      stepId: "surface-attempt",
+      kind: "surface_attempt",
+      status: traceStatusForSurfaceAttempt(firstAttempt),
+      at: input.endedAt,
+      summary: firstAttempt ? `Surface attempt ${firstAttempt.result} via ${firstAttempt.channel}.` : "No surface attempt was needed.",
+      ...(firstAttempt ? { surfaceAttempt: firstAttempt } : {}),
+    },
+    {
+      schemaVersion: 1,
+      stepId: "send",
+      kind: "send",
+      status: input.sendAllowed
+        ? traceStatusForSurfaceAttempt(firstAttempt)
+        : "skipped",
+      at: input.endedAt,
+      summary: input.sendAllowed ? "Live send was allowed for this run." : "Live send was not allowed for this run.",
+      ...(firstAttempt ? { surfaceAttempt: firstAttempt } : {}),
+    },
+    {
+      schemaVersion: 1,
+      stepId: "ledger",
+      kind: "ledger",
+      status: "succeeded",
+      at: input.endedAt,
+      summary: "Recorded native RSVP run ledger evidence.",
+      refs: [
+        { kind: "ledger", locator: "state/run-ledger/runs.jsonl" },
+        { kind: "ledger", locator: "state/rsvp/spend-ledger.json" },
+      ],
+    },
+    {
+      schemaVersion: 1,
+      stepId: "error",
+      kind: "error",
+      status: input.errors.length > 0 ? "failed" : "skipped",
+      at: input.endedAt,
+      summary: input.errors.length > 0 ? "RSVP refresh returned an error." : "No RSVP error happened.",
+      ...(input.errors[0] ? { error: input.errors[0] } : {}),
+    },
+    {
+      schemaVersion: 1,
+      stepId: "complete",
+      kind: "complete",
+      status: input.lifecycle === "completed" ? "succeeded" : "failed",
+      at: input.endedAt,
+      summary: `Native RSVP habit ${input.lifecycle}.`,
+    },
+  ]
 }
 
 function recordNativeRunLedger(input: {
@@ -269,6 +437,7 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
   const lifecycle: Extract<RunLedgerLifecycle, "completed" | "error"> = errorMessage ? "error" : "completed"
   const surfaceAttempts = surfaceAttemptsFor(payload, policy.sendAllowed, errorMessage)
   const errors = errorMessage ? [errorMessage] : []
+  const producedRefs = producedRefsFor(payload)
 
   recordNativeRunLedger({
     agentRoot,
@@ -282,6 +451,21 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
     lifecycle,
   })
 
+  const traceSteps = nativeRsvpTraceSteps({
+    habitName: input.habitName,
+    trigger: input.trigger,
+    mode: habit.rsvp.mode,
+    source: habit.rsvp.source,
+    sendAllowed: policy.sendAllowed,
+    startedAt,
+    endedAt,
+    payload,
+    producedRefs,
+    surfaceAttempts,
+    errors,
+    lifecycle,
+  })
+
   const completion = completeHabitRun({
     agentRoot,
     habit,
@@ -292,17 +476,15 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
     operationId: `rsvp-native:${input.trigger}:${input.occurrenceId ?? runId}`,
     permissionEnvelope: permissionEnvelope(policy.sendAllowed),
     toolPolicy: toolPolicy(policy.sendAllowed),
-    producedRefs: producedRefsFor(payload),
+    producedRefs,
     surfaceAttempts,
+    traceSteps,
     errors,
     summarySnapshot: {
       summary: errorMessage
         ? `Native RSVP habit failed: ${errorMessage}`
         : "Native RSVP habit completed.",
-      decisions: [
-        `mode=${habit.rsvp.mode}`,
-        `sendAllowed=${String(policy.sendAllowed)}`,
-      ],
+      decisions: decisionsFromHabitRunTraceSteps(traceSteps),
       nextLikelyStep: null,
     },
   })

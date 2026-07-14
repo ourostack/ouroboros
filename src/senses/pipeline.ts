@@ -63,6 +63,13 @@ export interface FailoverState {
   pending: FailoverContext | null
 }
 
+export interface PrepareRunAgentOptionsInput {
+  messages: ChatCompletionMessageParam[]
+  currentUserMessages: ChatCompletionMessageParam[]
+  resolvedContext: ResolvedContext
+  runAgentOptions: RunAgentOptions
+}
+
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
 function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number): string | null {
   /* v8 ignore start -- pending expiry edge permutations are covered by the stale voice queue tests; this helper keeps defensive non-voice fallbacks @preserve */
@@ -430,6 +437,10 @@ export interface InboundTurnInput {
   signal?: AbortSignal
   /** Optional runAgent options (traceId, toolContext overrides, etc). */
   runAgentOptions?: RunAgentOptions
+  /** Optional sense hook for post-gate, post-session, pre-run evidence/context augmentation. */
+  prepareRunAgentOptions?: (
+    input: PrepareRunAgentOptionsInput,
+  ) => Promise<RunAgentOptions | void> | RunAgentOptions | void
 
   // ── Trust gate context (optional, defaults to safe values) ──
   /** Identity provider for trust gate. Defaults to "local". */
@@ -533,6 +544,40 @@ let _lastSessionKey: string | null = null
 
 function runAgentOptionContextPacketIds(options: RunAgentOptions): string[] {
   return Array.isArray(options.contextPacketIds) ? options.contextPacketIds : []
+}
+
+function mergeRunAgentContextPacketIds(
+  left: string[] | undefined,
+  right: string[] | undefined,
+): string[] | undefined {
+  const merged = [
+    ...(Array.isArray(left) ? left : []),
+    ...(Array.isArray(right) ? right : []),
+  ].filter((value) => typeof value === "string" && value.trim().length > 0)
+  return merged.length > 0 ? [...new Set(merged)] : undefined
+}
+
+function mergePreparedRunAgentOptions(base: RunAgentOptions, prepared: RunAgentOptions | void): RunAgentOptions {
+  if (!prepared) return base
+  const contextPacketIds = mergeRunAgentContextPacketIds(base.contextPacketIds, prepared.contextPacketIds)
+  const { contextPacketIds: _baseContextPacketIds, ...baseOptions } = base
+  const { contextPacketIds: _preparedContextPacketIds, ...preparedOptions } = prepared
+  const merged: RunAgentOptions = {
+    ...baseOptions,
+    ...preparedOptions,
+    ...(contextPacketIds ? { contextPacketIds } : {}),
+  }
+  if (prepared.toolContext) {
+    const toolContext = {
+      ...base.toolContext,
+      ...prepared.toolContext,
+    }
+    merged.toolContext = {
+      ...toolContext,
+      signin: toolContext.signin ?? (async () => undefined),
+    }
+  }
+  return merged
 }
 
 function buildInboundRunLedgerInput(input: {
@@ -1016,7 +1061,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const existingToolContext = input.runAgentOptions?.toolContext
   const currentUserMessage = existingToolContext?.currentUserMessage
     ?? latestUserAuthoredText(input.messages, input.continuityIngressTexts)
-  const runAgentOptions: RunAgentOptions = {
+  let runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     ...(orientationFrame ? { orientationFrame } : {}),
     ...(liveLatencyMode ? { skipKeptNotes: true } : {}),
@@ -1050,6 +1095,16 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       ...(orientationFrame ? { orientationFrame } : {}),
     },
   }
+
+  runAgentOptions = mergePreparedRunAgentOptions(
+    runAgentOptions,
+    await input.prepareRunAgentOptions?.({
+      messages: sessionMessages,
+      currentUserMessages,
+      resolvedContext,
+      runAgentOptions,
+    }),
+  )
 
   const runLedger = prepareInboundRunLedger({
     channel: input.channel,

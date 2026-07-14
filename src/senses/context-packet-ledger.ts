@@ -59,8 +59,65 @@ export interface CompactSenseContextPacketReceiptsResult {
   compacted: number
 }
 
+export type SenseContextPacketSummary = Pick<
+  SenseContextLedgerRow,
+  | "packetId"
+  | "sense"
+  | "agent"
+  | "chatKeyHash"
+  | "anchorMessageGuid"
+  | "anchorTimestamp"
+  | "createdAt"
+  | "messageCount"
+  | "sourceRefs"
+  | "bodyHashes"
+  | "rawBodyStored"
+  | "privacyClass"
+  | "omittedMessages"
+  | "truncatedMessages"
+>
+
+export interface SenseContextPacketSummaryList {
+  totalCount: number
+  limit: number
+  items: SenseContextPacketSummary[]
+}
+
+export interface SenseContextPacketViewMessage {
+  timestamp: string
+  authorLabel: string
+  bodyHash: string
+  bodyPreview: string
+  sourceRef: SenseContextPacketMessage["sourceRef"]
+  renderedSourceRef: string
+}
+
+export interface SenseContextPacketViewPacket {
+  packetId: string
+  sense: string
+  agent: string
+  privacyClass: SenseContextPacket["privacyClass"]
+  messages: SenseContextPacketViewMessage[]
+  omittedMessages: number
+  truncatedMessages: number
+}
+
+export interface SenseContextPacketView {
+  row: SenseContextPacketSummary
+  packet: SenseContextPacketViewPacket
+}
+
+export interface SenseContextPacketListOptions {
+  sense?: string
+  limit?: number
+}
+
 function contextPacketRoot(agentRoot: string, sense: string): string {
   return path.join(agentRoot, "state", "senses", "context-packets", sense)
+}
+
+function contextPacketBaseRoot(agentRoot: string): string {
+  return path.join(agentRoot, "state", "senses", "context-packets")
 }
 
 function packetPath(agentRoot: string, packet: SenseContextPacket): string {
@@ -215,6 +272,136 @@ export function readSenseContextLedger(agentRoot: string, sense: string): SenseC
     }
   })
   return rows
+}
+
+function safeContextPacketLimit(limit: number | undefined): number {
+  return Number.isInteger(limit) && typeof limit === "number" && limit >= 1 && limit <= 100 ? limit : 20
+}
+
+function discoverContextPacketSenses(agentRoot: string): string[] {
+  const root = contextPacketBaseRoot(agentRoot)
+  if (!fs.existsSync(root)) return []
+  return fs.readdirSync(root)
+    .filter((entry) => {
+      try {
+        return fs.statSync(path.join(root, entry)).isDirectory()
+      } catch {
+        return false
+      }
+    })
+    .sort()
+}
+
+function summarizeLedgerRow(row: SenseContextLedgerRow): SenseContextPacketSummary {
+  return {
+    packetId: row.packetId,
+    sense: row.sense,
+    agent: row.agent,
+    chatKeyHash: row.chatKeyHash,
+    anchorMessageGuid: row.anchorMessageGuid,
+    anchorTimestamp: row.anchorTimestamp,
+    createdAt: row.createdAt,
+    messageCount: row.messageCount,
+    sourceRefs: row.sourceRefs,
+    bodyHashes: row.bodyHashes,
+    rawBodyStored: row.rawBodyStored,
+    privacyClass: row.privacyClass,
+    omittedMessages: row.omittedMessages,
+    truncatedMessages: row.truncatedMessages,
+  }
+}
+
+function readAllContextPacketRows(agentRoot: string, sense?: string): SenseContextLedgerRow[] {
+  const senses = sense ? [sense] : discoverContextPacketSenses(agentRoot)
+  return senses.flatMap((entry) => readSenseContextLedger(agentRoot, entry))
+}
+
+function timestampSortValue(value: string): number {
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+export function listSenseContextPacketSummaries(
+  agentRoot: string,
+  options: SenseContextPacketListOptions = {},
+): SenseContextPacketSummaryList {
+  const limit = safeContextPacketLimit(options.limit)
+  const rows = readAllContextPacketRows(agentRoot, options.sense)
+    .sort((left, right) =>
+      timestampSortValue(right.createdAt || right.anchorTimestamp) - timestampSortValue(left.createdAt || left.anchorTimestamp))
+  return {
+    totalCount: rows.length,
+    limit,
+    items: rows.slice(0, limit).map(summarizeLedgerRow),
+  }
+}
+
+function isSafeContextPacketId(packetId: string): boolean {
+  return /^scp_[A-Za-z0-9_-]+$/.test(packetId)
+}
+
+function pathInsideContextPacketRoot(agentRoot: string, sense: string, filePath: string): boolean {
+  const root = path.resolve(contextPacketRoot(agentRoot, sense))
+  const resolved = path.resolve(filePath)
+  return resolved === root || resolved.startsWith(`${root}${path.sep}`)
+}
+
+function redactPreview(value: string): string {
+  return value
+    .replace(/\bpassword=[^\s]+/gi, "password=[redacted]")
+    .replace(/\b(token|api[_-]?key|secret)=[^\s]+/gi, "$1=[redacted]")
+}
+
+function viewMessage(message: SenseContextPacketMessage): SenseContextPacketViewMessage {
+  const { chatGuid: _chatGuid, ...sourceRef } = message.sourceRef as SenseContextPacketMessage["sourceRef"] & { chatGuid?: string }
+  return {
+    timestamp: message.timestamp,
+    authorLabel: message.authorLabel,
+    bodyHash: message.bodyHash,
+    bodyPreview: redactPreview(message.bodyPreview),
+    sourceRef,
+    renderedSourceRef: message.renderedSourceRef,
+  }
+}
+
+function emitContextPacketReadWarning(packetId: string, reason: string): void {
+  emitNervesEvent({
+    level: "warn",
+    component: "senses",
+    event: "senses.context_packet_read_error",
+    message: "failed to read sense context packet view",
+    meta: { packetId, reason },
+  })
+}
+
+export function readSenseContextPacketView(agentRoot: string, packetId: string): SenseContextPacketView | null {
+  if (!isSafeContextPacketId(packetId)) return null
+  const row = readAllContextPacketRows(agentRoot).find((entry) => entry.packetId === packetId)
+  if (!row) return null
+  if (!pathInsideContextPacketRoot(agentRoot, row.sense, row.packetPath)) {
+    emitContextPacketReadWarning(packetId, "packet path escaped context-packet root")
+    return null
+  }
+  if (!fs.existsSync(row.packetPath)) return null
+  try {
+    const packet = JSON.parse(fs.readFileSync(row.packetPath, "utf-8")) as Partial<SenseContextPacket>
+    if (packet.packetId !== packetId || !Array.isArray(packet.messages)) return null
+    return {
+      row: summarizeLedgerRow(row),
+      packet: {
+        packetId,
+        sense: typeof packet.sense === "string" ? packet.sense : row.sense,
+        agent: typeof packet.agent === "string" ? packet.agent : row.agent,
+        privacyClass: packet.privacyClass === "private-runtime" ? packet.privacyClass : "private-runtime",
+        messages: packet.messages.map((message) => viewMessage(message as SenseContextPacketMessage)),
+        omittedMessages: typeof packet.omittedMessages === "number" ? packet.omittedMessages : row.omittedMessages,
+        truncatedMessages: typeof packet.truncatedMessages === "number" ? packet.truncatedMessages : row.truncatedMessages,
+      },
+    }
+  } catch (error) {
+    emitContextPacketReadWarning(packetId, error instanceof Error ? error.message : String(error))
+    return null
+  }
 }
 
 function timestampMs(value: string): number {

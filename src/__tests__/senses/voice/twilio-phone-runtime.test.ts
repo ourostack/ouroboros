@@ -1264,6 +1264,11 @@ describe("Twilio phone transport runtime", () => {
     expect(deps.waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
     expect(deps.refreshMachineRuntimeConfig).toHaveBeenCalledWith("slugger", "machine_voice", { preserveCachedOnFailure: true })
     expect(deps.cacheSelectedProviderCredentials).toHaveBeenCalledWith("slugger")
+    expect(deps.createTranscriber).toHaveBeenCalledWith({
+      whisperCliPath: "/opt/whisper.cpp/main",
+      modelPath: "/models/ggml-base.en.bin",
+    })
+    const createdTranscriber = vi.mocked(deps.createTranscriber).mock.results[0]?.value
     expect(deps.createTts).toHaveBeenCalledWith(expect.objectContaining({
       outputFormat: "mp3_44100_128",
     }))
@@ -1278,6 +1283,7 @@ describe("Twilio phone transport runtime", () => {
       greetingPrebufferMs: 3500,
       playbackMode: "stream",
       transportMode: "record-play",
+      transcriber: createdTranscriber,
     }))
   })
 

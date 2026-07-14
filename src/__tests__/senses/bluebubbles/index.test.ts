@@ -616,7 +616,7 @@ function resetMocks(): void {
     for (const m of input.messages) msgs.push(m)
     // Mirror pipeline: merge context and friendStore into runAgentOptions.toolContext
     const existingToolContext = input.runAgentOptions?.toolContext
-    const pipelineOpts = {
+    let pipelineOpts = {
       ...input.runAgentOptions,
       toolContext: {
         signin: async () => undefined,
@@ -624,6 +624,22 @@ function resetMocks(): void {
         context: resolvedContext,
         friendStore: input.friendStore,
       },
+    }
+    const preparedOptions = await input.prepareRunAgentOptions?.({
+      messages: msgs,
+      currentUserMessages: input.messages,
+      resolvedContext,
+      runAgentOptions: pipelineOpts,
+    })
+    if (preparedOptions) {
+      pipelineOpts = {
+        ...pipelineOpts,
+        ...preparedOptions,
+        toolContext: {
+          ...pipelineOpts.toolContext,
+          ...preparedOptions.toolContext,
+        },
+      }
     }
     const result = await input.runAgent(msgs, input.callbacks, input.channel, input.signal, pipelineOpts)
     input.postTurn(msgs, sessionMessages.sessionPath, result.usage)
@@ -7475,6 +7491,96 @@ describe("BlueBubbles sense runtime", () => {
     const durableMessages = mocks.postTurnTrim.mock.calls[0]?.[0] ?? []
     expect(JSON.stringify(durableMessages)).not.toContain("Untrusted bluebubbles context")
     expect(JSON.stringify(durableMessages)).not.toContain("RSVP Update -- Wedding")
+  })
+
+  it("passes precomputed same-chat context packet ids to the shared pipeline options", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "script-report-guid",
+        timestamp: dmTopLevelPayload.data.dateCreated - 3_000,
+        fromMe: true,
+        textForAgent: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    const { readSenseContextLedger } = await import("../../../senses/context-packet-ledger")
+    const rows = readSenseContextLedger(agentRoot, "bluebubbles")
+    expect(rows).toHaveLength(1)
+    expect(firstRunAgentOptions().contextPacketIds).toEqual([rows[0].packetId])
+  })
+
+  it("builds same-chat context when the pipeline prepare hook does not provide known messages", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      const preparedOptions = await input.prepareRunAgentOptions?.({
+        currentUserMessages: input.messages,
+        resolvedContext: defaultFriendContext,
+        runAgentOptions: {},
+      })
+      return {
+        resolvedContext: defaultFriendContext,
+        gateResult: { allowed: true },
+        usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0 },
+        sessionPath: "/tmp/session.json",
+        messages: preparedOptions?.messages ?? [],
+      }
+    })
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "script-report-guid",
+        timestamp: dmTopLevelPayload.data.dateCreated - 3_000,
+        fromMe: true,
+        textForAgent: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    const { readSenseContextLedger } = await import("../../../senses/context-packet-ledger")
+    const rows = readSenseContextLedger(agentRoot, "bluebubbles")
+    expect(rows).toHaveLength(1)
+    expect(mocks.handleInboundTurn.mock.results[0]).toBeDefined()
+  })
+
+  it("does not inject same-chat history already present in the provider session", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    mocks.loadSession.mockReturnValueOnce({
+      messages: [
+        { role: "system", content: "system prompt" },
+        {
+          role: "assistant",
+          content: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+        },
+      ],
+    })
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "script-report-guid",
+        timestamp: dmTopLevelPayload.data.dateCreated - 3_000,
+        fromMe: true,
+        textForAgent: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    const modelMessages = firstRunAgentMessages()
+    expect(modelMessages.some((message) =>
+      message.role === "system"
+      && typeof message.content === "string"
+      && message.content.includes("Untrusted bluebubbles context")
+    )).toBe(false)
+    const { readSenseContextLedger } = await import("../../../senses/context-packet-ledger")
+    expect(readSenseContextLedger(agentRoot, "bluebubbles")).toEqual([])
   })
 
   it("builds same-chat context for identifier-only chats with fallback message fields", async () => {

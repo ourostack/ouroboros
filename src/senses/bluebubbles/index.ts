@@ -742,15 +742,28 @@ function insertEphemeralContextMessages(
   ]
 }
 
+interface PreparedBlueBubblesContextMessages {
+  messages: OpenAI.ChatCompletionMessageParam[]
+  contextPacketIds: string[]
+}
+
+function knownProviderMessageTexts(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
+  return messages
+    .map((message) => extractMessageText(message.content))
+    .map((text) => text.trim())
+    .filter((text) => text.length > 0)
+}
+
 async function buildBlueBubblesContextMessages(input: {
   agentName: string
   agentRoot: string
   client: BlueBubblesClient
   event: BlueBubblesNormalizedEvent
-}): Promise<OpenAI.ChatCompletionMessageParam[]> {
-  if (input.event.kind !== "message") return []
+  knownMessages?: OpenAI.ChatCompletionMessageParam[]
+}): Promise<PreparedBlueBubblesContextMessages> {
+  if (input.event.kind !== "message") return { messages: [], contextPacketIds: [] }
   const event = input.event
-  if (!Number.isFinite(event.timestamp)) return []
+  if (!Number.isFinite(event.timestamp)) return { messages: [], contextPacketIds: [] }
   const chatGuidHash = blueBubblesContextChatKeyHash(event)
   const anchorTimestamp = new Date(event.timestamp).toISOString()
   try {
@@ -758,8 +771,9 @@ async function buildBlueBubblesContextMessages(input: {
       agentName: input.agentName,
       client: input.client,
       event,
+      knownMessageTexts: knownProviderMessageTexts(input.knownMessages ?? []),
     })
-    if (!result) return []
+    if (!result) return { messages: [], contextPacketIds: [] }
     const { packet, rendered, historyCount } = result
     writeSenseContextPacket(input.agentRoot, packet)
     emitNervesEvent({
@@ -772,7 +786,10 @@ async function buildBlueBubblesContextMessages(input: {
         contextMessages: historyCount,
       },
     })
-    return [{ role: "system", content: rendered.text }]
+    return {
+      messages: [{ role: "system", content: rendered.text }],
+      contextPacketIds: [packet.packetId],
+    }
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -790,9 +807,12 @@ async function buildBlueBubblesContextMessages(input: {
       beforeAnchorTimestamp: anchorTimestamp,
       maxAgeMs: 24 * 60 * 60 * 1000,
     })
-    if (!fallback) return []
+    if (!fallback) return { messages: [], contextPacketIds: [] }
     const rendered = renderSenseContextPacketForPrompt(fallback)
-    return [{ role: "system", content: rendered.text }]
+    return {
+      messages: [{ role: "system", content: rendered.text }],
+      contextPacketIds: [fallback.packetId],
+    }
   }
 }
 
@@ -1637,6 +1657,10 @@ async function handleBlueBubblesNormalizedEvent(
         (timeoutTimer as { unref: () => void }).unref()
       }
 
+      let preparedBlueBubblesContext: PreparedBlueBubblesContextMessages = {
+        messages: [],
+        contextPacketIds: [],
+      }
       const turnPromise = handleInboundTurn({
         channel: "bluebubbles",
         sessionKey: event.chat.sessionKey,
@@ -1663,35 +1687,44 @@ async function handleBlueBubblesNormalizedEvent(
         enforceTrustGate,
         drainPending,
         drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
-	        runAgent: async (msgs, cb, channel, sig, opts) => {
-	          const contextMessages = await buildBlueBubblesContextMessages({
-	            agentName,
-	            agentRoot: getAgentRoot(),
-	            client,
-	            event,
-	          })
-	          return resolvedDeps.runAgent(insertEphemeralContextMessages(msgs, contextMessages), cb, channel, sig, {
-	            ...opts,
-	            toolContext: {
-	              /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
-	              signin: async () => undefined,
-	              ...opts?.toolContext,
-	              summarize,
-	              bluebubblesReplyTarget: {
-	                setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
-	              },
-	              codingFeedback: {
-	                send: async (message: string) => {
-	                  await client.sendText({
-	                    chat: event.chat,
-	                    text: message,
-	                    replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-	                  })
-	                },
-	              },
-	            },
-	          })
-	        },
+        prepareRunAgentOptions: async ({ messages, runAgentOptions }) => {
+          preparedBlueBubblesContext = await buildBlueBubblesContextMessages({
+            agentName,
+            agentRoot: getAgentRoot(),
+            client,
+            event,
+            knownMessages: messages,
+          })
+          if (preparedBlueBubblesContext.contextPacketIds.length === 0) return undefined
+          return {
+            contextPacketIds: [
+              ...(runAgentOptions.contextPacketIds ?? []),
+              ...preparedBlueBubblesContext.contextPacketIds,
+            ],
+          }
+        },
+        runAgent: async (msgs, cb, channel, sig, opts) =>
+          resolvedDeps.runAgent(insertEphemeralContextMessages(msgs, preparedBlueBubblesContext.messages), cb, channel, sig, {
+            ...opts,
+            toolContext: {
+              /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
+              signin: async () => undefined,
+              ...opts?.toolContext,
+              summarize,
+              bluebubblesReplyTarget: {
+                setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
+              },
+              codingFeedback: {
+                send: async (message: string) => {
+                  await client.sendText({
+                    chat: event.chat,
+                    text: message,
+                    replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+                  })
+                },
+              },
+            },
+          }),
         postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
           const prepared = resolvedDeps.postTurnTrim(turnMessages, usage, hooks)
           resolvedDeps.deferPostTurnPersist(sessionPathArg, prepared, usage, state)

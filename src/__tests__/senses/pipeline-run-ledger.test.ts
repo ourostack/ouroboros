@@ -316,6 +316,120 @@ describe("handleInboundTurn run ledger attribution", () => {
     expect(mockRecordFlightRecorderEvent).toHaveBeenCalled()
   })
 
+  it("merges prepared run-agent options, context packet ids, and tool context before run ledger attribution", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    const baseTool = vi.fn()
+    const preparedTool = vi.fn()
+    const runAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+
+    await handleInboundTurn(makeInput({
+      runAgent,
+      runAgentOptions: {
+        traceId: "trace-rsvp-question",
+        contextPacketIds: ["scp_same_thread", "scp_duplicate"],
+        toolContext: {
+          baseTool,
+        } as any,
+      },
+      prepareRunAgentOptions: vi.fn(() => ({
+        contextPacketIds: ["scp_duplicate", "scp_prepared"],
+        toolContext: {
+          preparedTool,
+        } as any,
+      })),
+    }))
+
+    const options = runAgent.mock.calls[0]?.[4] as RunAgentOptions
+    expect(options.contextPacketIds).toEqual(["scp_same_thread", "scp_duplicate", "scp_prepared"])
+    expect(options.toolContext).toEqual(expect.objectContaining({
+      baseTool,
+      preparedTool,
+    }))
+    const rows = readRunLedger(agentRoot)
+    expect(rows.map((row) => row.contextPacketIds)).toEqual([
+      ["scp_same_thread", "scp_duplicate", "scp_prepared"],
+      ["scp_same_thread", "scp_duplicate", "scp_prepared"],
+    ])
+  })
+
+  it("drops blank prepared context packet ids and supplies a signin fallback when tool context omits one", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    const preparedTool = vi.fn()
+    const runAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+
+    await handleInboundTurn(makeInput({
+      runAgent,
+      runAgentOptions: {
+        traceId: "trace-rsvp-question",
+        toolContext: {
+          signin: undefined,
+        } as any,
+      },
+      prepareRunAgentOptions: vi.fn(() => ({
+        contextPacketIds: [" ", ""],
+        toolContext: {
+          preparedTool,
+        } as any,
+      })),
+    }))
+
+    const options = runAgent.mock.calls[0]?.[4] as RunAgentOptions
+    expect(options.contextPacketIds).toBeUndefined()
+    expect(options.toolContext).toEqual(expect.objectContaining({ preparedTool }))
+    await expect((options.toolContext as any).signin("github")).resolves.toBeUndefined()
+    expect(readRunLedger(agentRoot).map((row) => row.contextPacketIds)).toEqual([[], []])
+  })
+
+  it("keeps base context packet ids when prepared options only add tool context", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    const preparedTool = vi.fn()
+    const runAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+
+    await handleInboundTurn(makeInput({
+      runAgent,
+      runAgentOptions: {
+        traceId: "trace-rsvp-question",
+        contextPacketIds: ["scp_base"],
+      },
+      prepareRunAgentOptions: vi.fn(() => ({
+        toolContext: {
+          preparedTool,
+        } as any,
+      })),
+    }))
+
+    const options = runAgent.mock.calls[0]?.[4] as RunAgentOptions
+    expect(options.contextPacketIds).toEqual(["scp_base"])
+    expect(options.toolContext).toEqual(expect.objectContaining({ preparedTool }))
+  })
+
+  it("keeps base tool context when prepared options only add context packet ids", async () => {
+    const agentRoot = tempAgentRoot()
+    mockGetAgentRoot.mockReturnValue(agentRoot)
+    const baseTool = vi.fn()
+    const runAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+
+    await handleInboundTurn(makeInput({
+      runAgent,
+      runAgentOptions: {
+        traceId: "trace-rsvp-question",
+        toolContext: {
+          baseTool,
+        } as any,
+      },
+      prepareRunAgentOptions: vi.fn(() => ({
+        contextPacketIds: ["scp_prepared_only"],
+      })),
+    }))
+
+    const options = runAgent.mock.calls[0]?.[4] as RunAgentOptions
+    expect(options.contextPacketIds).toEqual(["scp_prepared_only"])
+    expect(options.toolContext).toEqual(expect.objectContaining({ baseTool }))
+  })
+
   it("records content-free error rows when the model turn throws", async () => {
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)

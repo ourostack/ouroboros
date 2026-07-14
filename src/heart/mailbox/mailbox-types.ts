@@ -22,10 +22,13 @@ import type {
   HabitToolPolicy,
 } from "../../arc/flight-recorder"
 import type { HabitSessionSummary, HabitSessionSummarySelector } from "../habits/habit-session-summary"
+import type { SenseContextPacketSummaryList, SenseContextPacketView } from "../../senses/context-packet-ledger"
 
 // Re-export domain types through the observation layer
 export type { UsageData } from "../../nerves/observation"
 export type { SessionEvent } from "../session-events"
+export type MailboxContextPacketListView = SenseContextPacketSummaryList
+export type MailboxContextPacketDetailView = SenseContextPacketView
 
 export const MAILBOX_PRODUCT_NAME = "Ouro Mailbox" as const
 export const MAILBOX_RELEASE_INTERACTION_MODEL = "read-only" as const

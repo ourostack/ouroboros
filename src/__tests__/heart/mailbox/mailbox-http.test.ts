@@ -61,6 +61,8 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentHabitRun: vi.fn(() => null),
     readAgentHabitRunSummaries: vi.fn(() => ({ totalCount: 0, limit: 20, items: [] })),
     readAgentHabitRunSummary: vi.fn(() => null),
+    readAgentContextPackets: vi.fn(() => ({ totalCount: 0, limit: 20, items: [] })),
+    readAgentContextPacket: vi.fn(() => null),
     readAgentMail: vi.fn(() => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [], messages: [], accessLog: [], error: null })),
     readAgentMailMessage: vi.fn(() => ({ status: "not-found", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", message: null, accessLog: [], error: "missing" })),
     readDaemonHealth: vi.fn(() => null),
@@ -309,6 +311,7 @@ describe("mailbox http", () => {
       toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: false },
       producedRefs: [],
       surfaceAttempts: [],
+      traceSteps: [],
       errors: [],
     }
     writeHabitRunReceipt(path.join(bundlesRoot, "nobody.ouro"), receipt)
@@ -1556,6 +1559,159 @@ describe("mailbox http", () => {
       ok: false,
       error: "limit must be an integer between 1 and 100",
     })
+  })
+
+  it("serves generic context packet list and detail endpoints", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const packetList = {
+      totalCount: 1,
+      limit: 1,
+      items: [{
+        packetId: "scp_context",
+        sense: "bluebubbles",
+        agent: "slugger",
+        chatKeyHash: "chat-hash-abcdef123456",
+        anchorMessageGuid: "anchor-guid",
+        anchorTimestamp: "2026-07-09T19:23:00.000Z",
+        createdAt: "2026-07-09T20:00:00.000Z",
+        messageCount: 1,
+        sourceRefs: ["bbmsg:chat-hash-ab:script-guid"],
+        bodyHashes: ["sha256:abc"],
+        rawBodyStored: false,
+        privacyClass: "private-runtime",
+        omittedMessages: 0,
+        truncatedMessages: 0,
+      }],
+    }
+    const packetDetail = {
+      row: packetList.items[0],
+      packet: {
+        packetId: "scp_context",
+        sense: "bluebubbles",
+        agent: "slugger",
+        privacyClass: "private-runtime",
+        messages: [{
+          timestamp: "2026-07-09T19:20:00.000Z",
+          authorLabel: "RSVP script",
+          bodyHash: "sha256:abc",
+          bodyPreview: "RSVP Update -- Wedding",
+          renderedSourceRef: "bbmsg:chat-hash-ab:script-guid",
+          sourceRef: { sense: "bluebubbles", messageGuid: "script-guid", chatGuidHash: "chat-hash-abcdef123456" },
+        }],
+      },
+    }
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentContextPackets = vi.fn(() => packetList)
+    hooks.readAgentContextPacket = vi.fn((_agent: string, packetId: string) => (
+      packetId === "scp_context" ? packetDetail : null
+    ))
+    const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const listResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets?limit=1"), listResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(listResponse.statusCode).toBe(200)
+    expect(JSON.parse(listResponse.body.toString("utf8"))).toEqual(packetList)
+    expect(hooks.readAgentContextPackets).toHaveBeenCalledWith("slugger", { limit: 1 })
+
+    const defaultLimitResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets"), defaultLimitResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(defaultLimitResponse.statusCode).toBe(200)
+    expect(hooks.readAgentContextPackets).toHaveBeenCalledWith("slugger")
+
+    const invalidLimitResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets?limit=0"), invalidLimitResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(invalidLimitResponse.statusCode).toBe(400)
+    expect(JSON.parse(invalidLimitResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "limit must be an integer between 1 and 100",
+    })
+
+    const detailResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets/scp_context"), detailResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(detailResponse.statusCode).toBe(200)
+    expect(JSON.parse(detailResponse.body.toString("utf8"))).toEqual(packetDetail)
+    expect(hooks.readAgentContextPacket).toHaveBeenCalledWith("slugger", "scp_context")
+
+    const missingResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets/bad%2Fescape"), missingResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(missingResponse.statusCode).toBe(404)
+    expect(JSON.parse(missingResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "context packet 'bad%2Fescape' not found",
+    })
+
+    const malformedPacketIdResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/context-packets/%E0%A4%A"), malformedPacketIdResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(malformedPacketIdResponse.statusCode).toBe(404)
+    expect(JSON.parse(malformedPacketIdResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "context packet '%E0%A4%A' not found",
+    })
+  })
+
+  it("serves context packet list and detail through the default mailbox server hooks", async () => {
+    const { startMailboxHttpServer } = await import("../../../heart/mailbox/mailbox-http")
+    const { buildSenseContextPacket } = await import("../../../senses/context-packets")
+    const { writeSenseContextPacket } = await import("../../../senses/context-packet-ledger")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mailbox-context-packets-"))
+    const agentRoot = path.join(bundlesRoot, "slugger.ouro")
+    const packet = buildSenseContextPacket({
+      agent: "slugger",
+      sense: "bluebubbles",
+      sessionKey: "iMessage;-;chat-secret-guid",
+      chatKeyHash: "chat-hash-abcdef123456",
+      anchorMessageGuid: "anchor-guid",
+      anchorTimestamp: "2026-07-09T19:23:00.000Z",
+      windowBeforeMessages: 40,
+      windowBeforeMs: 48 * 60 * 60 * 1000,
+      messages: [{
+        timestamp: "2026-07-09T19:20:00.000Z",
+        authorLabel: "RSVP script",
+        body: "RSVP Update -- Wedding password=secret-token",
+        sourceRef: {
+          sense: "bluebubbles",
+          adapter: "bluebubbles-api-v1",
+          service: "imessage",
+          chatGuid: "iMessage;-;chat-secret-guid",
+          chatGuidHash: "chat-hash-abcdef123456",
+          messageGuid: "script-guid",
+          senderExternalIdHash: "sender-hash",
+          observedAt: "2026-07-09T19:20:00.000Z",
+        },
+      }],
+    })
+    writeSenseContextPacket(agentRoot, packet, { now: "2026-07-09T20:00:00.000Z" })
+    const server = await startMailboxHttpServer({
+      host: "127.0.0.1",
+      port: 0,
+      bundlesRoot,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
+      readAgentState: () => null,
+    })
+
+    try {
+      const listResponse = await fetch(`${server.origin}/api/agents/slugger/context-packets?limit=1`)
+      expect(listResponse.status).toBe(200)
+      const list = await listResponse.json()
+      expect(list.items[0].packetId).toBe(packet.packetId)
+      expect(JSON.stringify(list)).not.toContain("secret-token")
+
+      const detailResponse = await fetch(`${server.origin}/api/agents/slugger/context-packets/${packet.packetId}`)
+      expect(detailResponse.status).toBe(200)
+      const detail = await detailResponse.json()
+      expect(detail.packet.messages[0].bodyPreview).toContain("[redacted]")
+      expect(JSON.stringify(detail)).not.toContain("iMessage;-;chat-secret-guid")
+      expect(JSON.stringify(detail)).not.toContain("secret-token")
+    } finally {
+      await server.stop()
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
   })
 
   it("serves /api/agents/:agent/note-decisions endpoint", async () => {

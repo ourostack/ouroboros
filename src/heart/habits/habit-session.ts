@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import type { AttentionItem } from "../../arc/attention-types"
 import {
+  decisionsFromHabitRunTraceSteps,
   isSafeHabitRunId as isSafeFlightRecorderHabitRunId,
   listHabitRunReceipts,
   writeHabitRunReceipt,
@@ -12,6 +13,7 @@ import {
   type HabitReturnRouteKind,
   type HabitRunOutcome,
   type HabitRunReceipt,
+  type HabitRunTraceStep,
   type HabitRunTrigger,
   type HabitSurfaceAttempt,
   type HabitToolPolicy,
@@ -75,6 +77,7 @@ export interface BuildHabitRunReceiptInput {
   toolPolicy: HabitToolPolicy
   producedRefs?: FlightRecorderProducedRef[]
   surfaceAttempts?: HabitSurfaceAttempt[]
+  traceSteps?: HabitRunTraceStep[]
   errors?: string[]
   nextRunAt?: string | null
   summarySnapshot?: HabitRunSummarySnapshot
@@ -575,10 +578,11 @@ function computeNextRunAt(habit: HabitFile, endedAt: string): string | null {
 
 function defaultSummarySnapshot(input: BuildHabitRunReceiptInput): HabitRunSummarySnapshot {
   const errors = input.errors ?? []
+  const decisions = decisionsFromHabitRunTraceSteps(input.traceSteps)
   if (errors.length > 0) {
     return {
       summary: `Habit ${input.habit.name} finished with errors: ${errors.join("; ")}`,
-      decisions: [],
+      decisions,
       nextLikelyStep: null,
     }
   }
@@ -587,7 +591,7 @@ function defaultSummarySnapshot(input: BuildHabitRunReceiptInput): HabitRunSumma
   if (surfaced) {
     return {
       summary: `Habit ${input.habit.name} surfaced via ${surfaced.recipient}/${surfaced.channel}.`,
-      decisions: [],
+      decisions,
       nextLikelyStep: null,
     }
   }
@@ -595,13 +599,13 @@ function defaultSummarySnapshot(input: BuildHabitRunReceiptInput): HabitRunSumma
   if (produced) {
     return {
       summary: `Habit ${input.habit.name} produced ${produced.kind}: ${produced.locator}.`,
-      decisions: [],
+      decisions,
       nextLikelyStep: null,
     }
   }
   return {
     summary: `Habit ${input.habit.name} finished with ${input.outcome}.`,
-    decisions: [],
+    decisions,
     nextLikelyStep: null,
   }
 }
@@ -629,6 +633,7 @@ export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRun
     summarySnapshot: input.summarySnapshot ?? defaultSummarySnapshot(input),
     producedRefs: input.producedRefs ?? [],
     surfaceAttempts: input.surfaceAttempts ?? [],
+    traceSteps: input.traceSteps ?? [],
     errors: input.errors ?? [],
   }
   emitNervesEvent({
@@ -688,6 +693,7 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       toolPolicy: input.toolPolicy,
       producedRefs,
       surfaceAttempts: input.surfaceAttempts,
+      traceSteps: input.traceSteps,
       errors: input.errors,
       summarySnapshot: input.summarySnapshot,
     })

@@ -123,6 +123,52 @@ describe("BlueBubbles context packet builder", () => {
     expect(result).toBeNull()
   })
 
+  it("filters same-thread history already present in provider-visible messages", async () => {
+    const anchor = message()
+    const exactKnown = message({
+      messageGuid: "exact-known-guid",
+      timestamp: Date.parse("2026-07-09T19:20:00.000Z"),
+      text: "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+    })
+    const normalizedKnown = message({
+      messageGuid: "normalized-known-guid",
+      timestamp: Date.parse("2026-07-09T19:21:00.000Z"),
+      text: "Already     In The Session",
+    })
+    const containedKnown = message({
+      messageGuid: "contained-known-guid",
+      timestamp: Date.parse("2026-07-09T19:22:00.000Z"),
+      text: "contained body text",
+    })
+    const blankBody = message({
+      messageGuid: "blank-body-guid",
+      timestamp: Date.parse("2026-07-09T19:22:30.000Z"),
+      text: "",
+      textForAgent: "",
+    })
+    const fresh = message({
+      messageGuid: "fresh-guid",
+      timestamp: Date.parse("2026-07-09T19:23:00.000Z"),
+      text: "fresh unseen context",
+    })
+
+    const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
+    const result = await buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client: { listRecentMessages: vi.fn().mockResolvedValue([exactKnown, normalizedKnown, containedKnown, blankBody, fresh]) },
+      event: anchor,
+      knownMessageTexts: [
+        "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+        " already in the session ",
+        "the existing transcript contains this contained body text already",
+        "   ",
+      ],
+    })
+
+    expect(result?.historyCount).toBe(1)
+    expect(result?.packet.messages.map((entry) => entry.sourceRef.messageGuid)).toEqual(["fresh-guid"])
+  })
+
   it("returns null before querying when the anchor timestamp or client query is unavailable", async () => {
     const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
     const listRecentMessages = vi.fn()

@@ -8697,7 +8697,7 @@ describe("ouro habit CLI execution", () => {
     const deps = makeDeps({ agentBundleRoot: tempBundle })
     const result = await runOuroCli(["habit", "inspect", "--agent", "test", "run-inspect"], deps)
 
-    expect(result).toBe(`${JSON.stringify(receipt, null, 2)}\n`)
+    expect(result).toBe(`${JSON.stringify({ ...receipt, traceSteps: [] }, null, 2)}\n`)
     expect(result).not.toContain("transcriptShouldNotBeLoaded")
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })

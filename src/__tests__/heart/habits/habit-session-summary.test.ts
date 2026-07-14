@@ -54,6 +54,7 @@ function makeReceipt(
     },
     producedRefs: overrides.producedRefs ?? [],
     surfaceAttempts: overrides.surfaceAttempts ?? [],
+    traceSteps: overrides.traceSteps ?? [],
     errors: overrides.errors ?? [],
     operationId: overrides.operationId ?? null,
     summarySnapshot: overrides.summarySnapshot ?? {
@@ -609,6 +610,64 @@ describe("habit-session-summary artifact reader", () => {
       decisions: ["Use the receipt decision."],
       toolsUsed: ["send_message"],
       nextLikelyStep: "Use the receipt next step.",
+    })
+  })
+
+  it("projects generic trace-step decisions when receipt snapshot decisions are empty", () => {
+    const agentRoot = makeAgentRoot()
+    const runId = "run-trace-decisions"
+    writeSummaryReceipt(agentRoot, runId, {
+      summarySnapshot: {
+        summary: "Receipt summary stays authoritative.",
+        decisions: [],
+        nextLikelyStep: null,
+      },
+      traceSteps: [
+        {
+          schemaVersion: 1,
+          stepId: "decision-no-change",
+          kind: "decision",
+          status: "succeeded",
+          at: "2026-06-11T12:00:10.000Z",
+          summary: "No new RSVPs were found.",
+          decisions: ["Do not send an unchanged RSVP summary."],
+        },
+        {
+          schemaVersion: 1,
+          stepId: "send-skipped",
+          kind: "send",
+          status: "skipped",
+          at: "2026-06-11T12:00:15.000Z",
+          summary: "Skipped outbound iMessage.",
+          decisions: ["Keep the run quiet because there was no new information."],
+          surfaceAttempt: {
+            recipient: "ari",
+            channel: "bluebubbles",
+            reason: "status",
+            result: "deferred",
+            routeKind: "originator",
+          },
+        },
+        {
+          schemaVersion: 1,
+          stepId: "error-skipped",
+          kind: "error",
+          status: "skipped",
+          at: "2026-06-11T12:00:20.000Z",
+          summary: "No error happened.",
+        },
+      ],
+    } as Partial<HabitSummaryReceipt>)
+    writeCanonicalSession(agentRoot, runId)
+
+    expect(readHabitSessionSummary(agentRoot, { runId })).toMatchObject({
+      summary: "Receipt summary stays authoritative.",
+      decisions: [
+        "Do not send an unchanged RSVP summary.",
+        "Keep the run quiet because there was no new information.",
+      ],
+      messagesSent: [],
+      warnings: [],
     })
   })
 

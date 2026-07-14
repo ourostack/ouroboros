@@ -135,7 +135,8 @@ describe("native RSVP habit runner", () => {
 
       const receipts = listHabitRunReceipts(tmp.agentRoot)
       expect(receipts).toHaveLength(1)
-      expect(receipts[0]).toMatchObject({
+      const receipt = receipts[0]
+      expect(receipt).toMatchObject({
         habitName: "rsvp-wedding",
         trigger: "launchd",
         outcome: "surfaced",
@@ -150,6 +151,47 @@ describe("native RSVP habit runner", () => {
           }),
         ],
       })
+      expect(receipt.traceSteps.map((step) => step.kind)).toEqual([
+        "trigger",
+        "habit_definition",
+        "fetch",
+        "snapshot",
+        "render",
+        "decision",
+        "produced_ref",
+        "surface_attempt",
+        "send",
+        "ledger",
+        "error",
+        "complete",
+      ])
+      expect(receipt.traceSteps).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stepId: "habit-definition",
+          kind: "habit_definition",
+          refs: [{ kind: "habit_definition", locator: "habits/rsvp-wedding.md", label: "rsvp-wedding" }],
+        }),
+        expect.objectContaining({
+          stepId: "decision",
+          kind: "decision",
+          decisions: ["mode=live", "sendAllowed=true", "outboundAction=send"],
+        }),
+        expect.objectContaining({
+          stepId: "send",
+          kind: "send",
+          status: "succeeded",
+          surfaceAttempt: expect.objectContaining({
+            channel: "bluebubbles",
+            result: "sent",
+          }),
+        }),
+        expect.objectContaining({
+          stepId: "error",
+          kind: "error",
+          status: "skipped",
+        }),
+      ]))
+      expect(receipt.summarySnapshot.decisions).toEqual(["mode=live", "sendAllowed=true", "outboundAction=send"])
 
       const runLedger = readRunLedger(tmp.agentRoot)
       expect(runLedger.map((row) => row.lifecycle)).toEqual(["started", "completed"])
@@ -223,6 +265,28 @@ describe("native RSVP habit runner", () => {
         trigger: "overdue",
         outcome: "error",
         errors: ["RSVP refresh requires native RSVP config before live work can run"],
+        traceSteps: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "decision",
+            decisions: ["mode=shadow", "sendAllowed=false", "outboundAction=unknown"],
+          }),
+          expect.objectContaining({
+            stepId: "send",
+            kind: "send",
+            status: "skipped",
+          }),
+          expect.objectContaining({
+            stepId: "error",
+            kind: "error",
+            status: "failed",
+            error: "RSVP refresh requires native RSVP config before live work can run",
+          }),
+          expect.objectContaining({
+            stepId: "complete",
+            kind: "complete",
+            status: "failed",
+          }),
+        ]),
       })
       expect(readRunLedger(tmp.agentRoot).map((row) => row.lifecycle)).toEqual(["started", "error"])
       expect(readRsvpSpendLedger(tmp.agentRoot).runs).toHaveLength(2)
@@ -311,9 +375,175 @@ describe("native RSVP habit runner", () => {
             locator: "state/rsvp/snapshots/snap-shadow-1.json",
           },
         ],
+        traceSteps: expect.arrayContaining([
+          expect.objectContaining({
+            stepId: "snapshot",
+            kind: "snapshot",
+            status: "succeeded",
+            refs: [{ kind: "snapshot", locator: "state/rsvp/snapshots/snap-shadow-1.json" }],
+          }),
+          expect.objectContaining({
+            stepId: "produced-ref",
+            kind: "produced_ref",
+            status: "succeeded",
+            producedRefs: [{ kind: "none", locator: "state/rsvp/snapshots/snap-shadow-1.json" }],
+          }),
+          expect.objectContaining({
+            stepId: "send",
+            kind: "send",
+            status: "skipped",
+          }),
+        ]),
       })
     } finally {
       tmp.cleanup()
+    }
+  })
+
+  it("records failed live delivery attempts and malformed outbound decisions in generic trace steps", async () => {
+    const tmp = seedRsvpHabit("live")
+    const runRefresh = vi.fn(async () => JSON.stringify({
+      ok: true,
+      command: "rsvp.refresh",
+      sideEffect: true,
+      agent: "slugger",
+      mode: "live",
+      message: "RSVP refresh completed",
+      sendAllowed: true,
+      refresh: {
+        snapshotId: "snap-live-failed-delivery",
+        reportText: "RSVP Update -- Wedding",
+        outboundDecision: { action: 12 },
+        delivery: {
+          status: "failed",
+          error: "BlueBubbles rejected the send",
+        },
+      },
+    }))
+
+    try {
+      const result = await runNativeRsvpHabit({
+        agent: "slugger",
+        bundlesRoot: tmp.bundlesRoot,
+        habitName: "rsvp-wedding",
+        trigger: "launchd",
+        now: () => "2026-07-12T17:00:05.000Z",
+        runRefresh,
+      })
+
+      expect(result).toMatchObject({
+        ok: true,
+        lifecycle: "completed",
+      })
+      const receipt = listHabitRunReceipts(tmp.agentRoot)[0]
+      expect(receipt).toMatchObject({
+        surfaceAttempts: [
+          expect.objectContaining({
+            channel: "bluebubbles",
+            result: "failed",
+            rawStatus: "failed",
+            error: "BlueBubbles rejected the send",
+          }),
+        ],
+        traceSteps: expect.arrayContaining([
+          expect.objectContaining({
+            stepId: "decision",
+            decisions: ["mode=live", "sendAllowed=true", "outboundAction=unknown"],
+          }),
+          expect.objectContaining({
+            stepId: "surface-attempt",
+            kind: "surface_attempt",
+            status: "failed",
+            surfaceAttempt: expect.objectContaining({
+              result: "failed",
+              error: "BlueBubbles rejected the send",
+            }),
+          }),
+          expect.objectContaining({
+            stepId: "send",
+            kind: "send",
+            status: "failed",
+          }),
+        ]),
+      })
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("maps optional live delivery status variants into surface attempt evidence", async () => {
+    const noDelivery = seedRsvpHabit("live")
+    const queuedDelivery = seedRsvpHabit("live")
+    const messageOnlyFailure = seedRsvpHabit("live")
+    const statusOnlyFailure = seedRsvpHabit("live")
+
+    const runWithPayload = (payload: Record<string, unknown>) => runNativeRsvpHabit({
+      agent: "slugger",
+      bundlesRoot: payload.bundlesRoot as string,
+      habitName: "rsvp-wedding",
+      trigger: "launchd",
+      now: () => "2026-07-12T17:00:05.000Z",
+      runRefresh: async () => JSON.stringify(payload.refreshPayload),
+    })
+    const refreshPayload = (delivery?: Record<string, unknown>) => ({
+      ok: true,
+      command: "rsvp.refresh",
+      sideEffect: true,
+      agent: "slugger",
+      mode: "live",
+      message: "RSVP refresh completed",
+      sendAllowed: true,
+      refresh: {
+        snapshotId: "snap-live-delivery-status",
+        reportText: "RSVP Update -- Wedding",
+        outboundDecision: { action: "send" },
+        ...(delivery ? { delivery } : {}),
+      },
+    })
+
+    try {
+      await runWithPayload({
+        bundlesRoot: noDelivery.bundlesRoot,
+        refreshPayload: refreshPayload(),
+      })
+      expect(listHabitRunReceipts(noDelivery.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "sent",
+      }))
+      expect(listHabitRunReceipts(noDelivery.agentRoot)[0].surfaceAttempts[0]).not.toHaveProperty("rawStatus")
+
+      await runWithPayload({
+        bundlesRoot: queuedDelivery.bundlesRoot,
+        refreshPayload: refreshPayload({ status: "queued" }),
+      })
+      expect(listHabitRunReceipts(queuedDelivery.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "sent",
+        rawStatus: "queued",
+      }))
+
+      await runWithPayload({
+        bundlesRoot: messageOnlyFailure.bundlesRoot,
+        refreshPayload: refreshPayload({ result: "error", message: "provider returned an error" }),
+      })
+      expect(listHabitRunReceipts(messageOnlyFailure.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "failed",
+        rawStatus: "error",
+        error: "provider returned an error",
+      }))
+
+      await runWithPayload({
+        bundlesRoot: statusOnlyFailure.bundlesRoot,
+        refreshPayload: refreshPayload({ status: "failed" }),
+      })
+      expect(listHabitRunReceipts(statusOnlyFailure.agentRoot)[0].surfaceAttempts[0]).toEqual(expect.objectContaining({
+        result: "failed",
+        rawStatus: "failed",
+        error: "failed",
+      }))
+    } finally {
+      noDelivery.cleanup()
+      queuedDelivery.cleanup()
+      messageOnlyFailure.cleanup()
+      statusOnlyFailure.cleanup()
     }
   })
 

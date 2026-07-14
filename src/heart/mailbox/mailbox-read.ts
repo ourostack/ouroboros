@@ -26,6 +26,8 @@ export {
   readHabitRunReceiptView,
   readHabitRunView,
   readHabitView,
+  readContextPacketListView,
+  readContextPacketView,
   readLogView,
   readNotesView,
   readNeedsMeView,
