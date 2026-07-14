@@ -2751,6 +2751,7 @@ describe("mailbox deep readers", () => {
 	        },
 	        producedRefs,
 	        surfaceAttempts,
+	        traceSteps: overrides.traceSteps ?? [],
 	        errors,
 	        summarySnapshot,
 	      }
@@ -2846,11 +2847,30 @@ describe("mailbox deep readers", () => {
     it("reads one habit receipt and returns null for missing unsafe or malformed receipts", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
-      const receipt = makeHabitReceipt({ runId: "run-detail" })
+      const receipt = makeHabitReceipt({
+        runId: "run-detail",
+        traceSteps: [{
+          schemaVersion: 1,
+          stepId: "decision",
+          kind: "decision",
+          status: "succeeded",
+          at: "2026-06-11T10:00:30.000Z",
+          summary: "Habit decided to surface the update.",
+          decisions: ["Surface the update."],
+        }],
+      })
       writeHabitRunReceipt(agentRoot, receipt)
       fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "malformed.json"), "{\"schemaVersion\":2}", "utf-8")
 
-      expect(readHabitRunReceiptView(agentRoot, "run-detail")).toEqual({ receipt })
+      expect(readHabitRunReceiptView(agentRoot, "run-detail")).toEqual({
+        receipt: {
+          ...receipt,
+          summarySnapshot: {
+            ...receipt.summarySnapshot,
+            decisions: ["Surface the update."],
+          },
+        },
+      })
       expect(readHabitRunReceiptView(agentRoot, "missing")).toBeNull()
       expect(readHabitRunReceiptView(agentRoot, "../escape")).toBeNull()
       expect(readHabitRunReceiptView(agentRoot, "bad%2fescape")).toBeNull()

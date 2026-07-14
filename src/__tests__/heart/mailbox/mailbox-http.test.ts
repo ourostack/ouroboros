@@ -311,6 +311,7 @@ describe("mailbox http", () => {
       toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: false },
       producedRefs: [],
       surfaceAttempts: [],
+      traceSteps: [],
       errors: [],
     }
     writeHabitRunReceipt(path.join(bundlesRoot, "nobody.ouro"), receipt)

@@ -135,7 +135,8 @@ describe("native RSVP habit runner", () => {
 
       const receipts = listHabitRunReceipts(tmp.agentRoot)
       expect(receipts).toHaveLength(1)
-      expect(receipts[0]).toMatchObject({
+      const receipt = receipts[0]
+      expect(receipt).toMatchObject({
         habitName: "rsvp-wedding",
         trigger: "launchd",
         outcome: "surfaced",
@@ -150,6 +151,47 @@ describe("native RSVP habit runner", () => {
           }),
         ],
       })
+      expect(receipt.traceSteps.map((step) => step.kind)).toEqual([
+        "trigger",
+        "habit_definition",
+        "fetch",
+        "snapshot",
+        "render",
+        "decision",
+        "produced_ref",
+        "surface_attempt",
+        "send",
+        "ledger",
+        "error",
+        "complete",
+      ])
+      expect(receipt.traceSteps).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stepId: "habit-definition",
+          kind: "habit_definition",
+          refs: [{ kind: "habit_definition", locator: "habits/rsvp-wedding.md", label: "rsvp-wedding" }],
+        }),
+        expect.objectContaining({
+          stepId: "decision",
+          kind: "decision",
+          decisions: ["mode=live", "sendAllowed=true", "outboundAction=send"],
+        }),
+        expect.objectContaining({
+          stepId: "send",
+          kind: "send",
+          status: "succeeded",
+          surfaceAttempt: expect.objectContaining({
+            channel: "bluebubbles",
+            result: "sent",
+          }),
+        }),
+        expect.objectContaining({
+          stepId: "error",
+          kind: "error",
+          status: "skipped",
+        }),
+      ]))
+      expect(receipt.summarySnapshot.decisions).toEqual(["mode=live", "sendAllowed=true", "outboundAction=send"])
 
       const runLedger = readRunLedger(tmp.agentRoot)
       expect(runLedger.map((row) => row.lifecycle)).toEqual(["started", "completed"])
@@ -223,6 +265,28 @@ describe("native RSVP habit runner", () => {
         trigger: "overdue",
         outcome: "error",
         errors: ["RSVP refresh requires native RSVP config before live work can run"],
+        traceSteps: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "decision",
+            decisions: ["mode=shadow", "sendAllowed=false", "outboundAction=unknown"],
+          }),
+          expect.objectContaining({
+            stepId: "send",
+            kind: "send",
+            status: "skipped",
+          }),
+          expect.objectContaining({
+            stepId: "error",
+            kind: "error",
+            status: "failed",
+            error: "RSVP refresh requires native RSVP config before live work can run",
+          }),
+          expect.objectContaining({
+            stepId: "complete",
+            kind: "complete",
+            status: "failed",
+          }),
+        ]),
       })
       expect(readRunLedger(tmp.agentRoot).map((row) => row.lifecycle)).toEqual(["started", "error"])
       expect(readRsvpSpendLedger(tmp.agentRoot).runs).toHaveLength(2)
@@ -311,6 +375,25 @@ describe("native RSVP habit runner", () => {
             locator: "state/rsvp/snapshots/snap-shadow-1.json",
           },
         ],
+        traceSteps: expect.arrayContaining([
+          expect.objectContaining({
+            stepId: "snapshot",
+            kind: "snapshot",
+            status: "succeeded",
+            refs: [{ kind: "snapshot", locator: "state/rsvp/snapshots/snap-shadow-1.json" }],
+          }),
+          expect.objectContaining({
+            stepId: "produced-ref",
+            kind: "produced_ref",
+            status: "succeeded",
+            producedRefs: [{ kind: "none", locator: "state/rsvp/snapshots/snap-shadow-1.json" }],
+          }),
+          expect.objectContaining({
+            stepId: "send",
+            kind: "send",
+            status: "skipped",
+          }),
+        ]),
       })
     } finally {
       tmp.cleanup()

@@ -1157,6 +1157,140 @@ describe("Arc flight recorder", () => {
     })
   })
 
+  it("normalizes and validates generic habit trace steps on receipt read and write", async () => {
+    const recorder = await import("../../arc/flight-recorder") as any
+    const runId = "2026-06-08T12-20-00-000Z-checkup-55555555"
+    const receipt = {
+      schemaVersion: 2,
+      runId,
+      sessionId: runId,
+      habitName: "checkup",
+      trigger: "launchd",
+      startedAt: "2026-06-08T12:20:00.000Z",
+      endedAt: "2026-06-08T12:21:00.000Z",
+      outcome: "surfaced",
+      definitionLocator: "habits/checkup.md",
+      sessionLocator: `state/habit-sessions/${runId}/session.json`,
+      pendingLocator: `state/habit-sessions/${runId}/pending`,
+      runtimeStateLocator: "state/habits/checkup.json",
+      receiptLocator: `arc/flight-recorder/habit-receipts/${runId}.json`,
+      nextRunAt: null,
+      permissionEnvelope: {
+        schemaVersion: 1,
+        canMessageOutward: true,
+        returnRoutes: [{ kind: "originator", recipient: "ari", status: "allowed", friendId: "ari", channel: "bluebubbles", key: "chat" }],
+        deniedTools: [],
+        warnings: [],
+      },
+      toolPolicy: {
+        requestedTools: null,
+        grantedTools: ["surface", "send_message"],
+        deniedTools: [],
+        outwardMessagingAllowed: true,
+      },
+      producedRefs: [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
+      surfaceAttempts: [{
+        recipient: "ari",
+        channel: "bluebubbles",
+        reason: "status",
+        result: "sent",
+        routeKind: "originator",
+      }],
+      errors: [],
+      traceSteps: [
+        {
+          schemaVersion: 1,
+          stepId: "trigger-launchd",
+          kind: "trigger",
+          status: "succeeded",
+          at: "2026-06-08T12:20:00.000Z",
+          summary: "launchd started the habit",
+          refs: [{ kind: "habit_definition", locator: "habits/checkup.md", label: "Checkup habit" }],
+        },
+        {
+          schemaVersion: 1,
+          stepId: "decision-send",
+          kind: "decision",
+          status: "succeeded",
+          at: "2026-06-08T12:20:30.000Z",
+          summary: "RSVP counts changed, so surface the update.",
+          decisions: ["Surface the RSVP update because counts changed."],
+          refs: [{ kind: "surface", locator: "surface/ari/bluebubbles" }],
+        },
+        {
+          schemaVersion: 1,
+          stepId: "send-imessage",
+          kind: "send",
+          status: "succeeded",
+          at: "2026-06-08T12:20:45.000Z",
+          summary: "Sent the update to Ari.",
+          surfaceAttempt: {
+            recipient: "ari",
+            channel: "bluebubbles",
+            reason: "status",
+            result: "sent",
+            routeKind: "originator",
+          },
+        },
+        {
+          schemaVersion: 1,
+          stepId: "error-none",
+          kind: "error",
+          status: "skipped",
+          at: "2026-06-08T12:20:50.000Z",
+          summary: "No error happened.",
+        },
+      ],
+    }
+
+    recorder.writeHabitRunReceipt(agentRoot, receipt)
+
+    expect(recorder.readHabitRunReceipt(agentRoot, runId)).toMatchObject({
+      runId,
+      traceSteps: receipt.traceSteps,
+    })
+
+    const receiptDir = path.join(agentRoot, "arc", "flight-recorder", "habit-receipts")
+    fs.writeFileSync(path.join(receiptDir, "missing-trace.json"), JSON.stringify({
+      ...receipt,
+      runId: "missing-trace",
+      sessionId: "missing-trace",
+      receiptLocator: "arc/flight-recorder/habit-receipts/missing-trace.json",
+      traceSteps: undefined,
+    }), "utf-8")
+    fs.writeFileSync(path.join(receiptDir, "legacy-trace-default.json"), JSON.stringify({
+      schemaVersion: 1,
+      runId: "legacy-trace-default",
+      habitName: "legacy-checkup",
+      trigger: "poke",
+      startedAt: "2026-06-08T11:00:00.000Z",
+      endedAt: "2026-06-08T11:01:00.000Z",
+      outcome: "blocked",
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: ["legacy block"],
+    }), "utf-8")
+    fs.writeFileSync(path.join(receiptDir, "wrong-trace-kind.json"), JSON.stringify({
+      ...receipt,
+      runId: "wrong-trace-kind",
+      sessionId: "wrong-trace-kind",
+      receiptLocator: "arc/flight-recorder/habit-receipts/wrong-trace-kind.json",
+      traceSteps: [{ schemaVersion: 1, stepId: "bad", kind: "banana", status: "succeeded", at: "2026-06-08T12:20:00.000Z", summary: "bad" }],
+    }), "utf-8")
+    fs.writeFileSync(path.join(receiptDir, "wrong-trace-ref.json"), JSON.stringify({
+      ...receipt,
+      runId: "wrong-trace-ref",
+      sessionId: "wrong-trace-ref",
+      receiptLocator: "arc/flight-recorder/habit-receipts/wrong-trace-ref.json",
+      traceSteps: [{ schemaVersion: 1, stepId: "bad-ref", kind: "produced_ref", status: "succeeded", at: "2026-06-08T12:20:00.000Z", summary: "bad", refs: [{ kind: "", locator: "" }] }],
+    }), "utf-8")
+
+    expect(recorder.readHabitRunReceipt(agentRoot, "missing-trace")).toMatchObject({ traceSteps: [] })
+    expect(recorder.readHabitRunReceipt(agentRoot, "legacy-trace-default")).toMatchObject({ traceSteps: [] })
+    expect(recorder.readHabitRunReceipt(agentRoot, "wrong-trace-kind")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "wrong-trace-ref")).toBeNull()
+  })
+
   it("accepts every habit trigger and outcome variant in schema v2 receipts", async () => {
     const recorder = await import("../../arc/flight-recorder") as any
     const triggers = ["cron", "launchd", "poke", "overdue", "manual"]

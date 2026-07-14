@@ -134,6 +134,43 @@ export interface HabitSurfaceAttempt {
   error?: string
 }
 
+export type HabitRunTraceStepKind =
+  | "trigger"
+  | "habit_definition"
+  | "fetch"
+  | "snapshot"
+  | "render"
+  | "decision"
+  | "produced_ref"
+  | "surface_attempt"
+  | "send"
+  | "ledger"
+  | "error"
+  | "complete"
+
+export type HabitRunTraceStepStatus = "started" | "succeeded" | "skipped" | "blocked" | "failed"
+
+export interface HabitRunTraceRef {
+  kind: string
+  locator: string
+  label?: string
+}
+
+export interface HabitRunTraceStep {
+  schemaVersion: 1
+  stepId: string
+  kind: HabitRunTraceStepKind
+  status: HabitRunTraceStepStatus
+  at: string
+  summary: string
+  refs?: HabitRunTraceRef[]
+  producedRefs?: FlightRecorderProducedRef[]
+  decisions?: string[]
+  surfaceAttempt?: HabitSurfaceAttempt
+  error?: string
+  meta?: Record<string, unknown>
+}
+
 export interface HabitRunSummarySnapshot {
   summary: string
   decisions: string[]
@@ -174,11 +211,15 @@ export interface HabitRunReceipt {
   summarySnapshot: HabitRunSummarySnapshot
   producedRefs: FlightRecorderProducedRef[]
   surfaceAttempts: HabitSurfaceAttempt[]
+  traceSteps: HabitRunTraceStep[]
   errors: string[]
 }
 
 export type WritableHabitRunReceipt =
-  | (Omit<HabitRunReceipt, "summarySnapshot"> & { summarySnapshot?: HabitRunSummarySnapshot })
+  | (Omit<HabitRunReceipt, "summarySnapshot" | "traceSteps"> & {
+    summarySnapshot?: HabitRunSummarySnapshot
+    traceSteps?: HabitRunTraceStep[]
+  })
   | LegacyHabitRunReceipt
 
 export function isHabitRunTrigger(value: unknown): value is HabitRunTrigger {
@@ -228,6 +269,17 @@ function atomicWriteJson(filePath: string, value: unknown): void {
 
 function cappedArray(values: string[]): string[] {
   return values.map((value) => capStructuredRecordString(value))
+}
+
+export function decisionsFromHabitRunTraceSteps(traceSteps: readonly HabitRunTraceStep[] = []): string[] {
+  const decisions: string[] = []
+  for (const step of traceSteps) {
+    for (const decision of step.decisions ?? []) {
+      const trimmed = decision.trim()
+      if (trimmed.length > 0) decisions.push(capStructuredRecordString(trimmed))
+    }
+  }
+  return uniqueStrings(decisions)
 }
 
 function normalizeEvent(input: RecordFlightRecorderEventInput): FlightRecorderEvent {
@@ -891,6 +943,59 @@ function isHabitSurfaceAttemptArray(value: unknown): value is HabitSurfaceAttemp
       && (entry.error === undefined || typeof entry.error === "string"))
 }
 
+function isHabitRunTraceStepKind(value: unknown): value is HabitRunTraceStepKind {
+  return value === "trigger"
+    || value === "habit_definition"
+    || value === "fetch"
+    || value === "snapshot"
+    || value === "render"
+    || value === "decision"
+    || value === "produced_ref"
+    || value === "surface_attempt"
+    || value === "send"
+    || value === "ledger"
+    || value === "error"
+    || value === "complete"
+}
+
+function isHabitRunTraceStepStatus(value: unknown): value is HabitRunTraceStepStatus {
+  return value === "started"
+    || value === "succeeded"
+    || value === "skipped"
+    || value === "blocked"
+    || value === "failed"
+}
+
+function isHabitRunTraceRefArray(value: unknown): value is HabitRunTraceRef[] {
+  return Array.isArray(value)
+    && value.every((entry) => isPlainRecord(entry)
+      && typeof entry.kind === "string"
+      && entry.kind.trim().length > 0
+      && typeof entry.locator === "string"
+      && entry.locator.trim().length > 0
+      && (entry.label === undefined || typeof entry.label === "string"))
+}
+
+function isHabitRunTraceStepArray(value: unknown): value is HabitRunTraceStep[] {
+  return Array.isArray(value)
+    && value.every((entry) => isPlainRecord(entry)
+      && entry.schemaVersion === 1
+      && typeof entry.stepId === "string"
+      && entry.stepId.trim().length > 0
+      && isHabitRunTraceStepKind(entry.kind)
+      && isHabitRunTraceStepStatus(entry.status)
+      && typeof entry.at === "string"
+      && entry.at.trim().length > 0
+      && typeof entry.summary === "string"
+      && entry.summary.trim().length > 0
+      && (entry.refs === undefined || isHabitRunTraceRefArray(entry.refs))
+      && (entry.producedRefs === undefined || isProducedRefArray(entry.producedRefs))
+      && (entry.decisions === undefined || isStringArray(entry.decisions))
+      && (entry.surfaceAttempt === undefined || isHabitSurfaceAttemptArray([entry.surfaceAttempt]))
+      && (entry.error === undefined || typeof entry.error === "string")
+      && (entry.meta === undefined || isPlainRecord(entry.meta)))
+}
+
 function isHabitReturnRouteArray(value: unknown): value is HabitReturnRoute[] {
   return Array.isArray(value)
     && value.every((entry) => isPlainRecord(entry)
@@ -925,12 +1030,14 @@ function defaultHabitRunSummarySnapshot(receipt: {
   outcome: HabitRunOutcome
   producedRefs: FlightRecorderProducedRef[]
   surfaceAttempts: HabitSurfaceAttempt[]
+  traceSteps?: HabitRunTraceStep[]
   errors: string[]
 }): HabitRunSummarySnapshot {
+  const decisions = decisionsFromHabitRunTraceSteps(receipt.traceSteps)
   if (receipt.errors.length > 0) {
     return {
       summary: `Habit ${receipt.habitName} finished with errors: ${receipt.errors.join("; ")}`,
-      decisions: [],
+      decisions,
       nextLikelyStep: null,
     }
   }
@@ -939,7 +1046,7 @@ function defaultHabitRunSummarySnapshot(receipt: {
   if (surface) {
     return {
       summary: `Habit ${receipt.habitName} surfaced via ${surface.recipient}/${surface.channel}.`,
-      decisions: [],
+      decisions,
       nextLikelyStep: null,
     }
   }
@@ -947,13 +1054,13 @@ function defaultHabitRunSummarySnapshot(receipt: {
   if (produced) {
     return {
       summary: `Habit ${receipt.habitName} produced ${produced.kind}: ${produced.locator}.`,
-      decisions: [],
+      decisions,
       nextLikelyStep: null,
     }
   }
   return {
     summary: `Habit ${receipt.habitName} finished with ${receipt.outcome}.`,
-    decisions: [],
+    decisions,
     nextLikelyStep: null,
   }
 }
@@ -973,7 +1080,7 @@ function normalizeHabitRunSummarySnapshot(
       : fallback.nextLikelyStep
   return {
     summary: capStructuredRecordString(summary),
-    decisions: cappedArray(isStringArray(snapshot.decisions) ? snapshot.decisions : fallback.decisions),
+    decisions: cappedArray(isStringArray(snapshot.decisions) && snapshot.decisions.length > 0 ? snapshot.decisions : fallback.decisions),
     nextLikelyStep: nextLikelyStep === null ? null : capStructuredRecordString(nextLikelyStep),
   }
 }
@@ -1010,6 +1117,7 @@ function isHabitRunReceipt(value: unknown): value is HabitRunReceipt {
     && (value.summarySnapshot === undefined || isPlainRecord(value.summarySnapshot))
     && isProducedRefArray(value.producedRefs)
     && isHabitSurfaceAttemptArray(value.surfaceAttempts)
+    && (value.traceSteps === undefined || isHabitRunTraceStepArray(value.traceSteps))
     && isStringArray(value.errors)
 }
 
@@ -1081,12 +1189,59 @@ function normalizeLegacyHabitRunReceipt(receipt: LegacyHabitRunReceipt): HabitRu
     summarySnapshot: defaultHabitRunSummarySnapshot(receipt),
     producedRefs: receipt.producedRefs,
     surfaceAttempts: receipt.surfaceAttempts,
+    traceSteps: [],
     errors: receipt.errors,
   }
 }
 
-function capHabitRunReceipt(receipt: Omit<HabitRunReceipt, "summarySnapshot"> & { summarySnapshot?: HabitRunSummarySnapshot }): HabitRunReceipt {
-  const fallbackSnapshot = defaultHabitRunSummarySnapshot(receipt)
+function capHabitRunTraceRefs(refs: HabitRunTraceRef[] | undefined): HabitRunTraceRef[] | undefined {
+  if (!refs || refs.length === 0) return undefined
+  return refs.map((ref) => ({
+    kind: capStructuredRecordString(ref.kind),
+    locator: capStructuredRecordString(ref.locator),
+    ...(ref.label ? { label: capStructuredRecordString(ref.label) } : {}),
+  }))
+}
+
+function capHabitRunTraceStep(step: HabitRunTraceStep): HabitRunTraceStep {
+  const refs = capHabitRunTraceRefs(step.refs)
+  const producedRefs = step.producedRefs?.map((ref) => ({ ...ref, locator: capStructuredRecordString(ref.locator) }))
+  const decisions = step.decisions ? cappedArray(step.decisions) : undefined
+  const surfaceAttempt = step.surfaceAttempt
+    ? {
+        ...step.surfaceAttempt,
+        recipient: capStructuredRecordString(step.surfaceAttempt.recipient),
+        channel: capStructuredRecordString(step.surfaceAttempt.channel),
+        ...(step.surfaceAttempt.rawStatus ? { rawStatus: capStructuredRecordString(step.surfaceAttempt.rawStatus) } : {}),
+        ...(step.surfaceAttempt.error ? { error: capStructuredRecordString(step.surfaceAttempt.error) } : {}),
+      }
+    : undefined
+  return {
+    schemaVersion: 1,
+    stepId: capStructuredRecordString(step.stepId),
+    kind: step.kind,
+    status: step.status,
+    at: capStructuredRecordString(step.at),
+    summary: capStructuredRecordString(step.summary),
+    ...(refs ? { refs } : {}),
+    ...(producedRefs && producedRefs.length > 0 ? { producedRefs } : {}),
+    ...(decisions && decisions.length > 0 ? { decisions } : {}),
+    ...(surfaceAttempt ? { surfaceAttempt } : {}),
+    ...(step.error ? { error: capStructuredRecordString(step.error) } : {}),
+    ...(step.meta ? { meta: capStructuredRecordStringLeaves(step.meta) } : {}),
+  }
+}
+
+function normalizeHabitRunTraceSteps(traceSteps: HabitRunTraceStep[] | undefined): HabitRunTraceStep[] {
+  return (traceSteps ?? []).map((step) => capHabitRunTraceStep(step))
+}
+
+function capHabitRunReceipt(receipt: Omit<HabitRunReceipt, "summarySnapshot" | "traceSteps"> & {
+  summarySnapshot?: HabitRunSummarySnapshot
+  traceSteps?: HabitRunTraceStep[]
+}): HabitRunReceipt {
+  const traceSteps = normalizeHabitRunTraceSteps(receipt.traceSteps)
+  const fallbackSnapshot = defaultHabitRunSummarySnapshot({ ...receipt, traceSteps })
   return {
     ...receipt,
     habitName: capStructuredRecordString(receipt.habitName),
@@ -1124,6 +1279,7 @@ function capHabitRunReceipt(receipt: Omit<HabitRunReceipt, "summarySnapshot"> & 
       ...(attempt.rawStatus ? { rawStatus: capStructuredRecordString(attempt.rawStatus) } : {}),
       ...(attempt.error ? { error: capStructuredRecordString(attempt.error) } : {}),
     })),
+    traceSteps,
     errors: receipt.errors.map((error) => capStructuredRecordString(error)),
   }
 }
