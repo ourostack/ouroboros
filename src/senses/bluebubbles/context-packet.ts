@@ -23,6 +23,7 @@ export interface BuildBlueBubblesContextPacketInput {
   agentName: string
   client: Pick<BlueBubblesClient, "listRecentMessages">
   event: BlueBubblesNormalizedMessage
+  knownMessageTexts?: string[]
 }
 
 function sha256Hex(input: string): string {
@@ -69,6 +70,21 @@ function messageToContextInput(
   }
 }
 
+function normalizeKnownMessageText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase()
+}
+
+function hasKnownMessageText(candidate: BlueBubblesNormalizedMessage, knownTexts: Set<string>): boolean {
+  if (knownTexts.size === 0) return false
+  const body = normalizeKnownMessageText(candidate.textForAgent || candidate.text)
+  if (!body) return true
+  if (knownTexts.has(body)) return true
+  for (const known of knownTexts) {
+    if (body.length >= 12 && known.includes(body)) return true
+  }
+  return false
+}
+
 export async function buildBlueBubblesContextPacket(
   input: BuildBlueBubblesContextPacketInput,
 ): Promise<BlueBubblesContextPacketBuildResult | null> {
@@ -77,6 +93,11 @@ export async function buildBlueBubblesContextPacket(
   const event = input.event
   const chatGuidHash = blueBubblesContextChatKeyHash(event)
   const anchorTimestamp = new Date(event.timestamp).toISOString()
+  const knownTexts = new Set(
+    (input.knownMessageTexts ?? [])
+      .map(normalizeKnownMessageText)
+      .filter((value) => value.length > 0),
+  )
   const candidates = await input.client.listRecentMessages({
     beforeTimestamp: event.timestamp,
     limit: BLUEBUBBLES_CONTEXT_PACKET_LIMIT,
@@ -90,6 +111,7 @@ export async function buildBlueBubblesContextPacket(
     .filter((candidate) => candidate.messageGuid !== event.messageGuid)
     .filter((candidate) => candidate.timestamp <= event.timestamp)
     .filter((candidate) => event.timestamp - candidate.timestamp <= BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS)
+    .filter((candidate) => !hasKnownMessageText(candidate, knownTexts))
   if (history.length === 0) return null
   const packet = buildSenseContextPacket({
     agent: input.agentName,

@@ -298,6 +298,38 @@ describe("rest tool in runAgent", () => {
     }))
   })
 
+  it("passes rendered sense context packet messages through to the provider request", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk("I can see the context.")]))
+
+    const callbacks = makeCallbacks()
+    await runAgent(
+      [
+        { role: "system", content: "system prompt" },
+        {
+          role: "system",
+          content: "Untrusted bluebubbles context packet scp_same_thread:\nRSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
+        },
+        { role: "user", content: "who is pending?" },
+      ],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      { contextPacketIds: ["scp_same_thread"] },
+    )
+
+    const createCall = mockCreate.mock.calls[0]?.[0]
+    expect(createCall.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("Untrusted bluebubbles context packet scp_same_thread"),
+      }),
+      expect.objectContaining({
+        role: "user",
+        content: "who is pending?",
+      }),
+    ]))
+  })
+
   // ── Attention queue gating ──────────────────────────────────
 
   it("rest is rejected when attention queue has items", async () => {
