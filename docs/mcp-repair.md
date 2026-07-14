@@ -17,6 +17,7 @@ ouro mcp doctor --agent <agent>
 ```
 
 This launches `ouro mcp-serve` directly, calls the MCP `status` tool, and reports daemon health, sense health, MCP/daemon version alignment, and the repair commands.
+The doctor focuses on bridge health, so it ignores aggregate daemon warnings that come from unrelated health checks.
 
 For CI-style checks, use:
 

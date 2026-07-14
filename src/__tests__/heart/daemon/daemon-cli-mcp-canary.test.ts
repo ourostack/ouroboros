@@ -216,6 +216,7 @@ describe("ouro mcp canary", () => {
     expect(mockRunMcpStatusCanary).toHaveBeenCalledWith(expect.objectContaining({
       agent: "slugger",
       socketPath: "/tmp/ouro-test.sock",
+      ignoreOverviewHealth: true,
     }))
     expect(mockFormatMcpStatusDoctorResult).toHaveBeenCalledWith(expect.objectContaining({
       summary: "mcp canary ok",
