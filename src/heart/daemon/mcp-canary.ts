@@ -25,6 +25,7 @@ export interface McpStatusCanaryOptions {
   timeoutMs?: number
   requiredSenses?: string[]
   ignoreOverviewHealth?: boolean
+  ignoreSenseHealth?: boolean
   spawnImpl?: SpawnImpl
 }
 
@@ -173,7 +174,7 @@ export function parseMcpStatusText(text: string): ParsedMcpStatus {
 function validateMcpStatus(
   parsed: ParsedMcpStatus,
   requiredSenses: string[],
-  options: Partial<Pick<McpStatusCanaryOptions, "ignoreOverviewHealth" | "agent">> = {},
+  options: Partial<Pick<McpStatusCanaryOptions, "ignoreOverviewHealth" | "ignoreSenseHealth" | "agent">> = {},
 ): McpStatusCanaryResult {
   const failures: string[] = []
   if (parsed.daemon.daemon !== "running") {
@@ -191,10 +192,12 @@ function validateMcpStatus(
     failures.push(`version mismatch daemon=${parsed.daemon.daemonVersion} mcp=${parsed.daemon.mcpVersion}`)
   }
 
-  for (const [sense, row] of Object.entries(parsed.senses)) {
-    if (row.status === "disabled") continue
-    if (row.status === "running" || row.status === "interactive") continue
-    failures.push(`sense=${sense}:${row.status}`)
+  if (!options.ignoreSenseHealth) {
+    for (const [sense, row] of Object.entries(parsed.senses)) {
+      if (row.status === "disabled") continue
+      if (row.status === "running" || row.status === "interactive") continue
+      failures.push(`sense=${sense}:${row.status}`)
+    }
   }
 
   for (const sense of requiredSenses) {
@@ -212,7 +215,7 @@ function validateMcpStatus(
     .map((row) => `${row.name}:${row.status}`)
     .join(",")
   const summary = failures.length === 0
-    ? `mcp canary ok: daemon=${parsed.daemon.daemon} health=${parsed.daemon.health}${options.ignoreOverviewHealth ? " (overview ignored)" : ""} senses=${senseSummary}`
+    ? `mcp canary ok: daemon=${parsed.daemon.daemon} health=${parsed.daemon.health}${options.ignoreOverviewHealth ? " (overview ignored)" : ""} senses=${senseSummary}${options.ignoreSenseHealth ? " (sense health reported, not gated)" : ""}`
     : `mcp canary failed: ${failures.join("; ")}`
   const repair = hasVersionMismatch && options.agent
     ? buildMcpBridgeRepairGuidance(options.agent)
@@ -247,6 +250,7 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       timeoutMs,
       requiredSenses,
       ignoreOverviewHealth: options.ignoreOverviewHealth === true,
+      ignoreSenseHealth: options.ignoreSenseHealth === true,
     },
   })
 
@@ -342,6 +346,7 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     const canary = validateMcpStatus(parsed, requiredSenses, {
       agent: options.agent,
       ignoreOverviewHealth: options.ignoreOverviewHealth,
+      ignoreSenseHealth: options.ignoreSenseHealth,
     })
     emitNervesEvent({
       component: "daemon",
