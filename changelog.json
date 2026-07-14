@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.718",
+      "changes": [
+        "Keep MCP doctor focused on bridge health when aggregate daemon health warns."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.717",
       "changes": [
         "Raise MCP bridge canary timeout for slow runtime status paths."

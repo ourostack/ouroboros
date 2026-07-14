@@ -8036,6 +8036,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       agent: command.agent,
       socketPath: canarySocketPath,
       command: process.execPath,
+      ignoreOverviewHealth: true,
       commandArgs: [
         path.join(__dirname, "ouro-bot-entry.js"),
         "mcp-serve",
