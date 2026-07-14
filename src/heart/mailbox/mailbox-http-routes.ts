@@ -366,6 +366,31 @@ async function handleAgentRoute(request: http.IncomingMessage, response: http.Se
     return
   }
 
+  if (surface === "context-packets") {
+    const limit = parseHabitRunLimit(request.url as string)
+    if (limit === null) {
+      writeJson(response, 400, { ok: false, error: "limit must be an integer between 1 and 100" })
+      return
+    }
+    const view = limit === undefined
+      ? options.hooks.readAgentContextPackets(agent)
+      : options.hooks.readAgentContextPackets(agent, { limit })
+    writeJson(response, 200, view)
+    return
+  }
+
+  if (surface.startsWith("context-packets/")) {
+    const rawPacketId = surface.slice("context-packets/".length)
+    const packetId = decodePathSegment(rawPacketId)
+    const view = packetId ? options.hooks.readAgentContextPacket(agent, packetId) : null
+    if (!view) {
+      writeJson(response, 404, { ok: false, error: `context packet '${rawPacketId}' not found` })
+      return
+    }
+    writeJson(response, 200, view)
+    return
+  }
+
   if (surface === "mail") {
     writeJson(response, 200, await options.hooks.readAgentMail(agent))
     return

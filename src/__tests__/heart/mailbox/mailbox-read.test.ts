@@ -27,6 +27,8 @@ import {
   readHabitSessionSummaryView,
   readHabitRunView,
   readHabitView,
+  readContextPacketListView,
+  readContextPacketView,
   readLogView,
   readNotesView,
   readNeedsMeView,
@@ -2616,6 +2618,61 @@ describe("mailbox deep readers", () => {
         isOverdue: true,
       })
     })
+  })
+
+  it("reads context packet list and detail views from the private packet ledger", async () => {
+    const tmpRoot = makeBundleRoot()
+    const agentRoot = path.join(tmpRoot, "agent.ouro")
+    const { buildSenseContextPacket } = await import("../../../senses/context-packets")
+    const { writeSenseContextPacket } = await import("../../../senses/context-packet-ledger")
+    const packet = buildSenseContextPacket({
+      agent: "agent",
+      sense: "bluebubbles",
+      sessionKey: "iMessage;-;chat-secret-guid",
+      chatKeyHash: "chat-hash-abcdef123456",
+      anchorMessageGuid: "anchor-guid",
+      anchorTimestamp: "2026-07-09T19:23:00.000Z",
+      windowBeforeMessages: 40,
+      windowBeforeMs: 48 * 60 * 60 * 1000,
+      messages: [{
+        timestamp: "2026-07-09T19:20:00.000Z",
+        authorLabel: "RSVP script",
+        body: "RSVP Update -- Wedding password=secret-token",
+        sourceRef: {
+          sense: "bluebubbles",
+          adapter: "bluebubbles-api-v1",
+          service: "imessage",
+          chatGuid: "iMessage;-;chat-secret-guid",
+          chatGuidHash: "chat-hash-abcdef123456",
+          messageGuid: "script-guid",
+          senderExternalIdHash: "sender-hash",
+          observedAt: "2026-07-09T19:20:00.000Z",
+        },
+      }],
+    })
+    writeSenseContextPacket(agentRoot, packet, { now: "2026-07-09T20:00:00.000Z" })
+
+    const list = readContextPacketListView(agentRoot, { limit: 1 })
+    const detail = readContextPacketView(agentRoot, packet.packetId)
+
+    expect(list).toMatchObject({
+      totalCount: 1,
+      limit: 1,
+      items: [expect.objectContaining({
+        packetId: packet.packetId,
+        sense: "bluebubbles",
+        messageCount: 1,
+        rawBodyStored: false,
+      })],
+    })
+    expect(detail?.packet.messages[0]).toMatchObject({
+      bodyHash: expect.stringMatching(/^sha256:/),
+      bodyPreview: expect.stringContaining("[redacted]"),
+      renderedSourceRef: "bbmsg:chat-hash-ab:script-guid",
+      sourceRef: expect.not.objectContaining({ chatGuid: expect.any(String) }),
+    })
+    expect(JSON.stringify({ list, detail })).not.toContain("secret-token")
+    expect(JSON.stringify({ list, detail })).not.toContain("iMessage;-;chat-secret-guid")
   })
 
 	  describe("readHabitRunView", () => {

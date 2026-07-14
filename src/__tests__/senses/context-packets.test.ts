@@ -300,6 +300,103 @@ describe("sense context packets", () => {
     }))
   })
 
+  it("lists and reads sanitized context packet views without raw body or unsafe source fields", async () => {
+    const { buildSenseContextPacket } = await import("../../senses/context-packets")
+    const {
+      listSenseContextPacketSummaries,
+      readSenseContextPacketView,
+      writeSenseContextPacket,
+    } = await import("../../senses/context-packet-ledger")
+    const packet = buildSenseContextPacket(packetInput({
+      messages: [
+        {
+          timestamp: "2026-07-09T19:20:00.000Z",
+          authorLabel: "RSVP script",
+          body: "RSVP Update -- Wedding password=secret-token\n149 attending / 123 declined / 1 pending",
+          sourceRef: blueBubblesRef("script-guid", 2),
+        },
+      ],
+    }))
+    writeSenseContextPacket(agentRoot, packet, { now: "2026-07-09T20:00:00.000Z" })
+    const ledgerPath = path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "ledger.jsonl")
+    fs.appendFileSync(ledgerPath, "{bad json\n", "utf-8")
+
+    const list = listSenseContextPacketSummaries(agentRoot, { limit: 1 })
+
+    expect(list).toMatchObject({
+      totalCount: 1,
+      limit: 1,
+      items: [expect.objectContaining({
+        packetId: packet.packetId,
+        sense: "bluebubbles",
+        agent: "slugger",
+        rawBodyStored: false,
+        privacyClass: "private-runtime",
+      })],
+    })
+    expect(JSON.stringify(list)).not.toContain("packetPath")
+    expect(JSON.stringify(list)).not.toContain("receiptPath")
+    expect(JSON.stringify(list)).not.toContain("iMessage;-;chat-secret-guid")
+    expect(JSON.stringify(list)).not.toContain("secret-token")
+
+    const view = readSenseContextPacketView(agentRoot, packet.packetId)
+
+    expect(view?.row.packetId).toBe(packet.packetId)
+    expect(view?.packet).toMatchObject({
+      packetId: packet.packetId,
+      privacyClass: "private-runtime",
+      messages: [expect.objectContaining({
+        bodyHash: expect.stringMatching(/^sha256:/),
+        bodyPreview: expect.stringContaining("[redacted]"),
+        renderedSourceRef: "bbmsg:chat-hash-ab:script-guid",
+        sourceRef: expect.not.objectContaining({ chatGuid: expect.any(String) }),
+      })],
+    })
+    const serialized = JSON.stringify(view)
+    expect(serialized).not.toContain("password=secret-token")
+    expect(serialized).not.toContain("iMessage;-;chat-secret-guid")
+  })
+
+  it("returns null for missing, unsafe, or escaped context packet detail reads", async () => {
+    const { buildSenseContextPacket } = await import("../../senses/context-packets")
+    const {
+      readSenseContextPacketView,
+      writeSenseContextPacket,
+    } = await import("../../senses/context-packet-ledger")
+    const packet = buildSenseContextPacket(packetInput())
+    const written = writeSenseContextPacket(agentRoot, packet)
+
+    expect(readSenseContextPacketView(agentRoot, "../escape")).toBeNull()
+    expect(readSenseContextPacketView(agentRoot, "scp_missing")).toBeNull()
+
+    fs.unlinkSync(written.packetPath)
+    expect(readSenseContextPacketView(agentRoot, packet.packetId)).toBeNull()
+
+    const ledgerPath = path.join(agentRoot, "state", "senses", "context-packets", "bluebubbles", "ledger.jsonl")
+    fs.appendFileSync(ledgerPath, `${JSON.stringify({
+      schemaVersion: 1,
+      policyVersion: "sense-context-packet/v1",
+      packetId: "scp_unsafe",
+      sense: "bluebubbles",
+      agent: "slugger",
+      chatKeyHash: "chat-hash-abcdef123456",
+      anchorMessageGuid: "anchor",
+      anchorTimestamp: "2026-07-09T19:23:00.000Z",
+      createdAt: "2026-07-09T19:24:00.000Z",
+      packetPath: path.join(os.tmpdir(), "outside-context-packet.json"),
+      receiptPath: path.join(os.tmpdir(), "outside-context-packet-receipt.json"),
+      messageCount: 1,
+      sourceRefs: ["bbmsg:chat-hash-ab:anchor"],
+      bodyHashes: ["sha256:abc"],
+      rawBodyStored: false,
+      privacyClass: "private-runtime",
+      omittedMessages: 0,
+      truncatedMessages: 0,
+    })}\n`, "utf-8")
+
+    expect(readSenseContextPacketView(agentRoot, "scp_unsafe")).toBeNull()
+  })
+
   it("handles malformed timestamps, missing row ids, tight render budgets, and exported refs", async () => {
     const {
       buildSenseContextPacket,

@@ -8,6 +8,10 @@ import { getAgentBundlesRoot } from "../../identity"
 import { isDaemonStatus } from "../../daemon/daemon-health"
 import { listHabitRunReceipts, readHabitRunReceipt, type HabitRunReceipt } from "../../../arc/flight-recorder"
 import {
+  listSenseContextPacketSummaries,
+  readSenseContextPacketView,
+} from "../../../senses/context-packet-ledger"
+import {
   type MailboxAttentionQueueItem,
   type MailboxAttentionView,
   type MailboxBridgeInventory,
@@ -27,6 +31,8 @@ import {
   type MailboxHabitSessionSummary,
   type MailboxHabitSessionSummaryView,
   type MailboxHabitView,
+  type MailboxContextPacketDetailView,
+  type MailboxContextPacketListView,
   type MailboxLogEntry,
   type MailboxLogView,
   type MailboxNotesView,
@@ -218,6 +224,17 @@ export function readAttentionView(agentName: string, options: MailboxReadOptions
     pendingChannels,
     returnObligations,
   }
+}
+
+export function readContextPacketListView(
+  agentRoot: string,
+  options: { limit?: number } = {},
+): MailboxContextPacketListView {
+  return listSenseContextPacketSummaries(agentRoot, options)
+}
+
+export function readContextPacketView(agentRoot: string, packetId: string): MailboxContextPacketDetailView | null {
+  return readSenseContextPacketView(agentRoot, packetId)
 }
 
 /* v8 ignore start — defensive parsing */
