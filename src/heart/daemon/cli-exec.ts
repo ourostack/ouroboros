@@ -214,6 +214,38 @@ function setupReloadNotice(tool: "claude-code" | "codex"): string {
   const host = tool === "codex" ? "Codex" : "Claude Code"
   return `  reload required: open a fresh ${host} session so the host launches the newly registered MCP bridge; existing MCP processes keep their old runtime`
 }
+
+function commandFailureText(error: unknown): string {
+  const parts: string[] = []
+  if (error instanceof Error) parts.push(error.message)
+  else if (error !== undefined && error !== null) parts.push(String(error))
+  const maybeOutput = error as { stdout?: unknown; stderr?: unknown; output?: unknown[] } | null
+  if (maybeOutput?.stdout) parts.push(String(maybeOutput.stdout))
+  if (maybeOutput?.stderr) parts.push(String(maybeOutput.stderr))
+  if (Array.isArray(maybeOutput?.output)) {
+    for (const chunk of maybeOutput.output) {
+      if (chunk) parts.push(String(chunk))
+    }
+  }
+  return parts.join("\n")
+}
+
+function isExistingMcpServerFailure(error: unknown): boolean {
+  return /mcp server .+ already exists/i.test(commandFailureText(error))
+    || /already exists in .+ config/i.test(commandFailureText(error))
+}
+
+function registerMcpServer(addCommand: string, removeCommand: string): "registered" | "replaced" {
+  try {
+    execSync(addCommand, { stdio: "pipe" })
+    return "registered"
+  } catch (error) {
+    if (!isExistingMcpServerFailure(error)) throw error
+    execSync(removeCommand, { stdio: "pipe" })
+    execSync(addCommand, { stdio: "pipe" })
+    return "replaced"
+  }
+}
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
 const RSVP_CLI_KINDS = new Set<RsvpCliCommand["kind"]>([
   "rsvp.doctor",
@@ -7948,7 +7980,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (tool === "claude-code") {
       // 1. Register MCP server with Claude Code
       const mcpAddCmd = `${claudeCmd} mcp add ouro-${setupAgent} -s user -- ${mcpServeCommand}`
-      execSync(mcpAddCmd, { stdio: "pipe" })
+      const mcpRemoveCmd = `${claudeCmd} mcp remove -s user ouro-${setupAgent}`
+      const mcpRegistration = registerMcpServer(mcpAddCmd, mcpRemoveCmd)
 
       // 2. Write hooks config
       const settingsPath = path.join(claudeConfigDir, "settings.json")
@@ -7973,7 +8006,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode, platform },
+        meta: { tool, agent: setupAgent, runtimeMode, platform, mcpRegistration },
       })
 
       // 3. Write conversation formatting instructions
@@ -7987,22 +8020,23 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         fs.writeFileSync(claudeMdPath, existingClaudeMd + agentInstructions)
       }
 
-      const message = `setup complete: claude-code + ${setupAgent}\n  MCP server registered\n  hooks configured\n  conversation formatting instructions added\n${setupReloadNotice("claude-code")}`
+      const message = `setup complete: claude-code + ${setupAgent}\n  MCP server ${mcpRegistration}\n  hooks configured\n  conversation formatting instructions added\n${setupReloadNotice("claude-code")}`
       deps.writeStdout(message)
       return message
     } else {
       // tool === "codex" (parseSetupCommand validates tool, so this is the only remaining option)
       const mcpAddCmd = `codex mcp add ouro-${setupAgent} -- ${mcpServeCommand}`
-      execSync(mcpAddCmd, { stdio: "pipe" })
+      const mcpRemoveCmd = `codex mcp remove ouro-${setupAgent}`
+      const mcpRegistration = registerMcpServer(mcpAddCmd, mcpRemoveCmd)
 
       emitNervesEvent({
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode, platform },
+        meta: { tool, agent: setupAgent, runtimeMode, platform, mcpRegistration },
       })
 
-      const message = `setup complete: codex + ${setupAgent}\n  MCP server registered\n${setupReloadNotice("codex")}`
+      const message = `setup complete: codex + ${setupAgent}\n  MCP server ${mcpRegistration}\n${setupReloadNotice("codex")}`
       deps.writeStdout(message)
       return message
     }

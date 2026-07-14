@@ -46,6 +46,8 @@ For Claude Code:
 ouro setup --tool claude-code --agent <agent>
 ```
 
+These setup commands are idempotent. If the dev tool already has an `ouro-<agent>` MCP server, setup replaces that stale registration with the current `ouro mcp-serve --agent <agent>` command.
+
 Then open a fresh dev-tool session. Existing MCP stdio processes keep the runtime they were launched with, so registration updates cannot hot-reload an already-running MCP child process.
 
 If the doctor reports `daemon=unreachable`, start or refresh the daemon first:

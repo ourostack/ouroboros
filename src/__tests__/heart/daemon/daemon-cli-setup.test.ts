@@ -120,6 +120,24 @@ describe("ouro setup command", () => {
       expect(calls.some((c: string) => c.includes("claude") && c.includes("mcp") && c.includes("add"))).toBe(true)
     })
 
+    it("claude-code setup replaces an existing MCP server registration", async () => {
+      const existingError = new Error("Command failed: claude mcp add ouro-test-agent")
+      Object.assign(existingError, { stderr: Buffer.from("MCP server ouro-test-agent already exists in user config") })
+      mockExecSync.mockImplementationOnce(() => { throw existingError })
+
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      const result = await runOuroCli(["setup", "--tool", "claude-code", "--agent", "test-agent"], deps)
+
+      const calls = mockExecSync.mock.calls.map((c: any[]) => c[0])
+      expect(calls[0]).toContain("claude mcp add ouro-test-agent")
+      expect(calls[1]).toContain("claude mcp remove -s user ouro-test-agent")
+      expect(calls[2]).toContain("claude mcp add ouro-test-agent")
+      expect(result).toContain("MCP server replaced")
+    })
+
     it("setup resolves the only discovered agent when --agent is omitted", async () => {
       const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps()
@@ -171,6 +189,24 @@ describe("ouro setup command", () => {
       expect(calls.some((c: string) => c.includes("codex") && c.includes("mcp") && c.includes("add"))).toBe(true)
       expect(result).toContain("reload required")
       expect(result).toContain("fresh Codex session")
+    })
+
+    it("codex setup replaces an existing MCP server registration", async () => {
+      const existingError = new Error("Command failed: codex mcp add ouro-test-agent")
+      Object.assign(existingError, { stderr: Buffer.from("MCP server ouro-test-agent already exists") })
+      mockExecSync.mockImplementationOnce(() => { throw existingError })
+
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+
+      const result = await runOuroCli(["setup", "--tool", "codex", "--agent", "test-agent"], deps)
+
+      const calls = mockExecSync.mock.calls.map((c: any[]) => c[0])
+      expect(calls[0]).toContain("codex mcp add ouro-test-agent")
+      expect(calls[1]).toContain("codex mcp remove ouro-test-agent")
+      expect(calls[2]).toContain("codex mcp add ouro-test-agent")
+      expect(result).toContain("MCP server replaced")
     })
 
     it("claude-code setup explains that existing MCP processes need a fresh session", async () => {
