@@ -4,6 +4,7 @@ import type { ChildProcess, SpawnOptionsWithoutStdio } from "child_process"
 import {
   buildMcpBridgeRepairGuidance,
   createMcpStatusCanaryProbe,
+  DEFAULT_CANARY_TIMEOUT_MS,
   formatMcpStatusDoctorResult,
   formatMcpStatusCanaryResult,
   parseMcpStatusText,
@@ -103,6 +104,10 @@ function createStatusResponseChild(response: Record<string, unknown>): FakeChild
 }
 
 describe("mcp canary", () => {
+  it("uses a production-safe default timeout for slow status paths", () => {
+    expect(DEFAULT_CANARY_TIMEOUT_MS).toBe(60_000)
+  })
+
   it("parses daemon and sense status lines", () => {
     const parsed = parseMcpStatusText([
       "",

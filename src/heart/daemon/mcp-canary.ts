@@ -49,7 +49,7 @@ export interface McpDoctorNextSteps {
   note: string
 }
 
-const DEFAULT_CANARY_TIMEOUT_MS = 10_000
+export const DEFAULT_CANARY_TIMEOUT_MS = 60_000
 const MCP_PROTOCOL_VERSION = "2024-11-05"
 
 function defaultCommandArgs(agent: string, socketPath?: string): string[] {
