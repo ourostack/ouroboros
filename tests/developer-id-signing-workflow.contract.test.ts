@@ -66,6 +66,18 @@ describe("Developer ID signing workflow contract", () => {
       "node .github/actions/release-trust/run-reconciliation.mjs frame-native native/developer-id-signing/driver 2",
     )
     expect(secretSteps[0].run).not.toContain("${{")
+    const secretStepIndex = jobs.signing.steps.indexOf(secretSteps[0])
+    const admissionStep = jobs.signing.steps.find(
+      (step: any) => step.name === "Admit exact protected-main signing authority",
+    )
+    expect(admissionStep).toBeDefined()
+    expect(jobs.signing.steps.indexOf(admissionStep)).toBeLessThan(secretStepIndex)
+    expect(admissionStep.run).toBe(
+      "node .github/actions/release-trust/run-reconciliation.mjs admit-secret-workflow signing",
+    )
+    expect(jobs.signing.steps.filter((step: any) => step.run).every(
+      (step: any) => !step.run.includes("${{ inputs."),
+    )).toBe(true)
 
     const serialized = JSON.stringify(workflow)
     expect(serialized).toContain("attempt-authority")
@@ -101,6 +113,40 @@ describe("Developer ID signing workflow contract", () => {
       code: "closure_member_duplicate",
       path: requiredPaths[0],
     })
+    expect(verifyWorkflowClosure({ requiredPaths: null, members })).toMatchObject({
+      ok: false,
+      code: "closure_invalid",
+    })
+    expect(verifyWorkflowClosure({ requiredPaths: [...requiredPaths, requiredPaths[0]], members })).toMatchObject({
+      ok: false,
+      code: "closure_required_path_duplicate",
+    })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members: [{ path: requiredPaths[0], sha256: "wrong" }, ...members.slice(1)],
+    })).toMatchObject({ ok: false, code: "closure_member_invalid" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members: [{ path: requiredPaths[0], sha256: null }, ...members.slice(1)],
+    })).toMatchObject({ ok: false, code: "closure_member_invalid" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members: [...members.slice(0, -1), { path: "unexpected", sha256: "f".repeat(64) }],
+    })).toMatchObject({ ok: false, code: "closure_member_unexpected", path: "unexpected" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members: [...members].reverse(),
+    })).toMatchObject({ ok: false, code: "closure_member_order_invalid" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [{ kind: "action", identity: "actions/checkout", ref: "v6" }],
+    })).toMatchObject({ ok: false, code: "closure_action_unpinned" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [{ kind: "reusable-workflow", identity: "owner/repo/.github/workflows/x.yml", ref: "a".repeat(40) }],
+    })).toMatchObject({ ok: false, code: "closure_execution_forbidden" })
   })
 
   it("rejects incomplete rotation chains and stale-pair supersession", async () => {
@@ -173,8 +219,41 @@ describe("Developer ID signing workflow contract", () => {
     })).toMatchObject({ ok: false, code: "inception_member_mismatch" })
     expect(verifyPolicyChain({
       ...valid,
+      requiredInceptionMembers: null,
+    })).toMatchObject({ ok: false, code: "inception_member_mismatch" })
+    expect(verifyPolicyChain({
+      ...valid,
+      inceptionAuthority: { namedMembers: null },
+    })).toMatchObject({ ok: false, code: "inception_member_mismatch" })
+    expect(verifyPolicyChain({
+      ...valid,
       foundation: { ...valid.foundation, ctLogs: [] },
     })).toMatchObject({ ok: false, code: "foundation_incomplete" })
+    expect(verifyPolicyChain(null)).toMatchObject({ ok: false, code: "inception_member_mismatch" })
+    expect(verifyPolicyChain({ ...valid, foundation: null })).toMatchObject({
+      ok: false,
+      code: "foundation_incomplete",
+    })
+    expect(verifyPolicyChain({
+      ...valid,
+      foundation: { ...valid.foundation, fulcioRoots: [] },
+    })).toMatchObject({ ok: false, code: "foundation_incomplete" })
+    expect(verifyPolicyChain({
+      ...valid,
+      foundation: { ...valid.foundation, rekorLogs: [] },
+    })).toMatchObject({ ok: false, code: "foundation_incomplete" })
+    expect(verifyPolicyChain({ ...valid, transitions: null })).toMatchObject({
+      ok: false,
+      code: "rotation_chain_invalid",
+    })
+    expect(verifyPolicyChain({
+      ...valid,
+      transitions: [{ ...valid.transitions[0], predecessorSignatureVerified: false }, valid.transitions[1]],
+    })).toMatchObject({ ok: false, code: "rotation_chain_incomplete" })
+    expect(verifyPolicyChain({ ...valid, activeHead: "d".repeat(64) })).toMatchObject({
+      ok: false,
+      code: "rotation_chain_incomplete",
+    })
   })
 
   it("uses a dedicated keyless workflow to seal authority-merge audit bytes", () => {
@@ -196,5 +275,8 @@ describe("Developer ID signing workflow contract", () => {
     expect(serialized).toContain("cosign")
     expect(serialized).not.toContain("${{ secrets.")
     expect(serialized).not.toContain("Developer ID Application")
+    expect(jobs.seal.steps.filter((step: any) => step.run).every(
+      (step: any) => !step.run.includes("${{ inputs."),
+    )).toBe(true)
   })
 })

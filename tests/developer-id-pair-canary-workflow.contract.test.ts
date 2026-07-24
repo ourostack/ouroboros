@@ -1,5 +1,6 @@
 import { execFileSync } from "child_process"
-import { readFileSync } from "fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
+import { tmpdir } from "os"
 import { pathToFileURL } from "url"
 import { join } from "path"
 
@@ -64,6 +65,20 @@ describe("Developer ID pair canary workflow contract", () => {
     )
     expect(secretSteps[0].run).not.toContain("${{")
 
+    const secretStepIndex = jobs.canary.steps.indexOf(secretSteps[0])
+    const admissionStep = jobs.canary.steps.find(
+      (step: any) => step.name === "Admit exact protected-main canary authority",
+    )
+    expect(admissionStep).toBeDefined()
+    expect(jobs.canary.steps.indexOf(admissionStep)).toBeLessThan(secretStepIndex)
+    expect(admissionStep.run).toBe(
+      "node .github/actions/release-trust/run-reconciliation.mjs admit-secret-workflow pair-canary",
+    )
+    expect(admissionStep.run).not.toContain("${{")
+    expect(jobs.canary.steps.filter((step: any) => step.run).every(
+      (step: any) => !step.run.includes("${{ inputs."),
+    )).toBe(true)
+
     const serialized = JSON.stringify(workflow)
     expect(serialized).toContain("release-trust-inception-head")
     expect(serialized).not.toContain("npm publish")
@@ -80,7 +95,9 @@ describe("Developer ID pair canary workflow contract", () => {
       ".github/workflows/developer-id-pair-canary.yml",
     )
     expect(() => normalizeWorkflowPath("@feature")).toThrow(/workflow path/i)
+    expect(() => normalizeWorkflowPath(".github/workflows/")).toThrow(/workflow path/i)
     expect(() => normalizeWorkflowPath(".github/workflows/x.yml@refs\/heads\/main")).toThrow(/@main/i)
+    expect(() => normalizeWorkflowPath(".github/workflows/x.yml@feature")).toThrow(/@main/i)
     expect(verifyOidcWorkflowRef({
       claim: `ourostack/ouroboros/${workflowPathValue}@refs/heads/main`,
       repository: "ourostack/ouroboros",
@@ -127,24 +144,67 @@ describe("Developer ID pair canary workflow contract", () => {
       postAllowed: true,
     })
     expect(intent.requestSha256).not.toBe(intent.bodySha256)
+    for (const invalid of [
+      { repository: "missing-slash" },
+      { workflowId: 0 },
+      { apiVersion: "latest" },
+      { requestBytes: null },
+    ]) {
+      expect(() => buildDispatchIntent({
+        repository: "ourostack/ouroboros",
+        workflowId: 123456,
+        apiVersion: "2026-03-10",
+        requestBytes,
+        authorityBytes,
+        bodyBytes,
+        ...invalid,
+      })).toThrow(/invalid workflow dispatch authority/i)
+    }
   })
 
   it("preserves exact pagination bytes and enforces the literal 1,000-result ceiling", async () => {
     const { scanWorkflowRuns } = await loadReconciliation()
+    const headSha = "f".repeat(40)
+    const exactRun = (overrides: Record<string, unknown> = {}) => ({
+      id: 11,
+      run_attempt: 1,
+      event: "workflow_dispatch",
+      head_branch: "main",
+      head_sha: headSha,
+      workflow_id: 123456,
+      path: `${workflowPathValue}@main`,
+      display_title: "canary:attempt-7",
+      created_at: "2026-07-23T20:05:00Z",
+      ...overrides,
+    })
     const pages = [
       {
         requestBytes: "GET /actions/runs?per_page=100&page=1 HTTP/1.1\r\n\r\n",
-        responseBytes: '{"total_count":2,"workflow_runs":[{"id":11,"display_title":"canary:attempt-7"}]}',
+        responseBytes: JSON.stringify({ total_count: 2, workflow_runs: [exactRun()] }),
         linkBytes: '<https://api.github.test/runs?page=2>; rel="next"',
       },
       {
         requestBytes: "GET /actions/runs?per_page=100&page=2 HTTP/1.1\r\n\r\n",
-        responseBytes: '{"total_count":2,"workflow_runs":[{"id":12,"display_title":"other"}]}',
+        responseBytes: JSON.stringify({
+          total_count: 2,
+          workflow_runs: [exactRun({ id: 12, display_title: "other" })],
+        }),
         linkBytes: "",
       },
     ]
+    const scan = (candidatePages: any[], correlationTitle = "canary:attempt-7") => scanWorkflowRuns({
+      pages: candidatePages,
+      correlationTitle,
+      workflowId: 123456,
+      workflowPath: workflowPathValue,
+      headSha,
+      inclusiveWindow: {
+        createdAtOrAfter: "2026-07-23T20:00:00Z",
+        createdAtOrBefore: "2026-07-23T20:10:00Z",
+      },
+    })
 
-    const unique = scanWorkflowRuns({ pages, correlationTitle: "canary:attempt-7" })
+    const unique = scan(pages)
     expect(unique).toMatchObject({
       state: "unique",
       runId: 11,
@@ -161,19 +221,61 @@ describe("Developer ID pair canary workflow contract", () => {
         expect.any(Object),
       ],
     })
-    expect(scanWorkflowRuns({
-      pages: [{
+    expect(scan([{
         requestBytes: pages[0].requestBytes,
         responseBytes: '{"total_count":1001,"workflow_runs":[]}',
         linkBytes: "",
-      }],
-      correlationTitle: "missing",
-    })).toMatchObject({
+      }], "missing")).toMatchObject({
       state: "ceiling_exceeded",
       ceiling: 1000,
       observedTotal: 1001,
     })
     expect(pages[0].linkBytes).toBe('<https://api.github.test/runs?page=2>; rel="next"')
+    expect(scan(pages, "other")).toMatchObject({
+      state: "unique",
+      runId: 12,
+    })
+    expect(scan(pages, "missing")).toMatchObject({ state: "none" })
+    expect(scan([{
+        requestBytes: "request",
+        responseBytes: JSON.stringify({
+          total_count: 2,
+          workflow_runs: [exactRun({ id: 1, display_title: "same" }), exactRun({ id: 2, display_title: "same" })],
+        }),
+        linkBytes: "",
+      }], "same")).toMatchObject({ state: "multiple" })
+    for (const impostor of [
+      exactRun({ workflow_id: 999 }),
+      exactRun({ path: ".github/workflows/other.yml" }),
+      exactRun({ event: "push" }),
+      exactRun({ head_branch: "feature" }),
+      exactRun({ head_sha: "0".repeat(40) }),
+      exactRun({ run_attempt: 2 }),
+      exactRun({ created_at: "2026-07-23T19:59:59Z" }),
+      exactRun({ created_at: "2026-07-23T20:10:01Z" }),
+    ]) {
+      expect(scan([{
+        requestBytes: "request",
+        responseBytes: JSON.stringify({ total_count: 1, workflow_runs: [impostor] }),
+        linkBytes: "",
+      }])).toMatchObject({ state: "none" })
+    }
+    for (const incompletePages of [
+      [],
+      [{ requestBytes: null, responseBytes: "{}", linkBytes: "" }],
+      [{ requestBytes: "request", responseBytes: "not-json", linkBytes: "" }],
+      [{ requestBytes: "request", responseBytes: '{"total_count":-1,"workflow_runs":[]}', linkBytes: "" }],
+      [{ requestBytes: "request", responseBytes: '{"total_count":1,"workflow_runs":[]}', linkBytes: "" }],
+      [{ requestBytes: "request", responseBytes: '{"total_count":0,"workflow_runs":[]}', linkBytes: "next" }],
+      [
+        { requestBytes: "one", responseBytes: '{"total_count":1,"workflow_runs":[]}', linkBytes: "next" },
+        { requestBytes: "two", responseBytes: '{"total_count":0,"workflow_runs":[]}', linkBytes: "" },
+      ],
+    ]) {
+      expect(scan(incompletePages, "missing")).toMatchObject({
+        state: "incomplete",
+      })
+    }
   })
 
   it("never redispatches after an intent-persisted response loss", async () => {
@@ -195,6 +297,7 @@ describe("Developer ID pair canary workflow contract", () => {
       intent: expect.objectContaining({ bodyBytes: "body-exact-bytes" }),
       postAllowed: false,
     })
+    expect(() => reconcileDispatch({ state: "new" })).toThrow(/persisted dispatch intent/i)
   })
 
   it("supersedes only a uniquely bound terminal run with two closed empty artifact scans", async () => {
@@ -226,5 +329,60 @@ describe("Developer ID pair canary workflow contract", () => {
       ...valid,
       uniqueRunBinding: null,
     })).toMatchObject({ ok: false, code: "unique_run_required" })
+    expect(authorizeTerminalSupersession({
+      ...valid,
+      terminalInspection: { ...valid.terminalInspection, conclusion: "success" },
+    })).toMatchObject({ ok: false, code: "terminal_run_required" })
+    expect(authorizeTerminalSupersession({
+      ...valid,
+      artifactInventory: { ...valid.artifactInventory, scans: [valid.artifactInventory.scans[0]] },
+    })).toMatchObject({ ok: false, code: "artifact_inventory_incomplete" })
+    expect(authorizeTerminalSupersession({
+      ...valid,
+      artifactInventory: { ...valid.artifactInventory, expiredUnavailableArtifactIds: [99] },
+    })).toMatchObject({ ok: false, code: "artifact_inventory_ambiguous" })
+  })
+
+  it("frames native fields once, clears the parent values, and fails closed", async () => {
+    const { frameFields, runNativeFrame } = await loadReconciliation()
+    const environment: Record<string, string> = {
+      OURO_DRIVER_FIELD_1: "one",
+      OURO_DRIVER_FIELD_2: "two",
+    }
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+
+    expect(runNativeFrame("/usr/bin/true", 2, environment, {
+      stdout: { write: (value: Buffer) => stdout.push(value) },
+      stderr: { write: (value: Buffer) => stderr.push(value) },
+    })).toBe(0)
+    expect(environment).toEqual({})
+    expect(Buffer.concat(stdout)).toHaveLength(0)
+    expect(Buffer.concat(stderr)).toHaveLength(0)
+    expect(() => runNativeFrame("/usr/bin/true", 0, {}, {
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    })).toThrow(/field count/i)
+    expect(() => runNativeFrame("/usr/bin/true", 1, {}, {
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    })).toThrow(/missing OURO_DRIVER_FIELD_1/i)
+    expect(() => frameFields([Buffer.alloc(1048577)])).toThrow(/byte ceiling/i)
+    expect(() => runNativeFrame("/definitely/missing", 1, { OURO_DRIVER_FIELD_1: "one" }, {
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    })).toThrow()
+    const directory = mkdtempSync(join(tmpdir(), "ouro-signal-driver-"))
+    const signaledDriver = join(directory, "driver")
+    try {
+      writeFileSync(signaledDriver, "#!/bin/sh\nkill -TERM $$\n", { mode: 0o700 })
+      chmodSync(signaledDriver, 0o700)
+      expect(runNativeFrame(signaledDriver, 1, { OURO_DRIVER_FIELD_1: "one" }, {
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      })).toBe(70)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

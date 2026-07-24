@@ -66,5 +66,15 @@ describe("release trust bootstrap coverage contract", () => {
     expect(v8Step.run).toContain("--coverage.thresholds.branches=100")
     expect(v8Step.run).toContain("--coverage.thresholds.functions=100")
     expect(v8Step.run).toContain("--coverage.thresholds.statements=100")
+    expect(readFileSync(
+      join(process.cwd(), ".github", "actions", "release-trust", "run-reconciliation.mjs"),
+      "utf8",
+    )).not.toMatch(/v8 ignore/i)
+  })
+
+  it("makes protected trust coverage a hard prerequisite of publication", () => {
+    const workflow = loadCoverageWorkflow()
+
+    expect(workflow.jobs.publish.needs).toContain("trust-coverage")
   })
 })

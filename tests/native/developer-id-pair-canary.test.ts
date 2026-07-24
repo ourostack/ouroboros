@@ -17,8 +17,10 @@ function compileDriver(): string {
   const root = mkdtempSync(join(tmpdir(), "ouro-pair-canary-driver-"))
   tempRoots.push(root)
   const output = join(root, "driver")
-  const clang = execFileSync("/usr/bin/xcrun", ["--find", "clang"], { encoding: "utf8" }).trim()
-  execFileSync(clang, [
+  execFileSync("/usr/bin/xcrun", [
+    "--sdk",
+    "macosx",
+    "clang",
     "-std=c17",
     "-Wall",
     "-Wextra",
@@ -92,7 +94,7 @@ describe.runIf(process.platform === "darwin")("Developer ID pair canary native d
     )
   })
 
-  it("accepts one exact two-field stdin frame and rejects ambiguous bytes", () => {
+  it("accepts one exact four-field stdin frame and rejects ambiguous bytes", () => {
     const executable = compileDriver()
     const frame = encodeFrame([
       Buffer.from("synthetic-p12"),

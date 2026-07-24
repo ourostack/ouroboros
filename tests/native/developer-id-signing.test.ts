@@ -17,8 +17,10 @@ function compileDriver(): string {
   const root = mkdtempSync(join(tmpdir(), "ouro-signing-driver-"))
   tempRoots.push(root)
   const output = join(root, "driver")
-  const clang = execFileSync("/usr/bin/xcrun", ["--find", "clang"], { encoding: "utf8" }).trim()
-  execFileSync(clang, [
+  execFileSync("/usr/bin/xcrun", [
+    "--sdk",
+    "macosx",
+    "clang",
     "-std=c17",
     "-Wall",
     "-Wextra",
