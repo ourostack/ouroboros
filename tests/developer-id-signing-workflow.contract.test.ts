@@ -1,4 +1,5 @@
 import { execFileSync } from "child_process"
+import { createHash } from "crypto"
 import { readFileSync } from "fs"
 import { pathToFileURL } from "url"
 import { join } from "path"
@@ -6,6 +7,10 @@ import { join } from "path"
 import { describe, expect, it } from "vitest"
 
 const repoRoot = process.cwd()
+
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex")
+}
 
 async function loadClosure() {
   return import(pathToFileURL(join(
@@ -67,16 +72,35 @@ describe("Developer ID signing workflow contract", () => {
     )
     expect(secretSteps[0].run).not.toContain("${{")
     const secretStepIndex = jobs.signing.steps.indexOf(secretSteps[0])
+    const installStep = jobs.signing.steps.find(
+      (step: any) => step.name === "Install pinned release trust dependencies",
+    )
     const admissionStep = jobs.signing.steps.find(
       (step: any) => step.name === "Admit exact protected-main signing authority",
     )
+    expect(installStep?.run).toBe("npm ci --ignore-scripts")
     expect(admissionStep).toBeDefined()
+    expect(jobs.signing.steps.indexOf(installStep)).toBeLessThan(jobs.signing.steps.indexOf(admissionStep))
     expect(jobs.signing.steps.indexOf(admissionStep)).toBeLessThan(secretStepIndex)
     expect(admissionStep.run).toBe(
       "node .github/actions/release-trust/run-reconciliation.mjs admit-secret-workflow signing",
     )
+    const planStep = jobs.signing.steps.find(
+      (step: any) => step.name === "Materialize exact public identity and asset signing plan",
+    )
+    expect(planStep?.run).toBe(
+      "node .github/actions/release-trust/run-reconciliation.mjs materialize-native-plan signing developer-id-signing-native-plan.v1.bin",
+    )
+    expect(jobs.signing.steps.indexOf(planStep)).toBeGreaterThan(jobs.signing.steps.indexOf(admissionStep))
+    expect(jobs.signing.steps.indexOf(planStep)).toBeLessThan(secretStepIndex)
     expect(jobs.signing.steps.filter((step: any) => step.run).every(
       (step: any) => !step.run.includes("${{ inputs."),
+    )).toBe(true)
+    expect(jobs.signing.steps.filter((step: any) => step.run).every(
+      (step: any) => !/^xcrun\s/.test(step.run),
+    )).toBe(true)
+    expect(jobs.signing.steps.filter((step: any) => step.run?.includes(" clang ")).every(
+      (step: any) => step.run.startsWith("/usr/bin/xcrun "),
     )).toBe(true)
 
     const serialized = JSON.stringify(workflow)
@@ -145,8 +169,219 @@ describe("Developer ID signing workflow contract", () => {
     expect(verifyWorkflowClosure({
       requiredPaths,
       members,
+      execution: [{ kind: "action", identity: "actions/checkout" }],
+    })).toMatchObject({ ok: false, code: "closure_action_unpinned" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
       execution: [{ kind: "reusable-workflow", identity: "owner/repo/.github/workflows/x.yml", ref: "a".repeat(40) }],
     })).toMatchObject({ ok: false, code: "closure_execution_forbidden" })
+    expect(verifyWorkflowClosure({ requiredPaths, members, execution: null })).toMatchObject({
+      ok: false,
+      code: "closure_execution_invalid",
+    })
+    expect(verifyWorkflowClosure({ requiredPaths, members, execution: [{}] })).toMatchObject({
+      ok: false,
+      code: "closure_execution_invalid",
+    })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [{ kind: "container", identity: "node", digest: "latest" }],
+    })).toMatchObject({ ok: false, code: "closure_container_unpinned" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [{ kind: "container", identity: "node" }],
+    })).toMatchObject({ ok: false, code: "closure_container_unpinned" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [{ kind: "download", identity: "tool", sha256: "wrong" }],
+    })).toMatchObject({ ok: false, code: "closure_download_unverified" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [{ kind: "download", identity: "tool" }],
+    })).toMatchObject({ ok: false, code: "closure_download_unverified" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [{ kind: "shell", identity: "inline" }],
+    })).toMatchObject({ ok: false, code: "closure_execution_forbidden" })
+    expect(verifyWorkflowClosure({
+      requiredPaths,
+      members,
+      execution: [
+        { kind: "action", identity: "actions/checkout", ref: "a".repeat(40) },
+        { kind: "container", identity: "node", digest: `sha256:${"b".repeat(64)}` },
+        { kind: "download", identity: "tool", sha256: "c".repeat(64) },
+        { kind: "local", identity: "native/driver.c" },
+      ],
+    })).toEqual({ ok: true })
+  })
+
+  it("derives normative execution closures from workflow and entry bytes", async () => {
+    const { buildExecutionClosure, validateExecutionClosure } = await loadClosure()
+    const workflowPath = ".github/workflows/developer-id-signing.yml"
+    const driverPath = "native/developer-id-signing/driver.c"
+    const workflowBytes = readFileSync(join(repoRoot, workflowPath), "utf8")
+    const driverBytes = readFileSync(join(repoRoot, driverPath))
+    const contractPaths = [
+      ".github/actions/release-trust/canonicalize.mjs",
+      ".github/actions/release-trust/protected-store.mjs",
+      ".github/actions/release-trust/run-reconciliation.mjs",
+      ".github/actions/release-trust/workflow-closure.mjs",
+      "package.json",
+      "package-lock.json",
+    ]
+    const checkedOutFileBytesByPath = Object.fromEntries([
+      ...contractPaths.map((path) => [path, readFileSync(join(repoRoot, path))]),
+      [driverPath, driverBytes],
+    ])
+    const systemExecutableEvidenceByCommand = {
+      clang: {
+        realpath: "/usr/bin/clang",
+        sha256: "1".repeat(64),
+        designatedRequirementSha256: null,
+      },
+      node: {
+        realpath: "/usr/local/bin/node",
+        sha256: "2".repeat(64),
+        designatedRequirementSha256: "3".repeat(64),
+      },
+      xcrun: {
+        realpath: "/usr/bin/xcrun",
+        sha256: "4".repeat(64),
+        designatedRequirementSha256: null,
+      },
+    }
+    const input = {
+      workflowPath,
+      workflowBytes,
+      driverPath,
+      driverBytes,
+      driverKind: "signing",
+      checkedOutFileBytesByPath,
+      systemExecutableEvidenceByCommand,
+    }
+
+    const closure = buildExecutionClosure(input)
+    expect(closure).toMatchObject({
+      schemaVersion: 1,
+      workflowPath,
+      workflowBlobSha256: sha256(workflowBytes),
+      signingDriverPath: driverPath,
+      signingDriverSha256: sha256(driverBytes),
+      closureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
+    expect(closure.entries.map((entry: any) => entry.kind)).toEqual([
+      "action",
+      "action",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "system-executable",
+      "system-executable",
+      "system-executable",
+    ])
+    expect(validateExecutionClosure({ ...input, closure })).toEqual({ ok: true })
+    expect(validateExecutionClosure({
+      ...input,
+      closure: { ...closure, allDownloadsHashVerifiedBeforeExecution: false },
+    })).toMatchObject({ ok: false, code: "execution_closure_mismatch" })
+    expect(validateExecutionClosure({ ...input, closure: null })).toMatchObject({
+      ok: false,
+      code: "execution_closure_mismatch",
+    })
+    expect(validateExecutionClosure({
+      ...input,
+      checkedOutFileBytesByPath: null,
+      closure,
+    })).toMatchObject({ ok: false, code: "execution_closure_mismatch" })
+
+    const invalidInputs = [
+      { workflowPath: null },
+      { workflowPath: "workflow.yml" },
+      { workflowBytes: null },
+      { driverPath: null },
+      { driverPath: "" },
+      { driverBytes: {} },
+      { driverKind: "other" },
+      { checkedOutFileBytesByPath: null },
+      { checkedOutFileBytesByPath: [] },
+      { systemExecutableEvidenceByCommand: null },
+      { systemExecutableEvidenceByCommand: [] },
+    ]
+    for (const invalid of invalidInputs) {
+      expect(() => buildExecutionClosure({ ...input, ...invalid })).toThrow(/generator input/i)
+    }
+
+    expect(() => buildExecutionClosure({
+      ...input,
+      workflowBytes: "steps:\n  - name: checkout\n    uses: actions/checkout@v6\n",
+    })).toThrow(/immutable action/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      workflowBytes: `steps:\n  - name: reusable\n    uses: owner/repo/.github/workflows/x.yml@${"1".repeat(40)}\n`,
+    })).toThrow(/immutable action/i)
+    expect(() => buildExecutionClosure({ ...input, workflowBytes: "steps: []\n" })).toThrow(/workflow|action/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      workflowPath: ".github/workflows/developer-id-pair-canary.yml",
+    })).toThrow(/workflow plan mismatch/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      driverPath: "native/developer-id-signing/other.c",
+    })).toThrow(/workflow plan mismatch/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      workflowBytes: workflowBytes.replace("admit-secret-workflow signing", "admit-secret-workflow pair-canary"),
+    })).toThrow(/commands do not match/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      driverBytes: Buffer.from("substituted-driver"),
+    })).toThrow(/does not bind the driver source/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      checkedOutFileBytesByPath: Object.fromEntries(
+        Object.entries(checkedOutFileBytesByPath).filter(([path]) => path !== driverPath),
+      ),
+    })).toThrow(/checked-out evidence/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      checkedOutFileBytesByPath: { ...checkedOutFileBytesByPath, "extra.mjs": Buffer.from("extra") },
+    })).toThrow(/unexpected checked-out evidence/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      systemExecutableEvidenceByCommand: {
+        node: systemExecutableEvidenceByCommand.node,
+        xcrun: systemExecutableEvidenceByCommand.xcrun,
+      },
+    })).toThrow(/system executable evidence/i)
+    expect(() => buildExecutionClosure({
+      ...input,
+      systemExecutableEvidenceByCommand: {
+        ...systemExecutableEvidenceByCommand,
+        shell: systemExecutableEvidenceByCommand.xcrun,
+      },
+    })).toThrow(/unexpected system executable evidence/i)
+    for (const evidence of [
+      { ...systemExecutableEvidenceByCommand, node: { ...systemExecutableEvidenceByCommand.node, realpath: "bin/node" } },
+      { ...systemExecutableEvidenceByCommand, node: { ...systemExecutableEvidenceByCommand.node, realpath: "/bin/not-node" } },
+      { ...systemExecutableEvidenceByCommand, node: { ...systemExecutableEvidenceByCommand.node, sha256: "bad" } },
+      { ...systemExecutableEvidenceByCommand, node: { ...systemExecutableEvidenceByCommand.node, designatedRequirementSha256: undefined } },
+      { ...systemExecutableEvidenceByCommand, node: { ...systemExecutableEvidenceByCommand.node, designatedRequirementSha256: "bad" } },
+    ]) {
+      expect(() => buildExecutionClosure({
+        ...input,
+        systemExecutableEvidenceByCommand: evidence,
+      })).toThrow(/system executable evidence/i)
+    }
   })
 
   it("rejects incomplete rotation chains and stale-pair supersession", async () => {
@@ -187,7 +422,10 @@ describe("Developer ID signing workflow contract", () => {
       terminalNoValidArtifactListing: true,
     }
 
-    expect(verifyPolicyChain(valid)).toEqual({ ok: true })
+    expect(verifyPolicyChain(valid)).toMatchObject({
+      ok: false,
+      code: "verification_evidence_required",
+    })
     expect(verifyPolicyChain({ ...valid, transitions: [valid.transitions[1]] })).toMatchObject({
       ok: false,
       code: "rotation_chain_incomplete",
@@ -256,7 +494,7 @@ describe("Developer ID signing workflow contract", () => {
     })
   })
 
-  it("uses a dedicated keyless workflow to seal authority-merge audit bytes", () => {
+  it("uses a dedicated keyless workflow to seal the canonical inception body", () => {
     const workflow = loadWorkflow("release-trust-inception-seal.yml")
     const jobs = workflow.jobs
 
@@ -270,8 +508,17 @@ describe("Developer ID signing workflow contract", () => {
     expect(jobs.seal.steps.filter((step: any) => step.uses).every(
       (step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses),
     )).toBe(true)
+    const installStep = jobs.seal.steps.find(
+      (step: any) => step.name === "Install pinned release trust dependencies",
+    )
+    const materializeStep = jobs.seal.steps.find(
+      (step: any) => step.name === "Reconstruct exact inception seal body bytes",
+    )
+    expect(installStep?.run).toBe("npm ci --ignore-scripts")
+    expect(jobs.seal.steps.indexOf(installStep)).toBeLessThan(jobs.seal.steps.indexOf(materializeStep))
     const serialized = JSON.stringify(workflow)
-    expect(serialized).toContain("authority-merge-audit")
+    expect(serialized).toContain("sealBodyBase64")
+    expect(serialized).toContain("release-trust-inception-seal-body.v1.json")
     expect(serialized).toContain("cosign")
     expect(serialized).not.toContain("${{ secrets.")
     expect(serialized).not.toContain("Developer ID Application")

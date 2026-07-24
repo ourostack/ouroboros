@@ -33,9 +33,12 @@ describe("release trust bootstrap coverage contract", () => {
     )).toBe(true)
 
     const nativeStep = job.steps.find((step: any) => step.name === "Run native trust coverage")
-    expect(nativeStep.env).toEqual({ OURO_NATIVE_COVERAGE: "1" })
+    expect(nativeStep.env).toBeUndefined()
+    expect(nativeStep.run).toContain('OURO_PAIR_PROFILE_FILE="$PWD/trust-native-coverage/pair-%p.profraw"')
+    expect(nativeStep.run).toContain('OURO_SIGNING_PROFILE_FILE="$PWD/trust-native-coverage/signing-%p.profraw"')
     expect(nativeStep.run).toContain("tests/native/developer-id-pair-canary.test.ts")
     expect(nativeStep.run).toContain("tests/native/developer-id-signing.test.ts")
+    expect(nativeStep.run).toContain("-DOURO_NATIVE_COVERAGE")
     expect(nativeStep.run).toContain("-fprofile-instr-generate")
     expect(nativeStep.run).toContain("-fcoverage-mapping")
     expect(nativeStep.run).toContain("llvm-profdata merge")
@@ -61,6 +64,7 @@ describe("release trust bootstrap coverage contract", () => {
       expect(v8Step.run).toContain(`--coverage.include=${actionPath}`)
     }
     expect(v8Step.run).toContain("npm exec -- vitest run")
+    expect(v8Step.run).toContain("tests/release-trust-bootstrap-coverage.contract.test.ts")
     expect(v8Step.run).toContain("--coverage.enabled=true")
     expect(v8Step.run).toContain("--coverage.thresholds.lines=100")
     expect(v8Step.run).toContain("--coverage.thresholds.branches=100")

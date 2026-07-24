@@ -155,6 +155,8 @@ function inceptionFixture() {
 describe("release trust bootstrap contract", () => {
   it("canonicalizes authority bytes with RFC 8785 semantics", async () => {
     const { canonicalize, sha256Jcs } = await loadTrustAction("canonicalize.mjs")
+    const packageManifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"))
+    const lockfile = JSON.parse(readFileSync(join(repoRoot, "package-lock.json"), "utf8"))
     const authority = {
       schemaVersion: 1,
       implementationMergeSha: "1".repeat(40),
@@ -167,6 +169,18 @@ describe("release trust bootstrap contract", () => {
       '{"evidence":{"a":1,"z":2},"implementationMergeSha":"1111111111111111111111111111111111111111","schemaVersion":1}',
     )
     expect(sha256Jcs(authority)).toBe(sha256(canonical))
+    expect(packageManifest.dependencies["json-canonicalize"]).toBe("2.0.0")
+    expect(lockfile.packages["node_modules/json-canonicalize"]).toMatchObject({
+      version: "2.0.0",
+      integrity: "sha512-yyrnK/mEm6Na3ChbJUWueXdapueW0p380RUyTW87XGb1ww8l8hU0pRrGC3vSWHe9CxrbPHX2fGUOZpNiHR0IIg==",
+    })
+    expect(canonicalize({
+      numbers: [333333333.33333329, 1e30, 4.5, 0.002, 1e-27],
+      literals: [null, true, false],
+      string: "€$\u000f\nA'B\"\\\"/",
+    })).toBe(
+      "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\"/\"}",
+    )
     expect(() => canonicalize({ invalid: Number.NaN })).toThrow(/finite|RFC 8785/i)
   })
 
@@ -193,7 +207,10 @@ describe("release trust bootstrap contract", () => {
     const { validateInception } = await loadTrustAction("protected-store.mjs")
     const base = inceptionFixture()
 
-    expect(validateInception(base)).toEqual({ ok: true })
+    expect(validateInception(base)).toMatchObject({
+      ok: false,
+      code: "verification_evidence_required",
+    })
     expect(validateInception({ ...base, externalCarrierReceipt: null })).toMatchObject({
       ok: false,
       code: "carrier_receipt_required",
@@ -384,11 +401,11 @@ describe("release trust bootstrap contract", () => {
     expect(foundation).toMatchObject({
       schemaVersion: 1,
       source: {
-        rootVersion: expect.any(Number),
-        rootSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-        repositoryCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
+        rootVersion: 15,
+        rootSha256: "73747011d0857ada15479a16c4cae0f3ed03aac698b523b97e1de314ac9d9ca8",
+        repositoryCommit: "54ff875ae39f073e0a88703b39b1f4e3b29693ae",
         trustedRootBase64: expect.stringMatching(/^[A-Za-z0-9+/]+={0,2}$/),
-        trustedRootSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        trustedRootSha256: "6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66",
       },
     })
     expect(createHash("sha256").update(Buffer.from(

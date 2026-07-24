@@ -97,11 +97,95 @@ jobs:
       - name: Run Local Package E2E Lane
         run: npm run test:e2e:package
 
+  trust-coverage:
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-26
+          - macos-26-intel
+    steps:
+      - name: Checkout trust TCB
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Use pinned Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.4.1
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run trust TCB V8 coverage
+        run: |
+          npm exec -- vitest run \
+            tests/release-trust-bootstrap.contract.test.ts \
+            tests/release-trust-bootstrap-coverage.contract.test.ts \
+            tests/developer-id-pair-canary-workflow.contract.test.ts \
+            tests/developer-id-signing-workflow.contract.test.ts \
+            --coverage.enabled=true \
+            --coverage.provider=v8 \
+            --coverage.include=.github/actions/release-trust/canonicalize.mjs \
+            --coverage.include=.github/actions/release-trust/protected-store.mjs \
+            --coverage.include=.github/actions/release-trust/workflow-closure.mjs \
+            --coverage.include=.github/actions/release-trust/run-reconciliation.mjs \
+            --coverage.thresholds.lines=100 \
+            --coverage.thresholds.branches=100 \
+            --coverage.thresholds.functions=100 \
+            --coverage.thresholds.statements=100
+
+      - name: Run native trust coverage
+        run: |
+          set -euo pipefail
+          mkdir -p trust-native-coverage
+          OURO_PAIR_PROFILE_FILE="$PWD/trust-native-coverage/pair-%p.profraw" \
+          OURO_SIGNING_PROFILE_FILE="$PWD/trust-native-coverage/signing-%p.profraw" \
+            npm exec -- vitest run \
+            tests/native/developer-id-pair-canary.test.ts \
+            tests/native/developer-id-signing.test.ts
+          xcrun --sdk macosx clang -std=c17 -Wall -Wextra -Werror \
+            -DOURO_NATIVE_COVERAGE -fprofile-instr-generate -fcoverage-mapping \
+            "$PWD/native/developer-id-pair-canary/driver.c" \
+            -framework Security -framework CoreFoundation \
+            -o trust-native-coverage/pair-canary
+          xcrun --sdk macosx clang -std=c17 -Wall -Wextra -Werror \
+            -DOURO_NATIVE_COVERAGE -fprofile-instr-generate -fcoverage-mapping \
+            "$PWD/native/developer-id-signing/driver.c" \
+            -framework Security -framework CoreFoundation \
+            -o trust-native-coverage/signing
+          xcrun llvm-profdata merge -sparse trust-native-coverage/*.profraw \
+            -o trust-native-coverage/merged.profdata
+          xcrun llvm-cov report trust-native-coverage/pair-canary \
+            -object trust-native-coverage/signing \
+            -instr-profile trust-native-coverage/merged.profdata \
+            --show-branch-summary
+          xcrun llvm-cov export trust-native-coverage/pair-canary \
+            -object trust-native-coverage/signing \
+            -instr-profile trust-native-coverage/merged.profdata \
+            -summary-only > trust-native-coverage/summary.json
+          node <<'NODE'
+          const summary = require('./trust-native-coverage/summary.json').data[0].totals
+          for (const key of ['lines', 'branches', 'functions']) {
+            if (summary[key].percent !== 100) throw new Error(`${key} coverage ${summary[key].percent}%`)
+          }
+          console.log('lines: 100.00%')
+          console.log('branches: 100.00%')
+          console.log('functions: 100.00%')
+          NODE
+
   publish:
     needs:
       - coverage
       - integration
       - package-e2e
+      - trust-coverage
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10

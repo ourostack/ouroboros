@@ -1,0 +1,64 @@
+name: developer-id-pair-canary
+
+"on":
+  workflow_dispatch:
+    inputs:
+      requestBase64:
+        required: true
+        type: string
+      requestSha256:
+        required: true
+        type: string
+      dispatchAuthorityBase64:
+        required: true
+        type: string
+      dispatchAuthoritySha256:
+        required: true
+        type: string
+      dispatchCorrelationId:
+        required: true
+        type: string
+
+run-name: ouro-pair-canary-${{ inputs.dispatchCorrelationId }}
+
+jobs:
+  canary:
+    runs-on: macos-26
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout immutable run tree
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Use pinned Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.4.1
+          package-manager-cache: false
+
+      - name: Install pinned release trust dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Admit exact protected-main canary authority
+        run: node .github/actions/release-trust/run-reconciliation.mjs admit-secret-workflow pair-canary
+
+      - name: Compile closure-bound canary driver after release-trust-inception-head admission
+        run: /usr/bin/xcrun clang -std=c17 -Wall -Wextra -Werror native/developer-id-pair-canary/driver.c -framework Security -framework CoreFoundation -o native/developer-id-pair-canary/driver
+
+      - name: Prepare fixed nonce-bound canary Mach-O before secret exposure
+        run: /usr/bin/xcrun clang -std=c17 -Wall -Wextra -Werror native/developer-id-pair-canary/driver.c -framework Security -framework CoreFoundation -o developer-id-pair-canary-input
+
+      - name: Materialize exact public native plan before secret exposure
+        run: node .github/actions/release-trust/run-reconciliation.mjs materialize-native-plan pair-canary developer-id-pair-canary-native-plan.v1.bin
+
+      - name: Validate repository-secret frame in one native boundary
+        env:
+          OURO_DRIVER_FIELD_1: ${{ secrets.OURO_DEVELOPER_ID_P12_B64 }}
+          OURO_DRIVER_FIELD_2: ${{ secrets.OURO_DEVELOPER_ID_P12_PASSWORD }}
+          OURO_DRIVER_FIELD_3: ${{ vars.OURO_DEVELOPER_ID_TEAM_ID }}
+          OURO_DRIVER_FIELD_4: ${{ vars.OURO_DEVELOPER_ID_APPLICATION_CN }}
+        run: node .github/actions/release-trust/run-reconciliation.mjs frame-native native/developer-id-pair-canary/driver 4
