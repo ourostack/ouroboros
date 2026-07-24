@@ -52,6 +52,7 @@ import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { AdapterDiagnosticsRegistry } from "../habits/adapter-diagnostics"
 import { composeMcpHabitAdapter, type McpHabitAdapterComposition } from "../habits/mcp-habit-composition"
 import { sha256CanonicalJson } from "../runtime/canonical-json"
+import { createDarwinProcessIdentitySource } from "../runtime/darwin-process-proof"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -436,6 +437,7 @@ const daemon = new OuroDaemon({
   mode,
   mcpToolHabitAdapterFor,
   adapterDiagnostics,
+  habitProcessIdentitySource: createDarwinProcessIdentitySource({ packageRoot: getRepoRoot() }),
   onStopCommandComplete: () => {
     stopEntryRuntime()
     scheduleCleanProcessExitAfterStopCommand()

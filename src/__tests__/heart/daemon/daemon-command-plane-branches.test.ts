@@ -38,6 +38,16 @@ describe("daemon command plane branches", () => {
       adapterDiagnostics?: { list(): unknown[] }
     },
   ) => {
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0
+    const habitProcessIdentitySource = {
+      readBootId: vi.fn(() => "boot-test"),
+      readProcess: vi.fn((pid: number) => ({
+        uid,
+        pid,
+        startIdentity: `test-process:${pid}`,
+        executableRealpath: path.resolve(process.execPath),
+      })),
+    }
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
       startAutoStartAgents: vi.fn(async () => undefined),
@@ -103,6 +113,10 @@ describe("daemon command plane branches", () => {
         stop: async () => undefined,
       })),
       onStopCommandComplete: options?.onStopCommandComplete,
+      habitProcessIdentitySource,
+      habitBarrierStorePath: `${socketPath}.activation-barriers.json`,
+      habitMachineTimezone: "UTC",
+      habitNow: () => "2026-07-23T10:00:00.000Z",
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
@@ -1298,11 +1312,11 @@ describe("daemon command plane branches", () => {
         reason: "habit heartbeat fired by overdue",
         triggerSource: "habit-overdue",
         budgetClass: "scheduled",
-        idempotencyKey: "habit:slugger:heartbeat:overdue:overdue:first-run:30m",
+        idempotencyKey: expect.stringMatching(/^habit:slugger:heartbeat:overdue:occ_[A-Za-z0-9_-]{43}$/),
         originRefs: [
           { kind: "habit", id: "heartbeat" },
           { kind: "habit-trigger", id: "overdue" },
-          { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+          { kind: "habit-occurrence", id: expect.stringMatching(/^occ_[A-Za-z0-9_-]{43}$/) },
           { kind: "daemon-command", id: "habit.poke" },
         ],
       }),
@@ -1337,27 +1351,27 @@ describe("daemon command plane branches", () => {
     const firstPoke = await daemon.handleCommand(command)
     const duplicatePoke = await daemon.handleCommand(command)
 
-    expect(firstPoke).toMatchObject({
+    expect(firstPoke, JSON.stringify(firstPoke)).toMatchObject({
       ok: true,
       message: "completed habit heartbeat for slugger",
       data: { disposition: "settled", result: { status: "completed" } },
     })
-    expect(duplicatePoke).toMatchObject({
-      ok: false,
-      error: "duplicate private-turn decision already recorded",
+    expect(duplicatePoke, JSON.stringify(duplicatePoke)).toMatchObject({
+      ok: true,
       data: {
-        disposition: "settled",
-        result: { status: "failed_terminal", error: { code: "private_turn_denied" } },
+        kind: "blocked",
+        reason: "occurrence_settled",
+        occurrenceId: expect.stringMatching(/^occ_[A-Za-z0-9_-]{43}$/),
       },
     })
-    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(2)
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
     expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
       expect.objectContaining({
-        idempotencyKey: "habit:slugger:heartbeat:launchd:launchd:last-run:2026-07-03T23:30:00.000Z:cadence:30m",
+        idempotencyKey: expect.stringMatching(/^habit:slugger:heartbeat:launchd:occ_[A-Za-z0-9_-]{43}$/),
         originRefs: [
           { kind: "habit", id: "heartbeat" },
           { kind: "habit-trigger", id: "launchd" },
-          { kind: "habit-occurrence", id: "launchd:last-run:2026-07-03T23:30:00.000Z:cadence:30m" },
+          { kind: "habit-occurrence", id: expect.stringMatching(/^occ_[A-Za-z0-9_-]{43}$/) },
           { kind: "daemon-command", id: "habit.poke" },
         ],
       }),

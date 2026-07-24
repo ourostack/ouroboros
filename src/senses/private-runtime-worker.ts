@@ -325,6 +325,7 @@ function fallbackHabitFile(habitName: string): HabitFile {
     name: habitName,
     title: habitName,
     cadence: null,
+    cadenceTimezone: null,
     status: "active",
     lastRun: null,
     created: null,

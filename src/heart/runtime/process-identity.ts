@@ -69,12 +69,22 @@ function identityFromProof(pid: number, bootId: string, proof: ProcessProof): Pr
   return parseProcessIdentity({ uid: proof.uid, pid, startIdentity: proof.startIdentity, bootId })
 }
 
-export function observeProcessIdentity(pid: number, source: ProcessIdentitySource): ProcessIdentity {
+export function observeProcessIdentity(
+  pid: number,
+  source: ProcessIdentitySource,
+  expected?: { expectedUid: number; expectedExecutableRealpath: string },
+): ProcessIdentity {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("process PID must be a positive safe integer")
   const bootId = source.readBootId()
   if (typeof bootId !== "string" || bootId.length === 0) throw new Error("machine boot evidence is invalid")
   const proof = source.readProcess(pid)
   if (proof === null) throw new Error(`process ${pid} is absent`)
+  if (expected) {
+    if (proof.uid !== expected.expectedUid) throw new Error("process evidence does not match the expected UID")
+    if (proof.executableRealpath !== expected.expectedExecutableRealpath) {
+      throw new Error("process evidence does not match the expected executable realpath")
+    }
+  }
   const identity = identityFromProof(pid, bootId, proof)
   emitNervesEvent({
     component: "heart",

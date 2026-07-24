@@ -77,6 +77,21 @@ describe("ProcessIdentity", () => {
     expect(evidence.readProcess).toHaveBeenCalledWith(4242)
   })
 
+  it("binds an observed owner to the expected UID and executable when requested", () => {
+    expect(observeProcessIdentity(4242, source(), {
+      expectedUid: 501,
+      expectedExecutableRealpath: "/usr/local/bin/runtime",
+    })).toEqual(identity)
+    expect(() => observeProcessIdentity(4242, source(), {
+      expectedUid: 502,
+      expectedExecutableRealpath: "/usr/local/bin/runtime",
+    })).toThrow(/expected UID/i)
+    expect(() => observeProcessIdentity(4242, source(), {
+      expectedUid: 501,
+      expectedExecutableRealpath: "/other-runtime",
+    })).toThrow(/expected executable/i)
+  })
+
   it("requires equality of uid, pid, microsecond start identity, and boot ID", () => {
     expect(processIdentityEquals(identity, { ...identity })).toBe(true)
     expect(processIdentityEquals(identity, { ...identity, uid: 502 })).toBe(false)

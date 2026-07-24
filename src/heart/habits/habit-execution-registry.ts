@@ -67,6 +67,14 @@ export async function dispatchHabitExecution(input: {
   invocation: Omit<HabitInvocationV1<Record<string, unknown>>, "config">
 }): Promise<HabitInvocationOutcomeV1> {
   const resolved = input.registry.resolve(input.envelope)
+  return invokeResolvedHabitExecution({ resolved, invocation: input.invocation })
+}
+
+export async function invokeResolvedHabitExecution(input: {
+  resolved: ResolvedHabitExecution
+  invocation: Omit<HabitInvocationV1<Record<string, unknown>>, "config">
+}): Promise<HabitInvocationOutcomeV1> {
+  const { resolved } = input
   try {
     const outcome = await resolved.adapter.invoke({
       ...input.invocation,

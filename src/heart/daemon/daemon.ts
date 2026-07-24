@@ -59,10 +59,20 @@ import {
   type AgentTurnHabitResponseV1,
 } from "../habits/agent-turn-adapter"
 import type { HabitExecutionAdapter, HabitInvocationOutcomeV1 } from "../habits/habit-execution"
-import { dispatchHabitExecution, HabitExecutionRegistry } from "../habits/habit-execution-registry"
+import { HabitExecutionRegistry } from "../habits/habit-execution-registry"
 import { createPackagedHabitExecutionRegistry } from "../habits/packaged-habit-adapters"
 import type { AdapterDiagnosticsRegistry, HabitAdapterDiagnosticProjectionV1 } from "../habits/adapter-diagnostics"
 import { sha256CanonicalJson } from "../runtime/canonical-json"
+import { ActivationBarrierStore } from "../activation/barrier-core"
+import { HabitDispatchCoordinator } from "../habits/habit-dispatch-coordinator"
+import { HabitOccurrenceStore } from "../habits/habit-occurrence-store"
+import { HabitScheduleStore } from "../habits/habit-schedule-store"
+import {
+  observeProcessIdentity,
+  proveExactProcessState,
+  type ProcessIdentity,
+  type ProcessIdentitySource,
+} from "../runtime/process-identity"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -539,6 +549,11 @@ export interface OuroDaemonOptions {
   /** Generic composition seam for the packaged MCP habit adapter. */
   mcpToolHabitAdapterFor?: (agent: string) => Promise<HabitExecutionAdapter<unknown> | null>
   adapterDiagnostics?: Pick<AdapterDiagnosticsRegistry, "list">
+  habitProcessIdentitySource?: ProcessIdentitySource
+  habitBarrierStorePath?: string
+  habitMachineTimezone?: string
+  habitNow?: () => string
+  habitRandomUuid?: () => string
 }
 
 interface DaemonWorkerRow {
@@ -813,6 +828,12 @@ export class OuroDaemon {
   private readonly mcpToolHabitAdapterFor: ((agent: string) => Promise<HabitExecutionAdapter<unknown> | null>) | null
   private readonly daemonInstanceId = randomUUID()
   private readonly adapterDiagnostics: Pick<AdapterDiagnosticsRegistry, "list"> | null
+  private readonly habitProcessIdentitySource: ProcessIdentitySource | null
+  private readonly habitBarrierStorePath: string
+  private readonly habitMachineTimezone: string
+  private readonly habitNow: () => string
+  private readonly habitRandomUuid: (() => string) | undefined
+  private habitProcessIdentity: ProcessIdentity | null = null
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -829,6 +850,16 @@ export class OuroDaemon {
     this.externalEventRoot = options.externalEventRoot ?? null
     this.mcpToolHabitAdapterFor = options.mcpToolHabitAdapterFor ?? null
     this.adapterDiagnostics = options.adapterDiagnostics ?? null
+    this.habitProcessIdentitySource = options.habitProcessIdentitySource ?? null
+    this.habitBarrierStorePath = options.habitBarrierStorePath ?? path.join(
+      os.homedir(),
+      ".ouro-cli",
+      "dependencies",
+      "activation-barriers.json",
+    )
+    this.habitMachineTimezone = options.habitMachineTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    this.habitNow = options.habitNow ?? (() => new Date().toISOString())
+    this.habitRandomUuid = options.habitRandomUuid
   }
 
   /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
@@ -1507,24 +1538,6 @@ export class OuroDaemon {
     }
   }
 
-  private resolveHabitPokeOccurrenceId(
-    command: Extract<DaemonCommand, { kind: "habit.poke" }>,
-    trigger: HabitRunTrigger,
-  ): string | { skipReason: string } | undefined {
-    const agentRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
-    const habitPath = path.join(agentRoot, "habits", `${command.habitName}.md`)
-    if (trigger === "poke" || trigger === "manual") return undefined
-    if (typeof command.occurrenceId === "string" && command.occurrenceId.trim().length > 0) return command.occurrenceId.trim()
-
-    if (!fs.existsSync(habitPath)) return { skipReason: "habit file not found" }
-
-    const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
-    if (habit.cadence === null) return { skipReason: "habit has no cadence" }
-    const cadence = habit.cadence
-    if (habit.lastRun === null) return `${trigger}:first-run:${cadence}`
-    return `${trigger}:last-run:${habit.lastRun}:cadence:${cadence}`
-  }
-
   private async requestAgentTurnHabitResult(
     request: AgentTurnHabitRequestV1,
     trigger: HabitRunTrigger,
@@ -1609,60 +1622,93 @@ export class OuroDaemon {
   private async dispatchHabitCommand(
     command: Extract<DaemonCommand, { kind: "habit.poke" }>,
     trigger: HabitRunTrigger,
-    occurrenceId: string | undefined,
   ): Promise<DaemonResponse> {
     const bundleRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
     const habitPath = path.join(bundleRoot, "habits", `${command.habitName}.md`)
+    const isScheduled = trigger === "cron" || trigger === "launchd" || trigger === "overdue"
+    if (isScheduled && !fs.existsSync(habitPath)) {
+      return {
+        ok: true,
+        message: `skipped scheduled habit ${command.habitName} for ${command.agent}: habit file not found`,
+      }
+    }
     let habit: ReturnType<typeof parseHabitFile>
     try {
       habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
     } catch (error) {
       return { ok: false, error: `habit definition unavailable: ${messageFromHabitPokeError(error)}` }
     }
-    const observedAt = new Date().toISOString()
-    const resolvedOccurrenceId = occurrenceId ?? `manual:${randomUUID()}`
-    const deadlineAt = new Date(Date.now() + 15 * 60_000).toISOString()
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), Math.max(0, Date.parse(deadlineAt) - Date.now()))
     try {
       const registry = await this.createHabitExecutionRegistry(command.agent, trigger)
-      const outcome = await dispatchHabitExecution({
-        registry,
-        envelope: habit.execution,
-        invocation: {
-          schemaVersion: 1,
-          agent: command.agent,
-          bundleRoot,
-          habit: {
-            id: habit.name,
-            title: habit.title,
-            body: habit.body,
-            tools: habit.tools ?? [],
-            continuity: habit.continuity,
-          },
-          occurrenceId: resolvedOccurrenceId,
-          attemptId: `attempt:${randomUUID()}`,
-          trigger: {
-            kind: trigger,
-            observedAt,
-            scheduleProofRef: occurrenceId ? `habit-occurrence:${occurrenceId}` : null,
-          },
-          owner: {
-            uid: typeof process.getuid === "function" ? process.getuid() : 0,
-            pid: process.pid,
-            startIdentity: `daemon:${process.pid}:${this.daemonInstanceId}`,
-            bootId: `boot:${Math.floor(Date.now() - os.uptime() * 1_000)}`,
-            daemonInstanceId: this.daemonInstanceId,
-          },
-          deadlineAt,
-          signal: controller.signal,
-        },
+      const source = this.habitProcessIdentitySource
+      if (!source) throw new Error("habit dispatch process identity source is unavailable")
+      const expectedUid = typeof process.getuid === "function" ? process.getuid() : 0
+      this.habitProcessIdentity ??= observeProcessIdentity(process.pid, source, {
+        expectedUid,
+        expectedExecutableRealpath: fs.realpathSync(process.execPath),
       })
-      return this.habitOutcomeResponse(command, outcome)
+      const owner = { ...this.habitProcessIdentity, daemonInstanceId: this.daemonInstanceId }
+      const lockOwner: ProcessIdentity = {
+        uid: owner.uid,
+        pid: owner.pid,
+        startIdentity: owner.startIdentity,
+        bootId: owner.bootId,
+      }
+      const proveOwnerState = (expected: ProcessIdentity) => proveExactProcessState(expected, source)
+      const coordinator = new HabitDispatchCoordinator({
+        agent: command.agent,
+        registry,
+        bundleRoot,
+        owner,
+        now: this.habitNow,
+        ...(this.habitRandomUuid ? { randomUuid: this.habitRandomUuid } : {}),
+        deadlineMs: 15 * 60_000,
+        scheduleStore: new HabitScheduleStore({
+          bundleRoot,
+          agent: command.agent,
+          owner,
+          machineTimezone: this.habitMachineTimezone,
+          now: this.habitNow,
+          proveOwnerState,
+        }),
+        occurrenceStore: new HabitOccurrenceStore({
+          bundleRoot,
+          agent: command.agent,
+          owner,
+          now: this.habitNow,
+          proveOwnerState,
+        }),
+        barrierStore: new ActivationBarrierStore({
+          targetPath: this.habitBarrierStorePath,
+          owner: lockOwner,
+          proveOwnerState,
+        }),
+      })
+      const result = await coordinator.dispatch({
+        habit: {
+          id: habit.name,
+          title: habit.title,
+          body: habit.body,
+          tools: habit.tools ?? [],
+          continuity: habit.continuity,
+          cadence: habit.cadence,
+          cadenceTimezone: habit.cadenceTimezone,
+          created: habit.created,
+          execution: habit.execution,
+        },
+        trigger,
+      })
+      if (result.kind === "blocked") {
+        const reason = result.reason === "no_cadence" ? "habit has no cadence" : result.reason
+        return {
+          ok: true,
+          message: `skipped scheduled habit ${command.habitName} for ${command.agent}: ${reason}`,
+          ...(result.reason === "no_cadence" ? {} : { data: result }),
+        }
+      }
+      return this.habitOutcomeResponse(command, result.outcome)
     } catch (error) {
       return { ok: false, error: messageFromHabitPokeError(error) }
-    } finally {
-      clearTimeout(timeout)
     }
   }
 
@@ -2117,14 +2163,7 @@ export class OuroDaemon {
         if (!isHabitRunTrigger(trigger)) {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
         }
-        const occurrenceId = this.resolveHabitPokeOccurrenceId(command, trigger)
-        if (typeof occurrenceId === "object") {
-          return {
-            ok: true,
-            message: `skipped scheduled habit ${command.habitName} for ${command.agent}: ${occurrenceId.skipReason}`,
-          }
-        }
-        return this.dispatchHabitCommand(command, trigger, occurrenceId)
+        return this.dispatchHabitCommand(command, trigger)
       }
       case "await.poke": {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))

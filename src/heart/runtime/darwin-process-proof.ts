@@ -4,9 +4,10 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { parseCanonicalJson } from "./canonical-json"
-import type { ProcessProof } from "./process-identity"
+import type { ProcessIdentitySource, ProcessProof } from "./process-identity"
 
 const MAXIMUM_OUTPUT_BYTES = 8192
+const PACKAGED_HELPER_RELATIVE_PATH = path.join("assets", "native", "process-proof", "process-proof-darwin")
 
 export interface ProcessProofRunner {
   readFile(filePath: string): Buffer
@@ -26,6 +27,15 @@ export interface DarwinProcessProofOptions {
   runner: ProcessProofRunner
 }
 
+export interface DarwinProcessIdentitySourceOptions {
+  packageRoot: string
+  platform?: string
+  arch?: string
+  runner?: ProcessProofRunner
+  readText?: (filePath: string) => string
+  readBootEvidence?: () => string
+}
+
 export const defaultProcessProofRunner: ProcessProofRunner = {
   readFile: (filePath) => fs.readFileSync(filePath),
   realpath: (filePath) => fs.realpathSync(filePath),
@@ -37,6 +47,75 @@ export const defaultProcessProofRunner: ProcessProofRunner = {
     })
     return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
   },
+}
+
+export interface DarwinBootEvidenceRunnerResult {
+  status: number | null
+  stdout: string | null
+  stderr: string | null
+}
+
+export function readDarwinBootEvidence(
+  run: () => DarwinBootEvidenceRunnerResult = () => {
+    const result = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
+      encoding: "utf8",
+      maxBuffer: MAXIMUM_OUTPUT_BYTES,
+      env: {},
+    })
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr }
+  },
+): string {
+  const result = run()
+  if (result.status !== 0 || (result.stderr ?? "").length > 0) {
+    throw new Error(`Darwin boot evidence command failed with status ${result.status ?? "unknown"}`)
+  }
+  return result.stdout ?? ""
+}
+
+export function parseDarwinBootId(raw: string): string {
+  if (Buffer.byteLength(raw, "utf8") > MAXIMUM_OUTPUT_BYTES) {
+    throw new Error("Darwin boot evidence exceeds the bounded protocol")
+  }
+  const match = /^\{ sec = ([0-9]+), usec = ([0-9]+) \}(?:[^\r\n]*)\r?\n?$/.exec(raw)
+  if (!match) throw new Error("Darwin boot evidence has an invalid schema")
+  const seconds = Number(match[1])
+  const microseconds = Number(match[2])
+  if (!Number.isSafeInteger(seconds) || seconds <= 0 || !Number.isSafeInteger(microseconds) || microseconds < 0 || microseconds > 999999) {
+    throw new Error("Darwin boot evidence has an invalid timestamp")
+  }
+  return `darwin-boot:${seconds}:${String(microseconds).padStart(6, "0")}`
+}
+
+export function createDarwinProcessIdentitySource(
+  options: DarwinProcessIdentitySourceOptions,
+): ProcessIdentitySource {
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  if (platform !== "darwin") throw new Error(`unsupported process-identity platform: ${platform}`)
+  const helperPath = path.join(options.packageRoot, PACKAGED_HELPER_RELATIVE_PATH)
+  const provenancePath = `${helperPath}.sha256`
+  const readText = options.readText ?? ((filePath: string) => fs.readFileSync(filePath, "utf8"))
+  const provenance = readText(provenancePath)
+  const provenanceMatch = /^([a-f0-9]{64})  process-proof-darwin\n$/.exec(provenance)
+  if (!provenanceMatch) throw new Error("packaged process-proof provenance record is invalid")
+  const runner = options.runner ?? defaultProcessProofRunner
+  const readBootEvidence = options.readBootEvidence ?? readDarwinBootEvidence
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.runtime_darwin_process_identity_source_created",
+    message: "created release-bound Darwin process identity source",
+    meta: { helperPath, arch },
+  })
+  return {
+    readBootId: () => parseDarwinBootId(readBootEvidence()),
+    readProcess: (pid) => inspectDarwinProcess(pid, {
+      platform,
+      arch,
+      helperPath,
+      helperSha256: provenanceMatch[1]!,
+      runner,
+    }),
+  }
 }
 
 function parseProof(value: unknown, expectedPid: number, runner: ProcessProofRunner): ProcessProof {

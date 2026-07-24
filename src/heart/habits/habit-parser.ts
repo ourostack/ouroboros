@@ -32,6 +32,7 @@ export interface HabitFile {
   name: string
   title: string
   cadence: string | null
+  cadenceTimezone: string | null
   status: HabitStatus
   lastRun: string | null
   created: string | null
@@ -152,6 +153,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
       name: stem,
       title: stem,
       cadence: null,
+      cadenceTimezone: null,
       status: "active",
       lastRun: null,
       created: null,
@@ -171,6 +173,10 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
 
   const rawCadence = frontmatter.cadence
   const cadence = typeof rawCadence === "string" && rawCadence.length > 0 ? rawCadence : null
+  const rawCadenceTimezone = frontmatter.cadenceTimezone
+  const cadenceTimezone = typeof rawCadenceTimezone === "string" && rawCadenceTimezone.length > 0
+    ? rawCadenceTimezone
+    : null
 
   const rawStatus = frontmatter.status
   const status: HabitStatus =
@@ -194,6 +200,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     name: stem,
     title,
     cadence,
+    cadenceTimezone,
     status,
     lastRun,
     created,

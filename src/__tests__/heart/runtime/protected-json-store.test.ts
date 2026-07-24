@@ -364,6 +364,29 @@ describe("protected JSON store", () => {
     held.release()
     afterDisappear.release()
 
+    const releasedBeforeReadTarget = tempTarget()
+    const releasedBeforeRead = acquireProtectedLock(releasedBeforeReadTarget, owner, state("alive"))
+    const releasedBeforeReadPath = `${releasedBeforeReadTarget}.lock`
+    let removeBeforeOpen = true
+    const releasedBeforeReadIo: ProtectedStoreIo = {
+      ...nodeProtectedStoreIo,
+      openSync: (filePath, flags, mode) => {
+        if (filePath === releasedBeforeReadPath && removeBeforeOpen && flags === (fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)) {
+          removeBeforeOpen = false
+          fs.unlinkSync(releasedBeforeReadPath)
+        }
+        return nodeProtectedStoreIo.openSync(filePath, flags, mode)
+      },
+    }
+    const afterReleaseBeforeRead = acquireProtectedLock(
+      releasedBeforeReadTarget,
+      replacement,
+      state("dead"),
+      releasedBeforeReadIo,
+    )
+    releasedBeforeRead.release()
+    afterReleaseBeforeRead.release()
+
     const targetChanged = tempTarget()
     acquireProtectedLock(targetChanged, owner, state("alive"))
     let changedLstatCount = 0

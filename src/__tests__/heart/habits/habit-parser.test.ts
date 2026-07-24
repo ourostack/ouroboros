@@ -14,6 +14,7 @@ describe("parseHabitFile", () => {
       "---",
       "title: Heartbeat",
       "cadence: 30m",
+      "cadenceTimezone: America/Los_Angeles",
       "status: active",
       "lastRun: 2026-03-27T10:00:00.000Z",
       "created: 2026-03-27",
@@ -28,6 +29,7 @@ describe("parseHabitFile", () => {
       name: "heartbeat",
       title: "Heartbeat",
       cadence: "30m",
+      cadenceTimezone: "America/Los_Angeles",
       status: "active",
       lastRun: "2026-03-27T10:00:00.000Z",
       created: "2026-03-27",
@@ -212,7 +214,7 @@ describe("parseHabitFile", () => {
 
     const result: HabitFile = parseHabitFile(content, "/bundles/agent.ouro/habits/shape-test.md")
     const keys = Object.keys(result).sort()
-    expect(keys).toEqual(["body", "cadence", "continuity", "created", "execution", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
+    expect(keys).toEqual(["body", "cadence", "cadenceTimezone", "continuity", "created", "execution", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
   })
 
   it("parses habit origin and surface policy from nested frontmatter", () => {

@@ -277,7 +277,13 @@ export function acquireProtectedLock(
     acquiredIdentity = createLock(lockPath, lockBytes, io)
     if (acquiredIdentity !== null) break
 
-    const existing = readStableRegularFile(lockPath, io, "protected lock")
+    let existing: ReturnType<typeof readStableRegularFile>
+    try {
+      existing = readStableRegularFile(lockPath, io, "protected lock")
+    } catch (error) {
+      if (lstatOptional(lockPath, io) === null) continue
+      throw error
+    }
     const record = parseLock(existing.bytes)
     const ownerState = proveOwnerState(record.owner)
     if (ownerState.state !== "dead") throw new ProtectedStoreLockedError()
@@ -350,6 +356,15 @@ export function readProtectedJson<T>(
   return decodeProtectedJson(readStableRegularFile(targetPath, io, "protected JSON record").bytes, parse)
 }
 
+export function readProtectedJsonOptional<T>(
+  targetPath: string,
+  parse: (value: unknown) => T,
+  io: ProtectedStoreIo = nodeProtectedStoreIo,
+): T | null {
+  if (lstatOptional(targetPath, io) === null) return null
+  return readProtectedJson(targetPath, parse, io)
+}
+
 function writeProtectedJsonAtomic(
   targetPath: string,
   value: unknown,
@@ -400,6 +415,22 @@ function writeProtectedJsonAtomic(
     }
     io.closeSync(parent.fd)
   }
+}
+
+export function writeProtectedJsonUnderLock<T>(
+  targetPath: string,
+  value: T,
+  parse: (value: unknown) => T,
+  lock: ProtectedLock,
+  io: ProtectedStoreIo = nodeProtectedStoreIo,
+): T {
+  lock.assertHeld()
+  const priorStats = lstatOptional(targetPath, io)
+  const expectedPrior = priorStats === null ? null : regularIdentity(priorStats, "protected JSON record")
+  if (priorStats !== null) readProtectedJson(targetPath, parse, io)
+  const next = parse(value)
+  writeProtectedJsonAtomic(targetPath, next, expectedPrior, lock, io)
+  return next
 }
 
 export interface ProtectedJsonMutation<T> {

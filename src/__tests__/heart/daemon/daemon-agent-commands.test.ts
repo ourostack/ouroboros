@@ -52,6 +52,16 @@ describe("daemon agent service command routing", () => {
   })
 
   const make = (socketPath: string, options?: { privatePolicyResult?: "allow" | "deny"; bundlesRoot?: string }) => {
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0
+    const habitProcessIdentitySource = {
+      readBootId: vi.fn(() => "boot-test"),
+      readProcess: vi.fn((pid: number) => ({
+        uid,
+        pid,
+        startIdentity: `test-process:${pid}`,
+        executableRealpath: path.resolve(process.execPath),
+      })),
+    }
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
       startAutoStartAgents: vi.fn(async () => undefined),
@@ -129,6 +139,10 @@ describe("daemon agent service command routing", () => {
               deniedReason: "default policy deny",
             }),
       },
+      habitProcessIdentitySource,
+      habitBarrierStorePath: `${socketPath}.activation-barriers.json`,
+      habitMachineTimezone: "UTC",
+      habitNow: () => "2026-07-23T10:00:00.000Z",
     } as any)
     return { daemon, processManager, scheduler }
   }
