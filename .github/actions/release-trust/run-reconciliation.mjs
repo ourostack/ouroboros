@@ -17,7 +17,12 @@ import { pathToFileURL } from "node:url"
 import { gunzipSync } from "node:zlib"
 
 import { canonicalize } from "./canonicalize.mjs"
-import { validateFoundation } from "./protected-store.mjs"
+import {
+  constructInceptionSealBody,
+  constructInceptionSealStatement,
+  validateFoundation,
+  validateProtectedMergeSemantics,
+} from "./protected-store.mjs"
 import { validateExecutionClosure } from "./workflow-closure.mjs"
 
 const RESULT_CEILING = 1000
@@ -28,6 +33,12 @@ const REPOSITORY = "ourostack/ouroboros"
 const REPOSITORY_ID = "1169669354"
 const REPOSITORY_NODE_ID = "R_kgDORbe86g"
 const SEAL_WORKFLOW_PATH = ".github/workflows/release-trust-inception-seal.yml"
+const AUTHORITY_PATHS = Object.freeze([
+  "release/trust/release-trust-bootstrap-evidence.v1.json",
+  "release/trust/release-trust-inception-authority.v1.json",
+  "release/trust/release-trust-policy-head.v1.json",
+])
+const CARRIER_PATH = "release/trust/release-trust-inception-seal.v1.json"
 const SIGNING_M0_PATHS = Object.freeze([
   "developer-id-pair-active-authority.v1.json",
   "developer-id-pair-canary-artifact-acquisition.v1.json",
@@ -825,6 +836,214 @@ export function materializeNativePlan(kind, outputPath, {
   return { ok: true }
 }
 
+export function createGitHubAuthorityClient({ environment = process.env, fetcher = globalThis.fetch } = {}) {
+  const token = environment.GITHUB_TOKEN
+  if (typeof token !== "string" || token.length === 0 || typeof fetcher !== "function") {
+    throw new TypeError("GitHub authority client credentials are unavailable")
+  }
+  return {
+    async get(path) {
+      if (typeof path !== "string"
+        || !(path === `/repos/${REPOSITORY}` || path.startsWith(`/repos/${REPOSITORY}/`))) {
+        throw new TypeError("GitHub authority request path is invalid")
+      }
+      const response = await fetcher(`https://api.github.com${path}`, {
+        method: "GET",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "X-GitHub-Api-Version": "2026-03-10",
+        },
+      })
+      if (!response || response.status !== 200 || typeof response.json !== "function") {
+        throw new TypeError("GitHub authority request failed")
+      }
+      return response.json()
+    },
+  }
+}
+
+function auditResponseBody(exchange, label) {
+  try {
+    return JSON.parse(Buffer.from(exchange.response.bodyBase64, "base64").toString("utf8"))
+  } catch {
+    throw new TypeError(`${label} audit response is invalid`)
+  }
+}
+
+async function acquirePagedReviews(client, pullRequestNumber) {
+  const pages = []
+  for (let page = 1; page <= 10; page += 1) {
+    const body = await client.get(
+      `/repos/${REPOSITORY}/pulls/${pullRequestNumber}/reviews?per_page=100&page=${page}`,
+    )
+    if (!Array.isArray(body) || body.length > 100) throw new TypeError("GitHub review page is invalid")
+    pages.push(body)
+    if (body.length < 100) return pages
+  }
+  throw new TypeError("GitHub review result ceiling exceeded")
+}
+
+async function acquirePagedChecks(client, sha) {
+  const pages = []
+  let acquired = 0
+  for (let page = 1; ; page += 1) {
+    const body = await client.get(
+      `/repos/${REPOSITORY}/commits/${sha}/check-runs?per_page=100&page=${page}`,
+    )
+    if (!Number.isSafeInteger(body?.total_count) || body.total_count < 1 || body.total_count > 1000
+      || !Array.isArray(body.check_runs) || body.check_runs.length > 100) {
+      throw new TypeError("GitHub check page is invalid")
+    }
+    pages.push(body)
+    acquired += body.check_runs.length
+    if (acquired === body.total_count) return pages
+    if (acquired > body.total_count || body.check_runs.length !== 100) {
+      throw new TypeError("GitHub check pagination is invalid")
+    }
+  }
+}
+
+function inspectGitHubTree(tree, expectedOid) {
+  if (tree?.sha !== expectedOid || tree.truncated !== false || !Array.isArray(tree.tree)) {
+    throw new TypeError("GitHub tree is incomplete")
+  }
+  const leaves = tree.tree.filter((entry) => entry?.type !== "tree")
+  if (leaves.some((entry) => typeof entry.path !== "string" || entry.path.length === 0
+    || entry.path.includes("\0") || !/^[0-7]{6}$/.test(entry.mode ?? "")
+    || !["blob", "commit"].includes(entry.type) || !SHA1.test(entry.sha ?? ""))
+    || new Set(leaves.map((entry) => entry.path)).size !== leaves.length) {
+    throw new TypeError("GitHub tree entry is invalid")
+  }
+  const listing = Buffer.concat(leaves.map((entry) => (
+    Buffer.from(`${entry.mode} ${entry.type} ${entry.sha}\t${entry.path}\0`, "utf8")
+  )))
+  return {
+    entries: new Map(leaves.map((entry) => [entry.path, {
+      mode: entry.mode,
+      type: entry.type,
+      sha: entry.sha,
+    }])),
+    treeSha256: sha256(listing),
+  }
+}
+
+async function acquireProtectedMerge(client, repository, protection, sha, pullRequestNumber) {
+  const [pullRequest, commit, reviews, checks] = await Promise.all([
+    client.get(`/repos/${REPOSITORY}/pulls/${pullRequestNumber}`),
+    client.get(`/repos/${REPOSITORY}/commits/${sha}`),
+    acquirePagedReviews(client, pullRequestNumber),
+    acquirePagedChecks(client, sha),
+  ])
+  const treeOid = commit?.commit?.tree?.sha
+  if (!SHA1.test(treeOid ?? "")) throw new TypeError("GitHub merge tree is invalid")
+  const tree = inspectGitHubTree(
+    await client.get(`/repos/${REPOSITORY}/git/trees/${treeOid}?recursive=1`),
+    treeOid,
+  )
+  const merge = {
+    sha,
+    treeOid,
+    treeSha256: tree.treeSha256,
+    parentShas: commit?.parents?.map((parent) => parent?.sha),
+    pullRequestNumber,
+  }
+  if (!validateProtectedMergeSemantics({
+    merge,
+    repository,
+    pullRequest,
+    commit,
+    reviews,
+    checks,
+    protection,
+  }).ok) {
+    throw new TypeError("GitHub protected merge is invalid")
+  }
+  return { merge, entries: tree.entries }
+}
+
+function requireAuthorityOnlyTreeChange(implementationEntries, authorityEntries) {
+  const paths = new Set([...implementationEntries.keys(), ...authorityEntries.keys()])
+  const changed = [...paths].filter((path) => canonicalize(implementationEntries.get(path) ?? null)
+    !== canonicalize(authorityEntries.get(path) ?? null))
+  if (canonicalize(changed.sort()) !== canonicalize([...AUTHORITY_PATHS].sort())
+    || AUTHORITY_PATHS.some((path) => implementationEntries.has(path)
+      || authorityEntries.get(path)?.type !== "blob")
+    || authorityEntries.has(CARRIER_PATH)) {
+    throw new TypeError("authority merge tree contains non-authority changes")
+  }
+}
+
+export async function verifyInceptionSealSigningAuthority({
+  body,
+  bytes,
+  environment,
+  root,
+  githubClient,
+}) {
+  try {
+    const client = githubClient ?? createGitHubAuthorityClient({ environment })
+    if (!client || typeof client.get !== "function") return false
+    const bootstrapEvidence = readCanonical(root, AUTHORITY_PATHS[0], "bootstrap evidence")
+    const authority = readCanonical(root, AUTHORITY_PATHS[1], "inception authority")
+    const policyHead = readCanonical(root, AUTHORITY_PATHS[2], "release trust head")
+    const historicalProtection = auditResponseBody(
+      body.authorityMergeAuditEvidence?.branchProtection,
+      "authority branch protection",
+    )
+    const repository = await client.get(`/repos/${REPOSITORY}`)
+    const [implementation, authorityMerge] = await Promise.all([
+      acquireProtectedMerge(
+        client,
+        repository,
+        auditResponseBody(
+          bootstrapEvidence.value.content?.githubAuditEvidence?.branchProtection,
+          "bootstrap branch protection",
+        ),
+        body.bootstrapMergeSha,
+        bootstrapEvidence.value.content?.bootstrapPullRequestNumber,
+      ),
+      acquireProtectedMerge(
+        client,
+        repository,
+        historicalProtection,
+        body.authorityMergeSha,
+        body.authorityMergePullRequestNumber,
+      ),
+    ])
+    requireAuthorityOnlyTreeChange(implementation.entries, authorityMerge.entries)
+    const requiredMembers = {
+      signingWorkflowSha256: authority.value.signingWorkflowBlobSha256,
+      signingClosureSha256: authority.value.signingExecutionClosureSha256,
+      pairCanaryWorkflowSha256: authority.value.pairCanaryWorkflowBlobSha256,
+      pairCanaryClosureSha256: authority.value.pairCanaryExecutionClosureSha256,
+      sealWorkflowSha256: authority.value.inceptionSealWorkflowBlobSha256,
+      sealClosureSha256: authority.value.inceptionSealExecutionClosureSha256,
+      initialPolicySha256: authority.value.initialPolicySha256,
+      pairCanaryPolicySha256: authority.value.pairCanaryTrustPolicySha256,
+      foundationSha256: authority.value.pairCanaryFoundationSha256,
+    }
+    const expected = constructInceptionSealBody({
+      implementationMerge: implementation.merge,
+      authorityArtifacts: {
+        bootstrapEvidence: { value: bootstrapEvidence.value, bytes: bootstrapEvidence.bytes },
+        authority: { value: authority.value, bytes: authority.bytes },
+        policyHead: { value: policyHead.value, bytes: policyHead.bytes },
+        requiredMembers,
+      },
+      authorityMerge: {
+        ...authorityMerge.merge,
+        auditEvidence: body.authorityMergeAuditEvidence,
+      },
+      createdAt: body.createdAt,
+    })
+    return expected.bytes === bytes.toString("utf8")
+      && expected.value.authorityMergeSha === environment.GITHUB_SHA
+  } catch {
+    return false
+  }
+}
+
 function validateSealRunEnvironment(environment) {
   const runId = Number(environment.GITHUB_RUN_ID)
   if (environment.GITHUB_REPOSITORY !== REPOSITORY
@@ -912,22 +1131,32 @@ function validateSealBody(root, environment, bytes) {
   return body
 }
 
-export function materializeSealInput(outputPath, {
-  environment = process.env,
-  root = process.cwd(),
-  trustVerifier = () => false,
-  fileSystem = {
+export async function materializeSealInput(outputPath, statementOutputPathOrOptions, maybeOptions = {}) {
+  const statementOutputPath = typeof statementOutputPathOrOptions === "string"
+    ? statementOutputPathOrOptions
+    : undefined
+  const options = typeof statementOutputPathOrOptions === "string"
+    ? maybeOptions
+    : (statementOutputPathOrOptions ?? {})
+  const {
+    environment = process.env,
+    root = process.cwd(),
+    trustVerifier = verifyInceptionSealSigningAuthority,
+    githubClient,
+    fileSystem = {
     close: closeSync,
     fsync: fsyncSync,
     open: openSync,
     unlink: unlinkSync,
     write: writeSync,
-  },
-} = {}) {
+    },
+  } = options
   validateSealRunEnvironment(environment)
   const event = JSON.parse(readFileSync(environment.GITHUB_EVENT_PATH, "utf8"))
   const bytes = decodeCanonicalBase64(event.inputs?.sealBodyBase64, "sealBodyBase64")
-  let descriptor
+  let bodyDescriptor
+  let statementDescriptor
+  let statementBytes
   try {
     if (!SHA256.test(event.inputs?.sealBodySha256 ?? "")
       || sha256(bytes) !== event.inputs.sealBodySha256) {
@@ -935,21 +1164,45 @@ export function materializeSealInput(outputPath, {
     }
     const body = validateSealBody(root, environment, bytes)
     if (typeof trustVerifier !== "function"
-      || trustVerifier({ event, body, bytes: Buffer.from(bytes), environment, root }) !== true) {
+      || await trustVerifier({
+        event,
+        body,
+        bytes: Buffer.from(bytes),
+        environment,
+        root,
+        githubClient,
+      }) !== true) {
       throw new TypeError("cryptographic verification evidence required")
     }
-    descriptor = fileSystem.open(outputPath, "wx", 0o600)
-    fileSystem.write(descriptor, bytes)
-    fileSystem.fsync(descriptor)
+    statementBytes = statementOutputPath === undefined
+      ? undefined
+      : Buffer.from(constructInceptionSealStatement({
+        sealBody: { value: body, bytes: bytes.toString("utf8") },
+      }).bytes)
+    bodyDescriptor = fileSystem.open(outputPath, "wx", 0o600)
+    fileSystem.write(bodyDescriptor, bytes)
+    fileSystem.fsync(bodyDescriptor)
+    if (statementOutputPath !== undefined) {
+      statementDescriptor = fileSystem.open(statementOutputPath, "wx", 0o600)
+      fileSystem.write(statementDescriptor, statementBytes)
+      fileSystem.fsync(statementDescriptor)
+    }
   } catch (error) {
-    if (descriptor !== undefined) {
-      fileSystem.close(descriptor)
-      descriptor = undefined
+    if (statementDescriptor !== undefined) {
+      fileSystem.close(statementDescriptor)
+      statementDescriptor = undefined
+      fileSystem.unlink(statementOutputPath)
+    }
+    if (bodyDescriptor !== undefined) {
+      fileSystem.close(bodyDescriptor)
+      bodyDescriptor = undefined
       fileSystem.unlink(outputPath)
     }
     throw error
   } finally {
-    if (descriptor !== undefined) fileSystem.close(descriptor)
+    if (statementDescriptor !== undefined) fileSystem.close(statementDescriptor)
+    if (bodyDescriptor !== undefined) fileSystem.close(bodyDescriptor)
+    if (statementBytes) statementBytes.fill(0)
     bytes.fill(0)
   }
   return { ok: true }
@@ -960,7 +1213,7 @@ export function isDirectInvocation(argv, moduleUrl) {
     && moduleUrl === pathToFileURL(argv[1]).href
 }
 
-export function runCli(
+export async function runCli(
   args,
   output = { stdout: process.stdout, stderr: process.stderr },
   operations = { admitSecretWorkflow, materializeNativePlan, materializeSealInput, runNativeFrame },
@@ -973,8 +1226,8 @@ export function runCli(
       operations.admitSecretWorkflow(args[1])
       return 0
     }
-    if (args[0] === "materialize-seal-input" && args.length === 2) {
-      operations.materializeSealInput(args[1])
+    if (args[0] === "materialize-seal-input" && (args.length === 2 || args.length === 3)) {
+      await operations.materializeSealInput(args[1], args[2])
       return 0
     }
     if (args[0] === "materialize-native-plan" && args.length === 3) {
@@ -984,7 +1237,7 @@ export function runCli(
     output.stderr.write(
       "usage: run-reconciliation.mjs frame-native <executable> <field-count> | "
       + "admit-secret-workflow <pair-canary|signing> | materialize-native-plan <kind> <output> | "
-      + "materialize-seal-input <output>\n",
+      + "materialize-seal-input <body-output> [statement-output]\n",
     )
     return 64
   } catch (error) {
@@ -993,9 +1246,9 @@ export function runCli(
   }
 }
 
-export function runDirectInvocation(argv, moduleUrl, cli, setExitCode) {
+export async function runDirectInvocation(argv, moduleUrl, cli, setExitCode) {
   if (!isDirectInvocation(argv, moduleUrl)) return false
-  setExitCode(cli(argv.slice(2)))
+  setExitCode(await cli(argv.slice(2)))
   return true
 }
 
@@ -1003,7 +1256,7 @@ export function setProcessExitCode(code) {
   process.exitCode = code
 }
 
-runDirectInvocation(
+await runDirectInvocation(
   process.argv,
   import.meta.url,
   runCli,

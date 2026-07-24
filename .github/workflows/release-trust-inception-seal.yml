@@ -39,7 +39,19 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Reconstruct exact inception seal body bytes
-        run: node .github/actions/release-trust/run-reconciliation.mjs materialize-seal-input release-trust-inception-seal-body.v1.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/actions/release-trust/run-reconciliation.mjs materialize-seal-input release-trust-inception-seal-body.v1.json release-trust-inception-seal-statement.v1.json
 
       - name: Create keyless inception seal
-        run: cosign sign-blob --yes --bundle release-trust-inception-seal.v1.sigstore.json release-trust-inception-seal-body.v1.json
+        run: cosign attest-blob --yes --statement release-trust-inception-seal-statement.v1.json --bundle release-trust-inception-seal.v1.sigstore.json
+
+      - name: Upload exact inception seal artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-trust-inception-seal-${{ github.run_id }}-1
+          path: |
+            release-trust-inception-seal-body.v1.json
+            release-trust-inception-seal.v1.sigstore.json
+          if-no-files-found: error
+          retention-days: 90

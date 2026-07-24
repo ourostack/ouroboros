@@ -382,6 +382,40 @@ describe("Developer ID signing workflow contract", () => {
         systemExecutableEvidenceByCommand: evidence,
       })).toThrow(/system executable evidence/i)
     }
+
+    const sealWorkflowPath = ".github/workflows/release-trust-inception-seal.yml"
+    const sealWorkflowBytes = readFileSync(join(repoRoot, sealWorkflowPath), "utf8")
+    const sealInput = {
+      workflowPath: sealWorkflowPath,
+      workflowBytes: sealWorkflowBytes,
+      driverKind: "seal",
+      checkedOutFileBytesByPath: Object.fromEntries(
+        contractPaths.map((path) => [path, readFileSync(join(repoRoot, path))]),
+      ),
+      systemExecutableEvidenceByCommand: {},
+    }
+    const sealClosure = buildExecutionClosure(sealInput)
+    expect(sealClosure).toMatchObject({
+      schemaVersion: 1,
+      workflowPath: sealWorkflowPath,
+      workflowBlobSha256: sha256(sealWorkflowBytes),
+      closureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
+    expect(sealClosure).not.toHaveProperty("secretDriverPath")
+    expect(sealClosure).not.toHaveProperty("signingDriverPath")
+    expect(sealClosure.entries.map((entry: any) => entry.kind)).toEqual([
+      "action",
+      "action",
+      "action",
+      "action",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+      "checked-out-file",
+    ])
+    expect(validateExecutionClosure({ ...sealInput, closure: sealClosure })).toEqual({ ok: true })
   })
 
   it("rejects incomplete rotation chains and stale-pair supersession", async () => {
@@ -519,7 +553,25 @@ describe("Developer ID signing workflow contract", () => {
     const serialized = JSON.stringify(workflow)
     expect(serialized).toContain("sealBodyBase64")
     expect(serialized).toContain("release-trust-inception-seal-body.v1.json")
-    expect(serialized).toContain("cosign")
+    expect(serialized).toContain("release-trust-inception-seal-statement.v1.json")
+    const signingStep = jobs.seal.steps.find(
+      (step: any) => step.name === "Create keyless inception seal",
+    )
+    expect(signingStep?.run).toBe(
+      "cosign attest-blob --yes --statement release-trust-inception-seal-statement.v1.json --bundle release-trust-inception-seal.v1.sigstore.json",
+    )
+    expect(serialized).not.toContain("cosign sign-blob")
+    const uploadStep = jobs.seal.steps.find(
+      (step: any) => step.name === "Upload exact inception seal artifact",
+    )
+    expect(uploadStep?.uses).toBe("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a")
+    expect(uploadStep?.with).toEqual({
+      name: "release-trust-inception-seal-${{ github.run_id }}-1",
+      path: "release-trust-inception-seal-body.v1.json\nrelease-trust-inception-seal.v1.sigstore.json\n",
+      "if-no-files-found": "error",
+      "retention-days": 90,
+    })
+    expect(jobs.seal.steps.indexOf(uploadStep)).toBe(jobs.seal.steps.length - 1)
     expect(serialized).not.toContain("${{ secrets.")
     expect(serialized).not.toContain("Developer ID Application")
     expect(jobs.seal.steps.filter((step: any) => step.run).every(

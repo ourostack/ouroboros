@@ -1122,38 +1122,47 @@ describe("Developer ID pair canary workflow contract", () => {
         sealBodySha256: sha256(sealBytes),
       } }))
       const sealPath = join(fixtures[1].root, "seal.json")
+      const sealStatementPath = join(fixtures[1].root, "seal-statement.json")
       const sealEnvironment = {
         ...fixtures[1].environment,
         GITHUB_EVENT_PATH: sealEventPath,
         GITHUB_WORKFLOW_REF: "ourostack/ouroboros/.github/workflows/release-trust-inception-seal.yml@refs/heads/main",
       }
-      expect(materializeSealInput(sealPath, {
+      expect(await materializeSealInput(sealPath, sealStatementPath, {
         root: fixtures[1].root,
         environment: sealEnvironment,
         trustVerifier: () => true,
       })).toEqual({ ok: true })
       expect(readFileSync(sealPath, "utf8")).toBe(sealBytes)
-      expect(() => materializeSealInput(sealPath, {
+      expect(JSON.parse(readFileSync(sealStatementPath, "utf8"))).toMatchObject({
+        _type: "https://in-toto.io/Statement/v1",
+        subject: [{ name: "release-trust-inception-seal-body.v1.json", digest: { sha256: sha256(sealBytes) } }],
+        predicateType: "https://ouro.bot/attestations/release-trust-inception-seal/v1",
+        predicate: { bodySha256: sha256(sealBytes) },
+      })
+      await expect(materializeSealInput(sealPath, {
         root: fixtures[1].root,
         environment: sealEnvironment,
         trustVerifier: () => true,
-      })).toThrow()
-      expect(() => materializeSealInput(join(fixtures[1].root, "unverified-seal.json"), {
+      })).rejects.toThrow()
+      await expect(materializeSealInput(join(fixtures[1].root, "unverified-seal.json"), {
         root: fixtures[1].root,
         environment: sealEnvironment,
-      })).toThrow(/verification evidence required/i)
+      })).rejects.toThrow(/verification evidence required/i)
+      await expect(materializeSealInput(join(fixtures[1].root, "default-options-seal.json"), null as any))
+        .rejects.toThrow(/protected main/i)
       for (const environment of [
         { ...sealEnvironment, GITHUB_REF: "refs/heads/feature" },
         { ...sealEnvironment, GITHUB_RUN_ATTEMPT: "2" },
         { ...sealEnvironment, GITHUB_WORKFLOW_REF: "ourostack/ouroboros/.github/workflows/other.yml@refs/heads/main" },
       ]) {
-        expect(() => materializeSealInput(join(fixtures[1].root, `wrong-seal-run-${environment.GITHUB_RUN_ATTEMPT}.json`), {
+        await expect(materializeSealInput(join(fixtures[1].root, `wrong-seal-run-${environment.GITHUB_RUN_ATTEMPT}.json`), {
           root: fixtures[1].root,
           environment,
           trustVerifier: () => true,
-        })).toThrow(/protected main/i)
+        })).rejects.toThrow(/protected main/i)
       }
-      const expectSealBodyRejected = (mutate: (body: any) => void, name: string, pattern: RegExp) => {
+      const expectSealBodyRejected = async (mutate: (body: any) => void, name: string, pattern: RegExp) => {
         const body = JSON.parse(sealBytes)
         mutate(body)
         const bytes = canonicalFixture(body)
@@ -1161,38 +1170,38 @@ describe("Developer ID pair canary workflow contract", () => {
           sealBodyBase64: Buffer.from(bytes).toString("base64"),
           sealBodySha256: sha256(bytes),
         } }))
-        expect(() => materializeSealInput(join(fixtures[1].root, `${name}.json`), {
+        await expect(materializeSealInput(join(fixtures[1].root, `${name}.json`), {
           root: fixtures[1].root,
           environment: sealEnvironment,
           trustVerifier: () => true,
-        })).toThrow(pattern)
+        })).rejects.toThrow(pattern)
       }
-      expectSealBodyRejected((body) => { body.unexpected = true }, "extra-seal-field", /exact authority-merge evidence/i)
-      expectSealBodyRejected((body) => { body.authorityPath = "release/trust/other.json" }, "path-drift", /checked-out authority bytes/i)
-      expectSealBodyRejected((body) => { body.bootstrapMergeSha = "7".repeat(40) }, "graph-drift", /graph is inconsistent/i)
+      await expectSealBodyRejected((body) => { body.unexpected = true }, "extra-seal-field", /exact authority-merge evidence/i)
+      await expectSealBodyRejected((body) => { body.authorityPath = "release/trust/other.json" }, "path-drift", /checked-out authority bytes/i)
+      await expectSealBodyRejected((body) => { body.bootstrapMergeSha = "7".repeat(40) }, "graph-drift", /graph is inconsistent/i)
       writeFileSync(sealEventPath, JSON.stringify({ inputs: {
         sealBodyBase64: Buffer.from(sealBytes).toString("base64"),
         sealBodySha256: "0".repeat(64),
       } }))
-      expect(() => materializeSealInput(join(fixtures[1].root, "bad-seal.json"), {
+      await expect(materializeSealInput(join(fixtures[1].root, "bad-seal.json"), {
         root: fixtures[1].root,
         environment: sealEnvironment,
         trustVerifier: () => true,
-      })).toThrow(/hash mismatch/i)
+      })).rejects.toThrow(/hash mismatch/i)
       writeFileSync(sealEventPath, JSON.stringify({ inputs: {
         sealBodyBase64: Buffer.from(sealBytes).toString("base64"),
       } }))
-      expect(() => materializeSealInput(join(fixtures[1].root, "missing-hash-seal.json"), {
+      await expect(materializeSealInput(join(fixtures[1].root, "missing-hash-seal.json"), {
         root: fixtures[1].root,
         environment: sealEnvironment,
         trustVerifier: () => true,
-      })).toThrow(/hash mismatch/i)
+      })).rejects.toThrow(/hash mismatch/i)
       writeFileSync(sealEventPath, JSON.stringify({ inputs: {
         sealBodyBase64: Buffer.from(sealBytes).toString("base64"),
         sealBodySha256: sha256(sealBytes),
       } }))
       const calls: string[] = []
-      expect(() => materializeSealInput(join(fixtures[1].root, "write-failure.json"), {
+      await expect(materializeSealInput(join(fixtures[1].root, "write-failure.json"), {
         root: fixtures[1].root,
         environment: sealEnvironment,
         trustVerifier: () => true,
@@ -1203,8 +1212,38 @@ describe("Developer ID pair canary workflow contract", () => {
           close: () => calls.push("close"),
           unlink: () => calls.push("unlink"),
         },
-      })).toThrow()
+      })).rejects.toThrow()
       expect(calls).toEqual(["open", "close", "unlink"])
+      const statementWriteCalls: string[] = []
+      let nextDescriptor = 6
+      await expect(materializeSealInput(
+        join(fixtures[1].root, "statement-write-body.json"),
+        join(fixtures[1].root, "statement-write-failure.json"),
+        {
+          root: fixtures[1].root,
+          environment: sealEnvironment,
+          trustVerifier: () => true,
+          fileSystem: {
+            open: () => { nextDescriptor += 1; return nextDescriptor },
+            write: (descriptor: number) => {
+              statementWriteCalls.push(`write:${descriptor}`)
+              if (descriptor === 8) throw new Error("synthetic statement write failure")
+            },
+            fsync: (descriptor: number) => statementWriteCalls.push(`fsync:${descriptor}`),
+            close: (descriptor: number) => statementWriteCalls.push(`close:${descriptor}`),
+            unlink: (path: string) => statementWriteCalls.push(`unlink:${path.split("/").at(-1)}`),
+          },
+        },
+      )).rejects.toThrow(/synthetic statement write failure/)
+      expect(statementWriteCalls).toEqual([
+        "write:7",
+        "fsync:7",
+        "write:8",
+        "close:8",
+        "unlink:statement-write-failure.json",
+        "close:7",
+        "unlink:statement-write-body.json",
+      ])
     } finally {
       for (const fixture of fixtures) rmSync(fixture.root, { recursive: true, force: true })
     }
@@ -1329,19 +1368,19 @@ describe("Developer ID pair canary workflow contract", () => {
         materializeNativePlan: () => { calls.push("plan") },
         materializeSealInput: () => { calls.push("seal") },
       }
-      expect(runCli(["frame-native", "driver", "4"], output, operations)).toBe(23)
-      expect(runCli(["admit-secret-workflow", "pair-canary"], output, operations)).toBe(0)
-      expect(runCli(["materialize-seal-input", "seal.json"], output, operations)).toBe(0)
-      expect(runCli(["materialize-native-plan", "pair-canary", "plan.bin"], output, operations)).toBe(0)
-      expect(runCli(["unknown"], output, operations)).toBe(64)
+      expect(await runCli(["frame-native", "driver", "4"], output, operations)).toBe(23)
+      expect(await runCli(["admit-secret-workflow", "pair-canary"], output, operations)).toBe(0)
+      expect(await runCli(["materialize-seal-input", "seal.json", "statement.json"], output, operations)).toBe(0)
+      expect(await runCli(["materialize-native-plan", "pair-canary", "plan.bin"], output, operations)).toBe(0)
+      expect(await runCli(["unknown"], output, operations)).toBe(64)
       expect(calls).toEqual(["frame", "admit", "seal", "plan"])
       expect(stderr.join("")).toMatch(/usage:/i)
-      expect(runCli(["unknown"], output)).toBe(64)
-      expect(runCli(["admit-secret-workflow", "pair-canary"], output, {
+      expect(await runCli(["unknown"], output)).toBe(64)
+      expect(await runCli(["admit-secret-workflow", "pair-canary"], output, {
         ...operations,
         admitSecretWorkflow: () => { throw new Error("admission failed") },
       })).toBe(65)
-      expect(runCli(["materialize-seal-input", "seal.json"], output, {
+      expect(await runCli(["materialize-seal-input", "seal.json"], output, {
         ...operations,
         materializeSealInput: () => { throw "non-error failure" },
       })).toBe(65)
@@ -1350,13 +1389,13 @@ describe("Developer ID pair canary workflow contract", () => {
       expect(isDirectInvocation(["node", "/tmp/other.mjs"], moduleUrl)).toBe(false)
       expect(isDirectInvocation(["node", "/tmp/release-trust-cli.mjs"], moduleUrl)).toBe(true)
       const exits: number[] = []
-      expect(runDirectInvocation(
+      expect(await runDirectInvocation(
         ["node", "/tmp/other.mjs"],
         moduleUrl,
         () => 0,
         (code: number) => exits.push(code),
       )).toBe(false)
-      expect(runDirectInvocation(
+      expect(await runDirectInvocation(
         ["node", "/tmp/release-trust-cli.mjs", "unknown"],
         moduleUrl,
         () => 64,
@@ -1369,6 +1408,51 @@ describe("Developer ID pair canary workflow contract", () => {
       process.exitCode = previousExitCode
     } finally {
       rmSync(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it("acquires seal authority only through the canonical authenticated GitHub client", async () => {
+    const { createGitHubAuthorityClient } = await loadReconciliation()
+    expect(() => createGitHubAuthorityClient({ environment: {}, fetcher: async () => null })).toThrow(/credentials/i)
+    expect(() => createGitHubAuthorityClient({
+      environment: { GITHUB_TOKEN: "" },
+      fetcher: async () => null,
+    })).toThrow(/credentials/i)
+    expect(() => createGitHubAuthorityClient({
+      environment: { GITHUB_TOKEN: "fixture-token" },
+      fetcher: null,
+    })).toThrow(/credentials/i)
+
+    const requests: any[] = []
+    const client = createGitHubAuthorityClient({
+      environment: { GITHUB_TOKEN: "fixture-token" },
+      fetcher: async (...args: any[]) => {
+        requests.push(args)
+        return { status: 200, json: async () => ({ ok: true }) }
+      },
+    })
+    await expect(client.get(42 as any)).rejects.toThrow(/path is invalid/i)
+    await expect(client.get("/repos/another/repository")).rejects.toThrow(/path is invalid/i)
+    await expect(client.get("/repos/ourostack/ouroboros")).resolves.toEqual({ ok: true })
+    await expect(client.get("/repos/ourostack/ouroboros/commits/abc")).resolves.toEqual({ ok: true })
+    expect(requests[0]).toEqual([
+      "https://api.github.com/repos/ourostack/ouroboros",
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer fixture-token",
+          "X-GitHub-Api-Version": "2026-03-10",
+        },
+      },
+    ])
+
+    for (const response of [null, { status: 500, json: async () => ({}) }, { status: 200 }]) {
+      const failing = createGitHubAuthorityClient({
+        environment: { GITHUB_TOKEN: "fixture-token" },
+        fetcher: async () => response,
+      })
+      await expect(failing.get("/repos/ourostack/ouroboros")).rejects.toThrow(/request failed/i)
     }
   })
 

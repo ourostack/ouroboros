@@ -47,6 +47,16 @@ const EXECUTION_PLANS = Object.freeze({
       "node .github/actions/release-trust/run-reconciliation.mjs frame-native native/developer-id-signing/driver 2",
     ]),
   }),
+  seal: Object.freeze({
+    workflowPath: ".github/workflows/release-trust-inception-seal.yml",
+    driverPath: null,
+    systemCommands: Object.freeze([]),
+    runCommands: Object.freeze([
+      "npm ci --ignore-scripts",
+      "node .github/actions/release-trust/run-reconciliation.mjs materialize-seal-input release-trust-inception-seal-body.v1.json release-trust-inception-seal-statement.v1.json",
+      "cosign attest-blob --yes --statement release-trust-inception-seal-statement.v1.json --bundle release-trust-inception-seal.v1.sigstore.json",
+    ]),
+  }),
 })
 
 function fail(code, details = {}) {
@@ -105,13 +115,17 @@ export function buildExecutionClosure({
   const plan = EXECUTION_PLANS[driverKind]
   if (typeof workflowPath !== "string" || !workflowPath.startsWith(".github/workflows/")
     || typeof workflowBytes !== "string"
-    || typeof driverPath !== "string" || driverPath.length === 0
-    || !(Buffer.isBuffer(driverBytes) || typeof driverBytes === "string")
     || !plan || !checkedOutFileBytesByPath || Array.isArray(checkedOutFileBytesByPath)
     || !systemExecutableEvidenceByCommand || Array.isArray(systemExecutableEvidenceByCommand)) {
     throw new TypeError("execution closure generator input is invalid")
   }
-  if (workflowPath !== plan.workflowPath || driverPath !== plan.driverPath) {
+  const hasDriver = plan.driverPath !== null
+  if ((hasDriver && (typeof driverPath !== "string" || driverPath.length === 0
+    || !(Buffer.isBuffer(driverBytes) || typeof driverBytes === "string")))
+    || (!hasDriver && (driverPath !== undefined || driverBytes !== undefined))) {
+    throw new TypeError("execution closure generator input is invalid")
+  }
+  if (workflowPath !== plan.workflowPath || (hasDriver && driverPath !== plan.driverPath)) {
     throw new TypeError("execution closure workflow plan mismatch")
   }
   const workflowActions = declaredWorkflowActions(workflowBytes)
@@ -121,15 +135,15 @@ export function buildExecutionClosure({
   if (canonicalize(declaredWorkflowRuns(workflowBytes)) !== canonicalize(plan.runCommands)) {
     throw new TypeError("execution closure workflow commands do not match the operation plan")
   }
-  const checkedPaths = [...TRUST_TCB_PATHS, driverPath]
+  const checkedPaths = hasDriver ? [...TRUST_TCB_PATHS, driverPath] : [...TRUST_TCB_PATHS]
   exactRecordKeys(checkedOutFileBytesByPath, checkedPaths, "checked-out evidence")
   exactRecordKeys(systemExecutableEvidenceByCommand, plan.systemCommands, "system executable evidence")
 
-  const driverSha256 = sha256(driverBytes)
-  if (sha256(checkedOutFileBytesByPath[driverPath]) !== driverSha256) {
+  const driverSha256 = hasDriver ? sha256(driverBytes) : null
+  if (hasDriver && sha256(checkedOutFileBytesByPath[driverPath]) !== driverSha256) {
     throw new TypeError("checked-out evidence does not bind the driver source")
   }
-  const contractRole = `${driverKind}-driver-contract`
+  const contractRole = hasDriver ? `${driverKind}-driver-contract` : "seal-contract"
   const sourceRole = `${driverKind}-driver-source`
   const normalizedEntries = workflowActions.map((value) => {
     const at = value.lastIndexOf("@")
@@ -153,8 +167,6 @@ export function buildExecutionClosure({
     normalizedEntries.push({ kind: "system-executable", ...evidence })
   }
   normalizedEntries.sort(compareExecutionEntries)
-  const driverPathField = driverKind === "secret" ? "secretDriverPath" : "signingDriverPath"
-  const driverHashField = driverKind === "secret" ? "secretDriverSha256" : "signingDriverSha256"
   const body = {
     schemaVersion: 1,
     workflowPath,
@@ -165,8 +177,12 @@ export function buildExecutionClosure({
     allContainersPinnedByDigest: true,
     allDownloadsHashVerifiedBeforeExecution: true,
     noReusableWorkflowOrUndeclaredExecution: true,
-    [driverPathField]: driverPath,
-    [driverHashField]: driverSha256,
+  }
+  if (hasDriver) {
+    const driverPathField = driverKind === "secret" ? "secretDriverPath" : "signingDriverPath"
+    const driverHashField = driverKind === "secret" ? "secretDriverSha256" : "signingDriverSha256"
+    body[driverPathField] = driverPath
+    body[driverHashField] = driverSha256
   }
   return { ...body, closureSha256: sha256(canonicalize(body)) }
 }
