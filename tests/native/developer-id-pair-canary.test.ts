@@ -17,7 +17,8 @@ function compileDriver(): string {
   const root = mkdtempSync(join(tmpdir(), "ouro-pair-canary-driver-"))
   tempRoots.push(root)
   const output = join(root, "driver")
-  execFileSync("/usr/bin/clang", [
+  const clang = execFileSync("/usr/bin/xcrun", ["--find", "clang"], { encoding: "utf8" }).trim()
+  execFileSync(clang, [
     "-std=c17",
     "-Wall",
     "-Wextra",
@@ -39,7 +40,7 @@ function encodeFrame(fields: Buffer[]): Buffer {
   })])
 }
 
-describe("Developer ID pair canary native driver", () => {
+describe.runIf(process.platform === "darwin")("Developer ID pair canary native driver", () => {
   it("compiles warning-free and exposes only the inert contract probe", () => {
     const executable = compileDriver()
     const result = spawnSync(executable, ["--contract"], { encoding: "utf8", env: {} })
@@ -51,7 +52,7 @@ describe("Developer ID pair canary native driver", () => {
       sideEffects: "none",
       secretTransport: "stdin-only",
       acceptedModes: ["--contract", "--validate-frame"],
-      frame: { exact: true, maximumFieldBytes: 1048576, requiredFields: 2 },
+      frame: { exact: true, maximumFieldBytes: 1048576, requiredFields: 4 },
     })
     expect(result.stderr).toBe("")
   })
@@ -86,11 +87,19 @@ describe("Developer ID pair canary native driver", () => {
       join(process.cwd(), "native", "developer-id-pair-canary", "driver.c"),
       "utf8",
     )).not.toMatch(/\b(getenv|secure_getenv|environ)\b/)
+    expect(execFileSync("/usr/bin/nm", ["-u", executable], { encoding: "utf8" })).not.toMatch(
+      /\b(_getenv|_secure_getenv|_environ|_NSProcessInfo|_execve|_posix_spawn|_system)\b/,
+    )
   })
 
   it("accepts one exact two-field stdin frame and rejects ambiguous bytes", () => {
     const executable = compileDriver()
-    const frame = encodeFrame([Buffer.from("synthetic-p12"), Buffer.from("synthetic-password")])
+    const frame = encodeFrame([
+      Buffer.from("synthetic-p12"),
+      Buffer.from("synthetic-password"),
+      Buffer.from("TEAM123"),
+      Buffer.from("Developer ID Application: Test (TEAM123)"),
+    ])
     const accepted = spawnSync(executable, ["--validate-frame"], {
       encoding: "utf8",
       env: {},
@@ -101,8 +110,18 @@ describe("Developer ID pair canary native driver", () => {
     expect(JSON.parse(accepted.stdout)).toEqual({
       schemaVersion: 1,
       accepted: true,
-      fieldCount: 2,
+      fieldCount: 4,
       byteCount: frame.length,
+    })
+    const poisoned = spawnSync(executable, ["--validate-frame"], {
+      encoding: "utf8",
+      env: { OURO_DRIVER_FIELD_1: "different", PATH: "/definitely/not/used" },
+      input: frame,
+    })
+    expect(poisoned).toMatchObject({
+      status: accepted.status,
+      stdout: accepted.stdout,
+      stderr: accepted.stderr,
     })
     for (const invalid of [Buffer.alloc(0), frame.subarray(0, frame.length - 1), Buffer.concat([frame, Buffer.from([0])])]) {
       const rejected = spawnSync(executable, ["--validate-frame"], { env: {}, input: invalid })

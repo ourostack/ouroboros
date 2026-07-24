@@ -279,9 +279,16 @@ describe("release trust bootstrap contract", () => {
       schemaVersion: 1,
       source: {
         rootVersion: expect.any(Number),
+        rootSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        repositoryCommit: expect.stringMatching(/^[a-f0-9]{40}$/),
+        trustedRootBase64: expect.stringMatching(/^[A-Za-z0-9+/]+={0,2}$/),
         trustedRootSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
     })
+    expect(createHash("sha256").update(Buffer.from(
+      foundation.source.trustedRootBase64,
+      "base64",
+    )).digest("hex")).toBe(foundation.source.trustedRootSha256)
     for (const entry of [...foundation.fulcioRoots, ...foundation.ctLogs, ...foundation.rekorLogs]) {
       expect(entry).toMatchObject({
         keyId: expect.stringMatching(/^[a-f0-9]{64}$/),

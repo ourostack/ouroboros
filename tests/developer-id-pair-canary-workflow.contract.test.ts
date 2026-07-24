@@ -46,16 +46,23 @@ describe("Developer ID pair canary workflow contract", () => {
     })
     expect(workflow.environment).toBeUndefined()
     expect(jobs.canary.environment).toBeUndefined()
-    expect(jobs.canary.steps.every((step: any) => step.if !== false && step.if !== "${{ false }}")).toBe(true)
+    expect(jobs.canary.steps.every((step: any) => step.if === undefined)).toBe(true)
 
     const actionSteps = jobs.canary.steps.filter((step: any) => step.uses)
     expect(actionSteps.length).toBeGreaterThan(0)
     expect(actionSteps.every((step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses))).toBe(true)
     const secretSteps = jobs.canary.steps.filter((step: any) => JSON.stringify(step).includes("${{ secrets."))
     expect(secretSteps).toHaveLength(1)
-    expect(secretSteps[0].run).toContain("native/developer-id-pair-canary/driver")
-    expect(secretSteps[0].run).toContain("--validate-frame")
-    expect(secretSteps[0].run).toContain("env: {}")
+    expect(secretSteps[0].env).toEqual({
+      OURO_DRIVER_FIELD_1: "${{ secrets.OURO_DEVELOPER_ID_P12_B64 }}",
+      OURO_DRIVER_FIELD_2: "${{ secrets.OURO_DEVELOPER_ID_P12_PASSWORD }}",
+      OURO_DRIVER_FIELD_3: "${{ vars.OURO_DEVELOPER_ID_TEAM_ID }}",
+      OURO_DRIVER_FIELD_4: "${{ vars.OURO_DEVELOPER_ID_APPLICATION_CN }}",
+    })
+    expect(secretSteps[0].run).toBe(
+      "node .github/actions/release-trust/run-reconciliation.mjs frame-native native/developer-id-pair-canary/driver 4",
+    )
+    expect(secretSteps[0].run).not.toContain("${{")
 
     const serialized = JSON.stringify(workflow)
     expect(serialized).toContain("release-trust-inception-head")

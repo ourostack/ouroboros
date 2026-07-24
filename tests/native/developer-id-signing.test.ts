@@ -17,7 +17,8 @@ function compileDriver(): string {
   const root = mkdtempSync(join(tmpdir(), "ouro-signing-driver-"))
   tempRoots.push(root)
   const output = join(root, "driver")
-  execFileSync("/usr/bin/clang", [
+  const clang = execFileSync("/usr/bin/xcrun", ["--find", "clang"], { encoding: "utf8" }).trim()
+  execFileSync(clang, [
     "-std=c17",
     "-Wall",
     "-Wextra",
@@ -39,7 +40,7 @@ function encodeFrame(fields: Buffer[]): Buffer {
   })])
 }
 
-describe("Developer ID signing native driver", () => {
+describe.runIf(process.platform === "darwin")("Developer ID signing native driver", () => {
   it("compiles warning-free and reports its closed stdin-only contract", () => {
     const executable = compileDriver()
     const result = spawnSync(executable, ["--contract"], { encoding: "utf8", env: {} })
@@ -86,6 +87,9 @@ describe("Developer ID signing native driver", () => {
       join(process.cwd(), "native", "developer-id-signing", "driver.c"),
       "utf8",
     )).not.toMatch(/\b(getenv|secure_getenv|environ)\b/)
+    expect(execFileSync("/usr/bin/nm", ["-u", executable], { encoding: "utf8" })).not.toMatch(
+      /\b(_getenv|_secure_getenv|_environ|_NSProcessInfo|_execve|_posix_spawn|_system)\b/,
+    )
   })
 
   it("accepts one exact two-field stdin frame and rejects ambiguous bytes", () => {
@@ -103,6 +107,16 @@ describe("Developer ID signing native driver", () => {
       accepted: true,
       fieldCount: 2,
       byteCount: frame.length,
+    })
+    const poisoned = spawnSync(executable, ["--validate-frame"], {
+      encoding: "utf8",
+      env: { OURO_DRIVER_FIELD_1: "different", PATH: "/definitely/not/used" },
+      input: frame,
+    })
+    expect(poisoned).toMatchObject({
+      status: accepted.status,
+      stdout: accepted.stdout,
+      stderr: accepted.stderr,
     })
     for (const invalid of [Buffer.alloc(0), frame.subarray(0, frame.length - 1), Buffer.concat([frame, Buffer.from([0])])]) {
       const rejected = spawnSync(executable, ["--validate-frame"], { env: {}, input: invalid })

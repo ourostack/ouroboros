@@ -27,7 +27,7 @@ describe("release trust bootstrap coverage contract", () => {
       matrix: { runner: ["macos-26", "macos-26-intel"] },
     })
     expect(job.environment).toBeUndefined()
-    expect(job.steps.every((step: any) => step.if !== false && step.if !== "${{ false }}")).toBe(true)
+    expect(job.steps.every((step: any) => step.if === undefined)).toBe(true)
     expect(job.steps.filter((step: any) => step.uses).every(
       (step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses),
     )).toBe(true)

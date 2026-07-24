@@ -53,14 +53,19 @@ describe("Developer ID signing workflow contract", () => {
     })
     expect(workflow.environment).toBeUndefined()
     expect(jobs.signing.environment).toBeUndefined()
-    expect(jobs.signing.steps.every((step: any) => step.if !== false && step.if !== "${{ false }}")).toBe(true)
+    expect(jobs.signing.steps.every((step: any) => step.if === undefined)).toBe(true)
     const actionSteps = jobs.signing.steps.filter((step: any) => step.uses)
     expect(actionSteps.every((step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses))).toBe(true)
     const secretSteps = jobs.signing.steps.filter((step: any) => JSON.stringify(step).includes("${{ secrets."))
     expect(secretSteps).toHaveLength(1)
-    expect(secretSteps[0].run).toContain("native/developer-id-signing/driver")
-    expect(secretSteps[0].run).toContain("--validate-frame")
-    expect(secretSteps[0].run).toContain("env: {}")
+    expect(secretSteps[0].env).toEqual({
+      OURO_DRIVER_FIELD_1: "${{ secrets.OURO_DEVELOPER_ID_P12_B64 }}",
+      OURO_DRIVER_FIELD_2: "${{ secrets.OURO_DEVELOPER_ID_P12_PASSWORD }}",
+    })
+    expect(secretSteps[0].run).toBe(
+      "node .github/actions/release-trust/run-reconciliation.mjs frame-native native/developer-id-signing/driver 2",
+    )
+    expect(secretSteps[0].run).not.toContain("${{")
 
     const serialized = JSON.stringify(workflow)
     expect(serialized).toContain("attempt-authority")
@@ -182,7 +187,7 @@ describe("Developer ID signing workflow contract", () => {
     expect(jobs.seal.permissions).toEqual({ contents: "read", "id-token": "write" })
     expect(workflow.environment).toBeUndefined()
     expect(jobs.seal.environment).toBeUndefined()
-    expect(jobs.seal.steps.every((step: any) => step.if !== false && step.if !== "${{ false }}")).toBe(true)
+    expect(jobs.seal.steps.every((step: any) => step.if === undefined)).toBe(true)
     expect(jobs.seal.steps.filter((step: any) => step.uses).every(
       (step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses),
     )).toBe(true)
