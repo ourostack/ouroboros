@@ -12,6 +12,7 @@ const {
   mockCreateHabitRunId,
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
+  mockWriteHabitProjectionCandidate,
   mockReserveAutonomyBudget,
   mockApplyHabitRuntimeState,
   mockReadHabitSessionSummary,
@@ -28,6 +29,7 @@ const {
   mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
+  mockWriteHabitProjectionCandidate: vi.fn(),
   mockReserveAutonomyBudget: vi.fn(),
   mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
   mockReadHabitSessionSummary: vi.fn(() => null),
@@ -92,6 +94,10 @@ vi.mock("../../arc/flight-recorder", () => ({
   writeHabitRunReceipt: (...args: any[]) => mockWriteHabitRunReceipt(...args),
 }))
 
+vi.mock("../../heart/habits/habit-projection-candidate", () => ({
+  writeHabitProjectionCandidate: (...args: any[]) => mockWriteHabitProjectionCandidate(...args),
+}))
+
 vi.mock("../../heart/autonomy-budget", () => ({
   reserveAutonomyBudget: (...args: any[]) => mockReserveAutonomyBudget(...args),
 }))
@@ -112,6 +118,11 @@ describe("private-runtime-worker", () => {
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
     mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
+    mockWriteHabitProjectionCandidate.mockReset().mockReturnValue({
+      candidateRef: "state/habits/projection-candidates/occurrence-a/attempt-a.json",
+      candidatePath: "/bundles/slugger.ouro/state/habits/projection-candidates/occurrence-a/attempt-a.json",
+      candidateSha256: "a".repeat(64),
+    })
     mockReserveAutonomyBudget.mockReset().mockReturnValue({
       allowed: true,
       status: "allowed",
@@ -637,9 +648,16 @@ describe("private-runtime-worker", () => {
       }))
     })
 
-    it("sends a correlated completed result only after the habit receipt is durable", async () => {
+    it("sends a correlated completed result only after non-authoritative session evidence is durable", async () => {
       const order: string[] = []
-      mockWriteHabitRunReceipt.mockImplementation(() => { order.push("receipt") })
+      mockWriteHabitProjectionCandidate.mockImplementation(() => {
+        order.push("candidate")
+        return {
+          candidateRef: "state/habits/projection-candidates/occurrence-a/attempt-a.json",
+          candidatePath: "/bundles/slugger.ouro/state/habits/projection-candidates/occurrence-a/attempt-a.json",
+          candidateSha256: "a".repeat(64),
+        }
+      })
       const sendMessage = vi.fn(() => { order.push("response") })
       const worker = createPrivateRuntimeWorker(
         vi.fn().mockResolvedValue({ messages: [] }),
@@ -664,7 +682,9 @@ describe("private-runtime-worker", () => {
         executionRequest,
       })
 
-      expect(order).toEqual(["receipt", "response", "response"])
+      expect(order).toEqual(["candidate", "response", "response"])
+      expect(mockWriteHabitRunReceipt).not.toHaveBeenCalled()
+      expect(mockRecordHabitRun).not.toHaveBeenCalled()
       const response = {
         schemaVersion: 1,
         occurrenceId: "occurrence-a",
@@ -676,7 +696,7 @@ describe("private-runtime-worker", () => {
           result: {
             version: 1,
             status: "completed",
-            resultRef: "arc/flight-recorder/habit-receipts/habit-run-id.json",
+            resultRef: "state/habits/projection-candidates/occurrence-a/attempt-a.json",
           },
         },
       }
@@ -744,8 +764,8 @@ describe("private-runtime-worker", () => {
       }))
     })
 
-    it("does not acknowledge correlated completion when the receipt write fails", async () => {
-      mockWriteHabitRunReceipt.mockImplementation(() => { throw new Error("disk full") })
+    it("does not acknowledge correlated completion when staging durable session evidence fails", async () => {
+      mockWriteHabitProjectionCandidate.mockImplementation(() => { throw new Error("disk full") })
       const sendMessage = vi.fn()
       const worker = createPrivateRuntimeWorker(
         vi.fn().mockResolvedValue({ messages: [] }),
@@ -772,7 +792,7 @@ describe("private-runtime-worker", () => {
       expect(sendMessage).not.toHaveBeenCalled()
       expect(mockRecordHabitRun).not.toHaveBeenCalled()
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.habit_receipt_write_error",
+        event: "senses.habit_projection_candidate_write_error",
       }))
     })
 

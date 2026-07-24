@@ -1327,7 +1327,7 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
-  it("deduplicates repeated scheduled habit pokes while lastRun has not advanced", async () => {
+  it("replays the completed occurrence projection for repeated scheduled pokes", async () => {
     const socketPath = tmpSocketPath("daemon-habit-poke-stable-occurrence")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-stable-bundles-"))
     const ledgerPath = path.join(os.tmpdir(), `habit-poke-stable-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
@@ -1358,11 +1358,8 @@ describe("daemon command plane branches", () => {
     })
     expect(duplicatePoke, JSON.stringify(duplicatePoke)).toMatchObject({
       ok: true,
-      data: {
-        kind: "blocked",
-        reason: "occurrence_settled",
-        occurrenceId: expect.stringMatching(/^occ_[A-Za-z0-9_-]{43}$/),
-      },
+      message: "completed habit heartbeat for slugger",
+      data: { disposition: "settled", result: { status: "completed" } },
     })
     expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
     expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
@@ -1393,6 +1390,102 @@ describe("daemon command plane branches", () => {
       }),
       expect.any(Object),
     )
+  })
+
+  it("reconstructs a settled occurrence after projection publication crashes", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-projection-recovery")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-projection-recovery-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-projection-recovery-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    writeHabitFile({
+      bundlesRoot,
+      agent: "slugger",
+      habitName: "heartbeat",
+      cadence: "30m",
+      lastRun: "2026-07-03T23:30:00.000Z",
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const bundleRoot = path.join(bundlesRoot, "slugger.ouro")
+    const projectionDir = path.join(bundleRoot, "arc", "flight-recorder", "habit-projection-receipts")
+    processManager.requestFromAgent.mockImplementationOnce(async (_agent: string, message: Record<string, unknown>) => {
+      fs.rmSync(projectionDir, { recursive: true, force: true })
+      fs.mkdirSync(path.dirname(projectionDir), { recursive: true })
+      fs.writeFileSync(projectionDir, "projection path unavailable", "utf-8")
+      const request = message.executionRequest as Record<string, unknown>
+      return {
+        schemaVersion: 1,
+        occurrenceId: request.occurrenceId,
+        attemptId: request.attemptId,
+        responseCapability: request.responseCapability,
+        outcome: {
+          version: 1,
+          disposition: "settled",
+          result: { version: 1, status: "completed", resultRef: "result:durable" },
+        },
+      }
+    })
+    const command = { kind: "habit.poke", agent: "slugger", habitName: "heartbeat", trigger: "launchd" } as const
+
+    const interrupted = await daemon.handleCommand(command)
+    fs.rmSync(projectionDir, { force: true })
+    fs.mkdirSync(projectionDir, { recursive: true })
+    const recovered = await daemon.handleCommand(command)
+
+    expect(interrupted).toMatchObject({ ok: false, error: expect.stringMatching(/projection|directory|ENOTDIR/i) })
+    expect(recovered).toMatchObject({
+      ok: true,
+      message: "completed habit heartbeat for slugger",
+      data: { disposition: "settled", result: { status: "completed" } },
+    })
+    expect(processManager.requestFromAgent).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(fs.readFileSync(path.join(bundleRoot, "state", "habits", "heartbeat.json"), "utf-8"))).toMatchObject({
+      name: "heartbeat",
+      lastRun: "2026-07-23T10:00:00.000Z",
+      latestReceiptLocator: expect.stringMatching(/^arc\/flight-recorder\/habit-projection-receipts\/hpr_/),
+    })
+  })
+
+  it("keeps failed occurrence projections diagnostic and never advances lastRun", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-failed-projection")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-failed-projection-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-failed-projection-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "heartbeat", cadence: "30m" })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    processManager.requestFromAgent.mockImplementationOnce(async (_agent: string, message: Record<string, unknown>) => {
+      const request = message.executionRequest as Record<string, unknown>
+      return {
+        schemaVersion: 1,
+        occurrenceId: request.occurrenceId,
+        attemptId: request.attemptId,
+        responseCapability: request.responseCapability,
+        outcome: {
+          version: 1,
+          disposition: "settled",
+          result: {
+            version: 1,
+            status: "failed_terminal",
+            error: { code: "nope", message: "did not complete", retryable: false },
+          },
+        },
+      }
+    })
+
+    const response = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "launchd",
+    })
+    const bundleRoot = path.join(bundlesRoot, "slugger.ouro")
+
+    expect(response).toMatchObject({ ok: false, error: "did not complete" })
+    expect(fs.existsSync(path.join(bundleRoot, "state", "habits", "heartbeat.json"))).toBe(false)
+    expect(fs.readdirSync(path.join(bundleRoot, "arc", "flight-recorder", "habit-projection-receipts"))).toHaveLength(1)
   })
 
   it("skips scheduled habit pokes with missing habit files before policy evaluation", async () => {

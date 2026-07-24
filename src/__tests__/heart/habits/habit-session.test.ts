@@ -16,6 +16,7 @@ import {
   resolveHabitReturnRoute,
 } from "../../../heart/habits/habit-session"
 import { readHabitRunReceipt, writeHabitRunReceipt } from "../../../arc/flight-recorder"
+import { readHabitProjectionCandidate } from "../../../heart/habits/habit-projection-candidate"
 
 const mockEmitNervesEvent = vi.fn()
 
@@ -630,6 +631,41 @@ describe("habit-session helpers", () => {
     const runtimeWriteIndex = mockEmitNervesEvent.mock.calls.findIndex(([event]) => event.event === "daemon.habit_runtime_state_write")
     expect(receiptWriteIndex).toBeGreaterThanOrEqual(0)
     expect(runtimeWriteIndex).toBeGreaterThan(receiptWriteIndex)
+  })
+
+  it("stages correlated habit evidence without publishing completion or advancing lastRun", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const result = completeHabitRun({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat", cadence: "30m" }),
+      runId: "run-correlated",
+      trigger: "launchd",
+      startedAt: "2026-06-11T17:00:00.000Z",
+      endedAt: "2026-06-11T17:01:00.000Z",
+      permissionEnvelope: envelope,
+      toolPolicy: {
+        requestedTools: null,
+        grantedTools: [],
+        deniedTools: [],
+        outwardMessagingAllowed: true,
+      },
+      projection: { occurrenceId: "occurrence-a", attemptId: "attempt-a" },
+    })
+
+    expect(result).toMatchObject({
+      outcome: "no_change",
+      receiptWritten: false,
+      runtimeStateRecorded: false,
+      projectionCandidateRef: "state/habits/projection-candidates/occurrence-a/attempt-a.json",
+    })
+    expect(readHabitRunReceipt(agentRoot, "run-correlated")).toBeNull()
+    expect(fs.existsSync(path.join(agentRoot, "state", "habits", "heartbeat.json"))).toBe(false)
+    expect(readHabitProjectionCandidate(agentRoot, "occurrence-a", "attempt-a")).toMatchObject({
+      schemaVersion: 1,
+      occurrenceId: "occurrence-a",
+      attemptId: "attempt-a",
+      receipt: { schemaVersion: 2, runId: "run-correlated", habitName: "heartbeat" },
+    })
   })
 
   it("defaults omitted completion refs, attempts, and errors to a no-change receipt", async () => {

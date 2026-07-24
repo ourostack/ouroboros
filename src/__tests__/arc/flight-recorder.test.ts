@@ -1157,6 +1157,30 @@ describe("Arc flight recorder", () => {
     })
   })
 
+  it("replays an identical habit receipt without duplicating its flight event and rejects conflicts", async () => {
+    const recorder = await import("../../arc/flight-recorder") as any
+    const receipt = {
+      schemaVersion: 1,
+      runId: "run-idempotent",
+      habitName: "checkup",
+      trigger: "launchd",
+      startedAt: "2026-06-08T12:00:00.000Z",
+      endedAt: "2026-06-08T12:01:00.000Z",
+      outcome: "no_change",
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: [],
+    }
+
+    recorder.writeHabitRunReceipt(agentRoot, receipt)
+    const eventPath = path.join(agentRoot, "arc", "flight-recorder", "events", "2026-06-08.jsonl")
+    const firstEvents = fs.readFileSync(eventPath, "utf-8")
+    recorder.writeHabitRunReceipt(agentRoot, receipt)
+
+    expect(fs.readFileSync(eventPath, "utf-8")).toBe(firstEvents)
+    expect(() => recorder.writeHabitRunReceipt(agentRoot, { ...receipt, outcome: "error" })).toThrow(/conflict/i)
+  })
+
   it("normalizes and validates generic habit trace steps on receipt read and write", async () => {
     const recorder = await import("../../arc/flight-recorder") as any
     const runId = "2026-06-08T12-20-00-000Z-checkup-55555555"
