@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execSync } from "child_process"
+import { createHash } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import { DaemonProcessManager, type RuntimeCredentialBootstrap } from "./process-manager"
@@ -27,7 +28,7 @@ import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
 import { AwaitScheduler } from "../awaiting/await-scheduler"
 import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
-import { LaunchdCronManager } from "./os-cron"
+import { CrontabCronManager, LaunchdCronManager, type OsCronDeps, type OsCronManager, type OsCronRegistrationIdentity } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
@@ -260,15 +261,16 @@ const taskScheduler = new TaskDrivenScheduler({
 const habitSchedulers: HabitScheduler[] = []
 const awaitSchedulers: AwaitScheduler[] = []
 
-function habitCronLabelOwner(agent: string): (label: string) => boolean {
-  const agentPrefix = `bot.ouro.${agent}.`
-  const awaitPrefix = `${agentPrefix}await.`
-  return (label) => label.startsWith(agentPrefix) && !label.startsWith(awaitPrefix)
+function cronRegistrationOwner(consumer: string, agent: string): (identity: OsCronRegistrationIdentity) => boolean {
+  const agentKey = createHash("sha256").update(agent, "utf8").digest("base64url")
+  return (identity) => identity.consumer === consumer && identity.agentKey === agentKey
 }
 
-function awaitCronLabelOwner(agent: string): (label: string) => boolean {
-  const awaitPrefix = `bot.ouro.${agent}.await.`
-  return (label) => label.startsWith(awaitPrefix)
+function createRuntimeCronManager(deps: OsCronDeps, consumer: string, agent: string): OsCronManager {
+  const options = { consumer, ownsRegistration: cronRegistrationOwner(consumer, agent) }
+  return process.platform === "darwin"
+    ? new LaunchdCronManager(deps, options)
+    : new CrontabCronManager(deps, options)
 }
 
 function verifyOsCron(command: string): string {
@@ -719,7 +721,7 @@ void daemon.start().then(async () => {
       // Migrate old tasks/habits/ to habits/ at bundle root
       migrateHabitsFromTaskSystem(bundleRoot)
 
-      const osCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
+      const osCronManager = createRuntimeCronManager(osCronDeps, "habit", agent)
       const scheduler = new HabitScheduler({
         agent,
         habitsDir,
@@ -793,7 +795,7 @@ void daemon.start().then(async () => {
     const awaitsDir = path.join(bundleRoot, "awaiting")
     const awaitDegradedComponent = `awaits:${agent}`
     try {
-      const awaitOsCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
+      const awaitOsCronManager = createRuntimeCronManager(osCronDeps, "await", agent)
       const awaitScheduler = new AwaitScheduler({
         agent,
         awaitsDir,

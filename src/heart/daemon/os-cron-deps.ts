@@ -1,11 +1,62 @@
-import { execSync } from "child_process"
+import { execSync, spawnSync } from "child_process"
+import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { OsCronDeps, CrontabCronDeps } from "./os-cron"
+import type { CrontabCronDeps, OsCommandOptions, OsCommandResult, OsCronDeps } from "./os-cron"
 
-export function createRealOsCronDeps(): OsCronDeps {
+function runStructured(executable: string, argv: string[], options: OsCommandOptions = {}): OsCommandResult {
+  try {
+    const result = spawnSync(executable, argv, {
+      encoding: "utf8",
+      input: options.stdin,
+      timeout: options.timeoutMs,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    })
+    return {
+      status: result.status,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr || result.error?.message || "",
+      timedOut: result.error !== undefined && "code" in result.error && result.error.code === "ETIMEDOUT",
+    }
+  } catch (error) {
+    return {
+      status: null,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      timedOut: false,
+    }
+  }
+}
+
+function writeFileAtomic(filePath: string, content: string): void {
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`
+  let descriptor: number | null = null
+  try {
+    descriptor = fs.openSync(tempPath, "wx", 0o600)
+    fs.writeFileSync(descriptor, content, "utf8")
+    fs.fsyncSync(descriptor)
+    fs.closeSync(descriptor)
+    descriptor = null
+    fs.renameSync(tempPath, filePath)
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor)
+    try {
+      fs.unlinkSync(tempPath)
+    } catch {
+      // Atomic rename already consumed the temporary path.
+    }
+  }
+}
+
+export interface RealOsCronDepsOptions {
+  homeDir?: string
+  uid?: number
+}
+
+export function createRealOsCronDeps(options: RealOsCronDepsOptions = {}): OsCronDeps {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.os_cron_deps_created",
@@ -14,22 +65,17 @@ export function createRealOsCronDeps(): OsCronDeps {
   })
 
   return {
-    exec: (cmd: string) => {
+    exec: runStructured,
+    writeFileAtomic,
+    readFile: (filePath: string) => fs.readFileSync(filePath, "utf8"),
+    removeFile: (filePath: string) => {
       try {
-        execSync(cmd, { stdio: "ignore" })
-      } catch {
-        /* best effort */
+        fs.unlinkSync(filePath)
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error
       }
     },
-    writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"),
-    removeFile: (p: string) => {
-      try {
-        fs.unlinkSync(p)
-      } catch {
-        /* best effort — file may already be gone */
-      }
-    },
-    existsFile: (p: string) => fs.existsSync(p),
+    existsFile: (filePath: string) => fs.existsSync(filePath),
     listDir: (dir: string) => {
       try {
         return fs.readdirSync(dir)
@@ -38,58 +84,48 @@ export function createRealOsCronDeps(): OsCronDeps {
       }
     },
     mkdirp: (dir: string) => fs.mkdirSync(dir, { recursive: true }),
-    homeDir: os.homedir(),
+    homeDir: options.homeDir ?? os.homedir(),
     envPath: process.env.PATH ?? "",
+    uid: options.uid ?? process.getuid?.() ?? 0,
   }
 }
 
-export function createRealCrontabDeps(): CrontabCronDeps {
+export interface RealCrontabDepsOptions {
+  executable?: string
+}
+
+export function createRealCrontabDeps(options: RealCrontabDepsOptions = {}): CrontabCronDeps {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.crontab_deps_created",
     message: "created real crontab deps",
     meta: {},
   })
-
-  /* v8 ignore start -- crontab exec closures: calling these in tests would modify the real system crontab @preserve */
   return {
-    execOutput: (cmd: string) => execSync(cmd, { encoding: "utf-8" }),
-    execWrite: (cmd: string, stdin: string) => {
-      execSync(cmd, { input: stdin, stdio: ["pipe", "ignore", "ignore"] })
-    },
+    exec: runStructured,
+    crontabPath: options.executable ?? "/usr/bin/crontab",
   }
-  /* v8 ignore stop */
 }
 
 /* v8 ignore start -- ouro path resolution: probes process.argv, filesystem layout, and PATH; branches depend on install method and runtime environment @preserve */
 export function resolveOuroBinaryPath(): string {
-  // Try to resolve from process.argv[1] — the script being run
   const scriptPath = process.argv[1]
   if (scriptPath) {
-    // If running via node dist/heart/daemon/daemon-entry.js, resolve the ouro wrapper
-    // The ouro binary is typically at the package root's bin
     const distDir = path.resolve(path.dirname(scriptPath))
     const packageBin = path.resolve(distDir, "..", "..", "..", "node_modules", ".bin", "ouro")
-    if (fs.existsSync(packageBin)) {
-      return packageBin
-    }
+    if (fs.existsSync(packageBin)) return packageBin
 
-    // Try the repo-local scripts/ouro.sh
     const repoOuro = path.resolve(distDir, "..", "..", "..", "scripts", "ouro.sh")
-    if (fs.existsSync(repoOuro)) {
-      return repoOuro
-    }
+    if (fs.existsSync(repoOuro)) return repoOuro
   }
 
-  // Try which ouro
   try {
     const result = execSync("which ouro", { encoding: "utf-8" }).trim()
     if (result.length > 0) return result
   } catch {
-    /* not on PATH */
+    // Not on PATH.
   }
 
-  // Fallback: use "ouro" and rely on PATH
   emitNervesEvent({
     component: "daemon",
     event: "daemon.ouro_path_fallback",
