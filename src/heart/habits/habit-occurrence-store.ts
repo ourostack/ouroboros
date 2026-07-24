@@ -137,7 +137,23 @@ export type HabitOccurrenceClaimResult =
 
 export type HabitFenceAdmissionResult =
   | { kind: "admitted" }
-  | { kind: "blocked"; reason: "unknown_slot_fence"; occurrenceId: string }
+  | { kind: "blocked"; reason: "unknown_slot_fence" | "retry_not_due"; occurrenceId: string }
+
+export interface HabitReconciliationCandidateV1 {
+  occurrenceId: string
+  attemptId: string
+  execution: HabitExecutionEnvelopeV1
+  unknownReason: HabitUnknownReason
+  priorEvidence: HabitEvidenceV1[]
+}
+
+export interface HabitOwnedReconciliationInputV1 {
+  occurrenceId: string
+  attemptId: string
+  adapter: { id: string; version: 1 }
+  priorEvidence: HabitEvidenceV1[]
+  result: HabitReconciliationResultV1
+}
 
 export interface HabitOccurrenceStoreOptions {
   bundleRoot: string
@@ -716,10 +732,19 @@ export class HabitOccurrenceStore {
         ? this.ensureOpenFence(habitId, lock)
         : this.readFenceOptional(habitId)
       if (fence?.state === "blocked") {
-        this.requireBlockingOccurrence(fence)
+        const blocking = this.requireBlockingOccurrence(fence)
+        if (blocking.state === "failed_retryable" && resultNotBefore(blocking) <= Date.parse(this.now())) {
+          emitNervesEvent({
+            component: "heart",
+            event: "heart.habit_occurrence_fenced_retry_admitted",
+            message: "admitted the due retry named by the still-blocked habit fence",
+            meta: { agent: this.options.agent, habitId, occurrenceId: blocking.occurrenceId },
+          })
+          return { kind: "admitted" }
+        }
         return {
           kind: "blocked",
-          reason: "unknown_slot_fence",
+          reason: blocking.state === "failed_retryable" ? "retry_not_due" : "unknown_slot_fence",
           occurrenceId: fence.blockingOccurrenceId!,
         }
       }
@@ -906,21 +931,42 @@ export class HabitOccurrenceStore {
     })
   }
 
-  reconcile(
-    occurrenceId: string,
-    attemptId: string,
-    priorEvidence: HabitEvidenceV1[],
-    result: HabitReconciliationResultV1,
+  listReconciliationCandidates(habitId: string): HabitReconciliationCandidateV1[] {
+    return this.withLock((lock) => {
+      this.recoverPreparedTransactionsUnderLock(lock)
+      this.safeName(habitId, "habit ID")
+      this.recoverAbandonedAttemptsUnderLock(habitId, lock)
+      return this.listHabitOccurrences(habitId)
+        .filter((occurrence) => occurrence.state === "outcome_unknown")
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.occurrenceId.localeCompare(right.occurrenceId))
+        .map((occurrence) => {
+          const attempt = occurrence.attempts.at(-1)!
+          return {
+            occurrenceId: occurrence.occurrenceId,
+            attemptId: attempt.attemptId,
+            execution: clone(occurrence.execution),
+            unknownReason: attempt.unknownReason!,
+            priorEvidence: clone(attempt.unknownEvidence),
+          }
+        })
+    })
+  }
+
+  reconcileOwned(
+    input: HabitOwnedReconciliationInputV1,
   ): HabitOccurrenceClaimResult | { kind: "settled"; occurrence: HabitOccurrenceV1 } | { kind: "unresolved" } {
     return this.withLock((lock) => {
       this.recoverPreparedTransactionsUnderLock(lock)
-      const normalizedResult = reconciliationResult(result)
-      const prior = this.readOccurrence(occurrenceId)
+      const prior = this.readOccurrence(input.occurrenceId)
+      if (prior.execution.adapter !== input.adapter.id || prior.execution.version !== input.adapter.version) {
+        throw new HabitOccurrenceCorruptError("reconciliation does not match the recorded adapter pair")
+      }
+      const normalizedResult = reconciliationResult(input.result)
       const priorAttempt = prior.attempts.at(-1)!
-      if (prior.state !== "outcome_unknown" || priorAttempt.attemptId !== attemptId) {
+      if (prior.state !== "outcome_unknown" || priorAttempt.attemptId !== input.attemptId) {
         throw new HabitOccurrenceCorruptError("reconciliation does not own the current unknown attempt")
       }
-      if (canonicalizeJson(priorAttempt.unknownEvidence) !== canonicalizeJson(priorEvidence.map(evidence))) {
+      if (canonicalizeJson(priorAttempt.unknownEvidence) !== canonicalizeJson(input.priorEvidence.map(evidence))) {
         throw new HabitOccurrenceCorruptError("reconciliation evidence differs from durable prior evidence")
       }
       if (normalizedResult.disposition === "unresolved") return { kind: "unresolved" }

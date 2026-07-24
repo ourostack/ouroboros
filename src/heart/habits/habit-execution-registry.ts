@@ -1,9 +1,15 @@
 import { emitNervesEvent } from "../../nerves/runtime"
+import {
+  parseHabitInvocationOutcomeV1,
+  parseHabitReconciliationResultV1,
+} from "./habit-execution"
 import type {
   HabitExecutionAdapter,
   HabitExecutionEnvelopeV1,
   HabitInvocationOutcomeV1,
   HabitInvocationV1,
+  HabitReconciliationInputV1,
+  HabitReconciliationResultV1,
   HabitUnknownReason,
 } from "./habit-execution"
 
@@ -76,10 +82,28 @@ export async function invokeResolvedHabitExecution(input: {
 }): Promise<HabitInvocationOutcomeV1> {
   const { resolved } = input
   try {
-    const outcome = await resolved.adapter.invoke({
+    const rawOutcome = await resolved.adapter.invoke({
       ...input.invocation,
       config: resolved.config,
     })
+    if (rawOutcome === undefined || rawOutcome === null || (
+      typeof rawOutcome === "object" &&
+      !Array.isArray(rawOutcome) &&
+      (rawOutcome as { disposition?: unknown }).disposition === "settled" &&
+      !("result" in rawOutcome)
+    )) {
+      throw new HabitAdapterInvocationError("result_absent", `Habit adapter ${resolved.adapter.id}@${resolved.adapter.version} returned no result`)
+    }
+    let outcome: HabitInvocationOutcomeV1
+    try {
+      outcome = parseHabitInvocationOutcomeV1(rawOutcome)
+    } catch (error) {
+      throw new HabitAdapterInvocationError(
+        "invalid_result",
+        `Habit adapter ${resolved.adapter.id}@${resolved.adapter.version} returned an invalid result: ${(error as Error).message}`,
+        { cause: error },
+      )
+    }
     emitNervesEvent({
       component: "heart",
       event: "heart.habit_adapter_dispatched",
@@ -92,6 +116,38 @@ export async function invokeResolvedHabitExecution(input: {
     throw new HabitAdapterInvocationError(
       "adapter_exception",
       `Habit adapter ${resolved.adapter.id}@${resolved.adapter.version} threw: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    )
+  }
+}
+
+export async function reconcileResolvedHabitExecution(input: {
+  resolved: ResolvedHabitExecution
+  input: HabitReconciliationInputV1<unknown>
+}): Promise<HabitReconciliationResultV1> {
+  const reconcile = input.resolved.adapter.reconcile
+  if (!reconcile) return { version: 1, disposition: "unresolved" }
+  let raw: unknown
+  try {
+    raw = await reconcile({ ...input.input, config: input.resolved.config })
+  } catch (error) {
+    throw new Error(
+      `Habit adapter ${input.resolved.adapter.id}@${input.resolved.adapter.version} reconciliation failed: ${String(error)}`,
+      { cause: error },
+    )
+  }
+  try {
+    const result = parseHabitReconciliationResultV1(raw)
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.habit_adapter_reconciled",
+      message: "generic habit adapter returned reconciliation evidence",
+      meta: { adapterId: input.resolved.adapter.id, disposition: result.disposition },
+    })
+    return result
+  } catch (error) {
+    throw new Error(
+      `Habit adapter ${input.resolved.adapter.id}@${input.resolved.adapter.version} reconciliation result is invalid: ${(error as Error).message}`,
       { cause: error },
     )
   }

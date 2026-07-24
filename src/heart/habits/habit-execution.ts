@@ -147,6 +147,135 @@ function exactKeys(value: Record<string, unknown>, allowed: string[], label: str
   if (unknown.length > 0) fail(`${label} has unknown field ${unknown.sort()[0]}`)
 }
 
+function nonEmptyString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) fail(`${label} must be a non-empty string`)
+  return value
+}
+
+function canonicalTimestamp(value: unknown, label: string): string {
+  const text = nonEmptyString(value, label)
+  const milliseconds = Date.parse(text)
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== text) {
+    fail(`${label} must be canonical UTC time`)
+  }
+  return text
+}
+
+function parseEvidence(value: unknown): HabitEvidenceV1 {
+  const raw = record(value, "evidence")
+  exactKeys(raw, ["kind", "ref", "sha256", "observedAt"], "evidence")
+  if (raw.kind !== "adapter-owned" || typeof raw.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(raw.sha256)) {
+    fail("evidence must be adapter-owned with a lowercase SHA-256")
+  }
+  return {
+    kind: "adapter-owned",
+    ref: nonEmptyString(raw.ref, "evidence ref"),
+    sha256: raw.sha256,
+    observedAt: canonicalTimestamp(raw.observedAt, "evidence observedAt"),
+  }
+}
+
+function parseExecutionError(value: unknown): HabitExecutionErrorV1 {
+  const raw = record(value, "execution error")
+  exactKeys(raw, ["code", "message", "retryable"], "execution error")
+  if (typeof raw.retryable !== "boolean") fail("execution error retryable must be boolean")
+  return {
+    code: nonEmptyString(raw.code, "execution error code"),
+    message: nonEmptyString(raw.message, "execution error message"),
+    retryable: raw.retryable,
+  }
+}
+
+export function parseHabitExecutionResultV1(value: unknown): HabitExecutionResultV1 {
+  const raw = record(value, "execution result")
+  if (raw.version !== 1) fail("execution result version must be 1")
+  if (raw.status === "completed") {
+    exactKeys(raw, ["version", "status", "resultRef"], "completed execution result")
+    return { version: 1, status: "completed", resultRef: nonEmptyString(raw.resultRef, "result ref") }
+  }
+  if (raw.status === "failed_terminal") {
+    exactKeys(raw, ["version", "status", "error"], "terminal execution result")
+    const error = parseExecutionError(raw.error)
+    if (error.retryable) fail("terminal execution error cannot be retryable")
+    return { version: 1, status: "failed_terminal", error }
+  }
+  if (raw.status === "failed_retryable") {
+    exactKeys(raw, ["version", "status", "error", "safeRetryEvidence", "notBefore"], "retryable execution result")
+    const error = parseExecutionError(raw.error)
+    if (!error.retryable) fail("retryable execution error must be retryable")
+    return {
+      version: 1,
+      status: "failed_retryable",
+      error,
+      safeRetryEvidence: parseEvidence(raw.safeRetryEvidence),
+      notBefore: canonicalTimestamp(raw.notBefore, "retry notBefore"),
+    }
+  }
+  fail("execution result status is invalid")
+}
+
+export function parseHabitInvocationOutcomeV1(value: unknown): HabitInvocationOutcomeV1 {
+  const raw = record(value, "invocation outcome")
+  if (raw.version !== 1) fail("invocation outcome version must be 1")
+  if (raw.disposition === "settled") {
+    exactKeys(raw, ["version", "disposition", "result"], "settled invocation outcome")
+    return { version: 1, disposition: "settled", result: parseHabitExecutionResultV1(raw.result) }
+  }
+  if (raw.disposition === "outcome_unknown") {
+    exactKeys(raw, ["version", "disposition", "reason", "evidence"], "unknown invocation outcome")
+    if (raw.reason !== "adapter_reported_unknown") fail("unknown invocation reason is invalid")
+    return {
+      version: 1,
+      disposition: "outcome_unknown",
+      reason: "adapter_reported_unknown",
+      evidence: parseEvidence(raw.evidence),
+    }
+  }
+  fail("invocation outcome disposition is invalid")
+}
+
+export function parseHabitReconciliationResultV1(value: unknown): HabitReconciliationResultV1 {
+  const raw = record(value, "reconciliation result")
+  if (raw.version !== 1) fail("reconciliation result version must be 1")
+  if (raw.disposition === "unresolved") {
+    exactKeys(raw, ["version", "disposition"], "unresolved reconciliation result")
+    return { version: 1, disposition: "unresolved" }
+  }
+  if (raw.disposition === "completed") {
+    exactKeys(raw, ["version", "disposition", "resultRef", "evidence"], "completed reconciliation result")
+    return {
+      version: 1,
+      disposition: "completed",
+      resultRef: nonEmptyString(raw.resultRef, "reconciliation result ref"),
+      evidence: parseEvidence(raw.evidence),
+    }
+  }
+  if (raw.disposition === "safe_retry") {
+    exactKeys(raw, ["version", "disposition", "error", "notBefore", "evidence"], "safe-retry reconciliation result")
+    const error = parseExecutionError(raw.error)
+    if (!error.retryable) fail("safe-retry reconciliation error must be retryable")
+    return {
+      version: 1,
+      disposition: "safe_retry",
+      error,
+      notBefore: canonicalTimestamp(raw.notBefore, "reconciliation notBefore"),
+      evidence: parseEvidence(raw.evidence),
+    }
+  }
+  if (raw.disposition === "failed_terminal") {
+    exactKeys(raw, ["version", "disposition", "error", "evidence"], "terminal reconciliation result")
+    const error = parseExecutionError(raw.error)
+    if (error.retryable) fail("terminal reconciliation error cannot be retryable")
+    return {
+      version: 1,
+      disposition: "failed_terminal",
+      error,
+      evidence: parseEvidence(raw.evidence),
+    }
+  }
+  fail("reconciliation result disposition is invalid")
+}
+
 function validateYamlNode(node: Node): void {
   if (isAlias(node)) fail("YAML aliases are forbidden")
   if ("tag" in node && typeof node.tag === "string") fail("explicit YAML tags are forbidden")

@@ -3,11 +3,13 @@ import { describe, expect, it, vi } from "vitest"
 import type {
   HabitExecutionAdapter,
   HabitInvocationV1,
+  HabitReconciliationInputV1,
 } from "../../../heart/habits/habit-execution"
 import {
   HabitAdapterInvocationError,
   HabitExecutionRegistry,
   dispatchHabitExecution,
+  reconcileResolvedHabitExecution,
 } from "../../../heart/habits/habit-execution-registry"
 import { createPackagedHabitExecutionRegistry } from "../../../heart/habits/packaged-habit-adapters"
 
@@ -208,6 +210,129 @@ describe("HabitExecutionRegistry", () => {
       reason: "adapter_reported_unknown",
       evidence: { ref: "evidence:unknown-a" },
     })
+  })
+
+  it("classifies absent and schema-invalid invocation results as unknown", async () => {
+    for (const [returned, reason] of [
+      [undefined, "result_absent"],
+      [{ version: 1, disposition: "settled" }, "result_absent"],
+      [{ version: 1, disposition: "settled", result: { version: 1, status: "completed", resultRef: "" } }, "invalid_result"],
+      [{ version: 1, disposition: "unrecognized" }, "invalid_result"],
+    ] as const) {
+      const registry = new HabitExecutionRegistry()
+      registry.register(adapter("invalid-result", { invoke: vi.fn(async () => returned) as never }))
+
+      await expect(dispatchHabitExecution({
+        registry,
+        envelope: {
+          version: 1,
+          adapter: "invalid-result",
+          config: {},
+          policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "none" },
+        },
+        invocation: invocation(),
+      })).rejects.toMatchObject({ unknownReason: reason })
+    }
+  })
+
+  it("runs reconciliation only through the recorded resolved adapter and validates its result", async () => {
+    const reconcileInput: HabitReconciliationInputV1<Record<string, unknown>> = {
+      schemaVersion: 1,
+      agent: "agent-a",
+      bundleRoot: "/bundles/agent-a.ouro",
+      habitId: "inventory-refresh",
+      config: { normalized: true },
+      occurrenceId: "occurrence-a",
+      attemptId: "attempt-a",
+      unknownReason: "adapter_reported_unknown",
+      priorEvidence: [{
+        kind: "adapter-owned",
+        ref: "evidence:prior",
+        sha256: "a".repeat(64),
+        observedAt: "2026-07-24T12:00:00.000Z",
+      }],
+    }
+    const reconcile = vi.fn(async () => ({
+      version: 1 as const,
+      disposition: "completed" as const,
+      resultRef: "result:reconciled",
+      evidence: {
+        kind: "adapter-owned" as const,
+        ref: "evidence:completed",
+        sha256: "b".repeat(64),
+        observedAt: "2026-07-24T12:01:00.000Z",
+      },
+    }))
+    const registered = { ...adapter("reconciling"), reconcile }
+    const registry = new HabitExecutionRegistry()
+    registry.register(registered)
+    const resolved = registry.resolve({
+      version: 1,
+      adapter: "reconciling",
+      config: { raw: true },
+      policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "habit" },
+    })
+
+    await expect(reconcileResolvedHabitExecution({ resolved, input: reconcileInput }))
+      .resolves.toMatchObject({ disposition: "completed", resultRef: "result:reconciled" })
+    expect(reconcile).toHaveBeenCalledWith({ ...reconcileInput, config: { raw: true } })
+  })
+
+  it("leaves missing reconciliation unresolved and rejects malformed reconciliation authority", async () => {
+    const registry = new HabitExecutionRegistry()
+    registry.register(adapter("no-reconciliation"))
+    const resolved = registry.resolve({
+      version: 1,
+      adapter: "no-reconciliation",
+      config: {},
+      policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "habit" },
+    })
+    const input: HabitReconciliationInputV1<Record<string, unknown>> = {
+      schemaVersion: 1,
+      agent: "agent-a",
+      bundleRoot: "/bundles/agent-a.ouro",
+      habitId: "inventory-refresh",
+      config: {},
+      occurrenceId: "occurrence-a",
+      attemptId: "attempt-a",
+      unknownReason: "owner_died",
+      priorEvidence: [],
+    }
+
+    await expect(reconcileResolvedHabitExecution({ resolved, input }))
+      .resolves.toEqual({ version: 1, disposition: "unresolved" })
+
+    const malformed = {
+      ...adapter("malformed-reconciliation"),
+      reconcile: vi.fn(async () => ({ version: 1, disposition: "completed", resultRef: "missing-evidence" })) as never,
+    }
+    const malformedRegistry = new HabitExecutionRegistry()
+    malformedRegistry.register(malformed)
+    await expect(reconcileResolvedHabitExecution({
+      resolved: malformedRegistry.resolve({
+        version: 1,
+        adapter: "malformed-reconciliation",
+        config: {},
+        policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "habit" },
+      }),
+      input,
+    })).rejects.toThrow(/reconciliation.*invalid/i)
+
+    const throwing = {
+      ...adapter("throwing-reconciliation"),
+      reconcile: vi.fn(async () => { throw "raw reconciliation failure" }),
+    }
+    const throwingRegistry = new HabitExecutionRegistry()
+    throwingRegistry.register(throwing)
+    await expect(reconcileResolvedHabitExecution({
+      resolved: throwingRegistry.resolve({
+        version: 1,
+        adapter: "throwing-reconciliation",
+        config: {},
+        policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "habit" },
+      }),
+      input,
+    })).rejects.toThrow(/raw reconciliation failure/)
   })
 })
 

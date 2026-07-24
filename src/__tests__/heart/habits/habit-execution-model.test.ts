@@ -3,7 +3,10 @@ import { describe, expect, expectTypeOf, it } from "vitest"
 import {
   DEFAULT_HABIT_EXECUTION,
   parseHabitExecutionEnvelope,
+  parseHabitExecutionResultV1,
   parseHabitFrontmatterYaml,
+  parseHabitInvocationOutcomeV1,
+  parseHabitReconciliationResultV1,
   type HabitExecutionAdapter,
   type HabitExecutionEnvelopeV1,
   type HabitInvocationOutcomeV1,
@@ -101,5 +104,72 @@ describe("habit execution model", () => {
     expectTypeOf<Awaited<ReturnType<typeof adapter.invoke>>>().toEqualTypeOf<HabitInvocationOutcomeV1>()
     expectTypeOf<Awaited<ReturnType<NonNullable<typeof adapter.reconcile>>>>().toEqualTypeOf<HabitReconciliationResultV1>()
     expectTypeOf<ReturnType<typeof parseHabitExecutionEnvelope>>().toEqualTypeOf<HabitExecutionEnvelopeV1>()
+  })
+
+  it("strictly validates every invocation and reconciliation result variant", () => {
+    const evidence = {
+      kind: "adapter-owned" as const,
+      ref: "evidence:one",
+      sha256: "a".repeat(64),
+      observedAt: "2026-07-24T12:00:00.000Z",
+    }
+    const retryError = { code: "retry", message: "retry", retryable: true }
+    const terminalError = { code: "terminal", message: "terminal", retryable: false }
+
+    expect(parseHabitExecutionResultV1({ version: 1, status: "completed", resultRef: "result:one" }))
+      .toMatchObject({ status: "completed" })
+    expect(parseHabitExecutionResultV1({ version: 1, status: "failed_terminal", error: terminalError }))
+      .toMatchObject({ status: "failed_terminal" })
+    expect(parseHabitExecutionResultV1({
+      version: 1,
+      status: "failed_retryable",
+      error: retryError,
+      safeRetryEvidence: evidence,
+      notBefore: "2026-07-24T12:01:00.000Z",
+    })).toMatchObject({ status: "failed_retryable" })
+    expect(parseHabitInvocationOutcomeV1({
+      version: 1,
+      disposition: "outcome_unknown",
+      reason: "adapter_reported_unknown",
+      evidence,
+    })).toMatchObject({ disposition: "outcome_unknown" })
+    for (const value of [
+      { version: 1, disposition: "unresolved" },
+      { version: 1, disposition: "completed", resultRef: "result:one", evidence },
+      { version: 1, disposition: "safe_retry", error: retryError, notBefore: "2026-07-24T12:01:00.000Z", evidence },
+      { version: 1, disposition: "failed_terminal", error: terminalError, evidence },
+    ]) {
+      expect(parseHabitReconciliationResultV1(value)).toEqual(value)
+    }
+
+    const invalidExecutionResults = [
+      { version: 2, status: "completed", resultRef: "result:one" },
+      { version: 1, status: "failed_terminal", error: retryError },
+      { version: 1, status: "failed_retryable", error: terminalError, safeRetryEvidence: evidence, notBefore: "2026-07-24T12:01:00.000Z" },
+      { version: 1, status: "failed_terminal", error: { ...terminalError, retryable: "no" } },
+      { version: 1, status: "failed_retryable", error: retryError, safeRetryEvidence: { ...evidence, kind: "foreign" }, notBefore: "2026-07-24T12:01:00.000Z" },
+      { version: 1, status: "failed_retryable", error: retryError, safeRetryEvidence: evidence, notBefore: "not-a-time" },
+      { version: 1, status: "other" },
+    ]
+    for (const value of invalidExecutionResults) expect(() => parseHabitExecutionResultV1(value)).toThrow()
+
+    for (const value of [
+      { version: 2, disposition: "settled", result: { version: 1, status: "completed", resultRef: "result:one" } },
+      { version: 1, disposition: "outcome_unknown", reason: "wrong", evidence },
+      { version: 1, disposition: "other" },
+    ]) {
+      expect(() => parseHabitInvocationOutcomeV1(value)).toThrow()
+    }
+
+    for (const value of [
+      { version: 2, disposition: "unresolved" },
+      { version: 1, disposition: "safe_retry", error: terminalError, notBefore: "2026-07-24T12:01:00.000Z", evidence },
+      { version: 1, disposition: "failed_terminal", error: retryError, evidence },
+      { version: 1, disposition: "completed", resultRef: "", evidence },
+      { version: 1, disposition: "completed", resultRef: "result:one", evidence: { ...evidence, observedAt: "2026-07-24 12:00:00" } },
+      { version: 1, disposition: "other" },
+    ]) {
+      expect(() => parseHabitReconciliationResultV1(value)).toThrow()
+    }
   })
 })

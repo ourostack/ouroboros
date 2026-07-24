@@ -14,12 +14,16 @@ import {
   HabitAdapterInvocationError,
   HabitExecutionRegistry,
   invokeResolvedHabitExecution,
+  reconcileResolvedHabitExecution,
+  type ResolvedHabitExecution,
 } from "./habit-execution-registry"
 import type {
   HabitFenceAdmissionResult,
   HabitOccurrenceClaimInput,
   HabitOccurrenceClaimResult,
   HabitOccurrenceStore,
+  HabitOwnedReconciliationInputV1,
+  HabitReconciliationCandidateV1,
 } from "./habit-occurrence-store"
 import type { HabitScheduleStore } from "./habit-schedule-store"
 
@@ -52,6 +56,9 @@ interface OccurrenceAuthority {
     reason: HabitUnknownReason,
     priorEvidence: Extract<HabitInvocationOutcomeV1, { disposition: "outcome_unknown" }>['evidence'][],
   ): unknown
+  listReconciliationCandidates?(habitId: string): HabitReconciliationCandidateV1[]
+  reconcileOwned?(input: HabitOwnedReconciliationInputV1):
+    HabitOccurrenceClaimResult | { kind: "settled"; occurrence: unknown } | { kind: "unresolved" }
 }
 
 interface ScheduleAuthority {
@@ -131,14 +138,207 @@ export class HabitDispatchCoordinator {
     write()
   }
 
+  private async invokeWithDeadline(
+    input: Parameters<typeof invokeResolvedHabitExecution>[0],
+    externalSignal?: AbortSignal,
+  ): Promise<HabitInvocationOutcomeV1> {
+    const controller = new AbortController()
+    let rejectBoundary!: (reason: Error) => void
+    const boundary = new Promise<never>((_resolve, reject) => { rejectBoundary = reject })
+    const rejectInvocation = (error: HabitAdapterInvocationError) => {
+      rejectBoundary(error)
+      controller.abort()
+    }
+    const timer = setTimeout(() => {
+      rejectInvocation(new HabitAdapterInvocationError("execution_timeout", "habit adapter exceeded its execution deadline"))
+    }, this.options.deadlineMs)
+    const onExternalAbort = () => {
+      rejectInvocation(new HabitAdapterInvocationError("aborted_after_invoke", "habit adapter invocation was aborted after dispatch"))
+    }
+    externalSignal?.addEventListener("abort", onExternalAbort, { once: true })
+    if (externalSignal?.aborted) onExternalAbort()
+    try {
+      return await Promise.race([
+        (this.options.invokeResolved ?? invokeResolvedHabitExecution)({
+          ...input,
+          invocation: { ...input.invocation, signal: controller.signal },
+        }),
+        boundary,
+      ])
+    } finally {
+      clearTimeout(timer)
+      externalSignal?.removeEventListener("abort", onExternalAbort)
+    }
+  }
+
+  private async invokeClaim(input: {
+    habit: HabitDispatchDefinition
+    claim: Extract<HabitOccurrenceClaimResult, { kind: "claimed" }>
+    resolved: ResolvedHabitExecution
+    deadlineAt: string
+    signal: AbortSignal | undefined
+  }): Promise<HabitDispatchResult> {
+    const occurrenceStore = this.options.occurrenceStore as OccurrenceAuthority
+    const occurrenceId = input.claim.occurrence.occurrenceId
+    const attemptId = input.claim.attempt.attemptId
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.habit_dispatch_claim_admitted",
+      message: "admitted durable habit claim to the generic adapter boundary",
+      meta: { agent: this.options.agent, habitId: input.habit.id, occurrenceId, attemptId },
+    })
+
+    let outcome: HabitInvocationOutcomeV1
+    try {
+      outcome = await this.invokeWithDeadline({
+        resolved: input.resolved,
+        invocation: {
+          schemaVersion: 1,
+          agent: this.options.agent,
+          bundleRoot: this.options.bundleRoot,
+          habit: {
+            id: input.habit.id,
+            title: input.habit.title,
+            body: input.habit.body,
+            tools: input.habit.tools,
+            continuity: input.habit.continuity,
+          },
+          occurrenceId,
+          attemptId,
+          trigger: input.claim.attempt.trigger,
+          owner: this.options.owner,
+          deadlineAt: input.deadlineAt,
+          signal: new AbortController().signal,
+        },
+      }, input.signal)
+    } catch (error) {
+      const reason = error instanceof HabitAdapterInvocationError
+        ? error.unknownReason
+        : "adapter_exception"
+      this.persistSettlement(
+        () => { occurrenceStore.markUnknown(occurrenceId, attemptId, reason, []) },
+        occurrenceId,
+        attemptId,
+      )
+      throw error
+    }
+
+    if (outcome.disposition === "outcome_unknown") {
+      this.persistSettlement(
+        () => { occurrenceStore.markUnknown(occurrenceId, attemptId, outcome.reason, [outcome.evidence]) },
+        occurrenceId,
+        attemptId,
+      )
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.habit_dispatch_unknown_settled",
+        message: "persisted unknown habit outcome before projection",
+        meta: { agent: this.options.agent, habitId: input.habit.id, occurrenceId, attemptId },
+      })
+      return { kind: "outcome_unknown", occurrenceId, attemptId, outcome }
+    }
+
+    this.persistSettlement(
+      () => { occurrenceStore.settle(occurrenceId, attemptId, outcome.result) },
+      occurrenceId,
+      attemptId,
+    )
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.habit_dispatch_result_settled",
+      message: "persisted habit adapter result before projection",
+      meta: { agent: this.options.agent, habitId: input.habit.id, occurrenceId, attemptId },
+    })
+    return { kind: "settled", occurrenceId, attemptId, outcome }
+  }
+
+  private async reconcilePending(habit: HabitDispatchDefinition, signal?: AbortSignal): Promise<HabitDispatchResult | null> {
+    const occurrenceStore = this.options.occurrenceStore as OccurrenceAuthority
+    if (!occurrenceStore.listReconciliationCandidates || !occurrenceStore.reconcileOwned) return null
+    for (const candidate of occurrenceStore.listReconciliationCandidates(habit.id)) {
+      let resolved: ResolvedHabitExecution
+      try {
+        resolved = this.options.registry.resolve(candidate.execution)
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "heart",
+          event: "heart.habit_reconciliation_adapter_unavailable",
+          message: "recorded habit adapter is unavailable for reconciliation",
+          meta: { agent: this.options.agent, habitId: habit.id, occurrenceId: candidate.occurrenceId, error: String(error) },
+        })
+        continue
+      }
+      let result
+      try {
+        result = await reconcileResolvedHabitExecution({
+          resolved,
+          input: {
+            schemaVersion: 1,
+            agent: this.options.agent,
+            bundleRoot: this.options.bundleRoot,
+            habitId: habit.id,
+            config: resolved.config,
+            occurrenceId: candidate.occurrenceId,
+            attemptId: candidate.attemptId,
+            unknownReason: candidate.unknownReason,
+            priorEvidence: candidate.priorEvidence,
+          },
+        })
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "heart",
+          event: "heart.habit_reconciliation_failed",
+          message: "habit adapter reconciliation failed without changing occurrence authority",
+          meta: { agent: this.options.agent, habitId: habit.id, occurrenceId: candidate.occurrenceId, error: String(error) },
+        })
+        continue
+      }
+      let reconciled
+      try {
+        reconciled = occurrenceStore.reconcileOwned({
+          occurrenceId: candidate.occurrenceId,
+          attemptId: candidate.attemptId,
+          adapter: { id: resolved.adapter.id, version: resolved.adapter.version },
+          priorEvidence: candidate.priorEvidence,
+          result,
+        })
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "heart",
+          event: "heart.habit_reconciliation_commit_failed",
+          message: "habit reconciliation evidence could not be committed",
+          meta: { agent: this.options.agent, habitId: habit.id, occurrenceId: candidate.occurrenceId, error: String(error) },
+        })
+        continue
+      }
+      if (reconciled.kind === "claimed") {
+        return this.invokeClaim({
+          habit,
+          claim: reconciled,
+          resolved,
+          deadlineAt: reconciled.attempt.deadlineAt,
+          signal,
+        })
+      }
+    }
+    return null
+  }
+
   async dispatch(input: {
     habit: HabitDispatchDefinition
     trigger: HabitRunTrigger
+    signal?: AbortSignal
   }): Promise<HabitDispatchResult> {
     const observedAt = this.options.now()
     const deadlineAt = new Date(Date.parse(observedAt) + this.options.deadlineMs).toISOString()
     const resolved = this.options.registry.resolve(input.habit.execution)
     const occurrenceStore = this.options.occurrenceStore as OccurrenceAuthority
+
+    const reconciled = await this.reconcilePending(input.habit, input.signal)
+    if (reconciled) return reconciled
 
     let claim: HabitOccurrenceClaimResult
     if (scheduledTrigger(input.trigger)) {
@@ -190,76 +390,12 @@ export class HabitDispatchCoordinator {
     }
 
     if (claim.kind === "blocked") return claim
-    const occurrenceId = claim.occurrence.occurrenceId
-    const attemptId = claim.attempt.attemptId
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.habit_dispatch_claim_admitted",
-      message: "admitted durable habit claim to the generic adapter boundary",
-      meta: { agent: this.options.agent, habitId: input.habit.id, occurrenceId, attemptId },
+    return this.invokeClaim({
+      habit: input.habit,
+      claim,
+      resolved,
+      deadlineAt,
+      signal: input.signal,
     })
-
-    let outcome: HabitInvocationOutcomeV1
-    try {
-      outcome = await (this.options.invokeResolved ?? invokeResolvedHabitExecution)({
-        resolved,
-        invocation: {
-          schemaVersion: 1,
-          agent: this.options.agent,
-          bundleRoot: this.options.bundleRoot,
-          habit: {
-            id: input.habit.id,
-            title: input.habit.title,
-            body: input.habit.body,
-            tools: input.habit.tools,
-            continuity: input.habit.continuity,
-          },
-          occurrenceId,
-          attemptId,
-          trigger: claim.attempt.trigger,
-          owner: this.options.owner,
-          deadlineAt,
-          signal: AbortSignal.timeout(this.options.deadlineMs),
-        },
-      })
-    } catch (error) {
-      const reason = error instanceof HabitAdapterInvocationError
-        ? error.unknownReason
-        : "adapter_exception"
-      this.persistSettlement(
-        () => { occurrenceStore.markUnknown(occurrenceId, attemptId, reason, []) },
-        occurrenceId,
-        attemptId,
-      )
-      throw error
-    }
-
-    if (outcome.disposition === "outcome_unknown") {
-      this.persistSettlement(
-        () => { occurrenceStore.markUnknown(occurrenceId, attemptId, outcome.reason, [outcome.evidence]) },
-        occurrenceId,
-        attemptId,
-      )
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.habit_dispatch_unknown_settled",
-        message: "persisted unknown habit outcome before projection",
-        meta: { agent: this.options.agent, habitId: input.habit.id, occurrenceId, attemptId },
-      })
-      return { kind: "outcome_unknown", occurrenceId, attemptId, outcome }
-    }
-
-    this.persistSettlement(
-      () => { occurrenceStore.settle(occurrenceId, attemptId, outcome.result) },
-      occurrenceId,
-      attemptId,
-    )
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.habit_dispatch_result_settled",
-      message: "persisted habit adapter result before projection",
-      meta: { agent: this.options.agent, habitId: input.habit.id, occurrenceId, attemptId },
-    })
-    return { kind: "settled", occurrenceId, attemptId, outcome }
   }
 }

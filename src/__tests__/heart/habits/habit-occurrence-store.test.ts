@@ -3,7 +3,11 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 
-import type { HabitExecutionEnvelopeV1, HabitEvidenceV1 } from "../../../heart/habits/habit-execution"
+import type {
+  HabitExecutionEnvelopeV1,
+  HabitEvidenceV1,
+  HabitReconciliationResultV1,
+} from "../../../heart/habits/habit-execution"
 import { occurrenceIdentityForScheduledSlot } from "../../../heart/habits/habit-cadence-v1"
 import {
   HabitOccurrenceCorruptError,
@@ -107,6 +111,22 @@ function occurrenceFile(authority: HabitOccurrenceStore, occurrenceId: string): 
   return path.join(authority.options.bundleRoot, "state", "habits", "occurrences", `${occurrenceId}.json`)
 }
 
+function reconcile(
+  authority: HabitOccurrenceStore,
+  occurrenceId: string,
+  attemptId: string,
+  priorEvidence: HabitEvidenceV1[],
+  result: HabitReconciliationResultV1,
+) {
+  return authority.reconcileOwned({
+    occurrenceId,
+    attemptId,
+    adapter: { id: "fake", version: 1 },
+    priorEvidence,
+    result,
+  })
+}
+
 describe("habit occurrence store", () => {
   it("preflights an open fence and preserves an existing blocked fence across policy downgrade", () => {
     const authority = store()
@@ -120,6 +140,125 @@ describe("habit occurrence store", () => {
       reason: "unknown_slot_fence",
       occurrenceId: claim.occurrence.occurrenceId,
     })
+  })
+
+  it("returns deterministic exact-adapter reconciliation candidates after recovering abandoned work", () => {
+    const authority = store()
+    const first = authority.claimNext(scheduledInput({ execution: {
+      ...execution("none"),
+      adapter: "recorded-adapter",
+      config: { binding: "recorded" },
+    } }))
+    if (first.kind !== "claimed") throw new Error("expected claim")
+    authority.markUnknown(first.occurrence.occurrenceId, first.attempt.attemptId, "adapter_exception", [])
+    const second = authority.claimNext(scheduledInput({
+      slot: scheduledSlot("2026-07-24T10:30:00.000Z"),
+      execution: {
+        ...execution("none"),
+        adapter: "recorded-adapter",
+        config: { binding: "recorded" },
+      },
+    }))
+    if (second.kind !== "claimed") throw new Error("expected second claim")
+    authority.markUnknown(second.occurrence.occurrenceId, second.attempt.attemptId, "adapter_exception", [])
+
+    const candidates = authority.listReconciliationCandidates("daily")
+    expect(candidates).toContainEqual({
+      occurrenceId: first.occurrence.occurrenceId,
+      attemptId: first.attempt.attemptId,
+      execution: {
+        ...execution("none"),
+        adapter: "recorded-adapter",
+        config: { binding: "recorded" },
+      },
+      unknownReason: "adapter_exception",
+      priorEvidence: [],
+    })
+    expect(candidates.map((candidate) => candidate.occurrenceId)).toEqual(
+      [first.occurrence.occurrenceId, second.occurrence.occurrenceId].sort(),
+    )
+  })
+
+  it("turns exact-owner death or deadline expiry into durable reconciliation candidates", () => {
+    const authority = store()
+    const deadClaim = authority.claimNext(scheduledInput())
+    if (deadClaim.kind !== "claimed") throw new Error("expected claim")
+    const replacementOwner = { ...owner, pid: owner.pid + 1, startIdentity: "start-2", daemonInstanceId: "daemon-2" }
+    const recovered = new HabitOccurrenceStore({
+      ...authority.options,
+      owner: replacementOwner,
+      proveOwnerState: (candidate) => candidate.startIdentity === replacementOwner.startIdentity
+        ? { state: "alive", observed: replacementOwner }
+        : { state: "dead", reason: "process-reused" },
+    })
+
+    expect(recovered.listReconciliationCandidates("daily")).toEqual([expect.objectContaining({
+      occurrenceId: deadClaim.occurrence.occurrenceId,
+      attemptId: deadClaim.attempt.attemptId,
+      unknownReason: "owner_died",
+      priorEvidence: [],
+    })])
+
+    const deadlineAuthority = store()
+    const expired = deadlineAuthority.claimNext(scheduledInput({ deadlineAt: "2026-07-24T10:00:01.000Z" }))
+    if (expired.kind !== "claimed") throw new Error("expected claim")
+    const afterDeadline = new HabitOccurrenceStore({
+      ...deadlineAuthority.options,
+      now: () => "2026-07-24T10:00:02.000Z",
+    })
+    expect(afterDeadline.listReconciliationCandidates("daily")).toEqual([expect.objectContaining({
+      occurrenceId: expired.occurrence.occurrenceId,
+      unknownReason: "execution_timeout",
+    })])
+  })
+
+  it("admits a due same-occurrence fenced retry through preflight without opening the fence", () => {
+    const authority = store()
+    const first = authority.claimNext(scheduledInput({ execution: execution("habit") }))
+    if (first.kind !== "claimed") throw new Error("expected claim")
+    const priorEvidence = [evidence()]
+    authority.markUnknown(first.occurrence.occurrenceId, first.attempt.attemptId, "adapter_reported_unknown", priorEvidence)
+    authority.reconcileOwned({
+      occurrenceId: first.occurrence.occurrenceId,
+      attemptId: first.attempt.attemptId,
+      adapter: { id: "fake", version: 1 },
+      priorEvidence,
+      result: {
+        version: 1,
+        disposition: "safe_retry",
+        error: { code: "retry", message: "retry", retryable: true },
+        notBefore: "2026-07-24T11:00:00.000Z",
+        evidence: evidence("evidence/reconciled.json"),
+      },
+    })
+    expect(authority.checkFenceAdmission("daily", execution("habit"))).toEqual({
+      kind: "blocked",
+      reason: "retry_not_due",
+      occurrenceId: first.occurrence.occurrenceId,
+    })
+    const due = new HabitOccurrenceStore({ ...authority.options, now: () => "2026-07-24T11:00:00.000Z" })
+
+    expect(due.checkFenceAdmission("daily", execution("habit"))).toEqual({ kind: "admitted" })
+    expect(due.readFence("daily")).toMatchObject({
+      state: "blocked",
+      blockingOccurrenceId: first.occurrence.occurrenceId,
+    })
+  })
+
+  it("rejects reconciliation from any adapter other than the recorded exact pair", () => {
+    const authority = store()
+    const first = authority.claimNext(scheduledInput({ execution: execution("habit") }))
+    if (first.kind !== "claimed") throw new Error("expected claim")
+    authority.markUnknown(first.occurrence.occurrenceId, first.attempt.attemptId, "adapter_exception", [])
+
+    expect(() => authority.reconcileOwned({
+      occurrenceId: first.occurrence.occurrenceId,
+      attemptId: first.attempt.attemptId,
+      adapter: { id: "other-adapter", version: 1 },
+      priorEvidence: [],
+      result: { version: 1, disposition: "unresolved" },
+    })).toThrow(/recorded adapter/i)
+    expect(authority.readOccurrence(first.occurrence.occurrenceId)).toMatchObject({ state: "outcome_unknown" })
   })
 
   it("claims one deterministic attempt and suppresses duplicate triggers", () => {
@@ -206,7 +345,7 @@ describe("habit occurrence store", () => {
     if (first.kind !== "claimed") throw new Error("expected claim")
     const priorEvidence = [evidence()]
     authority.markUnknown(first.occurrence.occurrenceId, first.attempt.attemptId, "adapter_reported_unknown", priorEvidence)
-    const reconciled = authority.reconcile(first.occurrence.occurrenceId, first.attempt.attemptId, priorEvidence, {
+    const reconciled = reconcile(authority, first.occurrence.occurrenceId, first.attempt.attemptId, priorEvidence, {
       version: 1,
       disposition: "safe_retry",
       error: { code: "retry", message: "retry", retryable: true },
@@ -308,7 +447,7 @@ describe("habit occurrence store", () => {
     if (first.kind !== "claimed") throw new Error("expected claim")
     const priorEvidence = [evidence()]
     authority.markUnknown(first.occurrence.occurrenceId, first.attempt.attemptId, "adapter_reported_unknown", priorEvidence)
-    const waiting = authority.reconcile(first.occurrence.occurrenceId, first.attempt.attemptId, priorEvidence, {
+    const waiting = reconcile(authority, first.occurrence.occurrenceId, first.attempt.attemptId, priorEvidence, {
       version: 1,
       disposition: "safe_retry",
       error: { code: "retry", message: "retry", retryable: true },
@@ -338,12 +477,12 @@ describe("habit occurrence store", () => {
     if (completed.kind !== "claimed") throw new Error("expected claim")
     const priorEvidence = [evidence()]
     completedStore.markUnknown(completed.occurrence.occurrenceId, completed.attempt.attemptId, "adapter_reported_unknown", priorEvidence)
-    expect(completedStore.reconcile(completed.occurrence.occurrenceId, completed.attempt.attemptId, priorEvidence, {
+    expect(reconcile(completedStore, completed.occurrence.occurrenceId, completed.attempt.attemptId, priorEvidence, {
       version: 1,
       disposition: "unresolved",
     })).toEqual({ kind: "unresolved" })
     expect(completedStore.readFence("daily").state).toBe("blocked")
-    expect(completedStore.reconcile(completed.occurrence.occurrenceId, completed.attempt.attemptId, priorEvidence, {
+    expect(reconcile(completedStore, completed.occurrence.occurrenceId, completed.attempt.attemptId, priorEvidence, {
       version: 1,
       disposition: "completed",
       resultRef: "result/reconciled.json",
@@ -355,7 +494,7 @@ describe("habit occurrence store", () => {
     const terminal = terminalStore.claimNext(scheduledInput({ execution: execution("habit") }))
     if (terminal.kind !== "claimed") throw new Error("expected claim")
     terminalStore.markUnknown(terminal.occurrence.occurrenceId, terminal.attempt.attemptId, "adapter_exception", [])
-    expect(terminalStore.reconcile(terminal.occurrence.occurrenceId, terminal.attempt.attemptId, [], {
+    expect(reconcile(terminalStore, terminal.occurrence.occurrenceId, terminal.attempt.attemptId, [], {
       version: 1,
       disposition: "failed_terminal",
       error: { code: "terminal", message: "terminal", retryable: false },
@@ -667,34 +806,34 @@ describe("habit occurrence store", () => {
     const authority = store()
     const claim = authority.claimNext(scheduledInput({ execution: execution("habit") }))
     if (claim.kind !== "claimed") throw new Error("expected claim")
-    expect(() => authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, [], {
+    expect(() => reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, [], {
       version: 1,
       disposition: "unresolved",
     })).toThrow(/does not own/)
     const priorEvidence = [evidence()]
     authority.markUnknown(claim.occurrence.occurrenceId, claim.attempt.attemptId, "adapter_reported_unknown", priorEvidence)
-    expect(() => authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, [evidence("different.json")], {
+    expect(() => reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, [evidence("different.json")], {
       version: 1,
       disposition: "unresolved",
     })).toThrow(/differs/)
-    expect(() => authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
+    expect(() => reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
       version: 1,
       disposition: "other",
     } as never)).toThrow(/disposition/)
-    expect(() => authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
+    expect(() => reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
       version: 1,
       disposition: "safe_retry",
       error: { code: "bad", message: "bad", retryable: false },
       notBefore: "2026-07-24T10:00:00.000Z",
       evidence: evidence(),
     })).toThrow(/must be retryable/)
-    expect(() => authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
+    expect(() => reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
       version: 1,
       disposition: "failed_terminal",
       error: { code: "bad", message: "bad", retryable: true },
       evidence: evidence(),
     })).toThrow(/cannot be retryable/)
-    expect(() => authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
+    expect(() => reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, priorEvidence, {
       version: 2,
       disposition: "unresolved",
     } as never)).toThrow(/version/)
@@ -705,7 +844,7 @@ describe("habit occurrence store", () => {
     const claim = authority.claimNext(scheduledInput())
     if (claim.kind !== "claimed") throw new Error("expected claim")
     authority.markUnknown(claim.occurrence.occurrenceId, claim.attempt.attemptId, "adapter_exception", [])
-    const retry = authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, [], {
+    const retry = reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, [], {
       version: 1,
       disposition: "safe_retry",
       error: { code: "retry", message: "retry", retryable: true },
@@ -723,7 +862,7 @@ describe("habit occurrence store", () => {
     const claim = authority.claimNext(scheduledInput({ execution: execution("habit", 1) }))
     if (claim.kind !== "claimed") throw new Error("expected claim")
     authority.markUnknown(claim.occurrence.occurrenceId, claim.attempt.attemptId, "adapter_exception", [])
-    expect(authority.reconcile(claim.occurrence.occurrenceId, claim.attempt.attemptId, [], {
+    expect(reconcile(authority, claim.occurrence.occurrenceId, claim.attempt.attemptId, [], {
       version: 1,
       disposition: "safe_retry",
       error: { code: "retry", message: "retry", retryable: true },
@@ -919,7 +1058,7 @@ describe("habit occurrence store", () => {
     const reconciledClaim = reconciledStore.claimNext(scheduledInput({ execution: execution("habit") }))
     if (reconciledClaim.kind !== "claimed") throw new Error("expected claim")
     reconciledStore.markUnknown(reconciledClaim.occurrence.occurrenceId, reconciledClaim.attempt.attemptId, "adapter_exception", [])
-    reconciledStore.reconcile(reconciledClaim.occurrence.occurrenceId, reconciledClaim.attempt.attemptId, [], {
+    reconcile(reconciledStore, reconciledClaim.occurrence.occurrenceId, reconciledClaim.attempt.attemptId, [], {
       version: 1,
       disposition: "failed_terminal",
       error: { code: "terminal", message: "terminal", retryable: false },
