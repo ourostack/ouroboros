@@ -38,7 +38,7 @@ function makeJob(overrides: Partial<ScheduledTaskJob> = {}): ScheduledTaskJob {
     taskId: "heartbeat",
     schedule: "*/30 * * * *",
     lastRun: null,
-    command: '"/Applications/Ouro Bot/ouro" poke a --habit "heartbeat & calm" --trigger launchd',
+    command: '"/Applications/Ouro & Bot/ouro" poke a --habit heartbeat --trigger launchd',
     taskPath: "/Users/test/AgentBundles/a.ouro/habits/heartbeat.md",
     ...overrides,
   }
@@ -111,11 +111,11 @@ function legacyPlist(label: string, argv: string[]): string {
 
 function expectedArgv(job: ScheduledTaskJob): string[] {
   return [
-    "/Applications/Ouro Bot/ouro",
+    "/Applications/Ouro & Bot/ouro",
     "poke",
     job.agent,
     "--habit",
-    "heartbeat & calm",
+    "heartbeat",
     "--trigger",
     "launchd",
   ]
@@ -216,8 +216,8 @@ describe("OS scheduler identity and rendering", () => {
     const xml = generatedPlist(makeJob())
 
     expect(xml).toContain(`<string>${expectedLabel(makeJob())}</string>`)
-    expect(xml).toContain("<string>/Applications/Ouro Bot/ouro</string>")
-    expect(xml).toContain("<string>heartbeat &amp; calm</string>")
+    expect(xml).toContain("<string>/Applications/Ouro &amp; Bot/ouro</string>")
+    expect(xml).toContain("<string>heartbeat</string>")
     expect(xml).toContain("<key>StartInterval</key>\n  <integer>60</integer>")
     expect(xml).not.toContain("<integer>1800</integer>")
   })
@@ -394,7 +394,7 @@ describe("LaunchdCronManager reconciliation", () => {
     const job = makeJob()
     const legacyLabel = `bot.ouro.${job.agent}.${job.taskId}`
     const legacyPath = `/Users/test/Library/LaunchAgents/${legacyLabel}.plist`
-    const foreignArgv = ["/Applications/Ouro Bot/ouro", "poke", "a.b", "--habit", "heartbeat & calm", "--trigger", "launchd"]
+    const foreignArgv = ["/Applications/Ouro & Bot/ouro", "poke", "a.b", "--habit", "heartbeat", "--trigger", "launchd"]
     const { deps, removeFile } = makeLaunchdDeps({
       list: [`${legacyLabel}.plist`],
       files: { [legacyPath]: legacyPlist(legacyLabel, foreignArgv) },
