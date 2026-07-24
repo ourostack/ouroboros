@@ -2,6 +2,8 @@ const fs = require("fs")
 const path = require("path")
 
 const REQUIRED_PACKAGE_ASSET_PATHS = [
+  "assets/native/process-proof/process-proof-darwin",
+  "assets/native/process-proof/process-proof-darwin.sha256",
   "RepairGuide.ouro/agent.json",
   "RepairGuide.ouro/psyche/IDENTITY.md",
   "RepairGuide.ouro/psyche/SOUL.md",

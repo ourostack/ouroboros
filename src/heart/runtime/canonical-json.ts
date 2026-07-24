@@ -67,7 +67,6 @@ function assertJsonValue(value: unknown, seen: Set<object>): asserts value is Js
 export function canonicalizeJson(value: unknown): string {
   assertJsonValue(value, new Set())
   const encoded = canonicalize(value)
-  if (typeof encoded !== "string") throw new Error("RFC 8785 canonicalization did not produce bytes")
   emitNervesEvent({
     component: "heart",
     event: "heart.runtime_json_canonicalized",

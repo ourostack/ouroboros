@@ -35,6 +35,8 @@ describe("ProcessIdentity", () => {
 
     for (const value of [
       null,
+      "identity",
+      [],
       { ...identity, extra: true },
       { ...identity, uid: -1 },
       { ...identity, pid: 0 },
@@ -45,6 +47,26 @@ describe("ProcessIdentity", () => {
     ]) {
       expect(() => parseProcessIdentity(value)).toThrow(/process identity/i)
     }
+  })
+
+  it("rejects incomplete or mismatched injected evidence", () => {
+    for (const pid of [0, -1, 1.5]) {
+      expect(() => observeProcessIdentity(pid, source())).toThrow(/PID/i)
+    }
+    expect(() => observeProcessIdentity(4242, source({ readBootId: () => "" }))).toThrow(/boot/i)
+    expect(() => observeProcessIdentity(4242, source({ readProcess: () => null }))).toThrow(/absent/i)
+    expect(() => observeProcessIdentity(4242, source({
+      readProcess: () => ({ pid: 4243, uid: 501, startIdentity: identity.startIdentity, executableRealpath: "/runtime" }),
+    }))).toThrow(/PID/i)
+    expect(() => observeProcessIdentity(4242, source({
+      readProcess: () => ({ pid: 4242, uid: -1, startIdentity: identity.startIdentity, executableRealpath: "/runtime" }),
+    }))).toThrow(/UID/i)
+    expect(() => observeProcessIdentity(4242, source({
+      readProcess: () => ({ pid: 4242, uid: 501, startIdentity: "", executableRealpath: "/runtime" }),
+    }))).toThrow(/start/i)
+    expect(() => observeProcessIdentity(4242, source({
+      readProcess: () => ({ pid: 4242, uid: 501, startIdentity: identity.startIdentity, executableRealpath: "runtime" }),
+    }))).toThrow(/executable/i)
   })
 
   it("constructs identity only from injected boot and process-start evidence", () => {
@@ -99,6 +121,16 @@ describe("ProcessIdentity", () => {
       reason: "boot-evidence-unavailable",
     })
     expect(proveExactProcessState(identity, source({ readProcess: () => { throw new Error("denied") } }))).toEqual({
+      state: "unobservable",
+      reason: "process-evidence-unavailable",
+    })
+    expect(proveExactProcessState(identity, source({ readBootId: () => "" }))).toEqual({
+      state: "unobservable",
+      reason: "boot-evidence-unavailable",
+    })
+    expect(proveExactProcessState(identity, source({
+      readProcess: () => ({ pid: 4243, uid: 501, startIdentity: identity.startIdentity, executableRealpath: "/runtime" }),
+    }))).toEqual({
       state: "unobservable",
       reason: "process-evidence-unavailable",
     })

@@ -64,9 +64,17 @@ describe("canonical JSON authority", () => {
       circular,
       Object.create({ inherited: true }),
       { toJSON: () => ({ substituted: true }) },
+      "\ud800x",
+      "\udc00",
+      { "\ud800x": true },
     ]) {
       expect(() => canonicalizeJson(value)).toThrow(/RFC 8785|I-JSON|canonical/i)
     }
+  })
+
+  it("rejects malformed JSON and non-UTF-8 bytes", () => {
+    expect(() => parseCanonicalJson("{")) .toThrow(/malformed/i)
+    expect(() => parseCanonicalJson(Buffer.from([0xff]))).toThrow(/UTF-8/i)
   })
 
   it("rejects parseable ad hoc serializations instead of blessing them as authority", () => {

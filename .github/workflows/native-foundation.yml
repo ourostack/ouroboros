@@ -43,8 +43,10 @@ jobs:
             native-foundation/process-proof-x86_64 \
             -output native-foundation/process-proof-darwin
           touch -t 197001010000 native-foundation/process-proof-darwin
-          xcrun lipo -verify_arch arm64 x86_64 native-foundation/process-proof-darwin
+          xcrun lipo native-foundation/process-proof-darwin -verify_arch arm64 x86_64
           (cd native-foundation && shasum -a 256 process-proof-darwin > process-proof-darwin.sha256)
+          cmp native-foundation/process-proof-darwin assets/native/process-proof/process-proof-darwin
+          (cd assets/native/process-proof && shasum -a 256 -c process-proof-darwin.sha256)
           printf '%s\n' "$ZERO_DATE" > native-foundation/source-date.txt
 
       - name: Upload immutable universal helper artifact
@@ -87,7 +89,7 @@ jobs:
           set -euo pipefail
           cd native-foundation
           shasum -a 256 -c process-proof-darwin.sha256
-          xcrun lipo -verify_arch arm64 x86_64 process-proof-darwin
+          xcrun lipo process-proof-darwin -verify_arch arm64 x86_64
           test "$(uname -m)" = "${{ matrix.arch }}"
           chmod 0755 process-proof-darwin
           ./process-proof-darwin --pid $$ | tee process-proof-output.json
@@ -109,19 +111,28 @@ jobs:
           mkdir -p native-foundation/coverage
           xcrun --sdk macosx clang -std=c17 -Wall -Wextra -Werror \
             -arch "${{ matrix.arch }}" \
-            -DOURO_NATIVE_COVERAGE -fprofile-instr-generate -fcoverage-mapping \
-            native/process-proof/process-proof-darwin.c \
+            -fprofile-instr-generate -fcoverage-mapping \
+            tests/native/process-proof-coverage-driver.c \
             -o native-foundation/coverage/process-proof
           LLVM_PROFILE_FILE="$PWD/native-foundation/coverage/process-proof.profraw" \
-            native-foundation/coverage/process-proof --pid $$ >/dev/null
+            native-foundation/coverage/process-proof
           xcrun llvm-profdata merge -sparse native-foundation/coverage/process-proof.profraw \
             -o native-foundation/coverage/process-proof.profdata
           xcrun llvm-cov report native-foundation/coverage/process-proof \
             -instr-profile native-foundation/coverage/process-proof.profdata \
+            -ignore-filename-regex='tests/native/process-proof-coverage-driver.c' \
             --show-branch-summary
           xcrun llvm-cov export native-foundation/coverage/process-proof \
             -instr-profile native-foundation/coverage/process-proof.profdata \
+            -ignore-filename-regex='tests/native/process-proof-coverage-driver.c' \
             -summary-only > native-foundation/coverage/summary.json
+          node <<'NODE'
+          const totals = require('./native-foundation/coverage/summary.json').data[0].totals
+          for (const key of ['lines', 'branches', 'functions']) {
+            if (totals[key].percent !== 100) throw new Error(`${key} coverage ${totals[key].percent}%`)
+          }
+          console.log('native process-proof lines/branches/functions: 100%')
+          NODE
 
       - name: Upload per-slice LLVM coverage
         if: always()

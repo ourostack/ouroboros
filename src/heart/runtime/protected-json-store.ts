@@ -16,9 +16,21 @@ interface FileIdentity {
   ctimeMs: number
 }
 
+interface DirectoryIdentity {
+  dev: string
+  ino: string
+  nlink: string
+  uid: string
+  gid: string
+  mode: string
+  ctimeNs: string
+}
+
 export interface ProtectedStoreIo {
   lstatSync(filePath: string): fs.Stats
   fstatSync(fd: number): fs.Stats
+  lstatDirectorySync(directoryPath: string): fs.BigIntStats
+  fstatDirectorySync(fd: number): fs.BigIntStats
   openSync(filePath: string, flags: number, mode?: number): number
   readFileSync(pathOrFd: string | number): Buffer
   writeSync(fd: number, buffer: Buffer, offset: number, length: number): number
@@ -31,6 +43,8 @@ export interface ProtectedStoreIo {
 export const nodeProtectedStoreIo: ProtectedStoreIo = {
   lstatSync: (filePath) => fs.lstatSync(filePath),
   fstatSync: (fd) => fs.fstatSync(fd),
+  lstatDirectorySync: (directoryPath) => fs.lstatSync(directoryPath, { bigint: true }),
+  fstatDirectorySync: (fd) => fs.fstatSync(fd, { bigint: true }),
   openSync: (filePath, flags, mode) => fs.openSync(filePath, flags, mode),
   readFileSync: (pathOrFd) => fs.readFileSync(pathOrFd),
   writeSync: (fd, buffer, offset, length) => fs.writeSync(fd, buffer, offset, length),
@@ -94,6 +108,75 @@ function regularIdentity(stats: fs.Stats, label: string): FileIdentity {
   }
   if ((stats.mode & 0o777) !== 0o600) throw new ProtectedStoreCorruptError(`${label} must have mode 0600`)
   return identityFromStats(stats)
+}
+
+function directoryIdentity(stats: fs.BigIntStats, label: string): DirectoryIdentity {
+  if (stats.isSymbolicLink() || !stats.isDirectory() || stats.nlink <= 0n) {
+    throw new ProtectedStoreCorruptError(`${label} must be a real directory with a positive link count`)
+  }
+  return {
+    dev: stats.dev.toString(),
+    ino: stats.ino.toString(),
+    nlink: stats.nlink.toString(),
+    uid: stats.uid.toString(),
+    gid: stats.gid.toString(),
+    mode: stats.mode.toString(),
+    ctimeNs: stats.ctimeNs.toString(),
+  }
+}
+
+function directoryIdentitiesEqual(left: DirectoryIdentity, right: DirectoryIdentity): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function stableDirectoryIdentity(identity: DirectoryIdentity): string {
+  return JSON.stringify({
+    dev: identity.dev,
+    ino: identity.ino,
+    uid: identity.uid,
+    gid: identity.gid,
+    mode: identity.mode,
+  })
+}
+
+interface RetainedDirectory {
+  fd: number
+  identity: DirectoryIdentity
+}
+
+function openRetainedDirectory(directoryPath: string, io: ProtectedStoreIo): RetainedDirectory {
+  const before = directoryIdentity(io.lstatDirectorySync(directoryPath), "protected store parent")
+  const fd = io.openSync(directoryPath, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try {
+    const opened = directoryIdentity(io.fstatDirectorySync(fd), "protected store parent")
+    if (!directoryIdentitiesEqual(before, opened)) {
+      throw new ProtectedStoreCorruptError("protected store parent changed while opening")
+    }
+    return { fd, identity: opened }
+  } catch (error) {
+    io.closeSync(fd)
+    throw error
+  }
+}
+
+function assertRetainedDirectory(directoryPath: string, retained: RetainedDirectory, io: ProtectedStoreIo): void {
+  const byPath = directoryIdentity(io.lstatDirectorySync(directoryPath), "protected store parent")
+  const byDescriptor = directoryIdentity(io.fstatDirectorySync(retained.fd), "protected store parent")
+  if (!directoryIdentitiesEqual(retained.identity, byPath) || !directoryIdentitiesEqual(byPath, byDescriptor)) {
+    throw new ProtectedStoreCorruptError("protected store parent identity changed")
+  }
+}
+
+function refreshRetainedDirectory(directoryPath: string, retained: RetainedDirectory, io: ProtectedStoreIo): void {
+  const byPath = directoryIdentity(io.lstatDirectorySync(directoryPath), "protected store parent")
+  const byDescriptor = directoryIdentity(io.fstatDirectorySync(retained.fd), "protected store parent")
+  if (
+    stableDirectoryIdentity(retained.identity) !== stableDirectoryIdentity(byPath) ||
+    stableDirectoryIdentity(byPath) !== stableDirectoryIdentity(byDescriptor)
+  ) {
+    throw new ProtectedStoreCorruptError("protected store parent stable identity changed")
+  }
+  retained.identity = byDescriptor
 }
 
 function lstatOptional(filePath: string, io: ProtectedStoreIo): fs.Stats | null {
@@ -279,18 +362,21 @@ function writeProtectedJsonAtomic(
   const bytes = Buffer.from(canonicalizeJson(value), "utf8")
   let tempFd: number | null = null
   let renamed = false
+  const parent = openRetainedDirectory(parentPath, io)
   try {
     tempFd = io.openSync(
       tempPath,
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
       0o600,
     )
+    refreshRetainedDirectory(parentPath, parent, io)
     writeAll(tempFd, bytes, io)
     io.fsyncSync(tempFd)
     io.closeSync(tempFd)
     tempFd = null
 
     lock.assertHeld()
+    assertRetainedDirectory(parentPath, parent, io)
     const currentStats = lstatOptional(targetPath, io)
     if (expectedPrior === null) {
       if (currentStats !== null) throw new ProtectedStoreLockedError("protected target appeared during mutation")
@@ -302,12 +388,9 @@ function writeProtectedJsonAtomic(
 
     io.renameSync(tempPath, targetPath)
     renamed = true
-    const directoryFd = io.openSync(parentPath, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-    try {
-      io.fsyncSync(directoryFd)
-    } finally {
-      io.closeSync(directoryFd)
-    }
+    refreshRetainedDirectory(parentPath, parent, io)
+    io.fsyncSync(parent.fd)
+    assertRetainedDirectory(parentPath, parent, io)
   } finally {
     if (tempFd !== null) {
       try { io.closeSync(tempFd) } catch { /* best effort close before unlink */ }
@@ -315,6 +398,7 @@ function writeProtectedJsonAtomic(
     if (!renamed) {
       try { io.unlinkSync(tempPath) } catch { /* missing temporary file is already clean */ }
     }
+    io.closeSync(parent.fd)
   }
 }
 
