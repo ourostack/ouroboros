@@ -202,9 +202,28 @@ describe("activation barrier schema", () => {
     expect(() => parseBarrierStore(dangling)).toThrow(ActivationBarrierError)
 
     const duplicate = structuredClone(state)
-    duplicate.actionWindows[`${window.actionWindowId}-other`] = {
+    const secondBarrierId = "barrier-second"
+    const secondDeferredId = "deferred-second"
+    const secondEligibilityId = "eligibility-second"
+    const secondWindowId = deriveActionWindowId(secondBarrierId, secondDeferredId, secondEligibilityId)
+    duplicate.barriers[secondBarrierId] = {
+      ...structuredClone(duplicate.barriers[window.barrierId]),
+      barrierId: secondBarrierId,
+      tokenHash: "e".repeat(64),
+    }
+    duplicate.deferredIntents[secondDeferredId] = {
+      ...structuredClone(duplicate.deferredIntents[window.deferredId]),
+      deferredId: secondDeferredId,
+      dedupeKey: secondEligibilityId,
+      payload: { observationId: "observation-second", repairEligibilityId: secondEligibilityId },
+      blockedBy: [secondBarrierId],
+    }
+    duplicate.actionWindows[secondWindowId] = {
       ...window,
-      actionWindowId: `${window.actionWindowId}-other`,
+      actionWindowId: secondWindowId,
+      barrierId: secondBarrierId,
+      deferredId: secondDeferredId,
+      repairEligibilityId: secondEligibilityId,
     }
     expect(() => parseBarrierStore(duplicate)).toThrow(/active window|corrupt/i)
   })
@@ -339,7 +358,6 @@ describe("barrier admission and release reducer", () => {
   it.each([
     ["wrong holder", { holder: "other" }],
     ["wrong token", { tokenHash: "f".repeat(64) }],
-    ["wrong epoch replay", { writerEpoch: "epoch-9" }],
   ])("rejects release with %s", (_name, override) => {
     const state = deferRepair(acquireResource().store).store
     expect(() => applyBarrierCommand(state, {
@@ -366,8 +384,11 @@ describe("barrier admission and release reducer", () => {
       at: RELEASED_AT,
     })).toThrow(/exactly one current deferred/i)
 
-    let duplicated = deferRepair(acquired, "eligibility-a", "deferred-a").store
-    duplicated = deferRepair(duplicated, "eligibility-a", "deferred-b").store
+    const duplicated = deferRepair(acquired, "eligibility-a", "deferred-a").store
+    duplicated.deferredIntents["deferred-b"] = {
+      ...structuredClone(duplicated.deferredIntents["deferred-a"]),
+      deferredId: "deferred-b",
+    }
     expect(() => applyBarrierCommand(duplicated, {
       kind: "barrier.release",
       barrierId: "barrier-resource",
@@ -378,6 +399,22 @@ describe("barrier admission and release reducer", () => {
       at: RELEASED_AT,
     })).toThrow(/exactly one current deferred/i)
     expect(duplicated.barriers["barrier-resource"].status).toBe("held")
+  })
+
+  it("replays an identical release but rejects a drifted release after tombstoning", () => {
+    const denied = deferRepair(acquireResource().store).store
+    const command: BarrierCommandV1 = {
+      kind: "barrier.release",
+      barrierId: "barrier-resource",
+      holder: "rollout-owner",
+      tokenHash: "a".repeat(64),
+      currentDedupeKey: "eligibility-a",
+      writerEpoch: "epoch-8",
+      at: RELEASED_AT,
+    }
+    const released = applyBarrierCommand(denied, command)
+    expect(applyBarrierCommand(released.store, command).store).toEqual(released.store)
+    expect(() => applyBarrierCommand(released.store, { ...command, writerEpoch: "epoch-9" })).toThrow(/released|replay/i)
   })
 
   it("atomically arms exactly one deterministic one-shot action window", () => {
