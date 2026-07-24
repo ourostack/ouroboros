@@ -201,7 +201,7 @@ export type BarrierCommandV1 =
 export type BarrierCommandResultV1 =
   | { kind: "acquired"; barrier: BarrierV1; replayed: boolean }
   | { kind: "deferred"; deferredId: string; deferred: DeferredV1 }
-  | { kind: "admitted"; actionWindow: ActionWindowV1 | null }
+  | { kind: "admitted"; actionWindow: ActionWindowV1 | null; replayed?: true }
   | {
       kind: "released"
       barrier: BarrierV1
@@ -778,21 +778,20 @@ function applyRepairAdmission(
     observationId: requireString(command.observationId, "repair observationId"),
     repairEligibilityId: requireString(command.repairEligibilityId, "repair eligibilityId"),
   }
+  const generation = requirePositive(command.repairGeneration, "repair generation")
   if (blockers.length > 0) {
     return deferAdmission(prior, command, "resource-repair", target, payload, payload.repairEligibilityId, blockers)
   }
 
   const active = activeWindowsForResource(prior, target.resourceId)
   if (active.length === 0) return { store: prior, result: { kind: "admitted", actionWindow: null } }
-  if (active.length !== 1) fail("resource has multiple active action windows")
   const window = active[0]
   if (window.incarnationId !== target.incarnationId) fail("active action window belongs to a different incarnation")
-  const generation = requirePositive(command.repairGeneration, "repair generation")
   if (window.state === "blocked") fail("blocked action window requires terminal reconciliation before another generation")
   if (window.repairEligibilityId !== payload.repairEligibilityId) fail("active action window blocks a different eligibility")
   if (window.state === "consumed") {
     if (window.repairGeneration !== generation) fail("action window already consumed a different generation")
-    return { store: prior, result: { kind: "admitted", actionWindow: window } }
+    return { store: prior, result: { kind: "admitted", actionWindow: window, replayed: true } }
   }
   const next = cloneStore(prior)
   const consumed: ActionWindowV1 = {
@@ -820,6 +819,13 @@ function releaseReplay(prior: BarrierStoreV1, barrier: BarrierV1, command: Extra
   const matching = Object.values(prior.deferredIntents).filter((deferred) =>
     deferred.kind === barrier.scope && deferred.targetKey === barrier.targetKey,
   )
+  const readyOnRelease = matching.filter((deferred) => deferred.readyAt === barrier.releasedAt)
+  if (
+    (actionWindow !== null && actionWindow.repairEligibilityId !== command.currentDedupeKey) ||
+    (actionWindow === null && readyOnRelease.length > 0 && !readyOnRelease.some((deferred) => deferred.dedupeKey === command.currentDedupeKey))
+  ) {
+    fail("released barrier cannot be replayed with a drifted current deferred dedupe key")
+  }
   return {
     store: prior,
     result: {
@@ -907,7 +913,6 @@ function applyRelease(
       terminalSha256: null,
       supersededBy: null,
     }
-    if (next.actionWindows[actionWindowId]) fail("action window identity already exists")
     next.actionWindows[actionWindowId] = actionWindow
   }
   return {
@@ -1047,13 +1052,9 @@ function applyRearm(
     deferred.state === "pending" && deferred.dedupeKey === currentDedupeKey,
   )
   if (candidates.length !== 1) fail("rearm requires exactly one new current deferred repair")
-  const otherActive = activeWindowsForResource(prior, old.resourceId).filter((window) => window.actionWindowId !== old.actionWindowId)
-  if (otherActive.length > 0) fail("rearm compare-and-set found another active action window")
-
   const deferred = candidates[0]
   const eligibility = (deferred.payload as RepairDeferredPayload).repairEligibilityId
   const actionWindowId = deriveActionWindowId(barrier.barrierId, deferred.deferredId, eligibility)
-  if (prior.actionWindows[actionWindowId]) fail("rearm action window already exists")
   const next = cloneStore(prior)
   const releasedBarrier: BarrierV1 = {
     ...barrier,
@@ -1162,7 +1163,7 @@ export class ActivationBarrierStore {
     command: BarrierCommandV1,
     duringLock?: (applied: AppliedBarrierCommandV1) => void,
   ): AppliedBarrierCommandV1 {
-    let applied: AppliedBarrierCommandV1 | null = null
+    let applied!: AppliedBarrierCommandV1
     const store = mutateProtectedJson({
       targetPath: this.options.targetPath,
       owner: this.options.owner,
@@ -1176,8 +1177,7 @@ export class ActivationBarrierStore {
       },
       io: this.options.io,
     })
-    if (applied === null) fail("activation barrier mutation produced no result")
-    return { ...(applied as AppliedBarrierCommandV1), store }
+    return { ...applied, store }
   }
 
   apply(command: PublicBarrierCommandV1): AppliedBarrierCommandV1 {
@@ -1207,7 +1207,7 @@ export class ActivationBarrierStore {
     const applied = this.mutate(command, (candidate) => {
       if (candidate.result.kind !== "admitted") return
       if (candidate.result.actionWindow === null) attemptResult = beginAttempt()
-      else invokeAfterCommit = true
+      else if (candidate.result.replayed !== true) invokeAfterCommit = true
     })
     if (invokeAfterCommit) attemptResult = beginAttempt()
     return { admission: applied.result, ...(applied.result.kind === "admitted" ? { attempt: attemptResult } : {}) }
@@ -1219,6 +1219,9 @@ export class ActivationBarrierStore {
     const ref = requireString(input.reconciliationRef, "reconciliationRef")
     const sha256 = requireSha256(input.reconciliationSha256, "reconciliationSha256")
     const reconciliation = authority.resolve(ref, sha256)
+    if (sha256CanonicalJson(reconciliation) !== sha256) {
+      fail("reconciliation authority bytes do not match the requested hash")
+    }
     return this.mutate({
       kind: "barrier.rearm",
       barrierId: input.barrierId,

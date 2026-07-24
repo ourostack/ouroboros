@@ -10,7 +10,7 @@ import {
   type RepairGenerationReconciliationV1,
   type ResourceKey,
 } from "../../../heart/activation/barrier-core"
-import { canonicalizeJson } from "../../../heart/runtime/canonical-json"
+import { canonicalizeJson, sha256CanonicalJson } from "../../../heart/runtime/canonical-json"
 import {
   ProtectedStoreCorruptError,
   ProtectedStoreLockedError,
@@ -288,6 +288,26 @@ describe("in-process admission boundary", () => {
     expect(() => repo.withRepairAdmission(repairAdmission({ repairGeneration: 13 }), () => ({}))).toThrow(/generation|blocked/i)
   })
 
+  it("does not invoke a consumed one-shot generation again on exact replay", () => {
+    const targetPath = tempTarget()
+    const repo = repository(targetPath)
+    armWindow(repo)
+    const command = repairAdmission({
+      deferredId: "replay-deferred",
+      repairGeneration: 12,
+      writerEpoch: "epoch-3",
+      at: "2026-07-24T12:02:00.000Z",
+    })
+    const attempt = vi.fn(() => ({ takeoverId: "takeover-12" }))
+
+    repo.withRepairAdmission(command, attempt)
+    const replay = repo.withRepairAdmission(command, attempt)
+
+    expect(replay.admission).toMatchObject({ kind: "admitted", replayed: true })
+    expect(replay.attempt).toBeUndefined()
+    expect(attempt).toHaveBeenCalledOnce()
+  })
+
   it("does not call the attempt when durable consumption fails", () => {
     const targetPath = tempTarget()
     const repo = repository(targetPath)
@@ -397,9 +417,10 @@ describe("rearm authority boundary", () => {
     const targetPath = tempTarget()
     const initial = blockedRepository(targetPath)
     const expectedProof = proof(initial.windowId)
+    const expectedProofSha256 = sha256CanonicalJson(expectedProof)
     const resolve = vi.fn((ref: string, sha256: string) => {
       expect(ref).toBe("authority/reconciliation.json")
-      expect(sha256).toBe("9".repeat(64))
+      expect(sha256).toBe(expectedProofSha256)
       return expectedProof
     })
     const repo = repository(targetPath, { reconciliationAuthority: { resolve } })
@@ -411,7 +432,7 @@ describe("rearm authority boundary", () => {
       blockedActionWindowId: initial.windowId,
       currentDedupeKey: "eligibility-b",
       reconciliationRef: "authority/reconciliation.json",
-      reconciliationSha256: "9".repeat(64),
+      reconciliationSha256: expectedProofSha256,
       remainingBudget: 1,
       cooldownUntil: null,
       writerEpoch: "epoch-6",
@@ -425,10 +446,34 @@ describe("rearm authority boundary", () => {
     expect(repo.read().actionWindows[nextId].state).toBe("armed")
   })
 
+  it("rejects authority bytes that do not match the requested reconciliation hash", () => {
+    const targetPath = tempTarget()
+    const initial = blockedRepository(targetPath)
+    const expectedProof = proof(initial.windowId)
+    const repo = repository(targetPath, {
+      reconciliationAuthority: { resolve: () => expectedProof },
+    })
+
+    expect(() => repo.rearm({
+      barrierId: "barrier-rearm",
+      holder: "rollout-owner",
+      tokenHash: "d".repeat(64),
+      blockedActionWindowId: initial.windowId,
+      currentDedupeKey: "eligibility-b",
+      reconciliationRef: "authority/reconciliation.json",
+      reconciliationSha256: "9".repeat(64),
+      remainingBudget: 1,
+      cooldownUntil: null,
+      writerEpoch: "epoch-6",
+      at: "2026-07-24T12:08:00.000Z",
+    })).toThrow(/bytes.*hash|hash.*bytes/i)
+  })
+
   it("lets only one concurrent rearm CAS win and leaves unrelated resources byte-identical", async () => {
     const targetPath = tempTarget()
     const initial = blockedRepository(targetPath)
     const expectedProof = proof(initial.windowId)
+    const expectedProofSha256 = sha256CanonicalJson(expectedProof)
     const makeRepo = () => repository(targetPath, {
       reconciliationAuthority: { resolve: () => expectedProof },
     })
@@ -440,7 +485,7 @@ describe("rearm authority boundary", () => {
       blockedActionWindowId: initial.windowId,
       currentDedupeKey: "eligibility-b",
       reconciliationRef: "authority/reconciliation.json",
-      reconciliationSha256: "9".repeat(64),
+      reconciliationSha256: expectedProofSha256,
       remainingBudget: 1,
       cooldownUntil: null,
       writerEpoch: "epoch-6",

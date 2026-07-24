@@ -415,6 +415,7 @@ describe("barrier admission and release reducer", () => {
     const released = applyBarrierCommand(denied, command)
     expect(applyBarrierCommand(released.store, command).store).toEqual(released.store)
     expect(() => applyBarrierCommand(released.store, { ...command, writerEpoch: "epoch-9" })).toThrow(/released|replay/i)
+    expect(() => applyBarrierCommand(released.store, { ...command, currentDedupeKey: "different" })).toThrow(/released|replay/i)
   })
 
   it("atomically arms exactly one deterministic one-shot action window", () => {
