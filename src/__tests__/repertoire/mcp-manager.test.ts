@@ -31,6 +31,10 @@ interface MockClient {
 
 let clientFactory: () => MockClient
 
+function transportError(phase: "pre-dispatch" | "post-dispatch", message: string): Error & { phase: string } {
+  return Object.assign(new Error(message), { name: "McpTransportError", phase })
+}
+
 function createMockClient(tools: McpToolInfo[] = [], shouldFailConnect = false): MockClient {
   let closeCallback: (() => void) | null = null
   let connected = !shouldFailConnect
@@ -51,7 +55,7 @@ function createMockClient(tools: McpToolInfo[] = [], shouldFailConnect = false):
 }
 
 vi.mock("../../repertoire/mcp-client", () => ({
-  isMcpTransportError: (error: unknown) => /transport|closed|disconnect/i.test(error instanceof Error ? error.message : String(error)),
+  isMcpTransportError: (error: unknown) => error instanceof Error && error.name === "McpTransportError",
   McpClient: class McpClient {
     connect: MockClient["connect"]
     listTools: MockClient["listTools"]
@@ -75,7 +79,10 @@ vi.mock("../../repertoire/mcp-client", () => ({
   },
 }))
 
-import { McpManager } from "../../repertoire/mcp-manager"
+import {
+  McpManager,
+  createMcpInternalExecutorAuthority,
+} from "../../repertoire/mcp-manager"
 
 describe("McpManager", () => {
   let clientInstances: MockClient[]
@@ -288,7 +295,7 @@ describe("McpManager", () => {
       clientFactory = () => {
         const client = createMockClient()
         if (clientIdx === 0) {
-          client.callTool = vi.fn().mockRejectedValue(new Error("Transport closed"))
+          client.callTool = vi.fn().mockRejectedValue(transportError("pre-dispatch", "Transport closed before write"))
         }
         clientInstances.push(client)
         clientIdx++
@@ -314,7 +321,7 @@ describe("McpManager", () => {
       clientFactory = () => {
         const client = createMockClient()
         if (clientIdx === 0) {
-          client.callTool = vi.fn().mockRejectedValue(new Error("Transport closed"))
+          client.callTool = vi.fn().mockRejectedValue(transportError("pre-dispatch", "Transport closed before write"))
         } else {
           client.isConnected = vi.fn(() => false)
         }
@@ -330,19 +337,15 @@ describe("McpManager", () => {
       })
 
       await expect(manager.callTool("ado", "get_items", {})).rejects.toThrow(
-        'Server "ado" is disconnected after recovery: Transport closed',
+        'Server "ado" is disconnected after recovery: Transport closed before write',
       )
     })
 
-    it("recovers after a non-Error transport-level call failure", async () => {
-      let clientIdx = 0
+    it("never retries a post-dispatch transport failure", async () => {
       clientFactory = () => {
         const client = createMockClient()
-        if (clientIdx === 0) {
-          client.callTool = vi.fn().mockRejectedValue("transport closed as string")
-        }
+        client.callTool = vi.fn().mockRejectedValue(transportError("post-dispatch", "response lost after write"))
         clientInstances.push(client)
-        clientIdx++
         return client
       }
 
@@ -352,10 +355,12 @@ describe("McpManager", () => {
         ado: { command: "ado-server" },
       })
 
-      const result = await manager.callTool("ado", "get_items", {})
-
-      expect(result.content[0].text).toBe("result")
-      expect(clientInstances).toHaveLength(2)
+      await expect(manager.callTool("ado", "get_items", {})).rejects.toMatchObject({
+        name: "McpTransportError",
+        phase: "post-dispatch",
+      })
+      expect(clientInstances).toHaveLength(1)
+      expect(clientInstances[0].callTool).toHaveBeenCalledTimes(1)
     })
 
     it("does not retry application-level MCP tool errors", async () => {
@@ -374,6 +379,130 @@ describe("McpManager", () => {
 
       await expect(manager.callTool("ado", "missing", {})).rejects.toThrow("Method not found")
       expect(clientInstances).toHaveLength(1)
+    })
+  })
+
+  describe("internal server boundary", () => {
+    it("filters internal servers from public inventory, calls, and canaries", async () => {
+      let clientIdx = 0
+      clientFactory = () => {
+        const tools = [{ name: clientIdx === 0 ? "public_read" : "internal_effect", description: "Tool", inputSchema: {} }]
+        const client = createMockClient(tools)
+        clientInstances.push(client)
+        clientIdx++
+        return client
+      }
+      const manager = new McpManager()
+      await manager.start({
+        public: { command: "public-server", visibility: "agent" },
+        internal: { command: "internal-server", visibility: "internal" },
+      })
+
+      expect(manager.listAllTools()).toEqual([{
+        server: "public",
+        tools: [{ name: "public_read", description: "Tool", inputSchema: {} }],
+      }])
+      await expect(manager.callTool("internal", "internal_effect", {})).rejects.toThrow(/internal/i)
+      await expect(manager.runCanaries()).resolves.toEqual([{ server: "public", ok: true, detail: "1 tools listed" }])
+      expect(clientInstances[1].callTool).not.toHaveBeenCalled()
+      expect(clientInstances[1].refreshTools).not.toHaveBeenCalled()
+    })
+
+    it("calls an internal tool only with the registered exact memory capability", async () => {
+      const completeResult = {
+        content: [{ type: "text", text: "data" }],
+        structuredContent: { ok: true },
+        isError: false,
+      }
+      clientFactory = () => {
+        const client = createMockClient([{ name: "internal_effect", description: "Effect", inputSchema: {} }])
+        client.callTool = vi.fn().mockResolvedValue(completeResult)
+        clientInstances.push(client)
+        return client
+      }
+      const manager = new McpManager()
+      const authority = createMcpInternalExecutorAuthority({
+        executorId: "executor-a",
+        serverId: "internal",
+        toolName: "internal_effect",
+        registryRevision: `sha256:${"a".repeat(64)}`,
+        randomBytes: () => Buffer.alloc(32, 7),
+      })
+      manager.registerInternalExecutorAuthority(authority)
+      await manager.start({ internal: { command: "internal-server", visibility: "internal" } })
+
+      await expect(manager.callInternalTool({
+        authority,
+        serverId: "internal",
+        toolName: "internal_effect",
+        arguments: { ouroOccurrence: { occurrenceId: "occurrence-a" }, input: {}, credentials: {} },
+        timeoutMs: 20_000,
+      })).resolves.toEqual(completeResult)
+      expect(clientInstances[0].callTool).toHaveBeenCalledWith(
+        "internal_effect",
+        { ouroOccurrence: { occurrenceId: "occurrence-a" }, input: {}, credentials: {} },
+        20_000,
+      )
+    })
+
+    it.each([
+      ["executor", { executorId: "executor-other" }],
+      ["server", { serverId: "other" }],
+      ["tool", { toolName: "other" }],
+      ["revision", { registryRevision: `sha256:${"b".repeat(64)}` }],
+      ["token", { token: "00".repeat(32) }],
+    ])("rejects a mismatched internal %s capability before lookup or dispatch", async (_label, replacement) => {
+      clientFactory = () => {
+        const client = createMockClient([{ name: "internal_effect", description: "Effect", inputSchema: {} }])
+        clientInstances.push(client)
+        return client
+      }
+      const manager = new McpManager()
+      const authority = createMcpInternalExecutorAuthority({
+        executorId: "executor-a",
+        serverId: "internal",
+        toolName: "internal_effect",
+        registryRevision: `sha256:${"a".repeat(64)}`,
+        randomBytes: () => Buffer.alloc(32, 7),
+      })
+      manager.registerInternalExecutorAuthority(authority)
+      await manager.start({ internal: { command: "internal-server", visibility: "internal" } })
+
+      await expect(manager.callInternalTool({
+        authority: { ...authority, ...replacement },
+        serverId: "internal",
+        toolName: "internal_effect",
+        arguments: {},
+        timeoutMs: 20_000,
+      })).rejects.toThrow(/capability|authority/i)
+      expect(clientInstances[0].callTool).not.toHaveBeenCalled()
+    })
+
+    it("uses capability-bound internal inventory without surfacing it publicly", async () => {
+      const internalTools = [{
+        name: "internal_effect",
+        description: "Effect",
+        inputSchema: { type: "object" },
+        outputSchema: { type: "object" },
+      }]
+      clientFactory = () => {
+        const client = createMockClient(internalTools)
+        clientInstances.push(client)
+        return client
+      }
+      const manager = new McpManager()
+      const authority = createMcpInternalExecutorAuthority({
+        executorId: "executor-a",
+        serverId: "internal",
+        toolName: "internal_effect",
+        registryRevision: `sha256:${"a".repeat(64)}`,
+        randomBytes: () => Buffer.alloc(32, 7),
+      })
+      manager.registerInternalExecutorAuthority(authority)
+      await manager.start({ internal: { command: "internal-server", visibility: "internal" } })
+
+      await expect(manager.refreshInternalInventory(authority)).resolves.toEqual(internalTools)
+      expect(manager.listAllTools()).toEqual([])
     })
   })
 
@@ -436,7 +565,7 @@ describe("McpManager", () => {
     it("reports canary refresh failures and recovers transport-level errors", async () => {
       clientFactory = () => {
         const client = createMockClient()
-        client.refreshTools = vi.fn().mockRejectedValue(new Error("Transport closed during refresh"))
+        client.refreshTools = vi.fn().mockRejectedValue(transportError("pre-dispatch", "Transport closed during refresh"))
         clientInstances.push(client)
         return client
       }

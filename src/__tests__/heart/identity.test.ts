@@ -874,6 +874,7 @@ describe("mcpServers config", () => {
             command: "npx",
             args: ["-y", "@anthropic/mcp-server-ado"],
             env: { ADO_TOKEN: "tok123" },
+            visibility: "internal",
           },
           mail: {
             command: "/usr/local/bin/mail-server",
@@ -891,6 +892,7 @@ describe("mcpServers config", () => {
         command: "npx",
         args: ["-y", "@anthropic/mcp-server-ado"],
         env: { ADO_TOKEN: "tok123" },
+        visibility: "internal",
       },
       mail: {
         command: "/usr/local/bin/mail-server",
@@ -915,6 +917,25 @@ describe("mcpServers config", () => {
     const config = loadAgentConfig()
 
     expect(config.mcpServers).toEqual({})
+  })
+
+  it("rejects an invalid MCP server visibility", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+        mcpServers: {
+          unsafe: { command: "server", visibility: "private" },
+        },
+      }),
+    )
+
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    expect(() => loadAgentConfig()).toThrow(/mcpServers\.unsafe\.visibility|visibility.*agent.*internal/i)
   })
 })
 
