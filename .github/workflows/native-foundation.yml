@@ -97,7 +97,7 @@ jobs:
             const fs = require("fs")
             const value = JSON.parse(fs.readFileSync("process-proof-output.json", "utf8"))
             if (value.schemaVersion !== 1 || value.pid !== process.ppid) throw new Error("process-proof PID mismatch")
-            if (!/^darwin-proc:\\d+:\\d{6}$/.test(value.startIdentity)) throw new Error("process-proof start identity mismatch")
+            if (!/^darwin-proc:\d+:\d{6}$/.test(value.startIdentity)) throw new Error("process-proof start identity mismatch")
           '
 
       - name: Run native fixture suite

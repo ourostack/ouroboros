@@ -23,6 +23,8 @@ describe("native foundation workflow contract", () => {
     expect(workflow).toContain("runner: macos-26\n            arch: arm64")
     expect(workflow).toContain("runner: macos-26-intel\n            arch: x86_64")
     expect(workflow).toContain("test \"$(uname -m)\" = \"${{ matrix.arch }}\"")
+    expect(workflow).toContain("/^darwin-proc:\\d+:\\d{6}$/")
+    expect(workflow).not.toContain("/^darwin-proc:\\\\d+:\\\\d{6}$/")
     expect(workflow).toContain("tests/native/process-proof.test.ts")
     expect(workflow).toContain("tests/native/process-proof-coverage-driver.c")
     expect(workflow).toContain("-fprofile-instr-generate -fcoverage-mapping")
