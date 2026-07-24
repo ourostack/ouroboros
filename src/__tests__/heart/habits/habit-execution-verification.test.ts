@@ -8,7 +8,6 @@ import {
   parseHabitFile,
   parseHabitFrontmatter,
 } from "../../../heart/habits/habit-parser"
-import { parseRsvpAwareHabitFile } from "../../../rsvp/habit-parser"
 
 describe("generic habit execution verification", () => {
   it("accepts an empty YAML document and rejects a scalar document", () => {
@@ -72,15 +71,5 @@ describe("generic habit execution verification", () => {
     expect(empty.surface.extra).toEqual([])
     expect(unterminated.tools).toBeUndefined()
     expect(unterminated.surface.extra).toEqual([])
-  })
-
-  it("keeps the temporary personal adapter inert without personal metadata", () => {
-    const plain = parseRsvpAwareHabitFile("Body only.", "/bundles/agent.ouro/habits/plain.md")
-    const unterminated = parseRsvpAwareHabitFile("---\ntitle: Incomplete", "/bundles/agent.ouro/habits/incomplete.md")
-    const generic = parseRsvpAwareHabitFile("---\ntitle: Generic\n---\n\nBody.", "/bundles/agent.ouro/habits/generic.md")
-
-    expect(plain).not.toHaveProperty("rsvp")
-    expect(unterminated).not.toHaveProperty("rsvp")
-    expect(generic).not.toHaveProperty("rsvp")
   })
 })

@@ -14,7 +14,7 @@ import type {
   DoctorSummary,
 } from "./doctor-types"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
+import { probeBlueBubblesHealth } from "../../senses/bluebubbles/health-diagnostics"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
 import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"

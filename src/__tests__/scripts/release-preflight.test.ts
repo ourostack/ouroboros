@@ -193,18 +193,14 @@ describe("release-preflight", () => {
     expect(() => parseArgs(["--base-ref"])).toThrow("--base-ref requires a value")
   })
 
-  it("classifies persisted RSVP operational contracts for release preflight visibility", () => {
-    expect(classifyOperationalContractChange("src/rsvp/snapshot.ts")).toEqual({
+  it("classifies generic operational contracts for release preflight visibility", () => {
+    expect(classifyOperationalContractChange("src/senses/context-packets.ts")).toEqual({
       kind: "persisted-schema",
-      message: "persisted schema changed: src/rsvp/snapshot.ts",
+      message: "persisted schema changed: src/senses/context-packets.ts",
     })
-    expect(classifyOperationalContractChange("src/__fixtures__/rsvp/july-9-context/manifest.json")).toEqual({
+    expect(classifyOperationalContractChange("src/__fixtures__/bluebubbles/context.json")).toEqual({
       kind: "replay-fixture",
-      message: "replay fixture changed: src/__fixtures__/rsvp/july-9-context/manifest.json",
-    })
-    expect(classifyOperationalContractChange("fixtures/rsvp.fixture.json")).toEqual({
-      kind: "replay-fixture",
-      message: "replay fixture changed: fixtures/rsvp.fixture.json",
+      message: "replay fixture changed: src/__fixtures__/bluebubbles/context.json",
     })
     expect(classifyOperationalContractChange("fixtures/voice.trace.json")).toEqual({
       kind: "replay-fixture",
@@ -213,14 +209,6 @@ describe("release-preflight", () => {
     expect(classifyOperationalContractChange("src/heart/daemon/doctor.ts")).toEqual({
       kind: "doctor-category",
       message: "doctor category/check surface changed: src/heart/daemon/doctor.ts",
-    })
-    expect(classifyOperationalContractChange("src/rsvp/diagnostics.ts")).toEqual({
-      kind: "doctor-category",
-      message: "doctor category/check surface changed: src/rsvp/diagnostics.ts",
-    })
-    expect(classifyOperationalContractChange("src/rsvp/incident-bundle.ts")).toEqual({
-      kind: "doctor-category",
-      message: "doctor category/check surface changed: src/rsvp/incident-bundle.ts",
     })
     expect(classifyOperationalContractChange("docs/testing-guide.md")).toBeNull()
   })
@@ -284,21 +272,21 @@ describe("release-preflight", () => {
     expect(result.messages).toContain("wrapper package unchanged")
   })
 
-  it("surfaces RSVP persisted schema, replay fixture, and doctor category contract changes", () => {
+  it("surfaces generic persisted schema, replay fixture, and doctor category contract changes", () => {
     const packageRoot = makePackageRootWithRequiredAssets()
     const result = runReleasePreflight(
       {},
       {
         execSyncImpl: makeExecSyncImpl({
           changedFiles: [
-            "src/rsvp/snapshot.ts",
-            "src/__fixtures__/rsvp/july-9-context/manifest.json",
+            "src/senses/context-packets.ts",
+            "src/__fixtures__/bluebubbles/context.json",
             "src/heart/daemon/doctor.ts",
             "changelog.json",
           ],
         }),
         readFileSyncImpl: makeReadFileSyncImpl({
-          changelogChanges: ["RSVP operational contracts updated"],
+          changelogChanges: ["Generic operational contracts updated"],
         }),
         packageRoot,
       },
@@ -306,8 +294,8 @@ describe("release-preflight", () => {
     fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.messages).toContain("operational contracts: persisted-schema, replay-fixture, doctor-category")
-    expect(result.messages).toContain("persisted schema changed: src/rsvp/snapshot.ts")
-    expect(result.messages).toContain("replay fixture changed: src/__fixtures__/rsvp/july-9-context/manifest.json")
+    expect(result.messages).toContain("persisted schema changed: src/senses/context-packets.ts")
+    expect(result.messages).toContain("replay fixture changed: src/__fixtures__/bluebubbles/context.json")
     expect(result.messages).toContain("doctor category/check surface changed: src/heart/daemon/doctor.ts")
   })
 

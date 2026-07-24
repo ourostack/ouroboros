@@ -19,16 +19,11 @@ import type { AgentReadinessIssue } from "./readiness-repair"
 import type { VaultItemCompatibilityAlias, VaultItemTemplate } from "./vault-items"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
-import type { RsvpCutoverAction, RsvpCutoverDeps } from "../../rsvp/cutover"
-export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
 export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "workbench"
 export type DnsWorkflowAction = "backup" | "plan" | "apply" | "verify" | "rollback" | "certificate"
-export type RsvpCliMode = "shadow" | "live"
-export type RsvpSmokeMode = "preflight" | "live"
-export type RsvpSmokeSurface = "bluebubbles"
 
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }
@@ -115,17 +110,6 @@ export type OuroCliCommand =
   | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "bluebubbles.context-smoke"; agent?: string; messageGuid: string; persist?: boolean; json?: boolean }
-  | { kind: "rsvp.doctor"; agent?: string; json?: boolean; strict?: boolean; outputPath?: string }
-  | { kind: "rsvp.incident"; agent?: string; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.cutover"; agent?: string; legacyRoot: string; action: RsvpCutoverAction; yes?: boolean; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.legacy-render"; agent?: string; legacyRoot: string; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.replay"; agent?: string; fixturePath: string; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.config.import-legacy"; agent?: string; legacyRoot: string; mode: RsvpCliMode; yes?: boolean; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.habit.stage"; agent?: string; habitName?: string; title?: string; reportTitle?: string; mode: RsvpCliMode; cadence: string; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.import-legacy"; agent?: string; legacyRoot: string; mode: RsvpCliMode; yes?: boolean; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.refresh"; agent?: string; habitName?: string; mode: RsvpCliMode; noSend?: boolean; allowSend?: boolean; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.compare"; agent?: string; nativePath: string; legacyPath: string; json?: boolean; outputPath?: string }
-  | { kind: "rsvp.smoke"; agent?: string; mode: RsvpSmokeMode; surface: RsvpSmokeSurface; question?: string; allowSend?: boolean; json?: boolean; outputPath?: string; replayOutputPath?: string }
   | { kind: "clone"; remote: string; agent?: string }
   | { kind: "help"; command?: string }
 
@@ -211,8 +195,6 @@ export interface OuroCliDeps {
    * real `git pull` invocations against the developer's home bundles.
    */
   runBootSyncProbeImpl?: typeof import("./boot-sync-probe").runBootSyncProbe
-  /** Test/alternate-host injection for side-effect-safe RSVP legacy cutover probes. */
-  rsvpCutoverDeps?: RsvpCutoverDeps
 }
 
 export interface SessionEntry {
@@ -285,18 +267,5 @@ export type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>
 export type McpCanaryCliCommand = Extract<OuroCliCommand, { kind: "mcp.canary" }>
 export type McpDoctorCliCommand = Extract<OuroCliCommand, { kind: "mcp.doctor" }>
 export type DoctorCliCommand = Extract<OuroCliCommand, { kind: "doctor" }>
-export type RsvpCliCommand = Extract<OuroCliCommand, { kind:
-  | "rsvp.doctor"
-  | "rsvp.incident"
-  | "rsvp.cutover"
-  | "rsvp.legacy-render"
-  | "rsvp.replay"
-  | "rsvp.config.import-legacy"
-  | "rsvp.habit.stage"
-  | "rsvp.import-legacy"
-  | "rsvp.refresh"
-  | "rsvp.compare"
-  | "rsvp.smoke"
-}>
 export type CloneCliCommand = Extract<OuroCliCommand, { kind: "clone" }>
 export type HelpCliCommand = Extract<OuroCliCommand, { kind: "help" }>

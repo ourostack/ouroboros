@@ -4,7 +4,7 @@ import {
   probeBlueBubblesHealth,
   redactBlueBubblesHealthDetailForNerves,
   stringifyBlueBubblesHealthError,
-} from "../../../heart/daemon/bluebubbles-health-diagnostics"
+} from "../../../senses/bluebubbles/health-diagnostics"
 
 describe("bluebubbles health diagnostics", () => {
   it("probes the message count endpoint and returns a reachable result", async () => {
@@ -166,3 +166,4 @@ describe("bluebubbles health diagnostics", () => {
     expect(result.detail).toContain("Raw error: Error")
   })
 })
+

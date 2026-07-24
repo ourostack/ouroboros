@@ -1,5 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import { classifyHttpError } from "../providers/error-classification"
+import { classifyHttpError } from "../../heart/providers/error-classification"
 
 interface BlueBubblesHttpError extends Error {
   status?: number
@@ -157,3 +157,4 @@ emitNervesEvent({
   meta: {},
 })
 /* v8 ignore stop */
+

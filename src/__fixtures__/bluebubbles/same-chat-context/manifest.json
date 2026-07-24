@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "bluebubbles-context-regression/v1",
+  "fixtureId": "same-chat-context-synthetic-v1",
+  "privacy": {
+    "source": "synthetic",
+    "rawLiveTranscriptStored": false,
+    "credentialsStored": false,
+    "searchIndex": false,
+    "vectorIndex": false
+  },
+  "conversation": {
+    "sense": "bluebubbles",
+    "chatGuidHash": "sha256:synthetic-same-chat",
+    "anchorMessageGuid": "msg-user-followup",
+    "anchorTimestamp": "2026-07-09T19:23:00.000Z",
+    "messages": [
+      {
+        "messageGuid": "msg-automated-update",
+        "timestamp": "2026-07-09T17:00:00.000Z",
+        "authorLabel": "Assistant",
+        "body": "Travel Update\nHotel room 412 is confirmed."
+      },
+      {
+        "messageGuid": "msg-user-followup",
+        "timestamp": "2026-07-09T19:23:00.000Z",
+        "authorLabel": "Operator",
+        "body": "which room?"
+      }
+    ]
+  },
+  "expected": {
+    "contextPacketHash": "sha256:same-chat-context-packet",
+    "renderedModelInputHash": "sha256:same-chat-rendered-model-input",
+    "forbiddenToolCalls": [
+      "query_session"
+    ]
+  }
+}
