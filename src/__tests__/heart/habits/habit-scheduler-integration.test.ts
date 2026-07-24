@@ -164,6 +164,51 @@ describe("createRealOsCronDeps", () => {
       stderr: expect.any(String),
     })
   })
+
+  it("exec reports timeouts and catches invalid invocation arguments", async () => {
+    const { createRealOsCronDeps } = await import("../../../heart/daemon/os-cron-deps")
+    const deps = createRealOsCronDeps()
+
+    expect(deps.exec("/bin/sleep", ["1"], { timeoutMs: 1 })).toMatchObject({
+      status: null,
+      timedOut: true,
+    })
+    expect(deps.exec(null as unknown as string, [])).toMatchObject({
+      status: null,
+      timedOut: false,
+      stderr: expect.any(String),
+    })
+  })
+
+  it("atomic write cleans its temporary file when writing fails after open", async () => {
+    const { createRealOsCronDeps } = await import("../../../heart/daemon/os-cron-deps")
+    const deps = createRealOsCronDeps()
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-cron-test-"))
+    cleanup.push(tempDir)
+    const target = path.join(tempDir, "test.plist")
+
+    expect(() => (deps.writeFileAtomic as unknown as (filePath: string, content: null) => void)(target, null)).toThrow()
+    expect(fs.readdirSync(tempDir)).toEqual([])
+  })
+
+  it("removeFile surfaces deletion errors other than an already-missing file", async () => {
+    const { createRealOsCronDeps } = await import("../../../heart/daemon/os-cron-deps")
+    const deps = createRealOsCronDeps()
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-cron-test-"))
+    cleanup.push(tempDir)
+    const childDirectory = path.join(tempDir, "directory")
+    fs.mkdirSync(childDirectory)
+
+    expect(() => deps.removeFile(childDirectory)).toThrow()
+  })
+
+  it("honors explicit home and uid coordinates", async () => {
+    const { createRealOsCronDeps } = await import("../../../heart/daemon/os-cron-deps")
+    const deps = createRealOsCronDeps({ homeDir: "/fixture/home", uid: 777 })
+
+    expect(deps.homeDir).toBe("/fixture/home")
+    expect(deps.uid).toBe(777)
+  })
 })
 
 describe("createRealCrontabDeps", () => {

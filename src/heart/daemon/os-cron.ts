@@ -175,7 +175,7 @@ function scheduleToCalendarInterval(schedule: string): Record<string, number> | 
 }
 
 function scheduledArgv(command: string): string[] {
-  if (command.length === 0 || /[\u0000\r\n`$]/.test(command)) {
+  if (command.length === 0 || /[\u0000-\u001f\u007f`$]/.test(command)) {
     throw new Error("scheduled command must contain argv only")
   }
   const parsed = parseShellWords(command)
@@ -183,7 +183,7 @@ function scheduledArgv(command: string): string[] {
     throw new Error("scheduled command must contain argv only")
   }
   const argv = parsed as string[]
-  if (argv.some((entry) => entry.length === 0 || /[\u0000\r\n]/.test(entry))) {
+  if (argv.some((entry) => entry.length === 0 || /[\u0000-\u001f\u007f]/.test(entry))) {
     throw new Error("scheduled command must contain non-empty argv")
   }
   return argv
@@ -201,7 +201,7 @@ function escapeXml(value: string): string {
 function bundleRootFromTaskPath(taskPath: string): string {
   const parts = path.resolve(taskPath).split(path.sep)
   const bundleIndex = parts.findIndex((part) => part.endsWith(".ouro"))
-  return bundleIndex < 0 ? path.dirname(path.resolve(taskPath)) : parts.slice(0, bundleIndex + 1).join(path.sep) || path.sep
+  return bundleIndex < 0 ? path.dirname(path.resolve(taskPath)) : parts.slice(0, bundleIndex + 1).join(path.sep)
 }
 
 function generatePlistXml(
@@ -288,7 +288,7 @@ function parseLaunchctlPrint(stdout: string): { domain: string; label: string; a
   const argumentsMatch = /\n\targuments = \{\n([\s\S]*?)\n\t\}(?:\n|$)/.exec(stdout)
   if (!firstLine || !argumentsMatch) return null
   const argv = argumentsMatch[1]!.split("\n").map((line) => line.replace(/^\t\t/, ""))
-  if (argv.length === 0 || argv.some((arg) => arg.length === 0)) return null
+  if (argv.some((arg) => arg.length === 0)) return null
   return { domain: firstLine[1]!, label: firstLine[2]!, argv }
 }
 
@@ -312,11 +312,11 @@ function commandFailed(result: OsCommandResult): boolean {
   return result.timedOut || result.status !== 0
 }
 
-function launchdProof(job: ScheduledTaskJob, label: string, argv: string[], xml: string): OsCronProof {
+function launchdProof(job: ScheduledTaskJob, label: string, argv: string[], xml: string, uid: number): OsCronProof {
   const argumentsSha256 = sha256CanonicalJson(argv)
   return {
     backend: "launchd",
-    domain: `gui/${process.getuid?.() ?? 0}`,
+    domain: `gui/${uid}`,
     label,
     expectedProgramArgumentsSha256: argumentsSha256,
     observedProgramArgumentsSha256: argumentsSha256,
@@ -333,7 +333,7 @@ export class LaunchdCronManager implements OsCronManager {
   constructor(private readonly deps: OsCronDeps, options: LaunchdCronManagerOptions) {
     this.consumer = requireConsumer(options.consumer)
     this.ownsRegistration = options.ownsRegistration
-    this.uid = options.uid ?? deps.uid ?? process.getuid?.() ?? 0
+    this.uid = options.uid ?? deps.uid ?? os.userInfo().uid
   }
 
   private get launchAgentsDir(): string {
@@ -410,7 +410,7 @@ export class LaunchdCronManager implements OsCronManager {
       argv = scheduledArgv(job.command)
       xml = generatePlistXml(job, { consumer: this.consumer, envPath: this.deps.envPath })
     } catch (error) {
-      return failedJob(job, cronError("invalid_registration", error instanceof Error ? error.message : String(error)))
+      return failedJob(job, cronError("invalid_registration", String(error)))
     }
     const label = plistLabel(job, this.consumer)
     const plistPath = path.join(this.launchAgentsDir, `${label}.plist`)
@@ -547,8 +547,7 @@ export class LaunchdCronManager implements OsCronManager {
   }
 
   private proof(job: ScheduledTaskJob, label: string, argv: string[], xml: string): OsCronProof {
-    const proof = launchdProof(job, label, argv, xml) as Extract<OsCronProof, { backend: "launchd" }>
-    return { ...proof, domain: `gui/${this.uid}` }
+    return launchdProof(job, label, argv, xml, this.uid)
   }
 
   private print(label: string): OsCommandResult {
@@ -702,6 +701,10 @@ export class CrontabCronManager implements OsCronManager {
     const conflict = blocks.find((block) => block.identity && this.ownsRegistration(block.identity) && block.entry === null)
     if (conflict) return { outcome: "failed", error: cronError("crontab_partial_owned_entry", "owned crontab marker has no entry") }
     const owned = blocks.filter((block) => block.identity && this.ownsRegistration(block.identity))
+    const identities = owned.map((block) => block.marker)
+    if (new Set(identities).size !== identities.length) {
+      return { outcome: "failed", error: cronError("crontab_duplicate_owned_entry", "owned crontab marker is duplicated") }
+    }
     if (owned.length === 0) return { outcome: "verified_unchanged", error: null }
     const expected = removeSpans(read.bytes, owned)
     const written = this.deps.exec(this.crontabPath, ["-"], { stdin: expected, timeoutMs: COMMAND_TIMEOUT_MS })
@@ -790,30 +793,12 @@ export function createOsCronManager(options: CreateOsCronManagerOptions = {}): O
   const platform = options.platform ?? process.platform
   if (platform === "darwin") {
     if (!options.launchdOptions) throw new Error("OS cron manager requires explicit registration ownership")
-    /* v8 ignore start -- no-op defaults are exercised only when no runtime adapter is wired @preserve */
-    const deps = options.launchdDeps ?? {
-      exec: () => ({ status: 113, stdout: "", stderr: "not configured", timedOut: false }),
-      writeFileAtomic: () => {},
-      readFile: () => "",
-      removeFile: () => {},
-      existsFile: () => false,
-      listDir: () => [],
-      mkdirp: () => {},
-      homeDir: os.homedir(),
-      envPath: process.env.PATH ?? "",
-    }
-    /* v8 ignore stop */
-    return new LaunchdCronManager(deps, options.launchdOptions)
+    if (!options.launchdDeps) throw new Error("OS cron manager requires explicit launchd dependencies")
+    return new LaunchdCronManager(options.launchdDeps, options.launchdOptions)
   }
   if (!options.crontabOptions) throw new Error("OS cron manager requires explicit registration ownership")
-  /* v8 ignore start -- no-op defaults are exercised only when no runtime adapter is wired @preserve */
-  const deps = options.crontabDeps ?? {
-    exec: (_executable: string, argv: string[]) => argv[0] === "-l"
-      ? { status: 0, stdout: "", stderr: "", timedOut: false }
-      : { status: 0, stdout: "", stderr: "", timedOut: false },
-  }
-  /* v8 ignore stop */
-  return new CrontabCronManager(deps, options.crontabOptions)
+  if (!options.crontabDeps) throw new Error("OS cron manager requires explicit crontab dependencies")
+  return new CrontabCronManager(options.crontabDeps, options.crontabOptions)
 }
 
 export {

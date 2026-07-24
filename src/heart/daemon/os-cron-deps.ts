@@ -25,7 +25,7 @@ function runStructured(executable: string, argv: string[], options: OsCommandOpt
     return {
       status: null,
       stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
+      stderr: String(error),
       timedOut: false,
     }
   }
@@ -86,7 +86,7 @@ export function createRealOsCronDeps(options: RealOsCronDepsOptions = {}): OsCro
     mkdirp: (dir: string) => fs.mkdirSync(dir, { recursive: true }),
     homeDir: options.homeDir ?? os.homedir(),
     envPath: process.env.PATH ?? "",
-    uid: options.uid ?? process.getuid?.() ?? 0,
+    uid: options.uid ?? os.userInfo().uid,
   }
 }
 
