@@ -348,7 +348,7 @@ describe("LaunchdCronManager reconciliation", () => {
         [`/Users/test/Library/LaunchAgents/${ownLabel}.plist`]: generatedPlist(job),
         [`/Users/test/Library/LaunchAgents/${otherLabel}.plist`]: generatedPlist(dotted),
       },
-      commandResults: [ok()],
+      commandResults: [ok(), missing()],
     })
 
     launchdManager(deps).sync([])
@@ -370,6 +370,7 @@ describe("LaunchdCronManager reconciliation", () => {
         ok(launchctlPrint(legacyLabel, expectedArgv(job), legacyPath)),
         ok(),
         missing(),
+        missing(),
         ok(),
         ok(launchctlPrint(label, expectedArgv(job), plistPath)),
       ],
@@ -380,6 +381,7 @@ describe("LaunchdCronManager reconciliation", () => {
     expect(calls.map(({ argv }) => argv)).toEqual([
       ["print", `gui/501/${legacyLabel}`],
       ["bootout", `gui/501/${legacyLabel}`],
+      ["print", `gui/501/${legacyLabel}`],
       ["print", `gui/501/${label}`],
       ["bootstrap", "gui/501", plistPath],
       ["print", `gui/501/${label}`],
