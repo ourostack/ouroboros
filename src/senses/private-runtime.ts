@@ -35,11 +35,9 @@ import { buildHabitTurnMessage, type PriorHabitSessionSummaryInfo } from "./habi
 import { buildAwaitTurnMessage } from "./await-turn-message"
 import { parseAwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
-import type { HabitOrigin, HabitSurface } from "../heart/habits/habit-parser"
-import { parseRsvpAwareHabitFile as parseHabitFile, type RsvpAwareHabitFile as HabitFile } from "../rsvp/habit-parser"
+import { parseHabitFile, type HabitFile, type HabitOrigin, type HabitSurface } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
-import { isRsvpHabitName } from "../rsvp/habit-policy"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/flight-recorder"
 import { deskRecordOrientationSection } from "../mind/desk-section"
@@ -968,8 +966,6 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       const habitName = options.habitName
       const habitFilePath = path.join(agentRoot, "habits", `${habitName}.md`)
       const preparedHabit = options.preparedHabit?.habit.name === habitName ? options.preparedHabit.habit : null
-      const rsvpHabit = isRsvpHabitName(habitName)
-
       // Read and parse the habit file
       let habitBody: string | undefined
       let habitTitle: string = habitName
@@ -977,9 +973,6 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       let habitOrigin: HabitOrigin | null = null
       let habitSurface: HabitSurface = { family: true, originator: true, extra: [] }
       if (preparedHabit) {
-        if (rsvpHabit && !preparedHabit.rsvp) {
-          throw new Error(`RSVP habit metadata is required before private runtime execution: ${habitName}`)
-        }
         habitBody = preparedHabit.body || undefined
         habitTitle = preparedHabit.title || habitName
         habitLastRun = preparedHabit.lastRun
@@ -990,20 +983,13 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         try {
           const habitContent = fs.readFileSync(habitFilePath, "utf-8")
           const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
-          if (rsvpHabit && !parsed.rsvp) {
-            throw new Error(`RSVP habit metadata is required before private runtime execution: ${habitName}`)
-          }
           habitBody = parsed.body || undefined
           habitTitle = parsed.title || habitName
           habitLastRun = parsed.lastRun
           habitTools = parsed.tools
           habitOrigin = parsed.origin
           habitSurface = parsed.surface
-        } catch (error) {
-          if (rsvpHabit) {
-            const reason = error instanceof Error ? error.message : String(error)
-            throw new Error(`RSVP habit metadata is required before private runtime execution: ${reason}`)
-          }
+        } catch {
           // Habit file missing or unreadable
         }
       }

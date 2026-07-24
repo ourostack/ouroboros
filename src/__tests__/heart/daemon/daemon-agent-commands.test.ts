@@ -58,6 +58,20 @@ describe("daemon agent service command routing", () => {
       stopAll: vi.fn(async () => undefined),
       startAgent: vi.fn(async () => undefined),
       sendToAgent: vi.fn(),
+      requestFromAgent: vi.fn(async (_agent: string, message: Record<string, unknown>) => {
+        const request = message.executionRequest as Record<string, unknown>
+        return {
+          schemaVersion: 1,
+          occurrenceId: request.occurrenceId,
+          attemptId: request.attemptId,
+          responseCapability: request.responseCapability,
+          outcome: {
+            version: 1,
+            disposition: "settled",
+            result: { version: 1, status: "completed", resultRef: "arc/habit-receipt.json" },
+          },
+        }
+      }),
     }
 
     const scheduler = {
@@ -244,7 +258,11 @@ describe("daemon agent service command routing", () => {
 
   it("routes all 13 agent command kinds", async () => {
     const socketPath = tmpSocketPath("agent-all-commands")
-    const { daemon, processManager } = make(socketPath)
+    const bundlesRoot = fs.mkdtempSync(path.join(testHomeRoot, "agent-all-commands-bundles-"))
+    const habitsDir = path.join(bundlesRoot, "a.ouro", "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(path.join(habitsDir, "heartbeat.md"), "---\ntitle: heartbeat\n---\n\nRun the habit.\n", "utf8")
+    const { daemon, processManager } = make(socketPath, { privatePolicyResult: "allow", bundlesRoot })
     processManager.listAgentSnapshots.mockReturnValue([{
       name: "a",
       channel: "private-runtime",
@@ -340,20 +358,60 @@ describe("daemon agent service command routing", () => {
       }))
       const response = JSON.parse(raw)
       expect(response.ok).toBe(true)
-      expect(processManager.sendToAgent).not.toHaveBeenCalledWith("a", {
-        type: "habit",
-        habitName: "heartbeat",
-        trigger: "launchd",
-      })
-      expect(processManager.sendToAgent).toHaveBeenCalledWith("a", {
-        type: "habit",
-        habitName: "heartbeat",
-        trigger: "launchd",
-        privateTurnDecision: expect.objectContaining({
-          result: "allow",
-          triggerSource: "habit-launchd",
+      expect(processManager.requestFromAgent).toHaveBeenCalledWith(
+        "a",
+        expect.objectContaining({
+          type: "habit",
+          habitName: "heartbeat",
+          trigger: "launchd",
+          privateTurnDecision: expect.objectContaining({
+            result: "allow",
+            triggerSource: "habit-launchd",
+          }),
+          executionRequest: expect.objectContaining({
+            habitId: "heartbeat",
+          }),
         }),
-      })
+        expect.any(Object),
+      )
+      const [, sent, options] = processManager.requestFromAgent.mock.calls[0]
+      const executionRequest = sent.executionRequest as {
+        occurrenceId: string
+        attemptId: string
+        responseCapability: string
+      }
+      const candidate = {
+        schemaVersion: 1,
+        occurrenceId: executionRequest.occurrenceId,
+        attemptId: executionRequest.attemptId,
+        responseCapability: executionRequest.responseCapability,
+        outcome: {
+          version: 1,
+          disposition: "settled",
+          result: { version: 1, status: "completed", resultRef: "receipt:a" },
+        },
+      }
+      const classified = options.classify(candidate)
+      expect(classified).toMatchObject({ kind: "candidate", fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) })
+      expect(options.classify(null)).toEqual({ kind: "ignore" })
+      expect(options.classify({ ...candidate, occurrenceId: "other" })).toEqual({ kind: "ignore" })
+      expect(options.classify({ ...candidate, attemptId: "other" })).toEqual({ kind: "ignore" })
+      expect(options.classify({ ...candidate, responseCapability: "other" })).toEqual({ kind: "ignore" })
+      expect(options.classify({
+        schemaVersion: 1,
+        kind: "agent-turn-response-seal",
+        occurrenceId: executionRequest.occurrenceId,
+        attemptId: executionRequest.attemptId,
+        responseCapability: executionRequest.responseCapability,
+        responseSha256: classified.fingerprint,
+      })).toEqual({ kind: "commit", fingerprint: classified.fingerprint })
+      expect(options.classify({
+        schemaVersion: 1,
+        kind: "agent-turn-response-seal",
+        occurrenceId: executionRequest.occurrenceId,
+        attemptId: executionRequest.attemptId,
+        responseCapability: executionRequest.responseCapability,
+      })).toEqual({ kind: "commit", fingerprint: "" })
     } finally {
       await daemon.stop()
     }

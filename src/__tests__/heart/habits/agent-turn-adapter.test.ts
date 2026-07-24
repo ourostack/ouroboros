@@ -86,6 +86,37 @@ describe("agent-turn habit adapter", () => {
     }, expect.any(AbortSignal))
   })
 
+  it("uses a system capability when no deterministic random source is injected", async () => {
+    const request = vi.fn(async (message: AgentTurnHabitRequestV1) => settledResponse(message))
+    const adapter = createAgentTurnAdapter({ request })
+
+    await adapter.invoke(invocation())
+
+    expect(request.mock.calls[0][0].responseCapability).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it("accepts a correlated explicit unknown outcome", async () => {
+    const adapter = createAgentTurnAdapter({
+      randomBytes: () => Buffer.alloc(32, 4),
+      request: vi.fn(async (message: AgentTurnHabitRequestV1) => ({
+        ...settledResponse(message),
+        outcome: {
+          version: 1,
+          disposition: "outcome_unknown",
+          reason: "adapter_reported_unknown",
+          evidence: {
+            kind: "adapter-owned",
+            ref: "evidence:turn-a",
+            sha256: "a".repeat(64),
+            observedAt: "2026-07-24T12:00:00.000Z",
+          },
+        },
+      })),
+    })
+
+    await expect(adapter.invoke(invocation())).resolves.toMatchObject({ disposition: "outcome_unknown" })
+  })
+
   it("does not equate wake acceptance with completed work", async () => {
     const adapter = createAgentTurnAdapter({
       randomBytes: () => Buffer.alloc(32, 9),
@@ -139,6 +170,25 @@ describe("agent-turn habit adapter", () => {
     })
   })
 
+  it.each([
+    ["null", null],
+    ["array", []],
+    ["schema version", { schemaVersion: 2 }],
+    ["missing outcome", { schemaVersion: 1 }],
+    ["primitive outcome", { schemaVersion: 1, outcome: "settled" }],
+    ["outcome version", { schemaVersion: 1, outcome: { version: 2, disposition: "settled" } }],
+    ["outcome disposition", { schemaVersion: 1, outcome: { version: 1, disposition: "retry" } }],
+  ])("rejects an invalid %s response shape", async (_label, response) => {
+    const adapter = createAgentTurnAdapter({
+      randomBytes: () => Buffer.alloc(32, 5),
+      request: vi.fn(async () => response as AgentTurnHabitResponseV1),
+    })
+
+    await expect(adapter.invoke(invocation())).rejects.toMatchObject({
+      unknownReason: "adapter_transport_unknown",
+    })
+  })
+
   it("maps disconnect, timeout, and conflicting replay to transport-unknown", async () => {
     for (const reason of ["worker disconnected", "response timeout", "conflicting response replay"]) {
       const adapter = createAgentTurnAdapter({
@@ -150,6 +200,15 @@ describe("agent-turn habit adapter", () => {
         unknownReason: "adapter_transport_unknown",
       })
     }
+  })
+
+  it("normalizes a non-Error transport rejection", async () => {
+    const adapter = createAgentTurnAdapter({
+      randomBytes: () => Buffer.alloc(32, 6),
+      request: vi.fn(async () => { throw "worker vanished" }),
+    })
+
+    await expect(adapter.invoke(invocation())).rejects.toThrow(/worker vanished/i)
   })
 
   it("never asserts safe retry while reconciling an unknown agent turn", async () => {

@@ -111,6 +111,22 @@ const registryData: ConfigRegistryEntry[] = [
     topics: ["tools", "mcp", "servers", "extensions"],
   },
   {
+    path: "habitExecutors",
+    tier: "self",
+    description: "Verified generic MCP executor bindings used by explicit habit adapters.",
+    default: undefined,
+    effects: "Binds habit execution to fixed internal MCP tools, schemas, credentials, and reconciliation policy.",
+    topics: ["habits", "tools", "mcp", "execution"],
+  },
+  {
+    path: "mcpHealthProfiles",
+    tier: "self",
+    description: "Read-only health profiles for configured MCP servers and habit executors.",
+    default: undefined,
+    effects: "Controls inventory, schema, credential-readiness, and no-effect probe health gates.",
+    topics: ["health", "tools", "mcp", "diagnostics"],
+  },
+  {
     path: "humanFacing.provider",
     tier: "self",
     description: "Provider for human-facing interactions (CLI, Teams, BlueBubbles).",

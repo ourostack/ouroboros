@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
+import { randomUUID } from "crypto"
 import { getAgentBundlesRoot, getRepoRoot, setAgentName } from "../identity"
 import {
   listAllBundleAgents,
@@ -48,11 +49,20 @@ import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from "./await-private-wake"
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
-import { parseRsvpAwareHabitFile as parseHabitFile } from "../../rsvp/habit-parser"
+import { parseHabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
-import { isRsvpHabitName } from "../../rsvp/habit-policy"
-import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
+import {
+  createAgentTurnAdapter,
+  type AgentTurnHabitRequestV1,
+  type AgentTurnHabitResponseSealV1,
+  type AgentTurnHabitResponseV1,
+} from "../habits/agent-turn-adapter"
+import type { HabitExecutionAdapter, HabitInvocationOutcomeV1 } from "../habits/habit-execution"
+import { dispatchHabitExecution, HabitExecutionRegistry } from "../habits/habit-execution-registry"
+import { createPackagedHabitExecutionRegistry } from "../habits/packaged-habit-adapters"
+import type { AdapterDiagnosticsRegistry, HabitAdapterDiagnosticProjectionV1 } from "../habits/adapter-diagnostics"
+import { sha256CanonicalJson } from "../runtime/canonical-json"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -384,6 +394,18 @@ export interface DaemonProcessManagerLike {
   stopAgent?(agent: string): Promise<void>
   restartAgent?(agent: string, options?: { skipConfigCheck?: boolean }): Promise<void>
   sendToAgent?(agent: string, message: Record<string, unknown>): void
+  requestFromAgent?(
+    agent: string,
+    message: Record<string, unknown>,
+    options: {
+      deadlineAt: string
+      signal: AbortSignal
+      classify(response: unknown):
+        | { kind: "ignore" }
+        | { kind: "candidate"; fingerprint: string }
+        | { kind: "commit"; fingerprint: string }
+    },
+  ): Promise<unknown>
   listAgentSnapshots(): Array<{
     name: string
     channel: string
@@ -514,8 +536,9 @@ export interface OuroDaemonOptions {
   onStopCommandComplete?: () => void
   /** Test seam for external-event receipts. Defaults to ~/.ouro-cli/daemon/external-events. */
   externalEventRoot?: string
-  /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
-  rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  /** Generic composition seam for the packaged MCP habit adapter. */
+  mcpToolHabitAdapterFor?: (agent: string) => Promise<HabitExecutionAdapter<unknown> | null>
+  adapterDiagnostics?: Pick<AdapterDiagnosticsRegistry, "list">
 }
 
 interface DaemonWorkerRow {
@@ -561,6 +584,7 @@ interface DaemonStatusPayload {
   agents: BundleAgentRow[]
   /** Safe provider/model/readiness rows for every discovered bundle. */
   providers?: ProviderStatusRow[]
+  habitAdapters?: HabitAdapterDiagnosticProjectionV1[]
 }
 
 interface SocketIdentity {
@@ -786,7 +810,9 @@ export class OuroDaemon {
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void) | null
   private readonly externalEventRoot: string | null
-  private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  private readonly mcpToolHabitAdapterFor: ((agent: string) => Promise<HabitExecutionAdapter<unknown> | null>) | null
+  private readonly daemonInstanceId = randomUUID()
+  private readonly adapterDiagnostics: Pick<AdapterDiagnosticsRegistry, "list"> | null
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -801,7 +827,8 @@ export class OuroDaemon {
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
-    this.rsvpHabitRunner = options.rsvpHabitRunner
+    this.mcpToolHabitAdapterFor = options.mcpToolHabitAdapterFor ?? null
+    this.adapterDiagnostics = options.adapterDiagnostics ?? null
   }
 
   /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
@@ -854,6 +881,7 @@ export class OuroDaemon {
         agentRoot: path.join(this.bundlesRoot, `${agentName}.ouro`),
       })),
     )
+    const habitAdapters = this.adapterDiagnostics?.list() ?? []
 
     const mailboxUrl = this.mailboxServer?.origin ?? "http://127.0.0.1:0"
     return {
@@ -875,6 +903,7 @@ export class OuroDaemon {
       sync,
       agents,
       ...(providers.length > 0 ? { providers } : {}),
+      ...(habitAdapters.length > 0 ? { habitAdapters } : {}),
     }
   }
 
@@ -1484,46 +1513,181 @@ export class OuroDaemon {
   ): string | { skipReason: string } | undefined {
     const agentRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
     const habitPath = path.join(agentRoot, "habits", `${command.habitName}.md`)
-    let parsedHabit: ReturnType<typeof parseHabitFile> | null = null
-
-    if (isRsvpHabitName(command.habitName)) {
-      if (!fs.existsSync(habitPath)) return { skipReason: "RSVP habit file not found" }
-      try {
-        parsedHabit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
-      } catch (error) {
-        return { skipReason: `RSVP habit metadata invalid: ${messageFromHabitPokeError(error)}` }
-      }
-      if (!parsedHabit.rsvp) return { skipReason: "RSVP habit metadata is required before private runtime wake" }
-    }
-
     if (trigger === "poke" || trigger === "manual") return undefined
     if (typeof command.occurrenceId === "string" && command.occurrenceId.trim().length > 0) return command.occurrenceId.trim()
 
     if (!fs.existsSync(habitPath)) return { skipReason: "habit file not found" }
 
-    const habit = parsedHabit ?? applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+    const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
     if (habit.cadence === null) return { skipReason: "habit has no cadence" }
     const cadence = habit.cadence
     if (habit.lastRun === null) return `${trigger}:first-run:${cadence}`
     return `${trigger}:last-run:${habit.lastRun}:cadence:${cadence}`
   }
 
-  private async runNativeRsvpHabit(command: Extract<DaemonCommand, { kind: "habit.poke" }>, trigger: HabitRunTrigger, occurrenceId?: string): Promise<DaemonResponse> {
-    const runner = this.rsvpHabitRunner ?? (async (input: RunNativeRsvpHabitInput): Promise<RunNativeRsvpHabitResult> => {
-      const { runNativeRsvpHabit } = await import("../../rsvp/native-habit-runner")
-      return runNativeRsvpHabit(input)
-    })
-    const result = await runner({
-      agent: command.agent,
-      bundlesRoot: this.bundlesRoot,
-      habitName: command.habitName,
+  private async requestAgentTurnHabitResult(
+    request: AgentTurnHabitRequestV1,
+    trigger: HabitRunTrigger,
+    signal: AbortSignal,
+  ): Promise<AgentTurnHabitResponseV1> {
+    if (!this.hasManagedPrivateRuntime(request.agent)) {
+      throw new Error(`No managed agent '${request.agent}' is registered with daemon-managed private runtime.`)
+    }
+    if (!this.processManager.requestFromAgent) {
+      throw new Error("Managed private runtime does not support correlated habit results")
+    }
+    const wake = buildHabitPrivateWakeCommand({
+      agent: request.agent,
+      habitName: request.habitId,
       trigger,
-      ...(occurrenceId ? { occurrenceId } : {}),
+      sourceRef: { kind: "daemon-command", id: "habit.poke" },
+      occurrenceId: request.occurrenceId,
     })
+    const decision = await requestPrivateTurnDecision(this.buildPrivateRuntimeWakeRequest(wake), {
+      bundlesRoot: this.bundlesRoot,
+      ...this.privateRuntimePolicyDeps,
+    })
+    if (!decision.executable) {
+      return {
+        schemaVersion: 1,
+        occurrenceId: request.occurrenceId,
+        attemptId: request.attemptId,
+        responseCapability: request.responseCapability,
+        outcome: {
+          version: 1,
+          disposition: "settled",
+          result: {
+            version: 1,
+            status: "failed_terminal",
+            error: {
+              code: "private_turn_denied",
+              message: decision.deniedReason ?? "private runtime policy denied the habit turn",
+              retryable: false,
+            },
+          },
+        },
+      }
+    }
+    await this.processManager.startAgent(request.agent)
+    const response = await this.processManager.requestFromAgent(request.agent, {
+      ...this.buildPrivateRuntimeWorkerWakeMessage(wake, decision),
+      executionRequest: request,
+    }, {
+      deadlineAt: request.deadlineAt,
+      signal,
+      classify: (candidate) => {
+        if (!candidate || typeof candidate !== "object") return { kind: "ignore" as const }
+        const value = candidate as Partial<AgentTurnHabitResponseV1 & AgentTurnHabitResponseSealV1>
+        const correlated = value.schemaVersion === 1
+          && value.occurrenceId === request.occurrenceId
+          && value.attemptId === request.attemptId
+          && value.responseCapability === request.responseCapability
+        if (!correlated) return { kind: "ignore" as const }
+        if (value.kind === "agent-turn-response-seal") {
+          return { kind: "commit" as const, fingerprint: typeof value.responseSha256 === "string" ? value.responseSha256 : "" }
+        }
+        return { kind: "candidate" as const, fingerprint: sha256CanonicalJson(candidate) }
+      },
+    })
+    return response as AgentTurnHabitResponseV1
+  }
+
+  private async createHabitExecutionRegistry(
+    agent: string,
+    trigger: HabitRunTrigger,
+  ): Promise<HabitExecutionRegistry> {
+    const agentTurn = createAgentTurnAdapter({
+      request: (request, signal) => this.requestAgentTurnHabitResult(request, trigger, signal),
+    })
+    const mcpTool = await this.mcpToolHabitAdapterFor?.(agent) ?? null
+    if (mcpTool) return createPackagedHabitExecutionRegistry({ agentTurn, mcpTool })
+    const registry = new HabitExecutionRegistry()
+    registry.register(agentTurn)
+    return registry
+  }
+
+  private async dispatchHabitCommand(
+    command: Extract<DaemonCommand, { kind: "habit.poke" }>,
+    trigger: HabitRunTrigger,
+    occurrenceId: string | undefined,
+  ): Promise<DaemonResponse> {
+    const bundleRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
+    const habitPath = path.join(bundleRoot, "habits", `${command.habitName}.md`)
+    let habit: ReturnType<typeof parseHabitFile>
+    try {
+      habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+    } catch (error) {
+      return { ok: false, error: `habit definition unavailable: ${messageFromHabitPokeError(error)}` }
+    }
+    const observedAt = new Date().toISOString()
+    const resolvedOccurrenceId = occurrenceId ?? `manual:${randomUUID()}`
+    const deadlineAt = new Date(Date.now() + 15 * 60_000).toISOString()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), Math.max(0, Date.parse(deadlineAt) - Date.now()))
+    try {
+      const registry = await this.createHabitExecutionRegistry(command.agent, trigger)
+      const outcome = await dispatchHabitExecution({
+        registry,
+        envelope: habit.execution,
+        invocation: {
+          schemaVersion: 1,
+          agent: command.agent,
+          bundleRoot,
+          habit: {
+            id: habit.name,
+            title: habit.title,
+            body: habit.body,
+            tools: habit.tools ?? [],
+            continuity: habit.continuity,
+          },
+          occurrenceId: resolvedOccurrenceId,
+          attemptId: `attempt:${randomUUID()}`,
+          trigger: {
+            kind: trigger,
+            observedAt,
+            scheduleProofRef: occurrenceId ? `habit-occurrence:${occurrenceId}` : null,
+          },
+          owner: {
+            uid: typeof process.getuid === "function" ? process.getuid() : 0,
+            pid: process.pid,
+            startIdentity: `daemon:${process.pid}:${this.daemonInstanceId}`,
+            bootId: `boot:${Math.floor(Date.now() - os.uptime() * 1_000)}`,
+            daemonInstanceId: this.daemonInstanceId,
+          },
+          deadlineAt,
+          signal: controller.signal,
+        },
+      })
+      return this.habitOutcomeResponse(command, outcome)
+    } catch (error) {
+      return { ok: false, error: messageFromHabitPokeError(error) }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  private habitOutcomeResponse(
+    command: Extract<DaemonCommand, { kind: "habit.poke" }>,
+    outcome: HabitInvocationOutcomeV1,
+  ): DaemonResponse {
+    if (outcome.disposition === "outcome_unknown") {
+      return {
+        ok: false,
+        error: `habit ${command.habitName} outcome is unknown and requires reconciliation`,
+        data: outcome,
+      }
+    }
+    if (outcome.result.status === "completed") {
+      return {
+        ok: true,
+        message: `completed habit ${command.habitName} for ${command.agent}`,
+        data: outcome,
+      }
+    }
     return {
-      ok: result.ok,
-      message: result.message,
-      data: result,
+      ok: false,
+      error: outcome.result.error.message,
+      data: outcome,
     }
   }
 
@@ -1953,12 +2117,6 @@ export class OuroDaemon {
         if (!isHabitRunTrigger(trigger)) {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
         }
-        if (!isRsvpHabitName(command.habitName) && !this.hasManagedPrivateRuntime(command.agent)) {
-          return {
-            ok: false,
-            error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
-          }
-        }
         const occurrenceId = this.resolveHabitPokeOccurrenceId(command, trigger)
         if (typeof occurrenceId === "object") {
           return {
@@ -1966,16 +2124,7 @@ export class OuroDaemon {
             message: `skipped scheduled habit ${command.habitName} for ${command.agent}: ${occurrenceId.skipReason}`,
           }
         }
-        if (isRsvpHabitName(command.habitName)) {
-          return this.runNativeRsvpHabit(command, trigger, occurrenceId)
-        }
-        return this.handlePrivateRuntimeWake(buildHabitPrivateWakeCommand({
-          agent: command.agent,
-          habitName: command.habitName,
-          trigger,
-          sourceRef: { kind: "daemon-command", id: "habit.poke" },
-          occurrenceId,
-        }))
+        return this.dispatchHabitCommand(command, trigger, occurrenceId)
       }
       case "await.poke": {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))

@@ -29,6 +29,7 @@ import {
   checkAgents,
   checkSenses,
   checkHabits,
+  checkHabitAdapters,
   checkSecurity,
   checkTrips,
   checkMailroom,
@@ -126,6 +127,7 @@ describe("runDoctorChecks", () => {
     expect(names).toContain("Agents")
     expect(names).toContain("Senses")
     expect(names).toContain("Habits")
+    expect(names).toContain("Habit Adapters")
     expect(names).toContain("Security")
     expect(names).toContain("Disk")
   })
@@ -1088,6 +1090,69 @@ describe("checkHabits", () => {
     const cat = checkHabits(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("no agents")
+  })
+})
+
+describe("checkHabitAdapters", () => {
+  it("passes cleanly when no adapter has published diagnostics", () => {
+    const cat = checkHabitAdapters(createMockDeps())
+
+    expect(cat).toEqual({
+      name: "Habit Adapters",
+      checks: [{
+        id: "habit-adapter.none",
+        label: "habit adapter diagnostics",
+        status: "pass",
+        detail: "no adapter diagnostics published",
+      }],
+    })
+  })
+
+  it("maps closed generic statuses and actor-labelled blockers without execution fields", () => {
+    const cat = checkHabitAdapters(createMockDeps({
+      adapterDiagnostics: {
+        list: () => [{
+          schemaVersion: 1,
+          adapter: { id: "mcp-tool", version: 1 },
+          status: "blocked",
+          evidence: [{ ref: "state/habits/evidence.json", sha256: "a".repeat(64) }],
+          blockers: [{ code: "mcp_health_unavailable", actor: "agent-runnable", message: "Reconnect the server." }],
+          observedAt: "2026-07-24T12:00:00.000Z",
+          expiresAt: "2026-07-24T12:00:00.000Z",
+        }],
+      },
+    }))
+
+    expect(cat.checks).toEqual([expect.objectContaining({
+      id: "habit-adapter.mcp-tool.1",
+      label: "mcp-tool@1",
+      status: "fail",
+      detail: expect.stringContaining("mcp_health_unavailable:agent-runnable:Reconnect the server."),
+    })])
+    expect(JSON.stringify(cat)).not.toContain("toolName")
+    expect(JSON.stringify(cat)).not.toContain("credentialValue")
+  })
+
+  it.each([
+    ["healthy", "pass"],
+    ["degraded", "warn"],
+    ["unavailable", "fail"],
+  ] as const)("maps %s to %s", (adapterStatus, doctorStatus) => {
+    const cat = checkHabitAdapters(createMockDeps({
+      adapterDiagnostics: {
+        list: () => [{
+          schemaVersion: 1,
+          adapter: { id: "custom-adapter", version: 1 },
+          status: adapterStatus,
+          evidence: [],
+          blockers: [],
+          observedAt: "2026-07-24T12:00:00.000Z",
+          expiresAt: "2026-07-24T12:05:00.000Z",
+        }],
+      },
+    }))
+
+    expect(cat.checks[0].status).toBe(doctorStatus)
   })
 })
 

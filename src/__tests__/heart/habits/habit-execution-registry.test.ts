@@ -79,6 +79,7 @@ describe("HabitExecutionRegistry", () => {
     expect(() => registry.register(adapter("custom-adapter"))).toThrow(/duplicate/i)
     expect(() => registry.register(adapter("Custom_Adapter"))).toThrow(/identifier|adapter.*id/i)
     expect(() => registry.register(adapter("1-adapter"))).toThrow(/identifier|adapter.*id/i)
+    expect(() => registry.register({ ...adapter("future-adapter"), version: 2 as 1 })).toThrow(/version/i)
   })
 
   it("validates adapter configuration synchronously during resolution", () => {
@@ -147,6 +148,36 @@ describe("HabitExecutionRegistry", () => {
     })
   })
 
+  it("preserves deliberate classifications and normalizes non-Error throws", async () => {
+    const classified = new HabitExecutionRegistry()
+    classified.register(adapter("classified-adapter", {
+      invoke: async () => { throw new HabitAdapterInvocationError("adapter_transport_unknown", "already classified") },
+    }))
+    await expect(dispatchHabitExecution({
+      registry: classified,
+      envelope: {
+        version: 1,
+        adapter: "classified-adapter",
+        config: {},
+        policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "none" },
+      },
+      invocation: invocation(),
+    })).rejects.toMatchObject({ unknownReason: "adapter_transport_unknown", message: "already classified" })
+
+    const raw = new HabitExecutionRegistry()
+    raw.register(adapter("raw-adapter", { invoke: async () => { throw "raw failure" } }))
+    await expect(dispatchHabitExecution({
+      registry: raw,
+      envelope: {
+        version: 1,
+        adapter: "raw-adapter",
+        config: {},
+        policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "none" },
+      },
+      invocation: invocation(),
+    })).rejects.toThrow(/raw failure/i)
+  })
+
   it("preserves explicit schema-valid unknown outcomes and their evidence", async () => {
     const registry = new HabitExecutionRegistry()
     registry.register(adapter("unknown-adapter", {
@@ -197,5 +228,9 @@ describe("packaged habit adapter composition", () => {
       agentTurn: adapter("not-agent-turn"),
       mcpTool: adapter("mcp-tool"),
     })).toThrow(/agent-turn/i)
+    expect(() => createPackagedHabitExecutionRegistry({
+      agentTurn: adapter("agent-turn"),
+      mcpTool: adapter("not-mcp-tool"),
+    })).toThrow(/mcp-tool/i)
   })
 })

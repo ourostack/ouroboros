@@ -69,6 +69,7 @@ describe("MCP health profile registry", () => {
 
     expect(registry.keys()).toEqual(["inventory-health"])
     expect(registry.get("inventory-health")).toEqual(inventoryProfile())
+    expect(() => registry.get("missing")).toThrow(/unknown/i)
   })
 
   it("rejects duplicates, unknown fields, unknown servers, and noncanonical revisions", () => {
@@ -122,12 +123,62 @@ describe("MCP health profile registry", () => {
       readOnlyProbe: { ...readOnly.readOnlyProbe!, sideEffects: "write" as "none" },
     }], validationDeps())).toThrow(/sideEffects|none/i)
   })
+
+  it("rejects malformed profile, tool, binding, credential, and probe shapes", () => {
+    const deps = validationDeps()
+    expect(() => validateMcpHealthProfiles({}, deps)).toThrow(/array/i)
+    expect(() => validateMcpHealthProfiles([null], deps)).toThrow(/object/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), schemaVersion: 2 }], deps)).toThrow(/schemaVersion/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), profileId: "Bad_ID" }], deps)).toThrow(/profileId/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), serverId: 4 }], deps)).toThrow(/serverId/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile()], { ...deps, registryRevision: `sha256:${"b".repeat(64)}` })).toThrow(/registryRevision.*match/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), timeoutMs: 1.5 }], deps)).toThrow(/timeout/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), freshnessMs: 60_000.5 }], deps)).toThrow(/freshness/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), expectedTools: null }], deps)).toThrow(/expectedTools/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), expectedTools: [null] }], deps)).toThrow(/object/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      expectedTools: [inventoryProfile().expectedTools[0], inventoryProfile().expectedTools[0]],
+    })], deps)).toThrow(/duplicate/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      expectedTools: [{ ...inventoryProfile().expectedTools[0], name: 4 as unknown as string }],
+    })], deps)).toThrow(/name/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      expectedTools: [{ ...inventoryProfile().expectedTools[0], inputSchema: { ...inventoryProfile().expectedTools[0].inputSchema, root: "remote" as "bundle" } }],
+    })], deps)).toThrow(/root/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      expectedTools: [{ ...inventoryProfile().expectedTools[0], inputSchema: { ...inventoryProfile().expectedTools[0].inputSchema, ref: "" } }],
+    })], deps)).toThrow(/ref/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      expectedTools: [{ ...inventoryProfile().expectedTools[0], inputSchema: { ...inventoryProfile().expectedTools[0].inputSchema, sha256: "latest" } }],
+    })], deps)).toThrow(/sha256/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      expectedTools: [{ ...inventoryProfile().expectedTools[0], inputSchema: { ...inventoryProfile().expectedTools[0].inputSchema, sha256: `sha256:${"0".repeat(64)}` } }],
+    })], deps)).toThrow(/hash mismatch/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), credentialBindingNames: null }], deps)).toThrow(/credentialBindingNames/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), credentialBindingNames: ["Bad_ID"] }], deps)).toThrow(/credentialBindingNames/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), credentialBindingNames: ["token", "token"] }], deps)).toThrow(/duplicate/i)
+    expect(() => validateMcpHealthProfiles([{ ...inventoryProfile(), mode: "unknown" }], deps)).toThrow(/mode/i)
+
+    const readOnly = inventoryProfile({ mode: "read-only-tool", readOnlyProbe: null })
+    expect(() => validateMcpHealthProfiles([readOnly], deps)).toThrow(/object/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      mode: "read-only-tool",
+      readOnlyProbe: { toolName: 4 as unknown as string, input: {}, resultSchema: binding("schemas/status-output.json", outputSchema), sideEffects: "none" },
+    })], deps)).toThrow(/toolName/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      mode: "read-only-tool",
+      readOnlyProbe: { toolName: "missing", input: {}, resultSchema: binding("schemas/status-output.json", outputSchema), sideEffects: "none" },
+    })], deps)).toThrow(/expected tool/i)
+    expect(() => validateMcpHealthProfiles([inventoryProfile({
+      mode: "read-only-tool",
+      readOnlyProbe: { toolName: "inventory_status", input: [] as unknown as Record<string, unknown>, resultSchema: binding("schemas/status-output.json", outputSchema), sideEffects: "none" },
+    })], deps)).toThrow(/input.*object/i)
+  })
 })
 
 describe("MCP health runner", () => {
   it("inventory mode lists schemas and checks names/states without resolving values or invoking tools", async () => {
     const callReadOnlyTool = vi.fn()
-    const resolveCredentialValue = vi.fn(() => "secret-must-not-be-read")
     const receipt = await runMcpHealthProfile(inventoryProfile(), {
       now: () => new Date("2026-07-24T12:00:00.000Z"),
       inventory: vi.fn(async () => ({
@@ -136,7 +187,6 @@ describe("MCP health runner", () => {
         tools: listedTools,
       })),
       credentialState: vi.fn(() => "ready" as const),
-      resolveCredentialValue,
       callReadOnlyTool,
       validateResult: vi.fn(),
       persistEvidence: vi.fn((kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) })),
@@ -146,9 +196,8 @@ describe("MCP health runner", () => {
     expect(receipt.credentialReadiness).toEqual([{ bindingName: "service-token", state: "ready" }])
     expect(receipt.probe).toBeNull()
     expect(receipt.effectfulToolInvoked).toBe(false)
-    expect(resolveCredentialValue).not.toHaveBeenCalled()
     expect(callReadOnlyTool).not.toHaveBeenCalled()
-    expect(JSON.stringify(receipt)).not.toContain("secret-must-not-be-read")
+    expect(JSON.stringify(receipt)).not.toContain("credentialValue")
   })
 
   it("marks missing, locked, inventory-mismatched, and schema-mismatched evidence unhealthy", async () => {
@@ -161,7 +210,6 @@ describe("MCP health runner", () => {
           tools: listedTools,
         }),
         credentialState: () => state,
-        resolveCredentialValue: vi.fn(),
         callReadOnlyTool: vi.fn(),
         validateResult: vi.fn(),
         persistEvidence: (kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) }),
@@ -178,12 +226,51 @@ describe("MCP health runner", () => {
         tools: [{ ...listedTools[0], outputSchema: { type: "string" } }],
       }),
       credentialState: () => "ready",
-      resolveCredentialValue: vi.fn(),
       callReadOnlyTool: vi.fn(),
       validateResult: vi.fn(),
       persistEvidence: (kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) }),
     })
     expect(mismatch.disposition).toBe("unhealthy")
+
+    const absent = await runMcpHealthProfile(inventoryProfile(), {
+      now: () => new Date("2026-07-24T12:00:00.000Z"),
+      inventory: async () => ({
+        negotiatedProtocolVersion: "2025-06-18",
+        transportIdentitySha256: `sha256:${"b".repeat(64)}`,
+        tools: [],
+      }),
+      credentialState: () => "ready",
+      callReadOnlyTool: vi.fn(),
+      validateResult: vi.fn(),
+      persistEvidence: (kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) }),
+    })
+    expect(absent.disposition).toBe("unhealthy")
+  })
+
+  it("treats an explicitly output-less tool as a schema-matched healthy inventory entry", async () => {
+    const profile = inventoryProfile({
+      expectedTools: [{
+        name: "inventory_status",
+        inputSchema: binding("schemas/status-input.json", inputSchema),
+        outputSchema: null,
+      }],
+    })
+    const validated = validateMcpHealthProfiles([profile], validationDeps()).get("inventory-health")
+    const receipt = await runMcpHealthProfile(validated, {
+      now: () => new Date("2026-07-24T12:00:00.000Z"),
+      inventory: async () => ({
+        negotiatedProtocolVersion: "2025-06-18",
+        transportIdentitySha256: `sha256:${"b".repeat(64)}`,
+        tools: [{ ...listedTools[0], outputSchema: undefined }],
+      }),
+      credentialState: () => "ready",
+      callReadOnlyTool: vi.fn(),
+      validateResult: vi.fn(),
+      persistEvidence: (kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) }),
+    })
+
+    expect(receipt.disposition).toBe("healthy")
+    expect(receipt.observedTools[0].outputSchemaSha256).toBeNull()
   })
 
   it("runs one schema-valid no-effect probe without persisting model-visible content", async () => {
@@ -209,7 +296,6 @@ describe("MCP health runner", () => {
         tools: listedTools,
       }),
       credentialState: () => "ready",
-      resolveCredentialValue: vi.fn(),
       callReadOnlyTool,
       validateResult: vi.fn(),
       persistEvidence: (kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) }),
@@ -222,6 +308,38 @@ describe("MCP health runner", () => {
     expect(JSON.stringify(receipt)).not.toContain("free text")
   })
 
+  it.each([
+    ["isError", { content: [], structuredContent: { ok: true }, isError: true }, vi.fn()],
+    ["missing structured content", { content: [] }, vi.fn()],
+    ["schema failure", { content: [], structuredContent: { ok: "wrong" } }, vi.fn(() => { throw new Error("schema mismatch") })],
+  ])("marks a read-only probe %s unhealthy without probe authority", async (_label, result, validateResult) => {
+    const profile = inventoryProfile({
+      mode: "read-only-tool",
+      readOnlyProbe: {
+        toolName: "inventory_status",
+        input: {},
+        resultSchema: binding("schemas/status-output.json", outputSchema),
+        sideEffects: "none",
+      },
+    })
+    const receipt = await runMcpHealthProfile(profile, {
+      now: () => new Date("2026-07-24T12:00:00.000Z"),
+      inventory: async () => ({
+        negotiatedProtocolVersion: "2025-06-18",
+        transportIdentitySha256: `sha256:${"b".repeat(64)}`,
+        tools: listedTools,
+      }),
+      credentialState: () => "ready",
+      callReadOnlyTool: vi.fn(async () => result),
+      validateResult,
+      persistEvidence: (kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) }),
+    })
+
+    expect(receipt.disposition).toBe("unhealthy")
+    expect(receipt.probe).toBeNull()
+    expect(receipt.effectfulToolInvoked).toBe(false)
+  })
+
   it("derives freshness strictly from the receipt expiry", async () => {
     const receipt = await runMcpHealthProfile(inventoryProfile(), {
       now: () => new Date("2026-07-24T12:00:00.000Z"),
@@ -231,7 +349,6 @@ describe("MCP health runner", () => {
         tools: listedTools,
       }),
       credentialState: () => "ready",
-      resolveCredentialValue: vi.fn(),
       callReadOnlyTool: vi.fn(),
       validateResult: vi.fn(),
       persistEvidence: (kind, value) => ({ ref: `evidence:${kind}`, sha256: hash(value) }),
@@ -240,5 +357,6 @@ describe("MCP health runner", () => {
     expect(isMcpHealthReceiptFresh(receipt, new Date("2026-07-24T12:04:59.999Z"))).toBe(true)
     expect(isMcpHealthReceiptFresh(receipt, new Date("2026-07-24T12:05:00.000Z"))).toBe(false)
     expect(isMcpHealthReceiptFresh({ ...receipt, disposition: "unhealthy" }, new Date("2026-07-24T12:01:00.000Z"))).toBe(false)
+    expect(isMcpHealthReceiptFresh({ ...receipt, expiresAt: "never" }, new Date("2026-07-24T12:01:00.000Z"))).toBe(false)
   })
 })

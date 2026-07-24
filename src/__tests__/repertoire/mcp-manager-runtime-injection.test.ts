@@ -76,6 +76,58 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     mod.resetSharedMcpManager()
   })
 
+  it("isolates explicit agent scopes and restarts a changed same-name server only in its owner scope", async () => {
+    vi.resetModules()
+    const { connects, shutdowns } = mockManagerDeps()
+    const mod = await import("../../repertoire/mcp-manager")
+
+    const agentA = await mod.getSharedMcpManager({
+      scope: "agent:a",
+      configuredServers: { internal: { command: "agent-a-v1" } },
+      includePlugins: false,
+    })
+    const agentB = await mod.getSharedMcpManager({
+      scope: "agent:b",
+      configuredServers: { internal: { command: "agent-b-v1" } },
+      includePlugins: false,
+    })
+    const agentAUpdated = await mod.getSharedMcpManager({
+      scope: "agent:a",
+      configuredServers: { internal: { command: "agent-a-v2" } },
+      includePlugins: false,
+    })
+
+    expect(agentA).not.toBe(agentB)
+    expect(agentAUpdated).toBe(agentA)
+    expect(connects).toEqual(["agent-a-v1", "agent-b-v1", "agent-a-v2"])
+    expect(shutdowns).toEqual(["agent-a-v1"])
+    expect(agentB!.listAllTools().map((entry) => entry.server)).toEqual(["internal"])
+    mod.resetSharedMcpManager()
+  })
+
+  it("serializes concurrent reconciliations within one explicit scope", async () => {
+    vi.resetModules()
+    const { connects, shutdowns } = mockManagerDeps()
+    const mod = await import("../../repertoire/mcp-manager")
+
+    const first = mod.getSharedMcpManager({
+      scope: "agent:serialized",
+      configuredServers: { internal: { command: "serialized-v1" } },
+      includePlugins: false,
+    })
+    const second = mod.getSharedMcpManager({
+      scope: "agent:serialized",
+      configuredServers: { internal: { command: "serialized-v2" } },
+      includePlugins: false,
+    })
+    const [firstManager, secondManager] = await Promise.all([first, second])
+
+    expect(secondManager).toBe(firstManager)
+    expect(connects).toEqual(["serialized-v1", "serialized-v2"])
+    expect(shutdowns).toEqual(["serialized-v1"])
+    mod.resetSharedMcpManager()
+  })
+
   it("runtime server takes highest precedence over a colliding builtin", async () => {
     vi.resetModules()
     const connects: string[] = []

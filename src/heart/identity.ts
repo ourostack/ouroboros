@@ -3,6 +3,8 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
+import type { HabitMcpToolExecutorV1 } from "./habits/mcp-executors"
+import type { McpHealthProfileV1 } from "./mcp/mcp-health"
 
 export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
 
@@ -41,6 +43,7 @@ export interface McpServerConfig {
   args?: string[]
   env?: Record<string, string>
   cwd?: string
+  visibility?: "agent" | "internal"
 }
 
 export interface AgentFacingConfig {
@@ -65,6 +68,8 @@ export interface AgentConfig {
   }
   senses?: AgentSensesConfig
   mcpServers?: Record<string, McpServerConfig>
+  habitExecutors?: HabitMcpToolExecutorV1[]
+  mcpHealthProfiles?: McpHealthProfileV1[]
   shell?: {
     defaultTimeout?: number
   }
@@ -240,6 +245,46 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   return defaults
+}
+
+function normalizeMcpServers(value: unknown, configFile: string): Record<string, McpServerConfig> | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`agent.json at ${configFile} must include mcpServers as an object when present.`)
+  }
+  const normalized: Record<string, McpServerConfig> = {}
+  for (const [serverId, rawServer] of Object.entries(value as Record<string, unknown>)) {
+    if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) {
+      throw new Error(`agent.json at ${configFile} has invalid mcpServers.${serverId}.`)
+    }
+    const server = rawServer as Record<string, unknown>
+    const unknown = Object.keys(server).filter((key) => !["command", "args", "env", "cwd", "visibility"].includes(key))
+    if (unknown.length > 0) throw new Error(`agent.json at ${configFile} mcpServers.${serverId} has unknown field ${unknown.sort()[0]}.`)
+    if (typeof server.command !== "string" || server.command.trim().length === 0) {
+      throw new Error(`agent.json at ${configFile} must include mcpServers.${serverId}.command as a non-empty string.`)
+    }
+    if (server.args !== undefined && (!Array.isArray(server.args) || !server.args.every((arg) => typeof arg === "string"))) {
+      throw new Error(`agent.json at ${configFile} mcpServers.${serverId}.args must be a string array.`)
+    }
+    if (server.env !== undefined && (!server.env || typeof server.env !== "object" || Array.isArray(server.env)
+      || !Object.values(server.env).every((entry) => typeof entry === "string"))) {
+      throw new Error(`agent.json at ${configFile} mcpServers.${serverId}.env must be a string map.`)
+    }
+    if (server.cwd !== undefined && typeof server.cwd !== "string") {
+      throw new Error(`agent.json at ${configFile} mcpServers.${serverId}.cwd must be a string.`)
+    }
+    if (server.visibility !== undefined && server.visibility !== "agent" && server.visibility !== "internal") {
+      throw new Error(`agent.json at ${configFile} mcpServers.${serverId}.visibility must be agent or internal.`)
+    }
+    normalized[serverId] = {
+      command: server.command,
+      ...(server.args !== undefined ? { args: server.args as string[] } : {}),
+      ...(server.env !== undefined ? { env: server.env as Record<string, string> } : {}),
+      ...(server.cwd !== undefined ? { cwd: server.cwd } : {}),
+      ...(server.visibility !== undefined ? { visibility: server.visibility } : {}),
+    }
+  }
+  return normalized
 }
 
 export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
@@ -549,6 +594,7 @@ export function loadAgentConfig(): AgentConfig {
   // Tolerate deprecated provider field for backward compatibility
   const rawProvider = parsed.provider
   const provider = isValidProvider(rawProvider) ? rawProvider : undefined
+  const mcpServers = normalizeMcpServers(parsed.mcpServers, configFile)
 
   // Spread parsed first so any field present in AgentConfig is carried
   // through by default, then explicitly override the fields that need
@@ -563,6 +609,7 @@ export function loadAgentConfig(): AgentConfig {
     humanFacing,
     agentFacing,
     senses: normalizeSenses(parsed.senses, configFile),
+    ...(mcpServers !== undefined ? { mcpServers } : {}),
     phrases: parsed.phrases as AgentConfig["phrases"],
   }
   if (provider !== undefined) {

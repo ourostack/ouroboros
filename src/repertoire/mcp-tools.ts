@@ -56,8 +56,9 @@ export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] 
         try {
           const result = await mcpManager.callTool(entry.server, tool.name, args)
           const text = result.content
-            .filter((c: { type: string; text?: string }) => c.type === "text" && c.text)
-            .map((c: { text: string }) => c.text)
+            .filter((content): content is typeof content & { text: string } =>
+              content.type === "text" && typeof content.text === "string")
+            .map((content) => content.text)
             .join("")
 
           emitNervesEvent({

@@ -1,10 +1,13 @@
 import * as fs from "fs"
+import * as os from "os"
 import * as path from "path"
 
 import { describe, expect, it } from "vitest"
 
 import {
   AdapterDiagnosticsRegistry,
+  listStoredAdapterDiagnostics,
+  writeAdapterDiagnosticProjection,
   type HabitAdapterDiagnosticProjectionV1,
 } from "../../../heart/habits/adapter-diagnostics"
 
@@ -48,6 +51,20 @@ describe("closed habit adapter diagnostics", () => {
     }))).toThrow(/actor/i)
   })
 
+  it.each([
+    ["schema version", { schemaVersion: 2 as 1 }],
+    ["adapter id", { adapter: { id: "Bad_ID", version: 1 as const } }],
+    ["adapter version", { adapter: { id: "custom-adapter", version: 2 as 1 } }],
+    ["status", { status: "unknown" as "blocked" }],
+    ["evidence ref", { evidence: [{ ref: "", sha256: "a".repeat(64) }] }],
+    ["blocker code", { blockers: [{ code: "Bad Code", actor: "agent-runnable" as const, message: "Blocked." }] }],
+    ["blocker message", { blockers: [{ code: "blocked", actor: "agent-runnable" as const, message: "" }] }],
+    ["observed timestamp", { observedAt: "never" }],
+    ["expiry timestamp", { expiresAt: "never" }],
+  ])("rejects malformed %s", (_label, overrides) => {
+    expect(() => new AdapterDiagnosticsRegistry().publish(projection(overrides))).toThrow()
+  })
+
   it("returns an inert closed projection with no execution authority", () => {
     const registry = new AdapterDiagnosticsRegistry()
     registry.publish(projection())
@@ -67,6 +84,46 @@ describe("closed habit adapter diagnostics", () => {
     expect(JSON.stringify(rendered)).not.toContain("toolName")
     expect(JSON.stringify(rendered)).not.toContain("credentialValue")
     expect(Object.values(rendered[0]).some((value) => typeof value === "function")).toBe(false)
+  })
+
+  it("replaces one adapter projection without creating duplicate authority", () => {
+    const registry = new AdapterDiagnosticsRegistry()
+    registry.publish(projection())
+    registry.replace(projection({ status: "healthy", blockers: [] }))
+
+    expect(registry.list()).toEqual([projection({ status: "healthy", blockers: [] })])
+  })
+
+  it("writes and reloads sorted bundle-local projections", () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "adapter-diagnostics-"))
+    const secondBundle = path.join(bundlesRoot, "zeta.ouro")
+    const firstBundle = path.join(bundlesRoot, "alpha.ouro")
+    writeAdapterDiagnosticProjection(secondBundle, projection({ adapter: { id: "zeta-adapter", version: 1 } }))
+    writeAdapterDiagnosticProjection(firstBundle, projection({ adapter: { id: "alpha-adapter", version: 1 } }))
+
+    expect(listStoredAdapterDiagnostics(bundlesRoot).map((entry) => entry.adapter.id)).toEqual([
+      "alpha-adapter",
+      "zeta-adapter",
+    ])
+    const stored = path.join(firstBundle, "state", "habits", "adapter-diagnostics", "alpha-adapter-v1.json")
+    expect(fs.statSync(stored).mode & 0o777).toBe(0o600)
+  })
+
+  it("returns no stored diagnostics for an absent root and rejects malformed stored rows", () => {
+    const bundlesRoot = path.join(os.tmpdir(), `missing-adapter-diagnostics-${Date.now()}`)
+    expect(listStoredAdapterDiagnostics(bundlesRoot)).toEqual([])
+
+    const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "empty-adapter-diagnostics-"))
+    fs.mkdirSync(path.join(emptyRoot, "empty.ouro"), { recursive: true })
+    expect(listStoredAdapterDiagnostics(emptyRoot)).toEqual([])
+
+    const malformedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "malformed-adapter-diagnostics-"))
+    const directory = path.join(malformedRoot, "agent.ouro", "state", "habits", "adapter-diagnostics")
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(path.join(directory, "ignored.txt"), "not json", "utf8")
+    fs.mkdirSync(path.join(malformedRoot, "not-a-bundle"), { recursive: true })
+    fs.writeFileSync(path.join(directory, "bad.json"), JSON.stringify(projection({ observedAt: "never" })), "utf8")
+    expect(() => listStoredAdapterDiagnostics(malformedRoot)).toThrow(/timestamp/i)
   })
 })
 

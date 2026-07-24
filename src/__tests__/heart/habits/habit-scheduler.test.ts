@@ -485,12 +485,17 @@ describe("HabitScheduler", () => {
       })
     })
 
-    it("does not register active RSVP cron jobs unless typed RSVP metadata is present", () => {
+    it("schedules active habits without interpreting personal name prefixes", () => {
       const nowMs = new Date(2026, 6, 9, 9, 55, 0, 0).getTime()
       const readdir = vi.fn(() => ["rsvp-wedding.md"])
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile, now: vi.fn(() => nowMs) })
       mockParseHabitFile.mockReturnValueOnce(makeRsvpHabit())
+      mockEvaluateCadenceDue.mockReturnValueOnce({
+        due: false,
+        elapsedMs: 23 * 60 * 60 * 1000 + 54 * 60 * 1000,
+        occurrenceId: null,
+      })
 
       const scheduler = new HabitScheduler({
         agent: "slugger",
@@ -502,11 +507,10 @@ describe("HabitScheduler", () => {
 
       scheduler.start()
 
-      expect(cronManager.sync).toHaveBeenCalledWith([])
-      expect(scheduler.getParseErrors()).toEqual([{
-        file: "rsvp-wedding.md",
-        error: expect.stringMatching(/RSVP habit metadata/i),
-      }])
+      expect(cronManager.sync).toHaveBeenCalledWith([
+        expect.objectContaining({ taskId: "rsvp-wedding", schedule: "0 10 * * *" }),
+      ])
+      expect(scheduler.getParseErrors()).toEqual([])
       expect(onHabitFire).not.toHaveBeenCalled()
     })
 
@@ -904,7 +908,7 @@ describe("HabitScheduler", () => {
       expect(overdue[1].elapsedMs).toBe(24 * 60 * 60 * 1000)
     })
 
-    it("does not list untyped RSVP habits as overdue", () => {
+    it("evaluates overdue habits without interpreting personal name prefixes", () => {
       const readdir = vi.fn(() => ["rsvp-wedding.md"])
       const readFile = vi.fn(() => "content")
       deps = makeDeps({ readdir, readFile })
@@ -918,12 +922,12 @@ describe("HabitScheduler", () => {
         deps,
       })
 
-      expect(scheduler.listOverdueHabits()).toEqual([])
-      expect(scheduler.getParseErrors()).toEqual([{
-        file: "rsvp-wedding.md",
-        error: "RSVP habit metadata is required before scheduling",
+      expect(scheduler.listOverdueHabits()).toEqual([{
+        name: "rsvp-wedding",
+        elapsedMs: 300_000,
       }])
-      expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()
+      expect(scheduler.getParseErrors()).toEqual([])
+      expect(mockEvaluateCadenceDue).toHaveBeenCalled()
     })
 
     it("excludes non-overdue habits", () => {

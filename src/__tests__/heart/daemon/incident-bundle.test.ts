@@ -185,7 +185,7 @@ describe("RSVP incident bundle", () => {
     expectRedacted(written)
   })
 
-  it("falls back to the side-effect-free RSVP doctor category when no doctor runner is injected", async () => {
+  it("falls back to the side-effect-free generic doctor when no doctor runner is injected", async () => {
     const agentRoot = makeBareAgentRoot()
     const depsWithoutDoctor = incidentDeps()
     delete depsWithoutDoctor.runDoctorChecks
@@ -196,13 +196,7 @@ describe("RSVP incident bundle", () => {
       deps: depsWithoutDoctor,
     })
 
-    expect(bundle.doctor).toMatchObject({
-      categories: [
-        expect.objectContaining({
-          name: "RSVP",
-        }),
-      ],
-    })
+    expect(bundle.doctor).toMatchObject({ categories: [] })
     expect(bundle.sideEffect).toBe(false)
     expectRedacted(bundle)
   })

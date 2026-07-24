@@ -1224,7 +1224,7 @@ describe("daemon entrypoint", () => {
     })
   })
 
-  it("routes habit scheduler fires through canonical private wake commands", async () => {
+  it("routes habit scheduler fires through generic habit pokes", async () => {
     const { processManagerSendToAgent, schedulerOptions, sendDaemonCommand } = await importDaemonEntryWithHabitDispatch({
       socketPath: "/tmp/ouro-habit-private-wake.sock",
     })
@@ -1235,25 +1235,13 @@ describe("daemon entrypoint", () => {
 
     expect(sendDaemonCommand).toHaveBeenCalledWith(
       "/tmp/ouro-habit-private-wake.sock",
-      expect.objectContaining({
-        kind: "private.wake",
+      {
+        kind: "habit.poke",
         agent: "slugger",
-        reason: "habit heartbeat fired by overdue",
-        triggerSource: "habit-overdue",
-        budgetClass: "scheduled",
-        originRefs: [
-          { kind: "habit", id: "heartbeat" },
-          { kind: "habit-trigger", id: "overdue" },
-          { kind: "habit-occurrence", id: "overdue:first-run:30m" },
-          { kind: "daemon-entry", id: "habit-scheduler" },
-        ],
-      }),
-    )
-    expect(sendDaemonCommand).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        idempotencyKey: "habit:slugger:heartbeat:overdue:overdue:first-run:30m",
-      }),
+        habitName: "heartbeat",
+        trigger: "overdue",
+        occurrenceId: "overdue:first-run:30m",
+      },
     )
     expect(sendDaemonCommand).not.toHaveBeenCalledWith(
       expect.any(String),
@@ -1292,7 +1280,7 @@ describe("daemon entrypoint", () => {
     })
     expect(sendDaemonCommand).toHaveBeenCalledWith(
       "/tmp/ouro-habit-failed-wake.sock",
-      expect.objectContaining({ kind: "private.wake" }),
+      expect.objectContaining({ kind: "habit.poke" }),
     )
     expect(processManagerSendToAgent).not.toHaveBeenCalled()
   })

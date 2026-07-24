@@ -63,6 +63,8 @@ describe("config-registry", () => {
         "senses.mail",
         "senses.voice",
         "mcpServers",
+        "habitExecutors",
+        "mcpHealthProfiles",
         "shell.defaultTimeout",
         "phrases.thinking",
         "phrases.tool",
@@ -99,6 +101,8 @@ describe("config-registry", () => {
         "sync.enabled",
         "sync.remote",
         "mcpServers",
+        "habitExecutors",
+        "mcpHealthProfiles",
       ]
       for (const key of selfKeys) {
         const entry = CONFIG_REGISTRY.get(key)

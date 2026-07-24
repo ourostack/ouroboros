@@ -55,6 +55,21 @@ export interface DaemonAgentStartOptions {
   skipConfigCheck?: boolean
 }
 
+interface AgentIpcRequestBaseOptions {
+  deadlineAt: string
+  signal: AbortSignal
+}
+
+export type AgentIpcResponseClassification =
+  | { kind: "ignore" }
+  | { kind: "candidate"; fingerprint: string }
+  | { kind: "commit"; fingerprint: string }
+
+export type AgentIpcRequestOptions = AgentIpcRequestBaseOptions & (
+  | { matches(response: unknown): boolean; classify?: never }
+  | { matches?: never; classify(response: unknown): AgentIpcResponseClassification }
+)
+
 export interface DaemonProcessManagerOptions {
   agents: DaemonManagedAgent[]
   maxRestartsPerHour?: number
@@ -690,6 +705,101 @@ export class DaemonProcessManager {
         meta: { agent },
       })
     }
+  }
+
+  async requestFromAgent(
+    agent: string,
+    message: Record<string, unknown>,
+    options: AgentIpcRequestOptions,
+  ): Promise<unknown> {
+    const state = this.requireAgent(agent)
+    const child = state.process
+    if (!child || !child.connected) throw new Error(`Managed agent '${agent}' has no connected IPC transport`)
+    const deadlineMs = Date.parse(options.deadlineAt)
+    if (!Number.isFinite(deadlineMs)) throw new Error("Agent IPC request deadline is invalid")
+    const immediate = typeof options.matches === "function"
+    const sealed = typeof options.classify === "function"
+    if (immediate === sealed) throw new Error("Agent IPC request requires exactly one matcher or sealed classifier")
+
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let candidate: { fingerprint: string; response: unknown } | null = null
+      const delayMs = Math.max(0, deadlineMs - Date.now())
+      const timer = this.setTimeoutFn(() => finish(new Error("Agent IPC response timeout")), delayMs)
+      const onAbort = (): void => finish(new Error("Agent IPC request aborted"))
+      const onExit = (): void => finish(new Error("Managed agent exited before its IPC response"))
+      const onMessage = (response: unknown): void => {
+        if (options.matches) {
+          if (options.matches(response)) finish(null, response)
+          return
+        }
+        let classification: AgentIpcResponseClassification
+        try {
+          classification = options.classify!(response)
+        } catch (error) {
+          finish(new Error(`Agent IPC response classifier failed: ${error instanceof Error ? error.message : String(error)}`))
+          return
+        }
+        if (classification.kind === "ignore") return
+        if (!classification.fingerprint) {
+          finish(new Error("Agent IPC sealed response fingerprint is invalid"))
+          return
+        }
+        if (classification.kind === "candidate") {
+          if (!candidate) {
+            candidate = { fingerprint: classification.fingerprint, response }
+            return
+          }
+          if (candidate.fingerprint !== classification.fingerprint) {
+            finish(new Error("Agent IPC response candidate conflicts with prior replay"))
+          }
+          return
+        }
+        if (!candidate) {
+          finish(new Error("Agent IPC response commit arrived before its candidate"))
+          return
+        }
+        if (candidate.fingerprint !== classification.fingerprint) {
+          finish(new Error("Agent IPC response commit seal does not match its candidate"))
+          return
+        }
+        finish(null, candidate.response)
+      }
+      const cleanup = (): void => {
+        this.clearTimeoutFn(timer)
+        options.signal.removeEventListener("abort", onAbort)
+        child.removeListener("exit", onExit)
+        child.removeListener("message", onMessage)
+      }
+      const finish = (error: Error | null, response?: unknown): void => {
+        if (settled) return
+        settled = true
+        cleanup()
+        if (error) reject(error)
+        else resolve(response)
+      }
+
+      child.on("message", onMessage)
+      child.once("exit", onExit)
+      options.signal.addEventListener("abort", onAbort, { once: true })
+      if (options.signal.aborted) {
+        onAbort()
+        return
+      }
+      try {
+        child.send(message, (error) => {
+          if (error) finish(new Error(`Agent IPC request write failed: ${error.message}`))
+        })
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.agent_ipc_request_sent",
+          message: "sent correlated IPC request to managed agent",
+          meta: { agent },
+        })
+      } catch (error) {
+        finish(new Error(`Agent IPC request write failed: ${error instanceof Error ? error.message : String(error)}`))
+      }
+    })
   }
 
   getAgentSnapshot(agent: string): DaemonAgentSnapshot | undefined {

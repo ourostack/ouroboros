@@ -9134,6 +9134,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── doctor (local, no daemon socket needed) ──
   if (command.kind === "doctor") {
+    const { listStoredAdapterDiagnostics } = await import("../habits/adapter-diagnostics")
+    const doctorBundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
     const doctorDeps = {
       /* v8 ignore start -- thin fs wrappers tested via doctor.test.ts with injected deps @preserve */
       existsSync: (p: string) => fs.existsSync(p),
@@ -9144,7 +9146,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       checkSocketAlive: deps.checkSocketAlive,
       fetchImpl: deps.fetchImpl ?? fetch,
       socketPath: deps.socketPath,
-      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+      bundlesRoot: doctorBundlesRoot,
+      adapterDiagnostics: { list: () => listStoredAdapterDiagnostics(doctorBundlesRoot) },
       daemonLogsDir: path.join(getOuroCliHome(deps.homeDir), "daemon", "logs"),
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",

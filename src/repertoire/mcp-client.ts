@@ -9,11 +9,32 @@ export interface McpToolInfo {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  outputSchema?: Record<string, unknown>
+}
+
+export interface McpToolCallResultV1 {
+  content: Array<{ type: string; text?: string; [key: string]: unknown }>
+  structuredContent?: Record<string, unknown>
+  isError?: boolean
+}
+
+export type McpTransportPhase = "pre-dispatch" | "post-dispatch"
+
+export class McpTransportError extends Error {
+  readonly phase: McpTransportPhase
+
+  constructor(phase: McpTransportPhase, message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "McpTransportError"
+    this.phase = phase
+  }
 }
 
 interface PendingRequest {
   resolve: (value: unknown) => void
   reject: (reason: Error) => void
+  method: string
+  dispatched: boolean
   timer?: ReturnType<typeof setTimeout>
 }
 
@@ -31,11 +52,12 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown }
 }
 
-const MCP_PROTOCOL_VERSION = "2024-11-05"
+const MCP_PROTOCOL_VERSION = "2025-06-18"
 const DEFAULT_REQUEST_TIMEOUT = 10_000
 const DEFAULT_TOOL_CALL_TIMEOUT = 30_000
 
 export function isMcpTransportError(error: unknown): boolean {
+  if (error instanceof McpTransportError) return true
   const message = error instanceof Error ? error.message : String(error)
   const normalized = message.toLowerCase()
   return normalized.includes("disconnected")
@@ -57,6 +79,7 @@ export class McpClient {
   private connected = false
   private cachedTools: McpToolInfo[] | null = null
   private onCloseCallback: (() => void) | null = null
+  private negotiatedProtocolVersion: string | null = null
 
   constructor(config: McpServerConfig) {
     this.config = config
@@ -147,7 +170,7 @@ export class McpClient {
     name: string,
     args: Record<string, unknown>,
     timeout: number = DEFAULT_TOOL_CALL_TIMEOUT,
-  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  ): Promise<McpToolCallResultV1> {
     emitNervesEvent({
       event: "mcp.tool_call_start",
       component: "repertoire",
@@ -159,7 +182,7 @@ export class McpClient {
       const result = await this.sendRequest("tools/call", {
         name,
         arguments: args,
-      }, timeout) as { content: Array<{ type: string; text: string }> }
+      }, timeout) as McpToolCallResultV1
 
       emitNervesEvent({
         event: "mcp.tool_call_end",
@@ -203,12 +226,21 @@ export class McpClient {
     this.onCloseCallback = callback
   }
 
+  protocolVersion(): string | null {
+    return this.negotiatedProtocolVersion
+  }
+
   private async initialize(): Promise<void> {
     const result = await this.sendRequest("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
       clientInfo: { name: "ouroboros", version: "1.0" },
       capabilities: {},
-    })
+    }) as { protocolVersion?: unknown }
+
+    if (typeof result.protocolVersion !== "string" || result.protocolVersion.length === 0) {
+      throw new Error("MCP initialize response is missing negotiated protocolVersion")
+    }
+    this.negotiatedProtocolVersion = result.protocolVersion
 
     // Send initialized notification (no id, no response expected)
     this.writeMessage({
@@ -226,17 +258,21 @@ export class McpClient {
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.process || !this.connected && method !== "initialize") {
-        reject(new Error("MCP client is disconnected"))
+        reject(method === "tools/call"
+          ? new McpTransportError("pre-dispatch", "MCP client is disconnected")
+          : new Error("MCP client is disconnected"))
         return
       }
 
       const id = this.nextId++
-      const pending: PendingRequest = { resolve, reject }
+      const pending: PendingRequest = { resolve, reject, method, dispatched: false }
 
       if (timeout) {
         pending.timer = setTimeout(() => {
           this.pending.delete(id)
-          reject(new Error(`MCP request timeout after ${timeout}ms: ${method}`))
+          reject(method === "tools/call" && pending.dispatched
+            ? new McpTransportError("post-dispatch", `MCP request timeout after ${timeout}ms: ${method}`)
+            : new Error(`MCP request timeout after ${timeout}ms: ${method}`))
         }, timeout)
       }
 
@@ -254,7 +290,11 @@ export class McpClient {
         if (pending.timer) {
           clearTimeout(pending.timer)
         }
-        reject(new Error(`MCP transport is not writable for request: ${method}`))
+        reject(method === "tools/call"
+          ? new McpTransportError("pre-dispatch", `MCP transport is not writable for request: ${method}`)
+          : new Error(`MCP transport is not writable for request: ${method}`))
+      } else {
+        pending.dispatched = true
       }
     })
   }
@@ -352,7 +392,13 @@ export class McpClient {
       if (pending.timer) {
         clearTimeout(pending.timer)
       }
-      pending.reject(error)
+      pending.reject(pending.method === "tools/call"
+        ? new McpTransportError(
+            pending.dispatched ? "post-dispatch" : "pre-dispatch",
+            error.message,
+            { cause: error },
+          )
+        : error)
       this.pending.delete(id)
     }
   }
