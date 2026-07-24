@@ -8,6 +8,7 @@ import type { HabitExecutionEnvelopeV1, HabitEvidenceV1 } from "../../../heart/h
 import { occurrenceIdentityForScheduledSlot } from "../../../heart/habits/habit-cadence-v1"
 import { HabitOccurrenceStore, type HabitOccurrenceClaimInput } from "../../../heart/habits/habit-occurrence-store"
 import { HabitProjectionStore } from "../../../heart/habits/habit-projection-store"
+import { canonicalizeJson } from "../../../heart/runtime/canonical-json"
 import type { ExactProcessState, ProcessIdentity } from "../../../heart/runtime/process-identity"
 
 const roots: string[] = []
@@ -174,10 +175,38 @@ describe("habit projection receipt store", () => {
 
     fs.rmSync(projected.receiptPath)
     const conflicting = { ...projected.receipt, projectedAt: "2026-07-24T10:00:01.000Z" }
-    fs.writeFileSync(projected.receiptPath, JSON.stringify(conflicting), { mode: 0o600 })
-    expect(() => projectionStore.project(claim.occurrence.occurrenceId, claim.attempt.attemptId)).toThrow(/corrupt|conflict/i)
+    fs.writeFileSync(projected.receiptPath, canonicalizeJson(conflicting), { mode: 0o600 })
+    expect(() => projectionStore.project(claim.occurrence.occurrenceId, claim.attempt.attemptId)).toThrow(/conflict/i)
 
     const foreign = new HabitProjectionStore({ ...projectionStore.options, agent: "other-agent" })
     expect(() => foreign.project(claim.occurrence.occurrenceId, claim.attempt.attemptId)).toThrow(/agent/i)
+  })
+
+  it("fails closed for every malformed projection receipt field", () => {
+    const mutations: Array<(receipt: Record<string, unknown>) => unknown> = [
+      () => null,
+      (receipt) => ({ ...receipt, extra: true }),
+      (receipt) => ({ ...receipt, schemaVersion: 2 }),
+      (receipt) => ({ ...receipt, recordVersion: 0 }),
+      (receipt) => ({ ...receipt, state: "not-a-state" }),
+      (receipt) => ({ ...receipt, authoritySha256: "bad" }),
+      (receipt) => ({ ...receipt, resultRef: "" }),
+      (receipt) => ({ ...receipt, receiptId: "" }),
+      (receipt) => ({ ...receipt, projectedAt: "not-a-time" }),
+      (receipt) => ({ ...receipt, receiptId: `hpr_${"a".repeat(43)}` }),
+    ]
+
+    for (const mutate of mutations) {
+      const { occurrenceStore, projectionStore } = fixture()
+      const claimed = occurrenceStore.claimNext(claimInput())
+      if (claimed.kind !== "claimed") throw new Error("expected claim")
+      const projection = projectionStore.project(claimed.occurrence.occurrenceId, claimed.attempt.attemptId)
+      fs.writeFileSync(
+        projection.receiptPath,
+        canonicalizeJson(mutate(projection.receipt as unknown as Record<string, unknown>)),
+        { mode: 0o600 },
+      )
+      expect(() => projectionStore.project(claimed.occurrence.occurrenceId, claimed.attempt.attemptId)).toThrow()
+    }
   })
 })

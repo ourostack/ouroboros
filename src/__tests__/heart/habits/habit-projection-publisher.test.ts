@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { listHabitRunReceipts, type HabitRunReceipt } from "../../../arc/flight-recorder"
 import { occurrenceIdentityForScheduledSlot } from "../../../heart/habits/habit-cadence-v1"
@@ -146,6 +146,59 @@ describe("habit projection candidate and publisher", () => {
     fs.writeFileSync(first.candidatePath, "{", { mode: 0o600 })
     expect(() => readHabitProjectionCandidate(bundleRoot, "occurrence-a", "attempt-a")).toThrow(/corrupt/i)
     expect(() => writeHabitProjectionCandidate(bundleRoot, "../escape", "attempt-a", runReceipt())).toThrow(/path-safe/i)
+    expect(() => writeHabitProjectionCandidate(bundleRoot, "occ..escape", "attempt-a", runReceipt())).toThrow(/path-safe/i)
+  })
+
+  it("fails closed for malformed, mismatched, and non-Error candidate reads", () => {
+    const malformed: unknown[] = [
+      null,
+      { schemaVersion: 1, occurrenceId: "occurrence-a", attemptId: "attempt-a", receipt: runReceipt(), extra: true },
+      { schemaVersion: 2, occurrenceId: "occurrence-a", attemptId: "attempt-a", receipt: runReceipt() },
+      { schemaVersion: 1, occurrenceId: 1, attemptId: "attempt-a", receipt: runReceipt() },
+      { schemaVersion: 1, occurrenceId: "occurrence-a", attemptId: "attempt-a", receipt: null },
+      { schemaVersion: 1, occurrenceId: "occurrence-a", attemptId: "attempt-a", receipt: { schemaVersion: 1 } },
+    ]
+    for (const value of malformed) {
+      const { bundleRoot } = fixture()
+      const written = writeHabitProjectionCandidate(bundleRoot, "occurrence-a", "attempt-a", runReceipt())
+      fs.writeFileSync(written.candidatePath, JSON.stringify(value), { mode: 0o600 })
+      expect(() => readHabitProjectionCandidate(bundleRoot, "occurrence-a", "attempt-a")).toThrow(/corrupt/i)
+    }
+
+    const mismatched = fixture()
+    const written = writeHabitProjectionCandidate(mismatched.bundleRoot, "occurrence-a", "attempt-a", runReceipt())
+    fs.writeFileSync(written.candidatePath, JSON.stringify({
+      ...written.candidate,
+      occurrenceId: "occurrence-other",
+    }), { mode: 0o600 })
+    expect(() => readHabitProjectionCandidate(mismatched.bundleRoot, "occurrence-a", "attempt-a")).toThrow(/correlation/i)
+
+    const nonError = fixture()
+    writeHabitProjectionCandidate(nonError.bundleRoot, "occurrence-a", "attempt-a", runReceipt())
+    const parse = vi.spyOn(JSON, "parse").mockImplementationOnce(() => { throw "parse failed" })
+    expect(() => readHabitProjectionCandidate(nonError.bundleRoot, "occurrence-a", "attempt-a")).toThrow(/parse failed/i)
+    parse.mockRestore()
+  })
+
+  it("closes and removes a partial candidate when its durable write fails", () => {
+    const { bundleRoot } = fixture()
+    expect(() => writeHabitProjectionCandidate(
+      bundleRoot,
+      "occurrence-fsync",
+      "attempt-fsync",
+      runReceipt(),
+      {
+        mkdirSync: fs.mkdirSync,
+        openSync: fs.openSync,
+        writeFileSync: fs.writeFileSync,
+        fsyncSync: () => { throw new Error("fsync failed") },
+        closeSync: fs.closeSync,
+        renameSync: fs.renameSync,
+        rmSync: fs.rmSync,
+      },
+    )).toThrow(/fsync failed/i)
+    const directory = path.join(bundleRoot, "state", "habits", "projection-candidates", "occurrence-fsync")
+    expect(fs.existsSync(directory) ? fs.readdirSync(directory) : []).toEqual([])
   })
 
   it("publishes completed session, flight, and lastRun projections idempotently after authority", () => {
@@ -232,5 +285,62 @@ describe("habit projection candidate and publisher", () => {
       runtimeStateRecorded: false,
     })
     expect(fs.existsSync(path.join(unknown.bundleRoot, "state", "habits", "daily.json"))).toBe(false)
+  })
+
+  it("publishes a completed generic adapter result without a session candidate", () => {
+    const state = fixture("2026-07-24T10:00:01.000Z")
+    const claimed = claim(state)
+    state.occurrenceStore.settle(claimed.occurrence.occurrenceId, claimed.attempt.attemptId, {
+      version: 1,
+      status: "completed",
+      resultRef: "adapter:result",
+    })
+    const projection = state.projectionStore.project(claimed.occurrence.occurrenceId, claimed.attempt.attemptId)
+
+    expect(publishHabitProjection(state.bundleRoot, projection)).toEqual({
+      sessionProjected: false,
+      runtimeStateRecorded: true,
+    })
+    expect(JSON.parse(fs.readFileSync(path.join(state.bundleRoot, "state", "habits", "daily.json"), "utf-8"))).toMatchObject({
+      activeOperationId: null,
+      latestRunId: claimed.occurrence.occurrenceId,
+    })
+  })
+
+  it("rejects mismatched session evidence and malformed completed projection input", () => {
+    const mismatch = fixture("2026-07-24T10:00:01.000Z")
+    const mismatchClaim = claim(mismatch)
+    const candidate = writeHabitProjectionCandidate(
+      mismatch.bundleRoot,
+      mismatchClaim.occurrence.occurrenceId,
+      mismatchClaim.attempt.attemptId,
+      { ...runReceipt(), habitName: "other-habit" },
+    )
+    mismatch.occurrenceStore.settle(mismatchClaim.occurrence.occurrenceId, mismatchClaim.attempt.attemptId, {
+      version: 1,
+      status: "completed",
+      resultRef: candidate.candidateRef,
+    })
+    const mismatchProjection = mismatch.projectionStore.project(
+      mismatchClaim.occurrence.occurrenceId,
+      mismatchClaim.attempt.attemptId,
+    )
+    expect(() => publishHabitProjection(mismatch.bundleRoot, mismatchProjection)).toThrow(/habit.*match/i)
+
+    const malformed = fixture("2026-07-24T10:00:01.000Z")
+    const malformedClaim = claim(malformed)
+    malformed.occurrenceStore.settle(malformedClaim.occurrence.occurrenceId, malformedClaim.attempt.attemptId, {
+      version: 1,
+      status: "completed",
+      resultRef: "adapter:result",
+    })
+    const projection = malformed.projectionStore.project(
+      malformedClaim.occurrence.occurrenceId,
+      malformedClaim.attempt.attemptId,
+    )
+    expect(() => publishHabitProjection(malformed.bundleRoot, {
+      ...projection,
+      occurrence: { ...projection.occurrence, attempts: [] },
+    })).toThrow(/settled latest attempt/i)
   })
 })
