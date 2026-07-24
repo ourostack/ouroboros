@@ -1,0 +1,132 @@
+name: native-foundation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-universal-process-proof:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Build deterministic universal process-proof helper
+        run: |
+          set -euo pipefail
+          mkdir -p native-foundation/repeat
+          SOURCE="$PWD/native/process-proof/process-proof-darwin.c"
+          COMMON=(-std=c17 -Wall -Wextra -Werror -Os -mmacosx-version-min=15.0)
+          ZERO_DATE='Jan  1 00:00:00 1970'
+          export ZERO_AR_DATE=1
+          export SOURCE_DATE_EPOCH=0
+          xcrun --sdk macosx clang "${COMMON[@]}" -arch arm64 "$SOURCE" -o native-foundation/process-proof-arm64
+          xcrun --sdk macosx clang "${COMMON[@]}" -arch x86_64 "$SOURCE" -o native-foundation/process-proof-x86_64
+          xcrun --sdk macosx clang "${COMMON[@]}" -arch arm64 "$SOURCE" -o native-foundation/repeat/process-proof-arm64
+          xcrun --sdk macosx clang "${COMMON[@]}" -arch x86_64 "$SOURCE" -o native-foundation/repeat/process-proof-x86_64
+          cmp native-foundation/process-proof-arm64 native-foundation/repeat/process-proof-arm64
+          cmp native-foundation/process-proof-x86_64 native-foundation/repeat/process-proof-x86_64
+          rm native-foundation/repeat/process-proof-arm64 native-foundation/repeat/process-proof-x86_64
+          rmdir native-foundation/repeat
+          touch -t 197001010000 native-foundation/process-proof-arm64 native-foundation/process-proof-x86_64
+          xcrun lipo -create \
+            native-foundation/process-proof-arm64 \
+            native-foundation/process-proof-x86_64 \
+            -output native-foundation/process-proof-darwin
+          touch -t 197001010000 native-foundation/process-proof-darwin
+          xcrun lipo -verify_arch arm64 x86_64 native-foundation/process-proof-darwin
+          (cd native-foundation && shasum -a 256 process-proof-darwin > process-proof-darwin.sha256)
+          printf '%s\n' "$ZERO_DATE" > native-foundation/source-date.txt
+
+      - name: Upload immutable universal helper artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: process-proof-darwin-${{ github.sha }}
+          path: |
+            native-foundation/process-proof-darwin
+            native-foundation/process-proof-darwin.sha256
+            native-foundation/source-date.txt
+          if-no-files-found: error
+          compression-level: 0
+
+  verify-process-proof-slices:
+    needs: build-universal-process-proof
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-26-intel
+            arch: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Download immutable universal helper artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: process-proof-darwin-${{ github.sha }}
+          path: native-foundation
+
+      - name: Verify and execute matching universal slice
+        run: |
+          set -euo pipefail
+          cd native-foundation
+          shasum -a 256 -c process-proof-darwin.sha256
+          xcrun lipo -verify_arch arm64 x86_64 process-proof-darwin
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          chmod 0755 process-proof-darwin
+          ./process-proof-darwin --pid $$ | tee process-proof-output.json
+          node -e '
+            const fs = require("fs")
+            const value = JSON.parse(fs.readFileSync("process-proof-output.json", "utf8"))
+            if (value.schemaVersion !== 1 || value.pid !== process.ppid) throw new Error("process-proof PID mismatch")
+            if (!/^darwin-proc:\\d+:\\d{6}$/.test(value.startIdentity)) throw new Error("process-proof start identity mismatch")
+          '
+
+      - name: Run native fixture suite
+        run: |
+          npm ci
+          npm exec -- vitest run tests/native/process-proof.test.ts
+
+      - name: Collect matching-slice LLVM coverage
+        run: |
+          set -euo pipefail
+          mkdir -p native-foundation/coverage
+          xcrun --sdk macosx clang -std=c17 -Wall -Wextra -Werror \
+            -arch "${{ matrix.arch }}" \
+            -DOURO_NATIVE_COVERAGE -fprofile-instr-generate -fcoverage-mapping \
+            native/process-proof/process-proof-darwin.c \
+            -o native-foundation/coverage/process-proof
+          LLVM_PROFILE_FILE="$PWD/native-foundation/coverage/process-proof.profraw" \
+            native-foundation/coverage/process-proof --pid $$ >/dev/null
+          xcrun llvm-profdata merge -sparse native-foundation/coverage/process-proof.profraw \
+            -o native-foundation/coverage/process-proof.profdata
+          xcrun llvm-cov report native-foundation/coverage/process-proof \
+            -instr-profile native-foundation/coverage/process-proof.profdata \
+            --show-branch-summary
+          xcrun llvm-cov export native-foundation/coverage/process-proof \
+            -instr-profile native-foundation/coverage/process-proof.profdata \
+            -summary-only > native-foundation/coverage/summary.json
+
+      - name: Upload per-slice LLVM coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: process-proof-llvm-${{ matrix.arch }}-${{ github.sha }}
+          path: native-foundation/coverage
+          if-no-files-found: error
