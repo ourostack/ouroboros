@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process"
 import { readFileSync } from "fs"
 import { pathToFileURL } from "url"
 import { join } from "path"
@@ -19,18 +20,47 @@ async function loadReconciliation() {
 
 const workflowPathValue = ".github/workflows/developer-id-pair-canary.yml"
 
+function loadWorkflow(): any {
+  const source = readFileSync(workflowPath, "utf8")
+  return JSON.parse(execFileSync("ruby", [
+    "-ryaml",
+    "-rjson",
+    "-e",
+    "document = YAML.safe_load(STDIN.read, aliases: true); STDOUT.write(JSON.generate(document))",
+  ], { input: source, encoding: "utf8" }))
+}
+
 describe("Developer ID pair canary workflow contract", () => {
   it("is a no-environment OIDC workflow with inert secret access", () => {
-    const workflow = readFileSync(workflowPath, "utf8")
+    const workflow = loadWorkflow()
+    const jobs = workflow.jobs
 
-    expect(workflow).toContain("name: developer-id-pair-canary")
-    expect(workflow).toContain("id-token: write")
-    expect(workflow).toContain("contents: read")
-    expect(workflow).not.toMatch(/^\s*environment:/m)
-    expect(workflow).not.toContain("npm publish")
-    expect(workflow).not.toContain("security import")
-    expect(workflow).not.toContain("security add-generic-password")
-    expect(workflow).toContain("release-trust-inception-head")
+    expect(workflow.name).toBe("developer-id-pair-canary")
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"])
+    expect(Object.keys(jobs)).toEqual(["canary"])
+    expect(jobs.canary["runs-on"]).toBe("macos-26")
+    expect(jobs.canary.permissions).toEqual({
+      actions: "read",
+      contents: "read",
+      "id-token": "write",
+    })
+    expect(workflow.environment).toBeUndefined()
+    expect(jobs.canary.environment).toBeUndefined()
+    expect(jobs.canary.steps.every((step: any) => step.if !== false && step.if !== "${{ false }}")).toBe(true)
+
+    const actionSteps = jobs.canary.steps.filter((step: any) => step.uses)
+    expect(actionSteps.length).toBeGreaterThan(0)
+    expect(actionSteps.every((step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses))).toBe(true)
+    const secretSteps = jobs.canary.steps.filter((step: any) => JSON.stringify(step).includes("${{ secrets."))
+    expect(secretSteps).toHaveLength(1)
+    expect(secretSteps[0].run).toContain("native/developer-id-pair-canary/driver")
+    expect(secretSteps[0].run).toContain("--validate-frame")
+    expect(secretSteps[0].run).toContain("env: {}")
+
+    const serialized = JSON.stringify(workflow)
+    expect(serialized).toContain("release-trust-inception-head")
+    expect(serialized).not.toContain("npm publish")
+    expect(serialized).not.toContain("security import")
   })
 
   it("normalizes only bare workflow paths and literal @main suffixes", async () => {

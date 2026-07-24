@@ -29,6 +29,16 @@ function compileDriver(): string {
   return output
 }
 
+function encodeFrame(fields: Buffer[]): Buffer {
+  const count = Buffer.alloc(4)
+  count.writeUInt32BE(fields.length)
+  return Buffer.concat([count, ...fields.flatMap((field) => {
+    const length = Buffer.alloc(4)
+    length.writeUInt32BE(field.length)
+    return [length, field]
+  })])
+}
+
 describe("Developer ID pair canary native driver", () => {
   it("compiles warning-free and exposes only the inert contract probe", () => {
     const executable = compileDriver()
@@ -40,6 +50,8 @@ describe("Developer ID pair canary native driver", () => {
       driver: "developer-id-pair-canary",
       sideEffects: "none",
       secretTransport: "stdin-only",
+      acceptedModes: ["--contract", "--validate-frame"],
+      frame: { exact: true, maximumFieldBytes: 1048576, requiredFields: 2 },
     })
     expect(result.stderr).toBe("")
   })
@@ -74,5 +86,28 @@ describe("Developer ID pair canary native driver", () => {
       join(process.cwd(), "native", "developer-id-pair-canary", "driver.c"),
       "utf8",
     )).not.toMatch(/\b(getenv|secure_getenv|environ)\b/)
+  })
+
+  it("accepts one exact two-field stdin frame and rejects ambiguous bytes", () => {
+    const executable = compileDriver()
+    const frame = encodeFrame([Buffer.from("synthetic-p12"), Buffer.from("synthetic-password")])
+    const accepted = spawnSync(executable, ["--validate-frame"], {
+      encoding: "utf8",
+      env: {},
+      input: frame,
+    })
+
+    expect(accepted.status).toBe(0)
+    expect(JSON.parse(accepted.stdout)).toEqual({
+      schemaVersion: 1,
+      accepted: true,
+      fieldCount: 2,
+      byteCount: frame.length,
+    })
+    for (const invalid of [Buffer.alloc(0), frame.subarray(0, frame.length - 1), Buffer.concat([frame, Buffer.from([0])])]) {
+      const rejected = spawnSync(executable, ["--validate-frame"], { env: {}, input: invalid })
+      expect(rejected.status).toBe(65)
+      expect(rejected.stdout).toHaveLength(0)
+    }
   })
 })

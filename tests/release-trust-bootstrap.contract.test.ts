@@ -267,21 +267,41 @@ describe("release trust bootstrap contract", () => {
     })).toMatchObject({ ok: false, code: "historical_transport_not_authority" })
   })
 
-  it("pins a complete offline Sigstore trust foundation", () => {
+  it("pins a complete offline Sigstore trust foundation", async () => {
+    const { validateFoundation } = await loadTrustAction("protected-store.mjs")
     const foundation = JSON.parse(readFileSync(
       join(repoRoot, "release", "trust", "sigstore-foundation.v1.json"),
       "utf8",
     ))
 
+    expect(validateFoundation(foundation)).toEqual({ ok: true })
     expect(foundation).toMatchObject({
       schemaVersion: 1,
-      fulcioRoots: expect.any(Array),
-      ctLogs: expect.any(Array),
-      rekorLogs: expect.any(Array),
+      source: {
+        rootVersion: expect.any(Number),
+        trustedRootSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
     })
-    expect(foundation.fulcioRoots).not.toHaveLength(0)
-    expect(foundation.ctLogs).not.toHaveLength(0)
-    expect(foundation.rekorLogs).not.toHaveLength(0)
+    for (const entry of [...foundation.fulcioRoots, ...foundation.ctLogs, ...foundation.rekorLogs]) {
+      expect(entry).toMatchObject({
+        keyId: expect.stringMatching(/^[a-f0-9]{64}$/),
+        publicKeyDerBase64: expect.stringMatching(/^[A-Za-z0-9+/]+={0,2}$/),
+        publicKeySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        validFor: { start: expect.any(String), end: expect.any(String) },
+      })
+    }
     expect(JSON.stringify(foundation)).not.toMatch(/https?:\/\//)
+    expect(validateFoundation({
+      ...foundation,
+      ctLogs: [...foundation.ctLogs, foundation.ctLogs[0]],
+    })).toMatchObject({ ok: false, code: "foundation_entry_duplicate" })
+    expect(validateFoundation({
+      ...foundation,
+      rekorLogs: [{ ...foundation.rekorLogs[0], publicKeySha256: null }],
+    })).toMatchObject({ ok: false, code: "foundation_entry_invalid" })
+    expect(validateFoundation({
+      ...foundation,
+      fulcioRoots: [{ ...foundation.fulcioRoots[0], publicKeyDerBase64: "not base64!" }],
+    })).toMatchObject({ ok: false, code: "foundation_entry_invalid" })
   })
 })

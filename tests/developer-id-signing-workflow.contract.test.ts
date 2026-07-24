@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process"
 import { readFileSync } from "fs"
 import { pathToFileURL } from "url"
 import { join } from "path"
@@ -16,22 +17,57 @@ async function loadClosure() {
   )).href)
 }
 
+function loadWorkflow(name: string): any {
+  const source = readFileSync(join(repoRoot, ".github", "workflows", name), "utf8")
+  return JSON.parse(execFileSync("ruby", [
+    "-ryaml",
+    "-rjson",
+    "-e",
+    "document = YAML.safe_load(STDIN.read, aliases: true); STDOUT.write(JSON.generate(document))",
+  ], { input: source, encoding: "utf8" }))
+}
+
 describe("Developer ID signing workflow contract", () => {
   it("keeps signing secrets out of environments and binds immutable authority inputs", () => {
-    const workflow = readFileSync(
-      join(repoRoot, ".github", "workflows", "developer-id-signing.yml"),
-      "utf8",
-    )
+    const workflow = loadWorkflow("developer-id-signing.yml")
+    const jobs = workflow.jobs
 
-    expect(workflow).toContain("name: developer-id-signing")
-    expect(workflow).toContain("id-token: write")
-    expect(workflow).toContain("contents: read")
-    expect(workflow).not.toMatch(/^\s*environment:/m)
-    expect(workflow).toContain("attempt-authority")
-    expect(workflow).toContain("active-pair-authority")
-    expect(workflow).toContain("workflow_ref")
-    expect(workflow).toContain("release-trust-inception-head")
-    expect(workflow).not.toContain("GITHUB_ENV")
+    expect(workflow.name).toBe("developer-id-signing")
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"])
+    expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual([
+      "handoffControlBase64",
+      "handoffSha256",
+      "m0EvidenceGzipBase64",
+      "m0EvidenceGzipSha256",
+      "dispatchAttemptAuthorityBase64",
+      "dispatchAttemptAuthoritySha256",
+      "dispatchId",
+      "dispatchCorrelationId",
+    ])
+    expect(Object.keys(jobs)).toEqual(["signing"])
+    expect(jobs.signing["runs-on"]).toBe("macos-26")
+    expect(jobs.signing.permissions).toEqual({
+      actions: "read",
+      contents: "read",
+      "id-token": "write",
+    })
+    expect(workflow.environment).toBeUndefined()
+    expect(jobs.signing.environment).toBeUndefined()
+    expect(jobs.signing.steps.every((step: any) => step.if !== false && step.if !== "${{ false }}")).toBe(true)
+    const actionSteps = jobs.signing.steps.filter((step: any) => step.uses)
+    expect(actionSteps.every((step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses))).toBe(true)
+    const secretSteps = jobs.signing.steps.filter((step: any) => JSON.stringify(step).includes("${{ secrets."))
+    expect(secretSteps).toHaveLength(1)
+    expect(secretSteps[0].run).toContain("native/developer-id-signing/driver")
+    expect(secretSteps[0].run).toContain("--validate-frame")
+    expect(secretSteps[0].run).toContain("env: {}")
+
+    const serialized = JSON.stringify(workflow)
+    expect(serialized).toContain("attempt-authority")
+    expect(serialized).toContain("active-pair-authority")
+    expect(serialized).toContain("workflow_ref")
+    expect(serialized).toContain("release-trust-inception-head")
+    expect(serialized).not.toContain("GITHUB_ENV")
   })
 
   it("requires every workflow, policy, foundation, and driver leaf in its closure", async () => {
@@ -137,16 +173,23 @@ describe("Developer ID signing workflow contract", () => {
   })
 
   it("uses a dedicated keyless workflow to seal authority-merge audit bytes", () => {
-    const workflow = readFileSync(
-      join(repoRoot, ".github", "workflows", "release-trust-inception-seal.yml"),
-      "utf8",
-    )
+    const workflow = loadWorkflow("release-trust-inception-seal.yml")
+    const jobs = workflow.jobs
 
-    expect(workflow).toContain("name: release-trust-inception-seal")
-    expect(workflow).toContain("id-token: write")
-    expect(workflow).toContain("authority-merge-audit")
-    expect(workflow).toContain("cosign")
-    expect(workflow).not.toMatch(/^\s*environment:/m)
-    expect(workflow).not.toContain("Developer ID Application")
+    expect(workflow.name).toBe("release-trust-inception-seal")
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"])
+    expect(Object.keys(jobs)).toEqual(["seal"])
+    expect(jobs.seal.permissions).toEqual({ contents: "read", "id-token": "write" })
+    expect(workflow.environment).toBeUndefined()
+    expect(jobs.seal.environment).toBeUndefined()
+    expect(jobs.seal.steps.every((step: any) => step.if !== false && step.if !== "${{ false }}")).toBe(true)
+    expect(jobs.seal.steps.filter((step: any) => step.uses).every(
+      (step: any) => /^[^\s@]+\/[^\s@]+@[a-f0-9]{40}$/.test(step.uses),
+    )).toBe(true)
+    const serialized = JSON.stringify(workflow)
+    expect(serialized).toContain("authority-merge-audit")
+    expect(serialized).toContain("cosign")
+    expect(serialized).not.toContain("${{ secrets.")
+    expect(serialized).not.toContain("Developer ID Application")
   })
 })
