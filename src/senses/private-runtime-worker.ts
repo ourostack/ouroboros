@@ -6,8 +6,9 @@ import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
-import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
+import { parseRsvpAwareHabitFile as parseHabitFile, type RsvpAwareHabitFile as HabitFile } from "../rsvp/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
+import { DEFAULT_HABIT_EXECUTION } from "../heart/habits/habit-execution"
 import {
   completeHabitRun,
   createHabitSessionPaths,
@@ -346,6 +347,7 @@ function fallbackHabitFile(habitName: string): HabitFile {
     lastRun: null,
     created: null,
     tools: [],
+    execution: DEFAULT_HABIT_EXECUTION,
     origin: null,
     surface: { family: false, originator: false, extra: [] },
     continuity: { mode: "fresh" },

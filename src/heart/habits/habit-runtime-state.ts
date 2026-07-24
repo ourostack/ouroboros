@@ -53,7 +53,7 @@ export function readHabitLastRun(agentRoot: string, habitName: string): string |
   return isNonEmptyString(record?.lastRun) ? record.lastRun : null
 }
 
-export function applyHabitRuntimeState(agentRoot: string, habit: HabitFile): HabitFile {
+export function applyHabitRuntimeState<T extends HabitFile>(agentRoot: string, habit: T): T {
   const runtimeLastRun = readHabitLastRun(agentRoot, habit.name)
   if (runtimeLastRun === null) return habit
   return { ...habit, lastRun: runtimeLastRun }

@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 
 import type { RsvpCliCommand, OuroCliDeps } from "../heart/daemon/cli-types"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { parseRsvpAwareHabitFile as parseHabitFile } from "./habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { completeHabitRun } from "../heart/habits/habit-session"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData, type RunLedgerLifecycle } from "../heart/run-ledger"

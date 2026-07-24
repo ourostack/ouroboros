@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { parseHabitFile } from "../../../heart/habits/habit-parser"
+import { parseRsvpAwareHabitFile as parseHabitFile } from "../../../rsvp/habit-parser"
 
 describe("RSVP habit metadata parsing", () => {
   it("parses typed RSVP policy metadata and derives the allowed RSVP tool set", () => {

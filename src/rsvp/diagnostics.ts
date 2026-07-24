@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { parseRsvpAwareHabitFile as parseHabitFile } from "./habit-parser"
 import { emitNervesEvent } from "../nerves/runtime"
 import { isRsvpHabitName } from "./habit-policy"
 

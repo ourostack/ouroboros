@@ -70,7 +70,8 @@
     "semver": "^7.7.4",
     "smtp-server": "^3.18.4",
     "stripe": "^22.0.0",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "yaml": "2.9.0"
   },
   "repository": {
     "type": "git",

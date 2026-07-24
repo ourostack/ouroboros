@@ -1,11 +1,12 @@
 import * as path from "path"
-import { parseFrontmatter } from "../../util/frontmatter"
+import { stringify as stringifyYaml } from "yaml"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
-  RSVP_HABIT_ALLOWED_TOOLS,
-  parseRsvpHabitMetadata,
-  type RsvpHabitMetadata,
-} from "../../rsvp/habit-policy"
+  DEFAULT_HABIT_EXECUTION,
+  parseHabitExecutionEnvelope,
+  parseHabitFrontmatterYaml,
+  type HabitExecutionEnvelopeV1,
+} from "./habit-execution"
 
 export type HabitStatus = "active" | "paused"
 
@@ -35,7 +36,7 @@ export interface HabitFile {
   lastRun: string | null
   created: string | null
   tools: string[] | undefined
-  rsvp?: RsvpHabitMetadata
+  execution: HabitExecutionEnvelopeV1
   origin: HabitOrigin | null
   surface: HabitSurface
   continuity: HabitContinuity
@@ -81,6 +82,7 @@ function booleanField(record: Record<string, unknown>, key: string, fallback: bo
 }
 
 function parseStringArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((item): item is string => typeof item === "string")
   if (typeof raw === "string" && raw.startsWith("[") && raw.endsWith("]")) {
     const inner = raw.slice(1, -1)
     if (!inner.trim()) return []
@@ -127,7 +129,11 @@ function extractFrontmatterAndBody(content: string): { frontmatter: Record<strin
 
   const rawFrontmatter = lines.slice(1, closing).join("\n")
   const body = lines.slice(closing + 1).join("\n").trim()
-  return { frontmatter: parseFrontmatter(rawFrontmatter), body }
+  return { frontmatter: parseHabitFrontmatterYaml(rawFrontmatter), body }
+}
+
+export function parseHabitFrontmatter(content: string): Record<string, unknown> | null {
+  return extractFrontmatterAndBody(content)?.frontmatter ?? null
 }
 
 export function parseHabitFile(content: string, filePath: string): HabitFile {
@@ -150,6 +156,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
       lastRun: null,
       created: null,
       tools: undefined,
+      execution: DEFAULT_HABIT_EXECUTION,
       origin: null,
       surface: { family: true, originator: true, extra: [] },
       continuity: { mode: "fresh" },
@@ -175,8 +182,10 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const rawCreated = frontmatter.created
   const created = typeof rawCreated === "string" && rawCreated.length > 0 ? rawCreated : null
 
-  const rsvp = parseRsvpHabitMetadata(frontmatter.rsvp)
-  const tools = rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : parseToolsField(frontmatter.tools)
+  const tools = parseToolsField(frontmatter.tools)
+  const execution = frontmatter.execution === undefined
+    ? DEFAULT_HABIT_EXECUTION
+    : parseHabitExecutionEnvelope(frontmatter.execution)
   const origin = parseOrigin(frontmatter.origin)
   const surface = parseSurface(frontmatter.surface)
   const continuity = parseContinuity(frontmatter.continuity)
@@ -189,29 +198,12 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     lastRun,
     created,
     tools,
-    ...(rsvp ? { rsvp } : {}),
+    execution,
     origin,
     surface,
     continuity,
     body,
   }
-}
-
-function formatFrontmatterValue(value: unknown): string {
-  if (value === null || value === undefined) return "null"
-  if (Array.isArray(value)) return `[${value.join(", ")}]`
-  return String(value)
-}
-
-function renderFrontmatterLine(lines: string[], key: string, value: unknown): void {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    lines.push(`${key}:`)
-    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-      lines.push(`  ${childKey}: ${formatFrontmatterValue(childValue)}`)
-    }
-    return
-  }
-  lines.push(`${key}: ${formatFrontmatterValue(value)}`)
 }
 
 export function renderHabitFile(frontmatter: Record<string, unknown>, body: string): string {
@@ -222,15 +214,7 @@ export function renderHabitFile(frontmatter: Record<string, unknown>, body: stri
     meta: {},
   })
 
-  const lines: string[] = ["---"]
-
-  for (const key of Object.keys(frontmatter)) {
-    renderFrontmatterLine(lines, key, frontmatter[key])
-  }
-
-  lines.push("---")
-  lines.push("")
-  lines.push(body.trim())
-  lines.push("")
-  return lines.join("\n")
+  const renderedFrontmatter = stringifyYaml(frontmatter, { indent: 2, lineWidth: 0 })
+  parseHabitFrontmatterYaml(renderedFrontmatter)
+  return `---\n${renderedFrontmatter}---\n\n${body}`
 }

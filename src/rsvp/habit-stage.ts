@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { renderHabitFile } from "../heart/habits/habit-parser"
+import { DEFAULT_HABIT_EXECUTION } from "../heart/habits/habit-execution"
 import { emitNervesEvent } from "../nerves/runtime"
 import { ensureRsvpOutboundState } from "./outbound-state"
 import { ensureRsvpSpendLedger } from "./spend-ledger"
@@ -81,6 +82,7 @@ export function stageRsvpHabit(input: StageRsvpHabitInput): StageRsvpHabitResult
     created,
     tools: [...RSVP_HABIT_ALLOWED_TOOLS],
     continuity: { mode: "stateful" },
+    execution: DEFAULT_HABIT_EXECUTION,
     rsvp,
   }, stagedHabitBody())
 

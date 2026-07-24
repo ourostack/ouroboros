@@ -8204,6 +8204,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+    const { DEFAULT_HABIT_EXECUTION } = await import("../habits/habit-execution")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
     const { readHabitSessionSummary } = await import("../habits/habit-session-summary")
@@ -8332,9 +8333,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const habitContent = renderHabitFile(
       {
         title: command.name,
-        cadence: command.cadence ?? "null",
+        cadence: command.cadence ?? null,
         status: "active",
         created: now,
+        execution: DEFAULT_HABIT_EXECUTION,
       },
       `Habit: ${command.name}`,
     )

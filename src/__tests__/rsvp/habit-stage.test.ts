@@ -3,7 +3,7 @@ import * as path from "path"
 
 import { describe, expect, it } from "vitest"
 
-import { parseHabitFile } from "../../heart/habits/habit-parser"
+import { parseRsvpAwareHabitFile as parseHabitFile } from "../../rsvp/habit-parser"
 import { stageRsvpHabit } from "../../rsvp/habit-stage"
 import { createTmpBundle } from "../test-helpers/tmpdir-bundle"
 
@@ -122,7 +122,7 @@ describe("RSVP native habit staging", () => {
       expect(result.mode).toBe("live")
       expect(content).toMatch(/created: \d{4}-\d{2}-\d{2}T/)
       expect(content).toContain("mode: live")
-      expect(content).toContain("tools: [rsvp_query, rsvp_summary]")
+      expect(content).toContain("tools:\n  - rsvp_query\n  - rsvp_summary")
     } finally {
       tmp.cleanup()
     }

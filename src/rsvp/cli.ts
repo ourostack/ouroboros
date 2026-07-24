@@ -6,7 +6,7 @@ import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
 import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { parseRsvpAwareHabitFile as parseHabitFile } from "./habit-parser"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import {
