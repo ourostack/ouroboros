@@ -147,8 +147,7 @@ function exactKeys(value: Record<string, unknown>, allowed: string[], label: str
   if (unknown.length > 0) fail(`${label} has unknown field ${unknown.sort()[0]}`)
 }
 
-function validateYamlNode(node: Node | null): void {
-  if (node === null) return
+function validateYamlNode(node: Node): void {
   if (isAlias(node)) fail("YAML aliases are forbidden")
   if ("tag" in node && typeof node.tag === "string") fail("explicit YAML tags are forbidden")
   if (isMap(node)) {
@@ -156,20 +155,20 @@ function validateYamlNode(node: Node | null): void {
       if (!isScalar(pair.key) || typeof pair.key.value !== "string") fail("YAML map contains a non-string key")
       if (pair.key.value === "<<") fail("YAML merge keys are forbidden")
       validateYamlNode(pair.key)
-      validateYamlNode(pair.value as Node | null)
+      validateYamlNode(pair.value as Node)
     }
   } else if (isSeq(node)) {
-    for (const item of node.items) validateYamlNode(item as Node | null)
+    for (const item of node.items) validateYamlNode(item as Node)
   }
 }
 
 export function parseHabitFrontmatterYaml(raw: string): Record<string, unknown> {
   const documents = parseAllDocuments(raw, { merge: false, uniqueKeys: true })
+  if (documents.length === 0) return {}
   if (documents.length !== 1) fail("multiple YAML documents are forbidden")
   const document = documents[0]
   if (document.errors.length > 0) fail(`duplicate key or invalid YAML: ${document.errors[0].message}`)
-  validateYamlNode(document.contents)
-  if (document.contents === null) return {}
+  validateYamlNode(document.contents as Node)
   if (!isMap(document.contents)) fail("frontmatter document must be a map")
   const value = document.toJS({ maxAliasCount: 0 }) as unknown
   emitNervesEvent({
