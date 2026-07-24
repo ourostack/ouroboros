@@ -1,3 +1,4 @@
+import { createHash } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -8,7 +9,7 @@ import type { HabitExecutionEnvelopeV1, HabitEvidenceV1 } from "../../../heart/h
 import { occurrenceIdentityForScheduledSlot } from "../../../heart/habits/habit-cadence-v1"
 import { HabitOccurrenceStore, type HabitOccurrenceClaimInput } from "../../../heart/habits/habit-occurrence-store"
 import { HabitProjectionStore } from "../../../heart/habits/habit-projection-store"
-import { canonicalizeJson } from "../../../heart/runtime/canonical-json"
+import { canonicalizeJson, sha256CanonicalJson } from "../../../heart/runtime/canonical-json"
 import type { ExactProcessState, ProcessIdentity } from "../../../heart/runtime/process-identity"
 
 const roots: string[] = []
@@ -102,6 +103,17 @@ describe("habit projection receipt store", () => {
       projectedAt: claim.occurrence.updatedAt,
     })
     expect(first.receiptSha256).toMatch(/^[0-9a-f]{64}$/)
+    const authoritySha256 = sha256CanonicalJson(claim.occurrence)
+    expect(first.receipt.authoritySha256).toBe(authoritySha256)
+    expect(first.receipt.receiptId).toBe(`hpr_${createHash("sha256").update(Buffer.from(canonicalizeJson({
+      agent: "slugger",
+      habitId: "daily",
+      occurrenceId: claim.occurrence.occurrenceId,
+      attemptId: claim.attempt.attemptId,
+      recordVersion: claim.occurrence.recordVersion,
+      state: claim.occurrence.state,
+      authoritySha256,
+    }), "utf8")).digest("base64url")}`)
   })
 
   it("reconstructs exact completed, retryable, terminal, and unknown projections", () => {
@@ -208,5 +220,19 @@ describe("habit projection receipt store", () => {
       )
       expect(() => projectionStore.project(claimed.occurrence.occurrenceId, claimed.attempt.attemptId)).toThrow()
     }
+  })
+
+  it("rejects a schema-valid receipt whose deterministic identity does not match authority", () => {
+    const { occurrenceStore, projectionStore } = fixture()
+    const claimed = occurrenceStore.claimNext(claimInput())
+    if (claimed.kind !== "claimed") throw new Error("expected claim")
+    const projection = projectionStore.project(claimed.occurrence.occurrenceId, claimed.attempt.attemptId)
+    fs.writeFileSync(projection.receiptPath, canonicalizeJson({
+      ...projection.receipt,
+      receiptId: `hpr_${"a".repeat(43)}`,
+    }), { mode: 0o600 })
+
+    expect(() => projectionStore.project(claimed.occurrence.occurrenceId, claimed.attempt.attemptId))
+      .toThrow(/protected JSON record is corrupt/)
   })
 })
