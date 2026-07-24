@@ -58,7 +58,7 @@ import {
   type AgentTurnHabitResponseSealV1,
   type AgentTurnHabitResponseV1,
 } from "../habits/agent-turn-adapter"
-import type { HabitExecutionAdapter, HabitInvocationOutcomeV1 } from "../habits/habit-execution"
+import type { HabitExecutionAdapter } from "../habits/habit-execution"
 import { HabitExecutionRegistry } from "../habits/habit-execution-registry"
 import { createPackagedHabitExecutionRegistry } from "../habits/packaged-habit-adapters"
 import type { AdapterDiagnosticsRegistry, HabitAdapterDiagnosticProjectionV1 } from "../habits/adapter-diagnostics"
@@ -66,6 +66,8 @@ import { sha256CanonicalJson } from "../runtime/canonical-json"
 import { ActivationBarrierStore } from "../activation/barrier-core"
 import { HabitDispatchCoordinator } from "../habits/habit-dispatch-coordinator"
 import { HabitOccurrenceStore } from "../habits/habit-occurrence-store"
+import { HabitProjectionStore, type HabitProjectionResult } from "../habits/habit-projection-store"
+import { publishHabitProjection } from "../habits/habit-projection-publisher"
 import { HabitScheduleStore } from "../habits/habit-schedule-store"
 import {
   observeProcessIdentity,
@@ -1655,6 +1657,20 @@ export class OuroDaemon {
         bootId: owner.bootId,
       }
       const proveOwnerState = (expected: ProcessIdentity) => proveExactProcessState(expected, source)
+      const occurrenceStore = new HabitOccurrenceStore({
+        bundleRoot,
+        agent: command.agent,
+        owner,
+        now: this.habitNow,
+        proveOwnerState,
+      })
+      const projectionStore = new HabitProjectionStore({
+        bundleRoot,
+        agent: command.agent,
+        owner,
+        proveOwnerState,
+        occurrenceStore,
+      })
       const coordinator = new HabitDispatchCoordinator({
         agent: command.agent,
         registry,
@@ -1671,13 +1687,7 @@ export class OuroDaemon {
           now: this.habitNow,
           proveOwnerState,
         }),
-        occurrenceStore: new HabitOccurrenceStore({
-          bundleRoot,
-          agent: command.agent,
-          owner,
-          now: this.habitNow,
-          proveOwnerState,
-        }),
+        occurrenceStore,
         barrierStore: new ActivationBarrierStore({
           targetPath: this.habitBarrierStorePath,
           owner: lockOwner,
@@ -1699,6 +1709,12 @@ export class OuroDaemon {
         trigger,
       })
       if (result.kind === "blocked") {
+        if (result.occurrenceId !== null) {
+          const occurrence = occurrenceStore.readOccurrence(result.occurrenceId)
+          const projection = projectionStore.project(result.occurrenceId, occurrence.latestAttemptId)
+          publishHabitProjection(bundleRoot, projection)
+          if (result.reason === "occurrence_settled") return this.habitProjectionResponse(command, projection)
+        }
         const reason = result.reason === "no_cadence" ? "habit has no cadence" : result.reason
         return {
           ok: true,
@@ -1706,24 +1722,32 @@ export class OuroDaemon {
           ...(result.reason === "no_cadence" ? {} : { data: result }),
         }
       }
-      return this.habitOutcomeResponse(command, result.outcome)
+      const projection = projectionStore.project(result.occurrenceId, result.attemptId)
+      publishHabitProjection(bundleRoot, projection)
+      return this.habitProjectionResponse(command, projection)
     } catch (error) {
       return { ok: false, error: messageFromHabitPokeError(error) }
     }
   }
 
-  private habitOutcomeResponse(
+  private habitProjectionResponse(
     command: Extract<DaemonCommand, { kind: "habit.poke" }>,
-    outcome: HabitInvocationOutcomeV1,
+    projection: HabitProjectionResult,
   ): DaemonResponse {
-    if (outcome.disposition === "outcome_unknown") {
+    const attempt = projection.occurrence.attempts.at(-1)
+    if (!attempt || attempt.attemptId !== projection.receipt.attemptId) {
+      throw new Error("habit projection does not match the latest occurrence attempt")
+    }
+    if (projection.receipt.state === "outcome_unknown") {
       return {
         ok: false,
         error: `habit ${command.habitName} outcome is unknown and requires reconciliation`,
-        data: outcome,
+        data: projection.receipt,
       }
     }
-    if (outcome.result.status === "completed") {
+    if (attempt.result === null) throw new Error("settled habit projection has no result")
+    const outcome = { version: 1 as const, disposition: "settled" as const, result: attempt.result }
+    if (projection.receipt.state === "completed" && attempt.result.status === "completed") {
       return {
         ok: true,
         message: `completed habit ${command.habitName} for ${command.agent}`,
@@ -1732,7 +1756,9 @@ export class OuroDaemon {
     }
     return {
       ok: false,
-      error: outcome.result.error.message,
+      error: attempt.result.status === "completed"
+        ? `habit ${command.habitName} projection state conflicts with completion`
+        : attempt.result.error.message,
       data: outcome,
     }
   }

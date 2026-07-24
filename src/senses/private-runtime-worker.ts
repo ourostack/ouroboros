@@ -440,6 +440,7 @@ export function createPrivateRuntimeWorker(
   function recordHabitCompletion(
     habitRun: PreparedHabitRun,
     endedAt = habitRun.startedAt,
+    projection?: { occurrenceId: string; attemptId: string },
   ): ReturnType<typeof completeHabitRun> {
     recordHabitStartIfNeeded(habitRun)
     recordHabitRunLedger(habitRun, habitRun.errors.length > 0 ? "error" : "completed", endedAt)
@@ -457,12 +458,16 @@ export function createPrivateRuntimeWorker(
       surfaceAttempts: habitRun.surfaceAttempts,
       errors: habitRun.errors,
       summarySnapshot: deriveHabitSummarySnapshot(habitRun),
+      ...(projection ? { projection } : {}),
     })
   }
 
   function respondToHabitExecution(request: AgentTurnHabitRequestV1, habitRun: PreparedHabitRun): void {
-    const completion = recordHabitCompletion(habitRun, new Date(nowSource()).toISOString())
-    if (!completion.receiptWritten) return
+    const completion = recordHabitCompletion(habitRun, new Date(nowSource()).toISOString(), {
+      occurrenceId: request.occurrenceId,
+      attemptId: request.attemptId,
+    })
+    if (completion.projectionCandidateRef === null) return
     const outcome: HabitInvocationOutcomeV1 = habitRun.errors.length > 0
       ? {
           version: 1,
@@ -483,7 +488,7 @@ export function createPrivateRuntimeWorker(
           result: {
             version: 1,
             status: "completed",
-            resultRef: habitRun.paths.receiptLocator,
+            resultRef: completion.projectionCandidateRef,
           },
         }
     const response: AgentTurnHabitResponseV1 = {
@@ -505,7 +510,7 @@ export function createPrivateRuntimeWorker(
     emitNervesEvent({
       component: "senses",
       event: "senses.agent_turn_habit_result_sent",
-      message: "sent correlated result after durable habit completion",
+      message: "sent correlated result after durable habit session evidence was staged",
       meta: { occurrenceId: request.occurrenceId, attemptId: request.attemptId },
     })
   }
