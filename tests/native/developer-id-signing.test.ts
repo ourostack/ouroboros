@@ -46,6 +46,17 @@ describe("Developer ID signing native driver", () => {
 
   it("does not accept secret-bearing argv or environment variables", () => {
     const executable = compileDriver()
+    const contractWithoutEnvironment = spawnSync(executable, ["--contract"], {
+      encoding: "utf8",
+      env: {},
+    })
+    const contractWithPoisonedEnvironment = spawnSync(executable, ["--contract"], {
+      encoding: "utf8",
+      env: {
+        DEVELOPER_ID_APPLICATION_P12: "must-not-be-read",
+        DEVELOPER_ID_APPLICATION_PASSWORD: "must-not-be-read",
+      },
+    })
     const result = spawnSync(executable, ["--p12", "secret"], {
       encoding: "utf8",
       env: { DEVELOPER_ID_APPLICATION_P12: "must-not-be-read" },
@@ -54,9 +65,14 @@ describe("Developer ID signing native driver", () => {
     expect(result.status).toBe(64)
     expect(result.stdout).toBe("")
     expect(result.stderr).toMatch(/usage:.*--contract/i)
+    expect(contractWithPoisonedEnvironment).toMatchObject({
+      status: contractWithoutEnvironment.status,
+      stdout: contractWithoutEnvironment.stdout,
+      stderr: contractWithoutEnvironment.stderr,
+    })
     expect(readFileSync(
       join(process.cwd(), "native", "developer-id-signing", "driver.c"),
       "utf8",
-    )).not.toContain("getenv(")
+    )).not.toMatch(/\b(getenv|secure_getenv|environ)\b/)
   })
 })

@@ -64,12 +64,37 @@ describe("Developer ID signing workflow contract", () => {
 
   it("rejects incomplete rotation chains and stale-pair supersession", async () => {
     const { verifyPolicyChain } = await loadClosure()
+    const requiredInceptionMembers = {
+      workflowSha256: "1".repeat(64),
+      closureSha256: "2".repeat(64),
+      policySha256: "3".repeat(64),
+      foundationSha256: "4".repeat(64),
+    }
     const valid = {
       inceptionHead: "a".repeat(64),
       activeHead: "c".repeat(64),
+      requiredInceptionMembers,
+      inceptionAuthority: { namedMembers: requiredInceptionMembers },
+      foundation: {
+        fulcioRoots: [{ sha256: "5".repeat(64) }],
+        ctLogs: [{ publicKeySha256: "6".repeat(64) }],
+        rekorLogs: [{ publicKeySha256: "7".repeat(64) }],
+      },
       transitions: [
-        { prior: "a".repeat(64), successor: "b".repeat(64), predecessorSignatureVerified: true },
-        { prior: "b".repeat(64), successor: "c".repeat(64), predecessorSignatureVerified: true },
+        {
+          prior: "a".repeat(64),
+          successor: "b".repeat(64),
+          predecessorPolicySha256: "8".repeat(64),
+          signingPolicySha256: "8".repeat(64),
+          predecessorSignatureVerified: true,
+        },
+        {
+          prior: "b".repeat(64),
+          successor: "c".repeat(64),
+          predecessorPolicySha256: "9".repeat(64),
+          signingPolicySha256: "9".repeat(64),
+          predecessorSignatureVerified: true,
+        },
       ],
       freshPairAuthority: true,
       terminalNoValidArtifactListing: true,
@@ -84,6 +109,31 @@ describe("Developer ID signing workflow contract", () => {
       ok: false,
       code: "fresh_pair_required",
     })
+    expect(verifyPolicyChain({ ...valid, terminalNoValidArtifactListing: false })).toMatchObject({
+      ok: false,
+      code: "terminal_artifact_authority_required",
+    })
+    expect(verifyPolicyChain({
+      ...valid,
+      transitions: [
+        valid.transitions[0],
+        {
+          ...valid.transitions[1],
+          signingPolicySha256: "0".repeat(64),
+          predecessorSignatureVerified: true,
+        },
+      ],
+    })).toMatchObject({ ok: false, code: "successor_self_authorized" })
+    expect(verifyPolicyChain({
+      ...valid,
+      inceptionAuthority: {
+        namedMembers: { ...requiredInceptionMembers, workflowSha256: "0".repeat(64) },
+      },
+    })).toMatchObject({ ok: false, code: "inception_member_mismatch" })
+    expect(verifyPolicyChain({
+      ...valid,
+      foundation: { ...valid.foundation, ctLogs: [] },
+    })).toMatchObject({ ok: false, code: "foundation_incomplete" })
   })
 
   it("uses a dedicated keyless workflow to seal authority-merge audit bytes", () => {
