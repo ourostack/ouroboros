@@ -56,8 +56,49 @@ export const FULL_AGENT_JSON = {
       args: ["--flag", "value"],
       env: { FOO: "bar" },
       cwd: "/tmp",
+      visibility: "internal",
     },
   },
+  habitExecutors: [
+    {
+      version: 1,
+      id: "fixture-executor",
+      serverId: "test-server",
+      toolName: "fixture_run",
+      habitInputSchema: { root: "bundle", ref: "schemas/habit-input.json", sha256: `sha256:${"a".repeat(64)}` },
+      toolInputSchema: { root: "package", ref: "mcp/tool-input.json", sha256: `sha256:${"b".repeat(64)}` },
+      resultSchema: { root: "bundle", ref: "schemas/result.json", sha256: `sha256:${"c".repeat(64)}` },
+      timeoutMs: 30_000,
+      idempotencyField: "ouroOccurrence",
+      credentialBindings: [
+        {
+          name: "fixture-token",
+          source: { scope: "agent-runtime-config", jsonPointer: "/fixture/token" },
+        },
+      ],
+      reconciliation: null,
+    },
+  ],
+  mcpHealthProfiles: [
+    {
+      schemaVersion: 1,
+      profileId: "fixture-health",
+      serverId: "test-server",
+      registryRevision: `sha256:${"d".repeat(64)}`,
+      expectedTools: [
+        {
+          name: "fixture_status",
+          inputSchema: { root: "bundle", ref: "schemas/status-input.json", sha256: `sha256:${"e".repeat(64)}` },
+          outputSchema: null,
+        },
+      ],
+      credentialBindingNames: ["fixture-token"],
+      mode: "inventory-schema-credential-readiness",
+      readOnlyProbe: null,
+      timeoutMs: 5_000,
+      freshnessMs: 300_000,
+    },
+  ],
   shell: {
     defaultTimeout: 60_000,
   },

@@ -15,33 +15,29 @@ describe("no-live-side-effects CI fuse", () => {
   it("blocks known live side-effect APIs in replay and shadow test files", () => {
     expect(() => assertNoLiveSideEffects({
       files: [{
-        path: "src/__tests__/rsvp/replay.test.ts",
+        path: "src/__tests__/senses/bluebubbles/replay.test.ts",
         text: "await createBlueBubblesClient().sendMessage({ text: 'oops' })",
       }],
     })).toThrow(/BlueBubbles send/i)
   })
 
-  it("blocks launchctl, vault writes, daemon restarts, AislePlanner fetches, and legacy RSVP state writes", () => {
+  it("blocks generic launchctl, vault-write, and daemon-restart effects", () => {
     const blockedSamples = [
-      "await fetchAislePlannerLive()",
       "await writeVaultItem('runtime/config')",
       "spawnSync('launchctl', ['unload', plist])",
       "await restartDaemon()",
-      "legacy.save_snapshot(snapshot)",
-      "legacy.write_sent_state(state)",
-      "legacy.run_report_pipeline()",
     ]
 
     for (const sample of blockedSamples) {
       expect(() => assertNoLiveSideEffects({
-        files: [{ path: "src/__tests__/rsvp/replay.test.ts", text: sample }],
+        files: [{ path: "src/__tests__/senses/bluebubbles/replay.test.ts", text: sample }],
       }), sample).toThrow()
     }
   })
 
   it("passes clean files and defaults malformed input to an empty scan", () => {
     expect(assertNoLiveSideEffects({
-      files: [{ path: "src/__tests__/rsvp/replay.test.ts", text: "const fixture = 'offline'" }],
+      files: [{ path: "src/__tests__/senses/bluebubbles/replay.test.ts", text: "const fixture = 'offline'" }],
     })).toEqual({ ok: true, checked: 1 })
     expect(assertNoLiveSideEffects({ files: [{ path: 5, text: 9 }] })).toEqual({ ok: true, checked: 1 })
     expect(assertNoLiveSideEffects(null)).toEqual({ ok: true, checked: 0 })

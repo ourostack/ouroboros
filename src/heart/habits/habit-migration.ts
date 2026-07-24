@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderHabitFile } from "./habit-parser"
+import { DEFAULT_HABIT_EXECUTION } from "./habit-execution"
 import { writeHabitLastRun } from "./habit-runtime-state"
 import { parseFrontmatter } from "../../util/frontmatter"
 
@@ -124,7 +125,8 @@ export function migrateHabitsFromTaskSystem(bundleRoot: string): void {
     if (typeof frontmatter.title === "string") newFrontmatter.title = frontmatter.title
     if (typeof frontmatter.cadence === "string") newFrontmatter.cadence = frontmatter.cadence
     newFrontmatter.status = habitStatus
-    newFrontmatter.created = typeof frontmatter.created === "string" ? frontmatter.created : "null"
+    newFrontmatter.created = typeof frontmatter.created === "string" ? frontmatter.created : null
+    newFrontmatter.execution = DEFAULT_HABIT_EXECUTION
 
     // Add any other non-task fields from original
     for (const [key, value] of Object.entries(frontmatter)) {

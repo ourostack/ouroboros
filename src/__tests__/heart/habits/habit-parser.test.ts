@@ -14,6 +14,7 @@ describe("parseHabitFile", () => {
       "---",
       "title: Heartbeat",
       "cadence: 30m",
+      "cadenceTimezone: America/Los_Angeles",
       "status: active",
       "lastRun: 2026-03-27T10:00:00.000Z",
       "created: 2026-03-27",
@@ -28,10 +29,17 @@ describe("parseHabitFile", () => {
       name: "heartbeat",
       title: "Heartbeat",
       cadence: "30m",
+      cadenceTimezone: "America/Los_Angeles",
       status: "active",
       lastRun: "2026-03-27T10:00:00.000Z",
       created: "2026-03-27",
       tools: undefined,
+      execution: {
+        version: 1,
+        adapter: "agent-turn",
+        config: {},
+        policy: { maxOccurrenceAttempts: 3, unknownSlotFence: "none" },
+      },
       origin: null,
       surface: { family: true, originator: true, extra: [] },
       continuity: { mode: "fresh" },
@@ -206,7 +214,7 @@ describe("parseHabitFile", () => {
 
     const result: HabitFile = parseHabitFile(content, "/bundles/agent.ouro/habits/shape-test.md")
     const keys = Object.keys(result).sort()
-    expect(keys).toEqual(["body", "cadence", "continuity", "created", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
+    expect(keys).toEqual(["body", "cadence", "cadenceTimezone", "continuity", "created", "execution", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
   })
 
   it("parses habit origin and surface policy from nested frontmatter", () => {
@@ -530,7 +538,7 @@ describe("renderHabitFile", () => {
     }, "Ask whether Ari needs anything.")
 
     expect(rendered).toContain("origin:\n  friendId: ari\n  channel: cli\n  key: main")
-    expect(rendered).toContain("surface:\n  family: true\n  originator: false\n  extra: [teammate]")
+    expect(rendered).toContain("surface:\n  family: true\n  originator: false\n  extra:\n    - teammate")
     expect(rendered).toContain("continuity:\n  mode: stateful")
     expect(rendered).toContain("Ask whether Ari needs anything.")
   })
@@ -636,7 +644,7 @@ describe("renderHabitFile", () => {
     expect(reparsed.tools).toEqual(parsed.tools)
   })
 
-  it("renders array values in inline bracket format", () => {
+  it("renders array values in deterministic block format", () => {
     const frontmatter = {
       title: "Array render",
       cadence: "30m",
@@ -645,6 +653,6 @@ describe("renderHabitFile", () => {
     }
 
     const result = renderHabitFile(frontmatter, "Body.")
-    expect(result).toContain("tools: [read_file, web_fetch]")
+    expect(result).toContain("tools:\n  - read_file\n  - web_fetch")
   })
 })

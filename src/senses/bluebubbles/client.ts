@@ -4,7 +4,7 @@ import { getAgentName, loadAgentConfig } from "../../heart/identity"
 import {
   probeBlueBubblesHealth,
   redactBlueBubblesHealthDetailForNerves,
-} from "../../heart/daemon/bluebubbles-health-diagnostics"
+} from "./health-diagnostics"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { MINIMAX_PROVIDER_BASE_URL } from "../../heart/providers/minimax"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"

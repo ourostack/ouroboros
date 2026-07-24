@@ -8,6 +8,7 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
 import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
+import { DEFAULT_HABIT_EXECUTION } from "../heart/habits/habit-execution"
 import {
   completeHabitRun,
   createHabitSessionPaths,
@@ -26,13 +27,6 @@ import { baseToolDefinitions, type HabitSessionToolContext, type ToolDefinition,
 import { surfaceToolDefinition } from "../repertoire/tools-surface"
 import { riskProfileForTool } from "../repertoire/tools"
 import {
-  RSVP_HABIT_ALLOWED_TOOLS,
-  isRsvpHabitName,
-  rsvpHabitRuntimePolicy,
-  type RsvpHabitRuntimePolicy,
-} from "../rsvp/habit-policy"
-import { recordRsvpSpendLedgerRun } from "../rsvp/spend-ledger"
-import {
   appendRunLedgerRecordNonFatal,
   createRunLedgerRecord,
   runLedgerHash,
@@ -40,6 +34,13 @@ import {
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
 import { reserveAutonomyBudget, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
+import type {
+  AgentTurnHabitRequestV1,
+  AgentTurnHabitResponseV1,
+  AgentTurnHabitResponseSealV1,
+} from "../heart/habits/agent-turn-adapter"
+import type { HabitInvocationOutcomeV1 } from "../heart/habits/habit-execution"
+import { sha256CanonicalJson } from "../heart/runtime/canonical-json"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -50,6 +51,7 @@ export interface PrivateRuntimeWorkerMessage {
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
   privateTurnDecision?: PrivateTurnDecision
+  executionRequest?: AgentTurnHabitRequestV1
 }
 
 export interface PrivateRuntimeWorkerRunOptions {
@@ -87,6 +89,7 @@ interface QueueEntry {
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
   privateTurnDecision?: PrivateTurnDecision
+  executionRequest?: AgentTurnHabitRequestV1
 }
 
 interface PreparedHabitRun {
@@ -100,8 +103,6 @@ interface PreparedHabitRun {
   paths: ReturnType<typeof createHabitSessionPaths>
   permissionEnvelope: HabitRunReceipt["permissionEnvelope"]
   toolPolicy: HabitRunReceipt["toolPolicy"]
-  rsvpPolicy?: RsvpHabitRuntimePolicy
-  blockedReason?: string
   friendStore: FileFriendStore
   results: unknown[]
   errors: string[]
@@ -177,19 +178,6 @@ function recordHabitRunLedger(
       : {}),
   })
   appendRunLedgerRecordNonFatal(habitRun.agentRoot, record)
-  if (habitRun.rsvpPolicy) {
-    try {
-      recordRsvpSpendLedgerRun(habitRun.agentRoot, record)
-    } catch (error) {
-      emitNervesEvent({
-        level: "error",
-        component: "rsvp",
-        event: "rsvp.spend_ledger_record_error",
-        message: "failed to record RSVP spend ledger row",
-        meta: { runId: record.runId, lifecycle, error: String(error) },
-      })
-    }
-  }
 }
 
 function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string): AutonomyBudgetDecision {
@@ -198,11 +186,6 @@ function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string):
     runId: habitRun.runId,
     trigger: habitRun.trigger,
     operationId: habitRun.operationId,
-  }
-  if (habitRun.rsvpPolicy) {
-    target.rsvpSnapshotRef = habitRun.rsvpPolicy.snapshotRef
-    target.rsvpBudgetRef = habitRun.rsvpPolicy.budgetRef
-    target.rsvpIdempotencyRef = habitRun.rsvpPolicy.idempotencyRef
   }
   return reserveAutonomyBudget(habitRun.agentRoot, {
     agent: getAgentName(),
@@ -342,10 +325,12 @@ function fallbackHabitFile(habitName: string): HabitFile {
     name: habitName,
     title: habitName,
     cadence: null,
+    cadenceTimezone: null,
     status: "active",
     lastRun: null,
     created: null,
     tools: [],
+    execution: DEFAULT_HABIT_EXECUTION,
     origin: null,
     surface: { family: false, originator: false, extra: [] },
     continuity: { mode: "fresh" },
@@ -375,18 +360,13 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const agentRoot = getAgentRoot()
   const errors: string[] = []
   const habit = applyHabitRuntimeState(agentRoot, readHabitForRun(agentRoot, habitName, errors))
-  const blockedReason = isRsvpHabitName(habitName) && !habit.rsvp
-    ? "RSVP habit metadata is required before private runtime execution"
-    : null
-  if (blockedReason && !errors.includes(blockedReason)) errors.push(blockedReason)
   const runId = createHabitRunId(habitName, new Date(startedAt))
   const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
   const priorSessionSummary = readPriorSessionSummary(agentRoot, operationId)
   const paths = createHabitSessionPaths(agentRoot, runId, habit.name)
   const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
   const permissionEnvelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot, friendStore })
-  const rsvpPolicy = habit.rsvp ? rsvpHabitRuntimePolicy(habit.rsvp) : undefined
-  const requestedTools = blockedReason ? [] : habit.rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : habit.tools ?? null
+  const requestedTools = habit.tools ?? null
   const toolPolicy = filterHabitToolsForEnvelope(
     [...baseToolDefinitions, surfaceToolDefinition],
     requestedTools,
@@ -404,8 +384,6 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     paths,
     permissionEnvelope,
     toolPolicy,
-    ...(rsvpPolicy ? { rsvpPolicy } : {}),
-    ...(blockedReason ? { blockedReason } : {}),
     friendStore,
     results: [],
     errors,
@@ -444,6 +422,7 @@ export function createPrivateRuntimeWorker(
   runTurn: (options: PrivateRuntimeWorkerRunOptions) => Promise<unknown> = (options) => runPrivateRuntimeTurn(options),
   hasPendingWork: (pendingDir?: string) => boolean = defaultHasPendingWork,
   nowSource: () => number = () => Date.now(),
+  sendMessage: (message: AgentTurnHabitResponseV1 | AgentTurnHabitResponseSealV1) => void = (message) => { process.send?.(message) },
 ): PrivateRuntimeWorkerController {
   let running = false
   const queue: QueueEntry[] = []
@@ -461,10 +440,11 @@ export function createPrivateRuntimeWorker(
   function recordHabitCompletion(
     habitRun: PreparedHabitRun,
     endedAt = habitRun.startedAt,
-  ): void {
+    projection?: { occurrenceId: string; attemptId: string },
+  ): ReturnType<typeof completeHabitRun> {
     recordHabitStartIfNeeded(habitRun)
     recordHabitRunLedger(habitRun, habitRun.errors.length > 0 ? "error" : "completed", endedAt)
-    completeHabitRun({
+    return completeHabitRun({
       agentRoot: habitRun.agentRoot,
       habit: habitRun.habit,
       runId: habitRun.runId,
@@ -478,6 +458,60 @@ export function createPrivateRuntimeWorker(
       surfaceAttempts: habitRun.surfaceAttempts,
       errors: habitRun.errors,
       summarySnapshot: deriveHabitSummarySnapshot(habitRun),
+      ...(projection ? { projection } : {}),
+    })
+  }
+
+  function respondToHabitExecution(request: AgentTurnHabitRequestV1, habitRun: PreparedHabitRun): void {
+    const completion = recordHabitCompletion(habitRun, new Date(nowSource()).toISOString(), {
+      occurrenceId: request.occurrenceId,
+      attemptId: request.attemptId,
+    })
+    if (completion.projectionCandidateRef === null) return
+    const outcome: HabitInvocationOutcomeV1 = habitRun.errors.length > 0
+      ? {
+          version: 1,
+          disposition: "settled",
+          result: {
+            version: 1,
+            status: "failed_terminal",
+            error: {
+              code: "agent_turn_failed",
+              message: habitRun.errors.join("; "),
+              retryable: false,
+            },
+          },
+        }
+      : {
+          version: 1,
+          disposition: "settled",
+          result: {
+            version: 1,
+            status: "completed",
+            resultRef: completion.projectionCandidateRef,
+          },
+        }
+    const response: AgentTurnHabitResponseV1 = {
+      schemaVersion: 1,
+      occurrenceId: request.occurrenceId,
+      attemptId: request.attemptId,
+      responseCapability: request.responseCapability,
+      outcome,
+    }
+    sendMessage(response)
+    sendMessage({
+      schemaVersion: 1,
+      kind: "agent-turn-response-seal",
+      occurrenceId: request.occurrenceId,
+      attemptId: request.attemptId,
+      responseCapability: request.responseCapability,
+      responseSha256: sha256CanonicalJson(response),
+    })
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.agent_turn_habit_result_sent",
+      message: "sent correlated result after durable habit session evidence was staged",
+      meta: { occurrenceId: request.occurrenceId, attemptId: request.attemptId },
     })
   }
 
@@ -560,9 +594,10 @@ export function createPrivateRuntimeWorker(
     awaitName?: string,
     trigger?: HabitRunReceipt["trigger"],
     privateTurnDecision?: PrivateTurnDecision,
+    executionRequest?: AgentTurnHabitRequestV1,
   ): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision })
+      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision, executionRequest })
       return
     }
 
@@ -574,6 +609,7 @@ export function createPrivateRuntimeWorker(
       let nextAwaitName = awaitName
       let nextTrigger = trigger
       let nextPrivateTurnDecision = privateTurnDecision
+      let nextExecutionRequest = executionRequest
       let nextHabitRun: PreparedHabitRun | null = null
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
@@ -581,6 +617,7 @@ export function createPrivateRuntimeWorker(
         const currentReason = nextReason
         const currentHabitName = nextHabitName
         const currentTrigger = nextTrigger ?? "overdue"
+        const currentExecutionRequest = nextExecutionRequest
         const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
           ? nextHabitRun && nextHabitRun.habit.name === currentHabitName
             ? nextHabitRun
@@ -590,7 +627,8 @@ export function createPrivateRuntimeWorker(
         let currentHabitRunFinalized = false
         const finalizeCurrentHabitRun = (): void => {
           if (!currentHabitRun || currentHabitRunFinalized) return
-          recordHabitCompletion(currentHabitRun, new Date(nowSource()).toISOString())
+          if (currentExecutionRequest) respondToHabitExecution(currentExecutionRequest, currentHabitRun)
+          else recordHabitCompletion(currentHabitRun, new Date(nowSource()).toISOString())
           currentHabitRunFinalized = true
         }
         const turnErrors: string[] = []
@@ -601,18 +639,11 @@ export function createPrivateRuntimeWorker(
         let blockedAutonomyTurn = false
         try {
           const turnStartedAt = new Date(nowSource()).toISOString()
-          const autonomyDecision = currentHabitRun && !currentHabitRun.blockedReason
+          const autonomyDecision = currentHabitRun
             ? reserveHabitAutonomyBudget(currentHabitRun, turnStartedAt)
             : null
           if (currentHabitRun) recordHabitStartIfNeeded(currentHabitRun)
-          if (currentHabitRun?.blockedReason) {
-            blockedAutonomyTurn = true
-            turnResult = {
-              turnOutcome: "blocked",
-              reason: currentHabitRun.blockedReason,
-            }
-            clearHeartbeatRestShield()
-          } else if (autonomyDecision && !autonomyDecision.allowed) {
+          if (autonomyDecision && !autonomyDecision.allowed) {
             blockedAutonomyTurn = true
             const reason = `autonomy budget blocked: ${autonomyDecision.reason}`
             turnErrors.push(reason)
@@ -645,7 +676,6 @@ export function createPrivateRuntimeWorker(
                     pendingDir: currentHabitRun.paths.pendingDir,
                     permissionEnvelope: currentHabitRun.permissionEnvelope,
                     toolPolicy: currentHabitRun.toolPolicy,
-                    ...(currentHabitRun.rsvpPolicy ? { rsvpPolicy: currentHabitRun.rsvpPolicy } : {}),
                     friendStore: currentHabitRun.friendStore,
                     recordProducedRef: (ref) => { currentHabitRun.producedRefs.push(ref) },
                     recordSurfaceAttempt: (attempt) => { currentHabitRun.surfaceAttempts.push(attempt) },
@@ -697,6 +727,7 @@ export function createPrivateRuntimeWorker(
           nextAwaitName = next.awaitName
           nextTrigger = next.trigger
           nextPrivateTurnDecision = next.privateTurnDecision
+          nextExecutionRequest = next.executionRequest
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
         }
@@ -735,6 +766,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = currentTrigger
             nextPrivateTurnDecision = undefined
+            nextExecutionRequest = currentExecutionRequest
             nextHabitRun = currentHabitRun
           } else {
             finalizeCurrentHabitRun()
@@ -745,6 +777,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = undefined
             nextPrivateTurnDecision = undefined
+            nextExecutionRequest = undefined
           }
           continue
         }
@@ -768,7 +801,15 @@ export function createPrivateRuntimeWorker(
         return
       }
       recordHabitFireForRecursion(habitName)
-      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision)
+      await run(
+        "habit",
+        undefined,
+        maybeMessage.habitName,
+        undefined,
+        maybeMessage.trigger ?? "overdue",
+        maybeMessage.privateTurnDecision,
+        maybeMessage.executionRequest,
+      )
       return
     }
     if (maybeMessage.type === "await") {

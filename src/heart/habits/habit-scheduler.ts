@@ -1,9 +1,9 @@
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { parseHabitFile, type HabitFile } from "./habit-parser"
+import type { HabitFile } from "./habit-parser"
+import { parseHabitFile } from "./habit-parser"
 import { applyHabitRuntimeState } from "./habit-runtime-state"
 import { cadenceFallbackDelayMs, evaluateCadenceDue, nextCadenceRunAt, parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
-import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import type { OsCronManager } from "../daemon/os-cron"
 import type { ScheduledTaskJob } from "../daemon/task-scheduler"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
@@ -115,7 +115,6 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
-      if (this.rejectInvalidRsvpHabit(habit)) continue
       if (this.rejectReservedCronNamespaceHabit(habit)) continue
 
       const nowMs = this.deps.now()
@@ -159,7 +158,6 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
-      if (this.rejectInvalidRsvpHabit(habit)) continue
       if (this.rejectReservedCronNamespaceHabit(habit)) continue
 
       const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
@@ -403,7 +401,6 @@ export class HabitScheduler {
     for (const habit of habits) {
       if (habit.status !== "active") continue
       if (!habit.cadence) continue
-      if (this.rejectInvalidRsvpHabit(habit)) continue
       if (this.rejectReservedCronNamespaceHabit(habit)) continue
 
       const cronSchedule = parseCadenceToCron(habit.cadence)
@@ -421,16 +418,6 @@ export class HabitScheduler {
     }
 
     return jobs
-  }
-
-  private rejectInvalidRsvpHabit(habit: HabitFile): boolean {
-    if (!isRsvpHabitName(habit.name) || habit.rsvp) return false
-
-    this.recordHabitParseError(
-      `${habit.name}.md`,
-      "RSVP habit metadata is required before scheduling",
-    )
-    return true
   }
 
   private rejectReservedCronNamespaceHabit(habit: HabitFile): boolean {

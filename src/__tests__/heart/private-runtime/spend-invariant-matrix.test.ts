@@ -159,6 +159,27 @@ function makeHarness(policyResult: "allow" | "deny") {
       const decision = message.privateTurnDecision as PrivateTurnDecision | undefined
       if (decision?.executable) counters.modelTurns += 1
     }),
+    requestFromAgent: vi.fn(async (_agent: string, message: Record<string, unknown>) => {
+      workerMessages.push(message)
+      const decision = message.privateTurnDecision as PrivateTurnDecision | undefined
+      if (decision?.executable) counters.modelTurns += 1
+      const request = message.executionRequest as {
+        occurrenceId: string
+        attemptId: string
+        responseCapability: string
+      }
+      return {
+        schemaVersion: 1,
+        occurrenceId: request.occurrenceId,
+        attemptId: request.attemptId,
+        responseCapability: request.responseCapability,
+        outcome: {
+          version: 1,
+          disposition: "settled",
+          result: { version: 1, status: "completed", resultRef: "habit-run:test" },
+        },
+      }
+    }),
   }
   let receiptCounter = 0
   const router = {
@@ -288,6 +309,7 @@ const WAKE_ROWS: MatrixRow[] = [
   },
   {
     name: "manual habit poke",
+    setup: (harness) => writeHabitFile(harness.bundlesRoot, "heartbeat"),
     command: () => ({ kind: "habit.poke", agent: AGENT, habitName: "heartbeat", trigger: "manual" }),
     expectedWorkerType: "habit",
   },
@@ -401,6 +423,7 @@ describe("private-runtime spend-invariant matrix", () => {
     expect(harness.counters.modelTurns).toBe(0)
     expect(harness.processManager.startAgent).not.toHaveBeenCalled()
     expect(harness.processManager.sendToAgent).not.toHaveBeenCalled()
+    expect(harness.processManager.requestFromAgent).not.toHaveBeenCalled()
   })
 
   it.each(WAKE_ROWS)("allows $name with exactly one decision and one model turn", async (row) => {
@@ -424,7 +447,13 @@ describe("private-runtime spend-invariant matrix", () => {
     expect(harness.counters.providerPings).toBe(0)
     expect(harness.counters.modelTurns).toBe(1)
     expect(harness.processManager.startAgent).toHaveBeenCalledTimes(1)
-    expect(harness.processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    if (row.expectedWorkerType === "habit") {
+      expect(harness.processManager.requestFromAgent).toHaveBeenCalledTimes(1)
+      expect(harness.processManager.sendToAgent).not.toHaveBeenCalled()
+    } else {
+      expect(harness.processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      expect(harness.processManager.requestFromAgent).not.toHaveBeenCalled()
+    }
     expect(harness.workerMessages[0]).toMatchObject({
       type: row.expectedWorkerType,
       privateTurnDecision: expect.objectContaining({

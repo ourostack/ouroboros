@@ -1756,6 +1756,294 @@ describe("daemon process manager", () => {
     expect(snapshot?.lastSignal).toBeNull()
   })
 
+  describe("correlated agent IPC requests", () => {
+    async function runningManager(child: MockChild): Promise<DaemonProcessManager> {
+      spawn.mockReturnValue(child)
+      now.mockReturnValue(1_000)
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAgent("slugger")
+      return manager
+    }
+
+    it("waits for the matching response and removes request listeners", async () => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+      const controller = new AbortController()
+      const expected = { type: "habit.result", occurrenceId: "occ-a", capability: "cap-a" }
+      const request = manager.requestFromAgent("slugger", { type: "habit", occurrenceId: "occ-a" }, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: controller.signal,
+        matches: (response) => (response as { capability?: string } | null)?.capability === "cap-a",
+      })
+
+      child.emit("message", { type: "unrelated", capability: "other" })
+      child.emit("message", expected)
+
+      await expect(request).resolves.toBe(expected)
+      expect(child.send).toHaveBeenCalledWith(
+        { type: "habit", occurrenceId: "occ-a" },
+        expect.any(Function),
+      )
+      expect(child.listenerCount("message")).toBe(0)
+      expect(child.listenerCount("exit")).toBe(1)
+    })
+
+    it("resolves a sealed candidate after tolerating byte-identical replay", async () => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+      const candidate = { type: "habit.result", capability: "cap-a", outcome: "completed" }
+      const request = manager.requestFromAgent("slugger", { type: "habit" }, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        classify: (response) => {
+          const value = response as { type?: string; fingerprint?: string }
+          if (value.type === "habit.result") return { kind: "candidate" as const, fingerprint: JSON.stringify(value) }
+          if (value.type === "habit.result.seal") return { kind: "commit" as const, fingerprint: value.fingerprint! }
+          return { kind: "ignore" as const }
+        },
+      })
+
+      child.emit("message", { type: "unrelated" })
+      child.emit("message", candidate)
+      child.emit("message", structuredClone(candidate))
+      child.emit("message", { type: "habit.result.seal", fingerprint: JSON.stringify(candidate) })
+
+      await expect(request).resolves.toBe(candidate)
+      timers.at(-1)?.cb()
+    })
+
+    it.each([
+      ["conflicting candidate", [
+        { type: "habit.result", outcome: "completed" },
+        { type: "habit.result", outcome: "failed" },
+      ]],
+      ["commit before candidate", [
+        { type: "habit.result.seal", fingerprint: "sealed" },
+      ]],
+      ["mismatched commit", [
+        { type: "habit.result", outcome: "completed" },
+        { type: "habit.result.seal", fingerprint: "other" },
+      ]],
+    ])("rejects a sealed response protocol with %s", async (_label, messages) => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+      const request = manager.requestFromAgent("slugger", { type: "habit" }, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        classify: (response) => {
+          const value = response as { type?: string; fingerprint?: string }
+          if (value.type === "habit.result") return { kind: "candidate" as const, fingerprint: JSON.stringify(value) }
+          if (value.type === "habit.result.seal") return { kind: "commit" as const, fingerprint: value.fingerprint! }
+          return { kind: "ignore" as const }
+        },
+      })
+
+      for (const message of messages) child.emit("message", message)
+
+      await expect(request).rejects.toThrow(/conflict|commit|seal/i)
+    })
+
+    it.each([
+      ["Error", new Error("bad frame")],
+      ["non-Error", "bad frame"],
+    ])("normalizes a sealed classifier %s failure", async (_label, failure) => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+      const request = manager.requestFromAgent("slugger", {}, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        classify: () => { throw failure },
+      })
+
+      child.emit("message", { type: "malformed" })
+
+      await expect(request).rejects.toThrow(/classifier failed.*bad frame/i)
+    })
+
+    it("rejects an empty sealed response fingerprint", async () => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+      const request = manager.requestFromAgent("slugger", {}, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        classify: () => ({ kind: "candidate", fingerprint: "" }),
+      })
+
+      child.emit("message", { type: "candidate" })
+
+      await expect(request).rejects.toThrow(/fingerprint.*invalid/i)
+    })
+
+    it("requires exactly one immediate matcher or sealed classifier", async () => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+      const base = {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+      }
+
+      await expect(manager.requestFromAgent("slugger", {}, base as never)).rejects.toThrow(/matcher|classifier/i)
+      await expect(manager.requestFromAgent("slugger", {}, {
+        ...base,
+        matches: () => true,
+        classify: () => ({ kind: "ignore" as const }),
+      })).rejects.toThrow(/matcher|classifier/i)
+    })
+
+    it("rejects invalid deadlines before registering a request", async () => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+
+      await expect(manager.requestFromAgent("slugger", {}, {
+        deadlineAt: "not-a-date",
+        signal: new AbortController().signal,
+        matches: () => true,
+      })).rejects.toThrow(/deadline.*invalid/i)
+      expect(child.send).not.toHaveBeenCalledWith({}, expect.any(Function))
+    })
+
+    it("rejects absent and disconnected managed transports", async () => {
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      const options = {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        matches: () => true,
+      }
+
+      await expect(manager.requestFromAgent("missing", {}, options)).rejects.toThrow(/unknown.*agent/i)
+      await expect(manager.requestFromAgent("slugger", {}, options)).rejects.toThrow(/connected IPC/i)
+
+      const child = new MockChild()
+      const running = await runningManager(child)
+      child.connected = false
+      await expect(running.requestFromAgent("slugger", {}, options)).rejects.toThrow(/connected IPC/i)
+    })
+
+    it("rejects when the request is already aborted", async () => {
+      const child = new MockChild()
+      const manager = await runningManager(child)
+      const controller = new AbortController()
+      controller.abort()
+
+      await expect(manager.requestFromAgent("slugger", {}, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: controller.signal,
+        matches: () => true,
+      })).rejects.toThrow(/aborted/i)
+      expect(child.send).not.toHaveBeenCalledWith({}, expect.any(Function))
+    })
+
+    it("rejects when an in-flight request is aborted", async () => {
+      const abortChild = new MockChild()
+      const abortManager = await runningManager(abortChild)
+      const controller = new AbortController()
+      const aborted = abortManager.requestFromAgent("slugger", { id: "abort" }, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: controller.signal,
+        matches: () => false,
+      })
+      controller.abort()
+      await expect(aborted).rejects.toThrow(/aborted/i)
+    })
+
+    it("rejects when the managed worker exits before responding", async () => {
+      const exitChild = new MockChild()
+      const exitManager = await runningManager(exitChild)
+      const exited = exitManager.requestFromAgent("slugger", { id: "exit" }, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        matches: () => false,
+      })
+      exitChild.emit("exit", 1, null)
+      await expect(exited).rejects.toThrow(/exited/i)
+    })
+
+    it("rejects when the correlated response deadline expires", async () => {
+      const timeoutChild = new MockChild()
+      const timeoutManager = await runningManager(timeoutChild)
+      const timedOut = timeoutManager.requestFromAgent("slugger", { id: "timeout" }, {
+        deadlineAt: new Date(Date.now() - 1).toISOString(),
+        signal: new AbortController().signal,
+        matches: () => false,
+      })
+      expect(timers.at(-1)?.delay).toBe(0)
+      timers.at(-1)?.cb()
+      await expect(timedOut).rejects.toThrow(/timeout/i)
+    })
+
+    it("rejects an asynchronous IPC write failure", async () => {
+      const writeChild = new MockChild()
+      writeChild.send.mockImplementation((_message, callback) => {
+        callback?.(new Error("pipe closed"))
+        return false
+      })
+      const writeManager = await runningManager(writeChild)
+      await expect(writeManager.requestFromAgent("slugger", { id: "write" }, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        matches: () => false,
+      })).rejects.toThrow(/write failed.*pipe closed/i)
+    })
+
+    it("accepts a successful asynchronous IPC write callback", async () => {
+      const child = new MockChild()
+      child.send.mockImplementation((_message, callback) => {
+        callback?.(undefined)
+        return true
+      })
+      const manager = await runningManager(child)
+      const request = manager.requestFromAgent("slugger", {}, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        matches: () => true,
+      })
+
+      child.emit("message", { ok: true })
+
+      await expect(request).resolves.toEqual({ ok: true })
+    })
+
+    it("normalizes synchronous non-Error IPC write failures", async () => {
+      const child = new MockChild()
+      child.send.mockImplementation(() => {
+        throw "pipe vanished"
+      })
+      const manager = await runningManager(child)
+
+      await expect(manager.requestFromAgent("slugger", {}, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        matches: () => false,
+      })).rejects.toThrow(/write failed.*pipe vanished/i)
+    })
+
+    it("normalizes synchronous Error IPC write failures", async () => {
+      const child = new MockChild()
+      child.send.mockImplementation(() => {
+        throw new Error("pipe closed")
+      })
+      const manager = await runningManager(child)
+
+      await expect(manager.requestFromAgent("slugger", {}, {
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        signal: new AbortController().signal,
+        matches: () => false,
+      })).rejects.toThrow(/write failed.*pipe closed/i)
+    })
+  })
+
   /**
    * Respawn-loop guard — regression coverage for the 2026-05-11 incident.
    *

@@ -55,10 +55,6 @@ function pathRequiresChangelogFreshness(file) {
 
 function classifyOperationalContractChange(file) {
   const persistedSchemaPaths = [
-    "src/rsvp/snapshot.ts",
-    "src/rsvp/migration.ts",
-    "src/rsvp/config.ts",
-    "src/rsvp/outbound-state.ts",
     "src/senses/context-packets.ts",
     "src/senses/bluebubbles/outbound-state.ts",
     "src/heart/run-ledger.ts",
@@ -79,9 +75,7 @@ function classifyOperationalContractChange(file) {
   }
 
   if (
-    file === "src/heart/daemon/doctor.ts" ||
-    file === "src/rsvp/diagnostics.ts" ||
-    file === "src/rsvp/incident-bundle.ts"
+    file === "src/heart/daemon/doctor.ts"
   ) {
     return {
       kind: "doctor-category",

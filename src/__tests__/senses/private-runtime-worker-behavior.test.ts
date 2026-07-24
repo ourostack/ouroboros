@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { sha256CanonicalJson } from "../../heart/runtime/canonical-json"
 
 const {
   mockRunPrivateRuntimeTurn,
@@ -11,6 +12,7 @@ const {
   mockCreateHabitRunId,
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
+  mockWriteHabitProjectionCandidate,
   mockReserveAutonomyBudget,
   mockApplyHabitRuntimeState,
   mockReadHabitSessionSummary,
@@ -27,6 +29,7 @@ const {
   mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
+  mockWriteHabitProjectionCandidate: vi.fn(),
   mockReserveAutonomyBudget: vi.fn(),
   mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
   mockReadHabitSessionSummary: vi.fn(() => null),
@@ -91,6 +94,10 @@ vi.mock("../../arc/flight-recorder", () => ({
   writeHabitRunReceipt: (...args: any[]) => mockWriteHabitRunReceipt(...args),
 }))
 
+vi.mock("../../heart/habits/habit-projection-candidate", () => ({
+  writeHabitProjectionCandidate: (...args: any[]) => mockWriteHabitProjectionCandidate(...args),
+}))
+
 vi.mock("../../heart/autonomy-budget", () => ({
   reserveAutonomyBudget: (...args: any[]) => mockReserveAutonomyBudget(...args),
 }))
@@ -111,6 +118,11 @@ describe("private-runtime-worker", () => {
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
     mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
+    mockWriteHabitProjectionCandidate.mockReset().mockReturnValue({
+      candidateRef: "state/habits/projection-candidates/occurrence-a/attempt-a.json",
+      candidatePath: "/bundles/slugger.ouro/state/habits/projection-candidates/occurrence-a/attempt-a.json",
+      candidateSha256: "a".repeat(64),
+    })
     mockReserveAutonomyBudget.mockReset().mockReturnValue({
       allowed: true,
       status: "allowed",
@@ -636,6 +648,186 @@ describe("private-runtime-worker", () => {
       }))
     })
 
+    it("sends a correlated completed result only after non-authoritative session evidence is durable", async () => {
+      const order: string[] = []
+      mockWriteHabitProjectionCandidate.mockImplementation(() => {
+        order.push("candidate")
+        return {
+          candidateRef: "state/habits/projection-candidates/occurrence-a/attempt-a.json",
+          candidatePath: "/bundles/slugger.ouro/state/habits/projection-candidates/occurrence-a/attempt-a.json",
+          candidateSha256: "a".repeat(64),
+        }
+      })
+      const sendMessage = vi.fn(() => { order.push("response") })
+      const worker = createPrivateRuntimeWorker(
+        vi.fn().mockResolvedValue({ messages: [] }),
+        undefined,
+        () => new Date("2026-06-08T12:00:00.000Z").getTime(),
+        sendMessage,
+      )
+      const executionRequest = {
+        schemaVersion: 1 as const,
+        agent: "slugger",
+        habitId: "daily-record",
+        occurrenceId: "occurrence-a",
+        attemptId: "attempt-a",
+        deadlineAt: "2026-06-08T12:01:00.000Z",
+        responseCapability: "capability-a",
+      }
+
+      await worker.handleMessage({
+        type: "habit",
+        habitName: "daily-record",
+        trigger: "poke",
+        executionRequest,
+      })
+
+      expect(order).toEqual(["candidate", "response", "response"])
+      expect(mockWriteHabitRunReceipt).not.toHaveBeenCalled()
+      expect(mockRecordHabitRun).not.toHaveBeenCalled()
+      const response = {
+        schemaVersion: 1,
+        occurrenceId: "occurrence-a",
+        attemptId: "attempt-a",
+        responseCapability: "capability-a",
+        outcome: {
+          version: 1,
+          disposition: "settled",
+          result: {
+            version: 1,
+            status: "completed",
+            resultRef: "state/habits/projection-candidates/occurrence-a/attempt-a.json",
+          },
+        },
+      }
+      expect(sendMessage).toHaveBeenNthCalledWith(1, response)
+      expect(sendMessage).toHaveBeenNthCalledWith(2, {
+        schemaVersion: 1,
+        kind: "agent-turn-response-seal",
+        occurrenceId: "occurrence-a",
+        attemptId: "attempt-a",
+        responseCapability: "capability-a",
+        responseSha256: sha256CanonicalJson(response),
+      })
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.agent_turn_habit_result_sent",
+      }))
+    })
+
+    it("returns a correlated terminal result for a failed model turn", async () => {
+      const sendMessage = vi.fn()
+      const worker = createPrivateRuntimeWorker(
+        vi.fn().mockRejectedValue(new Error("model turn failed")),
+        undefined,
+        () => new Date("2026-06-08T12:00:00.000Z").getTime(),
+        sendMessage,
+      )
+
+      await worker.handleMessage({
+        type: "habit",
+        habitName: "daily-record",
+        trigger: "poke",
+        executionRequest: {
+          schemaVersion: 1,
+          agent: "slugger",
+          habitId: "daily-record",
+          occurrenceId: "occurrence-failed",
+          attemptId: "attempt-failed",
+          deadlineAt: "2026-06-08T12:01:00.000Z",
+          responseCapability: "capability-failed",
+        },
+      })
+
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        occurrenceId: "occurrence-failed",
+        attemptId: "attempt-failed",
+        responseCapability: "capability-failed",
+        outcome: {
+          version: 1,
+          disposition: "settled",
+          result: {
+            version: 1,
+            status: "failed_terminal",
+            error: {
+              code: "agent_turn_failed",
+              message: "model turn failed",
+              retryable: false,
+            },
+          },
+        },
+      }))
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "agent-turn-response-seal",
+        occurrenceId: "occurrence-failed",
+        attemptId: "attempt-failed",
+        responseCapability: "capability-failed",
+      }))
+    })
+
+    it("does not acknowledge correlated completion when staging durable session evidence fails", async () => {
+      mockWriteHabitProjectionCandidate.mockImplementation(() => { throw new Error("disk full") })
+      const sendMessage = vi.fn()
+      const worker = createPrivateRuntimeWorker(
+        vi.fn().mockResolvedValue({ messages: [] }),
+        undefined,
+        () => new Date("2026-06-08T12:00:00.000Z").getTime(),
+        sendMessage,
+      )
+
+      await worker.handleMessage({
+        type: "habit",
+        habitName: "daily-record",
+        trigger: "poke",
+        executionRequest: {
+          schemaVersion: 1,
+          agent: "slugger",
+          habitId: "daily-record",
+          occurrenceId: "occurrence-no-receipt",
+          attemptId: "attempt-no-receipt",
+          deadlineAt: "2026-06-08T12:01:00.000Z",
+          responseCapability: "capability-no-receipt",
+        },
+      })
+
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(mockRecordHabitRun).not.toHaveBeenCalled()
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_projection_candidate_write_error",
+      }))
+    })
+
+    it("uses the process IPC sender when no response sender is injected", async () => {
+      const originalSend = process.send
+      const processSend = vi.fn()
+      process.send = processSend as typeof process.send
+      try {
+        const worker = createPrivateRuntimeWorker(
+          vi.fn().mockResolvedValue({ messages: [] }),
+          undefined,
+          () => new Date("2026-06-08T12:00:00.000Z").getTime(),
+        )
+
+        await worker.handleMessage({
+          type: "habit",
+          habitName: "daily-record",
+          trigger: "poke",
+          executionRequest: {
+            schemaVersion: 1,
+            agent: "slugger",
+            habitId: "daily-record",
+            occurrenceId: "occurrence-default-send",
+            attemptId: "attempt-default-send",
+            deadlineAt: "2026-06-08T12:01:00.000Z",
+            responseCapability: "capability-default-send",
+          },
+        })
+
+        expect(processSend).toHaveBeenCalledTimes(2)
+      } finally {
+        process.send = originalSend
+      }
+    })
+
     it("derives the receipt summary snapshot from the latest assistant result", async () => {
       const runTurn = vi.fn().mockResolvedValue({
         messages: [
@@ -893,181 +1085,6 @@ describe("private-runtime-worker", () => {
           requestedTools: ["shell"],
           grantedTools: [],
           deniedTools: ["shell"],
-        }),
-      }))
-    })
-
-    it("blocks untyped RSVP habit sessions before provider or budget execution", async () => {
-      mockReadFileSync.mockImplementation((filePath: any) => {
-        if (String(filePath).includes("/habits/rsvp-wedding.md")) {
-          return [
-            "---",
-            "title: Wedding RSVPs",
-            "cadence: 0 10 * * *",
-            "tools: [rsvp_query, rsvp_summary, shell]",
-            "surface:",
-            "  family: false",
-            "  originator: false",
-            "---",
-            "",
-            "Check RSVP state with native tools only.",
-            "",
-          ].join("\n")
-        }
-        return ""
-      })
-      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
-      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
-
-      await worker.handleMessage({ type: "habit", habitName: "rsvp-wedding", trigger: "launchd" })
-
-      expect(runTurn).not.toHaveBeenCalled()
-      expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
-      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        habitName: "rsvp-wedding",
-        outcome: "error",
-        errors: [expect.stringMatching(/RSVP habit metadata is required/i)],
-        toolPolicy: expect.objectContaining({
-          requestedTools: [],
-          grantedTools: [],
-          deniedTools: [],
-          outwardMessagingAllowed: false,
-        }),
-      }))
-    })
-
-    it("blocks malformed RSVP habit frontmatter instead of falling back to a generic habit", async () => {
-      mockReadFileSync.mockImplementation((filePath: any) => {
-        if (String(filePath).includes("/habits/rsvp-wedding.md")) {
-          return [
-            "---",
-            "title: Wedding RSVPs",
-            "cadence: 0 10 * * *",
-            "rsvp:",
-            "  policyVersion: rsvp-habit/v1",
-            "  mode: shadow",
-            "  channel: bluebubbles",
-            "  source: aisleplanner",
-            "  routeRef: rsvp/config.json#bluebubblesRoute",
-            "  snapshotRef: state/rsvp/snapshots/latest.json",
-            "  outboundStateRef: state/rsvp/outbound-state.json",
-            "  budgetRef: state/rsvp/spend-ledger.json",
-            "  idempotencyRef: state/rsvp/outbound-state.json",
-            "  liveSendEligible: false",
-            "---",
-            "",
-            "Refresh native RSVP state.",
-            "",
-          ].join("\n")
-        }
-        return ""
-      })
-      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
-      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
-
-      await worker.handleMessage({ type: "habit", habitName: "rsvp-wedding", trigger: "manual" })
-
-      expect(runTurn).not.toHaveBeenCalled()
-      expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
-      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        habitName: "rsvp-wedding",
-        outcome: "error",
-        errors: expect.arrayContaining([
-          expect.stringMatching(/sense, not channel/i),
-          expect.stringMatching(/RSVP habit metadata is required/i),
-        ]),
-      }))
-    })
-
-    it("derives RSVP runtime policy from typed metadata instead of trusting freeform tool declarations", async () => {
-      mockReadFileSync.mockImplementation((filePath: any) => {
-        if (String(filePath).includes("/habits/rsvp-wedding.md")) {
-          return [
-            "---",
-            "title: Wedding RSVPs",
-            "cadence: 0 10 * * *",
-            "tools: [shell]",
-            "continuity:",
-            "  mode: stateful",
-            "rsvp:",
-            "  policyVersion: rsvp-habit/v1",
-            "  mode: shadow",
-            "  sense: bluebubbles",
-            "  source: aisleplanner",
-            "  routeRef: rsvp/config.json#bluebubblesRoute",
-            "  snapshotRef: state/rsvp/snapshots/latest.json",
-            "  outboundStateRef: state/rsvp/outbound-state.json",
-            "  budgetRef: state/rsvp/spend-ledger.json",
-            "  idempotencyRef: state/rsvp/outbound-state.json",
-            "  liveSendEligible: false",
-            "surface:",
-            "  family: false",
-            "  originator: false",
-            "---",
-            "",
-            "Refresh native RSVP state and answer follow-ups from the snapshot.",
-            "",
-          ].join("\n")
-        }
-        return ""
-      })
-      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
-      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date(2026, 6, 9, 10, 0, 0, 0).getTime())
-
-      await worker.handleMessage({ type: "habit", habitName: "rsvp-wedding", trigger: "launchd" })
-
-      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
-        preparedHabit: expect.objectContaining({
-          habit: expect.objectContaining({
-            name: "rsvp-wedding",
-            tools: ["rsvp_query", "rsvp_summary"],
-            rsvp: expect.objectContaining({
-              policyVersion: "rsvp-habit/v1",
-              mode: "shadow",
-              sense: "bluebubbles",
-              snapshotRef: "state/rsvp/snapshots/latest.json",
-              outboundStateRef: "state/rsvp/outbound-state.json",
-              budgetRef: "state/rsvp/spend-ledger.json",
-              idempotencyRef: "state/rsvp/outbound-state.json",
-              liveSendEligible: false,
-            }),
-          }),
-        }),
-        habitSession: expect.objectContaining({
-          rsvpPolicy: expect.objectContaining({
-            mode: "shadow",
-            sendAllowed: false,
-            liveSendEligible: false,
-            sense: "bluebubbles",
-            routeRef: "rsvp/config.json#bluebubblesRoute",
-            snapshotRef: "state/rsvp/snapshots/latest.json",
-            budgetRef: "state/rsvp/spend-ledger.json",
-            idempotencyRef: "state/rsvp/outbound-state.json",
-          }),
-          toolPolicy: expect.objectContaining({
-            requestedTools: ["rsvp_query", "rsvp_summary"],
-            grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
-            deniedTools: [],
-            outwardMessagingAllowed: false,
-          }),
-        }),
-      }))
-      expect(mockReserveAutonomyBudget).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        senseOrHabit: "rsvp-wedding",
-        target: expect.objectContaining({
-          habitName: "rsvp-wedding",
-          rsvpSnapshotRef: "state/rsvp/snapshots/latest.json",
-          rsvpBudgetRef: "state/rsvp/spend-ledger.json",
-          rsvpIdempotencyRef: "state/rsvp/outbound-state.json",
-        }),
-        idempotencyKey: expect.stringContaining("rsvp-wedding"),
-      }))
-      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        habitName: "rsvp-wedding",
-        toolPolicy: expect.objectContaining({
-          requestedTools: ["rsvp_query", "rsvp_summary"],
-          grantedTools: expect.arrayContaining(["rsvp_query", "rsvp_summary"]),
-          deniedTools: [],
         }),
       }))
     })

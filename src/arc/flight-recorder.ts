@@ -1,6 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
-import { randomUUID } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import { capStructuredRecordString, capStructuredRecordStringLeaves } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -1339,14 +1339,38 @@ export function writeHabitRunReceipt(agentRoot: string, receipt: WritableHabitRu
     warnMalformedHabitReceipt(agentRoot, safeReceipt.runId, "unsafe run id")
     throw new Error(`unsafe habit run id: ${safeReceipt.runId}`)
   }
-  atomicWriteJson(habitReceiptPath(agentRoot, safeReceipt.runId), safeReceipt)
-  recordFlightRecorderEvent(agentRoot, {
+  const receiptPath = habitReceiptPath(agentRoot, safeReceipt.runId)
+  if (fs.existsSync(receiptPath)) {
+    const prior = readHabitRunReceipt(agentRoot, safeReceipt.runId)
+    if (prior === null || JSON.stringify(prior) !== JSON.stringify(safeReceipt)) {
+      throw new Error(`habit run receipt conflict: ${safeReceipt.runId}`)
+    }
+  } else {
+    atomicWriteJson(receiptPath, safeReceipt)
+  }
+  const relativeReceiptPath = path.join("arc", "flight-recorder", "habit-receipts", `${safeReceipt.runId}.json`)
+  const eventId = `hfr_${createHash("sha256").update(JSON.stringify(safeReceipt)).digest("base64url")}`
+  const eventPath = path.join(eventsDir(agentRoot), `${eventDay(safeReceipt.endedAt)}.jsonl`)
+  const eventExists = fs.existsSync(eventPath) && fs.readFileSync(eventPath, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .some((line) => {
+      try {
+        const event = JSON.parse(line) as Partial<FlightRecorderEvent>
+        return event.id === eventId
+          || (event.kind === "habit_run" && (event.meta as Record<string, unknown> | undefined)?.receiptPath === relativeReceiptPath)
+      } catch {
+        return false
+      }
+    })
+  if (!eventExists) recordFlightRecorderEvent(agentRoot, {
+    id: eventId,
     kind: "habit_run",
     recordedAt: safeReceipt.endedAt,
     summary: `habit ${safeReceipt.habitName} finished with ${safeReceipt.outcome}`,
     producedRefs: safeReceipt.producedRefs,
     meta: {
-      receiptPath: path.join("arc", "flight-recorder", "habit-receipts", `${safeReceipt.runId}.json`),
+      receiptPath: relativeReceiptPath,
       operationId: safeReceipt.operationId ?? null,
     },
   })

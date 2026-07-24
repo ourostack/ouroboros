@@ -111,7 +111,7 @@ describe("McpClient", () => {
       const request = lastStdinRequest(mockProc)
       expect(request.method).toBe("initialize")
       expect(request.jsonrpc).toBe("2.0")
-      expect((request.params as Record<string, unknown>).protocolVersion).toBeDefined()
+      expect((request.params as Record<string, unknown>).protocolVersion).toBe("2025-06-18")
       expect((request.params as Record<string, unknown>).clientInfo).toBeDefined()
 
       sendResponse(mockProc, {
@@ -164,7 +164,7 @@ describe("McpClient", () => {
         id: listReq.id,
         result: {
           tools: [
-            { name: "get_items", description: "Get work items", inputSchema: { type: "object" } },
+            { name: "get_items", description: "Get work items", inputSchema: { type: "object" }, outputSchema: { type: "object" } },
             { name: "create_item", description: "Create item", inputSchema: { type: "object" } },
           ],
         },
@@ -172,7 +172,7 @@ describe("McpClient", () => {
 
       const tools = await listPromise
       expect(tools).toEqual([
-        { name: "get_items", description: "Get work items", inputSchema: { type: "object" } },
+        { name: "get_items", description: "Get work items", inputSchema: { type: "object" }, outputSchema: { type: "object" } },
         { name: "create_item", description: "Create item", inputSchema: { type: "object" } },
       ])
     })
@@ -288,13 +288,68 @@ describe("McpClient", () => {
         id: callReq.id,
         result: {
           content: [{ type: "text", text: "item1\nitem2" }],
+          structuredContent: { items: ["item1", "item2"] },
+          isError: false,
         },
       })
 
       const result = await callPromise
       expect(result).toEqual({
         content: [{ type: "text", text: "item1\nitem2" }],
+        structuredContent: { items: ["item1", "item2"] },
+        isError: false,
       })
+    })
+
+    it("classifies non-writable failure before request dispatch", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+      mockProc.stdin.writable = false
+
+      await expect(client.callTool("get_items", {})).rejects.toMatchObject({
+        name: "McpTransportError",
+        phase: "pre-dispatch",
+      })
+    })
+
+    it("classifies timeout after request write as outcome-unknown post-dispatch", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+
+      const promise = client.callTool("effectful_tool", {}, 25)
+      await tick()
+      expect(lastStdinRequest(mockProc).method).toBe("tools/call")
+
+      await expect(promise).rejects.toMatchObject({
+        name: "McpTransportError",
+        phase: "post-dispatch",
+      })
+    })
+
+    it("classifies effect commit followed by response loss as one post-dispatch invocation", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+
+      const promise = client.callTool("effectful_tool", {})
+      await tick()
+      const effectfulCalls = allStdinRequests(mockProc).filter((request) =>
+        request.method === "tools/call"
+        && (request.params as Record<string, unknown>)?.name === "effectful_tool",
+      )
+      expect(effectfulCalls).toHaveLength(1)
+
+      // The fake server has committed its effect but loses the response before
+      // returning JSON-RPC authority. The client must classify, never replay.
+      const committedEffects = [effectfulCalls[0].id]
+      mockProc.kill = vi.fn(() => true)
+      mockProc.emit("close", 1)
+
+      await expect(promise).rejects.toMatchObject({
+        name: "McpTransportError",
+        phase: "post-dispatch",
+      })
+      expect(committedEffects).toHaveLength(1)
+      expect(allStdinRequests(mockProc).filter((request) => request.method === "tools/call")).toHaveLength(1)
     })
 
     it("enforces timeout on tools/call", async () => {

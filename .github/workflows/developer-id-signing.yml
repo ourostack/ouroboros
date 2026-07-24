@@ -1,0 +1,68 @@
+name: developer-id-signing
+
+"on":
+  workflow_dispatch:
+    inputs:
+      handoffControlBase64:
+        required: true
+        type: string
+      handoffSha256:
+        required: true
+        type: string
+      m0EvidenceGzipBase64:
+        required: true
+        type: string
+      m0EvidenceGzipSha256:
+        required: true
+        type: string
+      dispatchAttemptAuthorityBase64:
+        required: true
+        type: string
+      dispatchAttemptAuthoritySha256:
+        required: true
+        type: string
+      dispatchId:
+        required: true
+        type: string
+      dispatchCorrelationId:
+        required: true
+        type: string
+
+run-name: ouro-release-signing-${{ inputs.dispatchCorrelationId }}
+
+jobs:
+  signing:
+    runs-on: macos-26
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout immutable run tree
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Use pinned Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.4.1
+          package-manager-cache: false
+
+      - name: Install pinned release trust dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Admit exact protected-main signing authority
+        run: node .github/actions/release-trust/run-reconciliation.mjs admit-secret-workflow signing
+
+      - name: Compile closure-bound signing driver after attempt-authority active-pair-authority workflow_ref and release-trust-inception-head admission
+        run: /usr/bin/xcrun clang -std=c17 -Wall -Wextra -Werror native/developer-id-signing/driver.c -framework Security -framework CoreFoundation -o native/developer-id-signing/driver
+
+      - name: Materialize exact public identity and asset signing plan
+        run: node .github/actions/release-trust/run-reconciliation.mjs materialize-native-plan signing developer-id-signing-native-plan.v1.bin
+
+      - name: Sign plan-bound assets through one repository-secret boundary
+        env:
+          OURO_DRIVER_FIELD_1: ${{ secrets.OURO_DEVELOPER_ID_P12_B64 }}
+          OURO_DRIVER_FIELD_2: ${{ secrets.OURO_DEVELOPER_ID_P12_PASSWORD }}
+        run: node .github/actions/release-trust/run-reconciliation.mjs frame-native native/developer-id-signing/driver 2

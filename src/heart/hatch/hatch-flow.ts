@@ -7,6 +7,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { storeProviderCredentials } from "../auth/auth-flow"
 import { getDefaultModelForProvider } from "../provider-models"
 import { renderHabitFile } from "../habits/habit-parser"
+import { DEFAULT_HABIT_EXECUTION } from "../habits/habit-execution"
 import { createBundleMeta } from "../../mind/bundle-manifest"
 import { resolveDeskRecordPaths } from "../../mind/record-paths"
 import {
@@ -97,6 +98,7 @@ function writeHeartbeatHabit(bundleRoot: string, now: Date): void {
       cadence: "30m",
       status: "active",
       created: now.toISOString(),
+      execution: DEFAULT_HABIT_EXECUTION,
     },
     "Run a lightweight heartbeat cycle. Review task board and inbox.\nCheck on pending obligations. Write important durable outputs to Arc or Desk record.",
   )

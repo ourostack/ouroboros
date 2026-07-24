@@ -2459,7 +2459,7 @@ describe("private runtime", () => {
     expect(content).toMatch(/not found|missing|could not read/i)
   })
 
-  it("rejects direct RSVP habit turns with malformed metadata before provider execution", async () => {
+  it("ignores unowned personal frontmatter during a generic habit turn", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
     fs.writeFileSync(
@@ -2491,10 +2491,9 @@ describe("private runtime", () => {
       reason: "habit",
       habitName: "rsvp-wedding",
       now: () => new Date("2026-07-09T17:00:00.000Z"),
-    })).rejects.toThrow(/RSVP habit metadata.*sense, not channel/i)
+    })).resolves.toMatchObject({ sessionPath: expect.any(String) })
 
-    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
-    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).toHaveBeenCalledTimes(1)
   })
 
   it("heartbeat habit without file still calls buildHabitTurnMessage (missing file path)", async () => {

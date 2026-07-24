@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createHash } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -92,8 +93,10 @@ vi.mock("../../../heart/habits/habit-migration", () => ({
 
 vi.mock("../../../heart/daemon/os-cron-deps", () => ({
   createRealOsCronDeps: vi.fn(() => ({
-    exec: vi.fn(),
+    exec: vi.fn(() => ({ status: 113, stdout: "", stderr: "not found", timedOut: false })),
+    writeFileAtomic: vi.fn(),
     writeFile: vi.fn(),
+    readFile: vi.fn(),
     removeFile: vi.fn(),
     existsFile: vi.fn(() => false),
     listDir: vi.fn(() => []),
@@ -661,18 +664,21 @@ describe("daemon entrypoint", () => {
     expect(habitSchedulerOptionsMock).toHaveBeenCalledWith(
       expect.objectContaining({ execForVerify: expect.any(Function) }),
     )
+    const sluggerKey = createHash("sha256").update("slugger", "utf8").digest("base64url")
+    const otherKey = createHash("sha256").update("other", "utf8").digest("base64url")
+    const jobKey = createHash("sha256").update("slugger:heartbeat:cadence", "utf8").digest("base64url")
     const habitSchedulerOptions = habitSchedulerOptionsMock.mock.calls[0][0] as {
-      osCronManager: { ownsLabel: (label: string) => boolean }
+      osCronManager: { ownsRegistration: (value: { consumer: string; agentKey: string; jobKey: string }) => boolean }
     }
-    expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.heartbeat")).toBe(true)
-    expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.await.vendor-reply")).toBe(false)
-    expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.other.heartbeat")).toBe(false)
+    expect(habitSchedulerOptions.osCronManager.ownsRegistration({ consumer: "habit", agentKey: sluggerKey, jobKey })).toBe(true)
+    expect(habitSchedulerOptions.osCronManager.ownsRegistration({ consumer: "await", agentKey: sluggerKey, jobKey })).toBe(false)
+    expect(habitSchedulerOptions.osCronManager.ownsRegistration({ consumer: "habit", agentKey: otherKey, jobKey })).toBe(false)
     await vi.waitFor(() => expect(awaitSchedulerOptionsMock).toHaveBeenCalled())
     const awaitSchedulerOptions = awaitSchedulerOptionsMock.mock.calls[0][0] as {
-      osCronManager: { ownsLabel: (label: string) => boolean }
+      osCronManager: { ownsRegistration: (value: { consumer: string; agentKey: string; jobKey: string }) => boolean }
     }
-    expect(awaitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.await.vendor-reply")).toBe(true)
-    expect(awaitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.heartbeat")).toBe(false)
+    expect(awaitSchedulerOptions.osCronManager.ownsRegistration({ consumer: "await", agentKey: sluggerKey, jobKey })).toBe(true)
+    expect(awaitSchedulerOptions.osCronManager.ownsRegistration({ consumer: "habit", agentKey: sluggerKey, jobKey })).toBe(false)
     habitSchedulerGetDegradedHabitsMock.mockReturnValueOnce([
       { name: "heartbeat", reason: "cron registration failed — using timer fallback" },
     ])
@@ -1224,7 +1230,7 @@ describe("daemon entrypoint", () => {
     })
   })
 
-  it("routes habit scheduler fires through canonical private wake commands", async () => {
+  it("routes habit scheduler fires through generic habit pokes", async () => {
     const { processManagerSendToAgent, schedulerOptions, sendDaemonCommand } = await importDaemonEntryWithHabitDispatch({
       socketPath: "/tmp/ouro-habit-private-wake.sock",
     })
@@ -1235,25 +1241,13 @@ describe("daemon entrypoint", () => {
 
     expect(sendDaemonCommand).toHaveBeenCalledWith(
       "/tmp/ouro-habit-private-wake.sock",
-      expect.objectContaining({
-        kind: "private.wake",
+      {
+        kind: "habit.poke",
         agent: "slugger",
-        reason: "habit heartbeat fired by overdue",
-        triggerSource: "habit-overdue",
-        budgetClass: "scheduled",
-        originRefs: [
-          { kind: "habit", id: "heartbeat" },
-          { kind: "habit-trigger", id: "overdue" },
-          { kind: "habit-occurrence", id: "overdue:first-run:30m" },
-          { kind: "daemon-entry", id: "habit-scheduler" },
-        ],
-      }),
-    )
-    expect(sendDaemonCommand).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        idempotencyKey: "habit:slugger:heartbeat:overdue:overdue:first-run:30m",
-      }),
+        habitName: "heartbeat",
+        trigger: "overdue",
+        occurrenceId: "overdue:first-run:30m",
+      },
     )
     expect(sendDaemonCommand).not.toHaveBeenCalledWith(
       expect.any(String),
@@ -1292,7 +1286,7 @@ describe("daemon entrypoint", () => {
     })
     expect(sendDaemonCommand).toHaveBeenCalledWith(
       "/tmp/ouro-habit-failed-wake.sock",
-      expect.objectContaining({ kind: "private.wake" }),
+      expect.objectContaining({ kind: "habit.poke" }),
     )
     expect(processManagerSendToAgent).not.toHaveBeenCalled()
   })

@@ -5,13 +5,9 @@ const fs = require("node:fs")
 
 const RULES = [
   { name: "BlueBubbles send", pattern: /\b(?:sendBlueBubbles|sendMessage)\s*\(/ },
-  { name: "AislePlanner live fetch", pattern: /\b(?:fetchAislePlannerLive|fetchAislePlanner)\s*\(/ },
   { name: "vault writes", pattern: /\b(?:writeVaultItem|upsertRuntimeCredentialConfig|mergeRuntimeCredentialConfig)\s*\(/ },
   { name: "launchctl mutation", pattern: /\blaunchctl\b|\bspawnSync\s*\(\s*["']launchctl["']/ },
   { name: "daemon restart", pattern: /\b(?:restartDaemon|startDaemonProcess)\s*\(/ },
-  { name: "legacy RSVP save_snapshot", pattern: /\b(?:save_snapshot|saveSnapshot)\s*\(/ },
-  { name: "legacy RSVP write_sent_state", pattern: /\b(?:write_sent_state|writeSentState)\s*\(/ },
-  { name: "legacy RSVP run_report_pipeline", pattern: /\b(?:run_report_pipeline|runReportPipeline)\s*\(/ },
 ]
 
 function assertNoLiveSideEffects(input) {

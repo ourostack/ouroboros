@@ -1,8 +1,10 @@
+import { createHash, timingSafeEqual } from "crypto"
 import { McpClient, isMcpTransportError } from "./mcp-client"
-import type { McpToolInfo } from "./mcp-client"
+import type { McpToolCallResultV1, McpToolInfo } from "./mcp-client"
 import { loadAgentConfig, type McpServerConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "./credential-access"
+import { sha256CanonicalJson } from "../heart/runtime/canonical-json"
 import {
   listPluginMcpServers,
   pluginMcpServerToConfig,
@@ -21,6 +23,52 @@ interface ServerEntry {
    * naming convention. Builtin (agent.json mcpServers) entries leave it unset.
    */
   pluginId?: string
+}
+
+export interface McpInternalExecutorAuthority {
+  capabilityId: string
+  executorId: string
+  serverId: string
+  toolName: string
+  registryRevision: string
+  tokenSha256: string
+  token: string
+}
+
+export interface McpServerCompositionInventory {
+  serverId: string
+  negotiatedProtocolVersion: string
+  transportIdentitySha256: string
+  tools: McpToolInfo[]
+}
+
+export function createMcpInternalExecutorAuthority(input: {
+  executorId: string
+  serverId: string
+  toolName: string
+  registryRevision: string
+  randomBytes: (size: number) => Buffer
+}): McpInternalExecutorAuthority {
+  const tokenBytes = input.randomBytes(32)
+  if (!Buffer.isBuffer(tokenBytes) || tokenBytes.length !== 32) throw new Error("Internal MCP capability requires exactly 32 random bytes")
+  const token = tokenBytes.toString("hex")
+  const tokenSha256 = createHash("sha256").update(tokenBytes).digest("hex")
+  const capabilityId = createHash("sha256").update([
+    input.executorId,
+    input.serverId,
+    input.toolName,
+    input.registryRevision,
+    tokenSha256,
+  ].join("\u0000")).digest("hex")
+  return {
+    capabilityId,
+    executorId: input.executorId,
+    serverId: input.serverId,
+    toolName: input.toolName,
+    registryRevision: input.registryRevision,
+    tokenSha256,
+    token,
+  }
 }
 
 const MAX_RESTART_RETRIES = 5
@@ -58,13 +106,17 @@ export type RuntimeMcpServers = Record<string, McpServerConfig>
  * invariant that keeps the runtime MCP from bleeding into a different agent's
  * concurrent turn on the shared daemon.
  */
-function buildMergedServerConfig(runtimeServers?: RuntimeMcpServers): {
+interface McpServerConfigSource {
+  configuredServers?: Record<string, McpServerConfig>
+  includePlugins?: boolean
+}
+
+function buildMergedServerConfig(runtimeServers?: RuntimeMcpServers, source: McpServerConfigSource = {}): {
   mergedServers: Record<string, McpServerConfig>
   pluginOrigins: Record<string, string>
 } {
-  const config = loadAgentConfig()
-  const builtinServers = config.mcpServers ?? {}
-  const pluginServers = listPluginMcpServers()
+  const builtinServers = source.configuredServers ?? loadAgentConfig().mcpServers ?? {}
+  const pluginServers = source.includePlugins === false ? [] : listPluginMcpServers()
   const mergedServers: Record<string, McpServerConfig> = {}
   const pluginOrigins: Record<string, string> = {}
   for (const p of pluginServers) {
@@ -89,6 +141,8 @@ function buildMergedServerConfig(runtimeServers?: RuntimeMcpServers): {
 
 export class McpManager {
   private servers = new Map<string, ServerEntry>()
+  private internalAuthorities = new Map<string, McpInternalExecutorAuthority>()
+  private internalAuthorityOwners = new Map<string, Set<string>>()
   private shuttingDown = false
 
   async start(
@@ -114,7 +168,12 @@ export class McpManager {
   listAllTools(): Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }> {
     const result: Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }> = []
     for (const [name, entry] of this.servers) {
-      result.push({ server: name, tools: entry.cachedTools, pluginId: entry.pluginId })
+      if ((entry.config.visibility ?? "agent") === "internal") continue
+      result.push({
+        server: name,
+        tools: entry.cachedTools,
+        ...(entry.pluginId ? { pluginId: entry.pluginId } : {}),
+      })
     }
     return result
   }
@@ -123,10 +182,13 @@ export class McpManager {
     server: string,
     tool: string,
     args: Record<string, unknown>,
-  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  ): Promise<McpToolCallResultV1> {
     let entry = this.servers.get(server)
     if (!entry) {
       throw new Error(`Unknown server: ${server}`)
+    }
+    if ((entry.config.visibility ?? "agent") === "internal") {
+      throw new Error(`Server "${server}" is internal and unavailable to ordinary MCP calls`)
     }
 
     if (!entry.client.isConnected()) {
@@ -143,6 +205,9 @@ export class McpManager {
       if (!isMcpTransportError(error)) {
         throw error
       }
+      if (!error || typeof error !== "object" || (error as { phase?: unknown }).phase !== "pre-dispatch") {
+        throw error
+      }
       const reason = error instanceof Error ? error.message : String(error)
       await this.recoverStaleTransport(server, reason)
       const recovered = this.servers.get(server)
@@ -156,6 +221,7 @@ export class McpManager {
   async runCanaries(): Promise<Array<{ server: string; ok: boolean; detail: string }>> {
     const results: Array<{ server: string; ok: boolean; detail: string }> = []
     for (const [server, entry] of [...this.servers]) {
+      if ((entry.config.visibility ?? "agent") === "internal") continue
       try {
         if (!entry.client.isConnected()) {
           await this.recoverStaleTransport(server, "canary disconnected")
@@ -190,9 +256,9 @@ export class McpManager {
    *  runtime server (e.g. ouro_workbench) is classified as "removed" and torn
    *  down — which is exactly the desired no-leak behavior for a turn that omits
    *  them. */
-  async reconcile(runtimeServers?: RuntimeMcpServers): Promise<void> {
+  async reconcile(runtimeServers?: RuntimeMcpServers, source: McpServerConfigSource = {}): Promise<void> {
     try {
-      const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers)
+      const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers, source)
       const currentNames = new Set(this.servers.keys())
       const desiredNames = new Set(Object.keys(mergedServers))
 
@@ -205,6 +271,15 @@ export class McpManager {
             message: `connecting new MCP server: ${name}`,
             meta: { server: name, command: cfg.command },
           })
+          await this.connectServer(name, cfg, pluginOrigins[name])
+          continue
+        }
+        const current = this.servers.get(name)!
+        if (sha256CanonicalJson(current.config) !== sha256CanonicalJson(cfg)
+          || current.pluginId !== pluginOrigins[name]) {
+          this.revokeAuthoritiesForServer(name)
+          current.client.shutdown()
+          this.servers.delete(name)
           await this.connectServer(name, cfg, pluginOrigins[name])
         }
       }
@@ -219,6 +294,7 @@ export class McpManager {
             meta: { server: name },
           })
           const entry = this.servers.get(name)
+          this.revokeAuthoritiesForServer(name)
           /* v8 ignore next -- defensive: name comes from this.servers.keys() this same tick, so entry is always present; the guard only protects against an awaited connectServer crash-handler racing a delete @preserve */
           if (entry) entry.client.shutdown()
           this.servers.delete(name)
@@ -250,6 +326,212 @@ export class McpManager {
       entry.client.shutdown()
     }
     this.servers.clear()
+    this.internalAuthorities.clear()
+    this.internalAuthorityOwners.clear()
+  }
+
+  registerInternalExecutorAuthority(authority: McpInternalExecutorAuthority): void {
+    if (this.internalAuthorities.has(authority.capabilityId)) throw new Error(`Duplicate internal MCP capability: ${authority.capabilityId}`)
+    this.validateAuthorityShape(authority)
+    this.internalAuthorities.set(authority.capabilityId, { ...authority })
+    emitNervesEvent({
+      component: "repertoire",
+      event: "mcp.internal_capability_registered",
+      message: "registered memory-only internal MCP executor capability",
+      meta: { capabilityId: authority.capabilityId, executorId: authority.executorId },
+    })
+  }
+
+  replaceInternalExecutorAuthorities(owner: string, authorities: McpInternalExecutorAuthority[]): void {
+    if (!owner) throw new Error("Internal MCP capability owner is required")
+    const previous = this.internalAuthorityOwners.get(owner) ?? new Set<string>()
+    const next = new Set<string>()
+    for (const authority of authorities) {
+      this.validateAuthorityShape(authority)
+      if (next.has(authority.capabilityId)) throw new Error(`Duplicate internal MCP capability: ${authority.capabilityId}`)
+      const registered = this.internalAuthorities.get(authority.capabilityId)
+      if (registered && !previous.has(authority.capabilityId)) {
+        throw new Error(`Internal MCP capability is already owned: ${authority.capabilityId}`)
+      }
+      next.add(authority.capabilityId)
+    }
+    for (const capabilityId of previous) this.internalAuthorities.delete(capabilityId)
+    for (const authority of authorities) this.internalAuthorities.set(authority.capabilityId, { ...authority })
+    this.internalAuthorityOwners.set(owner, next)
+    emitNervesEvent({
+      component: "repertoire",
+      event: "mcp.internal_capabilities_replaced",
+      message: "atomically replaced one owner's internal MCP capabilities",
+      meta: { owner, count: authorities.length },
+    })
+  }
+
+  async callInternalTool(input: {
+    authority: McpInternalExecutorAuthority
+    serverId: string
+    toolName: string
+    arguments: Record<string, unknown>
+    timeoutMs: number
+  }): Promise<McpToolCallResultV1> {
+    let entry = this.authorizedInternalEntry(input.authority, input.serverId, input.toolName)
+    if (!entry.client.isConnected()) {
+      await this.recoverStaleTransport(input.serverId, "internal pre-call disconnected")
+      entry = this.authorizedInternalEntry(input.authority, input.serverId, input.toolName)
+      if (!entry.client.isConnected()) throw new Error("Internal MCP capability server is disconnected after recovery")
+    }
+    try {
+      return await entry.client.callTool(input.toolName, input.arguments, input.timeoutMs)
+    } catch (error) {
+      if (!isMcpTransportError(error)
+        || !error
+        || typeof error !== "object"
+        || (error as { phase?: unknown }).phase !== "pre-dispatch") {
+        throw error
+      }
+      await this.recoverStaleTransport(input.serverId, error instanceof Error ? error.message : String(error))
+      const recovered = this.authorizedInternalEntry(input.authority, input.serverId, input.toolName)
+      if (!recovered.client.isConnected()) throw new Error("Internal MCP capability server is disconnected after recovery")
+      return recovered.client.callTool(input.toolName, input.arguments, input.timeoutMs)
+    }
+  }
+
+  async refreshInternalInventory(authority: McpInternalExecutorAuthority): Promise<McpToolInfo[]> {
+    let entry = this.authorizedInternalEntry(authority, authority.serverId, authority.toolName)
+    if (!entry.client.isConnected()) {
+      await this.recoverStaleTransport(authority.serverId, "internal inventory disconnected")
+      entry = this.authorizedInternalEntry(authority, authority.serverId, authority.toolName)
+      if (!entry.client.isConnected()) throw new Error("Internal MCP capability server is disconnected after recovery")
+    }
+    let tools: McpToolInfo[]
+    try {
+      tools = await entry.client.refreshTools()
+    } catch (error) {
+      if (!isMcpTransportError(error)) throw error
+      await this.recoverStaleTransport(authority.serverId, error instanceof Error ? error.message : String(error))
+      entry = this.authorizedInternalEntry(authority, authority.serverId, authority.toolName)
+      if (!entry.client.isConnected()) throw new Error("Internal MCP capability server is disconnected after recovery")
+      tools = await entry.client.refreshTools()
+    }
+    entry.cachedTools = tools
+    return tools
+  }
+
+  async refreshServerInventoryForComposition(serverId: string): Promise<McpServerCompositionInventory> {
+    let entry = this.servers.get(serverId)
+    if (!entry) throw new Error(`MCP server "${serverId}" is unavailable for composition`)
+    if (!entry.client.isConnected()) {
+      await this.recoverStaleTransport(serverId, "composition inventory disconnected")
+      entry = this.servers.get(serverId)
+      if (!entry?.client.isConnected()) throw new Error(`MCP server "${serverId}" is unavailable for composition`)
+    }
+    let tools: McpToolInfo[]
+    try {
+      tools = await entry.client.refreshTools()
+    } catch (error) {
+      if (!isMcpTransportError(error)) throw error
+      await this.recoverStaleTransport(serverId, error instanceof Error ? error.message : String(error))
+      entry = this.servers.get(serverId)
+      if (!entry?.client.isConnected()) throw new Error(`MCP server "${serverId}" is unavailable for composition`)
+      tools = await entry.client.refreshTools()
+    }
+    entry.cachedTools = tools
+    const negotiatedProtocolVersion = entry.client.protocolVersion()
+    if (!negotiatedProtocolVersion) throw new Error(`MCP server "${serverId}" has no negotiated protocol version`)
+    return {
+      serverId,
+      negotiatedProtocolVersion,
+      transportIdentitySha256: `sha256:${sha256CanonicalJson({
+        serverId,
+        command: entry.config.command,
+        args: entry.config.args ?? [],
+        cwd: entry.config.cwd ?? null,
+        visibility: entry.config.visibility ?? "agent",
+      })}`,
+      tools: structuredClone(tools),
+    }
+  }
+
+  async callReadOnlyHealthTool(input: {
+    serverId: string
+    toolName: string
+    arguments: Record<string, unknown>
+    timeoutMs: number
+  }): Promise<McpToolCallResultV1> {
+    let entry = this.servers.get(input.serverId)
+    if (!entry) throw new Error(`MCP health server "${input.serverId}" is unavailable`)
+    if (!entry.client.isConnected()) {
+      await this.recoverStaleTransport(input.serverId, "read-only health server disconnected")
+      entry = this.servers.get(input.serverId)
+      if (!entry?.client.isConnected()) throw new Error(`MCP health server "${input.serverId}" is unavailable`)
+    }
+    if (!entry.cachedTools.some((tool) => tool.name === input.toolName)) throw new Error(`MCP health tool "${input.toolName}" is absent`)
+    try {
+      return await entry.client.callTool(input.toolName, input.arguments, input.timeoutMs)
+    } catch (error) {
+      if (!isMcpTransportError(error)) throw error
+      await this.recoverStaleTransport(input.serverId, error instanceof Error ? error.message : String(error))
+      entry = this.servers.get(input.serverId)
+      if (!entry?.client.isConnected()) throw new Error(`MCP health server "${input.serverId}" is unavailable`)
+      if (!entry.cachedTools.some((tool) => tool.name === input.toolName)) throw new Error(`MCP health tool "${input.toolName}" is absent`)
+      return entry.client.callTool(input.toolName, input.arguments, input.timeoutMs)
+    }
+  }
+
+  private authorizedInternalEntry(
+    authority: McpInternalExecutorAuthority,
+    serverId: string,
+    toolName: string,
+  ): ServerEntry {
+    const registered = this.internalAuthorities.get(authority.capabilityId)
+    if (!registered || !this.sameAuthority(registered, authority)) throw new Error("Internal MCP capability authority mismatch")
+    if (registered.serverId !== serverId || registered.toolName !== toolName) throw new Error("Internal MCP capability coordinates mismatch")
+    const entry = this.servers.get(serverId)
+    if (!entry || (entry.config.visibility ?? "agent") !== "internal") throw new Error("Internal MCP capability server is unavailable")
+    if (!entry.cachedTools.some((tool) => tool.name === toolName)) throw new Error("Internal MCP capability tool is absent from inventory")
+    return entry
+  }
+
+  private validateAuthorityShape(authority: McpInternalExecutorAuthority): void {
+    if (!/^[0-9a-f]{64}$/.test(authority.capabilityId)
+      || !/^[0-9a-f]{64}$/.test(authority.tokenSha256)
+      || !/^[0-9a-f]{64}$/.test(authority.token)) {
+      throw new Error("Internal MCP capability encoding is invalid")
+    }
+    const tokenHash = createHash("sha256").update(Buffer.from(authority.token, "hex")).digest("hex")
+    if (tokenHash !== authority.tokenSha256) throw new Error("Internal MCP capability token hash mismatch")
+  }
+
+  private sameAuthority(left: McpInternalExecutorAuthority, right: McpInternalExecutorAuthority): boolean {
+    const leftToken = Buffer.from(left.token, "hex")
+    const rightToken = Buffer.from(right.token, "hex")
+    return left.capabilityId === right.capabilityId
+      && left.executorId === right.executorId
+      && left.serverId === right.serverId
+      && left.toolName === right.toolName
+      && left.registryRevision === right.registryRevision
+      && left.tokenSha256 === right.tokenSha256
+      && leftToken.length === rightToken.length
+      && timingSafeEqual(leftToken, rightToken)
+  }
+
+  private revokeAuthoritiesForServer(serverId: string): void {
+    const revoked = new Set(
+      [...this.internalAuthorities]
+        .filter(([, authority]) => authority.serverId === serverId)
+        .map(([capabilityId]) => capabilityId),
+    )
+    if (revoked.size === 0) return
+    for (const capabilityId of revoked) this.internalAuthorities.delete(capabilityId)
+    for (const [owner, capabilityIds] of this.internalAuthorityOwners) {
+      for (const capabilityId of revoked) capabilityIds.delete(capabilityId)
+      if (capabilityIds.size === 0) this.internalAuthorityOwners.delete(owner)
+    }
+    emitNervesEvent({
+      component: "repertoire",
+      event: "mcp.internal_capabilities_revoked_for_server",
+      message: "revoked internal MCP capabilities before server authority changed",
+      meta: { serverId, count: revoked.size },
+    })
   }
 
   /**
@@ -424,8 +706,14 @@ export class McpManager {
   }
 }
 
-let _sharedManager: McpManager | null = null
-let _sharedManagerPromise: Promise<McpManager | null> | null = null
+const DEFAULT_SHARED_MANAGER_SCOPE = "default"
+const _sharedManagers = new Map<string, McpManager>()
+const _sharedManagerOperations = new Map<string, Promise<McpManager | null>>()
+
+export interface SharedMcpManagerOptions extends McpServerConfigSource {
+  runtimeServers?: RuntimeMcpServers
+  scope?: string
+}
 
 /**
  * Get or create a shared McpManager instance from the agent's config.
@@ -440,29 +728,22 @@ let _sharedManagerPromise: Promise<McpManager | null> | null = null
  * no-leak invariant for the shared multi-agent daemon.
  */
 export async function getSharedMcpManager(
-  options?: { runtimeServers?: RuntimeMcpServers },
+  options: SharedMcpManagerOptions = {},
 ): Promise<McpManager | null> {
-  const runtimeServers = options?.runtimeServers
-  // If manager exists, reconcile to pick up config changes (new/removed servers)
-  // AND this turn's runtime overrides. Passing runtimeServers per-call is what
-  // scopes the runtime MCP to the active agent's turn.
-  if (_sharedManager) {
-    await _sharedManager.reconcile(runtimeServers)
-    return _sharedManager
-  }
-  /* v8 ignore next -- race guard: deduplicates concurrent initialization calls @preserve */
-  if (_sharedManagerPromise) return _sharedManagerPromise
-
-  // Always re-check config — agent may have added servers since last call
-
-  _sharedManagerPromise = (async () => {
+  const scope = options.scope ?? DEFAULT_SHARED_MANAGER_SCOPE
+  const prior = _sharedManagerOperations.get(scope) ?? Promise.resolve(_sharedManagers.get(scope) ?? null)
+  const operation = prior.then(async (current) => {
     try {
-      const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers)
+      if (current) {
+        await current.reconcile(options.runtimeServers, options)
+        return current
+      }
+      const { mergedServers, pluginOrigins } = buildMergedServerConfig(options.runtimeServers, options)
       if (Object.keys(mergedServers).length === 0) return null
 
       const manager = new McpManager()
       await manager.start(mergedServers, pluginOrigins)
-      _sharedManager = manager
+      _sharedManagers.set(scope, manager)
       return manager
     } catch (error) {
       emitNervesEvent({
@@ -474,12 +755,15 @@ export async function getSharedMcpManager(
         meta: { reason: error instanceof Error ? error.message : String(error) },
       })
       return null
-    } finally {
-      _sharedManagerPromise = null
     }
-  })()
+  })
+  _sharedManagerOperations.set(scope, operation)
 
-  return _sharedManagerPromise
+  try {
+    return await operation
+  } finally {
+    if (_sharedManagerOperations.get(scope) === operation) _sharedManagerOperations.delete(scope)
+  }
 }
 
 /**
@@ -487,14 +771,13 @@ export async function getSharedMcpManager(
  * Called during daemon/agent shutdown.
  */
 export function shutdownSharedMcpManager(): void {
-  if (_sharedManager) {
-    _sharedManager.shutdown()
-    _sharedManager = null
-  }
+  for (const manager of _sharedManagers.values()) manager.shutdown()
+  _sharedManagers.clear()
+  _sharedManagerOperations.clear()
 }
 
 /** Reset for testing only */
 export function resetSharedMcpManager(): void {
-  _sharedManager = null
-  _sharedManagerPromise = null
+  _sharedManagers.clear()
+  _sharedManagerOperations.clear()
 }

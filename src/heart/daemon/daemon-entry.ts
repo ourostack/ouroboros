@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execSync } from "child_process"
+import { createHash } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import { DaemonProcessManager, type RuntimeCredentialBootstrap } from "./process-manager"
@@ -27,14 +28,13 @@ import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
 import { AwaitScheduler } from "../awaiting/await-scheduler"
 import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
-import { LaunchdCronManager } from "./os-cron"
+import { CrontabCronManager, LaunchdCronManager, type OsCronDeps, type OsCronManager, type OsCronRegistrationIdentity } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
-import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from "./habit-private-wake"
-import { isRsvpHabitName } from "../../rsvp/habit-policy"
+import type { HabitPrivateWakeTriggerSource } from "./habit-private-wake"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
@@ -49,6 +49,11 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { readAgentConfigForAgent } from "../auth/auth-flow"
 import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
+import { getSharedMcpManager } from "../../repertoire/mcp-manager"
+import { AdapterDiagnosticsRegistry } from "../habits/adapter-diagnostics"
+import { composeMcpHabitAdapter, type McpHabitAdapterComposition } from "../habits/mcp-habit-composition"
+import { sha256CanonicalJson } from "../runtime/canonical-json"
+import { createDarwinProcessIdentitySource } from "../runtime/darwin-process-proof"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -256,15 +261,16 @@ const taskScheduler = new TaskDrivenScheduler({
 const habitSchedulers: HabitScheduler[] = []
 const awaitSchedulers: AwaitScheduler[] = []
 
-function habitCronLabelOwner(agent: string): (label: string) => boolean {
-  const agentPrefix = `bot.ouro.${agent}.`
-  const awaitPrefix = `${agentPrefix}await.`
-  return (label) => label.startsWith(agentPrefix) && !label.startsWith(awaitPrefix)
+function cronRegistrationOwner(consumer: string, agent: string): (identity: OsCronRegistrationIdentity) => boolean {
+  const agentKey = createHash("sha256").update(agent, "utf8").digest("base64url")
+  return (identity) => identity.consumer === consumer && identity.agentKey === agentKey
 }
 
-function awaitCronLabelOwner(agent: string): (label: string) => boolean {
-  const awaitPrefix = `bot.ouro.${agent}.await.`
-  return (label) => label.startsWith(awaitPrefix)
+function createRuntimeCronManager(deps: OsCronDeps, consumer: string, agent: string): OsCronManager {
+  const options = { consumer, ownsRegistration: cronRegistrationOwner(consumer, agent) }
+  return process.platform === "darwin"
+    ? new LaunchdCronManager(deps, options)
+    : new CrontabCronManager(deps, options)
 }
 
 function verifyOsCron(command: string): string {
@@ -309,6 +315,58 @@ const router = new FileMessageRouter()
 const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
+
+const adapterDiagnostics = new AdapterDiagnosticsRegistry()
+const mcpHabitCompositions = new Map<string, McpHabitAdapterComposition>()
+const mcpHabitAdapterOperations = new Map<string, Promise<McpHabitAdapterComposition["adapter"] | null>>()
+
+async function resolveMcpToolHabitAdapter(agent: string): Promise<McpHabitAdapterComposition["adapter"] | null> {
+  const { config } = readAgentConfigForAgent(agent, getAgentBundlesRoot())
+  const managerOptions = {
+    scope: `habit-executors:${agent}`,
+    configuredServers: config.mcpServers ?? {},
+    includePlugins: false,
+  }
+  if ((config.habitExecutors?.length ?? 0) === 0) {
+    mcpHabitCompositions.delete(agent)
+    const existing = await getSharedMcpManager(managerOptions)
+    existing?.replaceInternalExecutorAuthorities(`habit-executors:${agent}`, [])
+    return null
+  }
+  const revision = `sha256:${sha256CanonicalJson({
+    mcpServers: config.mcpServers,
+    habitExecutors: config.habitExecutors,
+    mcpHealthProfiles: config.mcpHealthProfiles,
+  })}`
+  const manager = await getSharedMcpManager(managerOptions)
+  if (!manager) throw new Error(`MCP habit adapter unavailable for ${agent}: no MCP manager`)
+  let composition = mcpHabitCompositions.get(agent)
+  if (!composition || composition.configRevision !== revision) {
+    composition = await composeMcpHabitAdapter({
+      agent,
+      bundleRoot: path.join(getAgentBundlesRoot(), `${agent}.ouro`),
+      packageSchemaRoot: path.join(getRepoRoot(), "schemas"),
+      config,
+      manager,
+      diagnostics: adapterDiagnostics,
+    }) ?? undefined
+    if (!composition) return null
+    mcpHabitCompositions.set(agent, composition)
+  }
+  if (!await composition.ensureHealthy()) throw new Error(`MCP habit adapter health gate is closed for ${agent}`)
+  return composition.adapter
+}
+
+async function mcpToolHabitAdapterFor(agent: string): Promise<McpHabitAdapterComposition["adapter"] | null> {
+  const prior = mcpHabitAdapterOperations.get(agent) ?? Promise.resolve(null)
+  const operation = prior.catch(() => null).then(() => resolveMcpToolHabitAdapter(agent))
+  mcpHabitAdapterOperations.set(agent, operation)
+  try {
+    return await operation
+  } finally {
+    if (mcpHabitAdapterOperations.get(agent) === operation) mcpHabitAdapterOperations.delete(agent)
+  }
+}
 
 const healthMonitor = new HealthMonitor({
   processManager,
@@ -379,6 +437,9 @@ const daemon = new OuroDaemon({
   healthMonitor,
   router,
   mode,
+  mcpToolHabitAdapterFor,
+  adapterDiagnostics,
+  habitProcessIdentitySource: createDarwinProcessIdentitySource({ packageRoot: getRepoRoot() }),
   onStopCommandComplete: () => {
     stopEntryRuntime()
     scheduleCleanProcessExitAfterStopCommand()
@@ -660,44 +721,24 @@ void daemon.start().then(async () => {
       // Migrate old tasks/habits/ to habits/ at bundle root
       migrateHabitsFromTaskSystem(bundleRoot)
 
-      const osCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
+      const osCronManager = createRuntimeCronManager(osCronDeps, "habit", agent)
       const scheduler = new HabitScheduler({
         agent,
         habitsDir,
         osCronManager,
         onHabitFire: (habitName, trigger, context) => {
-          if (isRsvpHabitName(habitName)) {
-            sendDaemonCommand(socketPath, {
-              kind: "habit.poke",
-              agent,
-              habitName,
-              trigger,
-              ...(context?.occurrenceId ? { occurrenceId: context.occurrenceId } : {}),
-            }).catch((error) => {
-              emitHabitPrivateWakeDispatchError({
-                agent,
-                habitName,
-                trigger,
-                triggerSource: `habit-${trigger}` as HabitPrivateWakeTriggerSource,
-                socketPath,
-                error,
-              })
-            })
-            return
-          }
-          const command = buildHabitPrivateWakeCommand({
+          sendDaemonCommand(socketPath, {
+            kind: "habit.poke",
             agent,
             habitName,
             trigger,
-            sourceRef: { kind: "daemon-entry", id: "habit-scheduler" },
-            occurrenceId: context?.occurrenceId,
-          })
-          sendDaemonCommand(socketPath, command).catch((error) => {
+            ...(context?.occurrenceId ? { occurrenceId: context.occurrenceId } : {}),
+          }).catch((error) => {
             emitHabitPrivateWakeDispatchError({
               agent,
               habitName,
               trigger,
-              triggerSource: command.triggerSource as HabitPrivateWakeTriggerSource,
+              triggerSource: `habit-${trigger}` as HabitPrivateWakeTriggerSource,
               socketPath,
               error,
             })
@@ -754,7 +795,7 @@ void daemon.start().then(async () => {
     const awaitsDir = path.join(bundleRoot, "awaiting")
     const awaitDegradedComponent = `awaits:${agent}`
     try {
-      const awaitOsCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
+      const awaitOsCronManager = createRuntimeCronManager(osCronDeps, "await", agent)
       const awaitScheduler = new AwaitScheduler({
         agent,
         awaitsDir,

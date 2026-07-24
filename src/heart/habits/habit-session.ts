@@ -24,6 +24,7 @@ import type { ToolDefinition, ToolRiskProfile } from "../../repertoire/tools-bas
 import { nextCadenceRunAt } from "../daemon/cadence"
 import type { HabitFile } from "./habit-parser"
 import { recordHabitRun } from "./habit-runtime-state"
+import { writeHabitProjectionCandidate } from "./habit-projection-candidate"
 
 export { isSafeHabitRunId } from "../../arc/flight-recorder"
 
@@ -83,13 +84,16 @@ export interface BuildHabitRunReceiptInput {
   summarySnapshot?: HabitRunSummarySnapshot
 }
 
-export type CompleteHabitRunInput = Omit<BuildHabitRunReceiptInput, "outcome" | "nextRunAt">
+export type CompleteHabitRunInput = Omit<BuildHabitRunReceiptInput, "outcome" | "nextRunAt"> & {
+  projection?: { occurrenceId: string; attemptId: string }
+}
 
 export interface CompleteHabitRunResult {
   outcome: HabitRunOutcome
   producedRefs: FlightRecorderProducedRef[]
   receiptWritten: boolean
   runtimeStateRecorded: boolean
+  projectionCandidateRef: string | null
 }
 
 export interface HabitRuntimeStateSnapshot {
@@ -697,20 +701,49 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       errors: input.errors,
       summarySnapshot: input.summarySnapshot,
     })
+    if (input.projection) {
+      const candidate = writeHabitProjectionCandidate(
+        input.agentRoot,
+        input.projection.occurrenceId,
+        input.projection.attemptId,
+        receipt,
+      )
+      return {
+        outcome,
+        producedRefs,
+        receiptWritten: false,
+        runtimeStateRecorded: false,
+        projectionCandidateRef: candidate.candidateRef,
+      }
+    }
     writeHabitRunReceipt(input.agentRoot, receipt)
   } catch (error) {
-    emitNervesEvent({
-      level: "error",
-      component: "senses",
-      event: "senses.habit_receipt_write_error",
-      message: "habit receipt could not be written; runtime state was not advanced",
-      meta: {
-        habitName: input.habit.name,
-        runId: input.runId,
-        error: String(error),
-      },
-    })
-    return { outcome, producedRefs, receiptWritten: false, runtimeStateRecorded: false }
+    if (input.projection) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.habit_projection_candidate_write_error",
+        message: "habit projection candidate could not be staged",
+        meta: {
+          habitName: input.habit.name,
+          runId: input.runId,
+          error: String(error),
+        },
+      })
+    } else {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.habit_receipt_write_error",
+        message: "habit receipt could not be written; runtime state was not advanced",
+        meta: {
+          habitName: input.habit.name,
+          runId: input.runId,
+          error: String(error),
+        },
+      })
+    }
+    return { outcome, producedRefs, receiptWritten: false, runtimeStateRecorded: false, projectionCandidateRef: null }
   }
   try {
     recordHabitRun(input.agentRoot, input.habit.name, input.endedAt, {
@@ -719,7 +752,7 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
       latestRunId: receipt.runId,
       latestReceiptLocator: receipt.receiptLocator,
     })
-    return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: true }
+    return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: true, projectionCandidateRef: null }
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -732,6 +765,6 @@ export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRun
         error: String(error),
       },
     })
-    return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: false }
+    return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: false, projectionCandidateRef: null }
   }
 }

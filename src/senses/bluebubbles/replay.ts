@@ -39,14 +39,14 @@ export interface BlueBubblesFixtureReplayResult {
   modelInputHash: string
 }
 
-export interface ReplayJuly9BlueBubblesContextFixtureInput {
+export interface ReplayBlueBubblesContextFixtureInput {
   manifestPath: string
   deps?: {
     querySession?: (...args: unknown[]) => unknown
   }
 }
 
-export interface July9BlueBubblesContextReplayResult {
+export interface BlueBubblesContextReplayResult {
   sideEffect: false
   contextPacketHash: string
   renderedModelInputHash: string
@@ -118,11 +118,11 @@ function readJsonManifest(filePath: string): Record<string, unknown> {
 
 function manifestExpected(manifest: Record<string, unknown>): Record<string, unknown> {
   const expected = isRecord(manifest.expected) ? manifest.expected : null
-  if (!expected) throw new Error("July 9 replay manifest missing expected block")
+  if (!expected) throw new Error("BlueBubbles context replay manifest missing expected block")
   return expected
 }
 
-function july9PrivacyViolations(manifest: Record<string, unknown>): string[] {
+function contextReplayPrivacyViolations(manifest: Record<string, unknown>): string[] {
   const privacy = isRecord(manifest.privacy) ? manifest.privacy : null
   if (!privacy) return ["privacy"]
   const violations: string[] = []
@@ -133,10 +133,10 @@ function july9PrivacyViolations(manifest: Record<string, unknown>): string[] {
   return violations
 }
 
-function assertJuly9ReplayPrivacy(manifest: Record<string, unknown>): void {
-  const violations = july9PrivacyViolations(manifest)
+function assertContextReplayPrivacy(manifest: Record<string, unknown>): void {
+  const violations = contextReplayPrivacyViolations(manifest)
   if (violations.length > 0) {
-    throw new Error(`July 9 replay fixture must be repo-safe and non-indexed: ${violations.join(", ")}`)
+    throw new Error(`BlueBubbles context replay fixture must be repo-safe and non-indexed: ${violations.join(", ")}`)
   }
 }
 
@@ -159,14 +159,14 @@ function messageLine(message: Record<string, unknown>): string | null {
   return `[${timestamp}] ${author}: ${body}`
 }
 
-export async function replayJuly9BlueBubblesContextFixture(
-  input: ReplayJuly9BlueBubblesContextFixtureInput,
-): Promise<July9BlueBubblesContextReplayResult> {
+export async function replayBlueBubblesContextFixture(
+  input: ReplayBlueBubblesContextFixtureInput,
+): Promise<BlueBubblesContextReplayResult> {
   const manifest = readJsonManifest(input.manifestPath)
-  if (manifest.schemaVersion !== 1 || manifest.policyVersion !== "july-9-rsvp-regression/v1") {
-    throw new Error("unsupported July 9 replay manifest")
+  if (manifest.schemaVersion !== 1 || manifest.policyVersion !== "bluebubbles-context-regression/v1") {
+    throw new Error("unsupported BlueBubbles context replay manifest")
   }
-  assertJuly9ReplayPrivacy(manifest)
+  assertContextReplayPrivacy(manifest)
   const expected = manifestExpected(manifest)
   const modelInput = manifestMessages(manifest)
     .map(messageLine)
@@ -180,8 +180,8 @@ export async function replayJuly9BlueBubblesContextFixture(
   }
   emitNervesEvent({
     component: "senses",
-    event: "senses.bluebubbles_july9_fixture_replayed",
-    message: "replayed July 9 BlueBubbles context fixture",
+    event: "senses.bluebubbles_context_fixture_replayed",
+    message: "replayed BlueBubbles same-chat context fixture",
     meta: {
       contextPacketHash: result.contextPacketHash,
       renderedModelInputHash: result.renderedModelInputHash,

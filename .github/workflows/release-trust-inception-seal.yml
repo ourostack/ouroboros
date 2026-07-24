@@ -1,0 +1,57 @@
+name: release-trust-inception-seal
+
+"on":
+  workflow_dispatch:
+    inputs:
+      sealBodyBase64:
+        required: true
+        type: string
+      sealBodySha256:
+        required: true
+        type: string
+
+run-name: release-trust-inception-seal-${{ github.sha }}
+
+jobs:
+  seal:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout immutable authority merge
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.0.5
+
+      - name: Use pinned Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.4.1
+          package-manager-cache: false
+
+      - name: Install pinned release trust dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Reconstruct exact inception seal body bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/actions/release-trust/run-reconciliation.mjs materialize-seal-input release-trust-inception-seal-body.v1.json release-trust-inception-seal-statement.v1.json
+
+      - name: Create keyless inception seal
+        run: cosign attest-blob --yes --statement release-trust-inception-seal-statement.v1.json --bundle release-trust-inception-seal.v1.sigstore.json
+
+      - name: Upload exact inception seal artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-trust-inception-seal-${{ github.run_id }}-1
+          path: |
+            release-trust-inception-seal-body.v1.json
+            release-trust-inception-seal.v1.sigstore.json
+          if-no-files-found: error
+          retention-days: 90

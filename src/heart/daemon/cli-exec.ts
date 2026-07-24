@@ -120,7 +120,6 @@ import type {
   ThoughtsCliCommand,
   CloneCliCommand,
   DoctorCliCommand,
-  RsvpCliCommand,
   HelpCliCommand,
   RuntimeConfigScope,
   A2ACliCommand,
@@ -247,27 +246,10 @@ function registerMcpServer(addCommand: string, removeCommand: string): "register
   }
 }
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
-const RSVP_CLI_KINDS = new Set<RsvpCliCommand["kind"]>([
-  "rsvp.doctor",
-  "rsvp.incident",
-  "rsvp.cutover",
-  "rsvp.legacy-render",
-  "rsvp.replay",
-  "rsvp.config.import-legacy",
-  "rsvp.habit.stage",
-  "rsvp.import-legacy",
-  "rsvp.refresh",
-  "rsvp.compare",
-  "rsvp.smoke",
-])
 const CONNECT_PROVIDER_ORIENTATION_PING_OPTIONS = {
   attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
   timeoutMs: 5_000,
 } satisfies Pick<ProviderPingOptions, "attemptPolicy" | "timeoutMs">
-
-function isRsvpCliCommand(command: OuroCliCommand): command is RsvpCliCommand {
-  return RSVP_CLI_KINDS.has(command.kind as RsvpCliCommand["kind"])
-}
 
 function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string {
   const normalized = error.trim().toLowerCase()
@@ -1844,7 +1826,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -7136,11 +7118,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return text
   }
 
-  if (isRsvpCliCommand(command)) {
-    const { runRsvpCliCommand } = await import("../../rsvp/cli")
-    return runRsvpCliCommand(command, deps)
-  }
-
   if (command.kind === "connect") {
     return executeConnect(command, deps)
   }
@@ -8204,6 +8181,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+    const { DEFAULT_HABIT_EXECUTION } = await import("../habits/habit-execution")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
     const { readHabitSessionSummary } = await import("../habits/habit-session-summary")
@@ -8332,9 +8310,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const habitContent = renderHabitFile(
       {
         title: command.name,
-        cadence: command.cadence ?? "null",
+        cadence: command.cadence ?? null,
         status: "active",
         created: now,
+        execution: DEFAULT_HABIT_EXECUTION,
       },
       `Habit: ${command.name}`,
     )
@@ -9132,6 +9111,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── doctor (local, no daemon socket needed) ──
   if (command.kind === "doctor") {
+    const { listStoredAdapterDiagnostics } = await import("../habits/adapter-diagnostics")
+    const doctorBundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
     const doctorDeps = {
       /* v8 ignore start -- thin fs wrappers tested via doctor.test.ts with injected deps @preserve */
       existsSync: (p: string) => fs.existsSync(p),
@@ -9142,7 +9123,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       checkSocketAlive: deps.checkSocketAlive,
       fetchImpl: deps.fetchImpl ?? fetch,
       socketPath: deps.socketPath,
-      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+      bundlesRoot: doctorBundlesRoot,
+      adapterDiagnostics: { list: () => listStoredAdapterDiagnostics(doctorBundlesRoot) },
       daemonLogsDir: path.join(getOuroCliHome(deps.homeDir), "daemon", "logs"),
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
