@@ -53,8 +53,8 @@ export interface DoctorDeps {
   readFileSync: (p: string) => string
   /** Read directory entries. */
   readdirSync: (p: string) => string[]
-  /** Get file stats (for permissions, size). */
-  statSync: (p: string) => { mode: number; size: number }
+  /** Get file stats (for permissions, size, and last-write freshness). */
+  statSync: (p: string) => { mode: number; size: number; mtimeMs: number }
   /** Check whether the daemon socket is alive. */
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   /** Optional fetch implementation used for active network diagnostics. */

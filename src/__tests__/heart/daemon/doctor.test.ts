@@ -42,7 +42,7 @@ function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     existsSync: vi.fn().mockReturnValue(false),
     readFileSync: vi.fn().mockReturnValue("{}"),
     readdirSync: vi.fn().mockReturnValue([]),
-    statSync: vi.fn().mockReturnValue({ mode: 0o600, size: 100 }),
+    statSync: vi.fn().mockReturnValue({ mode: 0o600, size: 100, mtimeMs: Date.now() }),
     checkSocketAlive: vi.fn().mockResolvedValue(false),
     socketPath: "/tmp/test.sock",
     bundlesRoot: "/tmp/bundles",
@@ -73,9 +73,11 @@ function readFileFor(map: Record<string, string>): (p: string) => string {
 }
 
 // ── Helper: build a statSync that returns stats for specified paths ──
-function statFor(map: Record<string, { mode: number; size: number }>): (p: string) => { mode: number; size: number } {
+function statFor(
+  map: Record<string, { mode: number; size: number; mtimeMs?: number }>,
+): (p: string) => { mode: number; size: number; mtimeMs: number } {
   return (p: string) => {
-    if (p in map) return map[p]
+    if (p in map) return { mtimeMs: Date.now(), ...map[p] }
     throw new Error(`ENOENT: ${p}`)
   }
 }
@@ -488,13 +490,20 @@ describe("checkSenses", () => {
     })
     const cat = await checkSenses(deps)
     expect(cat.name).toBe("Senses")
-    expect(cat.checks).toHaveLength(4)
-    expect(cat.checks.every((c) => c.status === "pass")).toBe(true)
+    expect(cat.checks).toHaveLength(5)
+    expect(cat.checks.slice(0, 4).every((c) => c.status === "pass")).toBe(true)
     expect(cat.checks[0].detail).toBe("enabled")
     expect(cat.checks[1].detail).toBe("disabled")
     expect(cat.checks[3]).toEqual(expect.objectContaining({
       label: "test.ouro bluebubbles config",
       detail: "http://bluebubbles.local",
+    }))
+    // Configuration being well-formed says nothing about delivery: this bundle
+    // has never recorded an inbound message, and that must not read as healthy.
+    expect(cat.checks[4]).toEqual(expect.objectContaining({
+      id: "senses.bluebubbles.inbound_liveness",
+      label: "test.ouro bluebubbles inbound delivery",
+      status: "fail",
     }))
   })
 
