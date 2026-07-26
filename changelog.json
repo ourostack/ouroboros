@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.722",
+      "changes": [
+        "ouro doctor now asserts pipeline liveness (mail ingest age, sense inbound-delivery age) so a configured-but-dead pipe fails loudly instead of reporting healthy."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.721",
       "changes": [
         "Make Slugger context hydration and native habit traces inspectable and coverage-gated."
