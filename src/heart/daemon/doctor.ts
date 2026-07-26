@@ -15,6 +15,16 @@ import type {
 } from "./doctor-types"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
+import {
+  evaluateFreshness,
+  observeAppendPerEventStore,
+  observeCreatePerEventStore,
+  resolveFreshnessThresholds,
+  FRESHNESS_DAY_MS,
+  FRESHNESS_HOUR_MS,
+  type FreshnessProbe,
+  type FreshnessThresholds,
+} from "./freshness"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
 import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
@@ -121,6 +131,143 @@ const SENSITIVE_CONFIG_KEYS = ["apiKey", "token", "secret", "password"]
 
 function credentialKeyLeaks(raw: string): string[] {
   return SENSITIVE_CONFIG_KEYS.filter((key) => raw.includes(`"${key}"`))
+}
+
+// ── Pipeline liveness (dead-pipe detection) ──
+//
+// Configuration checks answer "is this wired up?". These answer "is anything
+// actually flowing?". Both are needed: the 77-day mail outage and the
+// multi-day BlueBubbles inbound outage were both invisible to configuration
+// and connection checks that stayed green throughout.
+
+/**
+ * Mail ingest thresholds.
+ *
+ * A delegated mailbox forwards a human's real inbox, so a full calendar day
+ * with zero inbound mail is already anomalous — that is the warn line. Fail
+ * waits until 72h so a genuinely quiet weekend on a low-traffic mailbox does
+ * not hard-fail doctor; the 2026-05-10 outage would have failed on day four
+ * instead of going unnoticed for seventy-seven. Override per agent with
+ * `senses.mail.freshness.{warnAfterHours,failAfterHours}` in `agent.json`.
+ */
+export const DEFAULT_MAIL_INGEST_THRESHOLDS: FreshnessThresholds = {
+  warnAfterMs: 24 * FRESHNESS_HOUR_MS,
+  failAfterMs: 72 * FRESHNESS_HOUR_MS,
+}
+
+/**
+ * Inbound sense-delivery thresholds.
+ *
+ * Human-driven chat surfaces are bursty — nobody texts an agent every day —
+ * so the warn line sits at 72h and failure waits a full week. Seven days
+ * without a single inbound message on an attached chat sense is not plausible
+ * quiet; it is a dead pipe. Override per agent with
+ * `senses.<sense>.freshness.{warnAfterHours,failAfterHours}` in `agent.json`.
+ */
+export const DEFAULT_SENSE_DELIVERY_THRESHOLDS: FreshnessThresholds = {
+  warnAfterMs: 72 * FRESHNESS_HOUR_MS,
+  failAfterMs: 7 * FRESHNESS_DAY_MS,
+}
+
+/** Hard bound on how many per-conversation inbound logs a sense probe stats. */
+const SENSE_DELIVERY_MAX_LOG_SCAN = 500
+
+interface PipelineLivenessInput {
+  id: string
+  label: string
+  /** Verb phrase for the flow, e.g. "mail ingested". */
+  activity: string
+  /** Noun for one unit of flow, e.g. "message". */
+  unit: string
+  probe: FreshnessProbe
+  thresholds: FreshnessThresholds
+  remediation: string
+  nowMs: number
+  configuredSinceMs?: number | null
+  context?: string
+}
+
+function pipelineLivenessCheck(input: PipelineLivenessInput): DoctorCheck {
+  const result = evaluateFreshness({
+    activity: input.activity,
+    unit: input.unit,
+    observation: input.probe.observation,
+    provenance: input.probe.provenance,
+    nowMs: input.nowMs,
+    thresholds: input.thresholds,
+    remediation: input.remediation,
+    configuredSinceMs: input.configuredSinceMs,
+    context: input.context,
+  })
+  return { id: input.id, label: input.label, status: result.status, detail: result.detail }
+}
+
+/** Best-effort mtime used as a "this pipe has been wired up since" floor. */
+function pathMtimeMs(deps: DoctorDeps, filePath: string): number | null {
+  if (!deps.existsSync(filePath)) return null
+  try {
+    return deps.statSync(filePath).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+/** Read `senses.<sense>.freshness` from `agent.json`, if present. */
+function senseFreshnessOverride(deps: DoctorDeps, agentDir: string, sense: string): unknown {
+  const configPath = `${deps.bundlesRoot}/${agentDir}/agent.json`
+  if (!deps.existsSync(configPath)) return null
+  try {
+    const config = JSON.parse(deps.readFileSync(configPath)) as Record<string, unknown>
+    return asRecord(asRecord(config.senses)?.[sense])?.freshness ?? null
+  } catch {
+    return null
+  }
+}
+
+export interface SenseInboundDeliveryInput {
+  deps: DoctorDeps
+  /** Bundle directory name, e.g. `slugger.ouro`. */
+  agentDir: string
+  /** Sense key as it appears under `senses` in `agent.json`. */
+  sense: string
+  /** Directory of append-per-event inbound logs, one file per conversation. */
+  inboundDir: string
+  /** Suffix identifying an inbound log file. */
+  logSuffix?: string
+  /** Path whose mtime bounds "this sense has been attached since". */
+  configuredSincePath?: string
+  /** Sense-specific, actionable fix. */
+  remediation: string
+  /** Contrast line — typically the state of the sense's upstream probe. */
+  context?: string
+  nowMs: number
+}
+
+/**
+ * Inbound-delivery liveness for a sense that records what it received.
+ *
+ * This asserts on the *inbound* log, deliberately not on the upstream health
+ * probe: BlueBubbles reported `upstreamStatus: ok` for days while inbound
+ * delivery was dead because the server was POSTing to a stale webhook port.
+ * A sense opts in by calling this with its inbound log directory.
+ */
+export function senseInboundDeliveryCheck(input: SenseInboundDeliveryInput): DoctorCheck {
+  const suffix = input.logSuffix ?? ".ndjson"
+  return pipelineLivenessCheck({
+    id: `senses.${input.sense}.inbound_liveness`,
+    label: `${input.agentDir} ${input.sense} inbound delivery`,
+    activity: `${input.sense} inbound delivery`,
+    unit: "inbound message",
+    probe: observeAppendPerEventStore(input.inboundDir, input.deps, { suffix, maxEntries: SENSE_DELIVERY_MAX_LOG_SCAN }),
+    thresholds: resolveFreshnessThresholds(
+      DEFAULT_SENSE_DELIVERY_THRESHOLDS,
+      senseFreshnessOverride(input.deps, input.agentDir, input.sense),
+    ),
+    remediation: input.remediation,
+    configuredSinceMs: input.configuredSincePath ? pathMtimeMs(input.deps, input.configuredSincePath) : null,
+    context: input.context,
+    nowMs: input.nowMs,
+  })
 }
 
 export function checkAgents(deps: DoctorDeps): DoctorCategory {
@@ -266,6 +413,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           detail: serverUrl,
         })
 
+        let upstreamContext = "upstream probe not run in this pass"
         if (deps.fetchImpl) {
           const probe = await probeBlueBubblesHealth({
             serverUrl,
@@ -278,7 +426,22 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
             status: probe.ok ? "pass" : "fail",
             detail: probe.detail,
           })
+          upstreamContext = probe.ok
+            ? "upstream probe reachable — which does not prove inbound delivery"
+            : "upstream probe failing"
         }
+
+        const bluebubblesStateRoot = `${deps.bundlesRoot}/${agentDir}/state/senses/bluebubbles`
+        checks.push(senseInboundDeliveryCheck({
+          deps,
+          agentDir,
+          sense: "bluebubbles",
+          inboundDir: `${bluebubblesStateRoot}/inbound`,
+          configuredSincePath: bluebubblesStateRoot,
+          context: upstreamContext,
+          remediation: "no iMessage is reaching this agent — confirm the BlueBubbles server's configured webhook URL/port matches the port this daemon is listening on (a stale webhook port is the known cause), then re-attach with `ouro connect bluebubbles --agent <agent>`",
+          nowMs: Date.now(),
+        }))
       }
 
       if (sense === "mail" && senseObj.enabled === true) {
@@ -784,25 +947,80 @@ export function checkMailroom(deps: DoctorDeps): DoctorCategory {
       checks.push({ label: `${agentDir} mailroom`, status: "warn", detail: "registry.json has no mailboxes — provision via `ouro connect mail`" })
       continue
     }
-    let messagesCount = 0
     const messagesDir = `${mailroomRoot}/messages`
-    /* v8 ignore start -- defensive: messages-dir presence + readdir error + pluralization branches depend on filesystem-state fixtures not exhaustively covered @preserve */
-    if (deps.existsSync(messagesDir)) {
-      try {
-        messagesCount = deps.readdirSync(messagesDir).filter((name) => name.endsWith(".json")).length
-      } catch {
-        // ignore — pass detail just won't include the message count
-      }
-    }
+    const listing = listStoredMailMessages(deps, messagesDir)
+    /* v8 ignore start -- defensive: pluralization branches depend on filesystem-state fixtures not exhaustively covered @preserve */
     checks.push({
       label: `${agentDir} mailroom`,
       status: "pass",
-      detail: `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}, ${sourceGrants.length} source grant${sourceGrants.length === 1 ? "" : "s"}, ${messagesCount} message${messagesCount === 1 ? "" : "s"}`,
+      detail: `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}, ${sourceGrants.length} source grant${sourceGrants.length === 1 ? "" : "s"}, ${listing.count} message${listing.count === 1 ? "" : "s"} stored (cumulative — not a liveness signal)`,
     })
     /* v8 ignore stop */
+    checks.push(mailIngestLivenessCheck(deps, agentDir, mailroomRoot, messagesDir, listing))
   }
 
   return { name: "Mailroom", checks }
+}
+
+interface StoredMailListing {
+  count: number
+  /** False when the directory exists but could not be listed. */
+  readable: boolean
+}
+
+function listStoredMailMessages(deps: DoctorDeps, messagesDir: string): StoredMailListing {
+  if (!deps.existsSync(messagesDir)) return { count: 0, readable: true }
+  try {
+    return { count: deps.readdirSync(messagesDir).filter((name) => name.endsWith(".json")).length, readable: true }
+  } catch {
+    return { count: 0, readable: false }
+  }
+}
+
+/**
+ * Mail-ingest liveness — "is mail still arriving?", as opposed to the check
+ * above, which only says "is a mailbox configured?".
+ *
+ * This is the check that would have caught the 2026-05-10 outage: the mailbox,
+ * its config, and a cumulative count of 45,479 messages all reported ✔ for 77
+ * days while zero mail was ingested.
+ *
+ * The signal is the `messages/` directory mtime, which is both the cheapest
+ * and the most correct option. Cheapest: one stat regardless of store size,
+ * and the production store holds ~45k message files. Most correct: a message's
+ * `receivedAt` is when the mail was *sent* (an mbox backfill writes month-old
+ * values today), so parsing message bodies would answer a different question
+ * than "did this machine ingest anything recently?".
+ */
+function mailIngestLivenessCheck(
+  deps: DoctorDeps,
+  agentDir: string,
+  mailroomRoot: string,
+  messagesDir: string,
+  listing: StoredMailListing,
+): DoctorCheck {
+  const probe: FreshnessProbe = listing.readable
+    ? observeCreatePerEventStore(messagesDir, deps, { hasEntries: listing.count > 0 })
+    : {
+      observation: { kind: "unknown", reason: `${messagesDir} exists but could not be listed` },
+      provenance: `attempted directory listing of ${messagesDir}`,
+    }
+
+  return pipelineLivenessCheck({
+    id: "mail.ingest_liveness",
+    label: `${agentDir} mail ingest liveness`,
+    activity: "mail ingested",
+    unit: "message",
+    probe,
+    thresholds: resolveFreshnessThresholds(
+      DEFAULT_MAIL_INGEST_THRESHOLDS,
+      senseFreshnessOverride(deps, agentDir, "mail"),
+    ),
+    remediation: "mail is configured but nothing is arriving — re-check the mailbox grant and keyIds against the vault (a server-side key rotation silently orphans ingestion), run `ouro connect mail --agent <agent>`, and inspect the mailroom ingress logs",
+    configuredSinceMs: pathMtimeMs(deps, `${mailroomRoot}/registry.json`),
+    context: "mailbox configured",
+    nowMs: Date.now(),
+  })
 }
 
 export function checkFriends(deps: DoctorDeps): DoctorCategory {

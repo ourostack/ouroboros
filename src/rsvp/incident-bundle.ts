@@ -14,7 +14,7 @@ import {
 } from "./diagnostics"
 
 export interface RsvpIncidentBundleDeps extends RsvpDiagnosticsDeps {
-  statSync: (filePath: string) => { mode: number; size: number }
+  statSync: (filePath: string) => { mode: number; size: number; mtimeMs: number }
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   now?: () => Date
   runDoctorChecks?: () => Promise<DoctorResult>
