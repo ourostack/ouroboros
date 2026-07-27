@@ -775,6 +775,61 @@ describe("checkSenses", () => {
     }))
   })
 
+  it("warns when runtime state predates the coverage record entirely", async () => {
+    const statePath = "/tmp/bundles/test.ouro/state/senses/mail/runtime.json"
+    seedRuntimeConfig("test", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_native: "PRIVATE KEY" },
+      },
+    })
+    const cat = await checkSenses(createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json", statePath]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": JSON.stringify({ senses: { mail: { enabled: true } } }),
+        [statePath]: JSON.stringify({ schemaVersion: 1, status: "running" }),
+      }),
+    }))
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      id: "mail.key_coverage",
+      status: "warn",
+      detail: expect.stringContaining("no reason recorded"),
+    }))
+  })
+
+  it("reads a single covered key in the singular", async () => {
+    const cat = await checkSenses(mailCoverageDeps({
+      status: "covered",
+      declaredKeyIds: ["mail_slugger_native"],
+      absentKeyIds: [],
+      reason: null,
+      checkedAt: "2026-07-27T12:00:00.000Z",
+    }))
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      id: "mail.key_coverage",
+      status: "pass",
+      detail: "the 1 registry-declared mail key has a private half in the vault (recorded 2026-07-27T12:00:00.000Z)",
+    }))
+  })
+
+  it("names every absent key when more than one is missing", async () => {
+    const cat = await checkSenses(mailCoverageDeps({
+      status: "absent",
+      declaredKeyIds: ["mail_slugger_native", "mail_slugger-hey_6e7b4bfa34c0b826"],
+      absentKeyIds: ["mail_slugger_native", "mail_slugger-hey_6e7b4bfa34c0b826"],
+      reason: null,
+      checkedAt: "2026-07-27T12:00:00.000Z",
+    }))
+
+    const check = cat.checks.find((entry) => entry.id === "mail.key_coverage")
+    expect(check?.status).toBe("fail")
+    expect(check?.detail).toContain("declares mail keys with no private half")
+    expect(check?.detail).toContain("mail_slugger_native, mail_slugger-hey_6e7b4bfa34c0b826")
+  })
+
   it("passes enabled local Mail config checks and reports autonomy fallback state", async () => {
     const config = JSON.stringify({
       senses: {

@@ -111,6 +111,11 @@ function textField(record: Record<string, unknown> | null | undefined, key: stri
   return typeof value === "string" ? value.trim() : ""
 }
 
+function stringArrayField(record: Record<string, unknown> | null | undefined, key: string): string[] {
+  const value = record?.[key]
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []
+}
+
 function numberField(record: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
   const value = record?.[key]
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
@@ -329,6 +334,62 @@ export function checkAgents(deps: DoctorDeps): DoctorCategory {
   return { name: "Agents", checks }
 }
 
+/**
+ * Mail key coverage, as recorded by the mail sense.
+ *
+ * Doctor reads the sense's own per-cycle verdict rather than re-deriving it:
+ * a health check must need neither network access nor Azure credentials, and
+ * the registry that declares the key ids lives in a Blob container in hosted
+ * mode. The mail sense already fetches it every cycle, so its record is both
+ * the cheapest and the only honest source here.
+ *
+ * Absent is a `fail` because mail encrypted to a key with no private half is
+ * permanently unreadable — unlike an API key, ciphertext cannot be reissued.
+ * Anything the sense could not verify is a `warn`, never a `fail`: a locked or
+ * unavailable vault must not read as key loss.
+ */
+function mailKeyCoverageCheck(deps: DoctorDeps, agentDir: string): DoctorCheck {
+  const id = "mail.key_coverage"
+  const label = `${agentDir} mail key coverage`
+  const statePath = `${deps.bundlesRoot}/${agentDir}/state/senses/mail/runtime.json`
+  const unverified = (detail: string): DoctorCheck => ({ id, label, status: "warn", detail })
+
+  if (!deps.existsSync(statePath)) {
+    return unverified(`no mail sense runtime state at ${statePath} — coverage is unverified until the mail sense runs a scan`)
+  }
+  let coverage: Record<string, unknown>
+  try {
+    coverage = asRecord((JSON.parse(deps.readFileSync(statePath)) as Record<string, unknown>).keyCoverage) ?? {}
+  } catch {
+    return unverified(`mail sense runtime state at ${statePath} could not be read`)
+  }
+
+  const declaredKeyIds = stringArrayField(coverage, "declaredKeyIds")
+  const absentKeyIds = stringArrayField(coverage, "absentKeyIds")
+  const checkedAt = textField(coverage, "checkedAt")
+  const provenance = checkedAt ? ` (recorded ${checkedAt})` : ""
+
+  if (coverage.status === "covered") {
+    return {
+      id,
+      label,
+      status: "pass",
+      detail: declaredKeyIds.length === 1
+        ? `the 1 registry-declared mail key has a private half in the vault${provenance}`
+        : `all ${declaredKeyIds.length} registry-declared mail keys have a private half in the vault${provenance}`,
+    }
+  }
+  if (coverage.status === "absent") {
+    return {
+      id,
+      label,
+      status: "fail",
+      detail: `the mailroom registry declares mail key${absentKeyIds.length === 1 ? "" : "s"} with no private half in this agent's vault — mail encrypted to ${absentKeyIds.join(", ")} cannot be decrypted and cannot be recovered${provenance}; run \`ouro connect mail --agent ${agentDir.replace(/\.ouro$/, "")}\` and, if Mail Control no longer holds the one-time key, rerun it with --rotate-missing-mail-keys to mint a replacement for future mail`,
+    }
+  }
+  return unverified(`mail sense could not verify key coverage${provenance}: ${textField(coverage, "reason") || "no reason recorded"}`)
+}
+
 export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
   const checks: DoctorCheck[] = []
   const agents = discoverAgents(deps)
@@ -485,6 +546,11 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
             mailAutonomyDetail(mailroom),
           ].join("; "),
         })
+
+        // Config being well-formed says nothing about whether the vault can
+        // still decrypt what the registry points mail at — the 2026-07-24 gap
+        // sat behind a passing mail config check for 23 hours.
+        checks.push(mailKeyCoverageCheck(deps, agentDir))
       }
     }
   }
