@@ -19,6 +19,7 @@ import {
   evaluateFreshness,
   observeAppendPerEventStore,
   observeCreatePerEventStore,
+  observeMirroredStore,
   resolveFreshnessThresholds,
   FRESHNESS_DAY_MS,
   FRESHNESS_HOUR_MS,
@@ -903,7 +904,7 @@ function tripStoresDiffer(deps: DoctorDeps, durableRoot: string, legacyRoot: str
   return false
 }
 
-export function checkMailroom(deps: DoctorDeps): DoctorCategory {
+export async function checkMailroom(deps: DoctorDeps): Promise<DoctorCategory> {
   const checks: DoctorCheck[] = []
   const agents = discoverAgents(deps)
 
@@ -948,7 +949,7 @@ export function checkMailroom(deps: DoctorDeps): DoctorCategory {
       continue
     }
     const messagesDir = `${mailroomRoot}/messages`
-    const listing = listStoredMailMessages(deps, messagesDir)
+    const listing = listJsonDocuments(deps, messagesDir)
     /* v8 ignore start -- defensive: pluralization branches depend on filesystem-state fixtures not exhaustively covered @preserve */
     checks.push({
       label: `${agentDir} mailroom`,
@@ -956,25 +957,112 @@ export function checkMailroom(deps: DoctorDeps): DoctorCategory {
       detail: `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}, ${sourceGrants.length} source grant${sourceGrants.length === 1 ? "" : "s"}, ${listing.count} message${listing.count === 1 ? "" : "s"} stored (cumulative — not a liveness signal)`,
     })
     /* v8 ignore stop */
-    checks.push(mailIngestLivenessCheck(deps, agentDir, mailroomRoot, messagesDir, listing))
+    checks.push(mailIngestLivenessCheck(deps, agentDir, mailroomRoot, messagesDir, listing, await resolveMailStore(agentDir)))
   }
 
   return { name: "Mailroom", checks }
 }
 
-interface StoredMailListing {
+interface JsonDocumentListing {
   count: number
   /** False when the directory exists but could not be listed. */
   readable: boolean
 }
 
-function listStoredMailMessages(deps: DoctorDeps, messagesDir: string): StoredMailListing {
-  if (!deps.existsSync(messagesDir)) return { count: 0, readable: true }
+function listJsonDocuments(deps: DoctorDeps, dir: string): JsonDocumentListing {
+  if (!deps.existsSync(dir)) return { count: 0, readable: true }
   try {
-    return { count: deps.readdirSync(messagesDir).filter((name) => name.endsWith(".json")).length, readable: true }
+    return { count: deps.readdirSync(dir).filter((name) => name.endsWith(".json")).length, readable: true }
   } catch {
     return { count: 0, readable: false }
   }
+}
+
+/**
+ * Which Mailroom store this agent's mail actually lands in.
+ *
+ * Mirrors `mailroom/reader.ts#createMailroomStore`, which switches on
+ * `mailroom.azureAccountUrl`: set ⇒ hosted Azure Blob, absent ⇒ local files.
+ * `workSubstrate.mode === "hosted"` is the operator-facing name for the same
+ * cutover and is what the mail-config check reports, but the reader's own
+ * switch is what decides whether anything still writes to the local
+ * `state/mailroom/messages` directory — the only question liveness needs
+ * answered. A hosted substrate with no `azureAccountUrl` still reads local
+ * files, and the mail-config check already fails that config loudly.
+ */
+type MailStoreResolution =
+  | { hosted: false }
+  | { hosted: true; label: string }
+
+async function resolveMailStore(agentDir: string): Promise<MailStoreResolution> {
+  const agentName = agentDir.replace(/\.ouro$/, "")
+  // An unreadable vault means the mode is unknown, so this falls back to the
+  // reader's own default — the local file store. `mail config` in checkSenses
+  // is where an unavailable runtime config is reported, and it fails hard.
+  const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true })
+  if (!runtimeConfig.ok) return { hosted: false }
+  const mailroom = asRecord(runtimeConfig.config.mailroom)
+  const azureAccountUrl = textField(mailroom, "azureAccountUrl")
+  if (!azureAccountUrl) return { hosted: false }
+  const azureContainer = textField(mailroom, "azureContainer") || "mailroom"
+  return { hosted: true, label: `hosted azure-blob ${azureAccountUrl}/${azureContainer}` }
+}
+
+/**
+ * Local-file Mailroom liveness signal.
+ *
+ * The `messages/` directory mtime is both the cheapest and the most correct
+ * option. Cheapest: one stat regardless of store size, and the production store
+ * holds ~45k message files. Most correct: a message's `receivedAt` is when the
+ * mail was *sent* (an mbox backfill writes month-old values today), so parsing
+ * message bodies would answer a different question than "did this machine
+ * ingest anything recently?".
+ */
+function localMailStoreProbe(deps: DoctorDeps, messagesDir: string, listing: JsonDocumentListing): FreshnessProbe {
+  if (!listing.readable) {
+    return {
+      observation: { kind: "unknown", reason: `${messagesDir} exists but could not be listed` },
+      provenance: `attempted directory listing of ${messagesDir}`,
+    }
+  }
+  return observeCreatePerEventStore(messagesDir, deps, { hasEntries: listing.count > 0 })
+}
+
+/**
+ * Hosted Mailroom liveness signal.
+ *
+ * Once an agent is cut over to the hosted store, messages live in the Blob
+ * container and nothing writes to `state/mailroom/messages` any more, so its
+ * mtime freezes at the cutover. Reading it in hosted mode is how this check
+ * reported "no mail ingested in 77 days" on 2026-07-27 while the container was
+ * taking mail that same morning — a false failure, which trains operators to
+ * ignore the check and so undoes the reason it exists.
+ *
+ * The local artifact that does still move is the hosted reader's search cache:
+ * `AzureBlobMailroomStore` writes `state/mail-search/<messageId>.json` for
+ * every message it decrypts (see `mailroom/reader.ts`, which hands the hosted
+ * store that cache directory). Message ids are content hashes, so a *new* file
+ * appears exactly when this machine sees a message it has never seen before;
+ * re-reading old mail rewrites existing files and leaves the directory mtime
+ * untouched. Same create-per-event shape as the local store, same O(1) stat.
+ *
+ * It is deliberately one step downstream of ingest: it proves hosted mail
+ * reached this machine, which is the strongest claim available without network
+ * access or Azure credentials — a health check must need neither. The activity
+ * wording, provenance and remediation all say so rather than implying doctor
+ * measured the container itself, and an empty mirror reports `unknown` rather
+ * than the hosted store being empty.
+ */
+function hostedMailMirrorProbe(deps: DoctorDeps, agentDir: string, storeLabel: string): FreshnessProbe {
+  const mirrorDir = `${deps.bundlesRoot}/${agentDir}/state/mail-search`
+  const listing = listJsonDocuments(deps, mirrorDir)
+  if (!listing.readable) {
+    return {
+      observation: { kind: "unknown", reason: `${mirrorDir} exists but could not be listed` },
+      provenance: `attempted directory listing of ${mirrorDir}`,
+    }
+  }
+  return observeMirroredStore(mirrorDir, deps, { hasEntries: listing.count > 0, remote: storeLabel })
 }
 
 /**
@@ -985,40 +1073,38 @@ function listStoredMailMessages(deps: DoctorDeps, messagesDir: string): StoredMa
  * its config, and a cumulative count of 45,479 messages all reported ✔ for 77
  * days while zero mail was ingested.
  *
- * The signal is the `messages/` directory mtime, which is both the cheapest
- * and the most correct option. Cheapest: one stat regardless of store size,
- * and the production store holds ~45k message files. Most correct: a message's
- * `receivedAt` is when the mail was *sent* (an mbox backfill writes month-old
- * values today), so parsing message bodies would answer a different question
- * than "did this machine ingest anything recently?".
+ * Which signal is honest depends on where the store lives, so the probe, the
+ * activity wording and the remediation are all chosen per store kind. Reusing
+ * the local path in hosted mode measures a directory nothing writes to.
  */
 function mailIngestLivenessCheck(
   deps: DoctorDeps,
   agentDir: string,
   mailroomRoot: string,
   messagesDir: string,
-  listing: StoredMailListing,
+  listing: JsonDocumentListing,
+  store: MailStoreResolution,
 ): DoctorCheck {
-  const probe: FreshnessProbe = listing.readable
-    ? observeCreatePerEventStore(messagesDir, deps, { hasEntries: listing.count > 0 })
-    : {
-      observation: { kind: "unknown", reason: `${messagesDir} exists but could not be listed` },
-      provenance: `attempted directory listing of ${messagesDir}`,
-    }
+  const hosted = store.hosted ? store : null
+  const probe = hosted
+    ? hostedMailMirrorProbe(deps, agentDir, hosted.label)
+    : localMailStoreProbe(deps, messagesDir, listing)
 
   return pipelineLivenessCheck({
     id: "mail.ingest_liveness",
     label: `${agentDir} mail ingest liveness`,
-    activity: "mail ingested",
+    activity: hosted ? "hosted mail observed locally" : "mail ingested",
     unit: "message",
     probe,
     thresholds: resolveFreshnessThresholds(
       DEFAULT_MAIL_INGEST_THRESHOLDS,
       senseFreshnessOverride(deps, agentDir, "mail"),
     ),
-    remediation: "mail is configured but nothing is arriving — re-check the mailbox grant and keyIds against the vault (a server-side key rotation silently orphans ingestion), run `ouro connect mail --agent <agent>`, and inspect the mailroom ingress logs",
+    remediation: hosted
+      ? `doctor measures hosted mail only through this machine's local mirror and makes no network calls — confirm the container itself by listing \`messages/\` blobs in ${hosted.label} by Last-Modified, or read the mailbox directly (\`ouro mailbox\`, or the agent's \`mail_recent\` tool); if the mirror is empty or stale while the container is current, the hosted reader on this machine is not running`
+      : "mail is configured but nothing is arriving — re-check the mailbox grant and keyIds against the vault (a server-side key rotation silently orphans ingestion), run `ouro connect mail --agent <agent>`, and inspect the mailroom ingress logs",
     configuredSinceMs: pathMtimeMs(deps, `${mailroomRoot}/registry.json`),
-    context: "mailbox configured",
+    context: hosted ? `mailbox configured; ${hosted.label}` : "mailbox configured",
     nowMs: Date.now(),
   })
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type OpenAI from "openai"
+import { registerGlobalLogSink } from "../../nerves"
 import {
   buildOrientationFrame,
   extractMessageText,
@@ -408,6 +409,227 @@ describe("orientation frame", () => {
     expect(rendered).toContain("latest structured output: structured-evt-no-heading-1")
     expect(rendered).not.toContain("heading:")
     expect(rendered).toContain("2. Real substrate")
+  })
+
+  // ── Regression: 2026-07-27 send block ───────────────────────────────────
+  // Verbatim from the incident frame (channel mcp, 195 words, 0 referents, no
+  // structured output). The only correction match was "actually", in "unless you
+  // actually saw evidence" — inside the very instruction that authorised the send.
+  // It armed correction_hold and blocked send_message five times with nothing to
+  // disambiguate, so the remedy the block named could not be performed.
+  const julyIncidentSpeech = [
+    "That's genuinely useful — and it changes the picture: the 5 hotel confirmations predate the outage, so you have what you need to answer Ari's actual question. Do that now, please.",
+    "",
+    'Ari asked on 2026-07-21: "sanity checking that all hotels i booked for my upcoming travel have ac - can you confirm?" Open each of the confirmations you just listed (Ruby Mimi Zurich, Hotel Marthof Basel, LUGANODANTE Lugano, La Villa Mombaruzzo, The Grafton Hotel Dublin) and check specifically for air conditioning — the amenities lines, room description, or any AC/climate/aircon mention. Where the confirmation doesn\'t say, check your notes/facts, and if it\'s still unknown say "unknown" rather than guessing. Do NOT claim a hotel has AC unless you actually saw evidence.',
+    "",
+    "Then send Ari ONE clean iMessage (ari@mendelow.me) with a short per-hotel rundown — hotel: yes / no / unknown, one line each, plus a one-line note on how you'd confirm the unknowns (e.g. checking the hotel site or emailing them). Keep it text-length and warm. Your iMessage sending is fixed and working, so it should go through. Send it once and confirm delivery — do not retry on error, just report back what happened.",
+  ].join("\n")
+
+  it("does not hold a long standalone instruction that merely contains a correction word", () => {
+    const frame = buildOrientationFrame({
+      channel: "mcp",
+      messages: [{ role: "user", content: julyIncidentSpeech }],
+    })
+
+    expect(frame.signals).toContain("correction_marker")
+    expect(frame.actionPolicy).toEqual({ mode: "normal" })
+  })
+
+  it("still holds a long correction when a structured output is the thing to disambiguate", () => {
+    const frame = buildOrientationFrame({
+      channel: "mcp",
+      messages: [{ role: "user", content: julyIncidentSpeech }],
+      structuredOutputs: [
+        {
+          schemaVersion: 1,
+          id: "structured-evt-hotels-1",
+          kind: "ordered_list",
+          sourceEventId: "evt-hotels",
+          recordedAt: "2026-07-27T07:24:51.000Z",
+          items: [
+            { label: "1", text: "Ruby Mimi Zurich" },
+            { label: "2", text: "Hotel Marthof Basel" },
+          ],
+        },
+      ],
+    })
+
+    expect(frame.priorAssistantReferents).toEqual([])
+    expect(frame.actionPolicy).toMatchObject({ mode: "correction_hold", triggeredBy: "actually" })
+  })
+
+  it("still holds a long correction when there is a concrete referent to resolve", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "assistant", content: "1. Zurich leg\n2. Basel leg" },
+        {
+          role: "user",
+          content: "no, that is the wrong leg — I meant the other one, please redo the itinerary and resend it to the group once you are done",
+        },
+      ],
+    })
+
+    expect(frame.actionPolicy).toMatchObject({
+      mode: "correction_hold",
+      blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+    })
+  })
+
+  it("keeps holding a terse ambiguous correction with nothing to inspect", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "no, not that one" },
+      ],
+    })
+
+    expect(frame.actionPolicy).toMatchObject({
+      mode: "correction_hold",
+      triggeredBy: "not that",
+    })
+  })
+
+  it("names a leading 'no' as the trigger when no other marker matched", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "assistant", content: "Done." },
+        { role: "user", content: "no, use the other lane" },
+      ],
+    })
+
+    expect(frame.actionPolicy).toMatchObject({ mode: "correction_hold", triggeredBy: "no" })
+  })
+
+  it("emits a greppable armed event naming what is blocked and what clears it", () => {
+    const events: Array<{ event: string; meta?: Record<string, unknown> }> = []
+    const restore = registerGlobalLogSink((entry) => {
+      events.push({ event: entry.event, meta: entry.meta })
+    })
+
+    try {
+      buildOrientationFrame({
+        channel: "cli",
+        messages: [
+          { role: "assistant", content: "1. Keep minimax\n2. Switch to codex" },
+          { role: "user", content: "the first one" },
+        ],
+      })
+    } finally {
+      restore()
+    }
+
+    const armed = events.find((entry) => entry.event === "orientation.correction_hold_armed")
+    expect(armed?.meta).toMatchObject({
+      channel: "cli",
+      speechKind: "utterance",
+      signals: ["terse_referent"],
+      blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+      referentCount: 2,
+      speechWordCount: 3,
+    })
+    expect(String(armed?.meta?.clearedBy)).toContain("orientation_get")
+  })
+
+  it("does not emit the armed event for ordinary turns", () => {
+    const events: string[] = []
+    const restore = registerGlobalLogSink((entry) => {
+      events.push(entry.event)
+    })
+
+    try {
+      buildOrientationFrame({
+        channel: "cli",
+        messages: [{ role: "user", content: "please run the tests" }],
+      })
+    } finally {
+      restore()
+    }
+
+    expect(events).toContain("orientation.frame_built")
+    expect(events).not.toContain("orientation.correction_hold_armed")
+  })
+
+  // ── Reactions are approval, never corrections ───────────────────────────
+  it("never arms a hold from a reaction, even when the quoted message reads like a correction", () => {
+    const frame = buildOrientationFrame({
+      channel: "bluebubbles",
+      speechKind: "reaction",
+      messages: [
+        { role: "assistant", content: "1. Zurich\n2. Basel" },
+      ],
+      currentUserMessages: [
+        { role: "user", content: 'loved your message: "actually that was the wrong one, hang on"' },
+      ],
+      structuredOutputs: [
+        {
+          schemaVersion: 1,
+          id: "structured-evt-reaction-1",
+          kind: "ordered_list",
+          sourceEventId: "evt-reaction",
+          recordedAt: "2026-07-27T07:53:25.000Z",
+          items: [
+            { label: "1", text: "Zurich" },
+            { label: "2", text: "Basel" },
+          ],
+        },
+      ],
+    })
+
+    expect(frame.signals).toEqual([])
+    expect(frame.actionPolicy).toEqual({ mode: "normal" })
+    expect(frame.speechKind).toBe("reaction")
+  })
+
+  it("does not arm a hold for a terse reaction over prior referents", () => {
+    const frame = buildOrientationFrame({
+      channel: "bluebubbles",
+      speechKind: "reaction",
+      messages: [
+        { role: "assistant", content: "1. Keep minimax\n2. Switch to codex" },
+      ],
+      currentUserMessages: [{ role: "user", content: "liked a message: \"correct\"" }],
+    })
+
+    expect(frame.actionPolicy).toEqual({ mode: "normal" })
+  })
+
+  it("renders the hold remedy and the reaction speech kind", () => {
+    const held = renderOrientationFrame(buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "assistant", content: "1. Minimax\n2. OpenAI Codex" },
+        { role: "user", content: "correct" },
+      ],
+    }))
+
+    expect(held).toContain("policy blocks: durable_state_write, external_side_effect")
+    expect(held).toContain("policy clears when: Resolve the referent")
+    expect(held).not.toContain("speech kind:")
+    expect(held).toContain('policy trigger: correction marker "correct" in current user speech')
+
+    // terse_referent alone has no marker word to name
+    const terseOnly = renderOrientationFrame(buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "assistant", content: "1. Minimax\n2. OpenAI Codex" },
+        { role: "user", content: "the first one" },
+      ],
+    }))
+
+    expect(terseOnly).toContain("action policy: correction_hold")
+    expect(terseOnly).not.toContain("policy trigger:")
+
+    const reacted = renderOrientationFrame(buildOrientationFrame({
+      channel: "bluebubbles",
+      speechKind: "reaction",
+      messages: [],
+      currentUserMessages: [{ role: "user", content: 'loved your message: "shipped"' }],
+    }))
+
+    expect(reacted).toContain("speech kind: reaction")
   })
 
   it("renders frames without source metadata", () => {

@@ -2514,7 +2514,10 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.runAgent.mock.calls[0]?.[0]).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "user", content: "ari@mendelow.me reacted with love" }),
+        expect.objectContaining({
+          role: "user",
+          content: "ari@mendelow.me loved an unidentified message (target guid CB4EB152-A678-4F0E-8075-1AB09B5496F8; its text could not be resolved)",
+        }),
       ]),
     )
   })
@@ -9698,43 +9701,64 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
   })
 })
 
-// ── Reaction enrichment (Unit 4) ──────────────────────────────────────────
-describe("BlueBubbles adapter - reaction enrichment", () => {
-  it("enrichReactionText: enriches with original message text (under 80 chars)", async () => {
+// ── Reaction target resolution (Unit 4) ───────────────────────────────────
+describe("BlueBubbles adapter - reaction target resolution", () => {
+  it("resolveReactionTarget: prefers the authorship-carrying lookup", async () => {
     vi.resetModules()
     const bb = await import("../../../senses/bluebubbles")
-    const result = bb.enrichReactionText("reacted with love", "great idea!", 80)
-    expect(result).toBe('reacted with love to: "great idea!"')
+    const getMessageDetails = vi.fn().mockResolvedValue({ text: "great idea!", fromMe: true })
+    const getMessageText = vi.fn()
+
+    const target = await bb.resolveReactionTarget({ getMessageDetails, getMessageText } as any, "target-1")
+
+    expect(target).toEqual({ guid: "target-1", text: "great idea!", fromMe: true })
+    expect(getMessageText).not.toHaveBeenCalled()
   })
 
-  it("enrichReactionText: truncates text over 80 chars", async () => {
+  it("resolveReactionTarget: reports unknown text and authorship when the lookup returns nothing", async () => {
     vi.resetModules()
     const bb = await import("../../../senses/bluebubbles")
-    const longText = "a".repeat(81)
-    const result = bb.enrichReactionText("reacted with love", longText, 80)
-    expect(result).toBe(`reacted with love to: "${"a".repeat(77)}..."`)
+    const getMessageDetails = vi.fn().mockResolvedValue(null)
+
+    const target = await bb.resolveReactionTarget(
+      { getMessageDetails, getMessageText: vi.fn() } as any,
+      "target-2",
+    )
+
+    expect(target).toEqual({ guid: "target-2", text: null, fromMe: null })
   })
 
-  it("enrichReactionText: 80 chars passes through untouched", async () => {
+  it("resolveReactionTarget: swallows lookup rejections instead of failing the turn", async () => {
     vi.resetModules()
     const bb = await import("../../../senses/bluebubbles")
-    const exact = "a".repeat(80)
-    const result = bb.enrichReactionText("reacted with love", exact, 80)
-    expect(result).toBe(`reacted with love to: "${exact}"`)
+    const getMessageDetails = vi.fn().mockRejectedValue(new Error("bb offline"))
+
+    const target = await bb.resolveReactionTarget(
+      { getMessageDetails, getMessageText: vi.fn() } as any,
+      "target-3",
+    )
+
+    expect(target).toEqual({ guid: "target-3", text: null, fromMe: null })
   })
 
-  it("enrichReactionText: null text returns bare text", async () => {
+  it("resolveReactionTarget: falls back to text-only clients without authorship", async () => {
     vi.resetModules()
     const bb = await import("../../../senses/bluebubbles")
-    const result = bb.enrichReactionText("reacted with love", null, 80)
-    expect(result).toBe("reacted with love")
+    const getMessageText = vi.fn().mockResolvedValue("legacy client text")
+
+    const target = await bb.resolveReactionTarget({ getMessageText } as any, "target-4")
+
+    expect(target).toEqual({ guid: "target-4", text: "legacy client text", fromMe: null })
   })
 
-  it("enrichReactionText: empty string returns bare text", async () => {
+  it("resolveReactionTarget: text-only fallback tolerates rejection", async () => {
     vi.resetModules()
     const bb = await import("../../../senses/bluebubbles")
-    const result = bb.enrichReactionText("reacted with love", "", 80)
-    expect(result).toBe("reacted with love")
+    const getMessageText = vi.fn().mockRejectedValue(new Error("timeout"))
+
+    const target = await bb.resolveReactionTarget({ getMessageText } as any, "target-5")
+
+    expect(target).toEqual({ guid: "target-5", text: null, fromMe: null })
   })
 })
 

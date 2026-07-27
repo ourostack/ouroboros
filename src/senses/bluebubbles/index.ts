@@ -21,10 +21,12 @@ import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-bas
 import {
   BlueBubblesIgnoredEventError,
   normalizeBlueBubblesEvent,
+  renderBlueBubblesReactionText,
   type BlueBubblesChatRef,
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
   type BlueBubblesNormalizedMutation,
+  type BlueBubblesReactionTarget,
 } from "./model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
 import {
@@ -99,15 +101,22 @@ type BlueBubblesCallbacks = ChannelCallbacks & {
   cancelOutbound(reason: "turn_timeout"): void
 }
 
-// Enrich reaction text with the original message content for context.
-// If originalText is provided and non-empty, format as: baseText to: "truncated"
-// Otherwise return baseText unchanged.
-export function enrichReactionText(baseText: string, originalText: string | null, maxLen: number): string {
-  if (!originalText) return baseText
-  const truncated = originalText.length > maxLen
-    ? originalText.slice(0, maxLen - 3) + "..."
-    : originalText
-  return `${baseText} to: "${truncated}"`
+// Resolve the message a reaction points at, so the agent is told *what* was
+// reacted to and *whose* message it was rather than a bare "reacted with love".
+// Prefers the authorship-carrying lookup; falls back to text-only when the client
+// does not provide one. Every failure path returns an explicit "unknown" rather
+// than a value the caller could mistake for a resolved target.
+export async function resolveReactionTarget(
+  client: Pick<BlueBubblesClient, "getMessageText" | "getMessageDetails">,
+  targetMessageGuid: string,
+): Promise<BlueBubblesReactionTarget> {
+  const base: BlueBubblesReactionTarget = { guid: targetMessageGuid }
+  if (client.getMessageDetails) {
+    const details = await client.getMessageDetails(targetMessageGuid).catch(() => null)
+    return { ...base, text: details?.text ?? null, fromMe: details?.fromMe ?? null }
+  }
+  const text = await client.getMessageText(targetMessageGuid).catch(() => null)
+  return { ...base, text, fromMe: null }
 }
 
 // ── Near-duplicate outward-text detection ────────────────────────
@@ -1552,12 +1561,14 @@ async function handleBlueBubblesNormalizedEvent(
       })
     }
 
-    // Enrich reaction mutations with the original message text for context
+    // Anchor reaction mutations to the message they point at, including whose
+    // message it was. Unresolved targets keep the explicit "unidentified message"
+    // wording that normalizeBlueBubblesEvent already produced.
     const isReaction = event.kind === "mutation" && event.mutationType === "reaction"
-    if (isReaction && event.targetMessageGuid) {
-      /* v8 ignore start -- best-effort lookup; enrichReactionText covered by unit tests @preserve */
-      const originalText = await client.getMessageText(event.targetMessageGuid).catch(() => null)
-      if (originalText) event.textForAgent = enrichReactionText(event.textForAgent, originalText, 80)
+    if (isReaction && event.reaction && event.targetMessageGuid) {
+      /* v8 ignore start -- best-effort network lookup; resolveReactionTarget and renderBlueBubblesReactionText are covered by unit tests @preserve */
+      const target = await resolveReactionTarget(client, event.targetMessageGuid)
+      event.textForAgent = renderBlueBubblesReactionText(event.reaction, target)
       /* v8 ignore stop */
     }
 
@@ -1573,6 +1584,7 @@ async function handleBlueBubblesNormalizedEvent(
       currentUserMessages: [userMessage],
       structuredOutputs: existing?.structuredOutputs ?? [],
       source: buildBlueBubblesOrientationSource(event, priorMessages, repliedToText),
+      ...(isReaction ? { speechKind: "reaction" as const } : {}),
     })
 
     const visibleActivityTurnId = activeTurnId

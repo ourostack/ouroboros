@@ -161,6 +161,63 @@ function depsFor(bundlesRoot: string, overrides: Partial<DoctorDeps> = {}): Doct
   }
 }
 
+interface HostedMirrorFixture {
+  /** How long ago this machine last cached a hosted message it had not seen. */
+  lastObservedAgoMs?: number
+  /** How many search-cache documents the local mirror holds. */
+  documentCount?: number
+  /** Absolute epoch-ms override for the mail-search/ directory mtime. */
+  mirrorMtimeMs?: number
+}
+
+/**
+ * The hosted reader's local search cache — `state/mail-search/<messageId>.json`
+ * — which `mailroom/reader.ts` hands to `AzureBlobMailroomStore`. This is the
+ * only local artifact that still moves once an agent is on the hosted store.
+ */
+function writeHostedMirror(agentRoot: string, fixture: HostedMirrorFixture = {}): string {
+  const mirrorDir = path.join(agentRoot, "state", "mail-search")
+  fs.mkdirSync(mirrorDir, { recursive: true })
+  const documentCount = fixture.documentCount ?? 3
+  for (let index = 0; index < documentCount; index += 1) {
+    fs.writeFileSync(
+      path.join(mirrorDir, `mail_${index}.json`),
+      JSON.stringify({ schemaVersion: 1, messageId: `mail_${index}`, agentId: "slugger" }),
+      "utf-8",
+    )
+  }
+  if (typeof fixture.mirrorMtimeMs === "number") {
+    setMtime(mirrorDir, fixture.mirrorMtimeMs)
+  } else if (typeof fixture.lastObservedAgoMs === "number") {
+    setMtime(mirrorDir, Date.now() - fixture.lastObservedAgoMs)
+  }
+  return mirrorDir
+}
+
+const HOSTED_ACCOUNT_URL = "https://ouroprodpe5nvwd7rt3r4.blob.core.windows.net"
+const HOSTED_STORE_LABEL = `hosted azure-blob ${HOSTED_ACCOUNT_URL}/mailroom`
+
+function seedMailRuntime(agent: string, mailroom: Record<string, unknown>, mode = "hosted"): void {
+  mockRuntimeConfigs.set(agent, {
+    ok: true,
+    itemPath: `vault:${agent}:runtime/config`,
+    revision: "runtime_test",
+    updatedAt: "2026-07-27T00:00:00.000Z",
+    config: {
+      workSubstrate: { mode },
+      mailroom: {
+        mailboxAddress: `${agent}@ouro.bot`,
+        privateKeys: { mail_slugger_native: "-----BEGIN PRIVATE KEY-----stub-----END PRIVATE KEY-----" },
+        ...mailroom,
+      },
+    },
+  })
+}
+
+function seedHostedMailRuntime(agent = "slugger", mailroom: Record<string, unknown> = { azureContainer: "mailroom" }): void {
+  seedMailRuntime(agent, { azureAccountUrl: HOSTED_ACCOUNT_URL, ...mailroom })
+}
+
 function findCheck(checks: DoctorCheck[], id: string): DoctorCheck {
   const found = checks.find((check) => check.id === id)
   if (!found) throw new Error(`no check with id ${id} in: ${checks.map((c) => c.label).join(", ")}`)
@@ -190,11 +247,11 @@ afterEach(() => {
 // ── Mail ingest liveness ──
 
 describe("checkMailroom mail-ingest liveness", () => {
-  it("passes when mail was ingested recently", () => {
+  it("passes when mail was ingested recently", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { lastIngestAgoMs: 20 * 60 * 1000 })
 
-    const check = findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("pass")
     expect(check.label).toBe("slugger.ouro mail ingest liveness")
@@ -202,22 +259,22 @@ describe("checkMailroom mail-ingest liveness", () => {
     expect(check.detail).not.toContain("fix:")
   })
 
-  it("warns once ingestion has been quiet past the warn threshold", () => {
+  it("warns once ingestion has been quiet past the warn threshold", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { lastIngestAgoMs: 30 * HOUR_MS })
 
-    const check = findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("warn")
     expect(check.detail).toContain("no mail ingested in 30 hours")
     expect(check.detail).toContain("fix: mail is configured but nothing is arriving")
   })
 
-  it("separates 'mailbox configured' from 'mail pipe alive' in the reported checks", () => {
+  it("separates 'mailbox configured' from 'mail pipe alive' in the reported checks", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { lastIngestAgoMs: 10 * DAY_MS })
 
-    const checks = checkMailroom(depsFor(bundlesRoot)).checks
+    const checks = (await checkMailroom(depsFor(bundlesRoot))).checks
     const configured = checks.find((check) => check.label === "slugger.ouro mailroom")!
     const alive = findCheck(checks, "mail.ingest_liveness")
 
@@ -266,41 +323,41 @@ describe("checkMailroom mail-ingest liveness", () => {
     }
   })
 
-  it("fails when a provisioned mailbox has never ingested anything", () => {
+  it("fails when a provisioned mailbox has never ingested anything", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { messageCount: 0, provisionedAgoMs: 30 * DAY_MS })
 
-    const check = findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("fail")
     expect(check.detail).toContain("no mail ingested ever — the store is readable and empty")
     expect(check.detail).toContain("has been configured for 30 days")
   })
 
-  it("warns rather than fails for a mailbox provisioned moments ago with no mail yet", () => {
+  it("warns rather than fails for a mailbox provisioned moments ago with no mail yet", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { messageCount: 0, provisionedAgoMs: 5 * 60 * 1000 })
 
-    const check = findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("warn")
     expect(check.detail).toContain("has been configured for 5 minutes")
   })
 
-  it("reports 'never' when the messages directory is missing entirely", () => {
+  it("reports 'never' when the messages directory is missing entirely", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
     const mailroomRoot = writeMailroom(agentRoot, { messageCount: 0 })
     fs.rmSync(path.join(mailroomRoot, "messages"), { recursive: true, force: true })
 
-    const check = findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("fail")
     expect(check.detail).toContain("no mail ingested ever")
     expect(check.detail).toContain("does not exist")
   })
 
-  it("fails as unverified — not healthy — when the message store cannot be listed", () => {
+  it("fails as unverified — not healthy — when the message store cannot be listed", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
     const messagesDir = path.join(writeMailroom(agentRoot, { lastIngestAgoMs: HOUR_MS }), "messages")
@@ -311,51 +368,235 @@ describe("checkMailroom mail-ingest liveness", () => {
       },
     })
 
-    const check = findCheck(checkMailroom(deps).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(deps)).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("fail")
     expect(check.detail).toContain("mail ingested: last-activity time could not be determined")
     expect(check.detail).toContain("unverified, not healthy")
   })
 
-  it("warns instead of silently passing when the store mtime is in the future", () => {
+  it("warns instead of silently passing when the store mtime is in the future", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { messagesMtimeMs: Date.now() + 2 * DAY_MS })
 
-    const check = findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("warn")
     expect(check.detail).toContain("in the future")
     expect(check.detail).toContain("clock skew means freshness cannot be trusted")
   })
 
-  it("honours a per-agent threshold override from agent.json", () => {
+  it("honours a per-agent threshold override from agent.json", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", {
       mail: { enabled: true, freshness: { warnAfterHours: 1, failAfterHours: 2 } },
     })
     writeMailroom(agentRoot, { lastIngestAgoMs: 3 * HOUR_MS })
 
-    const check = findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness")
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
 
     expect(check.status).toBe("fail")
     expect(check.detail).toContain("no mail ingested in 3 hours")
   })
 
-  it("falls back to defaults when agent.json is missing or unparseable", () => {
+  it("falls back to defaults when agent.json is missing or unparseable", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
     writeMailroom(agentRoot, { lastIngestAgoMs: 30 * HOUR_MS })
     fs.writeFileSync(path.join(agentRoot, "agent.json"), "{not json", "utf-8")
 
-    expect(findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness").status).toBe("warn")
+    expect(findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness").status).toBe("warn")
 
     fs.rmSync(path.join(agentRoot, "agent.json"))
-    expect(findCheck(checkMailroom(depsFor(bundlesRoot)).checks, "mail.ingest_liveness").status).toBe("warn")
+    expect(findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness").status).toBe("warn")
   })
 
   it("uses 24h/72h defaults, so a quiet weekend warns before it fails", () => {
     expect(DEFAULT_MAIL_INGEST_THRESHOLDS).toEqual({ warnAfterMs: 24 * HOUR_MS, failAfterMs: 72 * HOUR_MS })
+  })
+
+  it("keeps reading the local store when the runtime config says the reader is on local files", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, { lastIngestAgoMs: 30 * HOUR_MS })
+    // A fresh mirror must not rescue a local-mode agent: with no
+    // `azureAccountUrl` the reader writes messages/, so messages/ is the truth.
+    writeHostedMirror(agentRoot, { lastObservedAgoMs: 5 * 60 * 1000 })
+    seedMailRuntime("slugger", { storePath: path.join(agentRoot, "state", "mailroom") }, "local")
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("no mail ingested in 30 hours")
+    expect(check.detail).toContain("state/mailroom/messages")
+  })
+})
+
+// ── Hosted (Azure Blob) Mailroom ──
+//
+// Cutting an agent over to the hosted store freezes `state/mailroom/messages`
+// at the cutover date, because nothing writes there any more. Measuring it in
+// hosted mode reports a dead pipe that is demonstrably alive — a false failure,
+// which teaches operators to ignore the check and so destroys the thing #885
+// was built for. These pin the mode-aware signal.
+
+describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
+  it("passes on the local hosted mirror, and names the hosted store it cannot read", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, { lastIngestAgoMs: 77 * DAY_MS })
+    writeHostedMirror(agentRoot, { lastObservedAgoMs: 20 * 60 * 1000 })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
+
+    expect(check.status).toBe("pass")
+    expect(check.label).toBe("slugger.ouro mail ingest liveness")
+    expect(check.detail).toContain("hosted mail observed locally 20 minutes ago")
+    expect(check.detail).toContain(HOSTED_STORE_LABEL)
+    expect(check.detail).toContain("state/mail-search")
+    expect(check.detail).toContain("which doctor does not read")
+    expect(check.detail).not.toContain("fix:")
+  })
+
+  it("REGRESSION 2026-07-27: does not report a 77-day outage from the frozen local store after the hosted cutover", async () => {
+    // The real false failure, replayed against a frozen clock. Slugger moved to
+    // the hosted Mailroom, so `state/mailroom/messages` stopped changing on
+    // 2026-05-10 — while `mail_recent` showed messages dated today and the blob
+    // container held 5000+ blobs with today's Last-Modified. `ouro doctor` said:
+    //   ✔ slugger.ouro mail config           slugger@ouro.bot; hosted azure-blob …
+    //   ✘ slugger.ouro mail ingest liveness  no mail ingested in 77 days …
+    //                                        derived from …/state/mailroom/messages
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, {
+      messageCount: 45,
+      messagesMtimeMs: Date.parse("2026-05-10T23:24:00.000Z"),
+      registryMtimeMs: Date.parse("2026-01-08T00:00:00.000Z"),
+    })
+    writeHostedMirror(agentRoot, { documentCount: 45, mirrorMtimeMs: Date.parse("2026-07-27T07:49:00.000Z") })
+    seedHostedMailRuntime()
+
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-07-27T08:00:00.000Z"))
+    try {
+      const result = await runDoctorChecks(depsFor(bundlesRoot), { category: "Mailroom" })
+      const alive = findCheck(result.categories[0].checks, "mail.ingest_liveness")
+
+      expect(alive.detail).not.toContain("no mail ingested in 77 days")
+      expect(alive.detail).not.toContain("state/mailroom/messages")
+      expect(alive.status).toBe("pass")
+      expect(alive.detail).toContain("hosted mail observed locally 11 minutes ago")
+      expect(result.summary.failed).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("warns, then fails, as the hosted mirror goes quiet", async () => {
+    const warnRoot = makeBundlesRoot()
+    const warnAgentRoot = writeAgent(warnRoot)
+    writeMailroom(warnAgentRoot, { lastIngestAgoMs: HOUR_MS })
+    writeHostedMirror(warnAgentRoot, { lastObservedAgoMs: 30 * HOUR_MS })
+    seedHostedMailRuntime()
+
+    const warned = findCheck((await checkMailroom(depsFor(warnRoot))).checks, "mail.ingest_liveness")
+
+    expect(warned.status).toBe("warn")
+    expect(warned.detail).toContain("no hosted mail observed locally in 30 hours")
+    expect(warned.detail).toContain("fix: doctor measures hosted mail only through this machine's local mirror")
+
+    const failRoot = makeBundlesRoot()
+    const failAgentRoot = writeAgent(failRoot)
+    writeMailroom(failAgentRoot, { lastIngestAgoMs: HOUR_MS })
+    writeHostedMirror(failAgentRoot, { lastObservedAgoMs: 9 * DAY_MS })
+
+    const failed = findCheck((await checkMailroom(depsFor(failRoot))).checks, "mail.ingest_liveness")
+
+    expect(failed.status).toBe("fail")
+    expect(failed.detail).toContain("no hosted mail observed locally in 9 days")
+    expect(failed.detail).toContain(`listing \`messages/\` blobs in ${HOSTED_STORE_LABEL} by Last-Modified`)
+  })
+
+  it("reports the unverified 'unknown' state — not pass, not a fake outage — when no hosted mirror exists", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    writeMailroom(writeAgent(bundlesRoot), { lastIngestAgoMs: 77 * DAY_MS })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("last-activity time could not be determined")
+    expect(check.detail).toContain("is absent")
+    expect(check.detail).toContain("not read by doctor (no network calls, no credentials)")
+    expect(check.detail).toContain("unverified, not healthy")
+    // Neither of the two wrong answers: a confident pass, or the local store's
+    // frozen mtime dressed up as a hosted outage.
+    expect(check.detail).not.toContain("no mail ingested")
+    expect(check.detail).not.toContain("77 days")
+  })
+
+  it("treats an empty hosted mirror as unverified rather than 'the hosted store never delivered'", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, { lastIngestAgoMs: 77 * DAY_MS })
+    writeHostedMirror(agentRoot, { documentCount: 0 })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("is empty")
+    expect(check.detail).toContain("unverified, not healthy")
+    expect(check.detail).not.toContain("the store is readable and empty")
+  })
+
+  it("reports unverified when the hosted mirror exists but cannot be listed", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, { lastIngestAgoMs: HOUR_MS })
+    const mirrorDir = writeHostedMirror(agentRoot, { lastObservedAgoMs: HOUR_MS })
+    seedHostedMailRuntime()
+    const deps = depsFor(bundlesRoot, {
+      readdirSync: (p) => {
+        if (p === mirrorDir) throw new Error("EACCES: permission denied")
+        return fs.readdirSync(p)
+      },
+    })
+
+    const check = findCheck((await checkMailroom(deps)).checks, "mail.ingest_liveness")
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("exists but could not be listed")
+    expect(check.detail).toContain("unverified, not healthy")
+  })
+
+  it("defaults the container name to `mailroom` when the runtime config omits it", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, { lastIngestAgoMs: 77 * DAY_MS })
+    writeHostedMirror(agentRoot, { lastObservedAgoMs: HOUR_MS })
+    seedHostedMailRuntime("slugger", {})
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
+
+    expect(check.status).toBe("pass")
+    expect(check.detail).toContain(HOSTED_STORE_LABEL)
+  })
+
+  it("honours the same per-agent threshold override in hosted mode", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", {
+      mail: { enabled: true, freshness: { warnAfterHours: 1, failAfterHours: 2 } },
+    })
+    writeMailroom(agentRoot, { lastIngestAgoMs: HOUR_MS })
+    writeHostedMirror(agentRoot, { lastObservedAgoMs: 3 * HOUR_MS })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness")
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("no hosted mail observed locally in 3 hours")
   })
 })
 
