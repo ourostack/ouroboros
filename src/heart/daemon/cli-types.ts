@@ -20,6 +20,8 @@ import type { VaultItemCompatibilityAlias, VaultItemTemplate } from "./vault-ite
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 import type { RsvpCutoverAction, RsvpCutoverDeps } from "../../rsvp/cutover"
+import type { MailroomRegistry } from "../../mailroom/core"
+import type { MailroomRuntimeConfig } from "../../mailroom/reader"
 export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
 export type RuntimeConfigScope = "agent" | "machine"
@@ -165,6 +167,11 @@ export interface OuroCliDeps {
   scanSessions?: (agentName: string) => Promise<SessionEntry[]>
   getChangelogPath?: () => string
   fetchImpl?: typeof fetch
+  /**
+   * Reads the public Mailroom registry. Injected so hosted key assertion can be
+   * exercised without Azure credentials; production uses `readMailroomRegistry`.
+   */
+  readMailroomRegistry?: (config: MailroomRuntimeConfig) => Promise<MailroomRegistry>
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
   updateCheckTimeoutMs?: number
   installCliVersion?: (version: string) => Promise<void>

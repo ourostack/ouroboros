@@ -3,15 +3,38 @@ import * as path from "node:path"
 import type { AddressInfo } from "node:net"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot, getRepoRoot } from "../heart/identity"
-import { refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
+import { readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import { requestPrivateWake } from "../heart/daemon/socket-client"
 import { listBackgroundOperations } from "../heart/background-operations"
 import { listAmbientMailImportOperations } from "../heart/mail-import-discovery"
 import { scanMailScreenerAttention } from "../mailroom/attention"
-import { resolveMailroomReader, type MailroomReaderResolution } from "../mailroom/reader"
+import { readMailroomRegistry, resolveMailroomReader, type MailroomReaderResolution, type MailroomRuntimeConfig } from "../mailroom/reader"
 import { startMailroomIngress, type MailroomIngressServers, type MailroomSmtpIngressOptions } from "../mailroom/smtp-ingress"
 import type { MailroomRegistry } from "../mailroom/core"
+
+/**
+ * Whether every mail key the public registry declares for this agent has a
+ * private half in the agent's vault.
+ *
+ * `could-not-verify` is not a soft `absent`: it means the probe never got a
+ * trustworthy answer (registry unreadable, vault read unavailable, registry
+ * declares nothing to check). Collapsing it into `absent` would cry wolf on
+ * every locked vault; collapsing it into `covered` would reproduce the silence
+ * that let `mail_slugger-hey_6e7b4bfa34c0b826` go unnoticed for 23 hours.
+ */
+export type MailKeyCoverageStatus = "covered" | "absent" | "could-not-verify"
+
+export interface MailKeyCoverage {
+  status: MailKeyCoverageStatus
+  /** Key ids the registry declares for this agent (empty when unverifiable). */
+  declaredKeyIds: string[]
+  /** Declared key ids with no usable private half in the vault. */
+  absentKeyIds: string[]
+  /** Why the probe could not answer, or null when it did. */
+  reason: string | null
+  checkedAt: string
+}
 
 export interface MailSenseRuntimeState {
   schemaVersion: 1
@@ -25,6 +48,7 @@ export interface MailSenseRuntimeState {
   storeLabel: string
   lastScanAt: string | null
   lastQueuedCount: number
+  keyCoverage: MailKeyCoverage
   updatedAt: string
 }
 
@@ -41,6 +65,7 @@ export interface MailSenseAppOptions {
   now?: () => number
   refreshRuntime?: typeof refreshRuntimeCredentialConfig
   resolveReader?: (agentName: string) => MailroomReaderResolution
+  readRegistry?: (config: MailroomRuntimeConfig) => Promise<MailroomRegistry>
   startIngress?: (options: MailroomSmtpIngressOptions & { smtpPort: number; httpPort: number; host?: string }) => MailroomIngressServers
   setIntervalFn?: (callback: () => void, ms: number) => unknown
   clearIntervalFn?: (timer: unknown) => void
@@ -66,6 +91,132 @@ interface ImportDiscoveryCandidateDescriptor {
 
 function readRegistry(registryPath: string): MailroomRegistry {
   return JSON.parse(fs.readFileSync(registryPath, "utf-8")) as MailroomRegistry
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function unverifiableCoverage(checkedAt: string, reason: string): MailKeyCoverage {
+  return { status: "could-not-verify", declaredKeyIds: [], absentKeyIds: [], reason, checkedAt }
+}
+
+/**
+ * Key ids the registry says mail can currently be encrypted to for this agent.
+ *
+ * Filtered to this agent because the hosted registry is domain-wide: counting
+ * every agent's records would report another agent's keys as absent on every
+ * cycle, and a check that always fails is a check operators learn to ignore.
+ *
+ * The match is case-insensitive. The harness sends `agentId: agent` verbatim to
+ * hosted Mail Control while this repo's own hosted ensure-response fixture
+ * returns the lowercased form for that same request, so a registry record's
+ * agent id can differ from the sense's agent name by case alone. Case-sensitive
+ * matching would then declare nothing and report `could-not-verify` forever —
+ * the same silence this probe exists to end. Widening the match cannot produce
+ * a false `absent` unless two agents differ only by case, which the store and
+ * address resolvers could not tell apart either.
+ *
+ * Disabled source grants are excluded because `resolveMailAddress`
+ * (`mailroom/core.ts`) refuses their alias outright, so no new mail can be
+ * encrypted to their key and a missing private half is not a live gap.
+ */
+function registryDeclaredKeyIds(registry: MailroomRegistry, agentName: string): string[] {
+  const wanted = agentName.toLowerCase()
+  const isThisAgent = (agentId: string): boolean => agentId.toLowerCase() === wanted
+  const declared = [
+    ...registry.mailboxes.filter((mailbox) => isThisAgent(mailbox.agentId)).map((mailbox) => mailbox.keyId),
+    ...registry.sourceGrants.filter((grant) => isThisAgent(grant.agentId) && grant.enabled).map((grant) => grant.keyId),
+  ]
+  return [...new Set(declared.filter((keyId) => keyId.trim().length > 0))]
+}
+
+/**
+ * Mail key ids the vault can actually decrypt with, read fresh rather than
+ * taken from the reader resolution captured at sense startup — a sense that has
+ * been up for days would otherwise measure a key set the vault has since
+ * changed, and report a rotation as a loss.
+ *
+ * Throws rather than returning empty when the read is untrustworthy, so the
+ * caller classifies it `could-not-verify` instead of `absent`. An empty-but-
+ * present `privateKeys` record is a real observation and is not a throw.
+ */
+function vaultMailKeyIds(agentName: string): string[] {
+  const runtime = readRuntimeCredentialConfig(agentName)
+  if (!runtime.ok) throw new Error(`vault ${runtime.itemPath} read is ${runtime.reason}`)
+  const mailroom = runtime.config.mailroom
+  const privateKeys = isRecord(mailroom) ? mailroom.privateKeys : undefined
+  if (!isRecord(privateKeys)) throw new Error(`vault ${runtime.itemPath} has no mailroom.privateKeys record`)
+  return Object.entries(privateKeys)
+    .filter((entry) => typeof entry[1] === "string" && entry[1].trim().length > 0)
+    .map((entry) => entry[0])
+}
+
+/**
+ * Never throws: every failure degrades to `could-not-verify`. `scan()` is
+ * awaited during sense startup, so a throw here would stop the mail sense from
+ * starting — an integrity probe must not be able to take mail down.
+ */
+async function computeMailKeyCoverage(input: {
+  agentName: string
+  config: MailroomRuntimeConfig
+  readRegistry: (config: MailroomRuntimeConfig) => Promise<MailroomRegistry>
+  checkedAt: string
+}): Promise<MailKeyCoverage> {
+  try {
+    const registry = await input.readRegistry(input.config)
+    const declaredKeyIds = registryDeclaredKeyIds(registry, input.agentName)
+    if (declaredKeyIds.length === 0) {
+      // Nothing to check against is not the same as nothing wrong: reporting
+      // `covered` for an empty declaration would turn an unprovisioned or
+      // wrong registry into a green light.
+      return unverifiableCoverage(input.checkedAt, `mailroom registry declares no mail keys for ${input.agentName}`)
+    }
+    const present = new Set(vaultMailKeyIds(input.agentName))
+    const absentKeyIds = declaredKeyIds.filter((keyId) => !present.has(keyId))
+    return {
+      status: absentKeyIds.length === 0 ? "covered" : "absent",
+      declaredKeyIds,
+      absentKeyIds,
+      reason: null,
+      checkedAt: input.checkedAt,
+    }
+  } catch (error) {
+    return unverifiableCoverage(input.checkedAt, error instanceof Error ? error.message : String(error))
+  }
+}
+
+/**
+ * Coverage has to push, not wait to be asked. `ouro doctor` is on-demand — it
+ * has no scheduled invocation — so a doctor line alone leaves a gap invisible
+ * until someone happens to run it, which is how `mail_slugger-hey_6e7b4bfa34c0b826`
+ * stayed unnoticed for 23 hours while mail encrypted to it piled up unreadable.
+ */
+function emitMailKeyCoverageEvents(agentName: string, coverage: MailKeyCoverage): void {
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_key_coverage_recorded",
+    message: "mail key coverage recorded",
+    meta: {
+      agentName,
+      status: coverage.status,
+      declaredCount: coverage.declaredKeyIds.length,
+      absentCount: coverage.absentKeyIds.length,
+      reason: coverage.reason,
+    },
+  })
+  if (coverage.status !== "absent") return
+  emitNervesEvent({
+    level: "error",
+    component: "senses",
+    event: "senses.mail_key_coverage_absent",
+    message: `mailroom registry declares mail keys with no private half in ${agentName}'s vault: ${coverage.absentKeyIds.join(", ")}`,
+    meta: {
+      agentName,
+      absentKeyIds: coverage.absentKeyIds,
+      declaredKeyIds: coverage.declaredKeyIds,
+    },
+  })
 }
 
 function validPort(value: number | undefined): number {
@@ -323,6 +474,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
   const importDiscoveryPath = importDiscoveryStatePath(options.agentName)
   let lastScanAt: string | null = null
   let lastQueuedCount = 0
+  let lastKeyCoverage = unverifiableCoverage(new Date(now()).toISOString(), "mail key coverage not probed yet")
 
   const scan = async () => {
     const scanStartedAt = new Date(now()).toISOString()
@@ -367,6 +519,14 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
       })
     }
 
+    lastKeyCoverage = await computeMailKeyCoverage({
+      agentName: options.agentName,
+      config: resolved.config,
+      readRegistry: options.readRegistry ?? readMailroomRegistry,
+      checkedAt: scanStartedAt,
+    })
+    emitMailKeyCoverageEvents(options.agentName, lastKeyCoverage)
+
     lastScanAt = scanStartedAt
     lastQueuedCount = queuedCount
     writeRuntimeState(runtimePath, {
@@ -381,6 +541,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
       storeLabel: resolved.storeLabel,
       lastScanAt,
       lastQueuedCount,
+      keyCoverage: lastKeyCoverage,
       updatedAt: new Date(now()).toISOString(),
     })
   }
@@ -429,6 +590,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
         storeLabel: resolved.storeLabel,
         lastScanAt,
         lastQueuedCount,
+        keyCoverage: lastKeyCoverage,
         updatedAt: new Date(now()).toISOString(),
       })
       emitNervesEvent({

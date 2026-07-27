@@ -131,7 +131,7 @@ import {
 import * as runtimeCredentials from "../../../heart/runtime-credentials"
 import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { clearProviderReadinessCache, readProviderLaneReadiness } from "../../../heart/provider-readiness-cache"
-import { provisionMailboxRegistry } from "../../../mailroom/core"
+import { provisionMailboxRegistry, type MailroomRegistry } from "../../../mailroom/core"
 
 const NOW = "2026-04-12T20:10:00.000Z"
 const mockPingProvider = vi.mocked(pingProvider)
@@ -470,6 +470,11 @@ function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<Ou
     checkSocketAlive: async () => false,
     cleanupStaleSocket: () => {},
     fallbackPendingMessage: () => "",
+    // Hosted key assertion reads the public registry blob. Default it to a
+    // failure so no test reaches Azure; tests that care inject a fixture.
+    readMailroomRegistry: async () => {
+      throw new Error("test: hosted registry read not stubbed")
+    },
     bundlesRoot,
     homeDir,
     ...overrides,
@@ -2243,6 +2248,241 @@ describe("provider CLI command execution", () => {
       mail_slugger_native: HOSTED_NATIVE_KEY,
       mail_slugger_hey: HOSTED_SOURCE_KEY,
     })
+  })
+
+  // ── Assertion widening ──────────────────────────────────────────────────
+  //
+  // requiredHostedKeyIds derives the asserted set from [body.mailbox,
+  // body.sourceGrant], so anything the ensure response omits is never asserted.
+  // The server omits sourceGrant unless a source alias is in play, which is how
+  // the 2026-07-24 gap slipped through: the registry declared
+  // mail_slugger-hey_6e7b4bfa34c0b826, the vault never received its private
+  // half, and setup reported success.
+  //
+  // Registry agentId is lowercase "slugger" while the CLI agent is "Slugger" —
+  // the same divergence this repo's own hosted ensure fixture carries — so
+  // these also pin the case-insensitive match.
+  function hostedRegistryFixture(keyIds: {
+    mailbox?: string
+    grants?: Array<{ keyId: string; agentId?: string }>
+  }): MailroomRegistry {
+    return {
+      schemaVersion: 1,
+      domain: "ouro.bot",
+      mailboxes: keyIds.mailbox
+        ? [{
+            agentId: "slugger",
+            mailboxId: "mailbox_slugger",
+            canonicalAddress: "slugger@ouro.bot",
+            keyId: keyIds.mailbox,
+            publicKeyPem: "-----BEGIN PUBLIC KEY-----\n",
+            defaultPlacement: "screener",
+          }]
+        : [],
+      sourceGrants: (keyIds.grants ?? []).map((grant, index) => ({
+        grantId: `grant_${index}`,
+        agentId: grant.agentId ?? "slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+        aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+        keyId: grant.keyId,
+        publicKeyPem: "-----BEGIN PUBLIC KEY-----\n",
+        defaultPlacement: "imbox",
+        enabled: true,
+      })),
+    }
+  }
+
+  function hostedEnsureWithoutSourceGrant(): Record<string, unknown> {
+    return hostedEnsureResponse({
+      addedMailbox: false,
+      addedSourceGrant: false,
+      generatedPrivateKeys: {},
+      sourceAlias: undefined,
+      sourceGrant: undefined,
+    })
+  }
+
+  async function runHostedConnectMail(
+    homeDir: string,
+    bundlesRoot: string,
+    readRegistry: () => Promise<MailroomRegistry>,
+  ): Promise<string> {
+    return runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+      readMailroomRegistry: readRegistry,
+    }))
+  }
+
+  it("detects a registry-declared key the ensure response omitted and the vault never received", async () => {
+    emitTestEvent("provider cli hosted mail control asserts registry keys")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-assert-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-assert-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: { mail_slugger_native: HOSTED_NATIVE_KEY },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+
+    await expect(runHostedConnectMail(homeDir, bundlesRoot, async () => hostedRegistryFixture({
+      mailbox: "mail_slugger_native",
+      grants: [{ keyId: "mail_slugger-hey_6e7b4bfa34c0b826" }],
+    }))).rejects.toThrow("mail_slugger-hey_6e7b4bfa34c0b826")
+  })
+
+  it("completes hosted setup when the registry declares only keys the vault already holds", async () => {
+    emitTestEvent("provider cli hosted mail control registry keys covered")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-covered-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-covered-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+        mail_slugger_hey: HOSTED_SOURCE_KEY,
+      },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+
+    await runHostedConnectMail(homeDir, bundlesRoot, async () => hostedRegistryFixture({
+      mailbox: "mail_slugger_native",
+      grants: [{ keyId: "mail_slugger_hey" }],
+    }))
+
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.privateKeys).toEqual({
+      mail_slugger_native: HOSTED_NATIVE_KEY,
+      mail_slugger_hey: HOSTED_SOURCE_KEY,
+    })
+  })
+
+  it("does not assert other agents' registry keys against this agent's vault", async () => {
+    emitTestEvent("provider cli hosted mail control ignores other agents registry keys")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-other-agent-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-other-agent-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: { mail_slugger_native: HOSTED_NATIVE_KEY },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+
+    await runHostedConnectMail(homeDir, bundlesRoot, async () => hostedRegistryFixture({
+      mailbox: "mail_slugger_native",
+      grants: [{ keyId: "mail_codex-hey_deadbeef", agentId: "codex" }],
+    }))
+
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.privateKeys).toEqual({ mail_slugger_native: HOSTED_NATIVE_KEY })
+  })
+
+  // Degrading to the response-only assertion keeps this additive: an
+  // unreachable registry must not refuse a setup that previously succeeded.
+  it("falls back to the ensure response's key ids when the registry cannot be read", async () => {
+    emitTestEvent("provider cli hosted mail control registry unreadable")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-unreadable-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-unreadable-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: { mail_slugger_native: HOSTED_NATIVE_KEY },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+
+    await runHostedConnectMail(homeDir, bundlesRoot, async () => {
+      throw new Error("registry blob unreachable")
+    })
+
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.privateKeys).toEqual({ mail_slugger_native: HOSTED_NATIVE_KEY })
+  })
+
+  it("passes the configured managed identity through to the registry read", async () => {
+    emitTestEvent("provider cli hosted mail control registry managed identity")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-mi-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-mi-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      azureManagedIdentityClientId: "11111111-2222-3333-4444-555555555555",
+      privateKeys: { mail_slugger_native: HOSTED_NATIVE_KEY },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+    const seen: Array<Record<string, unknown>> = []
+
+    await runHostedConnectMail(homeDir, bundlesRoot, async (config) => {
+      seen.push(config as unknown as Record<string, unknown>)
+      return hostedRegistryFixture({ mailbox: "mail_slugger_native" })
+    })
+
+    expect(seen[0]).toEqual(expect.objectContaining({
+      azureManagedIdentityClientId: "11111111-2222-3333-4444-555555555555",
+      registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
+    }))
+  })
+
+  // Without an injected reader the CLI must fall through to the real
+  // readMailroomRegistry. Spied here rather than left live so the assertion
+  // proves the wiring without reaching Azure.
+  it("uses the production registry reader when no reader is injected", async () => {
+    emitTestEvent("provider cli hosted mail control default registry reader")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-default-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-default-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: { mail_slugger_native: HOSTED_NATIVE_KEY },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+    const registrySpy = vi.spyOn(mailroomReader, "readMailroomRegistry").mockRejectedValue("bare string rejection")
+
+    try {
+      await runOuroCli([
+        "connect",
+        "mail",
+        "--agent",
+        "Slugger",
+        "--no-delegated-source",
+      ], makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        detectMode: () => "production",
+        readMailroomRegistry: undefined,
+      }))
+
+      expect(registrySpy).toHaveBeenCalledTimes(1)
+      const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+      expect(mailroom.privateKeys).toEqual({ mail_slugger_native: HOSTED_NATIVE_KEY })
+    } finally {
+      registrySpy.mockRestore()
+    }
   })
 
   it("reports hosted registry and vault drift when Mail Control no longer has a missing one-time key", async () => {

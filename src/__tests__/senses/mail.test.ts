@@ -6,7 +6,9 @@ import { provisionMailboxRegistry } from "../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore, type MailroomStore } from "../../mailroom/file-store"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
 import { resetIdentity } from "../../heart/identity"
-import { scanMailImportDiscoveryAttention, startMailSenseApp } from "../../senses/mail"
+import { scanMailImportDiscoveryAttention, startMailSenseApp, type MailKeyCoverage, type MailSenseApp } from "../../senses/mail"
+import type { MailroomRegistry } from "../../mailroom/core"
+import * as nervesRuntime from "../../nerves/runtime"
 
 const mockRequestInnerWake = vi.fn(async () => null)
 const mockRequestPrivateWake = vi.fn(async () => null)
@@ -970,5 +972,569 @@ describe("mail sense runtime", () => {
     expect(app.httpPort).toBeNull()
     await app.stop()
     expect(wrappedListening.server.once).not.toHaveBeenCalled()
+  })
+})
+
+// ── Mail key coverage ─────────────────────────────────────────────────────
+//
+// The 2026-07-24 incident shape: Mail Control minted `mail_slugger-hey_6e7b...`
+// hosted-side and the registry declared it, but the private half was never
+// persisted to the agent vault. Every message encrypted to it between
+// 2026-07-24T12:23Z and 2026-07-25T11:35Z is permanently unreadable, and
+// nothing surfaced the gap for 23 hours. These tests pin the detection.
+
+function registryFixture(input: {
+  mailboxes?: Array<{ agentId: string; keyId: string }>
+  sourceGrants?: Array<{ agentId: string; keyId: string; enabled?: boolean }>
+}): MailroomRegistry {
+  return {
+    schemaVersion: 1,
+    domain: "ouro.bot",
+    mailboxes: (input.mailboxes ?? []).map((entry, index) => ({
+      agentId: entry.agentId,
+      mailboxId: `mailbox_${index}`,
+      canonicalAddress: `${entry.agentId.toLowerCase()}@ouro.bot`,
+      keyId: entry.keyId,
+      publicKeyPem: "-----BEGIN PUBLIC KEY-----\n",
+      defaultPlacement: "screener",
+    })),
+    sourceGrants: (input.sourceGrants ?? []).map((entry, index) => ({
+      grantId: `grant_${index}`,
+      agentId: entry.agentId,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      aliasAddress: `${entry.agentId.toLowerCase()}-hey@ouro.bot`,
+      keyId: entry.keyId,
+      publicKeyPem: "-----BEGIN PUBLIC KEY-----\n",
+      defaultPlacement: "screener",
+      enabled: entry.enabled ?? true,
+    })),
+  }
+}
+
+function hostedStore(): MailroomStore {
+  return { listScreenerCandidates: async () => [] } as unknown as MailroomStore
+}
+
+async function startHostedMailSense(input: {
+  vaultConfig?: Record<string, unknown>
+  readRegistry: () => Promise<MailroomRegistry>
+  agentName?: string
+}): Promise<MailSenseApp> {
+  const agentName = input.agentName ?? "slugger"
+  if (input.vaultConfig) cacheRuntimeCredentialConfig(agentName, input.vaultConfig)
+  return startMailSenseApp({
+    agentName,
+    now: () => 1_777_000_000_000,
+    refreshRuntime: async () => ({
+      ok: true,
+      itemPath: `vault:${agentName}:runtime/config`,
+      config: {},
+      revision: "test",
+      updatedAt: new Date(0).toISOString(),
+    }),
+    resolveReader: () => ({
+      ok: true,
+      agentName,
+      config: {
+        mailboxAddress: `${agentName.toLowerCase()}@ouro.bot`,
+        azureAccountUrl: "https://stourotest.blob.core.windows.net",
+        azureContainer: "mailroom",
+        registryContainer: "mailroom",
+        registryBlob: "registry.json",
+        privateKeys: { mail_slugger_native: "secret" },
+        attentionIntervalMs: 5_000,
+      },
+      store: hostedStore(),
+      storeKind: "azure-blob",
+      storeLabel: "https://stourotest.blob.core.windows.net/mailroom",
+    }),
+    readRegistry: input.readRegistry,
+    startIngress: vi.fn(),
+    setIntervalFn: () => "timer",
+    clearIntervalFn: vi.fn(),
+  })
+}
+
+function readCoverage(app: MailSenseApp): MailKeyCoverage {
+  return readJson<{ keyCoverage: MailKeyCoverage }>(app.runtimeStatePath).keyCoverage
+}
+
+describe("mail sense key coverage", () => {
+  it("records covered when every registry-declared key id has a vault private key", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: {
+            mail_slugger_native: "PRIVATE",
+            "mail_slugger-hey_4c628d031cbe560c": "PRIVATE",
+          },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "slugger", keyId: "mail_slugger-hey_4c628d031cbe560c" }],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "covered",
+      declaredKeyIds: ["mail_slugger_native", "mail_slugger-hey_4c628d031cbe560c"],
+      absentKeyIds: [],
+      reason: null,
+    }))
+
+    await app.stop()
+  })
+
+  it("records absent for a key the registry declares that was never persisted to the vault", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: {
+            mail_slugger_native: "PRIVATE",
+            "mail_slugger-hey_4c628d031cbe560c": "PRIVATE",
+          },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "slugger", keyId: "mail_slugger-hey_6e7b4bfa34c0b826" }],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "absent",
+      absentKeyIds: ["mail_slugger-hey_6e7b4bfa34c0b826"],
+    }))
+
+    await app.stop()
+  })
+
+  it("records could-not-verify, never absent, when the registry cannot be read", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => {
+        throw new Error("mailroom registry blob not found")
+      },
+    })
+
+    const coverage = readCoverage(app)
+    expect(coverage.status).toBe("could-not-verify")
+    expect(coverage.absentKeyIds).toEqual([])
+    expect(coverage.reason).toContain("mailroom registry blob not found")
+
+    await app.stop()
+  })
+
+  it("records could-not-verify when the vault read is unavailable", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+      }),
+    })
+
+    const coverage = readCoverage(app)
+    expect(coverage.status).toBe("could-not-verify")
+    expect(coverage.absentKeyIds).toEqual([])
+    expect(coverage.reason).toContain("missing")
+
+    await app.stop()
+  })
+
+  it("records could-not-verify when the vault config carries no mailroom private keys", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+      }),
+    })
+
+    const coverage = readCoverage(app)
+    expect(coverage.status).toBe("could-not-verify")
+    expect(coverage.reason).toContain("mailroom.privateKeys")
+
+    await app.stop()
+  })
+
+  it("records could-not-verify when the vault config carries no mailroom section at all", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: { workSubstrate: { mode: "hosted" } },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "could-not-verify",
+      reason: expect.stringContaining("mailroom.privateKeys"),
+    }))
+
+    await app.stop()
+  })
+
+  it("counts a declared key whose stored private half is blank as absent", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: {
+            mail_slugger_native: "PRIVATE",
+            "mail_slugger-hey_blank": "   ",
+            "mail_slugger-hey_nonstring": 42,
+          },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [
+          { agentId: "slugger", keyId: "mail_slugger-hey_blank" },
+          { agentId: "slugger", keyId: "mail_slugger-hey_nonstring" },
+        ],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "absent",
+      absentKeyIds: ["mail_slugger-hey_blank", "mail_slugger-hey_nonstring"],
+    }))
+
+    await app.stop()
+  })
+
+  it("skips registry records that declare a blank key id", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "slugger", keyId: "" }],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "covered",
+      declaredKeyIds: ["mail_slugger_native"],
+    }))
+
+    await app.stop()
+  })
+
+  it("records could-not-verify when the registry read rejects with a non-Error value", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => {
+        throw "registry rejected as a bare string"
+      },
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "could-not-verify",
+      reason: "registry rejected as a bare string",
+    }))
+
+    await app.stop()
+  })
+
+  it("records could-not-verify when the registry declares no keys for this agent", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "otheragent", keyId: "mail_otheragent_native" }],
+        sourceGrants: [{ agentId: "otheragent", keyId: "mail_otheragent-hey_deadbeef" }],
+      }),
+    })
+
+    const coverage = readCoverage(app)
+    expect(coverage.status).toBe("could-not-verify")
+    expect(coverage.declaredKeyIds).toEqual([])
+    expect(coverage.absentKeyIds).toEqual([])
+
+    await app.stop()
+  })
+
+  // The harness sends `agentId: agent` verbatim to hosted Mail Control
+  // (cli-exec.ts basePayload) while this repo's own hosted ensure-response
+  // fixture returns the lowercased form for the same request, so the id in a
+  // registry record can differ from the sense's agent name by case alone.
+  // Matching case-sensitively would silently declare nothing and report
+  // could-not-verify forever, which is the blind spot this probe exists to end.
+  it("matches registry records whose agent id differs only by case", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "Slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "SLUGGER", keyId: "mail_slugger-hey_6e7b4bfa34c0b826" }],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "absent",
+      declaredKeyIds: ["mail_slugger_native", "mail_slugger-hey_6e7b4bfa34c0b826"],
+      absentKeyIds: ["mail_slugger-hey_6e7b4bfa34c0b826"],
+    }))
+
+    await app.stop()
+  })
+
+  it("ignores disabled source grants, whose alias the ingress already refuses", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "slugger", keyId: "mail_slugger-hey_retired", enabled: false }],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "covered",
+      declaredKeyIds: ["mail_slugger_native"],
+      absentKeyIds: [],
+    }))
+
+    await app.stop()
+  })
+
+  it("never blocks sense startup when the coverage probe throws outright", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: () => {
+        throw new Error("synchronous registry explosion")
+      },
+    })
+
+    const coverage = readCoverage(app)
+    expect(coverage.status).toBe("could-not-verify")
+    expect(coverage.reason).toContain("synchronous registry explosion")
+
+    await app.stop()
+  })
+
+  it("treats a malformed registry document as could-not-verify", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => ({ schemaVersion: 1, domain: "ouro.bot" } as unknown as MailroomRegistry),
+    })
+
+    expect(readCoverage(app).status).toBe("could-not-verify")
+
+    await app.stop()
+  })
+
+  // `ouro doctor` has no scheduled invocation on origin/main — it is on-demand
+  // only. A doctor line alone would not have surfaced the 2026-07-24 gap for 23
+  // hours, so detection has to push an event of its own.
+  it("emits a distinct nerves alarm naming the absent key id", async () => {
+    process.env.HOME = tempDir()
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "slugger", keyId: "mail_slugger-hey_6e7b4bfa34c0b826" }],
+      }),
+    })
+
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      component: "senses",
+      event: "senses.mail_key_coverage_absent",
+      meta: expect.objectContaining({
+        agentName: "slugger",
+        absentKeyIds: ["mail_slugger-hey_6e7b4bfa34c0b826"],
+      }),
+    }))
+
+    await app.stop()
+  })
+
+  it("records every cycle's coverage verdict as a greppable event", async () => {
+    process.env.HOME = tempDir()
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+      }),
+    })
+
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      component: "senses",
+      event: "senses.mail_key_coverage_recorded",
+      meta: expect.objectContaining({
+        agentName: "slugger",
+        status: "covered",
+        declaredCount: 1,
+        absentCount: 0,
+      }),
+    }))
+    expect(emitted).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_absent",
+    }))
+
+    await app.stop()
+  })
+
+  it("does not raise the absent alarm when coverage could not be verified", async () => {
+    process.env.HOME = tempDir()
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => {
+        throw new Error("mailroom registry blob not found")
+      },
+    })
+
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_recorded",
+      meta: expect.objectContaining({
+        status: "could-not-verify",
+        reason: "mailroom registry blob not found",
+      }),
+    }))
+    expect(emitted).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_absent",
+    }))
+
+    await app.stop()
+  })
+
+  it("re-reads coverage each scan cycle so a vault repair clears the alarm", async () => {
+    process.env.HOME = tempDir()
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_native: "PRIVATE" },
+      },
+    })
+    let intervalCallback: (() => void) | undefined
+    const app = await startMailSenseApp({
+      agentName: "slugger",
+      now: () => 1_777_000_000_000,
+      refreshRuntime: async () => ({
+        ok: true,
+        itemPath: "vault:slugger:runtime/config",
+        config: {},
+        revision: "test",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      resolveReader: () => ({
+        ok: true,
+        agentName: "slugger",
+        config: {
+          mailboxAddress: "slugger@ouro.bot",
+          azureAccountUrl: "https://stourotest.blob.core.windows.net",
+          privateKeys: { mail_slugger_native: "secret" },
+        },
+        store: hostedStore(),
+        storeKind: "azure-blob",
+        storeLabel: "https://stourotest.blob.core.windows.net/mailroom",
+      }),
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "slugger", keyId: "mail_slugger-hey_6e7b4bfa34c0b826" }],
+      }),
+      startIngress: vi.fn(),
+      setIntervalFn: (callback) => {
+        intervalCallback = callback
+        return "timer"
+      },
+      clearIntervalFn: vi.fn(),
+    })
+
+    expect(readCoverage(app).status).toBe("absent")
+
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {
+          mail_slugger_native: "PRIVATE",
+          "mail_slugger-hey_6e7b4bfa34c0b826": "RECOVERED",
+        },
+      },
+    })
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    intervalCallback?.()
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "covered",
+      absentKeyIds: [],
+    }))
+    expect(emitted).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_absent",
+    }))
+
+    await app.stop()
   })
 })
