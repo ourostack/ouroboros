@@ -64,7 +64,7 @@ import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versi
 import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
 import { importMboxFileToStore } from "../../mailroom/mbox-import"
-import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader } from "../../mailroom/reader"
+import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader, type MailroomRuntimeConfig } from "../../mailroom/reader"
 import { queuePendingMessage } from "../../mind/pending"
 import {
   completeBackgroundOperation,
@@ -4440,6 +4440,62 @@ function hostedMissingMailKeys(body: HostedMailControlEnsureResponse, keys: Reco
   }
 }
 
+/**
+ * Key ids the public registry declares for this agent, or `[]` when the
+ * registry cannot be consulted.
+ *
+ * `requiredHostedKeyIds` derives the asserted set from the ensure response
+ * alone, so anything the response omits is never asserted — and the server
+ * omits `sourceGrant` unless a source alias is in play. That is how the
+ * 2026-07-24 gap passed: the registry declared a source-grant key, the vault
+ * never received its private half, and setup reported success. The registry is
+ * the authority on what mail is currently being encrypted to, so it is
+ * consulted too.
+ *
+ * Never throws. An unreachable registry degrades to the response-only
+ * assertion, because refusing a setup that previously succeeded — on a machine
+ * whose Azure credentials happen to be unavailable — would be a worse failure
+ * than the one this guards against.
+ *
+ * The agent match is case-insensitive: the harness sends `agentId: agent`
+ * verbatim in the ensure payload while registry records can carry the
+ * lowercased form.
+ */
+async function hostedRegistryDeclaredKeyIds(input: {
+  agent: string
+  body: HostedMailControlEnsureResponse
+  existingMailroom: Record<string, unknown> | undefined
+  readRegistry: (config: MailroomRuntimeConfig) => Promise<MailroomRegistry>
+}): Promise<string[]> {
+  try {
+    const publicRegistry = isPlainRecord(input.body.publicRegistry) ? input.body.publicRegistry : {}
+    const managedIdentityClientId = stringField(input.existingMailroom ?? {}, "azureManagedIdentityClientId")
+    const registry = await input.readRegistry({
+      mailboxAddress: "",
+      privateKeys: {},
+      registryAzureAccountUrl: stringField(publicRegistry, "azureAccountUrl"),
+      registryContainer: stringField(publicRegistry, "container"),
+      registryBlob: stringField(publicRegistry, "blob"),
+      ...(managedIdentityClientId ? { azureManagedIdentityClientId: managedIdentityClientId } : {}),
+    })
+    const wanted = input.agent.toLowerCase()
+    const isThisAgent = (agentId: string): boolean => agentId.toLowerCase() === wanted
+    return [
+      ...registry.mailboxes.filter((mailbox) => isThisAgent(mailbox.agentId)).map((mailbox) => mailbox.keyId),
+      ...registry.sourceGrants.filter((grant) => isThisAgent(grant.agentId) && grant.enabled).map((grant) => grant.keyId),
+    ].filter((keyId) => keyId.trim().length > 0)
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "cli",
+      event: "cli.hosted_mail_registry_assertion_skipped",
+      message: "hosted mail key assertion could not consult the public registry",
+      meta: { agent: input.agent, error: error instanceof Error ? error.message : String(error) },
+    })
+    return []
+  }
+}
+
 function assertHostedPrivateKeys(input: {
   agent: string
   keys: Record<string, string>
@@ -4567,10 +4623,18 @@ async function ensureAgentMailroom(
         generatedPrivateKeys = responsePrivateKeys(body.generatedPrivateKeys)
         Object.assign(privateKeys, generatedPrivateKeys)
       }
+      const registryKeyIds = await hostedRegistryDeclaredKeyIds({
+        agent,
+        body,
+        existingMailroom,
+        readRegistry: deps.readMailroomRegistry ?? readMailroomRegistry,
+      })
       assertHostedPrivateKeys({
         agent,
         keys: privateKeys,
-        requiredKeyIds: requiredHostedKeyIds(body),
+        // Union, not replacement: the response still names keys it just minted,
+        // which a registry read taken before the write would not yet show.
+        requiredKeyIds: [...new Set([...requiredHostedKeyIds(body), ...registryKeyIds])],
       })
       const publicRegistry = requiredResponseRecord(body.publicRegistry, "publicRegistry")
       const blobStore = requiredResponseRecord(body.blobStore, "blobStore")

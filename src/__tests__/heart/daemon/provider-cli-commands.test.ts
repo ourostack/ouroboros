@@ -2417,6 +2417,74 @@ describe("provider CLI command execution", () => {
     expect(mailroom.privateKeys).toEqual({ mail_slugger_native: HOSTED_NATIVE_KEY })
   })
 
+  it("passes the configured managed identity through to the registry read", async () => {
+    emitTestEvent("provider cli hosted mail control registry managed identity")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-mi-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-mi-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      azureManagedIdentityClientId: "11111111-2222-3333-4444-555555555555",
+      privateKeys: { mail_slugger_native: HOSTED_NATIVE_KEY },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+    const seen: Array<Record<string, unknown>> = []
+
+    await runHostedConnectMail(homeDir, bundlesRoot, async (config) => {
+      seen.push(config as unknown as Record<string, unknown>)
+      return hostedRegistryFixture({ mailbox: "mail_slugger_native" })
+    })
+
+    expect(seen[0]).toEqual(expect.objectContaining({
+      azureManagedIdentityClientId: "11111111-2222-3333-4444-555555555555",
+      registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
+    }))
+  })
+
+  // Without an injected reader the CLI must fall through to the real
+  // readMailroomRegistry. Spied here rather than left live so the assertion
+  // proves the wiring without reaching Azure.
+  it("uses the production registry reader when no reader is injected", async () => {
+    emitTestEvent("provider cli hosted mail control default registry reader")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-registry-default-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-registry-default-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: { mail_slugger_native: HOSTED_NATIVE_KEY },
+    })
+    fetchMock.mockImplementationOnce(async () => mockJsonResponse(hostedEnsureWithoutSourceGrant()))
+    const registrySpy = vi.spyOn(mailroomReader, "readMailroomRegistry").mockRejectedValue("bare string rejection")
+
+    try {
+      await runOuroCli([
+        "connect",
+        "mail",
+        "--agent",
+        "Slugger",
+        "--no-delegated-source",
+      ], makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        detectMode: () => "production",
+        readMailroomRegistry: undefined,
+      }))
+
+      expect(registrySpy).toHaveBeenCalledTimes(1)
+      const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+      expect(mailroom.privateKeys).toEqual({ mail_slugger_native: HOSTED_NATIVE_KEY })
+    } finally {
+      registrySpy.mockRestore()
+    }
+  })
+
   it("reports hosted registry and vault drift when Mail Control no longer has a missing one-time key", async () => {
     emitTestEvent("provider cli hosted mail control drift")
     const bundlesRoot = makeTempDir("provider-cli-hosted-drift-bundles")
