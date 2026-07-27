@@ -1284,6 +1284,36 @@ describe("mail sense key coverage", () => {
     await app.stop()
   })
 
+  // The harness sends `agentId: agent` verbatim to hosted Mail Control
+  // (cli-exec.ts basePayload) while this repo's own hosted ensure-response
+  // fixture returns the lowercased form for the same request, so the id in a
+  // registry record can differ from the sense's agent name by case alone.
+  // Matching case-sensitively would silently declare nothing and report
+  // could-not-verify forever, which is the blind spot this probe exists to end.
+  it("matches registry records whose agent id differs only by case", async () => {
+    process.env.HOME = tempDir()
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "Slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "SLUGGER", keyId: "mail_slugger-hey_6e7b4bfa34c0b826" }],
+      }),
+    })
+
+    expect(readCoverage(app)).toEqual(expect.objectContaining({
+      status: "absent",
+      declaredKeyIds: ["mail_slugger_native", "mail_slugger-hey_6e7b4bfa34c0b826"],
+      absentKeyIds: ["mail_slugger-hey_6e7b4bfa34c0b826"],
+    }))
+
+    await app.stop()
+  })
+
   it("ignores disabled source grants, whose alias the ingress already refuses", async () => {
     process.env.HOME = tempDir()
     const app = await startHostedMailSense({

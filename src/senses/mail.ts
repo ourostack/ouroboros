@@ -108,14 +108,25 @@ function unverifiableCoverage(checkedAt: string, reason: string): MailKeyCoverag
  * every agent's records would report another agent's keys as absent on every
  * cycle, and a check that always fails is a check operators learn to ignore.
  *
+ * The match is case-insensitive. The harness sends `agentId: agent` verbatim to
+ * hosted Mail Control while this repo's own hosted ensure-response fixture
+ * returns the lowercased form for that same request, so a registry record's
+ * agent id can differ from the sense's agent name by case alone. Case-sensitive
+ * matching would then declare nothing and report `could-not-verify` forever —
+ * the same silence this probe exists to end. Widening the match cannot produce
+ * a false `absent` unless two agents differ only by case, which the store and
+ * address resolvers could not tell apart either.
+ *
  * Disabled source grants are excluded because `resolveMailAddress`
  * (`mailroom/core.ts`) refuses their alias outright, so no new mail can be
  * encrypted to their key and a missing private half is not a live gap.
  */
 function registryDeclaredKeyIds(registry: MailroomRegistry, agentName: string): string[] {
+  const wanted = agentName.toLowerCase()
+  const isThisAgent = (agentId: string): boolean => agentId.toLowerCase() === wanted
   const declared = [
-    ...registry.mailboxes.filter((mailbox) => mailbox.agentId === agentName).map((mailbox) => mailbox.keyId),
-    ...registry.sourceGrants.filter((grant) => grant.agentId === agentName && grant.enabled).map((grant) => grant.keyId),
+    ...registry.mailboxes.filter((mailbox) => isThisAgent(mailbox.agentId)).map((mailbox) => mailbox.keyId),
+    ...registry.sourceGrants.filter((grant) => isThisAgent(grant.agentId) && grant.enabled).map((grant) => grant.keyId),
   ]
   return [...new Set(declared.filter((keyId) => keyId.trim().length > 0))]
 }
