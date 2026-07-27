@@ -39,6 +39,17 @@ export interface BlueBubblesClient {
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
   /** Fetch the text content of a message by its GUID. Returns null if not found or on error. */
   getMessageText(messageGuid: string): Promise<string | null>
+  /**
+   * Fetch a message's text *and* authorship by GUID. Optional so existing fakes stay
+   * valid; callers fall back to `getMessageText` when it is absent.
+   */
+  getMessageDetails?(messageGuid: string): Promise<BlueBubblesMessageDetails | null>
+}
+
+export interface BlueBubblesMessageDetails {
+  text: string | null
+  /** true when the message was sent by this account (the agent), false when received. */
+  fromMe: boolean | null
 }
 
 export interface BlueBubblesListRecentMessagesParams {
@@ -780,6 +791,55 @@ export function createBlueBubblesClient(
           component: "senses",
           event: "senses.bluebubbles_get_message_text_error",
           message: "exception fetching message text",
+          meta: { messageGuid, reason: error instanceof Error ? error.message : String(error) },
+        })
+        return null
+      }
+    },
+
+    async getMessageDetails(messageGuid: string): Promise<BlueBubblesMessageDetails | null> {
+      const url = buildRepairUrl(config.serverUrl, messageGuid, config.password)
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+        })
+        if (!response.ok) {
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_get_message_details_error",
+            message: "failed to fetch message details",
+            meta: { messageGuid, status: response.status },
+          })
+          return null
+        }
+        const data = extractRepairData(await parseJsonBody(response))
+        if (!data) {
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_get_message_details_error",
+            message: "message payload was not a record",
+            meta: { messageGuid },
+          })
+          return null
+        }
+        const text = typeof data.text === "string" ? data.text.trim() || null : null
+        const fromMe = typeof data.isFromMe === "boolean" ? data.isFromMe : null
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_get_message_details",
+          message: "fetched message details by guid",
+          meta: { messageGuid, hasText: text !== null, hasAuthorship: fromMe !== null },
+        })
+        return { text, fromMe }
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_get_message_details_error",
+          message: "exception fetching message details",
           meta: { messageGuid, reason: error instanceof Error ? error.message : String(error) },
         })
         return null

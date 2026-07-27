@@ -1627,38 +1627,38 @@ describe("checkMailroom", () => {
     ...overrides,
   })
 
-  it("warns when no agents found", () => {
+  it("warns when no agents found", async () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
       readdirSync: readdirFor({ "/tmp/bundles": [] }),
     })
-    const cat = checkMailroom(deps)
+    const cat = await checkMailroom(deps)
     expect(cat.name).toBe("Mailroom")
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("no agent bundles")
   })
 
-  it("passes when no mailroom dir (mail not connected)", () => {
+  it("passes when no mailroom dir (mail not connected)", async () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
-    const cat = checkMailroom(deps)
+    const cat = await checkMailroom(deps)
     expect(cat.checks[0].status).toBe("pass")
     expect(cat.checks[0].detail).toContain("not connected")
   })
 
-  it("warns when state/mailroom dir exists but no registry.json", () => {
+  it("warns when state/mailroom dir exists but no registry.json", async () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/state/mailroom"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
-    const cat = checkMailroom(deps)
+    const cat = await checkMailroom(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("registry.json missing")
   })
 
-  it("fails when registry.json is unparseable", () => {
+  it("fails when registry.json is unparseable", async () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
@@ -1668,12 +1668,12 @@ describe("checkMailroom", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/mailroom/registry.json": "{not json" }),
     })
-    const cat = checkMailroom(deps)
+    const cat = await checkMailroom(deps)
     expect(cat.checks[0].status).toBe("fail")
     expect(cat.checks[0].detail).toContain("not valid JSON")
   })
 
-  it("warns when registry has zero mailboxes", () => {
+  it("warns when registry has zero mailboxes", async () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
@@ -1683,12 +1683,12 @@ describe("checkMailroom", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/mailroom/registry.json": registryJson({ mailboxes: [] }) }),
     })
-    const cat = checkMailroom(deps)
+    const cat = await checkMailroom(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("no mailboxes")
   })
 
-  it("passes with mailbox / grant / message counts when healthy", () => {
+  it("passes with mailbox / grant / message counts when healthy", async () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
@@ -1708,7 +1708,7 @@ describe("checkMailroom", () => {
         }),
       }),
     })
-    const cat = checkMailroom(deps)
+    const cat = await checkMailroom(deps)
     expect(cat.checks[0].status).toBe("pass")
     expect(cat.checks[0].detail).toContain("1 mailbox")
     expect(cat.checks[0].detail).toContain("1 source grant")

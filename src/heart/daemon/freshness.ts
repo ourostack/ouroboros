@@ -312,6 +312,57 @@ export function observeCreatePerEventStore(
   }
 }
 
+export interface MirroredStoreOptions {
+  /** Supplied by the caller, which typically already lists the directory. */
+  hasEntries: boolean
+  /** Where the authoritative store actually lives, named in every message. */
+  remote: string
+}
+
+/**
+ * Last-observation probe for a **local mirror of a remote store** — the cache
+ * this machine writes as it reads a store that lives somewhere else, such as
+ * the hosted Mailroom's `state/mail-search/<messageId>.json` documents.
+ *
+ * Mechanically this is `observeCreatePerEventStore`: one file per event, named
+ * by a content-addressed id, so the directory mtime answers "when did this
+ * machine last record something it had never seen before" for O(1) cost.
+ *
+ * One rule differs, and it is the entire reason this exists: an absent or empty
+ * mirror is `unknown`, never `none`. For a local store the directory *is* the
+ * store, so empty means "nothing was ever delivered". For a mirror the
+ * authoritative store is remote and deliberately not read here — a health check
+ * must not need network access or credentials — so empty means only "this
+ * machine holds no record". That is absence of evidence, and rendering it as a
+ * confident "never delivered" would be the same crying-wolf failure as reading
+ * a local directory that nothing writes to any more.
+ */
+export function observeMirroredStore(
+  dir: string,
+  deps: FreshnessFsDeps,
+  options: MirroredStoreOptions,
+): FreshnessProbe {
+  const provenance = `derived from the local mirror at ${dir} (directory mtime, O(1), no per-entry scan); the authoritative store is ${options.remote}, which doctor does not read`
+  const exists = deps.existsSync(dir)
+  if (!exists || !options.hasEntries) {
+    return {
+      observation: {
+        kind: "unknown",
+        reason: `the local mirror at ${dir} is ${exists ? "empty" : "absent"}, and ${options.remote} is not read by doctor (no network calls, no credentials), so recency cannot be measured on this machine`,
+      },
+      provenance,
+    }
+  }
+  try {
+    return { observation: { kind: "activity", atMs: deps.statSync(dir).mtimeMs }, provenance }
+  } catch (error) {
+    return {
+      observation: { kind: "unknown", reason: `${dir} could not be stat'd: ${error instanceof Error ? error.message : String(error)}` },
+      provenance,
+    }
+  }
+}
+
 export interface AppendPerEventStoreOptions {
   /** Only entries with this suffix are considered. */
   suffix: string

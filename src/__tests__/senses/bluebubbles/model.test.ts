@@ -734,7 +734,168 @@ describe("normalizeBlueBubblesEvent", () => {
     expect(result.mutationType).toBe("reaction")
     expect(result.shouldNotifyAgent).toBe(true)
     expect(result.targetMessageGuid).toBe("CB4EB152-A678-4F0E-8075-1AB09B5496F8")
-    expect(result.textForAgent).toContain("reacted with")
+    expect(result.reaction).toEqual({ raw: "love", action: "add", verb: "loved", noun: "love" })
+  })
+
+  it("names an unresolved reaction target instead of emitting a bare stub", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const withTarget = normalizeBlueBubblesEvent(reactionPayload)
+    const withoutTarget = normalizeBlueBubblesEvent(reactionWithoutTargetGuidPayload)
+
+    expect(withTarget.textForAgent).toBe(
+      'loved an unidentified message (target guid CB4EB152-A678-4F0E-8075-1AB09B5496F8; its text could not be resolved)',
+    )
+    expect(withoutTarget.textForAgent).toBe(
+      "laughed at an unidentified message (the reaction carried no target message reference)",
+    )
+  })
+
+  it("classifies numeric associated message types as reactions", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const numeric = normalizeBlueBubblesEvent({
+      type: "new-message",
+      data: {
+        guid: "NUMERIC-TAPBACK-2000",
+        associatedMessageGuid: "p:0/TARGET-2000",
+        associatedMessageType: 2000,
+        chats: [{ guid: "any;-;ari@mendelow.me" }],
+      },
+    })
+
+    expect(numeric.kind).toBe("mutation")
+    expect(numeric.mutationType).toBe("reaction")
+    expect(numeric.reaction).toMatchObject({ raw: "2000", action: "add", verb: "loved" })
+    expect(numeric.targetMessageGuid).toBe("TARGET-2000")
+  })
+
+  it("ignores zero and non-finite associated message types", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+
+    for (const associatedMessageType of [0, Number.NaN]) {
+      const result = normalizeBlueBubblesEvent({
+        type: "new-message",
+        data: {
+          guid: `NON-REACTION-${String(associatedMessageType)}`,
+          text: "plain message",
+          associatedMessageType,
+          chats: [{ guid: "any;-;ari@mendelow.me" }],
+        },
+      })
+      expect(result.kind).toBe("message")
+    }
+  })
+})
+
+describe("describeBlueBubblesReaction", () => {
+  it.each([
+    ["love", "add", "loved", "love"],
+    ["like", "add", "liked", "like"],
+    ["dislike", "add", "disliked", "dislike"],
+    ["laugh", "add", "laughed at", "laugh"],
+    ["emphasize", "add", "emphasized", "emphasis"],
+    ["question", "add", "questioned", "question"],
+  ])("decodes the %s tapback by name", async (raw, action, verb, noun) => {
+    const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
+    expect(describeBlueBubblesReaction(raw)).toEqual({ raw, action, verb, noun })
+  })
+
+  it.each([
+    ["2000", "loved"],
+    ["2001", "liked"],
+    ["2002", "disliked"],
+    ["2003", "laughed at"],
+    ["2004", "emphasized"],
+    ["2005", "questioned"],
+  ])("decodes add code %s", async (raw, verb) => {
+    const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
+    expect(describeBlueBubblesReaction(raw)).toMatchObject({ action: "add", verb })
+  })
+
+  it.each([
+    ["3000", "love"],
+    ["3001", "like"],
+    ["3002", "dislike"],
+    ["3003", "laugh"],
+    ["3004", "emphasis"],
+    ["3005", "question"],
+  ])("decodes removal code %s", async (raw, noun) => {
+    const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
+    expect(describeBlueBubblesReaction(raw)).toMatchObject({ action: "remove", noun })
+  })
+
+  it("treats a leading dash as a tapback removal", async () => {
+    const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
+    expect(describeBlueBubblesReaction("-love")).toEqual({
+      raw: "-love",
+      action: "remove",
+      verb: "loved",
+      noun: "love",
+    })
+  })
+
+  it("leaves unrecognized associated types unnamed rather than guessing", async () => {
+    const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
+    expect(describeBlueBubblesReaction("2006")).toEqual({ raw: "2006", action: "add" })
+    expect(describeBlueBubblesReaction("3006")).toEqual({ raw: "3006", action: "remove" })
+    expect(describeBlueBubblesReaction("sticker")).toEqual({ raw: "sticker", action: "add" })
+    // outside the 3000-3999 removal band, so not a removal
+    expect(describeBlueBubblesReaction("4000")).toEqual({ raw: "4000", action: "add" })
+  })
+})
+
+describe("renderBlueBubblesReactionText", () => {
+  it("attributes the target message to the agent or the other party", async () => {
+    const { describeBlueBubblesReaction, renderBlueBubblesReactionText } =
+      await import("../../../senses/bluebubbles/model")
+    const loved = describeBlueBubblesReaction("love")
+
+    expect(renderBlueBubblesReactionText(loved, { text: "hotel AC rundown", fromMe: true }))
+      .toBe('loved your message: "hotel AC rundown"')
+    expect(renderBlueBubblesReactionText(loved, { text: "hotel AC rundown", fromMe: false }))
+      .toBe('loved their message: "hotel AC rundown"')
+    expect(renderBlueBubblesReactionText(loved, { text: "hotel AC rundown", fromMe: null }))
+      .toBe('loved a message: "hotel AC rundown"')
+  })
+
+  it("truncates long target excerpts at the 80 character budget", async () => {
+    const { describeBlueBubblesReaction, renderBlueBubblesReactionText } =
+      await import("../../../senses/bluebubbles/model")
+    const exact = "x".repeat(80)
+    const long = "y".repeat(81)
+
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("like"), { text: exact }))
+      .toBe(`liked a message: "${exact}"`)
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("like"), { text: long }))
+      .toBe(`liked a message: "${"y".repeat(77)}..."`)
+  })
+
+  it("falls back to the unidentified wording for blank or missing target text", async () => {
+    const { describeBlueBubblesReaction, renderBlueBubblesReactionText } =
+      await import("../../../senses/bluebubbles/model")
+    const questioned = describeBlueBubblesReaction("question")
+
+    expect(renderBlueBubblesReactionText(questioned, { guid: "G-1", text: "   " }))
+      .toBe("questioned an unidentified message (target guid G-1; its text could not be resolved)")
+    expect(renderBlueBubblesReactionText(questioned, {}))
+      .toBe("questioned an unidentified message (the reaction carried no target message reference)")
+  })
+
+  it("distinguishes removing a tapback from adding one", async () => {
+    const { describeBlueBubblesReaction, renderBlueBubblesReactionText } =
+      await import("../../../senses/bluebubbles/model")
+
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("-love"), { text: "ship it", fromMe: true }))
+      .toBe('removed their love reaction from your message: "ship it"')
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("3006"), { text: "ship it" }))
+      .toBe('removed their 3006 reaction from a message: "ship it"')
+  })
+
+  it("names the raw associated type when the tapback is unrecognized", async () => {
+    const { describeBlueBubblesReaction, renderBlueBubblesReactionText } =
+      await import("../../../senses/bluebubbles/model")
+
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("2006"), { text: "ship it", fromMe: true }))
+      .toBe('reacted with 2006 to your message: "ship it"')
   })
 
   it("normalizes edited-message updates as notifyable mutations", async () => {

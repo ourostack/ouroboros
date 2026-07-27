@@ -58,6 +58,29 @@ export type BlueBubblesNormalizedMessage = {
 
 export type BlueBubblesMutationType = "reaction" | "edit" | "unsend" | "read" | "delivery"
 
+export type BlueBubblesReactionAction = "add" | "remove"
+
+/**
+ * A decoded iMessage tapback. `raw` is the `associatedMessageType` exactly as it
+ * arrived (lowercased when it was a string); `verb`/`noun` are only present for
+ * the six tapbacks iMessage actually defines, so unrecognized associated types
+ * (stickers, future codes) degrade to naming the raw value instead of guessing.
+ */
+export type BlueBubblesReactionDescriptor = {
+  raw: string
+  action: BlueBubblesReactionAction
+  verb?: string
+  noun?: string
+}
+
+/** What is known about the message a reaction points at, once resolution is attempted. */
+export type BlueBubblesReactionTarget = {
+  guid?: string
+  text?: string | null
+  /** true = the agent's own message, false = the other party's, null/undefined = unknown. */
+  fromMe?: boolean | null
+}
+
 export type BlueBubblesNormalizedMutation = {
   kind: "mutation"
   eventType: string
@@ -72,6 +95,8 @@ export type BlueBubblesNormalizedMutation = {
   textForAgent: string
   requiresRepair: boolean
   repairNotice?: string
+  /** Present for `mutationType: "reaction"` so senses can re-render once the target resolves. */
+  reaction?: BlueBubblesReactionDescriptor
 }
 
 export type BlueBubblesNormalizedEvent =
@@ -237,9 +262,77 @@ function formatMessageText(data: JsonRecord, attachments: BlueBubblesAttachmentS
 }
 
 function normalizeReactionName(value: unknown): string | undefined {
+  // chat.db stores associated_message_type as an integer; BlueBubbles forwards it
+  // as either the integer, its decimal string, or a name ("love", "-love").
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value !== 0 ? String(value) : undefined
+  }
   if (typeof value !== "string") return undefined
   const trimmed = value.trim()
   return trimmed ? trimmed.toLowerCase() : undefined
+}
+
+/**
+ * iMessage tapbacks: associated_message_type 2000-2005 add a tapback, 3000-3005
+ * remove the same tapback. BlueBubbles may send either the code or the name.
+ */
+const REACTION_VOCABULARY: ReadonlyArray<{ code: number; name: string; verb: string; noun: string }> = [
+  { code: 2000, name: "love", verb: "loved", noun: "love" },
+  { code: 2001, name: "like", verb: "liked", noun: "like" },
+  { code: 2002, name: "dislike", verb: "disliked", noun: "dislike" },
+  { code: 2003, name: "laugh", verb: "laughed at", noun: "laugh" },
+  { code: 2004, name: "emphasize", verb: "emphasized", noun: "emphasis" },
+  { code: 2005, name: "question", verb: "questioned", noun: "question" },
+]
+
+const REACTION_EXCERPT_MAX_LENGTH = 80
+
+export function describeBlueBubblesReaction(raw: string): BlueBubblesReactionDescriptor {
+  const stripped = raw.startsWith("-") ? raw.slice(1) : raw
+  const code = /^\d+$/.test(stripped) ? Number(stripped) : undefined
+  const removal = raw.startsWith("-") || (code !== undefined && code >= 3000 && code < 4000)
+  const action: BlueBubblesReactionAction = removal ? "remove" : "add"
+  const entry = REACTION_VOCABULARY.find((candidate) =>
+    candidate.name === stripped || candidate.code === code || candidate.code + 1000 === code)
+  if (!entry) return { raw, action }
+  return { raw, action, verb: entry.verb, noun: entry.noun }
+}
+
+function reactionExcerpt(text: string): string {
+  return text.length > REACTION_EXCERPT_MAX_LENGTH
+    ? `${text.slice(0, REACTION_EXCERPT_MAX_LENGTH - 3)}...`
+    : text
+}
+
+function reactionTargetPhrase(target: BlueBubblesReactionTarget): string {
+  const text = target.text?.trim()
+  if (text) {
+    const owner = target.fromMe === true ? "your" : target.fromMe === false ? "their" : "a"
+    return `${owner} message: "${reactionExcerpt(text)}"`
+  }
+  // Never hand the agent a bare "reacted with love" stub — say plainly that the
+  // referent is missing so it can ask instead of guessing what was approved.
+  return target.guid
+    ? `an unidentified message (target guid ${target.guid}; its text could not be resolved)`
+    : "an unidentified message (the reaction carried no target message reference)"
+}
+
+/**
+ * Render a reaction as speech the agent can act on: what the tapback was, whether
+ * it was added or removed, and which message it points at.
+ */
+export function renderBlueBubblesReactionText(
+  reaction: BlueBubblesReactionDescriptor,
+  target: BlueBubblesReactionTarget,
+): string {
+  const phrase = reactionTargetPhrase(target)
+  if (reaction.action === "remove") {
+    const noun = reaction.noun ?? reaction.raw.replace(/^-/, "")
+    return `removed their ${noun} reaction from ${phrase}`
+  }
+  return reaction.verb
+    ? `${reaction.verb} ${phrase}`
+    : `reacted with ${reaction.raw} to ${phrase}`
 }
 
 function stripPartPrefix(guid?: string): string | undefined {
@@ -249,14 +342,13 @@ function stripPartPrefix(guid?: string): string | undefined {
   return marker >= 0 ? trimmed.slice(marker + 1) : trimmed
 }
 
+// Reactions never reach here: `detectMutationType` returns "reaction" only when a
+// reaction name was decoded, and that same name produces the descriptor the caller
+// renders with `renderBlueBubblesReactionText` instead.
 function buildMutationText(
   mutationType: BlueBubblesMutationType,
   data: JsonRecord,
-  reactionName?: string,
 ): string {
-  if (mutationType === "reaction") {
-    return `reacted with ${reactionName}`
-  }
   if (mutationType === "edit") {
     const editedText = readString(data, "text")?.trim() ?? ""
     return editedText ? `edited message: ${editedText}` : "edited a message"
@@ -325,6 +417,10 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
   const fromMe = readBoolean(data, "isFromMe") ?? false
   const attachments = extractAttachments(data)
   const reactionName = normalizeReactionName(data.associatedMessageType)
+  const reaction = reactionName ? describeBlueBubblesReaction(reactionName) : undefined
+  const targetMessageGuid = reaction
+    ? stripPartPrefix(readString(data, "associatedMessageGuid"))
+    : undefined
   const mutationType = detectMutationType(eventType, data, reactionName)
   const requiresRepair =
     (readBoolean(data, "hasPayloadData") ?? false) ||
@@ -337,17 +433,17 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
         eventType,
         mutationType,
         messageGuid,
-        targetMessageGuid:
-          mutationType === "reaction"
-            ? stripPartPrefix(readString(data, "associatedMessageGuid"))
-            : undefined,
+        targetMessageGuid,
         timestamp,
         fromMe,
         sender,
         chat,
         shouldNotifyAgent: mutationType === "reaction" || mutationType === "edit" || mutationType === "unsend",
-        textForAgent: buildMutationText(mutationType, data, reactionName),
+        textForAgent: reaction
+          ? renderBlueBubblesReactionText(reaction, { guid: targetMessageGuid })
+          : buildMutationText(mutationType, data),
         requiresRepair,
+        ...(reaction ? { reaction } : {}),
       }
     : {
         kind: "message",

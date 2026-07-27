@@ -9,6 +9,7 @@ import {
   formatFreshnessTimestamp,
   observeAppendPerEventStore,
   observeCreatePerEventStore,
+  observeMirroredStore,
   resolveFreshnessThresholds,
   type FreshnessFsDeps,
   type FreshnessInput,
@@ -298,6 +299,77 @@ describe("observeCreatePerEventStore", () => {
     }), { hasEntries: true })
 
     expect(probe.observation).toEqual({ kind: "unknown", reason: "/store/messages could not be stat'd: boom" })
+  })
+})
+
+// ── mirrors of remote stores (hosted mailroom → state/mail-search/) ──
+
+describe("observeMirroredStore", () => {
+  const remote = "hosted azure-blob https://acct.blob.core.windows.net/mailroom"
+
+  it("reports the mirror's directory mtime without stat'ing a single entry", () => {
+    const statSync = vi.fn(() => ({ mtimeMs: NOW_MS - FRESHNESS_HOUR_MS }))
+    const probe = observeMirroredStore("/bundle/state/mail-search", fsDeps({ statSync }), { hasEntries: true, remote })
+
+    expect(probe.observation).toEqual({ kind: "activity", atMs: NOW_MS - FRESHNESS_HOUR_MS })
+    expect(statSync).toHaveBeenCalledTimes(1)
+    expect(statSync).toHaveBeenCalledWith("/bundle/state/mail-search")
+    expect(probe.provenance).toContain("derived from the local mirror at /bundle/state/mail-search")
+    expect(probe.provenance).toContain(`the authoritative store is ${remote}, which doctor does not read`)
+  })
+
+  it("reports 'unknown' — never 'none' — for an absent mirror, because the remote store is unread", () => {
+    const probe = observeMirroredStore("/bundle/state/mail-search", fsDeps({ existsSync: () => false }), {
+      hasEntries: false,
+      remote,
+    })
+
+    expect(probe.observation).toEqual({
+      kind: "unknown",
+      reason: `the local mirror at /bundle/state/mail-search is absent, and ${remote} is not read by doctor (no network calls, no credentials), so recency cannot be measured on this machine`,
+    })
+  })
+
+  it("reports 'unknown' for an empty mirror rather than claiming the remote store never delivered", () => {
+    const probe = observeMirroredStore("/bundle/state/mail-search", fsDeps(), { hasEntries: false, remote })
+
+    expect(probe.observation).toEqual({
+      kind: "unknown",
+      reason: `the local mirror at /bundle/state/mail-search is empty, and ${remote} is not read by doctor (no network calls, no credentials), so recency cannot be measured on this machine`,
+    })
+  })
+
+  it("reports 'unknown' when the mirror directory cannot be stat'd", () => {
+    const probe = observeMirroredStore("/bundle/state/mail-search", fsDeps({
+      statSync: () => { throw new Error("EACCES") },
+    }), { hasEntries: true, remote })
+
+    expect(probe.observation).toEqual({
+      kind: "unknown",
+      reason: "/bundle/state/mail-search could not be stat'd: EACCES",
+    })
+  })
+
+  it("stringifies non-Error stat failures", () => {
+    const probe = observeMirroredStore("/bundle/state/mail-search", fsDeps({
+      statSync: () => { throw "boom" },
+    }), { hasEntries: true, remote })
+
+    expect(probe.observation).toEqual({
+      kind: "unknown",
+      reason: "/bundle/state/mail-search could not be stat'd: boom",
+    })
+  })
+
+  it("never returns pass-eligible states for an unobservable mirror", () => {
+    for (const deps of [fsDeps({ existsSync: () => false }), fsDeps()]) {
+      const probe = observeMirroredStore("/bundle/state/mail-search", deps, { hasEntries: false, remote })
+      const result = evaluateFreshness(baseInput({ observation: probe.observation, provenance: probe.provenance }))
+
+      expect(result.status).toBe("fail")
+      expect(result.state).toBe("unknown")
+      expect(result.detail).toContain("unverified, not healthy")
+    }
   })
 })
 
