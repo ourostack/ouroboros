@@ -660,6 +660,121 @@ describe("checkSenses", () => {
     }))
   })
 
+  // ── mail.key_coverage ───────────────────────────────────────────────────
+  //
+  // Doctor reads the verdict the mail sense already wrote, the same way the
+  // bluebubbles inbound-delivery check reads sense state. It must not re-derive
+  // coverage here: doctor makes no network calls and holds no registry, so the
+  // sense's per-cycle record is the only honest source.
+  function mailCoverageDeps(coverage: unknown, overrides: { stateExists?: boolean } = {}): DoctorDeps {
+    const statePath = "/tmp/bundles/test.ouro/state/senses/mail/runtime.json"
+    const stateExists = overrides.stateExists ?? true
+    seedRuntimeConfig("test", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_native: "PRIVATE KEY" },
+      },
+    })
+    return createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+        ...(stateExists ? [statePath] : []),
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": JSON.stringify({ senses: { mail: { enabled: true } } }),
+        ...(stateExists ? { [statePath]: JSON.stringify({ schemaVersion: 1, keyCoverage: coverage }) } : {}),
+      }),
+    })
+  }
+
+  it("passes mail key coverage when the sense recorded every declared key as covered", async () => {
+    const cat = await checkSenses(mailCoverageDeps({
+      status: "covered",
+      declaredKeyIds: ["mail_slugger_native", "mail_slugger-hey_4c628d031cbe560c"],
+      absentKeyIds: [],
+      reason: null,
+      checkedAt: "2026-07-27T12:00:00.000Z",
+    }))
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      id: "mail.key_coverage",
+      label: "test.ouro mail key coverage",
+      status: "pass",
+    }))
+  })
+
+  it("fails mail key coverage and names the key the vault cannot decrypt with", async () => {
+    const cat = await checkSenses(mailCoverageDeps({
+      status: "absent",
+      declaredKeyIds: ["mail_slugger_native", "mail_slugger-hey_6e7b4bfa34c0b826"],
+      absentKeyIds: ["mail_slugger-hey_6e7b4bfa34c0b826"],
+      reason: null,
+      checkedAt: "2026-07-27T12:00:00.000Z",
+    }))
+
+    const check = cat.checks.find((entry) => entry.id === "mail.key_coverage")
+    expect(check?.status).toBe("fail")
+    expect(check?.detail).toContain("mail_slugger-hey_6e7b4bfa34c0b826")
+  })
+
+  it("warns rather than failing mail key coverage when the sense could not verify it", async () => {
+    const cat = await checkSenses(mailCoverageDeps({
+      status: "could-not-verify",
+      declaredKeyIds: [],
+      absentKeyIds: [],
+      reason: "vault vault:slugger:runtime/config read is unavailable",
+      checkedAt: "2026-07-27T12:00:00.000Z",
+    }))
+
+    const check = cat.checks.find((entry) => entry.id === "mail.key_coverage")
+    expect(check?.status).toBe("warn")
+    expect(check?.detail).toContain("read is unavailable")
+  })
+
+  it("warns when the mail sense has not written a coverage verdict yet", async () => {
+    const cat = await checkSenses(mailCoverageDeps(undefined, { stateExists: false }))
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      id: "mail.key_coverage",
+      status: "warn",
+      detail: expect.stringContaining("no mail sense runtime state"),
+    }))
+  })
+
+  it("warns when the mail sense runtime state is unparseable", async () => {
+    const statePath = "/tmp/bundles/test.ouro/state/senses/mail/runtime.json"
+    seedRuntimeConfig("test", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_native: "PRIVATE KEY" },
+      },
+    })
+    const cat = await checkSenses(createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json", statePath]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": JSON.stringify({ senses: { mail: { enabled: true } } }),
+        [statePath]: "{not-json",
+      }),
+    }))
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      id: "mail.key_coverage",
+      status: "warn",
+    }))
+  })
+
+  it("warns when the recorded coverage status is not one doctor knows", async () => {
+    const cat = await checkSenses(mailCoverageDeps({ status: "gibberish" }))
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      id: "mail.key_coverage",
+      status: "warn",
+    }))
+  })
+
   it("passes enabled local Mail config checks and reports autonomy fallback state", async () => {
     const config = JSON.stringify({
       senses: {
