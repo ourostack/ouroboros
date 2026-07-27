@@ -175,6 +175,39 @@ async function computeMailKeyCoverage(input: {
   }
 }
 
+/**
+ * Coverage has to push, not wait to be asked. `ouro doctor` is on-demand — it
+ * has no scheduled invocation — so a doctor line alone leaves a gap invisible
+ * until someone happens to run it, which is how `mail_slugger-hey_6e7b4bfa34c0b826`
+ * stayed unnoticed for 23 hours while mail encrypted to it piled up unreadable.
+ */
+function emitMailKeyCoverageEvents(agentName: string, coverage: MailKeyCoverage): void {
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_key_coverage_recorded",
+    message: "mail key coverage recorded",
+    meta: {
+      agentName,
+      status: coverage.status,
+      declaredCount: coverage.declaredKeyIds.length,
+      absentCount: coverage.absentKeyIds.length,
+      reason: coverage.reason,
+    },
+  })
+  if (coverage.status !== "absent") return
+  emitNervesEvent({
+    level: "error",
+    component: "senses",
+    event: "senses.mail_key_coverage_absent",
+    message: `mailroom registry declares mail keys with no private half in ${agentName}'s vault: ${coverage.absentKeyIds.join(", ")}`,
+    meta: {
+      agentName,
+      absentKeyIds: coverage.absentKeyIds,
+      declaredKeyIds: coverage.declaredKeyIds,
+    },
+  })
+}
+
 function validPort(value: number | undefined): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 65535 ? value : 0
 }
@@ -481,6 +514,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
       readRegistry: options.readRegistry ?? readMailroomRegistry,
       checkedAt: scanStartedAt,
     })
+    emitMailKeyCoverageEvents(options.agentName, lastKeyCoverage)
 
     lastScanAt = scanStartedAt
     lastQueuedCount = queuedCount
