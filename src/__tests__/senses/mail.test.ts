@@ -8,6 +8,7 @@ import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from 
 import { resetIdentity } from "../../heart/identity"
 import { scanMailImportDiscoveryAttention, startMailSenseApp, type MailKeyCoverage, type MailSenseApp } from "../../senses/mail"
 import type { MailroomRegistry } from "../../mailroom/core"
+import * as nervesRuntime from "../../nerves/runtime"
 
 const mockRequestInnerWake = vi.fn(async () => null)
 const mockRequestPrivateWake = vi.fn(async () => null)
@@ -1345,6 +1346,99 @@ describe("mail sense key coverage", () => {
     await app.stop()
   })
 
+  // `ouro doctor` has no scheduled invocation on origin/main — it is on-demand
+  // only. A doctor line alone would not have surfaced the 2026-07-24 gap for 23
+  // hours, so detection has to push an event of its own.
+  it("emits a distinct nerves alarm naming the absent key id", async () => {
+    process.env.HOME = tempDir()
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+        sourceGrants: [{ agentId: "slugger", keyId: "mail_slugger-hey_6e7b4bfa34c0b826" }],
+      }),
+    })
+
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      component: "senses",
+      event: "senses.mail_key_coverage_absent",
+      meta: expect.objectContaining({
+        agentName: "slugger",
+        absentKeyIds: ["mail_slugger-hey_6e7b4bfa34c0b826"],
+      }),
+    }))
+
+    await app.stop()
+  })
+
+  it("records every cycle's coverage verdict as a greppable event", async () => {
+    process.env.HOME = tempDir()
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => registryFixture({
+        mailboxes: [{ agentId: "slugger", keyId: "mail_slugger_native" }],
+      }),
+    })
+
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      component: "senses",
+      event: "senses.mail_key_coverage_recorded",
+      meta: expect.objectContaining({
+        agentName: "slugger",
+        status: "covered",
+        declaredCount: 1,
+        absentCount: 0,
+      }),
+    }))
+    expect(emitted).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_absent",
+    }))
+
+    await app.stop()
+  })
+
+  it("does not raise the absent alarm when coverage could not be verified", async () => {
+    process.env.HOME = tempDir()
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    const app = await startHostedMailSense({
+      vaultConfig: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_native: "PRIVATE" },
+        },
+      },
+      readRegistry: async () => {
+        throw new Error("mailroom registry blob not found")
+      },
+    })
+
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_recorded",
+      meta: expect.objectContaining({
+        status: "could-not-verify",
+        reason: "mailroom registry blob not found",
+      }),
+    }))
+    expect(emitted).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_absent",
+    }))
+
+    await app.stop()
+  })
+
   it("re-reads coverage each scan cycle so a vault repair clears the alarm", async () => {
     process.env.HOME = tempDir()
     cacheRuntimeCredentialConfig("slugger", {
@@ -1399,12 +1493,16 @@ describe("mail sense key coverage", () => {
         },
       },
     })
+    const emitted = vi.spyOn(nervesRuntime, "emitNervesEvent")
     intervalCallback?.()
     await new Promise((resolve) => setImmediate(resolve))
 
     expect(readCoverage(app)).toEqual(expect.objectContaining({
       status: "covered",
       absentKeyIds: [],
+    }))
+    expect(emitted).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.mail_key_coverage_absent",
     }))
 
     await app.stop()
