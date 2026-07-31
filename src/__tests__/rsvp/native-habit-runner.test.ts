@@ -757,6 +757,56 @@ describe("native RSVP habit runner", () => {
     }
   })
 
+  it("keeps lifecycle rejection fail closed when durable run-ledger evidence cannot be written", async () => {
+    const tmp = seedRsvpHabit("live")
+    const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-wedding.md")
+    fs.writeFileSync(
+      habitPath,
+      fs.readFileSync(habitPath, "utf-8").replace("status: active", "status: cancelled"),
+      "utf-8",
+    )
+    fs.mkdirSync(path.join(tmp.agentRoot, "state"), { recursive: true })
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "run-ledger"), "not a directory", "utf-8")
+    const runRefresh = vi.fn(async () => JSON.stringify({ ok: true }))
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (
+        entry.event === "heart.run_ledger_record_error"
+        || entry.event === "rsvp.habit_lifecycle_rejected"
+        || entry.event === "rsvp.native_habit_error"
+      ) events.push(entry)
+    })
+
+    try {
+      const result = await runNativeRsvpHabit({
+        agent: "slugger",
+        bundlesRoot: tmp.bundlesRoot,
+        habitName: "rsvp-wedding",
+        trigger: "manual",
+        now: () => "2026-07-12T17:00:05.000Z",
+        runRefresh,
+      })
+
+      expect(result).toMatchObject({
+        ok: false,
+        lifecycle: "error",
+        payload: {
+          sideEffect: false,
+          status: "cancelled",
+          degradedReason: null,
+        },
+      })
+      expect(runRefresh).not.toHaveBeenCalled()
+      expect(events.filter((event) => event.event === "heart.run_ledger_record_error").map((event) => event.meta?.lifecycle))
+        .toEqual(["started", "error"])
+      expect(events.filter((event) => event.event === "rsvp.habit_lifecycle_rejected")).toHaveLength(1)
+      expect(events.filter((event) => event.event === "rsvp.native_habit_error")).toHaveLength(1)
+    } finally {
+      unregister()
+      tmp.cleanup()
+    }
+  })
+
   it("surfaces runtime-state recording failures after successful refreshes", async () => {
     const tmp = seedRsvpHabit("live")
     fs.mkdirSync(path.join(tmp.agentRoot, "state"), { recursive: true })

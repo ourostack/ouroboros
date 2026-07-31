@@ -6,7 +6,7 @@ import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
 import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import {
@@ -235,11 +235,62 @@ function reportCopyFromHabit(title: string, rsvp: RsvpHabitMetadata): RsvpReport
   return copy
 }
 
+function explicitHabitLifecycleError(habitName: string, habit: HabitFile, prefix?: string): Error {
+  const degradedReason = habit.status === "degraded" ? habit.degradedReason : null
+  const degradedDetail = habit.status === "degraded" ? habit.degradedDetail : null
+  const reasonText = degradedReason ? ` reason=${degradedReason}` : ""
+  const detailText = degradedDetail ? ` detail=${degradedDetail}` : ""
+  const message = prefix
+    ? `${prefix}; status=${habit.status}${reasonText}${detailText}`
+    : `RSVP habit ${habitName} lifecycle rejected: status=${habit.status}${reasonText}${detailText}`
+  emitNervesEvent({
+    level: "warn",
+    component: "rsvp",
+    event: "rsvp.habit_lifecycle_rejected",
+    message,
+    meta: {
+      entryPoint: "explicit_refresh",
+      habitName,
+      status: habit.status,
+      degradedReason,
+      degradedDetail,
+    },
+  })
+  return new Error(message)
+}
+
 function requireRsvpHabitReportCopy(agentRoot: string, habitName: string): RsvpReportCopyInput {
   const habitPath = path.join(agentRoot, "habits", `${habitName}.md`)
-  if (!fs.existsSync(habitPath)) throw new Error(`RSVP habit ${habitName} not found at ${habitPath}`)
-  const habit = parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
-  if (!habit.rsvp) throw new Error(`RSVP habit ${habitName} metadata is required before explicit refresh`)
+  if (!fs.existsSync(habitPath)) {
+    const missing = createDegradedHabitFile(habitPath, "read_error", "", "habit file not found")
+    throw explicitHabitLifecycleError(habitName, missing, `RSVP habit ${habitName} not found at ${habitPath}`)
+  }
+  let habit: HabitFile
+  try {
+    habit = parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
+  } catch (error) {
+    const unreadable = createDegradedHabitFile(
+      habitPath,
+      "read_error",
+      "",
+      String(error),
+    )
+    throw explicitHabitLifecycleError(habitName, unreadable)
+  }
+  if (habit.status !== "active") throw explicitHabitLifecycleError(habitName, habit)
+  if (!habit.rsvp) {
+    const untyped = createDegradedHabitFile(
+      habitPath,
+      "invalid_metadata",
+      habit.body,
+      "RSVP habit metadata is required",
+    )
+    throw explicitHabitLifecycleError(
+      habitName,
+      untyped,
+      `RSVP habit ${habitName} metadata is required before explicit refresh`,
+    )
+  }
   return reportCopyFromHabit(habit.title, habit.rsvp)
 }
 

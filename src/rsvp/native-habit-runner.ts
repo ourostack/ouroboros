@@ -3,12 +3,12 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 
 import type { RsvpCliCommand, OuroCliDeps } from "../heart/daemon/cli-types"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { completeHabitRun } from "../heart/habits/habit-session"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData, type RunLedgerLifecycle } from "../heart/run-ledger"
 import { recordRsvpSpendLedgerRun } from "./spend-ledger"
-import { RSVP_HABIT_ALLOWED_TOOLS, rsvpHabitRuntimePolicy } from "./habit-policy"
+import { RSVP_HABIT_ALLOWED_TOOLS, rsvpHabitRuntimePolicy, type RsvpHabitMetadata } from "./habit-policy"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   decisionsFromHabitRunTraceSteps,
@@ -42,6 +42,19 @@ export interface RunNativeRsvpHabitResult {
   payload?: Record<string, unknown>
 }
 
+type ExecutableRsvpHabit = HabitFile & { status: "active"; rsvp: RsvpHabitMetadata }
+
+interface NativeRsvpHabitRejection {
+  kind: "rejected"
+  habit: HabitFile
+  errorCode: string
+  message: string
+}
+
+type NativeRsvpHabitResolution =
+  | { kind: "ready"; habit: ExecutableRsvpHabit }
+  | NativeRsvpHabitRejection
+
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex")
 }
@@ -59,6 +72,59 @@ function nativeRunId(input: RunNativeRsvpHabitInput): string {
     occurrenceId: input.occurrenceId ?? null,
   })).slice(0, 24)
   return `rsvp-${input.trigger}-${digest}`
+}
+
+function rejectionErrorCode(habit: HabitFile): string {
+  return habit.status === "degraded"
+    ? `habit_${habit.degradedReason}`
+    : `habit_status_${habit.status}`
+}
+
+function rejectionMessage(habitName: string, habit: HabitFile): string {
+  const reason = habit.status === "degraded" ? ` reason=${habit.degradedReason}` : ""
+  return `native RSVP habit ${habitName} rejected by lifecycle: status=${habit.status}${reason}`
+}
+
+function resolveNativeRsvpHabit(agentRoot: string, habitPath: string, habitName: string): NativeRsvpHabitResolution {
+  let habit: HabitFile
+  if (!fs.existsSync(habitPath)) {
+    habit = createDegradedHabitFile(habitPath, "read_error", "", "habit file not found")
+  } else {
+    try {
+      habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+    } catch (error) {
+      habit = createDegradedHabitFile(
+        habitPath,
+        "read_error",
+        "",
+        String(error),
+      )
+    }
+  }
+
+  if (habit.status !== "active") {
+    return {
+      kind: "rejected",
+      habit,
+      errorCode: rejectionErrorCode(habit),
+      message: rejectionMessage(habitName, habit),
+    }
+  }
+  if (!habit.rsvp) {
+    const degraded = createDegradedHabitFile(
+      habitPath,
+      "invalid_metadata",
+      habit.body,
+      "RSVP habit metadata is required",
+    )
+    return {
+      kind: "rejected",
+      habit: degraded,
+      errorCode: rejectionErrorCode(degraded),
+      message: rejectionMessage(habitName, degraded),
+    }
+  }
+  return { kind: "ready", habit: habit as ExecutableRsvpHabit }
 }
 
 function noopCliDeps(input: RunNativeRsvpHabitInput, agentRoot: string): OuroCliDeps {
@@ -340,6 +406,8 @@ function recordNativeRunLedger(input: {
   startedAt: string
   lifecycle: RunLedgerLifecycle
   endedAt?: string
+  errorName?: string
+  errorCode?: string
 }): void {
   const target = {
     habitName: input.habitName,
@@ -359,6 +427,8 @@ function recordNativeRunLedger(input: {
     ...(input.lifecycle === "completed" || input.lifecycle === "error"
       ? { usage: usageMetadataFromUsageData(undefined, "none") }
       : {}),
+    ...(input.errorName ? { errorName: input.errorName } : {}),
+    ...(input.errorCode ? { errorCode: input.errorCode } : {}),
     target,
     idempotencyScope: target,
     sessionRef: {
@@ -399,12 +469,6 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
     },
   })
 
-  const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
-  if (!habit.rsvp) throw new Error(`RSVP habit metadata is required before native execution: ${input.habitName}`)
-  const policy = rsvpHabitRuntimePolicy(habit.rsvp)
-  const command = refreshCommandFor(input, policy.sendAllowed, habit.rsvp.mode)
-  const deps = noopCliDeps(input, agentRoot)
-
   recordNativeRunLedger({
     agentRoot,
     agent: input.agent,
@@ -415,6 +479,84 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
     startedAt,
     lifecycle: "started",
   })
+
+  const resolution = resolveNativeRsvpHabit(agentRoot, habitPath, input.habitName)
+  if (resolution.kind === "rejected") {
+    const endedAt = nowIso(input.now)
+    const degradedReason = resolution.habit.status === "degraded"
+      ? resolution.habit.degradedReason
+      : null
+    const degradedDetail = resolution.habit.status === "degraded"
+      ? resolution.habit.degradedDetail
+      : null
+    const payload = {
+      ok: false,
+      command: "rsvp.refresh",
+      sideEffect: false,
+      agent: input.agent,
+      requires: "active RSVP habit",
+      message: resolution.message,
+      status: resolution.habit.status,
+      degradedReason,
+      degradedDetail,
+    }
+    recordNativeRunLedger({
+      agentRoot,
+      agent: input.agent,
+      habitName: input.habitName,
+      runId,
+      trigger: input.trigger,
+      occurrenceId: input.occurrenceId,
+      startedAt,
+      endedAt,
+      lifecycle: "error",
+      errorName: "HabitLifecycleRejected",
+      errorCode: resolution.errorCode,
+    })
+    const rejectionMeta = {
+      entryPoint: "native_runner",
+      agent: input.agent,
+      habitName: input.habitName,
+      trigger: input.trigger,
+      occurrenceId: input.occurrenceId ?? null,
+      runId,
+      status: resolution.habit.status,
+      degradedReason,
+      degradedDetail,
+      errorCode: resolution.errorCode,
+    }
+    emitNervesEvent({
+      level: "warn",
+      component: "rsvp",
+      event: "rsvp.habit_lifecycle_rejected",
+      message: resolution.message,
+      meta: rejectionMeta,
+    })
+    emitNervesEvent({
+      level: "error",
+      component: "rsvp",
+      event: "rsvp.native_habit_error",
+      message: resolution.message,
+      meta: {
+        ...rejectionMeta,
+        lifecycle: "error",
+        receiptWritten: false,
+        runtimeStateRecorded: false,
+      },
+    })
+    return {
+      ok: false,
+      message: resolution.message,
+      lifecycle: "error",
+      runId,
+      payload,
+    }
+  }
+
+  const habit = resolution.habit
+  const policy = rsvpHabitRuntimePolicy(habit.rsvp)
+  const command = refreshCommandFor(input, policy.sendAllowed, habit.rsvp.mode)
+  const deps = noopCliDeps(input, agentRoot)
 
   let payload: Record<string, unknown>
   let errorMessage: string | null = null
