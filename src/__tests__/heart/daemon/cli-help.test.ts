@@ -186,6 +186,12 @@ describe("getCommandHelp()", () => {
     expect(sentinelHelp).toContain("explicitly refresh")
   })
 
+  it("documents ouro as the nerves-review default process", () => {
+    const result = getCommandHelp("nerves-review")!
+    expect(result).toContain("default: ouro")
+    expect(result).not.toContain("default: daemon")
+  })
+
   it("describes `up` in plain language instead of leaning on house metaphor", () => {
     expect(COMMAND_REGISTRY["up"].description).toContain("Start and check Ouro")
   })

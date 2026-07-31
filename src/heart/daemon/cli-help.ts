@@ -4,6 +4,8 @@
  * Pure data + formatting: no side effects, no daemon communication.
  */
 
+import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
+
 // ── Types ──
 
 export interface CommandHelp {
@@ -202,7 +204,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   "nerves-review": {
     category: "Internal",
-    description: "Read-only review of recent nerves events from an agent log stream",
+    description: `Read-only review of recent nerves events from one agent log stream (default: ${DEFAULT_NERVES_PROCESS})`,
     usage: "ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
     example: "ouro nerves-review --agent slugger --component daemon --event habit --since 30m --json",
   },

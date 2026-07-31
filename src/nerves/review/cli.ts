@@ -1,6 +1,6 @@
 import * as path from "node:path"
 import { getAgentDaemonLogsDir } from "../../heart/identity"
-import { formatNerveEntry, parseDuration, reviewNerveEvents } from "./core"
+import { DEFAULT_NERVES_PROCESS, formatNerveEntry, parseDuration, reviewNerveEvents } from "./core"
 
 interface ParsedArgs {
   process: string
@@ -15,7 +15,7 @@ interface ParsedArgs {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const args: ParsedArgs = { process: "daemon", json: false, help: false }
+  const args: ParsedArgs = { process: DEFAULT_NERVES_PROCESS, json: false, help: false }
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]!
     const next = argv[i + 1]
@@ -71,7 +71,7 @@ function printHelp(): void {
     "Tail the agent's nerves ndjson and filter recent events. Read-only.",
     "",
     "options:",
-    "  --process <name>      log stream to read (default: daemon)",
+    `  --process <name>      log stream to read (default: ${DEFAULT_NERVES_PROCESS})`,
     "  --agent <name>        agent bundle to read from (default: current)",
     "  --component <substr>  filter by component substring (case-insensitive)",
     "  --event <substr>      filter by event-name substring (case-insensitive)",

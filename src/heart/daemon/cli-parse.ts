@@ -18,6 +18,7 @@ import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
 import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
+import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -2088,7 +2089,7 @@ function parseRsvpSmokeCommand(args: string[]): OuroCliCommand {
 
 function parseNervesReviewCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
-  let processName = "daemon"
+  let processName = DEFAULT_NERVES_PROCESS
   let component: string | undefined
   let event: string | undefined
   let level: string | undefined
