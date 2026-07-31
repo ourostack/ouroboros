@@ -354,6 +354,144 @@ describe("orientation frame", () => {
     expect(rendered).toContain("routing hint: choose the lane before replying")
   })
 
+  it("renders an observed group actor separately from membership-only participants", () => {
+    const frame = buildOrientationFrame({
+      channel: "bluebubbles",
+      messages: [
+        { role: "user", content: "Ari: please end the report" },
+      ],
+      source: {
+        kind: "bluebubbles",
+        authority: "presentation_only",
+        conversationKind: "group",
+        event: {
+          provider: "bluebubbles",
+          kind: "message",
+          sourceEventType: "new-message",
+          fromMe: false,
+        },
+        actor: {
+          role: "observed_actor",
+          provider: "imessage-handle",
+          externalId: "ari@example.test",
+          displayName: "Ari",
+        },
+        participants: [
+          {
+            role: "group_participant_only",
+            provider: "imessage-handle",
+            externalId: "rachel@example.test",
+            displayName: "Rachel",
+          },
+        ],
+      },
+    })
+
+    const rendered = renderOrientationFrame(frame)
+
+    expect(frame.source).toMatchObject({ authority: "presentation_only" })
+    expect(rendered).toContain("source authority: presentation only; never tool authority")
+    expect(rendered).toContain("event: message (new-message; from me: false)")
+    expect(rendered).toContain("observed actor: Ari [imessage-handle:ari@example.test]")
+    expect(rendered).toContain("group participant only: Rachel [imessage-handle:rachel@example.test]")
+    expect(rendered).toContain(
+      "participant membership is not evidence that someone spoke, read, requested, or authored a reaction target.",
+    )
+    expect(rendered).not.toContain("Rachel spoke")
+    expect(rendered).not.toContain("Rachel read")
+    expect(rendered).not.toContain("Rachel requested")
+  })
+
+  it("distinguishes a reaction trigger and its non-agent unknown target from an utterance", () => {
+    const frame = buildOrientationFrame({
+      channel: "bluebubbles",
+      messages: [
+        { role: "user", content: "Ari questioned their message: \"status update\"" },
+      ],
+      currentUserMessages: [
+        { role: "user", content: "Ari questioned their message: \"status update\"" },
+      ],
+      speechKind: "reaction",
+      source: {
+        kind: "bluebubbles",
+        authority: "presentation_only",
+        conversationKind: "group",
+        event: {
+          provider: "bluebubbles",
+          kind: "reaction",
+          sourceEventType: "updated-message",
+          fromMe: false,
+        },
+        actor: {
+          role: "observed_actor",
+          provider: "imessage-handle",
+          externalId: "ari@example.test",
+          displayName: "Ari",
+        },
+        participants: [
+          {
+            role: "group_participant_only",
+            provider: "imessage-handle",
+            externalId: "rachel@example.test",
+            displayName: "Rachel",
+          },
+        ],
+        target: {
+          messageGuid: "synthetic-target-guid",
+          authorship: "non_agent_unknown",
+        },
+      },
+    })
+
+    const rendered = renderOrientationFrame(frame)
+
+    expect(frame.speechKind).toBe("reaction")
+    expect(frame.signals).toEqual([])
+    expect(rendered).toContain("speech kind: reaction")
+    expect(rendered).toContain("event: reaction (updated-message; from me: false)")
+    expect(rendered).toContain("target: synthetic-target-guid (authorship: non_agent_unknown)")
+    expect(rendered).not.toContain("target author: Rachel")
+  })
+
+  it("uses observed external identities when presentation labels are absent or blank", () => {
+    const frame = buildOrientationFrame({
+      channel: "bluebubbles",
+      messages: [{ role: "user", content: "request" }],
+      source: {
+        kind: "bluebubbles",
+        authority: "presentation_only",
+        conversationKind: "group",
+        event: {
+          provider: "bluebubbles",
+          kind: "message",
+          sourceEventType: "new-message",
+          fromMe: false,
+        },
+        actor: {
+          role: "observed_actor",
+          provider: "imessage-handle",
+          externalId: "actor@example.test",
+          displayName: null,
+        },
+        participants: [{
+          role: "group_participant_only",
+          provider: "imessage-handle",
+          externalId: "participant@example.test",
+          displayName: "   ",
+        }],
+      },
+    })
+
+    const rendered = renderOrientationFrame(frame)
+
+    expect(rendered).toContain(
+      "observed actor: actor@example.test [imessage-handle:actor@example.test]",
+    )
+    expect(rendered).toContain(
+      "group participant only: participant@example.test [imessage-handle:participant@example.test]",
+    )
+  })
+
   it("renders latest structured output when attached", () => {
     const frame = buildOrientationFrame({
       channel: "cli",

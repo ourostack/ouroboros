@@ -82,6 +82,7 @@ vi.mock("../../heart/identity", () => {
 import * as fs from "fs"
 import { execSync, spawnSync } from "child_process"
 import { listSkills, loadSkill } from "../../repertoire/skills"
+import type { ToolContext } from "../../repertoire/tools-base"
 
 describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
@@ -1707,6 +1708,31 @@ describe("ToolContext shape", () => {
     // If adoOrganizations were required, TypeScript would error.
     // We just verify the interface shape by checking the module exports.
     expect(toolsBase).toBeDefined()
+  })
+
+  it("carries only an immutable BlueBubbles capture locator as current ingress evidence", () => {
+    const ctx: ToolContext = {
+      signin: vi.fn(),
+      currentIngressEvidence: {
+        schemaVersion: 1,
+        provider: "bluebubbles",
+        captureKeyHash: "b".repeat(64),
+      },
+    }
+
+    expect(ctx.currentIngressEvidence).toEqual({
+      schemaVersion: 1,
+      provider: "bluebubbles",
+      captureKeyHash: "b".repeat(64),
+    })
+    expect(Object.keys(ctx.currentIngressEvidence ?? {})).toEqual([
+      "schemaVersion",
+      "provider",
+      "captureKeyHash",
+    ])
+    expect(ctx.currentIngressEvidence).not.toHaveProperty("actor")
+    expect(ctx.currentIngressEvidence).not.toHaveProperty("request")
+    expect(ctx.currentIngressEvidence).not.toHaveProperty("participants")
   })
 })
 

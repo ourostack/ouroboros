@@ -14,10 +14,14 @@ import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pe
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { buildOrientationFrame, type OrientationSource } from "../../heart/orientation-frame"
+import {
+  buildOrientationFrame,
+  type OrientationConversationKind,
+  type OrientationSource,
+} from "../../heart/orientation-frame"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
 import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
-import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-base"
+import type { BlueBubblesReplyTargetSelection, ToolContext } from "../../repertoire/tools-base"
 import {
   BlueBubblesIgnoredEventError,
   describeBlueBubblesReaction,
@@ -37,7 +41,11 @@ import {
 } from "./inbound-log"
 import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation } from "./mutation-log"
 import { recordProcessedBlueBubblesMessage } from "./processed-log"
-import type { BlueBubblesSemanticCaptureV1, IngressTargetAuthorship } from "../ingress-evidence"
+import type {
+  BlueBubblesSemanticCaptureEvent,
+  BlueBubblesSemanticCaptureV1,
+  IngressTargetAuthorship,
+} from "../ingress-evidence"
 import {
   acquireBlueBubblesSemanticClaim,
   allocateBlueBubblesReactionCoordinate,
@@ -346,6 +354,14 @@ interface BlueBubblesHandleOptions {
   resolvedReactionTarget?: BlueBubblesReactionTarget
 }
 
+type CurrentBlueBubblesIngressEvidence = NonNullable<ToolContext["currentIngressEvidence"]>
+
+interface CapturedBlueBubblesHandleOptions extends BlueBubblesHandleOptions {
+  currentIngressEvidence: CurrentBlueBubblesIngressEvidence
+  orientationEvidence: BlueBubblesSemanticCaptureEvent
+  orientationConversationKind: OrientationConversationKind
+}
+
 class BlueBubblesRecoveryTurnTimeoutError extends Error {
   constructor(timeoutMs: number) {
     super(`bluebubbles recovery turn timed out after ${timeoutMs}ms`)
@@ -449,8 +465,8 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
 
   return {
     provider: "imessage-handle",
-    externalId: event.sender.externalId || event.sender.rawId,
-    displayName: event.sender.displayName || "Unknown",
+    externalId: event.sender.externalId,
+    displayName: event.sender.displayName,
     channel: "bluebubbles",
   }
 }
@@ -570,12 +586,55 @@ function extractHistoricalLaneSummary(
 function buildBlueBubblesOrientationSource(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
+  evidence: BlueBubblesSemanticCaptureEvent,
+  conversationKind: OrientationConversationKind,
   repliedToText?: string | null,
 ): OrientationSource {
   const repairNotice = event.repairNotice?.trim()
+  const actor = evidence.actor
+  const participants = evidence.participants
+    .filter((participant) => !(
+      participant.provider === actor.provider
+      && participant.externalId === actor.externalId
+    ))
+    .map((participant) => ({
+      role: "group_participant_only" as const,
+      provider: participant.provider,
+      externalId: participant.externalId,
+      displayName: participant.displayName,
+    }))
+  const targetGuid = evidence.targetGuid
+  const targetAuthorship = evidence.targetAuthorship
+  const presentation = {
+    authority: "presentation_only" as const,
+    conversationKind,
+    event: {
+      provider: evidence.provider,
+      kind: evidence.kind,
+      sourceEventType: evidence.sourceEventType,
+      fromMe: evidence.fromMe,
+    },
+    actor: {
+      role: "observed_actor" as const,
+      provider: actor.provider,
+      externalId: actor.externalId,
+      displayName: actor.displayName,
+    },
+    participants,
+    ...(targetGuid
+      ? {
+          target: {
+            messageGuid: targetGuid,
+            authorship: targetAuthorship ?? "unknown" as const,
+          },
+        }
+      : {}),
+  }
+
   if (event.kind !== "message") {
     return {
       kind: "bluebubbles",
+      ...presentation,
       lane: "mutation",
       ...(repairNotice ? { repairNotice } : {}),
     }
@@ -586,6 +645,7 @@ function buildBlueBubblesOrientationSource(
   const hasThreadRoute = !!threadId || summaries.some((summary) => summary.key.startsWith("thread:"))
   return {
     kind: "bluebubbles",
+    ...presentation,
     lane: threadId ? "thread" : "top_level",
     defaultReplyTarget: threadId ? "current_lane" : "top_level",
     ...(threadId ? { threadId } : {}),
@@ -1333,7 +1393,7 @@ async function handleBlueBubblesNormalizedEvent(
   event: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
-  options: BlueBubblesHandleOptions = {},
+  options: CapturedBlueBubblesHandleOptions,
 ): Promise<BlueBubblesHandleResult> {
   const client = resolvedDeps.createClient()
   const agentName = resolvedDeps.getAgentName()
@@ -1503,7 +1563,13 @@ async function handleBlueBubblesNormalizedEvent(
       messages: [...priorMessages, userMessage],
       currentUserMessages: [userMessage],
       structuredOutputs: existing?.structuredOutputs ?? [],
-      source: buildBlueBubblesOrientationSource(event, priorMessages, repliedToText),
+      source: buildBlueBubblesOrientationSource(
+        event,
+        priorMessages,
+        options.orientationEvidence,
+        options.orientationConversationKind,
+        repliedToText,
+      ),
     })
 
     const visibleActivityTurnId = activeTurnId
@@ -1607,7 +1673,7 @@ async function handleBlueBubblesNormalizedEvent(
         pendingDir,
         friendStore: store,
         provider: "imessage-handle",
-        externalId: event.sender.externalId || event.sender.rawId,
+        externalId: event.sender.externalId,
         isGroupChat: event.chat.isGroup,
         groupHasFamilyMember,
         hasExistingGroupWithFamily,
@@ -1658,7 +1724,14 @@ async function handleBlueBubblesNormalizedEvent(
         },
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
-        runAgentOptions: { mcpManager, orientationFrame },
+        runAgentOptions: {
+          mcpManager,
+          orientationFrame,
+          toolContext: {
+            signin: async () => undefined,
+            currentIngressEvidence: options.currentIngressEvidence,
+          },
+        },
         callbacks: failoverAwareCallbacks,
         failoverState: (() => {
           if (!bbFailoverStates.has(event.chat.sessionKey)) {
@@ -2150,7 +2223,7 @@ async function handleRestrictedBlueBubblesReactionFeedback(input: {
   trustedFriend: FriendRecord
   client: BlueBubblesClient
   resolvedDeps: RuntimeDeps
-  options: BlueBubblesHandleOptions
+  options: CapturedBlueBubblesHandleOptions
   resolvedReactionTarget?: BlueBubblesReactionTarget
 }): Promise<BlueBubblesHandleResult> {
   const { event, trustedFriend, client, resolvedDeps, options } = input
@@ -2168,7 +2241,12 @@ async function handleRestrictedBlueBubblesReactionFeedback(input: {
     channel: "bluebubbles",
     messages: [userMessage],
     currentUserMessages: [userMessage],
-    source: buildBlueBubblesOrientationSource(event, []),
+    source: buildBlueBubblesOrientationSource(
+      event,
+      [],
+      options.orientationEvidence,
+      options.orientationConversationKind,
+    ),
     speechKind: "reaction",
   })
   const callbacks = createBlueBubblesCallbacks(
@@ -2211,6 +2289,7 @@ async function handleRestrictedBlueBubblesReactionFeedback(input: {
             /* v8 ignore next -- ToolContext requires signin; restricted tools cannot invoke it @preserve */
             signin: async () => undefined,
             context,
+            currentIngressEvidence: options.currentIngressEvidence,
           },
         },
       )
@@ -2308,6 +2387,16 @@ async function handleCapturedBlueBubblesSemanticEvent(
   }
 
   try {
+    const capturedOptions: CapturedBlueBubblesHandleOptions = {
+      ...options,
+      currentIngressEvidence: Object.freeze({
+        schemaVersion: 1,
+        provider: "bluebubbles",
+        captureKeyHash: captured.capture.keyHash,
+      }),
+      orientationEvidence: captured.capture.event,
+      orientationConversationKind: captured.normalized.chat.isGroup ? "group" : "one_to_one",
+    }
     const reactionClassification = await classifyCapturedBlueBubblesReaction(captured, resolvedDeps)
     const reactionDecision = reactionClassification?.decision ?? null
     if (reactionDecision?.route === "capture_only") {
@@ -2339,7 +2428,12 @@ async function handleCapturedBlueBubblesSemanticEvent(
       ) {
         throw new Error("semantic_capture_routing_invalid")
       }
-      handledEvent = repaired
+      const identityGroundedRepaired: BlueBubblesNormalizedEvent = {
+        ...repaired,
+        fromMe: captured.normalized.fromMe,
+        sender: captured.normalized.sender,
+      }
+      handledEvent = identityGroundedRepaired
       if (reactionDecision?.route === "restricted_feedback") {
         const restrictedEvent = materializeRestrictedBlueBubblesReactionEvent(captured, repaired)
         handledEvent = restrictedEvent
@@ -2348,12 +2442,12 @@ async function handleCapturedBlueBubblesSemanticEvent(
           trustedFriend: reactionClassification!.trustedFriend!,
           client,
           resolvedDeps,
-          options,
+          options: capturedOptions,
           resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
         })
       } else {
-        result = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, source, {
-          ...options,
+        result = await handleBlueBubblesNormalizedEvent(identityGroundedRepaired, resolvedDeps, source, {
+          ...capturedOptions,
           resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
         })
       }

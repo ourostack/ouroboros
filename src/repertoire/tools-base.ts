@@ -110,6 +110,12 @@ export interface ToolContext {
   delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
   voiceCall?: VoiceCallControl;
   orientationFrame?: OrientationFrame;
+  /** Immutable locator for the durable v1 capture that started this turn. */
+  readonly currentIngressEvidence?: Readonly<{
+    schemaVersion: 1;
+    provider: "bluebubbles";
+    captureKeyHash: string;
+  }>;
   habitSession?: HabitSessionToolContext;
   daemonSocketPath?: string;
   agentRoot?: string;

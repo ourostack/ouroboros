@@ -559,6 +559,33 @@ const groupWithParticipantsPayload = {
   },
 }
 
+const groupOrientationPayload = {
+  type: "new-message",
+  data: {
+    guid: "SYNTHETIC-GROUP-ORIENTATION-MESSAGE",
+    text: "please end the report",
+    handle: {
+      address: "ari@example.test",
+      service: "iMessage",
+    },
+    attachments: [],
+    dateCreated: 1772947800000,
+    isFromMe: false,
+    chats: [
+      {
+        guid: "any;+;synthetic-orientation-group",
+        style: 43,
+        chatIdentifier: "synthetic-orientation-group",
+        displayName: "Synthetic Orientation Group",
+        participants: [
+          { address: "ari@example.test" },
+          { address: "rachel@example.test" },
+        ],
+      },
+    ],
+  },
+}
+
 async function makeStoredSemanticCapture(
   payload: unknown = dmTopLevelPayload,
   options: {
@@ -1095,6 +1122,130 @@ describe("BlueBubbles sense runtime", () => {
       lane: "top_level",
       defaultReplyTarget: "top_level",
     })
+  })
+
+  it("keeps the observed group actor distinct from membership-only participants and tools receive only the capture locator", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupOrientationPayload)
+
+    const capture = mocks.writeSemanticCapture.mock.calls[0]?.[1]
+    expect(capture).toBeDefined()
+    expect(firstRunAgentOptions().orientationFrame.source).toMatchObject({
+      kind: "bluebubbles",
+      authority: "presentation_only",
+      conversationKind: "group",
+      event: {
+        provider: "bluebubbles",
+        kind: "message",
+        sourceEventType: "new-message",
+        fromMe: false,
+      },
+      actor: {
+        role: "observed_actor",
+        provider: "imessage-handle",
+        externalId: "ari@example.test",
+      },
+      participants: [
+        {
+          role: "group_participant_only",
+          provider: "imessage-handle",
+          externalId: "rachel@example.test",
+        },
+      ],
+    })
+    expect(firstRunAgentOptions().orientationFrame.source.participants).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ externalId: "ari@example.test" }),
+      ]),
+    )
+
+    const ingressEvidence = firstRunAgentOptions().toolContext.currentIngressEvidence
+    expect(ingressEvidence).toEqual({
+      schemaVersion: 1,
+      provider: "bluebubbles",
+      captureKeyHash: capture.keyHash,
+    })
+    expect(Object.keys(ingressEvidence)).toEqual([
+      "schemaVersion",
+      "provider",
+      "captureKeyHash",
+    ])
+    expect(ingressEvidence).not.toHaveProperty("actor")
+    expect(ingressEvidence).not.toHaveProperty("request")
+    expect(ingressEvidence).not.toHaveProperty("participants")
+  })
+
+  it("does not let transport repair replace the captured actor or from-me observation", async () => {
+    mocks.repairEvent.mockImplementationOnce(async (event: any) => ({
+      ...event,
+      fromMe: true,
+      sender: {
+        ...event.sender,
+        externalId: "rachel@example.test",
+        rawId: "rachel@example.test",
+        displayName: "Rachel",
+      },
+    }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await bluebubbles.handleBlueBubblesEvent(groupOrientationPayload)
+
+    expect(firstRunAgentOptions().orientationFrame).toMatchObject({
+      currentUserSpeech: ["ari@example.test: please end the report"],
+      source: {
+        event: { fromMe: false },
+        actor: {
+          role: "observed_actor",
+          externalId: "ari@example.test",
+        },
+        participants: [{
+          role: "group_participant_only",
+          externalId: "rachel@example.test",
+        }],
+      },
+    })
+  })
+
+  it("keeps ordinary edit orientation grounded in captured group membership and target provenance after repair", async () => {
+    mocks.repairEvent.mockImplementationOnce(async (event: any) => ({
+      ...event,
+      targetMessageGuid: "FORGED-REPAIR-TARGET",
+      chat: {
+        ...event.chat,
+        isGroup: false,
+      },
+    }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await bluebubbles.handleBlueBubblesEvent({
+      ...groupOrientationPayload,
+      type: "updated-message",
+      data: {
+        ...groupOrientationPayload.data,
+        guid: "SYNTHETIC-GROUP-ORIENTATION-EDIT",
+        text: "please end the edited report",
+        dateEdited: 1772947805000,
+      },
+    })
+
+    const source = firstRunAgentOptions().orientationFrame.source
+    expect.soft(source).toMatchObject({
+      conversationKind: "group",
+      actor: {
+        role: "observed_actor",
+        externalId: "ari@example.test",
+      },
+      participants: [{
+        role: "group_participant_only",
+        externalId: "rachel@example.test",
+      }],
+    })
+    expect(source.participants).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ externalId: "ari@example.test" }),
+      ]),
+    )
+    expect.soft(source).not.toHaveProperty("target")
   })
 
   it("detects obsolete sibling thread lanes without deleting them before loading the shared chat trunk", async () => {
@@ -2914,7 +3065,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("covers friend-identity fallbacks for group identifiers, sender fallback, and unknown DM names", async () => {
+  it("covers friend-identity fallbacks for group identifiers, sender fallback, and observed DM identity", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
 
     mocks.repairEvent.mockResolvedValueOnce({
@@ -2943,7 +3094,11 @@ describe("BlueBubbles sense runtime", () => {
     })
     await bluebubbles.handleBlueBubblesEvent({
       ...dmThreadPayload,
-      data: { ...dmThreadPayload.data, guid: "group-ident-input" },
+      data: {
+        ...dmThreadPayload.data,
+        guid: "group-ident-input",
+        handle: { address: "sender-a", service: "iMessage" },
+      },
     })
 
     mocks.repairEvent.mockResolvedValueOnce({
@@ -2971,7 +3126,11 @@ describe("BlueBubbles sense runtime", () => {
     })
     await bluebubbles.handleBlueBubblesEvent({
       ...dmThreadPayload,
-      data: { ...dmThreadPayload.data, guid: "group-sender-input" },
+      data: {
+        ...dmThreadPayload.data,
+        guid: "group-sender-input",
+        handle: { address: "sender-only", service: "iMessage" },
+      },
     })
 
     mocks.repairEvent.mockResolvedValueOnce({
@@ -3000,7 +3159,11 @@ describe("BlueBubbles sense runtime", () => {
     })
     await bluebubbles.handleBlueBubblesEvent({
       ...dmThreadPayload,
-      data: { ...dmThreadPayload.data, guid: "dm-raw-input" },
+      data: {
+        ...dmThreadPayload.data,
+        guid: "dm-raw-input",
+        handle: { id: "raw-dm-id" },
+      },
     })
 
     expect(mocks.resolverCtor).toHaveBeenNthCalledWith(
@@ -3024,7 +3187,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.anything(),
       expect.objectContaining({
         externalId: "raw-dm-id",
-        displayName: "Unknown",
+        displayName: "raw-dm-id",
       }),
     )
   })
@@ -10413,6 +10576,84 @@ describe("BlueBubbles reaction capture-only policy", () => {
       "testagent",
       expect.objectContaining({ outcome: "restricted_feedback_settled" }),
     )
+  })
+
+  it("presents a trusted group reaction as Ari's reaction with Rachel only a participant and an agent-authored target", async () => {
+    const payload = policyReactionPayload("question") as typeof reactionPayload
+    const groupPayload = {
+      ...payload,
+      data: {
+        ...payload.data,
+        guid: "SYNTHETIC-GROUP-ORIENTATION-REACTION",
+        handle: {
+          address: "ari@example.test",
+          service: "iMessage",
+        },
+        chats: [{
+          guid: "any;+;synthetic-orientation-group",
+          style: 43,
+          chatIdentifier: "synthetic-orientation-group",
+          displayName: "Synthetic Orientation Group",
+          participants: [
+            { address: "ari@example.test" },
+            { address: "rachel@example.test" },
+          ],
+        }],
+      },
+    }
+    mocks.findByExternalId.mockResolvedValueOnce({
+      ...defaultFriendContext.friend,
+      name: "Ari",
+      trustLevel: "friend",
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await bluebubbles.handleBlueBubblesEvent(
+      groupPayload,
+      { createClient: () => policyClient(true) as any },
+    )
+
+    const capture = mocks.writeSemanticCapture.mock.calls[0]?.[1]
+    const options = firstRunAgentOptions()
+    expect(options.orientationFrame).toMatchObject({
+      speechKind: "reaction",
+      source: {
+        authority: "presentation_only",
+        conversationKind: "group",
+        event: {
+          provider: "bluebubbles",
+          kind: "reaction",
+          sourceEventType: "new-message",
+          fromMe: false,
+        },
+        actor: {
+          role: "observed_actor",
+          provider: "imessage-handle",
+          externalId: "ari@example.test",
+        },
+        participants: [
+          {
+            role: "group_participant_only",
+            provider: "imessage-handle",
+            externalId: "rachel@example.test",
+          },
+        ],
+        target: {
+          messageGuid: "cb4eb152-a678-4f0e-8075-1ab09b5496f8",
+          authorship: "agent",
+        },
+      },
+    })
+    expect(options.orientationFrame.source.participants).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ externalId: "ari@example.test" }),
+      ]),
+    )
+    expect(options.toolContext.currentIngressEvidence).toEqual({
+      schemaVersion: 1,
+      provider: "bluebubbles",
+      captureKeyHash: capture.keyHash,
+    })
   })
 
   it("records restricted provider failure without persistence, status, mutation, or a second inference", async () => {
