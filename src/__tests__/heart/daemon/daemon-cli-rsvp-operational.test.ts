@@ -114,6 +114,7 @@ vi.mock("../../../heart/runtime-credentials", async () => {
 
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 import { runRsvpCliCommand } from "../../../rsvp/cli"
+import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
 function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
@@ -168,6 +169,29 @@ function seedBundle(legacyRoot?: string): ReturnType<typeof createTmpBundle> {
   fs.writeFileSync(path.join(rsvpRoot, "baseline.json"), JSON.stringify({ nativeSnapshotId: previousSnapshot.snapshotId }), "utf-8")
   fs.writeFileSync(path.join(rsvpRoot, "snapshots", `${previousSnapshot.snapshotId}.json`), JSON.stringify(previousSnapshot), "utf-8")
   return tmp
+}
+
+function explicitRsvpHabitDefinition(status: string): string {
+  return [
+    "---",
+    "title: Explicit RSVP Update",
+    `status: ${status}`,
+    "cadence: 0 10 * * *",
+    "rsvp:",
+    "  policyVersion: rsvp-habit/v1",
+    "  mode: live",
+    "  sense: bluebubbles",
+    "  source: aisleplanner",
+    "  routeRef: rsvp/config.json#bluebubblesRoute",
+    "  snapshotRef: state/rsvp/snapshots/latest.json",
+    "  outboundStateRef: state/rsvp/outbound-state.json",
+    "  budgetRef: state/rsvp/spend-ledger.json",
+    "  idempotencyRef: state/rsvp/outbound-state.json",
+    "  liveSendEligible: true",
+    "---",
+    "",
+    "Refresh RSVP state.",
+  ].join("\n")
 }
 
 function seedLegacyCutoverRoot(options: { sendEnabled?: boolean } = {}): string {
@@ -479,6 +503,142 @@ describe("ouro rsvp operational CLI wiring", () => {
       expect(rsvpMocks.sendText).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
+    }
+  })
+
+  it("requires a currently active readable RSVP habit before explicit live refresh can fetch or send", async () => {
+    mockRuntimeCredentials()
+    const legacyRoot = seedLegacyCutoverRoot()
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: configWithCutover(legacyRoot) })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({
+      status: "ready",
+      credentials: { username: "user@example.com", password: "secret" },
+      checks: [],
+    })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: previousSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({
+      currentSnapshotId: "snap_current",
+      newRsvps: [],
+      statusChanges: [],
+      newGuests: [],
+      removedGuests: [],
+      summary: currentSnapshot.summary,
+    })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nCasey is pending.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:explicit-lifecycle" })
+    rsvpMocks.sendText.mockResolvedValue({ ok: true, messageGuid: "explicit-lifecycle-guid" })
+    const deps = createMockDeps({ bundlesRoot: "/unused", rsvpCutoverDeps: defaultCredentialCutoverDeps() })
+    const active = seedBundle(legacyRoot)
+    const activeHabitPath = path.join(active.agentRoot, "habits", "rsvp-wedding.md")
+    fs.mkdirSync(path.dirname(activeHabitPath), { recursive: true })
+    fs.writeFileSync(activeHabitPath, explicitRsvpHabitDefinition("active"), "utf-8")
+
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event === "rsvp.habit_lifecycle_rejected") events.push(entry)
+    })
+    const cleanups: Array<() => void> = [active.cleanup]
+
+    try {
+      const activeResult = JSON.parse(await runOuroCli([
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--habit",
+        "rsvp-wedding",
+        "--mode",
+        "live",
+        "--allow-send",
+        "--json",
+      ], { ...deps, bundlesRoot: active.bundlesRoot }))
+      expect(activeResult).toMatchObject({ ok: true, sideEffect: true, sendAllowed: true })
+      expect(rsvpMocks.fetchAislePlannerRsvps).toHaveBeenCalledTimes(1)
+      expect(rsvpMocks.sendText).toHaveBeenCalledTimes(1)
+
+      for (const mock of Object.values(rsvpMocks)) mock.mockClear()
+
+      const cases = [
+        { label: "paused", status: "paused", expectedStatus: "paused", expectedReason: null },
+        { label: "cancelled", status: "cancelled", expectedStatus: "cancelled", expectedReason: null },
+        { label: "parser-degraded", status: "retired", expectedStatus: "degraded", expectedReason: "invalid_status" },
+        { label: "missing", status: null, expectedStatus: "degraded", expectedReason: "read_error" },
+        { label: "io-error", status: "directory", expectedStatus: "degraded", expectedReason: "read_error" },
+        { label: "missing-rsvp-metadata", status: "untyped", expectedStatus: "degraded", expectedReason: "invalid_metadata" },
+      ] as const
+      const outcomes: string[] = []
+
+      for (const testCase of cases) {
+        const tmp = seedBundle(legacyRoot)
+        cleanups.push(tmp.cleanup)
+        const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-wedding.md")
+        fs.mkdirSync(path.dirname(habitPath), { recursive: true })
+        if (testCase.status === "directory") {
+          fs.mkdirSync(habitPath)
+        } else if (testCase.status === "untyped") {
+          fs.writeFileSync(habitPath, "---\ntitle: Untyped RSVP\nstatus: active\n---\n\nRefresh RSVP state.\n", "utf-8")
+        } else if (testCase.status !== null) {
+          fs.writeFileSync(habitPath, explicitRsvpHabitDefinition(testCase.status), "utf-8")
+        }
+
+        try {
+          await runOuroCli([
+            "rsvp",
+            "refresh",
+            "--agent",
+            "slugger",
+            "--habit",
+            "rsvp-wedding",
+            "--mode",
+            "live",
+            "--allow-send",
+            "--json",
+          ], { ...deps, bundlesRoot: tmp.bundlesRoot })
+          outcomes.push("resolved")
+        } catch (error) {
+          outcomes.push(error instanceof Error ? error.message : String(error))
+        }
+      }
+
+      expect.soft(outcomes[0]).toMatch(/status=paused/)
+      expect.soft(outcomes[1]).toMatch(/status=cancelled/)
+      expect.soft(outcomes[2]).toMatch(/status=degraded.*invalid_status/)
+      expect.soft(outcomes[3]).toMatch(/status=degraded.*read_error/)
+      expect.soft(outcomes[4]).toMatch(/status=degraded.*read_error/)
+      expect.soft(outcomes[5]).toMatch(/status=degraded.*invalid_metadata/)
+      expect.soft(rsvpMocks.fetchAislePlannerRsvps).not.toHaveBeenCalled()
+      expect.soft(rsvpMocks.buildRsvpSnapshot).not.toHaveBeenCalled()
+      expect.soft(rsvpMocks.computeRsvpDelta).not.toHaveBeenCalled()
+      expect.soft(rsvpMocks.renderRsvpReport).not.toHaveBeenCalled()
+      expect.soft(rsvpMocks.decideRsvpOutboundReport).not.toHaveBeenCalled()
+      expect.soft(rsvpMocks.createBlueBubblesClient).not.toHaveBeenCalled()
+      expect.soft(rsvpMocks.sendText).not.toHaveBeenCalled()
+      expect.soft(rsvpMocks.recordRsvpOutboundAttempt).not.toHaveBeenCalled()
+      expect.soft(events.map((event) => ({
+        component: event.component,
+        event: event.event,
+        entryPoint: event.meta?.entryPoint,
+        habitName: event.meta?.habitName,
+        status: event.meta?.status,
+        degradedReason: event.meta?.degradedReason,
+      }))).toEqual(cases.map((testCase) => ({
+        component: "rsvp",
+        event: "rsvp.habit_lifecycle_rejected",
+        entryPoint: "explicit_refresh",
+        habitName: "rsvp-wedding",
+        status: testCase.expectedStatus,
+        degradedReason: testCase.expectedReason,
+      })))
+    } finally {
+      unregister()
+      for (const cleanup of cleanups) cleanup()
     }
   })
 

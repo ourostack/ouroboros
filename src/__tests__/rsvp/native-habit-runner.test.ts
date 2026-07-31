@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { listHabitRunReceipts } from "../../arc/flight-recorder"
-import { readRunLedger } from "../../heart/run-ledger"
+import { readRunLedger, runLedgerHash } from "../../heart/run-ledger"
 import { readHabitLastRun } from "../../heart/habits/habit-runtime-state"
 import { readRsvpSpendLedger } from "../../rsvp/spend-ledger"
 import { runNativeRsvpHabit } from "../../rsvp/native-habit-runner"
@@ -582,20 +582,178 @@ describe("native RSVP habit runner", () => {
     }
   })
 
-  it("rejects native execution when RSVP habit metadata is missing", async () => {
-    const tmp = seedHabitWithoutRsvp()
+  it("fails closed with run evidence before refresh for every non-active or unreadable RSVP definition", async () => {
+    const cases: Array<{
+      label: string
+      seed: () => ReturnType<typeof seedRsvpHabit>
+      arrange: (habitPath: string) => void
+      expectedStatus: "paused" | "cancelled" | "degraded"
+      expectedReason: string | null
+      expectedErrorCode: string
+    }> = [
+      {
+        label: "paused",
+        seed: () => seedRsvpHabit("live"),
+        arrange: (habitPath) => fs.writeFileSync(
+          habitPath,
+          fs.readFileSync(habitPath, "utf-8").replace("status: active", "status: paused"),
+          "utf-8",
+        ),
+        expectedStatus: "paused",
+        expectedReason: null,
+        expectedErrorCode: "habit_status_paused",
+      },
+      {
+        label: "cancelled",
+        seed: () => seedRsvpHabit("live"),
+        arrange: (habitPath) => fs.writeFileSync(
+          habitPath,
+          fs.readFileSync(habitPath, "utf-8").replace("status: active", "status: cancelled"),
+          "utf-8",
+        ),
+        expectedStatus: "cancelled",
+        expectedReason: null,
+        expectedErrorCode: "habit_status_cancelled",
+      },
+      {
+        label: "parser-degraded",
+        seed: () => seedRsvpHabit("live"),
+        arrange: (habitPath) => fs.writeFileSync(
+          habitPath,
+          fs.readFileSync(habitPath, "utf-8").replace("status: active", "status: retired"),
+          "utf-8",
+        ),
+        expectedStatus: "degraded",
+        expectedReason: "invalid_status",
+        expectedErrorCode: "habit_invalid_status",
+      },
+      {
+        label: "missing",
+        seed: () => seedRsvpHabit("live"),
+        arrange: (habitPath) => fs.rmSync(habitPath),
+        expectedStatus: "degraded",
+        expectedReason: "read_error",
+        expectedErrorCode: "habit_read_error",
+      },
+      {
+        label: "io-error",
+        seed: () => seedRsvpHabit("live"),
+        arrange: (habitPath) => {
+          fs.rmSync(habitPath)
+          fs.mkdirSync(habitPath)
+        },
+        expectedStatus: "degraded",
+        expectedReason: "read_error",
+        expectedErrorCode: "habit_read_error",
+      },
+      {
+        label: "missing-rsvp-metadata",
+        seed: seedHabitWithoutRsvp,
+        arrange: () => undefined,
+        expectedStatus: "degraded",
+        expectedReason: "invalid_metadata",
+        expectedErrorCode: "habit_invalid_metadata",
+      },
+    ]
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event === "rsvp.habit_lifecycle_rejected") events.push(entry)
+    })
+    const cleanups: Array<() => void> = []
+    const outcomes: Array<{
+      testCase: (typeof cases)[number]
+      agentRoot: string
+      runRefresh: ReturnType<typeof vi.fn>
+      result: Awaited<ReturnType<typeof runNativeRsvpHabit>> | null
+      error: string | null
+    }> = []
 
     try {
-      await expect(runNativeRsvpHabit({
-        agent: "slugger",
-        bundlesRoot: tmp.bundlesRoot,
+      for (const testCase of cases) {
+        const tmp = testCase.seed()
+        cleanups.push(tmp.cleanup)
+        const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-wedding.md")
+        testCase.arrange(habitPath)
+        const runRefresh = vi.fn(async () => JSON.stringify({ ok: true }))
+
+        try {
+          const result = await runNativeRsvpHabit({
+            agent: "slugger",
+            bundlesRoot: tmp.bundlesRoot,
+            habitName: "rsvp-wedding",
+            trigger: "manual",
+            occurrenceId: `manual:${testCase.label}`,
+            now: () => new Date("2026-07-12T17:00:05.000Z"),
+            runRefresh,
+          })
+          outcomes.push({ testCase, agentRoot: tmp.agentRoot, runRefresh, result, error: null })
+        } catch (error) {
+          outcomes.push({
+            testCase,
+            agentRoot: tmp.agentRoot,
+            runRefresh,
+            result: null,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+
+      for (const outcome of outcomes) {
+        const { testCase } = outcome
+        expect.soft(outcome.error, testCase.label).toBeNull()
+        expect.soft(outcome.result, testCase.label).toMatchObject({
+          ok: false,
+          lifecycle: "error",
+          payload: {
+            ok: false,
+            command: "rsvp.refresh",
+            sideEffect: false,
+            requires: "active RSVP habit",
+            status: testCase.expectedStatus,
+            degradedReason: testCase.expectedReason,
+          },
+        })
+        expect.soft(outcome.result?.message, testCase.label).toMatch(/rejected.*lifecycle/i)
+        expect.soft(outcome.runRefresh, testCase.label).not.toHaveBeenCalled()
+        const runLedger = readRunLedger(outcome.agentRoot)
+        const expectedTargetHash = runLedgerHash({
+          habitName: "rsvp-wedding",
+          runId: outcome.result?.runId,
+          trigger: "manual",
+          occurrenceId: `manual:${testCase.label}`,
+          command: "rsvp.refresh",
+        })
+        expect.soft(runLedger.map((row) => row.lifecycle), testCase.label).toEqual(["started", "error"])
+        expect.soft(runLedger[1], testCase.label).toMatchObject({
+          runId: runLedger[0]?.runId,
+          idempotencyKey: runLedger[0]?.idempotencyKey,
+          targetHash: expectedTargetHash,
+          sourceKind: "daemon",
+          senseOrHabit: "rsvp-wedding",
+          lifecycle: "error",
+          errorName: "HabitLifecycleRejected",
+          errorCode: testCase.expectedErrorCode,
+        })
+      }
+
+      expect.soft(events.map((event) => ({
+        component: event.component,
+        event: event.event,
+        entryPoint: event.meta?.entryPoint,
+        habitName: event.meta?.habitName,
+        status: event.meta?.status,
+        degradedReason: event.meta?.degradedReason,
+      }))).toEqual(cases.map((testCase) => ({
+        component: "rsvp",
+        event: "rsvp.habit_lifecycle_rejected",
+        entryPoint: "native_runner",
         habitName: "rsvp-wedding",
-        trigger: "manual",
-        now: () => new Date("2026-07-12T17:00:05.000Z"),
-        runRefresh: async () => JSON.stringify({ ok: true }),
-      })).rejects.toThrow("RSVP habit metadata is required before native execution: rsvp-wedding")
+        status: testCase.expectedStatus,
+        degradedReason: testCase.expectedReason,
+      })))
     } finally {
-      tmp.cleanup()
+      unregister()
+      for (const cleanup of cleanups) cleanup()
     }
   })
 
