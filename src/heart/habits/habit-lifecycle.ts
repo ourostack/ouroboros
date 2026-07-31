@@ -822,7 +822,7 @@ function publishOwner(
       { durabilityUnknown: published, cause: error },
     )
   }
-  if (tempOwned) bestEffortUnlink(tempPath, storeFs)
+  bestEffortUnlink(tempPath, storeFs)
   const snapshot = inspectOwner(paths.owner, storeFs)
   if (snapshot.status !== "valid" || snapshot.bytes !== bytes) {
     throw new HabitLifecycleError("lifecycle_lock_durability_unknown", { durabilityUnknown: true })
@@ -907,7 +907,7 @@ function publishImmutableLifecycleFile(
       { durabilityUnknown: published || exists, cause: error },
     )
   }
-  if (tempOwned) bestEffortUnlink(tempPath, storeFs)
+  bestEffortUnlink(tempPath, storeFs)
   return published ? "published" : "exists"
 }
 
@@ -1013,22 +1013,22 @@ function withCoordination<T>(
   } catch (error) {
     throw new HabitLifecycleError("lifecycle_coordination_failed", { cause: error })
   }
-  let began = false
+  let operationStarted = false
+  let operationCompleted = false
+  let completedValue: T | undefined
   try {
-    try {
-      database.exec("BEGIN IMMEDIATE")
-      began = true
-    } catch (error) {
-      if (isSqliteBusy(error)) return { status: "busy" }
-      throw error
-    }
-    const value = operation()
-    database.exec("COMMIT")
-    began = false
-    return { status: "completed", value }
+    const transaction = database.transaction(() => {
+      operationStarted = true
+      const value = operation()
+      completedValue = value
+      operationCompleted = true
+      return value
+    })
+    return { status: "completed", value: transaction.immediate() }
   } catch (error) {
-    if (began) {
-      try { database.exec("ROLLBACK") } catch { /* preserve the primary failure */ }
+    if (isSqliteBusy(error)) {
+      if (!operationStarted) return { status: "busy" }
+      if (operationCompleted) return { status: "completed", value: completedValue as T }
     }
     throw error
   } finally {
@@ -1349,9 +1349,7 @@ function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoExcepti
 }
 
 function isSqliteBusy(error: unknown): boolean {
-  return error instanceof Error
-    && "code" in error
-    && (error.code === "SQLITE_BUSY" || error.code === "SQLITE_BUSY_SNAPSHOT")
+  return error instanceof Error && "code" in error && error.code === "SQLITE_BUSY"
 }
 
 function asLifecycleError(error: unknown, fallbackCode: string): HabitLifecycleError {

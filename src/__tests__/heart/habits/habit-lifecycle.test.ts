@@ -1443,6 +1443,637 @@ describe("habit lifecycle filesystem protocol", () => {
     expect(releaseHabitLifecycleLock(retryLock.lease, fixedDeps())).toBe(true)
   })
 
+  it("rejects malformed public identities, records, transitions, and acquisition inputs", async () => {
+    expect(() => buildHabitEvidenceIdentity({
+      habitId: "rsvp-demo",
+      kind: "invalid" as "capture",
+      id: CAPTURE_HASH,
+    })).toThrow(/evidence_kind_invalid/)
+    const bridge = buildHabitEvidenceIdentity({ habitId: "rsvp-demo", kind: "bridge", id: "bridge-demo" })
+    expect(bridge.canonicalKey).toBe('["habit-evidence-v1","rsvp-demo","bridge","bridge-demo"]')
+    expect(() => buildHabitEvidenceIdentity({ habitId: "rsvp-demo", kind: "bridge", id: "bad/id" }))
+      .toThrow(/evidence_id_invalid/)
+    expect(() => buildHabitEvidenceIdentity({ habitId: "rsvp-demo", kind: "capture", id: "short" }))
+      .toThrow(/evidence_id_invalid/)
+
+    expect(() => createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: "pause:demo",
+      operationKind: "pause" as "cancel",
+      updatedAt: FIXED_NOW,
+    })).toThrow(/lifecycle_operation_kind_invalid/)
+    expect(() => createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: "send:demo",
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    })).toThrow(/lifecycle_operation_kind_invalid/)
+
+    const initial = createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: "send:demo",
+      operationKind: "send",
+      updatedAt: FIXED_NOW,
+    })
+    expect(() => transitionHabitLifecycleJournal(
+      { ...initial, generation: 1 },
+      { state: "send_intent", at: NEXT_NOW },
+    )).toThrow(/lifecycle_journal_invalid/)
+    const intent = transitionHabitLifecycleJournal(initial, { state: "send_intent", at: NEXT_NOW })
+    expect(() => transitionHabitLifecycleJournal(intent, {
+      state: "crossing_unknown",
+      at: THIRD_NOW,
+      transportInvokedAt: null,
+      transportResult: { httpStatus: null, messageGuid: null, errorCode: "timeout" },
+    })).toThrow(/lifecycle_transition_invalid/)
+    expect(() => transitionHabitLifecycleJournal(intent, {
+      state: "crossed",
+      at: THIRD_NOW,
+      transportInvokedAt: NEXT_NOW,
+      transportResult: { httpStatus: 99, messageGuid: null, errorCode: null },
+    })).toThrow(/transport_result_invalid/)
+
+    await expect(acquireHabitLifecycleLock(
+      { agentRoot: makeRoot("habit-lifecycle-missing-start-"), habitId: "rsvp-demo", operationId: "cancel:demo" },
+      fixedDeps({ processStartedAt: () => null }),
+    )).rejects.toMatchObject({ code: "process_started_at_invalid" })
+    await expect(acquireHabitLifecycleLock(
+      { agentRoot: makeRoot("habit-lifecycle-raw-candidate-error-"), habitId: "rsvp-demo", operationId: "cancel:demo" },
+      fixedDeps({ pid: () => { throw new Error("pid probe failed") } }),
+    )).rejects.toMatchObject({ code: "lifecycle_lock_failed" })
+    await expect(acquireHabitLifecycleLock(
+      { agentRoot: makeRoot("habit-lifecycle-invalid-clock-"), habitId: "rsvp-demo", operationId: "cancel:demo" },
+      fixedDeps({ now: () => new Date("invalid") }),
+    )).rejects.toMatchObject({ code: "lifecycle_clock_invalid" })
+  })
+
+  it("covers every platform probe fallback and process-stat failure boundary", () => {
+    const fallbackNow = new Date(FIXED_NOW)
+    expect(probeHabitBootIdentity({
+      platform: "aix",
+      now: () => fallbackNow,
+      uptime: () => 123.4,
+    })).toBe(sha256(`aix:${Math.round((fallbackNow.getTime() - 123_400) / 1_000)}`))
+    expect(probeHabitBootIdentity({ platform: "aix", now: () => fallbackNow })).toMatch(/^[a-f0-9]{64}$/)
+
+    const linuxFs = (value: string | Error) => new Proxy(fs, {
+      get(target, property, receiver) {
+        if (property !== "readFileSync") return Reflect.get(target, property, receiver)
+        return () => {
+          if (value instanceof Error) throw value
+          return value
+        }
+      },
+    }) as typeof fs
+    expect(probeHabitProcessStartedAt(900, { platform: "linux", fs: linuxFs("missing close paren") }))
+      .toBeNull()
+    expect(probeHabitProcessStartedAt(900, { platform: "linux", fs: linuxFs("900 (worker) S 1 2") }))
+      .toBeNull()
+    expect(probeHabitProcessStartedAt(900, { platform: "linux", fs: linuxFs(codedError("ESRCH")) }))
+      .toBeNull()
+    expect(() => probeHabitProcessStartedAt(900, { platform: "linux", fs: linuxFs(codedError("EIO")) }))
+      .toThrow(/EIO/)
+
+    const emptyRun = (() => "\n") as typeof execFileSync
+    const throwingRun = (() => { throw new Error("process probe failed") }) as typeof execFileSync
+    expect(probeHabitProcessStartedAt(900, { platform: "win32", execFileSync: emptyRun })).toBeNull()
+    expect(probeHabitProcessStartedAt(900, { platform: "win32", execFileSync: throwingRun })).toBeNull()
+    expect(probeHabitProcessStartedAt(900, { platform: "darwin", execFileSync: emptyRun })).toBeNull()
+    expect(probeHabitProcessStartedAt(900, { platform: "darwin", execFileSync: throwingRun })).toBeNull()
+  })
+
+  it("fails closed at journal, definition, receipt, and read boundaries", async () => {
+    const agentRoot = makeRoot("habit-lifecycle-public-boundaries-")
+    const validReceipt = cancellationReceipt()
+    const result = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "rsvp-demo",
+      operationId: validReceipt.operationId,
+    }, fixedDeps())
+    expect(result.status).toBe("acquired")
+    if (result.status !== "acquired") return
+
+    const journal = createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: validReceipt.operationId,
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    })
+    expect(() => writeHabitLifecycleJournal(result.lease, { ...journal, generation: 1 }, fixedDeps()))
+      .toThrow(/lifecycle_journal_invalid/)
+    expect(() => writeHabitLifecycleJournal(result.lease, { ...journal, habitId: "other-habit" }, fixedDeps()))
+      .toThrow(/lifecycle_journal_invalid/)
+    expect(() => writeHabitLifecycleJournal(result.lease, { ...journal, operationId: "cancel:other" }, fixedDeps()))
+      .toThrow(/lifecycle_journal_invalid/)
+    expect(() => writeHabitLifecycleDefinition(
+      result.lease,
+      path.join(path.dirname(agentRoot), "outside.md"),
+      "cancelled\n",
+      fixedDeps(),
+    )).toThrow(/definition_path_invalid/)
+    expect(() => writeHabitLifecycleDefinition(
+      result.lease,
+      path.join(agentRoot, "habits", "rsvp-demo.md"),
+      42 as unknown as string,
+      fixedDeps(),
+    )).toThrow(/definition_bytes_invalid/)
+    expect(() => publishHabitLifecycleReceipt(
+      result.lease,
+      validReceipt.evidenceKeyHash,
+      { ...validReceipt, schemaVersion: 2 } as unknown as HabitCancellationReceipt,
+      fixedDeps(),
+    )).toThrow(/lifecycle_receipt_invalid/)
+    expect(() => publishHabitLifecycleReceipt(
+      result.lease,
+      "b".repeat(64),
+      validReceipt,
+      fixedDeps(),
+    )).toThrow(/lifecycle_receipt_invalid/)
+    expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
+
+    const wrongOperation = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "rsvp-demo",
+      operationId: "cancel:other",
+    }, fixedDeps())
+    expect(wrongOperation.status).toBe("acquired")
+    if (wrongOperation.status === "acquired") {
+      expect(() => publishHabitLifecycleReceipt(
+        wrongOperation.lease,
+        validReceipt.evidenceKeyHash,
+        validReceipt,
+        fixedDeps(),
+      )).toThrow(/lifecycle_receipt_invalid/)
+      expect(releaseHabitLifecycleLock(wrongOperation.lease, fixedDeps())).toBe(true)
+    }
+
+    const wrongHabit = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "other-habit",
+      operationId: validReceipt.operationId,
+    }, fixedDeps())
+    expect(wrongHabit.status).toBe("acquired")
+    if (wrongHabit.status === "acquired") {
+      expect(() => publishHabitLifecycleReceipt(
+        wrongHabit.lease,
+        validReceipt.evidenceKeyHash,
+        validReceipt,
+        fixedDeps(),
+      )).toThrow(/lifecycle_receipt_invalid/)
+      expect(releaseHabitLifecycleLock(wrongHabit.lease, fixedDeps())).toBe(true)
+    }
+
+    expect(readHabitLifecycleJournal({ agentRoot, habitId: "missing-habit", operationId: "cancel:missing" }))
+      .toBeNull()
+    expect(readHabitLifecycleReceipt({ agentRoot, habitId: "missing-habit", evidenceKeyHash: "b".repeat(64) }))
+      .toBeNull()
+    const journalDirectoryPath = getHabitLifecyclePaths({
+      agentRoot,
+      habitId: "journal-directory",
+      operationId: "cancel:directory",
+    }).journal!
+    fs.mkdirSync(journalDirectoryPath, { recursive: true })
+    expect(() => readHabitLifecycleJournal({
+      agentRoot,
+      habitId: "journal-directory",
+      operationId: "cancel:directory",
+    })).toThrow(/lifecycle_journal_read_failed/)
+    const receiptDirectoryPath = getHabitLifecyclePaths({
+      agentRoot,
+      habitId: "receipt-directory",
+      evidenceKeyHash: "c".repeat(64),
+    }).receipt!
+    fs.mkdirSync(receiptDirectoryPath, { recursive: true })
+    expect(() => readHabitLifecycleReceipt({
+      agentRoot,
+      habitId: "receipt-directory",
+      evidenceKeyHash: "c".repeat(64),
+    })).toThrow(/lifecycle_receipt_read_failed/)
+  })
+
+  it("uses one default poll and makes release non-blocking under coordination contention", async () => {
+    const pollRoot = makeRoot("habit-lifecycle-default-poll-")
+    const pollPaths = getHabitLifecyclePaths({ agentRoot: pollRoot, habitId: "rsvp-demo" })
+    fs.mkdirSync(pollPaths.root, { recursive: true })
+    fs.writeFileSync(pollPaths.owner, serializeHabitLifecycleJson(owner("holder")), "utf8")
+    let nowCalls = 0
+    const pollResult = await acquireHabitLifecycleLock(
+      { agentRoot: pollRoot, habitId: "rsvp-demo", operationId: "waiter" },
+      fixedDeps({
+        now: () => new Date(Date.parse(FIXED_NOW) + (nowCalls++ < 3 ? 0 : HABIT_LIFECYCLE_TIMEOUT_MS)),
+        sleep: undefined,
+      }),
+    )
+    expect(pollResult).toEqual({ status: "timeout", error: "lifecycle_lock_timeout" })
+
+    const releaseRoot = makeRoot("habit-lifecycle-release-busy-")
+    const lock = await acquireHabitLifecycleLock(
+      { agentRoot: releaseRoot, habitId: "rsvp-demo", operationId: "holder" },
+      fixedDeps(),
+    )
+    expect(lock.status).toBe("acquired")
+    if (lock.status !== "acquired") return
+    const paths = getHabitLifecyclePaths({ agentRoot: releaseRoot, habitId: "rsvp-demo" })
+    const database = new Database(paths.coordination)
+    database.exec("BEGIN IMMEDIATE")
+    try {
+      const startedAt = Date.now()
+      expect(releaseHabitLifecycleLock(lock.lease, fixedDeps())).toBe(false)
+      expect(Date.now() - startedAt).toBeLessThan(250)
+      expect(fs.existsSync(paths.owner)).toBe(true)
+    } finally {
+      database.exec("ROLLBACK")
+      database.close()
+    }
+    expect(releaseHabitLifecycleLock(lock.lease, fixedDeps())).toBe(true)
+  })
+
+  it("distinguishes pre-operation contention from post-mutation commit contention", async () => {
+    const agentRoot = makeRoot("habit-lifecycle-post-mutation-busy-")
+    const paths = getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo" })
+    let acquisitionReader: Database.Database | null = null
+    const acquisitionFs = Object.create(fs) as Record<string, unknown>
+    acquisitionFs.linkSync = (...args: Parameters<typeof fs.linkSync>) => {
+      const result = Reflect.apply(fs.linkSync, fs, args)
+      if (String(args[1]) === paths.owner) {
+        acquisitionReader = new Database(paths.coordination)
+        acquisitionReader.exec("BEGIN")
+        acquisitionReader.prepare("SELECT name FROM sqlite_master ORDER BY name").all()
+      }
+      return result
+    }
+    const acquired = await acquireHabitLifecycleLock(
+      { agentRoot, habitId: "rsvp-demo", operationId: "post-commit-owner" },
+      fixedDeps({ fs: acquisitionFs as typeof fs }),
+    )
+    expect(acquired.status).toBe("acquired")
+    expect(fs.existsSync(paths.owner)).toBe(true)
+    acquisitionReader!.exec("ROLLBACK")
+    acquisitionReader!.close()
+    if (acquired.status !== "acquired") return
+
+    let releaseReader: Database.Database | null = null
+    const releaseFs = Object.create(fs) as Record<string, unknown>
+    releaseFs.unlinkSync = (...args: Parameters<typeof fs.unlinkSync>) => {
+      const result = Reflect.apply(fs.unlinkSync, fs, args)
+      if (String(args[0]) === paths.owner) {
+        releaseReader = new Database(paths.coordination)
+        releaseReader.exec("BEGIN")
+        releaseReader.prepare("SELECT name FROM sqlite_master ORDER BY name").all()
+      }
+      return result
+    }
+    expect(releaseHabitLifecycleLock(acquired.lease, fixedDeps({ fs: releaseFs as typeof fs }))).toBe(true)
+    expect(fs.existsSync(paths.owner)).toBe(false)
+    releaseReader!.exec("ROLLBACK")
+    releaseReader!.close()
+  })
+
+  it("preserves callback failures even when they resemble coordination contention", async () => {
+    for (const [index, failure] of [null, new Error("callback failed"), codedError("SQLITE_BUSY")].entries()) {
+      const agentRoot = makeRoot(`habit-lifecycle-callback-failure-${index}-`)
+      const paths = getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo" })
+      fs.mkdirSync(paths.root, { recursive: true })
+      fs.writeFileSync(paths.owner, serializeHabitLifecycleJson(owner("stale-owner")), "utf8")
+      await expect(acquireHabitLifecycleLock(
+        { agentRoot, habitId: "rsvp-demo", operationId: "contender" },
+        fixedDeps({
+          processStartedAt: () => "reused-process",
+          beforeOwnerRecovery: () => { throw failure },
+        }),
+      )).rejects.toMatchObject({ code: "lifecycle_lock_failed" })
+      expect(fs.readFileSync(paths.owner, "utf8")).toBe(serializeHabitLifecycleJson(owner("stale-owner")))
+    }
+  })
+
+  it("revalidates owner disappearance and treats every inspection race as indeterminate", async () => {
+    const recoveryRoot = makeRoot("habit-lifecycle-owner-disappears-")
+    const recoveryPaths = getHabitLifecyclePaths({ agentRoot: recoveryRoot, habitId: "rsvp-demo" })
+    fs.mkdirSync(recoveryPaths.root, { recursive: true })
+    fs.writeFileSync(recoveryPaths.owner, serializeHabitLifecycleJson(owner("stale-owner")), "utf8")
+    let recoveryHookCalls = 0
+    const recovered = await acquireHabitLifecycleLock(
+      { agentRoot: recoveryRoot, habitId: "rsvp-demo", operationId: "successor" },
+      fixedDeps({
+        processStartedAt: () => "reused-process",
+        beforeOwnerRecovery: () => {
+          recoveryHookCalls += 1
+          fs.unlinkSync(recoveryPaths.owner)
+        },
+        sleep: async () => {},
+      }),
+    )
+    expect(recoveryHookCalls).toBe(1)
+    expect(recovered.status).toBe("acquired")
+    if (recovered.status === "acquired") expect(releaseHabitLifecycleLock(recovered.lease, fixedDeps())).toBe(true)
+
+    const inspectRoot = makeRoot("habit-lifecycle-inspection-races-")
+    const held = await acquireHabitLifecycleLock(
+      { agentRoot: inspectRoot, habitId: "rsvp-demo", operationId: "holder" },
+      fixedDeps(),
+    )
+    expect(held.status).toBe("acquired")
+    if (held.status !== "acquired") return
+
+    const initialStatError = Object.create(fs) as Record<string, unknown>
+    initialStatError.lstatSync = () => { throw codedError("EIO") }
+    expect(releaseHabitLifecycleLock(held.lease, fixedDeps({ fs: initialStatError as typeof fs }))).toBe(false)
+
+    const nonFile = Object.create(fs) as Record<string, unknown>
+    nonFile.lstatSync = (...args: Parameters<typeof fs.lstatSync>) => {
+      const stats = Reflect.apply(fs.lstatSync, fs, args) as fs.Stats
+      return new Proxy(stats, {
+        get(target, property, receiver) {
+          if (property === "isFile") return () => false
+          return Reflect.get(target, property, receiver)
+        },
+      })
+    }
+    expect(releaseHabitLifecycleLock(held.lease, fixedDeps({ fs: nonFile as typeof fs }))).toBe(false)
+
+    for (const code of ["ENOENT", "EIO"]) {
+      const readFailure = Object.create(fs) as Record<string, unknown>
+      readFailure.readFileSync = () => { throw codedError(code) }
+      expect(releaseHabitLifecycleLock(held.lease, fixedDeps({ fs: readFailure as typeof fs }))).toBe(false)
+    }
+
+    const changedIdentity = Object.create(fs) as Record<string, unknown>
+    let ownerStatCalls = 0
+    changedIdentity.lstatSync = (...args: Parameters<typeof fs.lstatSync>) => {
+      const stats = Reflect.apply(fs.lstatSync, fs, args) as fs.Stats
+      ownerStatCalls += 1
+      if (ownerStatCalls !== 2) return stats
+      return new Proxy(stats, {
+        get(target, property, receiver) {
+          if (property === "ino") return target.ino + 1
+          return Reflect.get(target, property, receiver)
+        },
+      })
+    }
+    expect(releaseHabitLifecycleLock(held.lease, fixedDeps({ fs: changedIdentity as typeof fs }))).toBe(false)
+    expect(releaseHabitLifecycleLock(held.lease, fixedDeps())).toBe(true)
+  })
+
+  it("preserves uncertain owner publications and rejects failed final durability verification", async () => {
+    const identityRoot = makeRoot("habit-lifecycle-owner-identity-unknown-")
+    const identityPaths = getHabitLifecyclePaths({ agentRoot: identityRoot, habitId: "rsvp-demo" })
+    const identityFs = Object.create(fs) as Record<string, unknown>
+    let identityStatCalls = 0
+    identityFs.lstatSync = (...args: Parameters<typeof fs.lstatSync>) => {
+      identityStatCalls += 1
+      if (identityStatCalls === 2) throw codedError("EIO")
+      return Reflect.apply(fs.lstatSync, fs, args)
+    }
+    await expect(acquireHabitLifecycleLock(
+      { agentRoot: identityRoot, habitId: "rsvp-demo", operationId: "identity-unknown" },
+      fixedDeps({ fs: identityFs as typeof fs }),
+    )).rejects.toMatchObject({ code: "lifecycle_lock_durability_unknown", durabilityUnknown: true })
+    expect(fs.existsSync(identityPaths.owner)).toBe(true)
+
+    const cleanupRoot = makeRoot("habit-lifecycle-owner-cleanup-unknown-")
+    const cleanupPaths = getHabitLifecyclePaths({ agentRoot: cleanupRoot, habitId: "rsvp-demo" })
+    const cleanupFs = Object.create(fs) as Record<string, unknown>
+    let cleanupFsyncCalls = 0
+    cleanupFs.fsyncSync = (...args: Parameters<typeof fs.fsyncSync>) => {
+      cleanupFsyncCalls += 1
+      if (cleanupFsyncCalls === 2) throw codedError("EIO")
+      return Reflect.apply(fs.fsyncSync, fs, args)
+    }
+    cleanupFs.unlinkSync = (...args: Parameters<typeof fs.unlinkSync>) => {
+      if (String(args[0]) === cleanupPaths.owner) throw codedError("EIO")
+      return Reflect.apply(fs.unlinkSync, fs, args)
+    }
+    await expect(acquireHabitLifecycleLock(
+      { agentRoot: cleanupRoot, habitId: "rsvp-demo", operationId: "cleanup-unknown" },
+      fixedDeps({ fs: cleanupFs as typeof fs }),
+    )).rejects.toMatchObject({ code: "lifecycle_lock_durability_unknown", durabilityUnknown: true })
+    expect(fs.existsSync(cleanupPaths.owner)).toBe(true)
+
+    const verificationRoot = makeRoot("habit-lifecycle-owner-verification-unknown-")
+    const verificationPaths = getHabitLifecyclePaths({ agentRoot: verificationRoot, habitId: "rsvp-demo" })
+    const verificationFs = Object.create(fs) as Record<string, unknown>
+    let verificationStatCalls = 0
+    verificationFs.lstatSync = (...args: Parameters<typeof fs.lstatSync>) => {
+      verificationStatCalls += 1
+      if (verificationStatCalls === 3) throw codedError("EIO")
+      return Reflect.apply(fs.lstatSync, fs, args)
+    }
+    await expect(acquireHabitLifecycleLock(
+      { agentRoot: verificationRoot, habitId: "rsvp-demo", operationId: "verification-unknown" },
+      fixedDeps({ fs: verificationFs as typeof fs }),
+    )).rejects.toMatchObject({ code: "lifecycle_lock_durability_unknown", durabilityUnknown: true })
+    expect(fs.existsSync(verificationPaths.owner)).toBe(true)
+  })
+
+  it("preserves exact lease-lost errors at the second mutable and immutable fences", async () => {
+    const journalRoot = makeRoot("habit-lifecycle-second-journal-fence-")
+    const journalLock = await acquireHabitLifecycleLock(
+      { agentRoot: journalRoot, habitId: "rsvp-demo", operationId: "cancel:journal-fence" },
+      fixedDeps(),
+    )
+    expect(journalLock.status).toBe("acquired")
+    if (journalLock.status !== "acquired") return
+    const journal = createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: "cancel:journal-fence",
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    })
+    const journalFs = Object.create(fs) as Record<string, unknown>
+    let journalOwnerStats = 0
+    journalFs.lstatSync = (...args: Parameters<typeof fs.lstatSync>) => {
+      if (String(args[0]) === journalLock.lease.ownerPath && ++journalOwnerStats === 3) throw codedError("ENOENT")
+      return Reflect.apply(fs.lstatSync, fs, args)
+    }
+    expect(() => writeHabitLifecycleJournal(journalLock.lease, journal, fixedDeps({ fs: journalFs as typeof fs })))
+      .toThrow(/lifecycle_lease_lost/)
+    expect(readHabitLifecycleJournal({
+      agentRoot: journalRoot,
+      habitId: "rsvp-demo",
+      operationId: "cancel:journal-fence",
+    })).toBeNull()
+    expect(releaseHabitLifecycleLock(journalLock.lease, fixedDeps())).toBe(true)
+
+    const receiptRoot = makeRoot("habit-lifecycle-second-receipt-fence-")
+    const receipt = cancellationReceipt(sha256("second-receipt-fence"))
+    const receiptLock = await acquireHabitLifecycleLock(
+      { agentRoot: receiptRoot, habitId: "rsvp-demo", operationId: receipt.operationId },
+      fixedDeps(),
+    )
+    expect(receiptLock.status).toBe("acquired")
+    if (receiptLock.status !== "acquired") return
+    const receiptFs = Object.create(fs) as Record<string, unknown>
+    let receiptOwnerStats = 0
+    receiptFs.lstatSync = (...args: Parameters<typeof fs.lstatSync>) => {
+      if (String(args[0]) === receiptLock.lease.ownerPath && ++receiptOwnerStats === 5) throw codedError("ENOENT")
+      return Reflect.apply(fs.lstatSync, fs, args)
+    }
+    expect(() => publishHabitLifecycleReceipt(
+      receiptLock.lease,
+      receipt.evidenceKeyHash,
+      receipt,
+      fixedDeps({ fs: receiptFs as typeof fs }),
+    )).toThrow(/lifecycle_lease_lost/)
+    expect(readHabitLifecycleReceipt({
+      agentRoot: receiptRoot,
+      habitId: "rsvp-demo",
+      evidenceKeyHash: receipt.evidenceKeyHash,
+    })).toBeNull()
+    expect(releaseHabitLifecycleLock(receiptLock.lease, fixedDeps())).toBe(true)
+  })
+
+  it("fails closed when coordination cannot open", async () => {
+    const agentRoot = makeRoot("habit-lifecycle-coordination-open-")
+    const paths = getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo" })
+    fs.mkdirSync(paths.coordination, { recursive: true })
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event.startsWith("daemon.habit_lifecycle_lock_")) events.push(entry)
+    })
+    try {
+      await expect(acquireHabitLifecycleLock(
+        { agentRoot, habitId: "rsvp-demo", operationId: "coordination-open-failure" },
+        fixedDeps(),
+      )).rejects.toMatchObject({ code: "lifecycle_coordination_failed" })
+      expect(events.map((event) => event.event)).toEqual([
+        "daemon.habit_lifecycle_lock_start",
+        "daemon.habit_lifecycle_lock_error",
+      ])
+    } finally {
+      unregister()
+    }
+  })
+
+  it("validates receipt evidence identity and every deterministic acknowledgement boundary", async () => {
+    const agentRoot = makeRoot("habit-lifecycle-receipt-boundaries-")
+    const invalidReceipt = cancellationReceipt()
+    const invalidPath = getHabitLifecyclePaths({
+      agentRoot,
+      habitId: "rsvp-demo",
+      evidenceKeyHash: invalidReceipt.evidenceKeyHash,
+    }).receipt!
+    fs.mkdirSync(path.dirname(invalidPath), { recursive: true })
+    fs.writeFileSync(invalidPath, serializeHabitLifecycleJson({
+      ...invalidReceipt,
+      evidenceLocator: { kind: "capture", id: "not-a-hash" },
+    }), "utf8")
+    expect(() => readHabitLifecycleReceipt({
+      agentRoot,
+      habitId: "rsvp-demo",
+      evidenceKeyHash: invalidReceipt.evidenceKeyHash,
+    })).toThrow(/lifecycle_receipt_invalid/)
+
+    for (const boundaryState of ["crossing_unknown", "crossed"] as const) {
+      const captureHash = sha256(`receipt-${boundaryState}`)
+      const acknowledgement = boundaryState === "crossing_unknown"
+        ? "Cancelled habit \"rsvp-demo\" from confirmed requester \"Ari\". A concurrent send may have crossed the transport boundary; delivery is unknown."
+        : "Cancelled habit \"rsvp-demo\" from confirmed requester \"Ari\". A concurrent send crossed the transport boundary before cancellation took effect."
+      const receipt = cancellationReceipt(captureHash, {
+        transition: {
+          fromStatus: "active",
+          toStatus: "cancelled",
+          cancelledAt: THIRD_NOW,
+          boundaryState,
+        },
+        acknowledgement,
+      })
+      const receiptPath = getHabitLifecyclePaths({
+        agentRoot,
+        habitId: "rsvp-demo",
+        evidenceKeyHash: receipt.evidenceKeyHash,
+      }).receipt!
+      fs.writeFileSync(receiptPath, serializeHabitLifecycleJson(receipt), "utf8")
+      expect(readHabitLifecycleReceipt({
+        agentRoot,
+        habitId: "rsvp-demo",
+        evidenceKeyHash: receipt.evidenceKeyHash,
+      })).toEqual(receipt)
+    }
+  })
+
+  it("rejects invalid UUIDs and boundaries and emits fallback write diagnostics for raw errors", async () => {
+    await expect(acquireHabitLifecycleLock(
+      { agentRoot: makeRoot("habit-lifecycle-invalid-uuid-"), habitId: "rsvp-demo", operationId: "invalid-uuid" },
+      fixedDeps({ randomUUID: () => "invalid" }),
+    )).rejects.toMatchObject({ code: "lifecycle_uuid_invalid" })
+
+    const initial = createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: "cancel:invalid-boundary",
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    })
+    const intent = transitionHabitLifecycleJournal(initial, {
+      state: "cancellation_intent",
+      at: NEXT_NOW,
+      evidenceKeyHash: "b".repeat(64),
+    })
+    expect(() => transitionHabitLifecycleJournal(intent, {
+      state: "definition_cancelled",
+      at: THIRD_NOW,
+      boundaryState: "invalid" as "crossed",
+    })).toThrow(/boundary_state_invalid/)
+
+    const writeRoot = makeRoot("habit-lifecycle-raw-write-error-")
+    const lock = await acquireHabitLifecycleLock(
+      { agentRoot: writeRoot, habitId: "rsvp-demo", operationId: "cancel:raw-write" },
+      fixedDeps(),
+    )
+    expect(lock.status).toBe("acquired")
+    if (lock.status !== "acquired") return
+    const rawError = new Error("raw journal inspection failure")
+    const hostileJournal = new Proxy(createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: "cancel:raw-write",
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    }), {
+      ownKeys() { throw rawError },
+    })
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event === "daemon.habit_lifecycle_write_error") events.push(entry)
+    })
+    try {
+      expect(() => writeHabitLifecycleJournal(lock.lease, hostileJournal, fixedDeps())).toThrow(rawError)
+      expect(events.at(-1)).toMatchObject({
+        level: "error",
+        meta: expect.objectContaining({ errorCode: "lifecycle_write_failed" }),
+      })
+    } finally {
+      unregister()
+      expect(releaseHabitLifecycleLock(lock.lease, fixedDeps())).toBe(true)
+    }
+  })
+
+  it("tolerates missing temp cleanup and retries transient cleanup failures", async () => {
+    for (const behavior of ["missing", "retry"] as const) {
+      const agentRoot = makeRoot(`habit-lifecycle-temp-cleanup-${behavior}-`)
+      const adapter = Object.create(fs) as Record<string, unknown>
+      let tempUnlinkCalls = 0
+      adapter.unlinkSync = (...args: Parameters<typeof fs.unlinkSync>) => {
+        const filePath = String(args[0])
+        if (!filePath.endsWith(".tmp")) return Reflect.apply(fs.unlinkSync, fs, args)
+        tempUnlinkCalls += 1
+        if (tempUnlinkCalls === 1 && behavior === "missing") {
+          Reflect.apply(fs.unlinkSync, fs, args)
+          throw codedError("ENOENT")
+        }
+        if (tempUnlinkCalls === 1) throw codedError("EIO")
+        return Reflect.apply(fs.unlinkSync, fs, args)
+      }
+      const result = await acquireHabitLifecycleLock(
+        { agentRoot, habitId: "rsvp-demo", operationId: `cleanup-${behavior}` },
+        fixedDeps({ fs: adapter as typeof fs }),
+      )
+      expect(result.status).toBe("acquired")
+      expect(tempUnlinkCalls).toBe(behavior === "missing" ? 1 : 2)
+      const paths = getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo" })
+      expect(fs.readdirSync(paths.root).filter((name) => name.endsWith(".tmp"))).toEqual([])
+      if (result.status === "acquired") expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
+    }
+  })
+
   it("fails closed on corrupt journal/receipt state and emits diagnostic write errors", async () => {
     const agentRoot = makeRoot()
     const validReceipt = cancellationReceipt()
