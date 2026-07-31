@@ -8267,7 +8267,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary") {
-    const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+    const { createDegradedHabitFile, parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
     const { readHabitSessionSummary } = await import("../habits/habit-session-summary")
@@ -8282,7 +8282,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (command.kind === "habit.list") {
       let files: string[]
       try {
-        files = fs.readdirSync(habitsDir).filter((f) => f.endsWith(".md") && f !== "README.md")
+        files = fs.readdirSync(habitsDir).filter((f) => f.endsWith(".md") && f !== "README.md").sort()
       } catch {
         const message = "no habits found"
         deps.writeStdout(message)
@@ -8295,10 +8295,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
       const lines: string[] = []
       for (const file of files) {
-        const fileContent = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-        const habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fileContent, path.join(habitsDir, file)))
+        const filePath = path.join(habitsDir, file)
+        let habit
+        try {
+          const fileContent = fs.readFileSync(filePath, "utf-8")
+          habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fileContent, filePath))
+        } catch (error) {
+          habit = createDegradedHabitFile(
+            filePath,
+            "read_error",
+            "",
+            error instanceof Error ? error.message : String(error),
+          )
+        }
         const lastRunStr = habit.lastRun ?? "never"
-        lines.push(`${habit.name}  cadence=${habit.cadence ?? "none"}  status=${habit.status}  lastRun=${lastRunStr}`)
+        const degradedReason = habit.status === "degraded" ? `  degradedReason=${habit.degradedReason}` : ""
+        lines.push(`${habit.name}  cadence=${habit.cadence ?? "none"}  status=${habit.status}${degradedReason}  lastRun=${lastRunStr}`)
       }
       const message = lines.join("\n")
       deps.writeStdout(message)

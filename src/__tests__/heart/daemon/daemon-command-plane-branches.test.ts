@@ -1577,6 +1577,43 @@ describe("daemon command plane branches", () => {
       .toBeLessThan(processManager.sendToAgent.mock.invocationCallOrder[0]!)
   })
 
+  it.each(["missing", "blank"] as const)("derives active canonical scheduled occurrence evidence when the occurrence ref is %s", async (variant) => {
+    const socketPath = tmpSocketPath(`daemon-private-wake-occurrence-${variant}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-private-wake-occurrence-${variant}-bundles-`))
+    const ledgerPath = path.join(os.tmpdir(), `habit-private-wake-occurrence-${variant}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "scheduled-active", cadence: "30m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const response = await daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      reason: "habit scheduled-active fired by cron",
+      triggerSource: "habit-cron",
+      budgetClass: "scheduled",
+      idempotencyKey: `habit:slugger:scheduled-active:cron:${variant}`,
+      originRefs: [
+        { kind: "habit", id: "scheduled-active" },
+        { kind: "habit-trigger", id: "cron" },
+        ...(variant === "blank" ? [{ kind: "habit-occurrence", id: "  " }] : []),
+        { kind: "daemon-entry", id: "habit-scheduler" },
+      ],
+    })
+
+    expect(response).toMatchObject({ ok: true, message: "woke private runtime for slugger" })
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_ready",
+      meta: expect.objectContaining({
+        habitName: "scheduled-active",
+        trigger: "cron",
+        occurrenceId: "cron:first-run:30m",
+      }),
+    })])
+    expect(policyDeps.evaluatePolicy).toHaveBeenCalledTimes(1)
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     ["manual", "missing", false],
     ["poke", "unreadable", true],

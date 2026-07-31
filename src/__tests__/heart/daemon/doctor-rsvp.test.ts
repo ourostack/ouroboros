@@ -501,6 +501,7 @@ describe("RSVP doctor checks", () => {
       "---\nstatus: retired\ncadence: 24h\n---\n\nInvalid definition.",
       "utf8",
     )
+    fs.writeFileSync(path.join(habitsDir, "README.md"), "# Habit definitions\n", "utf8")
     fs.mkdirSync(path.join(habitsDir, "unreadable-report.md"))
 
     const category = checkHabits(depsFor(bundlesRoot))
@@ -526,6 +527,30 @@ describe("RSVP doctor checks", () => {
         detail: "no active scheduled habits require launchd",
       }),
     ]))
+    expect(category.checks.find((check) => check.id === "habits.lifecycle")?.detail).not.toContain("README")
+  })
+
+  it("normalizes non-Error habit read failures into typed degraded diagnostics", () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const habitsDir = path.join(agentRoot, "habits")
+    const habitPath = path.join(habitsDir, "raw-read-failure.md")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(habitPath, "not read", "utf8")
+    const deps = depsFor(bundlesRoot)
+    const readFileSync = deps.readFileSync
+    deps.readFileSync = (filePath) => {
+      if (filePath === habitPath) throw "raw read failure"
+      return readFileSync(filePath)
+    }
+
+    const category = checkHabits(deps)
+
+    expect(category.checks).toContainEqual(expect.objectContaining({
+      id: "habits.lifecycle",
+      status: "fail",
+      detail: "raw-read-failure=degraded(read_error)",
+    }))
   })
 
   it("surfaces missing runtime credentials and route coordinates as actionable checks", async () => {
