@@ -90,6 +90,35 @@ function makePausedHabit() {
   }
 }
 
+function makeCancelledHabit(name = "ended-report") {
+  return {
+    ...makeHeartbeatHabit(),
+    name,
+    title: "Ended Report",
+    status: "cancelled" as const,
+  }
+}
+
+function makeDegradedHabit(name = "broken-report") {
+  return {
+    ...makeHeartbeatHabit(),
+    name,
+    title: "Broken Report",
+    status: "degraded" as const,
+    degradedReason: "malformed_frontmatter" as const,
+    degradedDetail: null,
+  }
+}
+
+const nonActiveTransitions = ["paused", "cancelled", "degraded", "missing", "read_error"] as const
+type NonActiveTransition = typeof nonActiveTransitions[number]
+
+function makeTransitionHabit(transition: NonActiveTransition) {
+  if (transition === "paused") return { ...makeHeartbeatHabit(), status: "paused" as const }
+  if (transition === "degraded") return makeDegradedHabit("heartbeat")
+  return makeCancelledHabit("heartbeat")
+}
+
 function makeNoCadenceHabit() {
   return {
     name: "manual-check",
@@ -272,6 +301,36 @@ describe("HabitScheduler", () => {
       const syncedJobs = (cronManager.sync as ReturnType<typeof vi.fn>).mock.calls[0][0] as ScheduledTaskJob[]
       expect(syncedJobs).toHaveLength(1)
       expect(syncedJobs[0].taskId).toBe("heartbeat")
+    })
+
+    it("keeps cancelled and degraded definitions out of cron, overdue firing, and timer verification", () => {
+      const readdir = vi.fn(() => ["ended-report.md", "broken-report.md"])
+      const readFile = vi.fn(() => "content")
+      const execForVerify = vi.fn(() => "")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile
+        .mockReturnValueOnce(makeCancelledHabit())
+        .mockReturnValueOnce(makeDegradedHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(cronManager.sync).toHaveBeenCalledWith([])
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(scheduler.getDegradedHabits()).toEqual([])
+      expect(scheduler.getParseErrors()).toEqual([{
+        file: "broken-report.md",
+        error: "habit definition degraded: malformed_frontmatter",
+      }])
     })
 
     it("skips habits without cadence (no cron entry)", () => {
@@ -638,6 +697,41 @@ describe("HabitScheduler", () => {
       const secondSyncJobs = (cronManager.sync as ReturnType<typeof vi.fn>).mock.calls[1][0] as ScheduledTaskJob[]
       expect(secondSyncJobs).toHaveLength(1)
       expect(secondSyncJobs[0].taskId).toBe("heartbeat")
+    })
+
+    it.each(nonActiveTransitions)("removes a previously active cron entry and trigger when its definition becomes %s", async (transition) => {
+      let phase: "active" | "transitioned" = "active"
+      const readdir = vi.fn(() => transition === "missing" && phase === "transitioned" ? [] : ["heartbeat.md"])
+      const readFile = vi.fn(() => {
+        if (transition === "read_error" && phase === "transitioned") throw new Error("EACCES")
+        return "content"
+      })
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockImplementation(() =>
+        phase === "active" ? makeHeartbeatHabit() : makeTransitionHabit(transition))
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+      phase = "transitioned"
+      onHabitFire.mockClear()
+      mockEvaluateCadenceDue.mockClear()
+      scheduler.reconcile()
+
+      expect(cronManager.sync).toHaveBeenNthCalledWith(1, [expect.objectContaining({ taskId: "heartbeat" })])
+      expect(cronManager.sync).toHaveBeenNthCalledWith(2, [])
+      await expect(scheduler.triggerJob("slugger:heartbeat:cadence")).resolves.toEqual({
+        ok: false,
+        message: "unknown habit job: slugger:heartbeat:cadence",
+      })
+      expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()
+      expect(onHabitFire).not.toHaveBeenCalled()
     })
 
     it("fires habits with lastRun: null (new habits) on reconcile", () => {
@@ -1050,6 +1144,34 @@ describe("HabitScheduler", () => {
 
       const overdue = scheduler.listOverdueHabits()
       expect(overdue).toHaveLength(0)
+    })
+
+    it("excludes cancelled and degraded habits from overdue and trigger lookup", async () => {
+      const readdir = vi.fn(() => ["ended-report.md", "broken-report.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockImplementation((_content: string, filePath: string) =>
+        filePath.includes("ended-report") ? makeCancelledHabit() : makeDegradedHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      expect(scheduler.listOverdueHabits()).toEqual([])
+      await expect(scheduler.triggerJob("slugger:ended-report:cadence")).resolves.toEqual({
+        ok: false,
+        message: "unknown habit job: slugger:ended-report:cadence",
+      })
+      await expect(scheduler.triggerJob("slugger:broken-report:cadence")).resolves.toEqual({
+        ok: false,
+        message: "unknown habit job: slugger:broken-report:cadence",
+      })
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()
     })
 
     it("excludes habits without cadence from overdue list", () => {
@@ -1509,6 +1631,37 @@ describe("HabitScheduler", () => {
       expect((cronManager.sync as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1)
     })
 
+    it.each(nonActiveTransitions)("watch reconciliation syncs an empty job set after an active definition becomes %s", (transition) => {
+      let phase: "active" | "transitioned" = "active"
+      const readdir = vi.fn(() => transition === "missing" && phase === "transitioned" ? [] : ["heartbeat.md"])
+      const readFile = vi.fn(() => {
+        if (transition === "read_error" && phase === "transitioned") throw new Error("EACCES")
+        return "content"
+      })
+      const watchDeps = makeWatchableDeps({ readdir, readFile })
+      mockParseHabitFile.mockImplementation(() =>
+        phase === "active" ? makeHeartbeatHabit() : makeTransitionHabit(transition))
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps: watchDeps,
+      })
+
+      scheduler.start()
+      scheduler.watchForChanges()
+      phase = "transitioned"
+      onHabitFire.mockClear()
+      mockEvaluateCadenceDue.mockClear()
+      mockWatcher.callback!("change", "heartbeat.md")
+      vi.advanceTimersByTime(250)
+
+      expect(cronManager.sync).toHaveBeenLastCalledWith([])
+      expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
     it("multiple rapid events result in only one reconcile (debounce)", () => {
       const readdir = vi.fn(() => [])
       const watchDeps = makeWatchableDeps({ readdir })
@@ -1955,6 +2108,41 @@ describe("HabitScheduler", () => {
 
       // Degraded list should be empty now
       expect(scheduler.getDegradedHabits()).toHaveLength(0)
+    })
+
+    it.each(nonActiveTransitions)("%s clears an existing timer fallback without creating a replacement", (transition) => {
+      let phase: "active" | "transitioned" = "active"
+      const execForVerify = vi.fn(() => "")
+      const readdir = vi.fn(() => transition === "missing" && phase === "transitioned" ? [] : ["heartbeat.md"])
+      const readFile = vi.fn(() => {
+        if (transition === "read_error" && phase === "transitioned") throw new Error("EACCES")
+        return "content"
+      })
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockImplementation(() =>
+        phase === "active" ? makeHeartbeatHabit() : makeTransitionHabit(transition))
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+      expect(scheduler.getDegradedHabits()).toHaveLength(1)
+      phase = "transitioned"
+      onHabitFire.mockClear()
+      mockEvaluateCadenceDue.mockClear()
+      scheduler.reconcile()
+
+      expect(cronManager.sync).toHaveBeenLastCalledWith([])
+      expect(scheduler.getDegradedHabits()).toEqual([])
+      vi.advanceTimersByTime(30 * 60 * 1000)
+      expect(mockEvaluateCadenceDue).not.toHaveBeenCalled()
+      expect(onHabitFire).not.toHaveBeenCalled()
     })
 
     it("when verification succeeds on later reconciliation: removes timer, cron takes over", () => {
