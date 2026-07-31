@@ -2437,7 +2437,7 @@ describe("private runtime", () => {
     expect(call.alsoDue).toContain("weekly-review")
   })
 
-  it("handles missing habit file gracefully in habit turn", async () => {
+  it("rejects a missing habit before provider execution", async () => {
     // Do NOT create the habit file
     mockLoadSession.mockReturnValue({
       messages: [
@@ -2446,17 +2446,27 @@ describe("private runtime", () => {
       ],
     })
 
-    await runApprovedPrivateRuntimeTurn({
+    await expect(runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "nonexistent",
       now: () => new Date("2026-03-06T12:00:00.000Z"),
-    })
+    })).rejects.toThrow(/habit status degraded is non-executable before private runtime execution/i)
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    expect(content).toContain("nonexistent")
-    // Should indicate the file was not found but still produce a turn
-    expect(content).toMatch(/not found|missing|could not read/i)
+    expect(mockBuildHabitTurnMessage).not.toHaveBeenCalled()
+    expect(mockBuildSystem).not.toHaveBeenCalled()
+    expect(mockGetToolsForChannel).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.habit_lifecycle_rejected",
+      level: "warn",
+      meta: expect.objectContaining({
+        boundary: "private-runtime",
+        habitName: "nonexistent",
+        status: "degraded",
+        degradedReason: "read_error",
+      }),
+    }))
   })
 
   it("rejects direct RSVP habit turns with malformed metadata before provider execution", async () => {
@@ -2497,8 +2507,7 @@ describe("private runtime", () => {
     expect(mockRunAgent).not.toHaveBeenCalled()
   })
 
-  it("heartbeat habit without file still calls buildHabitTurnMessage (missing file path)", async () => {
-    // No habit file created -- should fall through to "could not be read" message
+  it("rejects a missing heartbeat before provider execution", async () => {
     mockLoadSession.mockReturnValue({
       messages: [
         { role: "system", content: "system prompt" },
@@ -2506,16 +2515,192 @@ describe("private runtime", () => {
       ],
     })
 
-    await runApprovedPrivateRuntimeTurn({
+    await expect(runApprovedPrivateRuntimeTurn({
       reason: "habit",
       habitName: "heartbeat",
       now: () => new Date("2026-03-06T12:05:00.000Z"),
-    })
+    })).rejects.toThrow(/habit status degraded is non-executable before private runtime execution/i)
 
-    const input = mockHandleInboundTurn.mock.calls[0][0]
-    const content = String(input.messages[0].content)
-    // Missing file falls through to error message, not buildHabitTurnMessage
-    expect(content).toMatch(/could not be read/i)
+    expect(mockBuildHabitTurnMessage).not.toHaveBeenCalled()
+    expect(mockBuildSystem).not.toHaveBeenCalled()
+    expect(mockGetToolsForChannel).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.habit_lifecycle_rejected",
+      meta: expect.objectContaining({
+        boundary: "private-runtime",
+        habitName: "heartbeat",
+        status: "degraded",
+        degradedReason: "read_error",
+      }),
+    }))
+  })
+
+  it.each([
+    ["paused", "paused"],
+    ["cancelled", "cancelled"],
+    ["retired", "degraded"],
+  ] as const)("rejects a direct %s habit before provider execution", async (definitionStatus, runtimeStatus) => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "lifecycle-check.md"),
+      [
+        "---",
+        `status: ${definitionStatus}`,
+        "tools: [shell, send_message]",
+        "---",
+        "",
+        "This must not execute while non-active.",
+      ].join("\n"),
+      "utf8",
+    )
+
+    await expect(runApprovedPrivateRuntimeTurn({
+      reason: "habit",
+      habitName: "lifecycle-check",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })).rejects.toThrow(`habit status ${runtimeStatus} is non-executable before private runtime execution`)
+
+    expect(mockBuildHabitTurnMessage).not.toHaveBeenCalled()
+    expect(mockBuildSystem).not.toHaveBeenCalled()
+    expect(mockGetToolsForChannel).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.habit_lifecycle_rejected",
+      level: "warn",
+      meta: expect.objectContaining({
+        boundary: "private-runtime",
+        habitName: "lifecycle-check",
+        status: runtimeStatus,
+      }),
+    }))
+  })
+
+  it.each([
+    ["paused", { status: "paused" }],
+    ["cancelled", { status: "cancelled" }],
+    ["degraded", { status: "degraded", degradedReason: "invalid_status", degradedDetail: null }],
+  ] as const)("rejects a prepared %s habit independently of the worker guard", async (runtimeStatus, lifecycle) => {
+    await expect((runApprovedPrivateRuntimeTurn as any)({
+      reason: "habit",
+      habitName: "lifecycle-check",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+      preparedHabit: {
+        runId: `${runtimeStatus}-run`,
+        trigger: "poke",
+        operationId: null,
+        habit: {
+          name: "lifecycle-check",
+          title: "Lifecycle Check",
+          cadence: "1h",
+          ...lifecycle,
+          lastRun: null,
+          created: null,
+          tools: ["shell", "send_message"],
+          origin: null,
+          surface: { family: false, originator: false, extra: [] },
+          continuity: { mode: "fresh" },
+          body: "This prepared habit must not execute.",
+        },
+      },
+    })).rejects.toThrow(`habit status ${runtimeStatus} is non-executable before private runtime execution`)
+
+    expect(mockBuildHabitTurnMessage).not.toHaveBeenCalled()
+    expect(mockBuildSystem).not.toHaveBeenCalled()
+    expect(mockGetToolsForChannel).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.habit_lifecycle_rejected",
+      level: "warn",
+      meta: expect.objectContaining({
+        boundary: "private-runtime",
+        habitName: "lifecycle-check",
+        status: runtimeStatus,
+      }),
+    }))
+  })
+
+  it.each([
+    [
+      "unterminated frontmatter",
+      [
+        "---",
+        "status: active",
+        "tools: [shell, send_message]",
+        "This frontmatter never closes.",
+      ].join("\n"),
+      "unterminated_frontmatter",
+    ],
+    [
+      "malformed frontmatter",
+      [
+        "---",
+        "status: active",
+        "tools: [shell, send_message]",
+        "not valid frontmatter",
+        "---",
+        "This malformed habit must not execute.",
+      ].join("\n"),
+      "malformed_frontmatter",
+    ],
+  ] as const)("rejects direct %s before prompt, tool, or provider execution", async (_label, definition, degradedReason) => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(path.join(habitsDir, "parse-failure.md"), definition, "utf8")
+
+    await expect(runApprovedPrivateRuntimeTurn({
+      reason: "habit",
+      habitName: "parse-failure",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })).rejects.toThrow("habit status degraded is non-executable before private runtime execution")
+
+    expect(mockBuildHabitTurnMessage).not.toHaveBeenCalled()
+    expect(mockBuildSystem).not.toHaveBeenCalled()
+    expect(mockGetToolsForChannel).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.habit_lifecycle_rejected",
+      level: "warn",
+      meta: expect.objectContaining({
+        boundary: "private-runtime",
+        habitName: "parse-failure",
+        status: "degraded",
+        degradedReason,
+      }),
+    }))
+  })
+
+  it("rejects a non-missing direct habit read error before prompt, tool, or provider execution", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(path.join(habitsDir, "read-error.md"), { recursive: true })
+
+    await expect(runApprovedPrivateRuntimeTurn({
+      reason: "habit",
+      habitName: "read-error",
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    })).rejects.toThrow("habit status degraded is non-executable before private runtime execution")
+
+    expect(mockBuildHabitTurnMessage).not.toHaveBeenCalled()
+    expect(mockBuildSystem).not.toHaveBeenCalled()
+    expect(mockGetToolsForChannel).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.habit_lifecycle_rejected",
+      level: "warn",
+      meta: expect.objectContaining({
+        boundary: "private-runtime",
+        habitName: "read-error",
+        status: "degraded",
+        degradedReason: "read_error",
+        detail: expect.not.stringContaining("ENOENT"),
+      }),
+    }))
   })
 
   // ── Parse error nudge tests ──────────────────────────────────────
