@@ -280,7 +280,7 @@ describe("buildSystem", () => {
       } as any,
       makeOnboardingContext() as any,
     ))
-    expect(result).toContain("## active bridge work\nbridge-2: keep cli and teams aligned")
+    expect(result).toContain("## active bridge work\nBackground only; do not execute.\nbridge-2: keep cli and teams aligned")
     expect(result.match(/## active bridge work/g)).toHaveLength(1)
   })
 
@@ -5657,6 +5657,205 @@ describe("pre-implementation scrutiny", () => {
       const nextHeadingIdx = after.indexOf("\n## ")
       const section = nextHeadingIdx === -1 ? after : after.slice(0, nextHeadingIdx)
       expect(/(\b(may|should|prefer)\b|if relevant)/i.test(section)).toBe(false)
+    })
+  })
+
+  describe("current-trigger authority", () => {
+    const backgroundOnly = "Background only; do not execute."
+    const explicitResume = "Prior work explicitly resumed by the current trigger."
+
+    function expectInstructionImmediatelyAfter(prompt: string, marker: string, instruction: string): void {
+      const markerIndex = prompt.indexOf(marker)
+      expect(markerIndex, `missing prompt marker ${marker}`).toBeGreaterThanOrEqual(0)
+      expect(prompt.slice(markerIndex + marker.length).trimStart().startsWith(instruction)).toBe(true)
+    }
+
+    async function renderAuthorityFixture(input: {
+      currentSpeech: string
+      resumePriorWork?: boolean
+    }): Promise<string> {
+      setupReadFileSync()
+      vi.mocked(fs.existsSync).mockReturnValue(false)
+      vi.mocked(fs.readdirSync).mockReturnValue([])
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const { renderStartOfTurnPacket } = await import("../../heart/start-of-turn-packet")
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+      resetPsycheCache()
+
+      const staleObligation = {
+        id: "ob-synthetic-digest",
+        origin: { friendId: "friend-1", channel: "bluebubbles", key: "synthetic-group" },
+        content: "continue the synthetic daily digest",
+        status: "investigating",
+        currentSurface: { kind: "coding", label: "synthetic digest lane" },
+        currentArtifact: "digest-status.md",
+        nextAction: "send the next synthetic digest",
+        createdAt: "2026-07-01T12:00:00.000Z",
+        updatedAt: "2026-07-01T12:05:00.000Z",
+        meaning: {
+          salience: "high",
+          stalenessClass: "stale",
+          resumeHint: "send the next synthetic digest",
+        },
+      }
+      const startOfTurnPacket = renderStartOfTurnPacket({
+        plotLine: "",
+        obligations: `- ${staleObligation.content}`,
+        cares: "",
+        presence: "",
+        arcResume: "stale Arc current ask: continue the synthetic daily digest",
+        recoverySentinel: {
+          schemaVersion: 1,
+          latest: null,
+          latestReady: null,
+          history: [],
+          degraded: { issues: ["stale synthetic recovery checkpoint"] },
+        },
+        resumeHint: "send the next synthetic digest",
+        tempo: "dense",
+        tokenBudget: { min: 900, max: 1100 },
+        assembledAt: "2026-07-30T12:00:00.000Z",
+      }, input.resumePriorWork === true ? { resumePriorWork: true } as any : undefined)
+
+      const activeWorkFrame = {
+        centerOfGravity: "inward-work",
+        currentSession: {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "synthetic-group",
+          sessionPath: "/tmp/synthetic-session.json",
+        },
+        currentObligation: staleObligation.content,
+        mustResolveBeforeHandoff: true,
+        inner: {
+          status: "running",
+          hasPending: true,
+          obligationPending: true,
+          job: {
+            status: "running",
+            content: staleObligation.content,
+            origin: { friendId: "friend-1", channel: "bluebubbles", key: "synthetic-group" },
+            mode: "reflect",
+            obligationStatus: "pending",
+            surfacedResult: null,
+            queuedAt: null,
+            startedAt: "2026-07-01T12:05:00.000Z",
+            surfacedAt: null,
+          },
+        },
+        bridges: [],
+        friendActivity: {
+          freshestForCurrentFriend: null,
+          otherLiveSessionsForCurrentFriend: [],
+          allOtherLiveSessions: [],
+        },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [staleObligation],
+        targetCandidates: [],
+        innerReturnObligations: [],
+        bridgeSuggestion: null,
+        primaryObligation: staleObligation,
+        resumeHandle: {
+          sessionLabel: "bluebubbles/synthetic-group",
+          lane: "synthetic digest lane",
+          artifact: "digest-status.md",
+          blockerOrWaitingOn: null,
+          nextAction: "send the next synthetic digest",
+          lastVerifiedCheckpoint: "digest was still active",
+          confidence: "high",
+          codingIdentity: null,
+        },
+      }
+      const options = {
+        orientationFrame: {
+          schemaVersion: 1,
+          channel: "bluebubbles",
+          currentUserSpeech: [input.currentSpeech],
+          priorAssistantReferents: [],
+          signals: [],
+          actionPolicy: { mode: "normal" },
+          source: {
+            kind: "bluebubbles",
+            authority: "presentation_only",
+            conversationKind: "group",
+            event: { provider: "bluebubbles", kind: "message", sourceEventType: "new-message", fromMe: false },
+            actor: { role: "observed_actor", provider: "imessage-handle", externalId: "requester@example.test", displayName: "Requester" },
+            participants: [
+              { role: "group_participant_only", provider: "imessage-handle", externalId: "member@example.test", displayName: "Member" },
+            ],
+            lane: "synthetic-group",
+            defaultReplyTarget: "current_lane",
+          },
+        },
+        startOfTurnPacket,
+        activeWorkFrame,
+        pendingAwaits: [],
+        ...(input.resumePriorWork === undefined ? {} : { resumePriorWork: input.resumePriorWork }),
+      }
+
+      return flattenSystemPrompt(await buildSystem("bluebubbles", options as any))
+    }
+
+    it("makes the incident-like current speech the sole authority and labels all stale work as background", async () => {
+      const prompt = await renderAuthorityFixture({
+        currentSpeech: "the digest event is over; stop the recurring report",
+      })
+
+      expect(prompt.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+      expect(prompt).not.toContain("## orientation frame")
+      expect(prompt).toContain("current user speech:\n- the digest event is over; stop the recurring report")
+      for (const marker of [
+        "**Next:**",
+        "**Arc:**",
+        "**Recovery Sentinel:**",
+        "**Owed:**",
+        "## live world-state",
+        "## what i'm holding",
+        "## where my attention is",
+        "## my commitments",
+      ]) {
+        expectInstructionImmediatelyAfter(prompt, marker, backgroundOnly)
+      }
+      expect(prompt).toContain("continue the synthetic daily digest")
+      expect(prompt).not.toContain(explicitResume)
+    })
+
+    it("does not infer resumePriorWork from exact text overlap with a stale obligation", async () => {
+      const prompt = await renderAuthorityFixture({
+        currentSpeech: "resume the synthetic daily digest and send the next synthetic digest",
+      })
+
+      expect(prompt.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+      expect(prompt).toContain("current user speech:\n- resume the synthetic daily digest and send the next synthetic digest")
+      expectInstructionImmediatelyAfter(prompt, "**Next:**", backgroundOnly)
+      expectInstructionImmediatelyAfter(prompt, "## live world-state", backgroundOnly)
+      expectInstructionImmediatelyAfter(prompt, "## my commitments", backgroundOnly)
+      expect(prompt).not.toContain(explicitResume)
+    })
+
+    it("labels prior work as resumed only for an explicit structured caller flag", async () => {
+      const prompt = await renderAuthorityFixture({
+        currentSpeech: "continue from the verified checkpoint",
+        resumePriorWork: true,
+      })
+
+      expect(prompt.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+      for (const marker of [
+        "**Next:**",
+        "**Arc:**",
+        "**Recovery Sentinel:**",
+        "**Owed:**",
+        "## live world-state",
+        "## what i'm holding",
+        "## where my attention is",
+        "## my commitments",
+      ]) {
+        expectInstructionImmediatelyAfter(prompt, marker, explicitResume)
+      }
+      expect(prompt).not.toContain(backgroundOnly)
     })
   })
 })

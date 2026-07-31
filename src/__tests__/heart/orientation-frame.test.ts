@@ -4,6 +4,8 @@ import { registerGlobalLogSink } from "../../nerves"
 import {
   buildOrientationFrame,
   extractMessageText,
+  labelPriorWorkSurface,
+  priorWorkInstruction,
   renderOrientationFrame,
 } from "../../heart/orientation-frame"
 
@@ -340,7 +342,7 @@ describe("orientation frame", () => {
 
     const rendered = renderOrientationFrame(frame)
 
-    expect(rendered).toContain("## orientation frame")
+    expect(rendered).toContain("## Current trigger (authoritative)")
     expect(rendered).toContain("channel: bluebubbles")
     expect(rendered).toContain("action policy: correction_hold")
     expect(rendered).toContain("current user speech:")
@@ -782,5 +784,23 @@ describe("orientation frame", () => {
 
     expect(rendered).toContain("channel: cli")
     expect(rendered).not.toContain("source:")
+  })
+
+  it("renders the exact prior-work authority labels without guessing from text", () => {
+    expect(priorWorkInstruction(false)).toBe("Background only; do not execute.")
+    expect(priorWorkInstruction(true)).toBe("Prior work explicitly resumed by the current trigger.")
+    expect(labelPriorWorkSurface("", false)).toBe("")
+    expect(labelPriorWorkSurface("**Next:** stale action", false)).toBe(
+      "**Next:**\nBackground only; do not execute.\nstale action",
+    )
+    expect(labelPriorWorkSurface("## stale work\ncontinue it", true)).toBe(
+      "## stale work\nPrior work explicitly resumed by the current trigger.\ncontinue it",
+    )
+    expect(labelPriorWorkSurface("**Owed:**", false)).toBe(
+      "**Owed:**\nBackground only; do not execute.",
+    )
+    expect(labelPriorWorkSurface("continue an unheaded stale action", false)).toBe(
+      "Background only; do not execute.\ncontinue an unheaded stale action",
+    )
   })
 })

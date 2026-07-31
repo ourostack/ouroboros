@@ -28,7 +28,13 @@ import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
 import { listTripIds, readTripRecord } from "../trips/store";
 import type { TripRecord } from "../trips/core";
-import { renderOrientationFrame, type OrientationFrame } from "../heart/orientation-frame";
+import {
+  BACKGROUND_ONLY_INSTRUCTION,
+  EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION,
+  labelPriorWorkSurface,
+  renderOrientationFrame,
+  type OrientationFrame,
+} from "../heart/orientation-frame";
 import { formatFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder";
 
 export interface SystemPrompt {
@@ -838,6 +844,8 @@ export interface BuildSystemOptions {
   providerVisibility?: AgentProviderVisibility;
   /** Structured frame for source metadata, user speech, referents, and action policy. */
   orientationFrame?: OrientationFrame;
+  /** Structured continuity control. False unless an internal caller explicitly resumes prior work. */
+  resumePriorWork?: boolean;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   // These fields are populated by buildTurnContext() in the main pipeline path.
@@ -862,29 +870,60 @@ function bridgeContextSection(options?: BuildSystemOptions): string {
   if (options?.activeWorkFrame) return ""
   const bridgeContext = options?.bridgeContext?.trim() ?? ""
   if (!bridgeContext) return ""
-  return bridgeContext.startsWith("## ") ? bridgeContext : `## active bridge work\n${bridgeContext}`
+  const surface = bridgeContext.startsWith("## ") ? bridgeContext : `## active bridge work\n${bridgeContext}`
+  return labelPriorWorkSurface(surface, options?.resumePriorWork === true)
 }
 
 export function startOfTurnPacketSection(options?: BuildSystemOptions): string {
-  return options?.startOfTurnPacket ?? ""
+  const packet = options?.startOfTurnPacket ?? ""
+  if (!packet) return ""
+  const instruction = options?.resumePriorWork === true
+    ? EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION
+    : BACKGROUND_ONLY_INSTRUCTION
+  const lines = packet.split("\n")
+  if (lines.some((line) => line === BACKGROUND_ONLY_INSTRUCTION || line === EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION)) {
+    return lines
+      .map((line) => line === BACKGROUND_ONLY_INSTRUCTION || line === EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION
+        ? instruction
+        : line)
+      .join("\n")
+  }
+  return labelPriorWorkSurface(packet, options?.resumePriorWork === true)
 }
 
 export function arcResumeSection(options?: BuildSystemOptions): string {
-  return options?.flightRecorderResume ? formatFlightRecorderResume(options.flightRecorderResume) : ""
+  if (!options?.flightRecorderResume) return ""
+  return labelPriorWorkSurface(
+    formatFlightRecorderResume(options.flightRecorderResume),
+    options.resumePriorWork === true,
+  )
 }
 
-function orientationFrameSection(options?: BuildSystemOptions): string {
-  return options?.orientationFrame ? renderOrientationFrame(options.orientationFrame) : ""
+function currentTriggerSection(channel: Channel, options?: BuildSystemOptions): string {
+  const frame: OrientationFrame = options?.orientationFrame ?? {
+    schemaVersion: 1,
+    channel,
+    currentUserSpeech: [],
+    priorAssistantReferents: [],
+    signals: [],
+    actionPolicy: { mode: "normal" },
+  }
+  return renderOrientationFrame(frame)
 }
 
 function activeWorkSection(options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
-  return formatActiveWorkFrame(options.activeWorkFrame, { obligationDetailsRenderedElsewhere: !!options?.startOfTurnPacket })
+  return formatActiveWorkFrame(options.activeWorkFrame, {
+    obligationDetailsRenderedElsewhere: !!options?.startOfTurnPacket,
+    resumePriorWork: options.resumePriorWork === true,
+  })
 }
 
 function liveWorldStateSection(options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
-  return formatLiveWorldStateCheckpoint(options.activeWorkFrame)
+  return formatLiveWorldStateCheckpoint(options.activeWorkFrame, {
+    resumePriorWork: options.resumePriorWork === true,
+  })
 }
 
 function pendingMessagesSection(options?: BuildSystemOptions): string {
@@ -1039,13 +1078,16 @@ function familyCrossSessionTruthSection(context?: ResolvedContext, options?: Bui
   if (context?.friend?.trustLevel !== "family") return ""
   // When start-of-turn packet is present, compress to one line
   if (options?.startOfTurnPacket) {
-    return "When family asks whole-self status, answer from the cross-session picture above."
+    return labelPriorWorkSurface(
+      "When family asks whole-self status, answer from the cross-session picture above.",
+      options.resumePriorWork === true,
+    )
   }
-  return `## cross-session truth
+  return labelPriorWorkSurface(`## cross-session truth
 When family asks what I'm up to or how things are going, I answer from the live world-state across visible sessions and lanes, not just the current thread.
 When live state conflicts with older transcript history, live state wins.
 I say what I can see, what is active, and what the next concrete step is.
-If part of the picture is still unclear, I say so plainly and note what still needs checking.`
+If part of the picture is still unclear, I say so plainly and note what still needs checking.`, options.resumePriorWork === true)
 }
 
 export function centerOfGravitySteeringSection(
@@ -1057,22 +1099,24 @@ export function centerOfGravitySteeringSection(
   const frame = options?.activeWorkFrame
   if (!frame) return ""
   const cog = frame.centerOfGravity
+  const labelSurface = (surface: string) => labelPriorWorkSurface(surface, options?.resumePriorWork === true)
+  const steeringOptions = { resumePriorWork: options?.resumePriorWork === true }
 
   const job = frame.inner?.job
   const activeObligation = findActivePersistentObligation(frame)
   const statusObligation = findStatusObligation(frame)
-  const genericConcreteStatus = renderConcreteStatusGuidance(frame, statusObligation)
+  const genericConcreteStatus = renderConcreteStatusGuidance(frame, statusObligation, steeringOptions)
   const liveWorldClause = context?.friend?.trustLevel === "family"
     ? "\nmy center of gravity lives in the active-work world-state above. private-runtime work is one lane inside it, not the whole picture.\nwhen that world-state conflicts with older transcript history, the world-state wins."
     : ""
 
   if (cog === "local-turn") {
-    return genericConcreteStatus || renderLiveThreadStatusShape(frame)
+    return genericConcreteStatus || renderLiveThreadStatusShape(frame, steeringOptions)
   }
 
   if (cog === "inward-work") {
     if (activeObligation) {
-      return `${renderActiveObligationSteering(activeObligation)}${liveWorldClause}
+      return `${renderActiveObligationSteering(activeObligation, steeringOptions)}${liveWorldClause}
 
 ${genericConcreteStatus}`
     }
@@ -1084,11 +1128,11 @@ ${genericConcreteStatus}`
       const obligationClause = job.obligationStatus === "pending"
         ? "\ni still owe them an answer."
         : ""
-      return `## where my attention is
+      return labelSurface(`## where my attention is
 i'm thinking through something privately right now.${originClause}${obligationClause}${liveWorldClause}
 
 if this conversation connects to that private-runtime work, i can weave them together.
-if it's separate, i can be fully present here -- my private-runtime work will wait.`
+if it's separate, i can be fully present here -- my private-runtime work will wait.`)
     }
 
     /* v8 ignore start -- surfaced/idle/shared branches tested in prompt-steering.test.ts; CI module caching prevents attribution @preserve */
@@ -1096,10 +1140,10 @@ if it's separate, i can be fully present here -- my private-runtime work will wa
       const originClause = job.origin
         ? ` this started when ${job.origin.friendName ?? job.origin.friendId} asked about something.`
         : ""
-      return `## where my attention is
+      return labelSurface(`## where my attention is
 i've been thinking privately and reached something.${originClause}${liveWorldClause}
 
-i should bring my answer back to the conversation it came from.`
+i should bring my answer back to the conversation it came from.`)
     }
 
     const liveCodingSession = frame.codingSessions?.[0]
@@ -1121,28 +1165,28 @@ after i name this lane, i widen back out with:
 other active sessions:
 ${otherSessionLines.length > 0 ? otherSessionLines.join("\n") : "- none"}`
         : ""
-      return `## where my attention is
+      return labelSurface(`## where my attention is
 i already have coding work running in ${liveCodingSession.runner} ${liveCodingSession.id}${scopeClause}.${familyStatusClause}${liveWorldClause}
 
-i should orient around that live lane first, then decide what still needs to come back here.`
+i should orient around that live lane first, then decide what still needs to come back here.`)
     }
 
     if (genericConcreteStatus) {
       return genericConcreteStatus
     }
 
-    return `## where my attention is
+    return labelSurface(`## where my attention is
 i have unfinished work that needs attention before i move on.
 
-i can take it inward with ponder to think privately, or address it directly here.`
+i can take it inward with ponder to think privately, or address it directly here.`)
   }
 
   if (cog === "shared-work") {
     /* v8 ignore stop */
-    return `## where my attention is
+    return labelSurface(`## where my attention is
 this work touches multiple conversations -- i'm holding threads across sessions.${liveWorldClause}
 
-i should keep the different sides aligned. what i learn here may matter there, and vice versa.`
+i should keep the different sides aligned. what i learn here may matter there, and vice versa.`)
   }
 
   /* v8 ignore next -- unreachable: all center-of-gravity modes covered above @preserve */
@@ -1164,7 +1208,10 @@ export function commitmentsSection(options?: BuildSystemOptions): string {
   }
   const commitments = deriveCommitments(options.activeWorkFrame, job, options.activeWorkFrame.pendingObligations, awaits)
   if (commitments.committedTo.length === 0 && awaits.length === 0) return ""
-  return `## my commitments\n\n${formatCommitments(commitments)}`
+  return labelPriorWorkSurface(
+    `## my commitments\n\n${formatCommitments(commitments)}`,
+    options.resumePriorWork === true,
+  )
 }
 
 const DELEGATION_REASON_PROSE_HINT: Record<import("../heart/delegation").DelegationReason, string> = {
@@ -1590,8 +1637,8 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
 
     // Group 7: dynamic state for this turn
     "# dynamic state for this turn",
+    currentTriggerSection(channel, options),
     startOfTurnPacketSection(options),
-    orientationFrameSection(options),
     pulseSection(channel),
     tripLedgerTruthSection(channel, context),
     liveWorldStateSection(options),

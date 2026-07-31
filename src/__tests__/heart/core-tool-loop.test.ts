@@ -324,6 +324,37 @@ describe("runAgent tool loop guard", () => {
     expect(result.completion).toMatchObject({ answer: "checked orientation" })
   })
 
+  it("derives the authoritative current trigger for direct channel callers that bypass the shared pipeline", async () => {
+    mockCreate.mockReturnValue(makeStream([
+      makeChunk(undefined, [
+        {
+          index: 0,
+          id: "call_final",
+          function: {
+            name: "settle",
+            arguments: '{"answer":"handled the current request"}',
+          },
+        },
+      ]),
+    ]))
+
+    const { runAgent } = await import("../../heart/core")
+    const callbacks = makeCallbacks()
+    const messages: any[] = [
+      { role: "assistant", content: "1. stale option\n2. another stale option" },
+      { role: "user", content: "stop the synthetic recurring report" },
+    ]
+
+    await runAgent(messages, callbacks, "cli", undefined, {
+      toolChoiceRequired: true,
+      skipKeptNotes: true,
+    })
+
+    const system = String(messages[0]?.content ?? "")
+    expect(system.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+    expect(system).toContain("current user speech:\n- stop the synthetic recurring report")
+  })
+
   it("restricts reaction feedback to one provider invocation and the exact registered read-only tool IDs", async () => {
     let providerTools: Array<{ function: { name: string } }> = []
     mockCreate.mockImplementation((request: any) => {

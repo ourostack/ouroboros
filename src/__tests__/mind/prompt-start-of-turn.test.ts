@@ -98,13 +98,26 @@ describe("start-of-turn packet prompt section", () => {
   it("startOfTurnPacketSection returns rendered start-of-turn packet from options", async () => {
     const { startOfTurnPacketSection } = await import("../../mind/prompt")
     const result = startOfTurnPacketSection({ startOfTurnPacket: "**Next:** review PR #42" })
-    expect(result).toBe("**Next:** review PR #42")
+    expect(result).toBe("**Next:**\nBackground only; do not execute.\nreview PR #42")
   })
 
   it("startOfTurnPacketSection returns empty string when no start-of-turn packet provided", async () => {
     const { startOfTurnPacketSection } = await import("../../mind/prompt")
     expect(startOfTurnPacketSection()).toBe("")
     expect(startOfTurnPacketSection({})).toBe("")
+  })
+
+  it("normalizes pre-rendered packet labels to the structured caller flag", async () => {
+    const { startOfTurnPacketSection } = await import("../../mind/prompt")
+
+    expect(startOfTurnPacketSection({
+      startOfTurnPacket: "**Next:**\nBackground only; do not execute.\nstale action",
+      resumePriorWork: true,
+    })).toBe("**Next:**\nPrior work explicitly resumed by the current trigger.\nstale action")
+    expect(startOfTurnPacketSection({
+      startOfTurnPacket: "**Next:**\nPrior work explicitly resumed by the current trigger.\nstale action",
+      resumePriorWork: false,
+    })).toBe("**Next:**\nBackground only; do not execute.\nstale action")
   })
 
   it("arcResumeSection renders the Arc flight recorder resume when provided", async () => {
@@ -157,7 +170,7 @@ describe("start-of-turn packet prompt section", () => {
 
     const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     const system = flattenSystemPrompt(await buildSystem("cli", { startOfTurnPacket: "**Next:** check inbox" }))
-    const startOfTurnPacketIdx = system.indexOf("**Next:** check inbox")
+    const startOfTurnPacketIdx = system.indexOf("**Next:**\nBackground only; do not execute.\ncheck inbox")
     const liveWorldIdx = system.indexOf("# dynamic state for this turn")
 
     expect(startOfTurnPacketIdx).toBeGreaterThan(-1)
@@ -216,7 +229,7 @@ describe("start-of-turn packet prompt section", () => {
 
     const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
     const system = flattenSystemPrompt(await buildSystem("cli", { startOfTurnPacket: "**Owed:** deploy fix" }))
-    expect(system).toContain("**Owed:** deploy fix")
+    expect(system).toContain("**Owed:**\nBackground only; do not execute.\ndeploy fix")
   })
 
   it("buildSystem includes orientation frame when provided", async () => {
@@ -247,11 +260,58 @@ describe("start-of-turn packet prompt section", () => {
       },
     }))
 
-    expect(system).toContain("## orientation frame")
+    expect(system.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
     expect(system).toContain("current user speech:")
     expect(system).toContain("- same")
     expect(system).toContain("2. Better substrate")
     expect(system).toContain("action policy: correction_hold")
+  })
+
+  it("buildSystem renders one authoritative empty trigger when no current frame is available", async () => {
+    const fs = await import("fs")
+    const fsMock = vi.mocked(fs)
+    fsMock.existsSync.mockReturnValue(false)
+    fsMock.readFileSync.mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" })
+      return ""
+    })
+    fsMock.readdirSync.mockReturnValue([])
+
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(system.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+    expect(system).toContain("current user speech:\n- (none)")
+  })
+
+  it("renders a reaction as the one authoritative current trigger", async () => {
+    const fs = await import("fs")
+    const fsMock = vi.mocked(fs)
+    fsMock.existsSync.mockReturnValue(false)
+    fsMock.readFileSync.mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" })
+      return ""
+    })
+    fsMock.readdirSync.mockReturnValue([])
+
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("bluebubbles", {
+      orientationFrame: {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        speechKind: "reaction",
+        currentUserSpeech: ['questioned your message: "synthetic status"'],
+        priorAssistantReferents: [],
+        signals: [],
+        actionPolicy: { mode: "normal" },
+      },
+    }))
+
+    expect(system.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+    expect(system).toContain("speech kind: reaction")
+    expect(system).toContain('current user speech:\n- questioned your message: "synthetic status"')
   })
 
   it("buildSystem omits start-of-turn packet section when none provided", async () => {

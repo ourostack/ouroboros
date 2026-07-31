@@ -26,7 +26,14 @@ import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
 import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
-import type { OrientationFrame } from "./orientation-frame";
+import {
+  BACKGROUND_ONLY_INSTRUCTION,
+  EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION,
+  buildOrientationFrame,
+  priorWorkInstruction,
+  renderOrientationFrame,
+  type OrientationFrame,
+} from "./orientation-frame";
 import type { DelegationDecision } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
 import { getAgentName, getAgentRoot } from "./identity";
@@ -372,6 +379,8 @@ export interface RunAgentOptions {
   providerVisibility?: AgentProviderVisibility;
   /** Structured orientation frame for the current inbound turn. */
   orientationFrame?: OrientationFrame;
+  /** Structured continuity control; user text never sets this flag. */
+  resumePriorWork?: boolean;
   /** Habit-session policy envelope for private habit turns. */
   habitSession?: HabitSessionToolContext;
   /** Content-free same-turn context packet ids linked to this provider run. */
@@ -824,6 +833,58 @@ function upsertSystemPrompt(
   }
 }
 
+const CURRENT_TRIGGER_HEADING = "## Current trigger (authoritative)";
+const FALLBACK_ORIENTATION_HEADINGS = new Set([
+  CURRENT_TRIGGER_HEADING,
+  "## orientation frame",
+]);
+
+function isFallbackPromptSectionBoundary(line: string): boolean {
+  return line.startsWith("# ")
+    || line.startsWith("## ")
+    || /^\*\*[^*]+:\*\*(?:\s.*)?$/.test(line);
+}
+
+/**
+ * A prompt refresh failure must not turn the previous turn's trigger back into
+ * authority. Preserve the usable prompt around it, remove every stale trigger
+ * section, normalise prior-work labels to the current structured resume flag,
+ * and put the freshly derived trigger first.
+ */
+function repairFallbackSystemPrompt(
+  existingSystemText: string | undefined,
+  orientationFrame: OrientationFrame,
+  resumePriorWork: boolean,
+): string {
+  const fallbackBase = existingSystemText ?? "You are a helpful assistant.";
+  const retainedLines: string[] = [];
+  let skippingCurrentTrigger = false;
+
+  for (const line of fallbackBase.split("\n")) {
+    if (FALLBACK_ORIENTATION_HEADINGS.has(line)) {
+      skippingCurrentTrigger = true;
+      continue;
+    }
+    if (skippingCurrentTrigger) {
+      if (!isFallbackPromptSectionBoundary(line)) continue;
+      skippingCurrentTrigger = false;
+    }
+    retainedLines.push(line);
+  }
+
+  const currentPriorWorkInstruction = priorWorkInstruction(resumePriorWork);
+  const repairedBase = retainedLines
+    .map((line) => (
+      line === BACKGROUND_ONLY_INSTRUCTION || line === EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION
+        ? currentPriorWorkInstruction
+        : line
+    ))
+    .join("\n")
+    .trim();
+
+  return `${renderOrientationFrame(orientationFrame)}\n\n${repairedBase}`;
+}
+
 // Remove orphan tool_calls from the last assistant message and any
 // trailing tool-result messages that lack a matching tool_call.
 // This keeps the conversation valid after an abort or tool-loop limit.
@@ -1035,6 +1096,9 @@ export async function runAgent(
     }
   }
 
+  const turnOrientationFrame = options?.orientationFrame
+    ?? (channel ? buildOrientationFrame({ channel, messages }) : undefined);
+
   // Refresh system prompt at start of each turn when channel is provided.
   // If refresh fails, keep existing system prompt (or inject a minimal safe fallback)
   // so turn execution remains consistent and non-fatal.
@@ -1043,6 +1107,8 @@ export async function runAgent(
     try {
       const buildSystemOptions = {
         ...options,
+        orientationFrame: turnOrientationFrame,
+        resumePriorWork: options?.resumePriorWork === true,
         providerCapabilities: providerRuntime.capabilities,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
       };
@@ -1052,7 +1118,11 @@ export async function runAgent(
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
       const existingSystemText = hadExistingSystemPrompt ? (messages[0].content as string) : undefined;
-      const fallback = existingSystemText ?? "You are a helpful assistant.";
+      const fallback = repairFallbackSystemPrompt(
+        existingSystemText,
+        turnOrientationFrame!,
+        options?.resumePriorWork === true,
+      );
       upsertSystemPrompt(messages, fallback);
       emitNervesEvent({
         level: "warn",
@@ -1179,7 +1249,7 @@ export async function runAgent(
     );
   // Augment tool context with reasoning effort controls from provider
   const baseToolContext: ToolContext | undefined = options?.toolContext
-    ?? (options?.orientationFrame ? { signin: async () => undefined, orientationFrame: options.orientationFrame } : undefined)
+    ?? (turnOrientationFrame ? { signin: async () => undefined, orientationFrame: turnOrientationFrame } : undefined)
   const habitSession = options?.habitSession ?? baseToolContext?.habitSession
   const augmentedToolContext: ToolContext | undefined = baseToolContext
       ? {
@@ -1187,7 +1257,7 @@ export async function runAgent(
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
         activeWorkFrame: options?.activeWorkFrame,
-        orientationFrame: options?.orientationFrame ?? baseToolContext.orientationFrame,
+        orientationFrame: turnOrientationFrame ?? baseToolContext.orientationFrame,
         ...(habitSession ? { habitSession } : {}),
       }
     : habitSession
@@ -1671,7 +1741,7 @@ export async function runAgent(
           const settleArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           callbacks.onToolStart("settle", settleArgs);
           // Private-runtime attention queue gate: reject settle if items remain
-          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (isPrivateRuntimeChannel && attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
@@ -1798,7 +1868,7 @@ export async function runAgent(
           callbacks.onToolStart("rest", restArgs);
 
           // Attention queue gate: reject rest if items remain
-          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
             messages.push(msg);
@@ -1935,13 +2005,13 @@ export async function runAgent(
 
             try {
               const action = parsedArgs.action ?? "create";
-              const currentSession = (augmentedToolContext ?? options?.toolContext)?.currentSession;
+              const currentSession = augmentedToolContext?.currentSession;
               const currentOrigin = currentSession
                 ? { friendId: currentSession.friendId, channel: currentSession.channel, key: currentSession.key }
                 : undefined;
               const isInnerChannel = currentOrigin?.friendId === "self" && currentOrigin?.channel === "inner";
               const shouldCreateReturnObligation = !!currentOrigin && !isInnerChannel;
-              const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins ?? [];
+              const attentionQueue = augmentedToolContext?.delegatedOrigins ?? [];
               const successCriteria = parseSuccessCriteria(parsedArgs.success_criteria);
               const payload = parsePacketPayload(parsedArgs.payload_json);
 
@@ -2116,7 +2186,7 @@ export async function runAgent(
           let success: boolean;
           try {
             const execToolFn = options?.execTool ?? execTool;
-            toolResult = await execToolFn(tc.name, args, augmentedToolContext ?? options?.toolContext);
+            toolResult = await execToolFn(tc.name, args, augmentedToolContext);
             success = true;
           } catch (e) {
             toolResult = `error: ${e}`;

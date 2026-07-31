@@ -440,6 +440,32 @@ describe("pipeline continuity integration", () => {
       // runAgent is called with (messages, callbacks, channel, signal, options)
       const options = runAgentSpy.mock.calls[0][4] as RunAgentOptions
       expect(options.startOfTurnPacket).toBe("**Next:** review PR #42")
+      expect((options as any).resumePriorWork).toBe(false)
+      expect(mockRenderStartOfTurnPacket).toHaveBeenCalledWith(
+        expect.anything(),
+        { resumePriorWork: false },
+      )
+    })
+
+    it("threads an explicit structured resumePriorWork flag without inferring it from user text", async () => {
+      mockRenderStartOfTurnPacket.mockReturnValue("**Next:** synthetic stale work")
+      const runAgentSpy = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+      const input = makeInput({
+        messages: [{ role: "user", content: "resume synthetic stale work" }],
+        continuityIngressTexts: ["resume synthetic stale work"],
+        runAgent: runAgentSpy,
+        runAgentOptions: { resumePriorWork: true } as any,
+      })
+
+      const { handleInboundTurn } = await import("../../senses/pipeline")
+      await handleInboundTurn(input)
+
+      const options = runAgentSpy.mock.calls[0][4] as RunAgentOptions
+      expect((options as any).resumePriorWork).toBe(true)
+      expect(mockRenderStartOfTurnPacket).toHaveBeenCalledWith(
+        expect.anything(),
+        { resumePriorWork: true },
+      )
     })
 
     it("derives tempo with episode salience and care risk data", async () => {

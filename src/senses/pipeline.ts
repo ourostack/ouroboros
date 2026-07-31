@@ -642,6 +642,10 @@ function prepareInboundRunLedger(input: Omit<Parameters<typeof buildInboundRunLe
 }
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  // Continuity resumption is structured caller intent. Never infer it from the
+  // current message or from similarity to prior obligations.
+  const resumePriorWork = input.runAgentOptions?.resumePriorWork === true
+
   // Reset session-scoped state when the session changes
   const sessionKey = `${input.channel}/${input.sessionKey ?? "session"}`
   if (sessionKey !== _lastSessionKey) {
@@ -1035,7 +1039,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     if (capabilities) {
       startOfTurnPacket.capabilities = capabilities
     }
-    renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket)
+    renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket, { resumePriorWork })
     if (!renderedStartOfTurnPacket) renderedStartOfTurnPacket = undefined
 
     // Update self-presence
@@ -1063,6 +1067,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ?? latestUserAuthoredText(input.messages, input.continuityIngressTexts)
   let runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
+    resumePriorWork,
     ...(orientationFrame ? { orientationFrame } : {}),
     ...(liveLatencyMode ? { skipKeptNotes: true } : {}),
     bridgeContext,

@@ -95,6 +95,37 @@ export interface OrientationFrame {
   speechKind?: OrientationSpeechKind
 }
 
+export const BACKGROUND_ONLY_INSTRUCTION = "Background only; do not execute."
+export const EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION = "Prior work explicitly resumed by the current trigger."
+
+export function priorWorkInstruction(resumePriorWork: boolean): string {
+  return resumePriorWork
+    ? EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION
+    : BACKGROUND_ONLY_INSTRUCTION
+}
+
+/**
+ * Put the prior-work authority label directly under a section heading when one
+ * exists, otherwise before the surface. This keeps the label adjacent to the
+ * exact stale-work surface it governs instead of relying on a distant prompt
+ * preamble.
+ */
+export function labelPriorWorkSurface(surface: string, resumePriorWork: boolean): string {
+  if (!surface) return ""
+  const instruction = priorWorkInstruction(resumePriorWork)
+  const inlineBoldHeading = /^(\*\*[^*]+:\*\*)\s+([\s\S]+)$/.exec(surface)
+  if (inlineBoldHeading) {
+    return `${inlineBoldHeading[1]}\n${instruction}\n${inlineBoldHeading[2]}`
+  }
+  const newlineIndex = surface.indexOf("\n")
+  const firstLine = newlineIndex === -1 ? surface : surface.slice(0, newlineIndex)
+  if (firstLine.startsWith("## ") || /^\*\*[^*]+:\*\*$/.test(firstLine)) {
+    const remainder = newlineIndex === -1 ? "" : surface.slice(newlineIndex + 1)
+    return [firstLine, instruction, remainder].filter((part) => part.length > 0).join("\n")
+  }
+  return `${instruction}\n${surface}`
+}
+
 export interface BuildOrientationFrameInput {
   channel: string
   messages: OpenAI.ChatCompletionMessageParam[]
@@ -350,7 +381,7 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
 
 export function renderOrientationFrame(frame: OrientationFrame): string {
   const lines = [
-    "## orientation frame",
+    "## Current trigger (authoritative)",
     `channel: ${frame.channel}`,
     `action policy: ${frame.actionPolicy.mode}`,
   ]

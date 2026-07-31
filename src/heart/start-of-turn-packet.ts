@@ -10,6 +10,7 @@ import { type CareRecord } from "../arc/cares"
 import { type AgentPresence } from "../arc/presence"
 import { formatFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder"
 import { formatContextLossSentinelText, type ContextLossSentinelView } from "./context-loss-sentinel"
+import { labelPriorWorkSurface, priorWorkInstruction } from "./orientation-frame"
 
 export interface StartOfTurnPacket {
   plotLine: string
@@ -28,6 +29,10 @@ export interface StartOfTurnPacket {
   bundleState?: BundleStateIssue[]
   capabilities?: string
   providerSelection?: string
+}
+
+export interface RenderStartOfTurnPacketOptions {
+  resumePriorWork?: boolean
 }
 
 function estimateTokens(text: string): number {
@@ -247,8 +252,12 @@ export function buildStartOfTurnPacket(
  * So presence is truncated first, then plotLine, then cares, then obligations.
  * resumeHint is never truncated.
  */
-export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
+export function renderStartOfTurnPacket(
+  packet: StartOfTurnPacket,
+  options: RenderStartOfTurnPacketOptions = {},
+): string {
   const budget = packet.tokenBudget
+  const resumePriorWork = options.resumePriorWork === true
 
   // Assemble sections in priority order (highest priority first for budget allocation)
   // Each section is { label, content, priority } where lower priority number = truncated first
@@ -283,7 +292,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   }
 
   // Build the rendered output, truncating lower-priority sections first
-  let rendered = formatSections(sections)
+  let rendered = formatSections(sections, resumePriorWork)
   let tokens = estimateTokens(rendered)
 
   // Truncate sections from lowest priority until we fit budget
@@ -297,7 +306,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
     // Remove this section entirely
     const idx = sections.findIndex((s) => s.label === section.label)
     sections.splice(idx, 1)
-    rendered = formatSections(sections)
+    rendered = formatSections(sections, resumePriorWork)
     tokens = estimateTokens(rendered)
   }
 
@@ -317,19 +326,22 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   return rendered
 }
 
-function formatSections(sections: Array<{ label: string; content: string }>): string {
+function formatSections(
+  sections: Array<{ label: string; content: string }>,
+  resumePriorWork: boolean,
+): string {
   const parts: string[] = []
 
   for (const section of sections) {
     switch (section.label) {
       case "resume":
-        parts.push(`**Next:** ${section.content}`)
+        parts.push(labelPriorWorkSurface(`**Next:**\n${section.content}`, resumePriorWork))
         break
       case "arc":
-        parts.push(`**Arc:**\n${section.content}`)
+        parts.push(labelPriorWorkSurface(`**Arc:**\n${section.content}`, resumePriorWork))
         break
       case "recoverySentinel":
-        parts.push(`**Recovery Sentinel:**\n${section.content}`)
+        parts.push(labelPriorWorkSurface(`**Recovery Sentinel:**\n${section.content}`, resumePriorWork))
         break
       case "sessionTiming":
         parts.push(`**Thread timing:** ${section.content}`)
@@ -338,7 +350,7 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         parts.push(`**Recent contact:** ${section.content}`)
         break
       case "obligations":
-        parts.push(`**Owed:**\n${section.content}`)
+        parts.push(labelPriorWorkSurface(`**Owed:**\n${section.content}`, resumePriorWork))
         break
       case "cares":
         parts.push(`**Cares:**\n${section.content}`)
@@ -371,16 +383,20 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
  * Ultra-compact version for coding context (max 200 tokens).
  * Just resumeHint + top obligation + top care, single-line bullets.
  */
-export function renderCompactStartOfTurnPacket(packet: StartOfTurnPacket): string {
+export function renderCompactStartOfTurnPacket(
+  packet: StartOfTurnPacket,
+  options: RenderStartOfTurnPacketOptions = {},
+): string {
   const parts: string[] = []
+  const instruction = priorWorkInstruction(options.resumePriorWork === true)
 
   if (packet.resumeHint) {
-    parts.push(`next: ${packet.resumeHint}`)
+    parts.push(`next:\n${instruction}\n${packet.resumeHint}`)
   }
   if (packet.obligations) {
     // Just first line of obligations
     const firstOb = packet.obligations.split("\n")[0]
-    parts.push(`owed: ${firstOb.replace(/^- /, "")}`)
+    parts.push(`owed:\n${instruction}\n${firstOb.replace(/^- /, "")}`)
   }
   if (packet.cares) {
     const firstCare = packet.cares.split("\n")[0]

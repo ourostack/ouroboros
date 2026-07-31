@@ -11,6 +11,7 @@ import { describeSessionActivityTiming, selectFreshestFriendFacingActivity, type
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 import { sanitizeKey } from "./config"
 import type { BackgroundOperationRecord } from "./background-operations"
+import { labelPriorWorkSurface } from "./orientation-frame"
 
 export type CenterOfGravityMode = "local-turn" | "inward-work" | "shared-work"
 
@@ -83,6 +84,12 @@ export interface ActiveWorkFrame {
   bridgeSuggestion: BridgeSuggestion | null
   primaryObligation: Obligation | null
   resumeHandle: ResumeHandle | null
+}
+
+export interface ActiveWorkRenderOptions {
+  obligationDetailsRenderedElsewhere?: boolean
+  /** Omitted outside prompt assembly; prompt callers always pass an explicit boolean. */
+  resumePriorWork?: boolean
 }
 
 interface BuildActiveWorkFrameInput {
@@ -868,7 +875,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
   return frame
 }
 
-export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obligationDetailsRenderedElsewhere?: boolean }): string {
+export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: ActiveWorkRenderOptions): string {
   const lines = ["## what i'm holding"]
   lines.push("this is my top-level live world-state right now. private-runtime work, coding lanes, other sessions, and return obligations all belong inside this picture.")
   lines.push("if older checkpoints elsewhere in the transcript disagree with this picture, this picture wins.")
@@ -1072,10 +1079,16 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
     }
   }
 
-  return lines.join("\n")
+  const rendered = lines.join("\n")
+  return typeof options?.resumePriorWork === "boolean"
+    ? labelPriorWorkSurface(rendered, options.resumePriorWork)
+    : rendered
 }
 
-export function formatLiveWorldStateCheckpoint(frame: ActiveWorkFrame): string {
+export function formatLiveWorldStateCheckpoint(
+  frame: ActiveWorkFrame,
+  options?: Pick<ActiveWorkRenderOptions, "resumePriorWork">,
+): string {
   const primaryObligation = findPrimaryOpenObligation(frame)
   const activeLane = formatActiveLane(frame, primaryObligation) ?? "no explicit live lane"
   const currentArtifact = formatCurrentArtifact(frame, primaryObligation) ?? "no artifact yet"
@@ -1104,7 +1117,10 @@ export function formatLiveWorldStateCheckpoint(frame: ActiveWorkFrame): string {
     lines.push(...otherActiveSessions)
   }
 
-  return lines.join("\n")
+  const rendered = lines.join("\n")
+  return typeof options?.resumePriorWork === "boolean"
+    ? labelPriorWorkSurface(rendered, options.resumePriorWork)
+    : rendered
 }
 
 // ── Cross-session change detection ──────────────────────────────

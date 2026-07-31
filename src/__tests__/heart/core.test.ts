@@ -1834,6 +1834,68 @@ describe("runAgent", () => {
     ]))
   })
 
+  it("creates a habit-session-only tool context when no channel orientation is available", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_read_no_channel", function: { name: "read_file", arguments: "{\"path\":\"safe.txt\"}" } },
+          ]),
+        ])
+      }
+      return makeStream([makeChunk("done")])
+    })
+
+    const execTool = vi.fn(async (_name, _args, ctx) => {
+      await ctx.signin()
+      ctx.setReasoningEffort("low")
+      expect(ctx.habitSession.runId).toBe("habit-run-no-channel")
+      expect(ctx.orientationFrame).toBeUndefined()
+      return "file contents"
+    })
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, undefined, undefined, {
+      tools: [{
+        type: "function" as const,
+        function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
+      }],
+      execTool,
+      habitSession: {
+        runId: "habit-run-no-channel",
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["read_file"],
+          grantedTools: ["read_file"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool", tool_call_id: "tc_read_no_channel", content: "file contents" }),
+    ]))
+  })
+
   it("habit mode preserves habit sessions provided through a base tool context", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -4485,7 +4547,7 @@ describe("runAgent", () => {
     expect(messages.some((m: any) => m.role === "user" && m.content === "hello from history")).toBe(true)
   })
 
-  it("falls back to existing system prompt when prompt refresh fails", async () => {
+  it("repairs the current-trigger authority while preserving stable prompt content when refresh fails", async () => {
     vi.resetModules()
     mockCreate.mockReset()
     mockResponsesCreate.mockReset()
@@ -4510,15 +4572,51 @@ describe("runAgent", () => {
       }
 
       const messages: any[] = [
-        { role: "system", content: "stable fallback prompt" },
-        { role: "user", content: "hello" },
+        {
+          role: "system",
+          content: [
+            "# stable fallback prompt",
+            "keep this durable instruction",
+            "",
+            "# dynamic state for this turn",
+            "",
+            "## orientation frame",
+            "channel: teams",
+            "action policy: normal",
+            "current user speech:",
+            "- stale legacy speech from before the upgrade",
+            "",
+            "## Current trigger (authoritative)",
+            "channel: teams",
+            "action policy: normal",
+            "current user speech:",
+            "- stale speech from the prior turn",
+            "",
+            "**Next:**",
+            "Background only; do not execute.",
+            "finish the earlier report",
+            "",
+            "## active bridge work",
+            "Prior work explicitly resumed by the current trigger.",
+            "publish the earlier report",
+          ].join("\n"),
+        },
+        { role: "user", content: "fresh speech for this turn" },
       ]
 
-      await core.runAgent(messages, callbacks, "teams")
+      await core.runAgent(messages, callbacks, "teams", undefined, { resumePriorWork: true })
 
       expect(messages[0].role).toBe("system")
-      expect(messages[0].content).toBe("stable fallback prompt")
-      expect(messages.some((m: any) => m.role === "user" && m.content === "hello")).toBe(true)
+      expect(messages[0].content).toContain("# stable fallback prompt")
+      expect(messages[0].content).toContain("keep this durable instruction")
+      expect(messages[0].content.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+      expect(messages[0].content).toContain("- fresh speech for this turn")
+      expect(messages[0].content).not.toContain("stale speech from the prior turn")
+      expect(messages[0].content).not.toContain("## orientation frame")
+      expect(messages[0].content).not.toContain("stale legacy speech from before the upgrade")
+      expect(messages[0].content).not.toContain("Background only; do not execute.")
+      expect(messages[0].content.match(/Prior work explicitly resumed by the current trigger\./g)).toHaveLength(2)
+      expect(messages.some((m: any) => m.role === "user" && m.content === "fresh speech for this turn")).toBe(true)
       expect(mockCreate).toHaveBeenCalled()
     } finally {
       vi.doUnmock("../../mind/prompt")
@@ -4557,7 +4655,9 @@ describe("runAgent", () => {
       await core.runAgent(messages, callbacks, "teams")
 
       expect(messages[0].role).toBe("system")
-      expect(messages[0].content).toBe("You are a helpful assistant.")
+      expect(messages[0].content).toContain("You are a helpful assistant.")
+      expect(messages[0].content.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+      expect(messages[0].content).toContain("- hello")
       expect(messages.some((m: any) => m.role === "user" && m.content === "hello")).toBe(true)
       expect(mockCreate).toHaveBeenCalled()
     } finally {
