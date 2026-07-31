@@ -16,6 +16,7 @@ export interface BlueBubblesSendTextParams {
   text: string
   replyToMessageGuid?: string
   tempGuid?: string
+  signal?: AbortSignal
 }
 
 export interface BlueBubblesSendTextResult {
@@ -349,11 +350,14 @@ export function createBlueBubblesClient(
         },
       })
 
+      const requestTimeoutSignal = AbortSignal.timeout(channelConfig.requestTimeoutMs)
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+        signal: params.signal
+          ? AbortSignal.any([params.signal, requestTimeoutSignal])
+          : requestTimeoutSignal,
       })
 
       if (!response.ok) {

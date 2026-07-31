@@ -1164,6 +1164,24 @@ describe("settleTool", () => {
   })
 })
 
+describe("restricted reaction feedback tool registry", () => {
+  it("registers the three schemas used by the restricted reaction allowlist", async () => {
+    vi.resetModules()
+    const { settleTool, observeTool } = await import("../../repertoire/tools")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const orientation = baseToolDefinitions.find(
+      (definition) => definition.tool.function.name === "orientation_get",
+    )
+
+    expect(orientation).toBeDefined()
+    expect([settleTool, observeTool, orientation!.tool].map((tool) => tool.function.name)).toEqual([
+      "settle",
+      "observe",
+      "orientation_get",
+    ])
+  })
+})
+
 describe("getToolsForChannel with ChannelCapabilities", () => {
   it("returns only base tools when no integrations available", async () => {
     vi.resetModules()

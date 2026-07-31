@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
+import { baseToolDefinitions, editFileReadTracker, observeTool, settleTool } from "./tools-base";
 import type { ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
@@ -138,6 +138,18 @@ export function getToolsForChannel(
   }
 
   return filterByCapability(result, providerCapabilities);
+}
+
+/**
+ * The complete provider-facing tool surface for trusted reaction feedback.
+ * Keep these schemas sourced from the normal registry so restricted turns
+ * cannot drift onto lookalike definitions or inherit channel/MCP tools.
+ */
+export function getRestrictedReactionFeedbackTools(): OpenAI.ChatCompletionFunctionTool[] {
+  const orientationGetTool = baseToolDefinitions.find(
+    (definition) => definition.tool.function.name === "orientation_get",
+  )!.tool
+  return [settleTool, observeTool, orientationGetTool]
 }
 
 // Look up a tool definition from the combined registry (native + MCP).

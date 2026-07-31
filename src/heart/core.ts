@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, getRestrictedReactionFeedbackTools, riskProfileForToolName } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
@@ -360,6 +360,8 @@ export interface RunAgentOptions {
   /** When true, the observe tool is available in 1:1 chats (normally group-only).
    *  Used for reaction/feedback signals where silence is natural even in DMs. */
   isReactionSignal?: boolean;
+  /** One-inference, read-only terminal mode for trusted feedback reactions. */
+  restrictedReactionFeedback?: boolean;
   /** Pending messages from other sessions/private runtime, rendered in system prompt. */
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
@@ -561,6 +563,26 @@ function parseSettlePayload(argumentsText: string): { answer?: string; intent?: 
   } catch {
     return {};
   }
+}
+
+function matchesRegisteredToolArgumentSchema(
+  tool: OpenAI.ChatCompletionFunctionTool,
+  args: Record<string, unknown>,
+): boolean {
+  const parameters = tool.function.parameters as {
+    required?: string[]
+    properties: Record<string, { type?: string; enum?: unknown[] }>
+  }
+  for (const requiredKey of parameters.required ?? []) {
+    if (!(requiredKey in args)) return false
+  }
+  for (const [key, property] of Object.entries(parameters.properties)) {
+    const value = args[key]
+    if (value === undefined) continue
+    if (property.type === "string" && typeof value !== "string") return false
+    if (property.enum && !property.enum.includes(value)) return false
+  }
+  return true
 }
 
 function parsePonderPayload(argumentsText: string): ParsedPonderArgs {
@@ -990,7 +1012,8 @@ export async function runAgent(
   const facing = channelToFacing(channel);
   let providerRuntime = await getProviderRuntime(facing);
   const provider = providerRuntime.id;
-  const toolChoiceRequired = options?.toolChoiceRequired ?? true;
+  const restrictedReactionFeedback = options?.restrictedReactionFeedback === true;
+  const toolChoiceRequired = restrictedReactionFeedback ? true : options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
   emitNervesEvent({
     event: "engine.turn_start",
@@ -1132,19 +1155,28 @@ export async function runAgent(
     outcome = "errored";
     done = true;
   };
+  const finishRestrictedReactionFeedbackViolation = (reason: string): void => {
+    callbacks.onClearText?.();
+    finishTerminalProviderError(
+      new Error(`restricted reaction feedback failed closed: ${reason}`),
+      "unknown",
+    );
+  };
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
 
   const toolPreferences = currentContext?.friend?.toolPreferences;
-  const baseTools = options?.tools ?? getToolsForChannel(
-    channel ? getChannelCapabilities(channel) : undefined,
-    toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
-    currentContext,
-    providerRuntime.capabilities,
-    options?.mcpManager,
-    providerRuntime.model,
-  );
+  const baseTools = restrictedReactionFeedback
+    ? getRestrictedReactionFeedbackTools()
+    : options?.tools ?? getToolsForChannel(
+      channel ? getChannelCapabilities(channel) : undefined,
+      toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
+      currentContext,
+      providerRuntime.capabilities,
+      options?.mcpManager,
+      providerRuntime.model,
+    );
   // Augment tool context with reasoning effort controls from provider
   const baseToolContext: ToolContext | undefined = options?.toolContext
     ?? (options?.orientationFrame ? { signin: async () => undefined, orientationFrame: options.orientationFrame } : undefined)
@@ -1190,17 +1222,21 @@ export async function runAgent(
     const filteredBaseTools = isPrivateRuntimeChannel
       ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
-    const activeTools = [
-      ...filteredBaseTools,
-      ponderTool,
-      ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
-      ...(isPrivateRuntimeChannel ? [restTool] : []),
-      ...(!isPrivateRuntimeChannel ? [observeTool] : []),
-      ...(!isPrivateRuntimeChannel ? [settleTool] : []),
-      ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
-    ];
+    const activeTools = restrictedReactionFeedback
+      ? filteredBaseTools
+      : [
+        ...filteredBaseTools,
+        ponderTool,
+        ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
+        ...(isPrivateRuntimeChannel ? [restTool] : []),
+        ...(!isPrivateRuntimeChannel ? [observeTool] : []),
+        ...(!isPrivateRuntimeChannel ? [settleTool] : []),
+        ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
+      ];
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
-    const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
+    const steeringFollowUps = restrictedReactionFeedback
+      ? []
+      : options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
       if (hasSupersedingFollowUp) {
@@ -1249,7 +1285,7 @@ export async function runAgent(
             traceId,
             toolChoiceRequired,
             reasoningEffort: currentReasoningEffort,
-            eagerSettleStreaming: true,
+            eagerSettleStreaming: !restrictedReactionFeedback,
             systemPrompt: structuredSystemPrompt,
           });
         } catch (error) {
@@ -1283,8 +1319,9 @@ export async function runAgent(
         operation: "turn",
         provider: providerRuntime.id,
         model: providerRuntime.model,
-        run: callProviderTurnWithOverflowRecovery,
+        run: restrictedReactionFeedback ? callProviderTurn : callProviderTurnWithOverflowRecovery,
         classifyError: (error) => providerRuntime.classifyError(error),
+        ...(restrictedReactionFeedback ? { policy: { maxAttempts: 1 } } : {}),
         onRetry: async (record, maxAttempts) => {
           const delayMs = record.delayMs as number
           const seconds = delayMs / 1000
@@ -1389,6 +1426,121 @@ export async function runAgent(
 
       if (hasPhaseAnnotation) {
         (msg as AssistantMessageWithReasoning).phase = isSoleSettle ? "settle" : "commentary";
+      }
+
+      if (restrictedReactionFeedback) {
+        if (result.toolCalls.length !== 1) {
+          streamCallbackBuffer?.discard();
+          finishRestrictedReactionFeedbackViolation(
+            result.toolCalls.length === 0
+              ? "the provider returned no terminal tool"
+              : "the provider returned a mixed or multiple-tool batch",
+          );
+          continue;
+        }
+
+        const restrictedCall = result.toolCalls[0];
+        if (!activeToolNames.has(restrictedCall.name)) {
+          streamCallbackBuffer?.discard();
+          finishRestrictedReactionFeedbackViolation(
+            `the provider returned unregistered tool ${JSON.stringify(restrictedCall.name)}`,
+          );
+          continue;
+        }
+
+        let restrictedArgs: Record<string, unknown> | null = null;
+        try {
+          const parsed = JSON.parse(restrictedCall.arguments);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            restrictedArgs = parsed as Record<string, unknown>;
+          }
+        } catch {
+          restrictedArgs = null;
+        }
+        const registeredTool = activeTools.find(
+          (tool) => tool.function.name === restrictedCall.name,
+        )!;
+        const argumentsMatchSchema = restrictedArgs !== null
+          && matchesRegisteredToolArgumentSchema(registeredTool, restrictedArgs);
+        const callbackArgs = (restrictedArgs ?? {}) as Record<string, string>;
+
+        if (restrictedCall.name === "settle") {
+          const { answer, intent } = parseSettlePayload(restrictedCall.arguments);
+          callbacks.onToolStart("settle", callbackArgs);
+          if (!argumentsMatchSchema || answer === undefined || intent === "direct_reply") {
+            callbacks.onToolEnd("settle", summarizeArgs("settle", callbackArgs), false);
+            streamCallbackBuffer?.discard();
+            finishRestrictedReactionFeedbackViolation("settle arguments were malformed or requested continuation");
+            continue;
+          }
+
+          await streamCallbackBuffer?.flush();
+          callbacks.onToolEnd("settle", summarizeArgs("settle", callbackArgs), true);
+          const completionIntent = intent === "blocked" ? "blocked" : "complete";
+          completion = { answer, intent: completionIntent };
+          callbacks.onClearText?.();
+          callbacks.onTextChunk(answer);
+          messages.push(msg);
+          const delivered = "(delivered)";
+          messages.push({ role: "tool", tool_call_id: restrictedCall.id, content: delivered });
+          providerRuntime.appendToolOutput(restrictedCall.id, delivered);
+          outcome = completionIntent === "blocked" ? "blocked" : "settled";
+          done = true;
+          continue;
+        }
+
+        if (!argumentsMatchSchema) {
+          streamCallbackBuffer?.discard();
+          finishRestrictedReactionFeedbackViolation(`${restrictedCall.name} arguments were malformed`);
+          continue;
+        }
+
+        if (restrictedCall.name === "observe") {
+          callbacks.onClearText?.();
+          callbacks.onToolStart("observe", callbackArgs);
+          const reason = typeof callbackArgs.reason === "string" ? callbackArgs.reason : undefined;
+          emitNervesEvent({
+            component: "engine",
+            event: "engine.observe",
+            message: "agent observed without responding",
+            meta: { ...(reason ? { reason } : {}) },
+          });
+          callbacks.onToolEnd("observe", summarizeArgs("observe", callbackArgs), true);
+          messages.push(msg);
+          const silenced = "(silenced)";
+          messages.push({ role: "tool", tool_call_id: restrictedCall.id, content: silenced });
+          providerRuntime.appendToolOutput(restrictedCall.id, silenced);
+          outcome = "observed";
+          done = true;
+          continue;
+        }
+
+        callbacks.onClearText?.();
+        callbacks.onToolStart("orientation_get", callbackArgs);
+        let orientationReadSucceeded = false;
+        try {
+          const execToolFn = options?.execTool ?? execTool;
+          await execToolFn(
+            "orientation_get",
+            callbackArgs,
+            augmentedToolContext,
+          );
+          orientationReadSucceeded = true;
+        } catch {
+          orientationReadSucceeded = false;
+        }
+        callbacks.onToolEnd(
+          "orientation_get",
+          summarizeArgs("orientation_get", callbackArgs),
+          orientationReadSucceeded,
+        );
+        streamCallbackBuffer?.discard();
+        finishRestrictedReactionFeedbackViolation(
+          orientationReadSucceeded
+            ? "orientation_get completed but no terminal response can follow the single invocation"
+            : "orientation_get failed",
+        );
+        continue;
       }
 
       // Detect the MiniMax "only-thinking, no tool call" violation: no tool

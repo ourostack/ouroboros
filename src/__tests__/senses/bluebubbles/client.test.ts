@@ -159,6 +159,39 @@ describe("BlueBubbles client", () => {
     expect(request.tempGuid).toBe("temp-from-ledger")
   })
 
+  it("composes caller cancellation into the BlueBubbles send request signal", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+    const controller = new AbortController()
+
+    await client.sendText({
+      chat: dmChat,
+      text: "deadline-bound send",
+      signal: controller.signal,
+    })
+
+    const requestSignal = (global.fetch as any).mock.calls[0][1].signal as AbortSignal
+    expect(requestSignal).toBeInstanceOf(AbortSignal)
+    expect(requestSignal.aborted).toBe(false)
+    controller.abort(new Error("restricted deadline elapsed"))
+    expect(requestSignal.aborted).toBe(true)
+  })
+
   it("edits outbound messages through the BlueBubbles edit endpoint", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
 

@@ -26,6 +26,7 @@ import {
   type BlueBubblesChatRef,
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
+  type BlueBubblesNormalizedMutation,
   type BlueBubblesReactionTarget,
 } from "./model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
@@ -114,7 +115,7 @@ const bbInFlightMessageClaims = new Map<string, number>()
 export const BB_IN_FLIGHT_MAX_AGE_MS = 15 * 60_000
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
-  flush(): Promise<void>
+  flush(options?: { signal?: AbortSignal }): Promise<void>
   finish(options?: { timeoutMs?: number }): Promise<void>
   cancelOutbound(reason: "turn_timeout"): void
 }
@@ -210,7 +211,7 @@ export interface BlueBubblesHandleResult {
   handled: boolean
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "restricted_feedback_settled" | "restricted_feedback_observed" | "restricted_feedback_failed"
 }
 
 function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string {
@@ -858,6 +859,7 @@ export function createBlueBubblesCallbacks(
   replyTarget: BlueBubblesReplyTargetController,
   isGroupChat: boolean,
   onVisibleActivity?: () => void,
+  options: { enableSilenceWatchdog?: boolean; enableActivitySignals?: boolean } = {},
 ): BlueBubblesCallbacks {
   let textBuffer = ""
   let typingActive = false
@@ -1013,8 +1015,8 @@ export function createBlueBubblesCallbacks(
   return {
     onModelStart(): void {
       if (outboundClosed) return
-      startSilenceWatchdog()
-      if (!isGroupChat) startTypingNow()
+      if (options.enableSilenceWatchdog !== false) startSilenceWatchdog()
+      if (options.enableActivitySignals !== false && !isGroupChat) startTypingNow()
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_turn_start",
@@ -1034,7 +1036,7 @@ export function createBlueBubblesCallbacks(
 
     onTextChunk(text: string): void {
       if (outboundClosed) return
-      if (isGroupChat && !typingActive) startTypingNow()
+      if (options.enableActivitySignals !== false && isGroupChat && !typingActive) startTypingNow()
       textBuffer += text
     },
 
@@ -1046,7 +1048,7 @@ export function createBlueBubblesCallbacks(
       // console. Keep the human-facing thread quiet until the agent has real
       // text (or the generic silence watchdog fires), while preserving native
       // read/typing signals and nerves telemetry for debugging.
-      if (!typingActive && name !== "observe" && name !== "speak") startTypingNow()
+      if (options.enableActivitySignals !== false && !typingActive && name !== "observe" && name !== "speak") startTypingNow()
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_start",
@@ -1121,7 +1123,7 @@ export function createBlueBubblesCallbacks(
       })
     },
 
-    async flush(): Promise<void> {
+    async flush(flushOptions: { signal?: AbortSignal } = {}): Promise<void> {
       if (outboundClosed) {
         textBuffer = ""
         await waitForBlueBubblesCallbackCleanup(queue, BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS, {
@@ -1166,6 +1168,7 @@ export function createBlueBubblesCallbacks(
         chat,
         text: trimmed,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+        ...(flushOptions.signal ? { signal: flushOptions.signal } : {}),
       })
       recordVisibleActivity()
     },
@@ -1489,18 +1492,6 @@ async function handleBlueBubblesNormalizedEvent(
       })
     }
 
-    // Anchor reaction mutations to the message they point at, including whose
-    // message it was. Unresolved targets keep the explicit "unidentified message"
-    // wording that normalizeBlueBubblesEvent already produced.
-    const isReaction = event.kind === "mutation" && event.mutationType === "reaction"
-    if (isReaction && event.reaction && event.targetMessageGuid) {
-      /* v8 ignore start -- best-effort network lookup; resolveReactionTarget and renderBlueBubblesReactionText are covered by unit tests @preserve */
-      const target = options.resolvedReactionTarget
-        ?? await resolveReactionTarget(client, event.targetMessageGuid)
-      event.textForAgent = renderBlueBubblesReactionText(event.reaction, target)
-      /* v8 ignore stop */
-    }
-
     // Build inbound user message as user-visible speech only; source/routing facts live in the orientation frame.
     const priorMessages = existing?.messages ?? sessionMessages
     const userMessage: OpenAI.ChatCompletionMessageParam = {
@@ -1513,7 +1504,6 @@ async function handleBlueBubblesNormalizedEvent(
       currentUserMessages: [userMessage],
       structuredOutputs: existing?.structuredOutputs ?? [],
       source: buildBlueBubblesOrientationSource(event, priorMessages, repliedToText),
-      ...(isReaction ? { speechKind: "reaction" as const } : {}),
     })
 
     const visibleActivityTurnId = activeTurnId
@@ -1668,7 +1658,7 @@ async function handleBlueBubblesNormalizedEvent(
         },
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
-        runAgentOptions: { mcpManager, orientationFrame, ...(isReaction ? { isReactionSignal: true } : {}) },
+        runAgentOptions: { mcpManager, orientationFrame },
         callbacks: failoverAwareCallbacks,
         failoverState: (() => {
           if (!bbFailoverStates.has(event.chat.sessionKey)) {
@@ -2065,17 +2055,54 @@ function semanticHandledOutcome(
   if (event.kind === "message") {
     return result.notifiedAgent ? "message_completed" : "message_observed"
   }
-  if (event.mutationType === "edit") return "edit_capture_only"
-  if (event.mutationType === "unsend") return "unsend_capture_only"
-  if (event.mutationType === "read") return "read_audit_only"
-  if (event.mutationType === "delivery") return "delivery_audit_only"
-  return result.notifiedAgent ? "restricted_feedback_settled" : "restricted_feedback_observed"
+  switch (event.mutationType) {
+    case "edit": return "edit_capture_only"
+    case "unsend": return "unsend_capture_only"
+    case "read": return "read_audit_only"
+    case "delivery": return "delivery_audit_only"
+    case "reaction":
+      if (result.reason === "restricted_feedback_settled") return "restricted_feedback_settled"
+      if (result.reason === "restricted_feedback_observed") return "restricted_feedback_observed"
+      return "restricted_feedback_failed"
+  }
+}
+
+interface CapturedReactionClassification {
+  decision: BlueBubblesReactionPolicyDecision
+  trustedFriend: FriendRecord | null
+}
+
+type RestrictedBlueBubblesReactionEvent = BlueBubblesNormalizedMutation & {
+  mutationType: "reaction"
+  reaction: NonNullable<BlueBubblesNormalizedMutation["reaction"]>
+  targetMessageGuid: string
+}
+
+function materializeRestrictedBlueBubblesReactionEvent(
+  captured: CapturedBlueBubblesSemanticEvent,
+  repaired: BlueBubblesNormalizedEvent,
+): RestrictedBlueBubblesReactionEvent {
+  // Classification reached `restricted_feedback` from the validated v1
+  // capture's reaction tuple. Direct capture and recovery both construct the
+  // paired normalized event from that same tuple, so it is the authoritative
+  // reaction object; repair contributes routing only and may legitimately
+  // promote its own transport-shaped result to `message`.
+  const event = captured.normalized as RestrictedBlueBubblesReactionEvent
+  return {
+    ...event,
+    mutationType: "reaction",
+    reaction: event.reaction,
+    targetMessageGuid: event.targetMessageGuid,
+    chat: repaired.chat,
+    requiresRepair: repaired.requiresRepair,
+    repairNotice: repaired.repairNotice,
+  }
 }
 
 async function classifyCapturedBlueBubblesReaction(
   captured: CapturedBlueBubblesSemanticEvent,
   resolvedDeps: RuntimeDeps,
-): Promise<BlueBubblesReactionPolicyDecision | null> {
+): Promise<CapturedReactionClassification | null> {
   const event = captured.capture.event
   if (event.kind !== "reaction" || !event.canonicalAction || !event.canonicalValue) return null
 
@@ -2086,15 +2113,19 @@ async function classifyCapturedBlueBubblesReaction(
     targetAuthorship: event.targetAuthorship,
   }
   const initial = classifyBlueBubblesReaction(input)
-  if (initial.route !== "trust_required") return initial
+  if (initial.route !== "trust_required") {
+    return { decision: initial, trustedFriend: null }
+  }
 
   let trustedActor = false
+  let trustedFriend: FriendRecord | null = null
   try {
     const friend = await resolvedDeps.createFriendStore().findByExternalId(
       "imessage-handle",
       event.actor.externalId,
     )
     trustedActor = TRUSTED_LEVELS.has(friend?.trustLevel ?? "stranger")
+    if (trustedActor && friend) trustedFriend = friend
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -2108,7 +2139,125 @@ async function classifyCapturedBlueBubblesReaction(
       },
     })
   }
-  return classifyBlueBubblesReaction({ ...input, trustedActor })
+  return {
+    decision: classifyBlueBubblesReaction({ ...input, trustedActor }),
+    trustedFriend,
+  }
+}
+
+async function handleRestrictedBlueBubblesReactionFeedback(input: {
+  event: RestrictedBlueBubblesReactionEvent
+  trustedFriend: FriendRecord
+  client: BlueBubblesClient
+  resolvedDeps: RuntimeDeps
+  options: BlueBubblesHandleOptions
+  resolvedReactionTarget?: BlueBubblesReactionTarget
+}): Promise<BlueBubblesHandleResult> {
+  const { event, trustedFriend, client, resolvedDeps, options } = input
+  const target = input.resolvedReactionTarget
+    ?? await resolveReactionTarget(client, event.targetMessageGuid)
+  event.textForAgent = renderBlueBubblesReactionText(event.reaction, target)
+
+  const channel = getChannelCapabilities("bluebubbles")
+  const context = { friend: trustedFriend, channel, isGroupChat: event.chat.isGroup }
+  const userMessage: OpenAI.ChatCompletionMessageParam = {
+    role: "user",
+    content: buildInboundContent(event),
+  }
+  const orientationFrame = buildOrientationFrame({
+    channel: "bluebubbles",
+    messages: [userMessage],
+    currentUserMessages: [userMessage],
+    source: buildBlueBubblesOrientationSource(event, []),
+    speechKind: "reaction",
+  })
+  const callbacks = createBlueBubblesCallbacks(
+    client,
+    event.chat,
+    createReplyTargetController(event),
+    event.chat.isGroup,
+    undefined,
+    { enableSilenceWatchdog: false, enableActivitySignals: false },
+  )
+  const controller = new AbortController()
+  const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
+  let timeoutTimer!: ReturnType<typeof setTimeout>
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutTimer = setTimeout(() => {
+      const error = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
+      callbacks.cancelOutbound("turn_timeout")
+      controller.abort(error)
+      reject(error)
+    }, timeoutMs)
+    /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
+    if (typeof (timeoutTimer as { unref?: () => void }).unref === "function") {
+      (timeoutTimer as { unref: () => void }).unref()
+    }
+  })
+
+  try {
+    const restrictedTurnAndDelivery = async () => {
+      const result = await resolvedDeps.runAgent(
+        [userMessage],
+        callbacks,
+        "bluebubbles",
+        controller.signal,
+        {
+          isReactionSignal: true,
+          restrictedReactionFeedback: true,
+          skipKeptNotes: true,
+          orientationFrame,
+          toolContext: {
+            /* v8 ignore next -- ToolContext requires signin; restricted tools cannot invoke it @preserve */
+            signin: async () => undefined,
+            context,
+          },
+        },
+      )
+      if (result.outcome === "settled" || result.outcome === "blocked") {
+        await callbacks.flush({ signal: controller.signal })
+      }
+      return result
+    }
+    const result = await Promise.race([
+      restrictedTurnAndDelivery(),
+      timeoutPromise,
+    ])
+
+    if (result.outcome === "settled" || result.outcome === "blocked") {
+      return {
+        handled: true,
+        notifiedAgent: true,
+        kind: event.kind,
+        reason: "restricted_feedback_settled",
+      }
+    }
+    if (result.outcome === "observed") {
+      return {
+        handled: true,
+        notifiedAgent: false,
+        kind: event.kind,
+        reason: "restricted_feedback_observed",
+      }
+    }
+    return {
+      handled: true,
+      notifiedAgent: false,
+      kind: event.kind,
+      reason: "restricted_feedback_failed",
+    }
+  } catch (error) {
+    callbacks.onError(error instanceof Error ? error : new Error(String(error)), "terminal")
+    return {
+      handled: true,
+      notifiedAgent: false,
+      kind: event.kind,
+      reason: "restricted_feedback_failed",
+    }
+  } finally {
+    clearTimeout(timeoutTimer)
+    await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
+  }
 }
 
 function writeCapturedBlueBubblesHandled(
@@ -2159,7 +2308,8 @@ async function handleCapturedBlueBubblesSemanticEvent(
   }
 
   try {
-    const reactionDecision = await classifyCapturedBlueBubblesReaction(captured, resolvedDeps)
+    const reactionClassification = await classifyCapturedBlueBubblesReaction(captured, resolvedDeps)
+    const reactionDecision = reactionClassification?.decision ?? null
     if (reactionDecision?.route === "capture_only") {
       const result: BlueBubblesHandleResult = {
         handled: true,
@@ -2181,7 +2331,8 @@ async function handleCapturedBlueBubblesSemanticEvent(
         reason: "mutation_state_only",
       }
     } else {
-      const repaired = await resolvedDeps.createClient().repairEvent(captured.normalized)
+      const client = resolvedDeps.createClient()
+      const repaired = await client.repairEvent(captured.normalized)
       if (
         semanticCaptureRequiresRoutingRepair(captured.capture)
         && !hasResolvedBlueBubblesRouting(repaired)
@@ -2189,10 +2340,23 @@ async function handleCapturedBlueBubblesSemanticEvent(
         throw new Error("semantic_capture_routing_invalid")
       }
       handledEvent = repaired
-      result = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, source, {
-        ...options,
-        resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
-      })
+      if (reactionDecision?.route === "restricted_feedback") {
+        const restrictedEvent = materializeRestrictedBlueBubblesReactionEvent(captured, repaired)
+        handledEvent = restrictedEvent
+        result = await handleRestrictedBlueBubblesReactionFeedback({
+          event: restrictedEvent,
+          trustedFriend: reactionClassification!.trustedFriend!,
+          client,
+          resolvedDeps,
+          options,
+          resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
+        })
+      } else {
+        result = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, source, {
+          ...options,
+          resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
+        })
+      }
     }
     writeCapturedBlueBubblesHandled(
       agentName,
