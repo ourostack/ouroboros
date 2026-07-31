@@ -4,7 +4,13 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 
+const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
+vi.mock("../../../nerves/runtime", () => ({
+  emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
+}))
+
 import { OuroDaemon, handleAgentSenseTurn, messageFromHabitPokeError } from "../../../heart/daemon/daemon"
+import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-private-wake"
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 
 function tmpSocketPath(name: string): string {
@@ -148,8 +154,32 @@ describe("daemon command plane branches", () => {
     )
   }
 
+  function writeRawHabitFile(options: {
+    bundlesRoot: string
+    agent: string
+    habitName: string
+    content: string
+  }): void {
+    const habitsDir = path.join(options.bundlesRoot, `${options.agent}.ouro`, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(path.join(habitsDir, `${options.habitName}.md`), options.content, "utf-8")
+  }
+
+  function lifecycleEvidenceEvents(): Array<Record<string, any>> {
+    return mockEmitNervesEvent.mock.calls
+      .map(([event]) => event as Record<string, any>)
+      .filter((event) => event.event === "daemon.habit_dispatch_ready" || event.event === "daemon.habit_dispatch_skipped")
+  }
+
+  function lifecycleEvidenceInvocationOrder(eventName: "daemon.habit_dispatch_ready" | "daemon.habit_dispatch_skipped"): number {
+    const callIndex = mockEmitNervesEvent.mock.calls.findIndex(([event]) => event.event === eventName)
+    expect(callIndex).toBeGreaterThanOrEqual(0)
+    return mockEmitNervesEvent.mock.invocationCallOrder[callIndex]!
+  }
+
   afterEach(() => {
     vi.restoreAllMocks()
+    mockEmitNervesEvent.mockReset()
   })
 
   it("formats non-Error habit poke failures defensively", () => {
@@ -1387,6 +1417,296 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ["manual", "paused", "---\nstatus: paused\ntools: [shell, send_message]\n---\n\nDo not run.", null],
+    ["poke", "cancelled", "---\nstatus: cancelled\ntools: [shell, send_message]\n---\n\nDo not run.", null],
+    ["launchd", "degraded", "---\nstatus: retired\ncadence: 30m\ntools: [shell, send_message]\n---\n\nDo not run.", "invalid_status"],
+    ["cron", "degraded", "---\nstatus: active\ncadence: 30m\ntools: [shell, send_message]\nThis frontmatter never closes.", "unterminated_frontmatter"],
+  ] as const)(
+    "rejects a %s habit poke whose current lifecycle state is %s before policy or dispatch",
+    async (trigger, runtimeStatus, content, degradedReason) => {
+      const socketPath = tmpSocketPath(`daemon-habit-${trigger}-${runtimeStatus}`)
+      const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-habit-${trigger}-${runtimeStatus}-bundles-`))
+      const ledgerPath = path.join(os.tmpdir(), `habit-${trigger}-${runtimeStatus}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+      const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+      writeRawHabitFile({ bundlesRoot, agent: "slugger", habitName: "lifecycle-check", content })
+      const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+      processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+      const response = await daemon.handleCommand({
+        kind: "habit.poke",
+        agent: "slugger",
+        habitName: "lifecycle-check",
+        trigger,
+      })
+
+      expect(response).toEqual({
+        ok: true,
+        message: expect.stringMatching(new RegExp(`skipped scheduled habit lifecycle-check for slugger: habit status ${runtimeStatus} is non-executable`)),
+      })
+      expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+      expect(fs.existsSync(ledgerPath)).toBe(false)
+      expect(processManager.startAgent).not.toHaveBeenCalled()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+      expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+        event: "daemon.habit_dispatch_skipped",
+        level: "warn",
+        meta: expect.objectContaining({
+          agent: "slugger",
+          habitName: "lifecycle-check",
+          trigger,
+          status: runtimeStatus,
+          degradedReason,
+        }),
+      })])
+    },
+  )
+
+  it.each([
+    ["cron", "paused", "---\nstatus: paused\ncadence: 30m\n---\n\nDo not run."],
+    ["launchd", "cancelled", "---\nstatus: cancelled\ncadence: 30m\n---\n\nDo not run."],
+    ["overdue", "degraded", "---\nstatus: active\ncadence: 30m\nThis frontmatter never closes."],
+  ] as const)("rejects a canonical scheduled %s private wake whose current lifecycle state is %s", async (trigger, status, content) => {
+    const socketPath = tmpSocketPath(`daemon-private-wake-${trigger}-${status}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-private-wake-${trigger}-${status}-bundles-`))
+    const ledgerPath = path.join(os.tmpdir(), `habit-private-wake-${trigger}-${status}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeRawHabitFile({ bundlesRoot, agent: "slugger", habitName: "scheduled-check", content })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const response = await daemon.handleCommand(buildHabitPrivateWakeCommand({
+      agent: "slugger",
+      habitName: "scheduled-check",
+      trigger,
+      sourceRef: { kind: "daemon-entry", id: "habit-scheduler" },
+      occurrenceId: `${trigger}:occurrence`,
+    }))
+
+    expect(response).toEqual({
+      ok: true,
+      message: expect.stringMatching(new RegExp(`skipped scheduled habit scheduled-check for slugger: habit status ${status} is non-executable`)),
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_skipped",
+      meta: expect.objectContaining({
+        agent: "slugger",
+        habitName: "scheduled-check",
+        trigger,
+        status,
+      }),
+    })])
+  })
+
+  it.each([
+    ["cron", "missing", false],
+    ["overdue", "unreadable", true],
+  ] as const)("rejects a canonical scheduled %s private wake with a %s definition", async (trigger, habitName, makeUnreadable) => {
+    const socketPath = tmpSocketPath(`daemon-private-wake-${trigger}-${habitName}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-private-wake-${trigger}-${habitName}-bundles-`))
+    const ledgerPath = path.join(os.tmpdir(), `habit-private-wake-${trigger}-${habitName}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    if (makeUnreadable) {
+      fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro", "habits", `${habitName}.md`), { recursive: true })
+    }
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const response = await daemon.handleCommand(buildHabitPrivateWakeCommand({
+      agent: "slugger",
+      habitName,
+      trigger,
+      sourceRef: { kind: "daemon-entry", id: "habit-scheduler" },
+      occurrenceId: `${trigger}:occurrence`,
+    }))
+
+    expect(response).toEqual({
+      ok: true,
+      message: expect.stringMatching(new RegExp(`skipped scheduled habit ${habitName} for slugger: habit status degraded is non-executable`)),
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_skipped",
+      meta: expect.objectContaining({
+        agent: "slugger",
+        habitName,
+        trigger,
+        status: "degraded",
+        degradedReason: "read_error",
+      }),
+    })])
+  })
+
+  it("records active canonical scheduled private-wake evidence before policy and worker dispatch", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-active")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-private-wake-active-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-private-wake-active-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "scheduled-active", cadence: "30m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const response = await daemon.handleCommand(buildHabitPrivateWakeCommand({
+      agent: "slugger",
+      habitName: "scheduled-active",
+      trigger: "launchd",
+      sourceRef: { kind: "daemon-entry", id: "habit-scheduler" },
+      occurrenceId: "launchd:occurrence",
+    }))
+
+    expect(response).toMatchObject({ ok: true, message: "woke private runtime for slugger" })
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_ready",
+      meta: expect.objectContaining({
+        agent: "slugger",
+        habitName: "scheduled-active",
+        trigger: "launchd",
+        status: "active",
+      }),
+    })])
+    expect(lifecycleEvidenceInvocationOrder("daemon.habit_dispatch_ready"))
+      .toBeLessThan(policyDeps.evaluatePolicy.mock.invocationCallOrder[0]!)
+    expect(lifecycleEvidenceInvocationOrder("daemon.habit_dispatch_ready"))
+      .toBeLessThan(processManager.sendToAgent.mock.invocationCallOrder[0]!)
+  })
+
+  it.each([
+    ["manual", "missing", false],
+    ["poke", "unreadable", true],
+  ] as const)("rejects a %s %s habit definition as degraded before policy or dispatch", async (trigger, habitName, makeUnreadable) => {
+    const socketPath = tmpSocketPath(`daemon-habit-${habitName}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-habit-${habitName}-bundles-`))
+    const ledgerPath = path.join(os.tmpdir(), `habit-${habitName}-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    if (makeUnreadable) {
+      fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro", "habits", `${habitName}.md`), { recursive: true })
+    }
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const response = await daemon.handleCommand({ kind: "habit.poke", agent: "slugger", habitName, trigger })
+
+    expect(response).toEqual({
+      ok: true,
+      message: expect.stringMatching(new RegExp(`skipped scheduled habit ${habitName} for slugger: habit status degraded is non-executable`)),
+    })
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_skipped",
+      meta: expect.objectContaining({
+        agent: "slugger",
+        habitName,
+        trigger,
+        status: "degraded",
+        degradedReason: "read_error",
+      }),
+    })])
+  })
+
+  it("records active habit dispatch evidence before entering private-runtime policy", async () => {
+    const socketPath = tmpSocketPath("daemon-habit-active-evidence")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-active-evidence-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `habit-active-evidence-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "heartbeat", cadence: "30m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const response = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "manual",
+    })
+
+    expect(response.ok).toBe(true)
+    expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_ready",
+      meta: expect.objectContaining({
+        agent: "slugger",
+        habitName: "heartbeat",
+        trigger: "manual",
+        status: "active",
+      }),
+    })])
+    expect(lifecycleEvidenceInvocationOrder("daemon.habit_dispatch_ready"))
+      .toBeLessThan(policyDeps.evaluatePolicy.mock.invocationCallOrder[0]!)
+    expect(lifecycleEvidenceInvocationOrder("daemon.habit_dispatch_ready"))
+      .toBeLessThan(processManager.sendToAgent.mock.invocationCallOrder[0]!)
+  })
+
+  it.each([
+    ["missing", null, "read_error", "RSVP habit file not found"],
+    ["unreadable", "directory", "read_error", "RSVP habit metadata invalid"],
+    ["unterminated", "---\nstatus: active\ncadence: 0 10 * * *\nThis frontmatter never closes.", "unterminated_frontmatter", "RSVP habit metadata invalid"],
+    ["paused", "paused", null, "habit status paused is non-executable"],
+    ["cancelled", "cancelled", null, "habit status cancelled is non-executable"],
+    ["invalid", "retired", "invalid_status", "RSVP habit metadata invalid"],
+  ] as const)("rejects a typed RSVP %s definition before the native runner", async (fixture, fixtureState, degradedReason, messageFragment) => {
+    const socketPath = tmpSocketPath(`daemon-rsvp-${fixture}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-rsvp-${fixture}-bundles-`))
+    const rsvpHabitRunner = vi.fn()
+    const habitPath = path.join(bundlesRoot, "slugger.ouro", "habits", "rsvp-wedding.md")
+    if (fixtureState === "directory") {
+      fs.mkdirSync(habitPath, { recursive: true })
+    } else if (fixtureState !== null) {
+      const content = fixture === "unterminated"
+        ? fixtureState
+        : [
+            "---",
+            `status: ${fixtureState}`,
+            "cadence: 0 10 * * *",
+            "rsvp:",
+            "  policyVersion: rsvp-habit/v1",
+            "  mode: shadow",
+            "  sense: bluebubbles",
+            "  source: aisleplanner",
+            "  routeRef: rsvp/config.json#bluebubblesRoute",
+            "  snapshotRef: state/rsvp/snapshots/latest.json",
+            "  outboundStateRef: state/rsvp/outbound-state.json",
+            "  budgetRef: state/rsvp/spend-ledger.json",
+            "  idempotencyRef: state/rsvp/outbound-state.json",
+            "  liveSendEligible: false",
+            "---",
+            "",
+            "Do not run.",
+          ].join("\n")
+      writeRawHabitFile({ bundlesRoot, agent: "slugger", habitName: "rsvp-wedding", content })
+    }
+    const { daemon } = make(socketPath, bundlesRoot, { rsvpHabitRunner })
+
+    const response = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "rsvp-wedding",
+      trigger: "manual",
+    })
+
+    expect(response).toEqual({
+      ok: true,
+      message: expect.stringContaining(messageFragment),
+    })
+    expect(rsvpHabitRunner).not.toHaveBeenCalled()
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_skipped",
+      meta: expect.objectContaining({
+        habitName: "rsvp-wedding",
+        status: fixture === "paused" || fixture === "cancelled" ? fixture : "degraded",
+        degradedReason,
+      }),
+    })])
+  })
+
   it("skips RSVP habit pokes with missing habit files before policy evaluation", async () => {
     const socketPath = tmpSocketPath("daemon-rsvp-habit-poke-missing")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-rsvp-habit-poke-missing-bundles-"))
@@ -1605,6 +1925,17 @@ describe("daemon command plane branches", () => {
       habitName: "rsvp-wedding",
       trigger: "manual",
     }))
+    expect(lifecycleEvidenceEvents()).toEqual([expect.objectContaining({
+      event: "daemon.habit_dispatch_ready",
+      meta: expect.objectContaining({
+        agent: "slugger",
+        habitName: "rsvp-wedding",
+        trigger: "manual",
+        status: "active",
+      }),
+    })])
+    expect(lifecycleEvidenceInvocationOrder("daemon.habit_dispatch_ready"))
+      .toBeLessThan(rsvpHabitRunner.mock.invocationCallOrder[0]!)
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
     expect(fs.existsSync(ledgerPath)).toBe(false)
     expect(processManager.startAgent).not.toHaveBeenCalled()

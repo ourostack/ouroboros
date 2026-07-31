@@ -281,6 +281,35 @@ function expectExplicitBlueBubblesClientConfig(): void {
 }
 
 describe("ouro rsvp operational CLI wiring", () => {
+  it("lists cancelled, parser-degraded, and unreadable habits truthfully without aborting", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    const habitsDir = path.join(tmp.agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "cancelled-report.md"),
+      "---\nstatus: cancelled\ncadence: 24h\n---\n\nDo not run.",
+      "utf8",
+    )
+    fs.writeFileSync(
+      path.join(habitsDir, "invalid-report.md"),
+      "---\nstatus: retired\ncadence: 24h\n---\n\nInvalid definition.",
+      "utf8",
+    )
+    fs.mkdirSync(path.join(habitsDir, "unreadable-report.md"))
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot })
+
+    try {
+      const result = await runOuroCli(["habit", "list", "--agent", "slugger"], deps)
+
+      expect(result).toContain("cancelled-report  cadence=24h  status=cancelled")
+      expect(result).toMatch(/invalid-report\s+cadence=none\s+status=degraded\s+degradedReason=invalid_status/)
+      expect(result).toMatch(/unreadable-report\s+cadence=none\s+status=degraded\s+degradedReason=read_error/)
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("runs bare import-legacy through native RSVP state migration, not config import", async () => {
     mockRuntimeCredentials()
     const tmp = seedBundle()

@@ -29,7 +29,7 @@ vi.mock("../../../heart/machine-identity", () => ({
 }))
 
 import type { DoctorDeps } from "../../../heart/daemon/doctor-types"
-import { checkRsvp, runDoctorChecks } from "../../../heart/daemon/doctor"
+import { checkHabits, checkRsvp, runDoctorChecks } from "../../../heart/daemon/doctor"
 import { RSVP_CONFIG_POLICY_VERSION, rsvpConfigPath } from "../../../rsvp/config"
 
 const tempRoots: string[] = []
@@ -482,6 +482,48 @@ describe("RSVP doctor checks", () => {
         label: "slugger.ouro RSVP habit schedule",
         status: "fail",
         detail: expect.stringMatching(/typed RSVP habit metadata/i),
+      }),
+    ]))
+  })
+
+  it("reports cancelled and degraded habit lifecycle states by name and reason", () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "cancelled-report.md"),
+      "---\nstatus: cancelled\ncadence: 24h\n---\n\nDo not run.",
+      "utf8",
+    )
+    fs.writeFileSync(
+      path.join(habitsDir, "invalid-report.md"),
+      "---\nstatus: retired\ncadence: 24h\n---\n\nInvalid definition.",
+      "utf8",
+    )
+    fs.mkdirSync(path.join(habitsDir, "unreadable-report.md"))
+
+    const category = checkHabits(depsFor(bundlesRoot))
+
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "habits.lifecycle",
+        label: "slugger.ouro habit lifecycle",
+        status: "fail",
+        detail: expect.stringMatching(/cancelled-report=cancelled/),
+      }),
+      expect.objectContaining({
+        id: "habits.lifecycle",
+        detail: expect.stringMatching(/invalid-report=degraded\(invalid_status\)/),
+      }),
+      expect.objectContaining({
+        id: "habits.lifecycle",
+        detail: expect.stringMatching(/unreadable-report=degraded\(read_error\)/),
+      }),
+      expect.objectContaining({
+        label: "slugger.ouro launchd plists",
+        status: "pass",
+        detail: "no active scheduled habits require launchd",
       }),
     ]))
   })
