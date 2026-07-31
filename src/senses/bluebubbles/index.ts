@@ -1942,17 +1942,38 @@ function semanticCaptureChat(
   const sessionKey = event.sessionKey?.trim()
   const chatGuid = event.chatGuid?.trim() || undefined
   const chatIdentifier = event.chatIdentifier?.trim() || undefined
-  if (!sessionKey || (!chatGuid && !chatIdentifier)) return null
+  if (!sessionKey) return null
+  const fallbackSendTarget = sessionKey.startsWith("chat:")
+    ? { kind: "chat_guid" as const, value: sessionKey.slice("chat:".length).trim() }
+    : sessionKey.startsWith("chat_identifier:")
+      ? { kind: "chat_identifier" as const, value: sessionKey.slice("chat_identifier:".length).trim() }
+      : null
+  const sendTarget = chatGuid
+    ? { kind: "chat_guid" as const, value: chatGuid }
+    : chatIdentifier
+      ? { kind: "chat_identifier" as const, value: chatIdentifier }
+      : fallbackSendTarget
+  if (!sendTarget?.value) return null
   return {
     chatGuid,
     chatIdentifier,
     isGroup: Boolean(chatGuid?.includes(";+;") || event.participants.length > 1),
     sessionKey,
-    sendTarget: chatGuid
-      ? { kind: "chat_guid", value: chatGuid }
-      : { kind: "chat_identifier", value: chatIdentifier! },
+    sendTarget,
     participantHandles: event.participants.map((participant) => participant.externalId),
   }
+}
+
+function semanticCaptureRequiresRoutingRepair(capture: BlueBubblesSemanticCaptureV1): boolean {
+  return !capture.event.chatGuid?.trim() && !capture.event.chatIdentifier?.trim()
+}
+
+function hasResolvedBlueBubblesRouting(event: BlueBubblesNormalizedEvent): boolean {
+  return Boolean(event.chat.chatGuid?.trim() || event.chat.chatIdentifier?.trim())
+}
+
+function isAuditOnlySemanticCapture(capture: BlueBubblesSemanticCaptureV1): boolean {
+  return capture.event.kind === "read" || capture.event.kind === "delivery"
 }
 
 function semanticCaptureToNormalizedEvent(
@@ -2077,17 +2098,35 @@ async function handleCapturedBlueBubblesSemanticEvent(
   }
 
   try {
-    const repaired = await resolvedDeps.createClient().repairEvent(captured.normalized)
-    const result = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, source, {
-      ...options,
-      resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
-    })
+    let handledEvent = captured.normalized
+    let result: BlueBubblesHandleResult
+    if (isAuditOnlySemanticCapture(captured.capture)) {
+      result = {
+        handled: true,
+        notifiedAgent: false,
+        kind: captured.normalized.kind,
+        reason: "mutation_state_only",
+      }
+    } else {
+      const repaired = await resolvedDeps.createClient().repairEvent(captured.normalized)
+      if (
+        semanticCaptureRequiresRoutingRepair(captured.capture)
+        && !hasResolvedBlueBubblesRouting(repaired)
+      ) {
+        throw new Error("semantic_capture_routing_invalid")
+      }
+      handledEvent = repaired
+      result = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, source, {
+        ...options,
+        resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
+      })
+    }
     const handledResult = writeBlueBubblesSemanticHandled(agentName, {
       schemaVersion: 1,
       canonicalKey: captured.capture.canonicalKey,
       keyHash: captured.capture.keyHash,
       handledAt: new Date().toISOString(),
-      outcome: semanticHandledOutcome(repaired, result),
+      outcome: semanticHandledOutcome(handledEvent, result),
       detailCode: null,
     })
     if (handledResult === "semantic_handled_collision") {

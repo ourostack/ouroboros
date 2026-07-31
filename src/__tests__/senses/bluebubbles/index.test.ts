@@ -9726,7 +9726,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
     expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
   })
 
-  it("fails closed for injected semantic captures with incomplete routing evidence", async () => {
+  it("keeps incomplete routing pending when repair cannot restore coordinates", async () => {
     const missingSessionBase = await makeStoredSemanticCapture({
       ...dmTopLevelPayload,
       data: { ...dmTopLevelPayload.data, guid: "CAPTURE-MISSING-SESSION" },
@@ -9738,6 +9738,10 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
     const missingGuidBase = await makeStoredSemanticCapture({
       ...dmTopLevelPayload,
       data: { ...dmTopLevelPayload.data, guid: "CAPTURE-MISSING-EVENT-GUID" },
+    })
+    const opaqueSessionBase = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "CAPTURE-OPAQUE-SESSION" },
     })
     mocks.listPendingSemanticCaptures.mockReturnValueOnce([
       {
@@ -9752,19 +9756,113 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
         ...missingGuidBase,
         event: { ...missingGuidBase.event, eventGuid: null },
       },
+      {
+        ...opaqueSessionBase,
+        event: {
+          ...opaqueSessionBase.event,
+          sessionKey: "opaque-session",
+          chatGuid: null,
+          chatIdentifier: null,
+        },
+      },
     ])
     const bluebubbles = await import("../../../senses/bluebubbles")
 
     await expect(bluebubbles.recoverCapturedBlueBubblesInboundMessages()).resolves.toEqual({
       recovered: 0,
       skipped: 0,
-      failed: 3,
+      failed: 4,
     })
-    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
+    expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
+      messageGuid: "capture-missing-chat",
+      requiresRepair: true,
+    }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_capture_recovery_error",
       meta: expect.objectContaining({ reason: "semantic_capture_routing_invalid" }),
     }))
+  })
+
+  it("settles read and delivery captures without allowing repair to promote them into model work", async () => {
+    const read = await makeStoredSemanticCapture({
+      ...readPayload,
+      data: { ...readPayload.data, guid: "AUDIT-READ-CANNOT-PROMOTE" },
+    })
+    const delivery = await makeStoredSemanticCapture({
+      ...deliveryPayload,
+      data: { ...deliveryPayload.data, guid: "AUDIT-DELIVERY-CANNOT-PROMOTE" },
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValueOnce([read, delivery])
+    mocks.repairEvent.mockImplementation(async (event: any) => ({
+      ...makeCatchUpMessage({
+        messageGuid: event.messageGuid,
+        text: "repair tried to promote audit state into a message",
+      }),
+      requiresRepair: false,
+    }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 0, skipped: 2, failed: 0 })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled.mock.calls.map((call: unknown[]) => call[1].outcome)).toEqual([
+      "read_audit_only",
+      "delivery_audit_only",
+    ])
+  })
+
+  it("repairs a captured unknown route by message guid before starting recovered work", async () => {
+    const capture = await makeStoredSemanticCapture({
+      type: "new-message",
+      data: {
+        guid: "RECOVERABLE-UNKNOWN-ROUTE",
+        text: "recover me by immutable guid",
+        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        attachments: [],
+        dateCreated: 1772946889999,
+        isFromMe: false,
+        chats: [{}],
+      },
+    })
+    expect(capture.event).toEqual(expect.objectContaining({
+      eventGuid: "recoverable-unknown-route",
+      sessionKey: "chat_identifier:unknown",
+      chatGuid: null,
+      chatIdentifier: null,
+    }))
+    mocks.listPendingSemanticCaptures.mockReturnValueOnce([capture])
+    mocks.repairEvent.mockImplementationOnce(async (event: any) => ({
+      ...event,
+      chat: {
+        ...makeCatchUpMessage().chat,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+      },
+      requiresRepair: false,
+    }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
+      messageGuid: "recoverable-unknown-route",
+      chat: expect.objectContaining({
+        sessionKey: "chat_identifier:unknown",
+        chatGuid: undefined,
+        chatIdentifier: undefined,
+        sendTarget: { kind: "chat_identifier", value: "unknown" },
+      }),
+      requiresRepair: true,
+    }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ outcome: "message_completed" }),
+    )
   })
 
   it("reconstructs every semantic event kind and nullable routing field before handling", async () => {
