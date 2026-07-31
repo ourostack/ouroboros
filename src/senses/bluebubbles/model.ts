@@ -19,6 +19,8 @@ export type BlueBubblesSenderRef = {
   externalId: string
   rawId: string
   displayName: string
+  /** True only when the transport supplied the sender identity directly. */
+  observed?: boolean
 }
 
 export type BlueBubblesSendTarget =
@@ -68,6 +70,8 @@ export type BlueBubblesReactionAction = "add" | "remove"
  */
 export type BlueBubblesReactionDescriptor = {
   raw: string
+  rawTransportValue: string
+  canonicalValue: "love" | "like" | "dislike" | "laugh" | "emphasize" | "question" | "custom" | "unknown"
   action: BlueBubblesReactionAction
   verb?: string
   noun?: string
@@ -97,6 +101,14 @@ export type BlueBubblesNormalizedMutation = {
   repairNotice?: string
   /** Present for `mutationType: "reaction"` so senses can re-render once the target resolves. */
   reaction?: BlueBubblesReactionDescriptor
+  /** Exact provider edit text; presentation text may be trimmed separately. */
+  editedText?: string
+  /** Exact trimmed provider revision, when supplied. */
+  revision?: string
+  /** Mutation-specific effective timestamp in epoch milliseconds. */
+  effectiveTimestamp?: number
+  /** Provider retraction timestamp retained separately for boundary evidence. */
+  retractionTimestamp?: number
 }
 
 export type BlueBubblesNormalizedEvent =
@@ -195,10 +207,13 @@ function buildChatRef(data: JsonRecord, threadOriginatorGuid?: string): BlueBubb
 
 function extractSender(data: JsonRecord, chat: BlueBubblesChatRef): BlueBubblesSenderRef {
   const handle = asRecord(data.handle) ?? asRecord(data.sender) ?? null
-  const rawId =
+  const observedRawId =
     readString(handle, "address") ??
     readString(handle, "id") ??
-    readString(data, "senderId") ??
+    readString(data, "senderId")
+  const observed = typeof observedRawId === "string" && observedRawId.trim().length > 0
+  const rawId =
+    observedRawId ??
     chat.chatIdentifier ??
     chat.chatGuid ??
     "unknown"
@@ -209,6 +224,7 @@ function extractSender(data: JsonRecord, chat: BlueBubblesChatRef): BlueBubblesS
     externalId,
     rawId,
     displayName,
+    observed,
   }
 }
 
@@ -276,7 +292,12 @@ function normalizeReactionName(value: unknown): string | undefined {
  * iMessage tapbacks: associated_message_type 2000-2005 add a tapback, 3000-3005
  * remove the same tapback. BlueBubbles may send either the code or the name.
  */
-const REACTION_VOCABULARY: ReadonlyArray<{ code: number; name: string; verb: string; noun: string }> = [
+const REACTION_VOCABULARY: ReadonlyArray<{
+  code: number
+  name: Exclude<BlueBubblesReactionDescriptor["canonicalValue"], "custom" | "unknown">
+  verb: string
+  noun: string
+}> = [
   { code: 2000, name: "love", verb: "loved", noun: "love" },
   { code: 2001, name: "like", verb: "liked", noun: "like" },
   { code: 2002, name: "dislike", verb: "disliked", noun: "dislike" },
@@ -287,15 +308,27 @@ const REACTION_VOCABULARY: ReadonlyArray<{ code: number; name: string; verb: str
 
 const REACTION_EXCERPT_MAX_LENGTH = 80
 
-export function describeBlueBubblesReaction(raw: string): BlueBubblesReactionDescriptor {
+export function describeBlueBubblesReaction(
+  raw: string,
+  rawTransportValue: string = raw,
+): BlueBubblesReactionDescriptor {
   const stripped = raw.startsWith("-") ? raw.slice(1) : raw
   const code = /^\d+$/.test(stripped) ? Number(stripped) : undefined
   const removal = raw.startsWith("-") || (code !== undefined && code >= 3000 && code < 4000)
   const action: BlueBubblesReactionAction = removal ? "remove" : "add"
   const entry = REACTION_VOCABULARY.find((candidate) =>
     candidate.name === stripped || candidate.code === code || candidate.code + 1000 === code)
-  if (!entry) return { raw, action }
-  return { raw, action, verb: entry.verb, noun: entry.noun }
+  const canonicalValue = entry?.name
+    ?? (code === 2006 || code === 3006 ? "custom" : "unknown")
+  if (!entry) return { raw, rawTransportValue, canonicalValue, action }
+  return {
+    raw,
+    rawTransportValue,
+    canonicalValue,
+    action,
+    verb: entry.verb,
+    noun: entry.noun,
+  }
 }
 
 function reactionExcerpt(text: string): string {
@@ -369,12 +402,30 @@ function detectMutationType(
 ): BlueBubblesMutationType | null {
   if (reactionName) return "reaction"
   if (eventType === "updated-message") {
-    if (readNumber(data, "dateRetracted")) return "unsend"
-    if (readNumber(data, "dateEdited")) return "edit"
-    if (readNumber(data, "dateRead")) return "read"
-    if (readBoolean(data, "isDelivered") || readNumber(data, "dateDelivered")) return "delivery"
+    if (readNumber(data, "dateRetracted") !== undefined) return "unsend"
+    if (readNumber(data, "dateEdited") !== undefined) return "edit"
+    if (readNumber(data, "dateRead") !== undefined) return "read"
+    if (readBoolean(data, "isDelivered") || readNumber(data, "dateDelivered") !== undefined) return "delivery"
   }
   return null
+}
+
+function readProviderRevision(data: JsonRecord): string | undefined {
+  const value = data.revision
+  if (typeof value !== "string" && typeof value !== "number") return undefined
+  const normalized = String(value).trim()
+  return normalized || undefined
+}
+
+function mutationEffectiveTimestamp(
+  mutationType: BlueBubblesMutationType,
+  data: JsonRecord,
+): number | undefined {
+  if (mutationType === "reaction") return readNumber(data, "dateCreated")
+  if (mutationType === "edit") return readNumber(data, "dateEdited")
+  if (mutationType === "unsend") return readNumber(data, "dateRetracted")
+  if (mutationType === "read") return readNumber(data, "dateRead")
+  return readNumber(data, "dateDelivered")
 }
 
 export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormalizedEvent {
@@ -417,11 +468,21 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
   const fromMe = readBoolean(data, "isFromMe") ?? false
   const attachments = extractAttachments(data)
   const reactionName = normalizeReactionName(data.associatedMessageType)
-  const reaction = reactionName ? describeBlueBubblesReaction(reactionName) : undefined
+  const reaction = reactionName
+    ? describeBlueBubblesReaction(reactionName, String(data.associatedMessageType))
+    : undefined
   const targetMessageGuid = reaction
     ? stripPartPrefix(readString(data, "associatedMessageGuid"))
     : undefined
   const mutationType = detectMutationType(eventType, data, reactionName)
+  const revision = mutationType ? readProviderRevision(data) : undefined
+  const effectiveTimestamp = mutationType
+    ? mutationEffectiveTimestamp(mutationType, data)
+    : undefined
+  const editedText = mutationType === "edit" ? readString(data, "text") : undefined
+  const retractionTimestamp = mutationType === "unsend"
+    ? readNumber(data, "dateRetracted")
+    : undefined
   const requiresRepair =
     (readBoolean(data, "hasPayloadData") ?? false) ||
     attachments.length > 0 ||
@@ -444,6 +505,10 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
           : buildMutationText(mutationType, data),
         requiresRepair,
         ...(reaction ? { reaction } : {}),
+        ...(editedText !== undefined ? { editedText } : {}),
+        ...(revision ? { revision } : {}),
+        ...(effectiveTimestamp !== undefined ? { effectiveTimestamp } : {}),
+        ...(retractionTimestamp !== undefined ? { retractionTimestamp } : {}),
       }
     : {
         kind: "message",
@@ -453,7 +518,7 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
         fromMe,
         sender,
         chat,
-        text: readString(data, "text")?.trim() ?? "",
+        text: readString(data, "text") ?? "",
         textForAgent: formatMessageText(data, attachments),
         attachments,
         balloonBundleId: readString(data, "balloonBundleId")?.trim() || undefined,

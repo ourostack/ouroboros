@@ -215,7 +215,7 @@ const editedPayload = {
   type: "updated-message",
   data: {
     guid: "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
-    text: "edited version",
+    text: "  edited version  ",
     handle: {
       address: "ari@mendelow.me",
       service: "iMessage",
@@ -224,6 +224,7 @@ const editedPayload = {
     attachments: [],
     dateCreated: 1772949000000,
     dateEdited: 1772949005000,
+    revision: " Edit-Revision-2 ",
     dateRetracted: null,
     isDelivered: true,
     dateRead: null,
@@ -479,6 +480,7 @@ describe("normalizeBlueBubblesEvent", () => {
     expect(result.chat.isGroup).toBe(false)
     expect(result.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
     expect(result.sender.externalId).toBe("ari@mendelow.me")
+    expect(result.sender.observed).toBe(true)
     expect(result.messageGuid).toBe("CCDE56E5-8D22-4DF9-B1A8-98E868A1B234")
     expect(result.textForAgent).toContain("https://ouroboros.bot")
     expect(result.textForAgent).toContain("link preview")
@@ -734,7 +736,15 @@ describe("normalizeBlueBubblesEvent", () => {
     expect(result.mutationType).toBe("reaction")
     expect(result.shouldNotifyAgent).toBe(true)
     expect(result.targetMessageGuid).toBe("CB4EB152-A678-4F0E-8075-1AB09B5496F8")
-    expect(result.reaction).toEqual({ raw: "love", action: "add", verb: "loved", noun: "love" })
+    expect(result.reaction).toEqual({
+      raw: "love",
+      rawTransportValue: "love",
+      canonicalValue: "love",
+      action: "add",
+      verb: "loved",
+      noun: "love",
+    })
+    expect(result.effectiveTimestamp).toBe(1772948058386)
   })
 
   it("names an unresolved reaction target instead of emitting a bare stub", async () => {
@@ -764,8 +774,37 @@ describe("normalizeBlueBubblesEvent", () => {
 
     expect(numeric.kind).toBe("mutation")
     expect(numeric.mutationType).toBe("reaction")
-    expect(numeric.reaction).toMatchObject({ raw: "2000", action: "add", verb: "loved" })
+    expect(numeric.reaction).toMatchObject({
+      raw: "2000",
+      rawTransportValue: "2000",
+      canonicalValue: "love",
+      action: "add",
+      verb: "loved",
+    })
     expect(numeric.targetMessageGuid).toBe("TARGET-2000")
+  })
+
+  it("keeps the exact raw reaction value while canonicalizing its semantic alias", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const result = normalizeBlueBubblesEvent({
+      type: "updated-message",
+      data: {
+        guid: "REACTION-ALIAS-1",
+        associatedMessageGuid: "p:0/TARGET-ALIAS-1",
+        associatedMessageType: " LOVE ",
+        dateCreated: 1772948059000,
+        handle: { address: "sender@example.com" },
+        chats: [{ guid: "any;-;sender@example.com" }],
+      },
+    })
+
+    expect(result.kind).toBe("mutation")
+    expect(result.reaction).toMatchObject({
+      raw: "love",
+      rawTransportValue: " LOVE ",
+      canonicalValue: "love",
+      action: "add",
+    })
   })
 
   it("ignores zero and non-finite associated message types", async () => {
@@ -788,45 +827,54 @@ describe("normalizeBlueBubblesEvent", () => {
 
 describe("describeBlueBubblesReaction", () => {
   it.each([
-    ["love", "add", "loved", "love"],
-    ["like", "add", "liked", "like"],
-    ["dislike", "add", "disliked", "dislike"],
-    ["laugh", "add", "laughed at", "laugh"],
-    ["emphasize", "add", "emphasized", "emphasis"],
-    ["question", "add", "questioned", "question"],
-  ])("decodes the %s tapback by name", async (raw, action, verb, noun) => {
+    ["love", "love", "add", "loved", "love"],
+    ["like", "like", "add", "liked", "like"],
+    ["dislike", "dislike", "add", "disliked", "dislike"],
+    ["laugh", "laugh", "add", "laughed at", "laugh"],
+    ["emphasize", "emphasize", "add", "emphasized", "emphasis"],
+    ["question", "question", "add", "questioned", "question"],
+  ])("decodes the %s tapback by name", async (raw, canonicalValue, action, verb, noun) => {
     const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
-    expect(describeBlueBubblesReaction(raw)).toEqual({ raw, action, verb, noun })
+    expect(describeBlueBubblesReaction(raw)).toEqual({
+      raw,
+      rawTransportValue: raw,
+      canonicalValue,
+      action,
+      verb,
+      noun,
+    })
   })
 
   it.each([
-    ["2000", "loved"],
-    ["2001", "liked"],
-    ["2002", "disliked"],
-    ["2003", "laughed at"],
-    ["2004", "emphasized"],
-    ["2005", "questioned"],
-  ])("decodes add code %s", async (raw, verb) => {
+    ["2000", "love", "loved"],
+    ["2001", "like", "liked"],
+    ["2002", "dislike", "disliked"],
+    ["2003", "laugh", "laughed at"],
+    ["2004", "emphasize", "emphasized"],
+    ["2005", "question", "questioned"],
+  ])("decodes add code %s", async (raw, canonicalValue, verb) => {
     const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
-    expect(describeBlueBubblesReaction(raw)).toMatchObject({ action: "add", verb })
+    expect(describeBlueBubblesReaction(raw)).toMatchObject({ action: "add", canonicalValue, verb })
   })
 
   it.each([
-    ["3000", "love"],
-    ["3001", "like"],
-    ["3002", "dislike"],
-    ["3003", "laugh"],
-    ["3004", "emphasis"],
-    ["3005", "question"],
-  ])("decodes removal code %s", async (raw, noun) => {
+    ["3000", "love", "love"],
+    ["3001", "like", "like"],
+    ["3002", "dislike", "dislike"],
+    ["3003", "laugh", "laugh"],
+    ["3004", "emphasize", "emphasis"],
+    ["3005", "question", "question"],
+  ])("decodes removal code %s", async (raw, canonicalValue, noun) => {
     const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
-    expect(describeBlueBubblesReaction(raw)).toMatchObject({ action: "remove", noun })
+    expect(describeBlueBubblesReaction(raw)).toMatchObject({ action: "remove", canonicalValue, noun })
   })
 
   it("treats a leading dash as a tapback removal", async () => {
     const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
     expect(describeBlueBubblesReaction("-love")).toEqual({
       raw: "-love",
+      rawTransportValue: "-love",
+      canonicalValue: "love",
       action: "remove",
       verb: "loved",
       noun: "love",
@@ -835,11 +883,31 @@ describe("describeBlueBubblesReaction", () => {
 
   it("leaves unrecognized associated types unnamed rather than guessing", async () => {
     const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
-    expect(describeBlueBubblesReaction("2006")).toEqual({ raw: "2006", action: "add" })
-    expect(describeBlueBubblesReaction("3006")).toEqual({ raw: "3006", action: "remove" })
-    expect(describeBlueBubblesReaction("sticker")).toEqual({ raw: "sticker", action: "add" })
+    expect(describeBlueBubblesReaction("2006")).toEqual({
+      raw: "2006",
+      rawTransportValue: "2006",
+      canonicalValue: "custom",
+      action: "add",
+    })
+    expect(describeBlueBubblesReaction("3006")).toEqual({
+      raw: "3006",
+      rawTransportValue: "3006",
+      canonicalValue: "custom",
+      action: "remove",
+    })
+    expect(describeBlueBubblesReaction("sticker")).toEqual({
+      raw: "sticker",
+      rawTransportValue: "sticker",
+      canonicalValue: "unknown",
+      action: "add",
+    })
     // outside the 3000-3999 removal band, so not a removal
-    expect(describeBlueBubblesReaction("4000")).toEqual({ raw: "4000", action: "add" })
+    expect(describeBlueBubblesReaction("4000")).toEqual({
+      raw: "4000",
+      rawTransportValue: "4000",
+      canonicalValue: "unknown",
+      action: "add",
+    })
   })
 })
 
@@ -907,6 +975,9 @@ describe("renderBlueBubblesReactionText", () => {
     expect(result.shouldNotifyAgent).toBe(true)
     expect(result.textForAgent).toContain("edited")
     expect(result.textForAgent).toContain("edited version")
+    expect(result.editedText).toBe("  edited version  ")
+    expect(result.revision).toBe("Edit-Revision-2")
+    expect(result.effectiveTimestamp).toBe(1772949005000)
   })
 
   it("normalizes unsent-message updates as notifyable mutations", async () => {
@@ -917,6 +988,8 @@ describe("renderBlueBubblesReactionText", () => {
     expect(result.mutationType).toBe("unsend")
     expect(result.shouldNotifyAgent).toBe(true)
     expect(result.textForAgent).toContain("unsent")
+    expect(result.retractionTimestamp).toBe(1772949105000)
+    expect(result.effectiveTimestamp).toBe(1772949105000)
   })
 
   it("normalizes read/delivery state changes without dropping them silently", async () => {
@@ -927,6 +1000,7 @@ describe("renderBlueBubblesReactionText", () => {
     expect(result.mutationType).toBe("read")
     expect(result.shouldNotifyAgent).toBe(false)
     expect(result.chat.sessionKey).toBe("chat:any;-;ari@mendelow.me")
+    expect(result.effectiveTimestamp).toBe(1772948415000)
   })
 
   it("falls back to chat identifier routing and normalizes phone handles", async () => {
@@ -940,6 +1014,7 @@ describe("renderBlueBubblesReactionText", () => {
     expect(result.chat.sendTarget).toEqual({ kind: "chat_identifier", value: "+1 (973) 508-0289" })
     expect(result.sender.rawId).toBe("+1 (973) 508-0289")
     expect(result.sender.externalId).toBe("+19735080289")
+    expect(result.sender.observed).toBe(true)
   })
 
   it("emits explicit generic attachment fallback text and unknown sender identity", async () => {
@@ -973,6 +1048,7 @@ describe("renderBlueBubblesReactionText", () => {
     expect(result.textForAgent).toContain("delivered")
     expect(result.shouldNotifyAgent).toBe(false)
     expect(result.requiresRepair).toBe(true)
+    expect(result.effectiveTimestamp).toBe(1772949405000)
   })
 
   it("falls back to a generic edit mutation when edited text is blank", async () => {
@@ -1035,6 +1111,7 @@ describe("renderBlueBubblesReactionText", () => {
     expect(guidOnlyResult.chat.chatIdentifier).toBeUndefined()
     expect(guidOnlyResult.chat.sendTarget).toEqual({ kind: "chat_guid", value: "chat-guid-only" })
     expect(guidOnlyResult.sender.rawId).toBe("chat-guid-only")
+    expect(guidOnlyResult.sender.observed).toBe(false)
 
     expect(unknownResult.kind).toBe("message")
     expect(unknownResult.chat.sessionKey).toBe("chat_identifier:unknown")
@@ -1064,5 +1141,43 @@ describe("renderBlueBubblesReactionText", () => {
         data: { text: "missing guid" },
       }),
     ).toThrow("BlueBubbles payload is missing data.guid")
+  })
+
+  it("distinguishes an ignorable guidless transport update from an invalid message", async () => {
+    const {
+      BlueBubblesIgnoredEventError,
+      normalizeBlueBubblesEvent,
+    } = await import("../../../senses/bluebubbles/model")
+
+    expect(() => normalizeBlueBubblesEvent({
+      type: "chat-read-status-changed",
+      data: {},
+    })).toThrow(BlueBubblesIgnoredEventError)
+
+    try {
+      normalizeBlueBubblesEvent({ type: "chat-read-status-changed", data: {} })
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "BlueBubblesIgnoredEventError",
+        eventType: "chat-read-status-changed",
+      })
+    }
+  })
+
+  it("drops blank provider revisions and stringifies finite revision numbers", async () => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const blank = normalizeBlueBubblesEvent({
+      ...editedPayload,
+      data: { ...editedPayload.data, revision: "   " },
+    })
+    const numeric = normalizeBlueBubblesEvent({
+      ...editedPayload,
+      data: { ...editedPayload.data, revision: 7 },
+    })
+
+    expect(blank.kind).toBe("mutation")
+    expect(blank).not.toHaveProperty("revision")
+    expect(numeric.kind).toBe("mutation")
+    expect(numeric).toHaveProperty("revision", "7")
   })
 })

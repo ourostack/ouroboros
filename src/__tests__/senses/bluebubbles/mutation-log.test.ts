@@ -139,12 +139,16 @@ describe("BlueBubbles mutation log", () => {
     )
   })
 
-  it("lists only recoverable state-only mutations, ignoring unreadable files and malformed rows", async () => {
+  it("adds raw legacy audit access without changing recovery candidates before the active cutover", async () => {
+    const mutationLog = await import("../../../senses/bluebubbles/mutation-log")
     const {
       getBlueBubblesMutationLogPath,
       listBlueBubblesRecoveryCandidates,
       recordBlueBubblesMutation,
-    } = await import("../../../senses/bluebubbles/mutation-log")
+    } = mutationLog
+    const listRecordedBlueBubblesMutations = (mutationLog as typeof mutationLog & {
+      listRecordedBlueBubblesMutations?: (agentName: string) => unknown[]
+    }).listRecordedBlueBubblesMutations
 
     recordBlueBubblesMutation("slugger", {
       kind: "mutation",
@@ -268,6 +272,16 @@ describe("BlueBubbles mutation log", () => {
     const brokenPath = path.join(path.dirname(pathToLog), "broken.ndjson")
     fs.mkdirSync(brokenPath, { recursive: true })
 
+    expect(listRecordedBlueBubblesMutations).toBeTypeOf("function")
+    const rawRows = listRecordedBlueBubblesMutations?.("slugger") ?? []
+    expect(rawRows).toHaveLength(4)
+    expect(rawRows.every((row) => {
+      return typeof row === "object"
+        && row !== null
+        && !("actor" in row)
+        && !("sender" in row)
+        && !("schemaVersion" in row)
+    })).toBe(true)
     expect(listBlueBubblesRecoveryCandidates("slugger")).toEqual([
       expect.objectContaining({
         messageGuid: "msg-2",
@@ -279,5 +293,29 @@ describe("BlueBubbles mutation log", () => {
         textForAgent: "latest read mutation",
       }),
     ])
+  })
+
+  it("returns an empty raw audit view without a mutation directory and rejects blank session keys", async () => {
+    const {
+      getBlueBubblesMutationLogPath,
+      listRecordedBlueBubblesMutations,
+    } = await import("../../../senses/bluebubbles/mutation-log")
+
+    expect(listRecordedBlueBubblesMutations("slugger")).toEqual([])
+
+    const logPath = getBlueBubblesMutationLogPath("slugger", "synthetic-session")
+    fs.mkdirSync(path.dirname(logPath), { recursive: true })
+    fs.writeFileSync(logPath, `${JSON.stringify({
+      recordedAt: new Date(1).toISOString(),
+      eventType: "updated-message",
+      mutationType: "read",
+      messageGuid: "message-without-session",
+      sessionKey: "   ",
+      shouldNotifyAgent: false,
+      textForAgent: "audit only",
+      fromMe: false,
+    })}\n`, "utf-8")
+
+    expect(listRecordedBlueBubblesMutations("slugger")).toEqual([])
   })
 })
