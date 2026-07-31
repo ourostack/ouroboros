@@ -289,12 +289,12 @@ function normalizeReactionName(value: unknown): string | undefined {
 }
 
 /**
- * iMessage tapbacks: associated_message_type 2000-2005 add a tapback, 3000-3005
+ * iMessage tapbacks: associated_message_type 2000-2006 add a tapback, 3000-3006
  * remove the same tapback. BlueBubbles may send either the code or the name.
  */
 const REACTION_VOCABULARY: ReadonlyArray<{
   code: number
-  name: Exclude<BlueBubblesReactionDescriptor["canonicalValue"], "custom" | "unknown">
+  name: Exclude<BlueBubblesReactionDescriptor["canonicalValue"], "unknown">
   verb: string
   noun: string
 }> = [
@@ -304,6 +304,7 @@ const REACTION_VOCABULARY: ReadonlyArray<{
   { code: 2003, name: "laugh", verb: "laughed at", noun: "laugh" },
   { code: 2004, name: "emphasize", verb: "emphasized", noun: "emphasis" },
   { code: 2005, name: "question", verb: "questioned", noun: "question" },
+  { code: 2006, name: "custom", verb: "reacted with custom emoji to", noun: "custom emoji" },
 ]
 
 const REACTION_EXCERPT_MAX_LENGTH = 80
@@ -318,8 +319,7 @@ export function describeBlueBubblesReaction(
   const action: BlueBubblesReactionAction = removal ? "remove" : "add"
   const entry = REACTION_VOCABULARY.find((candidate) =>
     candidate.name === stripped || candidate.code === code || candidate.code + 1000 === code)
-  const canonicalValue = entry?.name
-    ?? (code === 2006 || code === 3006 ? "custom" : "unknown")
+  const canonicalValue = entry?.name ?? "unknown"
   if (!entry) return { raw, rawTransportValue, canonicalValue, action }
   return {
     raw,

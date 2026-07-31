@@ -869,32 +869,64 @@ describe("describeBlueBubblesReaction", () => {
     expect(describeBlueBubblesReaction(raw)).toMatchObject({ action: "remove", canonicalValue, noun })
   })
 
-  it("treats a leading dash as a tapback removal", async () => {
+  it.each([
+    ["-love", "love", "loved", "love"],
+    ["-like", "like", "liked", "like"],
+    ["-dislike", "dislike", "disliked", "dislike"],
+    ["-laugh", "laugh", "laughed at", "laugh"],
+    ["-emphasize", "emphasize", "emphasized", "emphasis"],
+    ["-question", "question", "questioned", "question"],
+    ["-custom", "custom", "reacted with custom emoji to", "custom emoji"],
+  ])("decodes named removal %s exactly", async (raw, canonicalValue, verb, noun) => {
     const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
-    expect(describeBlueBubblesReaction("-love")).toEqual({
-      raw: "-love",
-      rawTransportValue: "-love",
-      canonicalValue: "love",
+    expect(describeBlueBubblesReaction(raw)).toEqual({
+      raw,
+      rawTransportValue: raw,
+      canonicalValue,
       action: "remove",
-      verb: "loved",
-      noun: "love",
+      verb,
+      noun,
     })
   })
 
-  it("leaves unrecognized associated types unnamed rather than guessing", async () => {
+  it("canonicalizes named and numeric custom tapbacks with a safe human label", async () => {
     const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
     expect(describeBlueBubblesReaction("2006")).toEqual({
       raw: "2006",
       rawTransportValue: "2006",
       canonicalValue: "custom",
       action: "add",
+      verb: "reacted with custom emoji to",
+      noun: "custom emoji",
     })
     expect(describeBlueBubblesReaction("3006")).toEqual({
       raw: "3006",
       rawTransportValue: "3006",
       canonicalValue: "custom",
       action: "remove",
+      verb: "reacted with custom emoji to",
+      noun: "custom emoji",
     })
+    expect(describeBlueBubblesReaction("custom")).toEqual({
+      raw: "custom",
+      rawTransportValue: "custom",
+      canonicalValue: "custom",
+      action: "add",
+      verb: "reacted with custom emoji to",
+      noun: "custom emoji",
+    })
+    expect(describeBlueBubblesReaction("-custom")).toEqual({
+      raw: "-custom",
+      rawTransportValue: "-custom",
+      canonicalValue: "custom",
+      action: "remove",
+      verb: "reacted with custom emoji to",
+      noun: "custom emoji",
+    })
+  })
+
+  it("leaves genuinely unrecognized associated types unnamed rather than guessing", async () => {
+    const { describeBlueBubblesReaction } = await import("../../../senses/bluebubbles/model")
     expect(describeBlueBubblesReaction("sticker")).toEqual({
       raw: "sticker",
       rawTransportValue: "sticker",
@@ -955,15 +987,27 @@ describe("renderBlueBubblesReactionText", () => {
     expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("-love"), { text: "ship it", fromMe: true }))
       .toBe('removed their love reaction from your message: "ship it"')
     expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("3006"), { text: "ship it" }))
-      .toBe('removed their 3006 reaction from a message: "ship it"')
+      .toBe('removed their custom emoji reaction from a message: "ship it"')
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("3999"), { text: "ship it" }))
+      .toBe('removed their 3999 reaction from a message: "ship it"')
   })
 
-  it("names the raw associated type when the tapback is unrecognized", async () => {
+  it("renders custom emoji without exposing its numeric transport code", async () => {
     const { describeBlueBubblesReaction, renderBlueBubblesReactionText } =
       await import("../../../senses/bluebubbles/model")
 
     expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("2006"), { text: "ship it", fromMe: true }))
-      .toBe('reacted with 2006 to your message: "ship it"')
+      .toBe('reacted with custom emoji to your message: "ship it"')
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("custom"), { text: "ship it" }))
+      .toBe('reacted with custom emoji to a message: "ship it"')
+  })
+
+  it("names raw evidence only when the reaction is genuinely unknown", async () => {
+    const { describeBlueBubblesReaction, renderBlueBubblesReactionText } =
+      await import("../../../senses/bluebubbles/model")
+
+    expect(renderBlueBubblesReactionText(describeBlueBubblesReaction("sticker"), { text: "ship it" }))
+      .toBe('reacted with sticker to a message: "ship it"')
   })
 
   it("normalizes edited-message updates as notifyable mutations", async () => {

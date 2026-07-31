@@ -54,6 +54,10 @@ import {
 import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
 import {
+  classifyBlueBubblesReaction,
+  type BlueBubblesReactionPolicyDecision,
+} from "./reaction-policy"
+import {
   beginBlueBubblesActiveTurn,
   finishBlueBubblesActiveTurn,
   noteBlueBubblesActiveTurnVisibleActivity,
@@ -2068,6 +2072,63 @@ function semanticHandledOutcome(
   return result.notifiedAgent ? "restricted_feedback_settled" : "restricted_feedback_observed"
 }
 
+async function classifyCapturedBlueBubblesReaction(
+  captured: CapturedBlueBubblesSemanticEvent,
+  resolvedDeps: RuntimeDeps,
+): Promise<BlueBubblesReactionPolicyDecision | null> {
+  const event = captured.capture.event
+  if (event.kind !== "reaction" || !event.canonicalAction || !event.canonicalValue) return null
+
+  const input = {
+    fromMe: event.fromMe,
+    action: event.canonicalAction,
+    canonicalValue: event.canonicalValue,
+    targetAuthorship: event.targetAuthorship,
+  }
+  const initial = classifyBlueBubblesReaction(input)
+  if (initial.route !== "trust_required") return initial
+
+  let trustedActor = false
+  try {
+    const friend = await resolvedDeps.createFriendStore().findByExternalId(
+      "imessage-handle",
+      event.actor.externalId,
+    )
+    trustedActor = TRUSTED_LEVELS.has(friend?.trustLevel ?? "stranger")
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_reaction_trust_lookup_error",
+      message: "failed direct actor trust lookup for bluebubbles reaction",
+      meta: {
+        keyHash: captured.capture.keyHash,
+        provider: event.actor.provider,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+  return classifyBlueBubblesReaction({ ...input, trustedActor })
+}
+
+function writeCapturedBlueBubblesHandled(
+  agentName: string,
+  capture: BlueBubblesSemanticCaptureV1,
+  outcome: BlueBubblesSemanticHandledOutcome,
+): void {
+  const handledResult = writeBlueBubblesSemanticHandled(agentName, {
+    schemaVersion: 1,
+    canonicalKey: capture.canonicalKey,
+    keyHash: capture.keyHash,
+    handledAt: new Date().toISOString(),
+    outcome,
+    detailCode: null,
+  })
+  if (handledResult === "semantic_handled_collision") {
+    throw new Error("semantic_handled_collision")
+  }
+}
+
 async function handleCapturedBlueBubblesSemanticEvent(
   captured: CapturedBlueBubblesSemanticEvent,
   resolvedDeps: RuntimeDeps,
@@ -2098,6 +2159,18 @@ async function handleCapturedBlueBubblesSemanticEvent(
   }
 
   try {
+    const reactionDecision = await classifyCapturedBlueBubblesReaction(captured, resolvedDeps)
+    if (reactionDecision?.route === "capture_only") {
+      const result: BlueBubblesHandleResult = {
+        handled: true,
+        notifiedAgent: false,
+        kind: captured.normalized.kind,
+        reason: reactionDecision.outcome === "ignored_self" ? "from_me" : "mutation_state_only",
+      }
+      writeCapturedBlueBubblesHandled(agentName, captured.capture, reactionDecision.outcome)
+      return result
+    }
+
     let handledEvent = captured.normalized
     let result: BlueBubblesHandleResult
     if (isAuditOnlySemanticCapture(captured.capture)) {
@@ -2121,17 +2194,11 @@ async function handleCapturedBlueBubblesSemanticEvent(
         resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
       })
     }
-    const handledResult = writeBlueBubblesSemanticHandled(agentName, {
-      schemaVersion: 1,
-      canonicalKey: captured.capture.canonicalKey,
-      keyHash: captured.capture.keyHash,
-      handledAt: new Date().toISOString(),
-      outcome: semanticHandledOutcome(handledEvent, result),
-      detailCode: null,
-    })
-    if (handledResult === "semantic_handled_collision") {
-      throw new Error("semantic_handled_collision")
-    }
+    writeCapturedBlueBubblesHandled(
+      agentName,
+      captured.capture,
+      semanticHandledOutcome(handledEvent, result),
+    )
     return result
   } finally {
     releaseBlueBubblesSemanticClaim(agentName, claim)
