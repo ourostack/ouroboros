@@ -678,24 +678,25 @@ describe("habit lifecycle filesystem protocol", () => {
 
   it("fences every mutation and release after an identical-byte ABA owner replacement", async () => {
     const agentRoot = makeRoot()
+    const fencedReceipt = cancellationReceipt()
     const result = await acquireHabitLifecycleLock(
-      { agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" },
+      { agentRoot, habitId: "rsvp-demo", operationId: fencedReceipt.operationId },
       fixedDeps(),
     )
     expect(result.status).toBe("acquired")
     if (result.status !== "acquired") return
-    const paths = getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" })
+    const paths = getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo", operationId: fencedReceipt.operationId })
     const originalStat = fs.lstatSync(paths.owner)
     const heldOldInode = path.join(paths.root, "owner.old-inode")
     fs.linkSync(paths.owner, heldOldInode)
     fs.unlinkSync(paths.owner)
-    fs.writeFileSync(paths.owner, serializeHabitLifecycleJson(owner()), "utf8")
+    fs.writeFileSync(paths.owner, serializeHabitLifecycleJson(owner(fencedReceipt.operationId)), "utf8")
     const replacementStat = fs.lstatSync(paths.owner)
     expect([replacementStat.dev, replacementStat.ino]).not.toEqual([originalStat.dev, originalStat.ino])
 
     const journal = createHabitLifecycleJournal({
       habitId: "rsvp-demo",
-      operationId: "cancel:demo",
+      operationId: fencedReceipt.operationId,
       operationKind: "cancel",
       updatedAt: FIXED_NOW,
     })
@@ -707,7 +708,6 @@ describe("habit lifecycle filesystem protocol", () => {
       "---\nstatus: cancelled\n---\n",
       fixedDeps(),
     )).toThrow(/lifecycle_lease_lost/)
-    const fencedReceipt = cancellationReceipt()
     expect(() => publishHabitLifecycleReceipt(
       result.lease,
       fencedReceipt.evidenceKeyHash,
@@ -715,7 +715,7 @@ describe("habit lifecycle filesystem protocol", () => {
       fixedDeps(),
     )).toThrow(/lifecycle_lease_lost/)
     expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(false)
-    expect(fs.readFileSync(paths.owner, "utf8")).toBe(serializeHabitLifecycleJson(owner()))
+    expect(fs.readFileSync(paths.owner, "utf8")).toBe(serializeHabitLifecycleJson(owner(fencedReceipt.operationId)))
     expect(fs.existsSync(paths.journal!)).toBe(false)
     expect(fs.existsSync(path.join(agentRoot, "habits", "rsvp-demo.md"))).toBe(false)
     expect(fs.existsSync(getHabitLifecyclePaths({
@@ -805,6 +805,7 @@ describe("habit lifecycle filesystem protocol", () => {
     fs.mkdirSync(paths.root, { recursive: true })
     fs.writeFileSync(paths.owner, serializeHabitLifecycleJson(owner("holder")), "utf8")
     let elapsed = 0
+    let bootProbeCalls = 0
     const events: LogEvent[] = []
     const unregister = registerGlobalLogSink((entry) => {
       if (entry.event.startsWith("daemon.habit_lifecycle_lock_")) events.push(entry)
@@ -814,7 +815,11 @@ describe("habit lifecycle filesystem protocol", () => {
         { agentRoot, habitId: "rsvp-demo", operationId: "waiter" },
         fixedDeps({
           now: () => new Date(Date.parse(FIXED_NOW) + elapsed),
-          bootIdentity: () => { throw new Error("boot probe unavailable") },
+          bootIdentity: () => {
+            bootProbeCalls += 1
+            if (bootProbeCalls === 1) return "boot-current"
+            throw new Error("boot probe unavailable")
+          },
           sleep: async (milliseconds) => { elapsed += milliseconds },
         }),
       )
@@ -1209,10 +1214,14 @@ describe("habit lifecycle filesystem protocol", () => {
 
   it("publishes receipts immutably, returns exact duplicates, rejects collisions, and reconciles durability unknown", async () => {
     const agentRoot = makeRoot()
-    const result = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" }, fixedDeps())
+    const receipt = cancellationReceipt()
+    const result = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "rsvp-demo",
+      operationId: receipt.operationId,
+    }, fixedDeps())
     expect(result.status).toBe("acquired")
     if (result.status !== "acquired") return
-    const receipt = cancellationReceipt()
     const evidenceHash = receipt.evidenceKeyHash
     const receiptPath = getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo", evidenceKeyHash: evidenceHash }).receipt!
     const operations: string[] = []
@@ -1228,15 +1237,24 @@ describe("habit lifecycle filesystem protocol", () => {
     expect(readHabitLifecycleReceipt({ agentRoot, habitId: "rsvp-demo", evidenceKeyHash: evidenceHash })).toEqual(receipt)
     expect(() => publishHabitLifecycleReceipt(result.lease, evidenceHash, {
       ...receipt,
-      acknowledgement: `${receipt.acknowledgement} collision`,
+      actor: { displayName: "Other requester", provider: "bluebubbles", externalId: "synthetic-other" },
+      acknowledgement: "Cancelled habit \"rsvp-demo\" from confirmed requester \"Other requester\". No concurrent send crossed the transport boundary.",
     }, fixedDeps()))
       .toThrow(/lifecycle_receipt_collision/)
+    expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
 
     const unknownReceipt = cancellationReceipt(sha256("durability-unknown-capture"))
     const unknownHash = unknownReceipt.evidenceKeyHash
+    const unknownLock = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "rsvp-demo",
+      operationId: unknownReceipt.operationId,
+    }, fixedDeps())
+    expect(unknownLock.status).toBe("acquired")
+    if (unknownLock.status !== "acquired") return
     let caught: unknown
     try {
-      publishHabitLifecycleReceipt(result.lease, unknownHash, unknownReceipt, fixedDeps({
+      publishHabitLifecycleReceipt(unknownLock.lease, unknownHash, unknownReceipt, fixedDeps({
         fs: tracingFs([], { operation: "fsyncSync", occurrence: 2 }),
       }))
     } catch (error) {
@@ -1244,7 +1262,8 @@ describe("habit lifecycle filesystem protocol", () => {
     }
     expectLifecycleError(caught, "lifecycle_durability_unknown", true)
     expect(readHabitLifecycleReceipt({ agentRoot, habitId: "rsvp-demo", evidenceKeyHash: unknownHash })).toEqual(unknownReceipt)
-    expect(publishHabitLifecycleReceipt(result.lease, unknownHash, unknownReceipt, fixedDeps())).toBe("duplicate")
+    expect(publishHabitLifecycleReceipt(unknownLock.lease, unknownHash, unknownReceipt, fixedDeps())).toBe("duplicate")
+    expect(releaseHabitLifecycleLock(unknownLock.lease, fixedDeps())).toBe(true)
 
     const failures = [
       { operation: "openSync" },
@@ -1256,10 +1275,17 @@ describe("habit lifecycle filesystem protocol", () => {
     for (const [index, failure] of failures.entries()) {
       const failedReceipt = cancellationReceipt(sha256(`receipt-failure-${index}`))
       const failedHash = failedReceipt.evidenceKeyHash
+      const failedLock = await acquireHabitLifecycleLock({
+        agentRoot,
+        habitId: "rsvp-demo",
+        operationId: failedReceipt.operationId,
+      }, fixedDeps())
+      expect(failedLock.status).toBe("acquired")
+      if (failedLock.status !== "acquired") continue
       let failureError: unknown
       try {
         publishHabitLifecycleReceipt(
-          result.lease,
+          failedLock.lease,
           failedHash,
           failedReceipt,
           fixedDeps({ fs: tracingFs([], failure) }),
@@ -1273,21 +1299,16 @@ describe("habit lifecycle filesystem protocol", () => {
       expect(fs.existsSync(path.dirname(failedPath))
         ? fs.readdirSync(path.dirname(failedPath)).filter((name) => name.endsWith(".tmp"))
         : []).toEqual([])
+      expect(releaseHabitLifecycleLock(failedLock.lease, fixedDeps())).toBe(true)
     }
-    expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
   })
 
   it("uses no-clobber publication for concurrent duplicate and collision receipt writers", async () => {
     const agentRoot = makeRoot("habit-lifecycle-receipt-race-")
-    const lock = await acquireHabitLifecycleLock(
-      { agentRoot, habitId: "rsvp-demo", operationId: "cancel:race" },
-      fixedDeps(),
-    )
-    expect(lock.status).toBe("acquired")
-    if (lock.status !== "acquired") return
 
     const runRace = async (
       label: string,
+      lease: HabitLifecycleLease,
       evidenceKeyHash: string,
       receipts: [HabitCancellationReceipt, HabitCancellationReceipt],
     ): Promise<string[]> => {
@@ -1301,7 +1322,7 @@ describe("habit lifecycle filesystem protocol", () => {
         readyPath: readyPaths[index]!,
         startPath,
         resultPath: resultPaths[index]!,
-        lease: lock.lease,
+        lease,
         evidenceKeyHash,
         receipt: receipts[index]!,
         precommitPath: precommitPaths[index]!,
@@ -1319,10 +1340,18 @@ describe("habit lifecycle filesystem protocol", () => {
 
     const duplicateReceipt = cancellationReceipt(sha256("concurrent-duplicate"))
     const duplicateHash = duplicateReceipt.evidenceKeyHash
-    expect((await runRace("duplicate", duplicateHash, [duplicateReceipt, duplicateReceipt])).sort())
+    const duplicateLock = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "rsvp-demo",
+      operationId: duplicateReceipt.operationId,
+    }, fixedDeps())
+    expect(duplicateLock.status).toBe("acquired")
+    if (duplicateLock.status !== "acquired") return
+    expect((await runRace("duplicate", duplicateLock.lease, duplicateHash, [duplicateReceipt, duplicateReceipt])).sort())
       .toEqual(["duplicate", "published"])
     expect(readHabitLifecycleReceipt({ agentRoot, habitId: "rsvp-demo", evidenceKeyHash: duplicateHash }))
       .toEqual(duplicateReceipt)
+    expect(releaseHabitLifecycleLock(duplicateLock.lease, fixedDeps())).toBe(true)
 
     const collisionCaptureHash = sha256("concurrent-collision")
     const firstReceipt = cancellationReceipt(collisionCaptureHash)
@@ -1331,14 +1360,21 @@ describe("habit lifecycle filesystem protocol", () => {
       actor: { displayName: "Second requester", provider: "bluebubbles", externalId: "synthetic-second" },
       acknowledgement: "Cancelled habit \"rsvp-demo\" from confirmed requester \"Second requester\". No concurrent send crossed the transport boundary.",
     })
-    expect((await runRace("collision", collisionHash, [firstReceipt, secondReceipt])).sort())
+    const collisionLock = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "rsvp-demo",
+      operationId: firstReceipt.operationId,
+    }, fixedDeps())
+    expect(collisionLock.status).toBe("acquired")
+    if (collisionLock.status !== "acquired") return
+    expect((await runRace("collision", collisionLock.lease, collisionHash, [firstReceipt, secondReceipt])).sort())
       .toEqual(["lifecycle_receipt_collision", "published"])
     expect([firstReceipt, secondReceipt]).toContainEqual(readHabitLifecycleReceipt({
       agentRoot,
       habitId: "rsvp-demo",
       evidenceKeyHash: collisionHash,
     }))
-    expect(releaseHabitLifecycleLock(lock.lease, fixedDeps())).toBe(true)
+    expect(releaseHabitLifecycleLock(collisionLock.lease, fixedDeps())).toBe(true)
   }, 45_000)
 
   it("preserves cancelled definition and journal state for operation-owned recovery and idempotent retry", async () => {
