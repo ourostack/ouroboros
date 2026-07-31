@@ -298,6 +298,7 @@ describe("BlueBubbles mutation log", () => {
   it("returns an empty raw audit view without a mutation directory and rejects blank session keys", async () => {
     const {
       getBlueBubblesMutationLogPath,
+      listBlueBubblesRecoveryCandidates,
       listRecordedBlueBubblesMutations,
     } = await import("../../../senses/bluebubbles/mutation-log")
 
@@ -317,5 +318,11 @@ describe("BlueBubbles mutation log", () => {
     })}\n`, "utf-8")
 
     expect(listRecordedBlueBubblesMutations("slugger")).toEqual([])
+    expect(listBlueBubblesRecoveryCandidates("slugger")).toEqual([
+      expect.objectContaining({
+        messageGuid: "message-without-session",
+        mutationType: "read",
+      }),
+    ])
   })
 })

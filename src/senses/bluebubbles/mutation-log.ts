@@ -66,7 +66,7 @@ export function recordBlueBubblesMutation(agentName: string, event: BlueBubblesN
   return filePath
 }
 
-export function listRecordedBlueBubblesMutations(agentName: string): BlueBubblesMutationLogEntry[] {
+function readBlueBubblesMutationRows(agentName: string): BlueBubblesMutationLogEntry[] {
   const rootDir = path.join(getAgentRoot(agentName), "state", "senses", "bluebubbles", "mutations")
   let files: string[]
   try {
@@ -91,7 +91,6 @@ export function listRecordedBlueBubblesMutations(agentName: string): BlueBubbles
       try {
         const entry = JSON.parse(trimmed) as Partial<BlueBubblesMutationLogEntry>
         if (typeof entry.messageGuid !== "string" || !entry.messageGuid.trim()) continue
-        if (typeof entry.sessionKey !== "string" || !entry.sessionKey.trim()) continue
         entries.push(entry as BlueBubblesMutationLogEntry)
       } catch {
         // Keep malformed legacy rows inert while retaining readable audit rows.
@@ -102,9 +101,15 @@ export function listRecordedBlueBubblesMutations(agentName: string): BlueBubbles
   return entries
 }
 
+export function listRecordedBlueBubblesMutations(agentName: string): BlueBubblesMutationLogEntry[] {
+  return readBlueBubblesMutationRows(agentName).filter((entry) => (
+    typeof entry.sessionKey === "string" && entry.sessionKey.trim().length > 0
+  ))
+}
+
 export function listBlueBubblesRecoveryCandidates(agentName: string): BlueBubblesMutationLogEntry[] {
   const deduped = new Map<string, BlueBubblesMutationLogEntry>()
-  for (const entry of listRecordedBlueBubblesMutations(agentName)) {
+  for (const entry of readBlueBubblesMutationRows(agentName)) {
     if (
       entry.fromMe
       || entry.shouldNotifyAgent

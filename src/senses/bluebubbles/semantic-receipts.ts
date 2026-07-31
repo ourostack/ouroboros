@@ -170,9 +170,12 @@ export function initializeBlueBubblesSemanticCutover(
     `.cutover.json.${process.pid}.${marker.providerNamespace}.tmp`,
   )
   let tempFd: number | null = null
+  let tempOwned = false
   let published = false
+  let primaryError: unknown
   try {
     tempFd = fs.openSync(tempPath, "wx", 0o600)
+    tempOwned = true
     fs.writeFileSync(tempFd, serializeBlueBubblesSemanticJson(marker), "utf8")
     fs.fsyncSync(tempFd)
     fs.closeSync(tempFd)
@@ -184,13 +187,26 @@ export function initializeBlueBubblesSemanticCutover(
     } catch (error) {
       if (!isNodeError(error, "EEXIST")) throw error
     }
+  } catch (error) {
+    primaryError = error
+    throw error
   } finally {
-    if (tempFd !== null) fs.closeSync(tempFd)
-    try {
-      fs.unlinkSync(tempPath)
-    } catch (error) {
-      if (!isNodeError(error, "ENOENT")) throw error
+    let cleanupError: unknown
+    if (tempFd !== null) {
+      try {
+        fs.closeSync(tempFd)
+      } catch (error) {
+        cleanupError = error
+      }
     }
+    if (tempOwned) {
+      try {
+        fs.unlinkSync(tempPath)
+      } catch (error) {
+        if (!isNodeError(error, "ENOENT") && cleanupError === undefined) cleanupError = error
+      }
+    }
+    if (primaryError === undefined && cleanupError !== undefined) throw cleanupError
   }
 
   if (!published) {
@@ -221,21 +237,37 @@ export function rotateBlueBubblesSemanticCutover(
     `.cutover.json.${process.pid}.${marker.providerNamespace}.tmp`,
   )
   let tempFd: number | null = null
+  let tempOwned = false
+  let primaryError: unknown
   try {
     tempFd = fs.openSync(tempPath, "wx", 0o600)
+    tempOwned = true
     fs.writeFileSync(tempFd, serializeBlueBubblesSemanticJson(marker), "utf8")
     fs.fsyncSync(tempFd)
     fs.closeSync(tempFd)
     tempFd = null
     fs.renameSync(tempPath, paths.cutover)
     fsyncDirectory(paths.root)
+  } catch (error) {
+    primaryError = error
+    throw error
   } finally {
-    if (tempFd !== null) fs.closeSync(tempFd)
-    try {
-      fs.unlinkSync(tempPath)
-    } catch (error) {
-      if (!isNodeError(error, "ENOENT")) throw error
+    let cleanupError: unknown
+    if (tempFd !== null) {
+      try {
+        fs.closeSync(tempFd)
+      } catch (error) {
+        cleanupError = error
+      }
     }
+    if (tempOwned) {
+      try {
+        fs.unlinkSync(tempPath)
+      } catch (error) {
+        if (!isNodeError(error, "ENOENT") && cleanupError === undefined) cleanupError = error
+      }
+    }
+    if (primaryError === undefined && cleanupError !== undefined) throw cleanupError
   }
 
   emitNervesEvent({
@@ -482,8 +514,12 @@ export function classifyBlueBubblesRecoveryRecord(
   value: unknown,
   cutover: BlueBubblesSemanticCutover,
 ): BlueBubblesRecoveryDisposition {
-  if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.event)) {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
     emitLegacyRecoveryBlocked(value)
+    return { disposition: "audit_only", reason: "legacy_or_actorless" }
+  }
+  if (!isRecord(value.event)) {
+    emitInvalidSemanticRecoveryRecord(value, false, "event_missing")
     return { disposition: "audit_only", reason: "legacy_or_actorless" }
   }
   const actor = value.event.actor
@@ -493,7 +529,7 @@ export function classifyBlueBubblesRecoveryRecord(
     || typeof actor.externalId !== "string"
     || actor.externalId.trim().length === 0
   ) {
-    emitLegacyRecoveryBlocked(value)
+    emitInvalidSemanticRecoveryRecord(value, false, "actor_missing")
     return { disposition: "audit_only", reason: "legacy_or_actorless" }
   }
   if (
@@ -508,7 +544,7 @@ export function classifyBlueBubblesRecoveryRecord(
     return { disposition: "audit_only", reason: "audit_event" }
   }
   if (typeof value.keyHash !== "string" || value.keyHash.length === 0) {
-    emitLegacyRecoveryBlocked(value)
+    emitInvalidSemanticRecoveryRecord(value, true, "key_hash_missing")
     return { disposition: "audit_only", reason: "legacy_or_actorless" }
   }
   return { disposition: "handleable", keyHash: value.keyHash }
@@ -639,12 +675,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function emitLegacyRecoveryBlocked(value: unknown): void {
-  const record = isRecord(value) ? value : null
-  const recordKind = typeof record?.mutationType === "string"
-    ? record.mutationType
-    : isRecord(record?.event) && typeof record.event.kind === "string"
-      ? record.event.kind
-      : "inbound"
   emitNervesEvent({
     level: "warn",
     component: "senses",
@@ -653,8 +683,36 @@ function emitLegacyRecoveryBlocked(value: unknown): void {
     meta: {
       schemaVersion: 0,
       actorPresent: false,
-      recordKind,
+      recordKind: recoveryRecordKind(value),
       reason: "legacy_or_actorless",
     },
   })
+}
+
+function emitInvalidSemanticRecoveryRecord(
+  value: unknown,
+  actorPresent: boolean,
+  reason: "event_missing" | "actor_missing" | "key_hash_missing",
+): void {
+  emitNervesEvent({
+    level: "warn",
+    component: "senses",
+    event: "senses.bluebubbles_semantic_recovery_invalid",
+    message: "blocked invalid v1 bluebubbles recovery record",
+    meta: {
+      schemaVersion: 1,
+      actorPresent,
+      recordKind: recoveryRecordKind(value),
+      reason,
+    },
+  })
+}
+
+function recoveryRecordKind(value: unknown): string {
+  const record = isRecord(value) ? value : null
+  return typeof record?.mutationType === "string"
+    ? record.mutationType
+    : isRecord(record?.event) && typeof record.event.kind === "string"
+      ? record.event.kind
+      : "inbound"
 }

@@ -649,6 +649,8 @@ describe("BlueBubbles semantic identity and cutover", () => {
   it("handles cutover publication races and fails closed at every cleanup boundary", async () => {
     const actualFs = await vi.importActual<typeof fs>("node:fs")
     const controls: {
+      openSync?: (...args: unknown[]) => number
+      closeSync?: (...args: unknown[]) => void
       linkSync?: (...args: unknown[]) => void
       writeFileSync?: (...args: unknown[]) => void
       unlinkSync?: (...args: unknown[]) => void
@@ -656,6 +658,12 @@ describe("BlueBubbles semantic identity and cutover", () => {
     vi.resetModules()
     vi.doMock("node:fs", () => ({
       ...actualFs,
+      openSync: (...args: unknown[]) => controls.openSync
+        ? controls.openSync(...args)
+        : Reflect.apply(actualFs.openSync, actualFs, args),
+      closeSync: (...args: unknown[]) => controls.closeSync
+        ? controls.closeSync(...args)
+        : Reflect.apply(actualFs.closeSync, actualFs, args),
       linkSync: (...args: unknown[]) => controls.linkSync
         ? controls.linkSync(...args)
         : Reflect.apply(actualFs.linkSync, actualFs, args),
@@ -667,6 +675,68 @@ describe("BlueBubbles semantic identity and cutover", () => {
         : Reflect.apply(actualFs.unlinkSync, actualFs, args),
     }))
     const semantic = await import("../../../senses/bluebubbles/semantic-receipts")
+
+    for (const [agentName, operation] of [
+      ["initialize-open-collision", "initialize"],
+      ["rotate-open-collision", "rotate"],
+    ] as const) {
+      const paths = semantic.getBlueBubblesSemanticPaths(agentName)
+      fs.mkdirSync(paths.root, { recursive: true })
+      const tempPath = path.join(
+        paths.root,
+        `.cutover.json.${process.pid}.${PROVIDER_NAMESPACE}.tmp`,
+      )
+      fs.writeFileSync(tempPath, "other-owner-sentinel\n", "utf8")
+      controls.openSync = () => {
+        throw codedError("EEXIST")
+      }
+      const invoke = operation === "initialize"
+        ? () => semantic.initializeBlueBubblesSemanticCutover(agentName, {
+            now: () => new Date(CUTOVER_AT),
+            randomUUID: () => PROVIDER_NAMESPACE,
+          })
+        : () => semantic.rotateBlueBubblesSemanticCutover(agentName, "migration", {
+            now: () => new Date(CUTOVER_AT),
+            randomUUID: () => PROVIDER_NAMESPACE,
+          })
+      expect(invoke).toThrow("synthetic EEXIST")
+      controls.openSync = undefined
+      expect(fs.readFileSync(tempPath, "utf8")).toBe("other-owner-sentinel\n")
+      fs.unlinkSync(tempPath)
+    }
+
+    for (const [agentName, operation] of [
+      ["initialize-close-failure", "initialize"],
+      ["rotate-close-failure", "rotate"],
+    ] as const) {
+      const paths = semantic.getBlueBubblesSemanticPaths(agentName)
+      const tempPath = path.join(
+        paths.root,
+        `.cutover.json.${process.pid}.${PROVIDER_NAMESPACE}.tmp`,
+      )
+      let firstClose = true
+      controls.closeSync = (...args: unknown[]) => {
+        if (firstClose) {
+          firstClose = false
+          Reflect.apply(actualFs.closeSync, actualFs, args)
+          throw codedError("EIO")
+        }
+        return Reflect.apply(actualFs.closeSync, actualFs, args)
+      }
+      const invoke = operation === "initialize"
+        ? () => semantic.initializeBlueBubblesSemanticCutover(agentName, {
+            now: () => new Date(CUTOVER_AT),
+            randomUUID: () => PROVIDER_NAMESPACE,
+          })
+        : () => semantic.rotateBlueBubblesSemanticCutover(agentName, "migration", {
+            now: () => new Date(CUTOVER_AT),
+            randomUUID: () => PROVIDER_NAMESPACE,
+          })
+      expect(invoke).toThrow("synthetic EIO")
+      controls.closeSync = undefined
+      expect(fs.existsSync(tempPath)).toBe(false)
+      expect(fs.existsSync(paths.cutover)).toBe(false)
+    }
 
     const winner = {
       schemaVersion: 1 as const,
@@ -1069,5 +1139,63 @@ describe("BlueBubbles semantic identity and cutover", () => {
       ...valid,
       keyHash: "",
     }, cutover)).toEqual(legacy)
+  })
+
+  it("reports true legacy and invalid-v1 recovery evidence without falsifying schema or actor state", async () => {
+    vi.resetModules()
+    const nerves = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nerves }))
+    const semantic = await import("../../../senses/bluebubbles/semantic-receipts")
+    const cutover = {
+      schemaVersion: 1 as const,
+      providerNamespace: PROVIDER_NAMESPACE,
+      effectiveAt: CUTOVER_AT,
+    }
+    const valid = semantic.buildBlueBubblesSemanticCapture({
+      cutover,
+      capturedAt: CAPTURED_AT,
+      event: makeMessageEvent(),
+      targetAuthorship: null,
+    })
+    expect(valid).not.toBeNull()
+
+    semantic.classifyBlueBubblesRecoveryRecord({
+      mutationType: "reaction",
+      messageGuid: "legacy",
+    }, cutover)
+    semantic.classifyBlueBubblesRecoveryRecord({
+      ...valid,
+      event: { ...valid?.event, actor: null },
+    }, cutover)
+    semantic.classifyBlueBubblesRecoveryRecord({
+      ...valid,
+      keyHash: "",
+    }, cutover)
+
+    expect(nerves).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_legacy_recovery_blocked",
+      meta: expect.objectContaining({
+        schemaVersion: 0,
+        actorPresent: false,
+        recordKind: "reaction",
+        reason: "legacy_or_actorless",
+      }),
+    }))
+    expect(nerves).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_semantic_recovery_invalid",
+      meta: expect.objectContaining({
+        schemaVersion: 1,
+        actorPresent: false,
+        reason: "actor_missing",
+      }),
+    }))
+    expect(nerves).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_semantic_recovery_invalid",
+      meta: expect.objectContaining({
+        schemaVersion: 1,
+        actorPresent: true,
+        reason: "key_hash_missing",
+      }),
+    }))
   })
 })
