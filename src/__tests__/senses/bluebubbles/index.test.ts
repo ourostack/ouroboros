@@ -2933,7 +2933,10 @@ describe("BlueBubbles sense runtime", () => {
       hasPayloadData: false,
       requiresRepair: false,
     })
-    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    await bluebubbles.handleBlueBubblesEvent({
+      ...dmThreadPayload,
+      data: { ...dmThreadPayload.data, guid: "group-ident-input" },
+    })
 
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "message",
@@ -2958,7 +2961,10 @@ describe("BlueBubbles sense runtime", () => {
       hasPayloadData: false,
       requiresRepair: false,
     })
-    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    await bluebubbles.handleBlueBubblesEvent({
+      ...dmThreadPayload,
+      data: { ...dmThreadPayload.data, guid: "group-sender-input" },
+    })
 
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "message",
@@ -2984,7 +2990,10 @@ describe("BlueBubbles sense runtime", () => {
       hasPayloadData: false,
       requiresRepair: false,
     })
-    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    await bluebubbles.handleBlueBubblesEvent({
+      ...dmThreadPayload,
+      data: { ...dmThreadPayload.data, guid: "dm-raw-input" },
+    })
 
     expect(mocks.resolverCtor).toHaveBeenNthCalledWith(
       1,
@@ -3294,7 +3303,10 @@ describe("BlueBubbles sense runtime", () => {
     await boomRes.done
     expect(boomRes.res.statusCode).toBe(200)
     expect(boomRes.getBody()).toContain("\"queued\":true")
-    await flushAsyncWork()
+    await waitFor(() => mocks.emitNervesEvent.mock.calls.some(
+      (call: unknown[]) => (call[0] as { event?: string; meta?: { reason?: string } })?.event === "senses.bluebubbles_webhook_async_error"
+        && (call[0] as { meta?: { reason?: string } }).meta?.reason === "repair blew up",
+    ))
 
     mocks.repairEvent.mockRejectedValueOnce("repair string blew up")
     const stringBoomReq = createMockRequest("POST", "/bluebubbles-webhook", dmThreadPayload)
@@ -3303,7 +3315,10 @@ describe("BlueBubbles sense runtime", () => {
     await stringBoomRes.done
     expect(stringBoomRes.res.statusCode).toBe(200)
     expect(stringBoomRes.getBody()).toContain("\"queued\":true")
-    await flushAsyncWork()
+    await waitFor(() => mocks.emitNervesEvent.mock.calls.some(
+      (call: unknown[]) => (call[0] as { event?: string; meta?: { reason?: string } })?.event === "senses.bluebubbles_webhook_async_error"
+        && (call[0] as { meta?: { reason?: string } }).meta?.reason === "repair string blew up",
+    ))
   })
 
   it("publishes the semantic capture before acknowledging a valid webhook", async () => {
