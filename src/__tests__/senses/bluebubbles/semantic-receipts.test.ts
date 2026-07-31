@@ -2263,6 +2263,51 @@ describe("BlueBubbles durable semantic store", () => {
     }
   })
 
+  it("rolls back ownership when the coordinator directory durability barrier fails", async () => {
+    const store = await loadSemanticStore()
+    const capture = makeSemanticCapture("sqlite-directory-fsync-failure")
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const operations: string[] = []
+
+    await expect(store.acquireBlueBubblesSemanticClaim(
+      "synthetic-agent",
+      capture,
+      semanticStoreDeps({
+        fs: createTracingFs(operations, {
+          operation: "fsyncSync",
+          matches: "fsync:semantic-receipts",
+          code: "EIO",
+        }),
+      }),
+    )).rejects.toThrow("synthetic EIO")
+
+    const ownership = new Database(paths.ownership, { readonly: true })
+    try {
+      const tableCount = ownership.prepare(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'owner_leases'",
+      ).pluck().get()
+      if (tableCount === 1) {
+        expect(ownership.prepare("SELECT count(*) FROM owner_leases").pluck().get()).toBe(0)
+      }
+    } finally {
+      ownership.close()
+    }
+    expect(fs.existsSync(path.join(paths.claims, `${capture.keyHash}.owner.json`))).toBe(false)
+    expect(operations).toContain("fsync:semantic-receipts")
+
+    const retry = await store.acquireBlueBubblesSemanticClaim(
+      "synthetic-agent",
+      capture,
+      semanticStoreDeps(),
+    )
+    expect(retry.status).toBe("acquired")
+    expect(store.releaseBlueBubblesSemanticClaim(
+      "synthetic-agent",
+      retry as SemanticClaimLeaseForTest,
+      semanticStoreDeps(),
+    )).toBe(true)
+  })
+
   it("polls SQLite write contention in exact 50 ms steps outside SQLite", async () => {
     const store = await loadSemanticStore()
     const seed = makeSemanticCapture("sqlite-busy-seed")

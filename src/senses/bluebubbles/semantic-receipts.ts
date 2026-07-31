@@ -1366,9 +1366,9 @@ function withImmediateSemanticOwnership<T>(
     database.pragma("synchronous = FULL")
     database.exec("BEGIN IMMEDIATE")
     initializeSemanticOwnershipSchema(database)
+    fsyncSemanticDirectory(path.dirname(ownershipPath), storeFs)
     const value = operation(database)
     database.exec("COMMIT")
-    fsyncSemanticDirectory(path.dirname(ownershipPath), storeFs)
     return { status: "completed", value }
   } catch (error) {
     if (database?.inTransaction) {
