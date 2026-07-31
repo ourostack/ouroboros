@@ -4,6 +4,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
+import Database from "better-sqlite3"
+
 import { getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type {
@@ -32,6 +34,12 @@ const CANONICAL_ACTIONS = new Set<Exclude<IngressCanonicalAction, null>>(["add",
 const SEMANTIC_KEY_HASH_PATTERN = /^[0-9a-f]{64}$/
 const SEMANTIC_CLAIM_POLL_MS = 50
 const SEMANTIC_CLAIM_TIMEOUT_MS = 5_000
+const SEMANTIC_OWNERSHIP_SCHEMA_VERSION = 1
+const SEMANTIC_OWNERSHIP_SCHEMA_SQL = `CREATE TABLE owner_leases (
+      resource_key TEXT PRIMARY KEY,
+      lease_id TEXT NOT NULL,
+      owner_json TEXT NOT NULL
+    ) STRICT, WITHOUT ROWID`
 const CAPTURE_KEYS = ["schemaVersion", "canonicalKey", "keyHash", "providerNamespace", "capturedAt", "event"]
 const CAPTURE_EVENT_KEYS = [
   "provider",
@@ -88,6 +96,7 @@ const SEMANTIC_HANDLED_OUTCOMES = new Set<BlueBubblesSemanticHandledOutcome>([
   "delivery_audit_only",
 ])
 const lastOwnerAcquisitionMs = new Map<string, number>()
+const semanticClaimLeaseIds = new WeakMap<BlueBubblesSemanticClaimLease, string>()
 
 export interface BlueBubblesSemanticCutover {
   schemaVersion: 1
@@ -103,6 +112,7 @@ export interface BlueBubblesSemanticPaths {
   claims: string
   coordinates: string
   quarantine: string
+  ownership: string
 }
 
 export interface BlueBubblesSemanticCutoverDeps {
@@ -203,6 +213,7 @@ export interface BlueBubblesSemanticStoreDeps {
   processStartedAt?: (pid: number) => string | null
   isProcessAlive?: (pid: number) => boolean
   sleep?: (milliseconds: number) => Promise<void>
+  sleepSync?: (milliseconds: number) => void
   platform?: NodeJS.Platform
   execFileSync?: typeof execFileSync
   kill?: typeof process.kill
@@ -249,6 +260,7 @@ export function getBlueBubblesSemanticPaths(agentName: string): BlueBubblesSeman
     claims: path.join(root, "claims"),
     coordinates: path.join(root, "coordinates"),
     quarantine: path.join(root, "quarantine"),
+    ownership: path.join(root, "ownership.sqlite"),
   }
 }
 
@@ -689,7 +701,7 @@ export function writeBlueBubblesSemanticCapture(
     const paths = getBlueBubblesSemanticPaths(agentName)
     const finalPath = semanticRecordPath(paths.captures, capture.keyHash)
     const existing = readExistingCaptureForWrite(agentName, capture.keyHash, deps)
-    if (existing) return finishCaptureComparison(agentName, existing, capture)
+    if (existing) return finishCaptureComparison(agentName, existing, capture, deps)
     if (!isBlueBubblesSemanticCapture(capture, capture.keyHash)) {
       throw semanticStoreError("semantic_capture_invalid")
     }
@@ -705,7 +717,7 @@ export function writeBlueBubblesSemanticCapture(
       if (!winner) {
         return writeBlueBubblesSemanticCaptureAfterQuarantine(agentName, capture, deps)
       }
-      return finishCaptureComparison(agentName, winner, capture)
+      return finishCaptureComparison(agentName, winner, capture, deps)
     }
     emitNervesEvent({
       component: "senses",
@@ -716,7 +728,6 @@ export function writeBlueBubblesSemanticCapture(
     return "semantic_capture_published"
   } catch (error) {
     emitCaptureError(agentName, capture.keyHash, error)
-    if (error instanceof Error && error.message === "semantic_capture_failed") throw error
     throw semanticStoreError("semantic_capture_failed", error)
   }
 }
@@ -769,7 +780,7 @@ export function writeBlueBubblesSemanticHandled(
     const paths = getBlueBubblesSemanticPaths(agentName)
     const finalPath = semanticRecordPath(paths.handled, record.keyHash)
     const existing = readExistingHandledForWrite(agentName, record.keyHash, deps)
-    if (existing) return finishHandledComparison(agentName, existing, record)
+    if (existing) return finishHandledComparison(agentName, existing, record, deps)
     if (!isBlueBubblesSemanticHandledRecord(record, record.keyHash)) {
       throw semanticStoreError("semantic_handled_invalid")
     }
@@ -777,7 +788,7 @@ export function writeBlueBubblesSemanticHandled(
     if (publication === "exists") {
       const winner = readExistingHandledForWrite(agentName, record.keyHash, deps)
       if (!winner) return writeBlueBubblesSemanticHandled(agentName, record, deps)
-      return finishHandledComparison(agentName, winner, record)
+      return finishHandledComparison(agentName, winner, record, deps)
     }
     return "semantic_handled_published"
   } catch (error) {
@@ -808,6 +819,10 @@ export async function acquireBlueBubblesSemanticClaim(
   identity: { canonicalKey: string; keyHash: string },
   deps: BlueBubblesSemanticStoreDeps = {},
 ): Promise<BlueBubblesSemanticClaimResult> {
+  const keyHash = validatedKeyHash(identity.keyHash)
+  if (sha256Utf8(identity.canonicalKey) !== keyHash) {
+    throw semanticStoreError("semantic_claim_invalid")
+  }
   const handled = readBlueBubblesSemanticHandled(agentName, identity.keyHash, deps)
   if (handled) return { status: "already_handled", record: handled }
   const paths = getBlueBubblesSemanticPaths(agentName)
@@ -821,6 +836,8 @@ export async function acquireBlueBubblesSemanticClaim(
       keyHash: identity.keyHash,
       operationId: `semantic-handle:${identity.keyHash}`,
       recordKind: "claim",
+      ownershipPath: paths.ownership,
+      resourceKey: `claim:${keyHash}`,
     }, deps)
   } catch (error) {
     if (error instanceof Error && error.message === "semantic_owner_liveness_failed") {
@@ -832,6 +849,7 @@ export async function acquireBlueBubblesSemanticClaim(
     return { status: "timeout", code: "semantic_claim_timeout" }
   }
   const lease: BlueBubblesSemanticClaimLease = { status: "acquired", record: ownerResult.record }
+  semanticClaimLeaseIds.set(lease, ownerResult.leaseId)
   const handledAfterClaim = readBlueBubblesSemanticHandled(agentName, identity.keyHash, deps)
   if (handledAfterClaim) {
     releaseBlueBubblesSemanticClaim(agentName, lease, deps)
@@ -856,7 +874,16 @@ export function releaseBlueBubblesSemanticClaim(
     paths.claims,
     `${validatedKeyHash(lease.record.keyHash)}.owner.json`,
   )
-  return releaseExclusiveSemanticOwner(paths.claims, ownerPath, lease.record, deps)
+  const leaseId = semanticClaimLeaseIds.get(lease)
+  if (!leaseId) return false
+  return releaseExclusiveSemanticOwner({
+    directoryPath: paths.claims,
+    ownerPath,
+    ownershipPath: paths.ownership,
+    resourceKey: `claim:${lease.record.keyHash}`,
+    record: lease.record,
+    leaseId,
+  }, deps)
 }
 
 export async function allocateBlueBubblesReactionCoordinate(
@@ -888,6 +915,8 @@ export async function allocateBlueBubblesReactionCoordinate(
       keyHash: coordinateHash,
       operationId: `semantic-coordinate:${coordinateHash}`,
       recordKind: "coordinate-owner",
+      ownershipPath: paths.ownership,
+      resourceKey: `coordinate:${coordinateHash}`,
     }, deps)
   } catch (error) {
     if (error instanceof Error && error.message === "semantic_owner_liveness_failed") {
@@ -918,7 +947,10 @@ export async function allocateBlueBubblesReactionCoordinate(
     )) {
       throw semanticStoreError("semantic_coordinate_invalid")
     }
-    if (existing && existing.lastAction === input.canonicalAction) return existing
+    if (existing && existing.lastAction === input.canonicalAction) {
+      fsyncSemanticDirectory(paths.coordinates, semanticFs(deps))
+      return existing
+    }
 
     const record = buildBlueBubblesReactionCoordinateRecord({
       coordinateKey: input.coordinateKey,
@@ -930,14 +962,21 @@ export async function allocateBlueBubblesReactionCoordinate(
     writeMutableSemanticRecord(paths.coordinates, finalPath, record, deps)
     return record
   } finally {
-    releaseExclusiveSemanticOwner(paths.coordinates, ownerPath, ownerResult.record, deps)
+    releaseExclusiveSemanticOwner({
+      directoryPath: paths.coordinates,
+      ownerPath,
+      ownershipPath: paths.ownership,
+      resourceKey: `coordinate:${coordinateHash}`,
+      record: ownerResult.record,
+      leaseId: ownerResult.leaseId,
+    }, deps)
   }
 }
 
 type SemanticRecordKind = "capture" | "handled" | "claim" | "coordinate" | "coordinate-owner"
 
 type ExclusiveOwnerResult =
-  | { status: "acquired"; record: BlueBubblesSemanticClaimRecord }
+  | { status: "acquired"; record: BlueBubblesSemanticClaimRecord; leaseId: string }
   | { status: "timeout" }
 
 interface ExclusiveOwnerInput {
@@ -947,6 +986,17 @@ interface ExclusiveOwnerInput {
   keyHash: string
   operationId: string
   recordKind: SemanticRecordKind
+  ownershipPath: string
+  resourceKey: string
+}
+
+interface ExclusiveOwnerReleaseInput {
+  directoryPath: string
+  ownerPath: string
+  ownershipPath: string
+  resourceKey: string
+  record: BlueBubblesSemanticClaimRecord
+  leaseId: string
 }
 
 function writeBlueBubblesSemanticCaptureAfterQuarantine(
@@ -960,7 +1010,7 @@ function writeBlueBubblesSemanticCaptureAfterQuarantine(
   if (publication === "exists") {
     const winner = readExistingCaptureForWrite(agentName, capture.keyHash, deps)
     if (!winner) throw semanticStoreError("semantic_capture_failed")
-    return finishCaptureComparison(agentName, winner, capture)
+    return finishCaptureComparison(agentName, winner, capture, deps)
   }
   emitNervesEvent({
     component: "senses",
@@ -987,7 +1037,9 @@ function finishCaptureComparison(
   agentName: string,
   existing: BlueBubblesSemanticCaptureV1,
   candidate: BlueBubblesSemanticCaptureV1,
+  deps: BlueBubblesSemanticStoreDeps,
 ): BlueBubblesSemanticCaptureWriteResult {
+  fsyncSemanticDirectory(getBlueBubblesSemanticPaths(agentName).captures, semanticFs(deps))
   if (capturesAreEquivalent(existing, candidate)) {
     emitNervesEvent({
       component: "senses",
@@ -1018,7 +1070,9 @@ function finishHandledComparison(
   agentName: string,
   existing: BlueBubblesSemanticHandledRecord,
   candidate: BlueBubblesSemanticHandledRecord,
+  deps: BlueBubblesSemanticStoreDeps,
 ): BlueBubblesSemanticHandledWriteResult {
+  fsyncSemanticDirectory(getBlueBubblesSemanticPaths(agentName).handled, semanticFs(deps))
   if (handledRecordsAreEquivalent(existing, candidate)) return "semantic_handled_duplicate"
   emitSemanticStoreError(
     agentName,
@@ -1173,57 +1227,33 @@ async function acquireExclusiveSemanticOwner(
   input: ExclusiveOwnerInput,
   deps: BlueBubblesSemanticStoreDeps,
 ): Promise<ExclusiveOwnerResult> {
-  const storeFs = semanticFs(deps)
+  const keyHash = validatedKeyHash(input.keyHash)
+  const pid = semanticPid(deps)
   const ownerRecord = buildBlueBubblesSemanticClaimRecord({
     canonicalKey: input.canonicalKey,
-    keyHash: validatedKeyHash(input.keyHash),
+    keyHash,
     operationId: input.operationId,
-    pid: semanticPid(deps),
+    pid,
     bootIdentity: semanticBootIdentity(deps),
-    processStartedAt: requiredProbeIdentity(semanticProcessStartedAt(semanticPid(deps), deps)),
+    processStartedAt: requiredProbeIdentity(semanticProcessStartedAt(pid, deps)),
     acquiredAt: nextOwnerAcquiredAt(input.ownerPath, deps),
   })
+  const leaseId = semanticRandomUuid(deps)
   const startedAt = semanticNow(deps).getTime()
   while (true) {
-    const publication = publishImmutableSemanticRecord(
-      input.directoryPath,
-      input.ownerPath,
-      ownerRecord,
+    const attempt = withImmediateSemanticOwnership(
+      input.ownershipPath,
       deps,
+      (database) => acquireSemanticOwnerInTransaction(
+        database,
+        input,
+        ownerRecord,
+        leaseId,
+        deps,
+      ),
     )
-    if (publication === "published") return { status: "acquired", record: ownerRecord }
-
-    const existing = readSemanticRecord(
-      input.ownerPath,
-      input.recordKind,
-      input.keyHash,
-      (value) => isBlueBubblesSemanticClaimRecord(value, input),
-      deps,
-    )
-    if (!existing) continue
-    let stale = false
-    try {
-      if (existing.owner.bootIdentity !== semanticBootIdentity(deps)) {
-        stale = true
-      } else if (!semanticIsProcessAlive(existing.owner.pid, deps)) {
-        stale = true
-      } else {
-        const observedStart = semanticProcessStartedAt(existing.owner.pid, deps)
-        if (observedStart === null) throw semanticStoreError("semantic_owner_liveness_failed")
-        stale = observedStart !== existing.owner.processStartedAt
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message === "semantic_owner_liveness_failed") throw error
-      throw semanticStoreError("semantic_owner_liveness_failed", error)
-    }
-    if (stale) {
-      removeSemanticOwnerIfUnchanged(
-        input.directoryPath,
-        input.ownerPath,
-        existing,
-        storeFs,
-      )
-      continue
+    if (attempt.status === "completed" && attempt.value === "acquired") {
+      return { status: "acquired", record: ownerRecord, leaseId }
     }
     if (semanticNow(deps).getTime() - startedAt >= SEMANTIC_CLAIM_TIMEOUT_MS) {
       return { status: "timeout" }
@@ -1233,20 +1263,59 @@ async function acquireExclusiveSemanticOwner(
 }
 
 function releaseExclusiveSemanticOwner(
-  directoryPath: string,
-  ownerPath: string,
-  owner: BlueBubblesSemanticClaimRecord,
+  input: ExclusiveOwnerReleaseInput,
   deps: BlueBubblesSemanticStoreDeps,
 ): boolean {
-  return removeSemanticOwnerIfUnchanged(directoryPath, ownerPath, owner, semanticFs(deps))
+  const startedAt = semanticNow(deps).getTime()
+  while (true) {
+    const result = withImmediateSemanticOwnership(input.ownershipPath, deps, (database) => {
+      const row = readSemanticOwnershipRow(database, input.resourceKey)
+      if (!row || row.lease_id !== input.leaseId) return false
+      const rowOwner = parseSemanticOwnershipRow(row, {
+        canonicalKey: input.record.canonicalKey,
+        keyHash: input.record.keyHash,
+        operationId: input.record.owner.operationId,
+      })
+      if (serializeBlueBubblesSemanticJson(rowOwner) !== serializeBlueBubblesSemanticJson(input.record)) {
+        return false
+      }
+      const evidence = inspectSemanticOwnerEvidence(input.ownerPath, {
+        canonicalKey: input.record.canonicalKey,
+        keyHash: input.record.keyHash,
+        operationId: input.record.owner.operationId,
+      }, deps)
+      if (evidence.status === "invalid") return false
+      if (evidence.status === "valid" && evidence.bytes !== row.owner_json) return false
+      if (evidence.status === "valid" && !removeSemanticOwnerEvidenceIfUnchanged(
+        input.directoryPath,
+        input.ownerPath,
+        row.owner_json,
+        semanticFs(deps),
+      )) return false
+      deleteSemanticOwnershipRow(database, input.resourceKey, input.leaseId)
+      return true
+    })
+    if (result.status === "completed") return result.value
+    if (semanticNow(deps).getTime() - startedAt >= SEMANTIC_CLAIM_TIMEOUT_MS) {
+      throw semanticStoreError("semantic_ownership_busy")
+    }
+    semanticSleepSync(SEMANTIC_CLAIM_POLL_MS, deps)
+  }
 }
 
-function removeSemanticOwnerIfUnchanged(
+function removeSemanticOwnerEvidenceIfUnchanged(
   directoryPath: string,
   ownerPath: string,
-  owner: BlueBubblesSemanticClaimRecord,
+  expectedBytes: string,
   storeFs: typeof fs,
 ): boolean {
+  let before: fs.Stats
+  try {
+    before = storeFs.lstatSync(ownerPath)
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return false
+    throw error
+  }
   let current: string
   try {
     current = storeFs.readFileSync(ownerPath, "utf8")
@@ -1254,10 +1323,315 @@ function removeSemanticOwnerIfUnchanged(
     if (isNodeError(error, "ENOENT")) return false
     throw error
   }
-  if (current !== serializeBlueBubblesSemanticJson(owner)) return false
+  const after = storeFs.lstatSync(ownerPath)
+  if (
+    !before.isFile()
+    || !after.isFile()
+    || before.dev !== after.dev
+    || before.ino !== after.ino
+    || current !== expectedBytes
+  ) return false
   storeFs.unlinkSync(ownerPath)
   fsyncSemanticDirectory(directoryPath, storeFs)
   return true
+}
+
+interface SemanticOwnershipRow {
+  resource_key: string
+  lease_id: string
+  owner_json: string
+}
+
+type SemanticOwnershipTransactionResult<T> =
+  | { status: "completed"; value: T }
+  | { status: "busy" }
+
+type SemanticOwnerEvidence =
+  | { status: "missing" }
+  | { status: "valid"; record: BlueBubblesSemanticClaimRecord; bytes: string }
+  | { status: "invalid"; reason: unknown }
+
+function withImmediateSemanticOwnership<T>(
+  ownershipPath: string,
+  deps: BlueBubblesSemanticStoreDeps,
+  operation: (database: Database.Database) => T,
+): SemanticOwnershipTransactionResult<T> {
+  const storeFs = semanticFs(deps)
+  storeFs.mkdirSync(path.dirname(ownershipPath), { recursive: true })
+  let database: Database.Database | null = null
+  try {
+    database = new Database(ownershipPath, { timeout: 0 })
+    database.pragma("busy_timeout = 0")
+    database.pragma("journal_mode = DELETE")
+    database.pragma("synchronous = FULL")
+    database.exec("BEGIN IMMEDIATE")
+    initializeSemanticOwnershipSchema(database)
+    const value = operation(database)
+    database.exec("COMMIT")
+    fsyncSemanticDirectory(path.dirname(ownershipPath), storeFs)
+    return { status: "completed", value }
+  } catch (error) {
+    if (database?.inTransaction) {
+      database.exec("ROLLBACK")
+    }
+    if (isSqliteBusy(error)) return { status: "busy" }
+    if (isSqliteError(error)) throw semanticStoreError("semantic_ownership_invalid", error)
+    throw error
+  } finally {
+    database?.close()
+  }
+}
+
+function initializeSemanticOwnershipSchema(database: Database.Database): void {
+  const version = database.pragma("user_version", { simple: true })
+  if (version === 0) {
+    database.exec(SEMANTIC_OWNERSHIP_SCHEMA_SQL)
+    database.pragma(`user_version = ${SEMANTIC_OWNERSHIP_SCHEMA_VERSION}`)
+  } else if (version !== SEMANTIC_OWNERSHIP_SCHEMA_VERSION) {
+    throw semanticStoreError("semantic_ownership_invalid")
+  }
+  const schema = database.prepare<[], { sql: string }>(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'owner_leases'",
+  ).get()
+  if (schema?.sql !== SEMANTIC_OWNERSHIP_SCHEMA_SQL) {
+    throw semanticStoreError("semantic_ownership_invalid")
+  }
+}
+
+function acquireSemanticOwnerInTransaction(
+  database: Database.Database,
+  input: ExclusiveOwnerInput,
+  candidate: BlueBubblesSemanticClaimRecord,
+  leaseId: string,
+  deps: BlueBubblesSemanticStoreDeps,
+): "acquired" | "occupied" {
+  const row = readSemanticOwnershipRow(database, input.resourceKey)
+  if (row) {
+    const existing = parseSemanticOwnershipRow(row, input)
+    if (!semanticOwnerIsStale(existing, deps)) {
+      reconcileSemanticOwnerEvidence(input, existing, deps)
+      return "occupied"
+    }
+    quarantineSemanticOwnerEvidenceIfPresent(input, deps)
+    deleteSemanticOwnershipRow(database, input.resourceKey, row.lease_id)
+  } else {
+    const evidence = inspectSemanticOwnerEvidence(input.ownerPath, input, deps)
+    if (evidence.status === "valid" && !semanticOwnerIsStale(evidence.record, deps)) {
+      insertSemanticOwnershipRow(
+        database,
+        input.resourceKey,
+        semanticRandomUuid(deps),
+        evidence.bytes,
+      )
+      return "occupied"
+    }
+    if (evidence.status !== "missing") {
+      quarantineSemanticRecord(
+        input.ownerPath,
+        input.recordKind,
+        input.keyHash,
+        deps,
+        evidence.status === "invalid"
+          ? evidence.reason
+          : semanticStoreError("semantic_owner_stale"),
+      )
+    }
+  }
+
+  const ownerJson = serializeBlueBubblesSemanticJson(candidate)
+  insertSemanticOwnershipRow(database, input.resourceKey, leaseId, ownerJson)
+  ensureSemanticOwnerEvidence(input, candidate, ownerJson, deps)
+  return "acquired"
+}
+
+function readSemanticOwnershipRow(
+  database: Database.Database,
+  resourceKey: string,
+): SemanticOwnershipRow | null {
+  return database.prepare<[string], SemanticOwnershipRow>(
+    "SELECT resource_key, lease_id, owner_json FROM owner_leases WHERE resource_key = ?",
+  ).get(resourceKey) ?? null
+}
+
+function insertSemanticOwnershipRow(
+  database: Database.Database,
+  resourceKey: string,
+  leaseId: string,
+  ownerJson: string,
+): void {
+  database.prepare<[string, string, string]>(
+    "INSERT INTO owner_leases (resource_key, lease_id, owner_json) VALUES (?, ?, ?)",
+  ).run(resourceKey, leaseId, ownerJson)
+}
+
+function deleteSemanticOwnershipRow(
+  database: Database.Database,
+  resourceKey: string,
+  leaseId: string,
+): void {
+  database.prepare<[string, string]>(
+    "DELETE FROM owner_leases WHERE resource_key = ? AND lease_id = ?",
+  ).run(resourceKey, leaseId)
+}
+
+function parseSemanticOwnershipRow(
+  row: SemanticOwnershipRow,
+  expected: Pick<ExclusiveOwnerInput, "canonicalKey" | "keyHash" | "operationId">,
+): BlueBubblesSemanticClaimRecord {
+  if (!UUID_V4_PATTERN.test(row.lease_id)) {
+    throw semanticStoreError("semantic_ownership_invalid")
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(row.owner_json)
+  } catch (error) {
+    throw semanticStoreError("semantic_ownership_invalid", error)
+  }
+  if (
+    !isBlueBubblesSemanticClaimRecord(value, expected)
+    || row.owner_json !== serializeBlueBubblesSemanticJson(value)
+  ) {
+    throw semanticStoreError("semantic_ownership_invalid")
+  }
+  return value
+}
+
+function semanticOwnerIsStale(
+  owner: BlueBubblesSemanticClaimRecord,
+  deps: BlueBubblesSemanticStoreDeps,
+): boolean {
+  try {
+    if (owner.owner.bootIdentity !== semanticBootIdentity(deps)) return true
+    if (!semanticIsProcessAlive(owner.owner.pid, deps)) return true
+    const observedStart = semanticProcessStartedAt(owner.owner.pid, deps)
+    if (observedStart === null) throw semanticStoreError("semantic_owner_liveness_failed")
+    return observedStart !== owner.owner.processStartedAt
+  } catch (error) {
+    if (error instanceof Error && error.message === "semantic_owner_liveness_failed") throw error
+    throw semanticStoreError("semantic_owner_liveness_failed", error)
+  }
+}
+
+function inspectSemanticOwnerEvidence(
+  ownerPath: string,
+  input: Pick<ExclusiveOwnerInput, "canonicalKey" | "keyHash" | "operationId">,
+  deps: BlueBubblesSemanticStoreDeps,
+): SemanticOwnerEvidence {
+  const storeFs = semanticFs(deps)
+  let stat: fs.Stats
+  try {
+    stat = storeFs.lstatSync(ownerPath)
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return { status: "missing" }
+    throw error
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    return { status: "invalid", reason: semanticStoreError("semantic_owner_evidence_invalid") }
+  }
+  let bytes: string
+  try {
+    bytes = storeFs.readFileSync(ownerPath, "utf8")
+  } catch (error) {
+    return { status: "invalid", reason: error }
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(bytes)
+  } catch (error) {
+    return { status: "invalid", reason: error }
+  }
+  if (
+    !isBlueBubblesSemanticClaimRecord(value, input)
+    || bytes !== serializeBlueBubblesSemanticJson(value)
+  ) {
+    return { status: "invalid", reason: semanticStoreError("semantic_owner_evidence_invalid") }
+  }
+  return { status: "valid", record: value, bytes }
+}
+
+function reconcileSemanticOwnerEvidence(
+  input: ExclusiveOwnerInput,
+  owner: BlueBubblesSemanticClaimRecord,
+  deps: BlueBubblesSemanticStoreDeps,
+): void {
+  const ownerJson = serializeBlueBubblesSemanticJson(owner)
+  const evidence = inspectSemanticOwnerEvidence(input.ownerPath, input, deps)
+  if (evidence.status === "valid" && evidence.bytes === ownerJson) {
+    fsyncSemanticDirectory(input.directoryPath, semanticFs(deps))
+    return
+  }
+  if (evidence.status !== "missing") {
+    quarantineSemanticRecord(
+      input.ownerPath,
+      input.recordKind,
+      input.keyHash,
+      deps,
+      evidence.status === "invalid"
+        ? evidence.reason
+        : semanticStoreError("semantic_owner_evidence_mismatch"),
+    )
+  }
+  ensureSemanticOwnerEvidence(input, owner, ownerJson, deps)
+}
+
+function quarantineSemanticOwnerEvidenceIfPresent(
+  input: ExclusiveOwnerInput,
+  deps: BlueBubblesSemanticStoreDeps,
+): void {
+  const evidence = inspectSemanticOwnerEvidence(input.ownerPath, input, deps)
+  if (evidence.status === "missing") return
+  quarantineSemanticRecord(
+    input.ownerPath,
+    input.recordKind,
+    input.keyHash,
+    deps,
+    evidence.status === "invalid" ? evidence.reason : semanticStoreError("semantic_owner_stale"),
+  )
+}
+
+function ensureSemanticOwnerEvidence(
+  input: ExclusiveOwnerInput,
+  owner: BlueBubblesSemanticClaimRecord,
+  ownerJson: string,
+  deps: BlueBubblesSemanticStoreDeps,
+): void {
+  const evidence = inspectSemanticOwnerEvidence(input.ownerPath, input, deps)
+  if (evidence.status === "valid" && evidence.bytes === ownerJson) {
+    fsyncSemanticDirectory(input.directoryPath, semanticFs(deps))
+    return
+  }
+  if (evidence.status !== "missing") {
+    quarantineSemanticRecord(
+      input.ownerPath,
+      input.recordKind,
+      input.keyHash,
+      deps,
+      evidence.status === "invalid"
+        ? evidence.reason
+        : semanticStoreError("semantic_owner_evidence_mismatch"),
+    )
+  }
+  const publication = publishImmutableSemanticRecord(
+    input.directoryPath,
+    input.ownerPath,
+    owner,
+    deps,
+  )
+  if (publication !== "published") throw semanticStoreError("semantic_owner_evidence_collision")
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  if (!(error instanceof Error) || !("code" in error) || typeof error.code !== "string") {
+    return false
+  }
+  return error.code.startsWith("SQLITE_BUSY") || error.code.startsWith("SQLITE_LOCKED")
+}
+
+function isSqliteError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && typeof error.code === "string"
+    && error.code.startsWith("SQLITE_")
 }
 
 function readSemanticRecord<T>(
@@ -1307,9 +1681,15 @@ function quarantineSemanticRecord(
   const paths = semanticQuarantinePaths(finalPath, recordKind, deps)
   try {
     storeFs.mkdirSync(paths.directoryPath, { recursive: true })
-    storeFs.renameSync(finalPath, paths.quarantinePath)
-    fsyncSemanticDirectory(path.dirname(finalPath), storeFs)
+    const sourceStat = storeFs.lstatSync(finalPath)
+    if (sourceStat.isSymbolicLink()) {
+      storeFs.symlinkSync(storeFs.readlinkSync(finalPath), paths.quarantinePath)
+    } else {
+      storeFs.linkSync(finalPath, paths.quarantinePath)
+    }
     fsyncSemanticDirectory(paths.directoryPath, storeFs)
+    storeFs.unlinkSync(finalPath)
+    fsyncSemanticDirectory(path.dirname(finalPath), storeFs)
   } catch (error) {
     emitSemanticStoreError("unknown", keyHash, "semantic_quarantine_failed", error)
     throw semanticStoreError("semantic_quarantine_failed", error)
@@ -1388,8 +1768,52 @@ function isBlueBubblesSemanticCapture(
     || !isNullableString(event.revision)
     || !isNullableString(event.contentSha256)
   ) return false
-  if (event.text === null) return event.textSha256 === null
-  return event.textSha256 === sha256Utf8(event.text)
+  if (event.text === null) {
+    if (event.textSha256 !== null) return false
+  } else if (event.textSha256 !== sha256Utf8(event.text)) {
+    return false
+  }
+  return captureIdentityMatchesEvent(value as unknown as BlueBubblesSemanticCaptureV1)
+}
+
+function captureIdentityMatchesEvent(value: BlueBubblesSemanticCaptureV1): boolean {
+  const event = value.event
+  const coordinateGeneration = event.kind === "reaction"
+    && event.revision === null
+    && event.effectiveAt === null
+    ? reactionGenerationFromCanonicalKey(value.canonicalKey)
+    : undefined
+  if (coordinateGeneration === null) return false
+  const identity = buildBlueBubblesSemanticIdentity({
+    providerNamespace: value.providerNamespace,
+    kind: event.kind,
+    eventGuid: event.eventGuid,
+    targetGuid: event.targetGuid,
+    actorExternalId: event.actor.externalId,
+    canonicalValue: event.canonicalValue ?? undefined,
+    canonicalAction: event.canonicalAction ?? undefined,
+    revision: event.revision ?? undefined,
+    effectiveTimestamp: event.effectiveAt === null ? undefined : Date.parse(event.effectiveAt),
+    text: event.text ?? undefined,
+    coordinateGeneration,
+  })
+  return identity !== null
+    && identity.canonicalKey === value.canonicalKey
+    && identity.keyHash === value.keyHash
+}
+
+function reactionGenerationFromCanonicalKey(canonicalKey: string): number | null {
+  let tuple: unknown
+  try {
+    tuple = JSON.parse(canonicalKey)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(tuple) || tuple.length !== 9 || typeof tuple[8] !== "string") return null
+  const match = /^generation:(0|[1-9]\d*)$/.exec(tuple[8])
+  if (!match) return null
+  const generation = Number(match[1])
+  return Number.isInteger(generation) && generation >= 0 ? generation : null
 }
 
 function isBlueBubblesSemanticHandledRecord(
@@ -1544,6 +1968,15 @@ async function semanticSleep(milliseconds: number, deps: BlueBubblesSemanticStor
     return
   }
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function semanticSleepSync(milliseconds: number, deps: BlueBubblesSemanticStoreDeps): void {
+  if (deps.sleepSync) {
+    deps.sleepSync(milliseconds)
+    return
+  }
+  const waitCell = new Int32Array(new SharedArrayBuffer(4))
+  Atomics.wait(waitCell, 0, 0, milliseconds)
 }
 
 function requiredProbeIdentity(value: string | null): string {

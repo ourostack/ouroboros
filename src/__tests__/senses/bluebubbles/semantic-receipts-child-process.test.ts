@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
+import Database from "better-sqlite3"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -110,6 +111,45 @@ describe.skipIf(!childAgent || childMode !== "claim")(
       expect(releaseBlueBubblesSemanticClaim(childAgent!, lease)).toBe(true)
       const releasedAtMs = Date.now()
       fs.writeFileSync(resultPath, JSON.stringify({ acquiredAtMs, releasedAtMs, ownerSnapshot }), "utf8")
+    })
+  },
+)
+
+describe.skipIf(!childAgent || childMode !== "claim-abandon")(
+  "BlueBubbles abandoned semantic claim child process",
+  () => {
+    it("publishes one claim and exits without releasing it", async () => {
+      const canonicalKey = process.env.BB_SEMANTIC_CHILD_CANONICAL_KEY!
+      const keyHash = process.env.BB_SEMANTIC_CHILD_KEY_HASH!
+      const resultPath = process.env.BB_SEMANTIC_CHILD_RESULT!
+      await enterStartBarrier()
+      const lease = await acquireBlueBubblesSemanticClaim(childAgent!, { canonicalKey, keyHash })
+      expect(lease.status).toBe("acquired")
+      if (lease.status !== "acquired") throw new Error(`claim was not acquired: ${lease.status}`)
+      fs.writeFileSync(resultPath, JSON.stringify({ pid: process.pid, record: lease.record }), "utf8")
+    })
+  },
+)
+
+describe.skipIf(!childAgent || childMode !== "ownership-lock")(
+  "BlueBubbles semantic ownership lock child process",
+  () => {
+    it("holds the SQLite writer briefly for a release retry", async () => {
+      const ownershipPath = path.join(
+        getBlueBubblesSemanticPaths(childAgent!).root,
+        "ownership.sqlite",
+      )
+      const ownership = new Database(ownershipPath, { timeout: 0 })
+      ownership.pragma("busy_timeout = 0")
+      ownership.exec("BEGIN IMMEDIATE")
+      fs.writeFileSync(process.env.BB_SEMANTIC_CHILD_READY!, "ready", "utf8")
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Number(process.env.BB_SEMANTIC_CHILD_HOLD_MS ?? "0"),
+      ))
+      ownership.exec("COMMIT")
+      ownership.close()
+      expect(fs.existsSync(ownershipPath)).toBe(true)
     })
   },
 )

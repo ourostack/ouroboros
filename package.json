@@ -1,6 +1,9 @@
 {
   "name": "@ouro.bot/cli",
   "version": "0.1.0-alpha.724",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -61,6 +64,7 @@
     "@ouro.bot/friends": "0.1.0-alpha.7",
     "@types/react": "^17.0.91",
     "@types/ws": "^8.18.1",
+    "better-sqlite3": "13.0.2",
     "fast-glob": "^3.3.3",
     "ink": "^3.2.0",
     "mailparser": "^3.9.8",
@@ -77,6 +81,7 @@
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
+    "@types/better-sqlite3": "7.6.13",
     "@types/mailparser": "^3.4.6",
     "@types/semver": "^7.7.1",
     "@types/smtp-server": "^3.5.13",
