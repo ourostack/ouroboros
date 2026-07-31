@@ -6,7 +6,7 @@ import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
-import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import {
   completeHabitRun,
@@ -40,6 +40,7 @@ import {
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
 import { reserveAutonomyBudget, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
+import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -337,22 +338,6 @@ function deriveHabitSummarySnapshot(habitRun: PreparedHabitRun): HabitRunSummary
   }
 }
 
-function fallbackHabitFile(habitName: string): HabitFile {
-  return {
-    name: habitName,
-    title: habitName,
-    cadence: null,
-    status: "active",
-    lastRun: null,
-    created: null,
-    tools: [],
-    origin: null,
-    surface: { family: false, originator: false, extra: [] },
-    continuity: { mode: "fresh" },
-    body: "",
-  }
-}
-
 function readHabitForRun(agentRoot: string, habitName: string, errors: string[]): HabitFile {
   const habitPath = path.join(agentRoot, "habits", `${habitName}.md`)
   try {
@@ -367,7 +352,7 @@ function readHabitForRun(agentRoot: string, habitName: string, errors: string[])
       message: "habit file could not be read for habit session",
       meta: { habitName, habitPath, reason },
     })
-    return fallbackHabitFile(habitName)
+    return createDegradedHabitFile(habitPath, "read_error")
   }
 }
 
@@ -378,9 +363,10 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   if (habit.status === "degraded" && habit.degradedDetail !== null) {
     errors.push(habit.degradedDetail)
   }
+  const lifecycleBlockedReason = privateRuntimeHabitRejectionReason(habit, "private-runtime-worker")
   const blockedReason = isRsvpHabitName(habitName) && !habit.rsvp
     ? "RSVP habit metadata is required before private runtime execution"
-    : null
+    : lifecycleBlockedReason
   if (blockedReason && !errors.includes(blockedReason)) errors.push(blockedReason)
   const runId = createHabitRunId(habitName, new Date(startedAt))
   const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
@@ -501,6 +487,11 @@ export function createPrivateRuntimeWorker(
   async function reuseHeartbeatOkRest(habitName: string): Promise<void> {
     const nowIso = new Date(nowSource()).toISOString()
     const habitRun = await prepareHabitRun(habitName, "overdue", nowIso)
+    if (habitRun.blockedReason) {
+      clearHeartbeatRestShield()
+      recordHabitCompletion(habitRun, nowIso)
+      return
+    }
     habitRun.results.push({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
     recordHabitCompletion(habitRun, nowIso)
     emitNervesEvent({

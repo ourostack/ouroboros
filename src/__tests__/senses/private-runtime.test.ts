@@ -2207,7 +2207,7 @@ describe("private runtime", () => {
     expect(content).not.toContain("waking up.")
   })
 
-  it("uses prepared habit context without reparsing the habit file", async () => {
+  it("uses prepared habit context after revalidating the current active definition", async () => {
     mockLoadSession.mockReturnValue({
       messages: [
         { role: "system", content: "system prompt" },
@@ -2218,6 +2218,13 @@ describe("private runtime", () => {
     const runId = "run-prepared"
     const sessionPath = path.join(agentRoot, "state", "habit-sessions", runId, "session.json")
     const pendingDir = path.join(agentRoot, "state", "habit-sessions", runId, "pending")
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "stateful-check.md"),
+      "---\nstatus: active\n---\n\nCurrent definition remains active.",
+      "utf8",
+    )
 
     await (runApprovedPrivateRuntimeTurn as any)({
       reason: "habit",
@@ -2623,6 +2630,62 @@ describe("private runtime", () => {
       }),
     }))
   })
+
+  it.each([
+    ["paused", "---\nstatus: paused\n---\n\nCurrent definition is paused.", "paused", null],
+    ["cancelled", "---\nstatus: cancelled\n---\n\nCurrent definition is cancelled.", "cancelled", null],
+    ["degraded", "---\nstatus: retired\n---\n\nCurrent definition is invalid.", "degraded", "invalid_status"],
+    ["missing", null, "degraded", "read_error"],
+  ] as const)(
+    "rejects a stale prepared-active snapshot when the current definition is %s",
+    async (_currentState, currentDefinition, runtimeStatus, degradedReason) => {
+      if (currentDefinition !== null) {
+        const habitsDir = path.join(agentRoot, "habits")
+        fs.mkdirSync(habitsDir, { recursive: true })
+        fs.writeFileSync(path.join(habitsDir, "stale-prepared.md"), currentDefinition, "utf8")
+      }
+
+      await expect((runApprovedPrivateRuntimeTurn as any)({
+        reason: "habit",
+        habitName: "stale-prepared",
+        now: () => new Date("2026-03-06T12:05:00.000Z"),
+        preparedHabit: {
+          runId: "stale-prepared-run",
+          trigger: "poke",
+          operationId: null,
+          habit: {
+            name: "stale-prepared",
+            title: "Stale Prepared",
+            cadence: "1h",
+            status: "active",
+            lastRun: null,
+            created: null,
+            tools: ["shell", "send_message"],
+            origin: null,
+            surface: { family: false, originator: false, extra: [] },
+            continuity: { mode: "fresh" },
+            body: "This stale active snapshot must not execute.",
+          },
+        },
+      })).rejects.toThrow(`habit status ${runtimeStatus} is non-executable before private runtime execution`)
+
+      expect(mockBuildHabitTurnMessage).not.toHaveBeenCalled()
+      expect(mockBuildSystem).not.toHaveBeenCalled()
+      expect(mockGetToolsForChannel).not.toHaveBeenCalled()
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockRunAgent).not.toHaveBeenCalled()
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_lifecycle_rejected",
+        level: "warn",
+        meta: expect.objectContaining({
+          boundary: "private-runtime",
+          habitName: "stale-prepared",
+          status: runtimeStatus,
+          degradedReason,
+        }),
+      }))
+    },
+  )
 
   it.each([
     [
@@ -3175,6 +3238,8 @@ describe("private runtime", () => {
   })
 
   it("returns rested HEARTBEAT_OK metadata from pipeline result", async () => {
+    fs.mkdirSync(path.join(agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "habits", "heartbeat.md"), "heartbeat body\n", "utf8")
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
       gateResult: { allowed: true },
@@ -3212,6 +3277,8 @@ describe("private runtime", () => {
     ["blank", JSON.stringify({ status: "   " })],
     ["missing", JSON.stringify({})],
   ])("omits %s rest status metadata from pipeline result", async (_caseName, restArguments) => {
+    fs.mkdirSync(path.join(agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "habits", "heartbeat.md"), "heartbeat body\n", "utf8")
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
       gateResult: { allowed: true },

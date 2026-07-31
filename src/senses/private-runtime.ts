@@ -35,8 +35,15 @@ import { buildHabitTurnMessage, type PriorHabitSessionSummaryInfo } from "./habi
 import { buildAwaitTurnMessage } from "./await-turn-message"
 import { parseAwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
-import { parseHabitFile, type HabitFile, type HabitOrigin, type HabitSurface } from "../heart/habits/habit-parser"
+import {
+  createDegradedHabitFile,
+  parseHabitFile,
+  type HabitFile,
+  type HabitOrigin,
+  type HabitSurface,
+} from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
+import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { isRsvpHabitName } from "../rsvp/habit-policy"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
@@ -982,34 +989,37 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
             : null
           throw new Error(`RSVP habit metadata is required before private runtime execution: ${detail ?? habitName}`)
         }
-        habitBody = preparedHabit.body || undefined
-        habitTitle = preparedHabit.title || habitName
-        habitLastRun = preparedHabit.lastRun
-        habitTools = preparedHabit.tools
-        habitOrigin = preparedHabit.origin
-        habitSurface = preparedHabit.surface
-      } else {
-        try {
-          const habitContent = fs.readFileSync(habitFilePath, "utf-8")
-          const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
-          if (rsvpHabit && !parsed.rsvp) {
-            const detail = parsed.status === "degraded" ? parsed.degradedDetail : null
-            throw new Error(detail ?? habitName)
-          }
-          habitBody = parsed.body || undefined
-          habitTitle = parsed.title || habitName
-          habitLastRun = parsed.lastRun
-          habitTools = parsed.tools
-          habitOrigin = parsed.origin
-          habitSurface = parsed.surface
-        } catch (error) {
-          if (rsvpHabit) {
-            const reason = error instanceof Error ? error.message : String(error)
-            throw new Error(`RSVP habit metadata is required before private runtime execution: ${reason}`)
-          }
-          // Habit file missing or unreadable
-        }
+        const blockedReason = privateRuntimeHabitRejectionReason(preparedHabit, "private-runtime")
+        if (blockedReason) throw new Error(blockedReason)
       }
+
+      let currentHabit: HabitFile
+      try {
+        const habitContent = fs.readFileSync(habitFilePath, "utf-8")
+        currentHabit = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
+      } catch (error) {
+        const readReason = error instanceof Error ? error.message : String(error)
+        if (rsvpHabit) {
+          throw new Error(`RSVP habit metadata is required before private runtime execution: ${readReason}`)
+        }
+        const degraded = createDegradedHabitFile(habitFilePath, "read_error", "", readReason)
+        const blockedReason = privateRuntimeHabitRejectionReason(degraded, "private-runtime")
+        throw new Error(blockedReason)
+      }
+      if (rsvpHabit && !currentHabit.rsvp) {
+        const detail = currentHabit.status === "degraded" ? currentHabit.degradedDetail : null
+        throw new Error(`RSVP habit metadata is required before private runtime execution: ${detail ?? habitName}`)
+      }
+      const currentBlockedReason = privateRuntimeHabitRejectionReason(currentHabit, "private-runtime")
+      if (currentBlockedReason) throw new Error(currentBlockedReason)
+      const executableHabit = preparedHabit ?? currentHabit
+
+      habitBody = executableHabit.body || undefined
+      habitTitle = executableHabit.title || habitName
+      habitLastRun = executableHabit.lastRun
+      habitTools = executableHabit.tools
+      habitOrigin = executableHabit.origin
+      habitSurface = executableHabit.surface
 
       // If the habit file couldn't be read at all (no body, no title parsed), error message
       if (habitBody === undefined && habitTitle === habitName) {

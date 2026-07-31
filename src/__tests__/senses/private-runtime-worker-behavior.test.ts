@@ -1619,6 +1619,48 @@ describe("private-runtime-worker", () => {
       )
     })
 
+    it("records blocked evidence and clears the rest shield when heartbeat becomes cancelled", async () => {
+      const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 10_500_000
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/heartbeat.md")) {
+          return "---\nstatus: cancelled\n---\n\nDo not run."
+        }
+        return ""
+      })
+      now += 60_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(mockWriteHabitRunReceipt).toHaveBeenNthCalledWith(2, "/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "heartbeat",
+        outcome: "error",
+        errors: expect.arrayContaining([
+          "habit status cancelled is non-executable before private runtime execution",
+        ]),
+      }))
+      expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.heartbeat_ok_rest_reused" }),
+      )
+
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/heartbeat.md")) return "heartbeat body"
+        return ""
+      })
+      now += 60_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(3)
+      expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.heartbeat_ok_rest_reused" }),
+      )
+    })
+
     it("does not reuse HEARTBEAT_OK rest when pending work exists", async () => {
       const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
       const hasPendingWork = vi.fn()
