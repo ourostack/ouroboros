@@ -9503,6 +9503,431 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
   })
 })
 
+describe("BlueBubbles semantic lifecycle coverage", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    resetMocks()
+    mocks.getAgentRoot.mockReturnValue(makeTempDir())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("allocates missing-time reaction coordinates and captures resolved agent authorship", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const getMessageDetails = vi.fn().mockResolvedValue({ text: "the prior reply", fromMe: true })
+    const client = {
+      sendText: mocks.sendText,
+      editMessage: mocks.editMessage,
+      setTyping: mocks.setTyping,
+      markChatRead: mocks.markChatRead,
+      checkHealth: mocks.checkHealth,
+      listRecentMessages: mocks.listRecentMessages,
+      repairEvent: mocks.repairEvent,
+      getMessageText: mocks.getMessageText,
+      getMessageDetails,
+    }
+    const payload = {
+      ...reactionPayload,
+      data: {
+        ...reactionPayload.data,
+        guid: "REACTION-WITHOUT-EFFECTIVE-TIME",
+        dateCreated: undefined,
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload, {
+      createClient: () => client as any,
+    })
+
+    expect(getMessageDetails).toHaveBeenCalledWith("CB4EB152-A678-4F0E-8075-1AB09B5496F8")
+    expect(mocks.allocateSemanticCoordinate).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ canonicalAction: "add" }),
+    )
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        event: expect.objectContaining({
+          targetAuthorship: "agent",
+          effectiveAt: null,
+        }),
+      }),
+    )
+  })
+
+  it("keeps missing-target coordinate candidates audit-only without allocating", async () => {
+    const payload = {
+      ...reactionPayload,
+      data: {
+        ...reactionPayload.data,
+        guid: "REACTION-WITHOUT-TARGET-OR-EFFECTIVE-TIME",
+        associatedMessageGuid: undefined,
+        dateCreated: undefined,
+      },
+    }
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(bluebubbles.handleBlueBubblesEvent(payload)).resolves.toEqual({
+      handled: true,
+      notifiedAgent: false,
+      kind: "mutation",
+      reason: "ignored",
+    })
+    expect(mocks.allocateSemanticCoordinate).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+  })
+
+  it("keeps actorless current ingress audit-only in direct and webhook handling", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const actorlessPayload = {
+      type: "new-message",
+      data: {
+        guid: "ACTORLESS-CURRENT-INGRESS",
+        text: "routing metadata is not an actor",
+        dateCreated: Date.now(),
+        isFromMe: false,
+        chats: [{ guid: "chat-guid-only", style: 45 }],
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.handleBlueBubblesEvent(actorlessPayload)).resolves.toEqual({
+      handled: true,
+      notifiedAgent: false,
+      kind: "message",
+      reason: "ignored",
+    })
+
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      actorlessPayload,
+    )
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(JSON.parse(res.getBody())).toEqual({
+      handled: true,
+      notifiedAgent: false,
+      kind: "message",
+      queued: false,
+      reason: "ignored",
+    })
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("returns the retryable webhook contract for non-Error semantic capture failures", async () => {
+    mocks.writeSemanticCapture.mockImplementationOnce(() => {
+      throw "capture disk unavailable"
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      dmTopLevelPayload,
+    )
+    const res = createMockResponse()
+
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(503)
+    expect(res.getHeader("content-type")).toBe("application/json")
+    expect(res.getBody()).toBe('{"ok":false,"error":"semantic_capture_failed"}')
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_webhook_error",
+      meta: expect.objectContaining({ reason: "capture disk unavailable" }),
+    }))
+  })
+
+  it("fails closed and releases ownership when handled publication collides", async () => {
+    mocks.writeSemanticHandled.mockReturnValueOnce("semantic_handled_collision")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload))
+      .rejects.toThrow("semantic_handled_collision")
+
+    expect(mocks.releaseSemanticClaim).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps actorless catch-up audit-only and leaves claim timeouts pending", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const actorless = makeCatchUpMessage({
+      messageGuid: "CATCHUP-ACTORLESS",
+      timestamp: Date.now(),
+    })
+    actorless.sender.observed = false
+    mocks.listRecentMessages.mockResolvedValueOnce([actorless])
+    const previousState = {
+      upstreamStatus: "error" as const,
+      detail: "previous outage",
+      lastCheckedAt: new Date().toISOString(),
+      pendingRecoveryCount: 0,
+    }
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, previousState)).resolves.toEqual({
+      inspected: 1,
+      recovered: 0,
+      skipped: 1,
+      failed: 0,
+    })
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+
+    mocks.listRecentMessages.mockResolvedValueOnce([makeCatchUpMessage({
+      messageGuid: "CATCHUP-CLAIM-TIMEOUT",
+      timestamp: Date.now(),
+    })])
+    mocks.acquireSemanticClaim.mockResolvedValueOnce({
+      status: "timeout",
+      code: "semantic_claim_timeout",
+    })
+
+    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, previousState)).resolves.toEqual({
+      inspected: 1,
+      recovered: 0,
+      skipped: 0,
+      failed: 0,
+    })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+  })
+
+  it("skips pre-cutover semantic captures before claim acquisition", async () => {
+    const capture = await makeStoredSemanticCapture(dmTopLevelPayload, {
+      capturedAt: "2026-07-29T23:59:59.999Z",
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValueOnce([capture])
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(bluebubbles.recoverCapturedBlueBubblesInboundMessages()).resolves.toEqual({
+      recovered: 0,
+      skipped: 1,
+      failed: 0,
+    })
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+  })
+
+  it("fails closed for injected semantic captures with incomplete routing evidence", async () => {
+    const missingSessionBase = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "CAPTURE-MISSING-SESSION" },
+    })
+    const missingChatBase = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "CAPTURE-MISSING-CHAT" },
+    })
+    const missingGuidBase = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "CAPTURE-MISSING-EVENT-GUID" },
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValueOnce([
+      {
+        ...missingSessionBase,
+        event: { ...missingSessionBase.event, sessionKey: null },
+      },
+      {
+        ...missingChatBase,
+        event: { ...missingChatBase.event, chatGuid: null, chatIdentifier: null },
+      },
+      {
+        ...missingGuidBase,
+        event: { ...missingGuidBase.event, eventGuid: null },
+      },
+    ])
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(bluebubbles.recoverCapturedBlueBubblesInboundMessages()).resolves.toEqual({
+      recovered: 0,
+      skipped: 0,
+      failed: 3,
+    })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_capture_recovery_error",
+      meta: expect.objectContaining({ reason: "semantic_capture_routing_invalid" }),
+    }))
+  })
+
+  it("reconstructs every semantic event kind and nullable routing field before handling", async () => {
+    const nullTextMessageBase = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "RECOVERED-NULL-TEXT-MESSAGE" },
+    })
+    const reactionBase = await makeStoredSemanticCapture({
+      ...reactionPayload,
+      data: { ...reactionPayload.data, guid: "RECOVERED-REACTION" },
+    }, { targetAuthorship: "agent" })
+    const observedReaction = await makeStoredSemanticCapture({
+      ...reactionPayload,
+      data: { ...reactionPayload.data, guid: "RECOVERED-OBSERVED-REACTION" },
+    }, { targetAuthorship: "agent" })
+    const identifierEditBase = await makeStoredSemanticCapture({
+      ...editPayload,
+      data: { ...editPayload.data, guid: "RECOVERED-IDENTIFIER-EDIT", revision: "revision-1" },
+    })
+    const nullTextEditBase = await makeStoredSemanticCapture({
+      ...editPayload,
+      data: { ...editPayload.data, guid: "RECOVERED-NULL-TEXT-EDIT" },
+    })
+    const unsend = await makeStoredSemanticCapture({
+      ...unsendPayload,
+      data: { ...unsendPayload.data, guid: "RECOVERED-UNSEND" },
+    })
+    const read = await makeStoredSemanticCapture({
+      ...readPayload,
+      data: { ...readPayload.data, guid: "RECOVERED-READ" },
+    })
+    const delivery = await makeStoredSemanticCapture({
+      ...deliveryPayload,
+      data: { ...deliveryPayload.data, guid: "RECOVERED-DELIVERY" },
+    })
+    const nullTextMessage = {
+      ...nullTextMessageBase,
+      event: { ...nullTextMessageBase.event, text: null, textSha256: null },
+    }
+    const reaction = {
+      ...reactionBase,
+      event: {
+        ...reactionBase.event,
+        actor: { ...reactionBase.event.actor, displayName: null },
+        rawTransportValue: null,
+      },
+    }
+    const identifierEdit = {
+      ...identifierEditBase,
+      event: {
+        ...identifierEditBase.event,
+        chatGuid: null,
+        chatIdentifier: "ari@mendelow.me",
+        participants: [
+          { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", displayName: null },
+          { provider: "imessage-handle" as const, externalId: "rachel@example.com", displayName: null },
+        ],
+      },
+    }
+    const nullTextEdit = {
+      ...nullTextEditBase,
+      event: {
+        ...nullTextEditBase.event,
+        text: null,
+        textSha256: null,
+        contentSha256: null,
+      },
+    }
+    mocks.listPendingSemanticCaptures.mockReturnValueOnce([
+      nullTextMessage,
+      reaction,
+      observedReaction,
+      identifierEdit,
+      nullTextEdit,
+      unsend,
+      read,
+      delivery,
+    ])
+    mocks.repairEvent.mockImplementation(async (event: any) => (
+      event.messageGuid === "recovered-observed-reaction"
+        ? { ...event, shouldNotifyAgent: false }
+        : event
+    ))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 5, skipped: 3, failed: 0 })
+    expect(mocks.writeSemanticHandled.mock.calls.map((call: unknown[]) => call[1].outcome)).toEqual([
+      "message_completed",
+      "restricted_feedback_settled",
+      "restricted_feedback_observed",
+      "edit_capture_only",
+      "edit_capture_only",
+      "unsend_capture_only",
+      "read_audit_only",
+      "delivery_audit_only",
+    ])
+    expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
+      messageGuid: "recovered-identifier-edit",
+      chat: expect.objectContaining({
+        chatGuid: undefined,
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: true,
+        participantHandles: ["ari@mendelow.me", "rachel@example.com"],
+      }),
+      sender: expect.objectContaining({ displayName: "ari@mendelow.me" }),
+      revision: "revision-1",
+    }))
+    expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
+      messageGuid: "recovered-null-text-edit",
+      textForAgent: "edited a message",
+    }))
+  })
+
+  it("uses safe timestamp fallbacks and treats lookalike timeout errors as ordinary failures", async () => {
+    mocks.repairEvent.mockImplementationOnce(async (event: any) => ({
+      ...event,
+      timestamp: Number.NaN,
+    }))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)).resolves.toEqual(
+      expect.objectContaining({ handled: true, notifiedAgent: true }),
+    )
+
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "LOOKALIKE-TIMEOUT-CAPTURE" },
+    })
+    const lookalike = new Error("not the canonical timeout message")
+    lookalike.name = "BlueBubblesRecoveryTurnTimeoutError"
+    mocks.handleInboundTurn.mockRejectedValueOnce(lookalike)
+
+    await expect(bluebubbles.recoverCapturedBlueBubblesInboundMessages()).resolves.toEqual({
+      recovered: 0,
+      skipped: 1,
+      failed: 1,
+    })
+  })
+
+  it("uses the current instant when a catch-up event has a non-finite timestamp", async () => {
+    mocks.listRecentMessages.mockResolvedValueOnce([makeCatchUpMessage({
+      messageGuid: "CATCHUP-NON-FINITE-TIMESTAMP",
+      timestamp: Number.NaN,
+    })])
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "previous outage",
+      lastCheckedAt: new Date().toISOString(),
+      pendingRecoveryCount: 0,
+    })).resolves.toEqual(expect.objectContaining({
+      inspected: 1,
+      recovered: 1,
+      skipped: 0,
+      failed: 0,
+      lastRecoveredMessageGuid: "CATCHUP-NON-FINITE-TIMESTAMP",
+    }))
+  })
+})
+
 // ── Reaction target resolution (Unit 4) ───────────────────────────────────
 describe("BlueBubbles adapter - reaction target resolution", () => {
   it("resolveReactionTarget: prefers the authorship-carrying lookup", async () => {

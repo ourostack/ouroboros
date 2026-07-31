@@ -48,6 +48,13 @@ describe("BlueBubbles processed log", () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   })
 
+  it("treats a missing processed directory and blank global ids as unprocessed", async () => {
+    const { hasProcessedBlueBubblesMessageGuid } = await import("../../../senses/bluebubbles/processed-log")
+
+    expect(hasProcessedBlueBubblesMessageGuid("slugger", "   ")).toBe(false)
+    expect(hasProcessedBlueBubblesMessageGuid("slugger", "not-recorded")).toBe(false)
+  })
+
   it("records handled messages to bundle state and skips blank message ids during dedupe checks", async () => {
     const {
       getBlueBubblesProcessedLogPath,
