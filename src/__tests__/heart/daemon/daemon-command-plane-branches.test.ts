@@ -1520,6 +1520,31 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
+  it("skips manual RSVP habit pokes when the definition becomes unreadable", async () => {
+    const socketPath = tmpSocketPath("daemon-rsvp-habit-poke-unreadable")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-rsvp-habit-poke-unreadable-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `rsvp-habit-poke-unreadable-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const habitsDir = path.join(bundlesRoot, "slugger.ouro", "habits")
+    fs.mkdirSync(path.join(habitsDir, "rsvp-wedding.md"), { recursive: true })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const poke = await daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "rsvp-wedding",
+      trigger: "manual",
+    })
+
+    expect(poke.ok).toBe(true)
+    expect(poke.message).toMatch(/skipped scheduled habit rsvp-wedding.*RSVP habit metadata invalid/i)
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+    expect(fs.existsSync(ledgerPath)).toBe(false)
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
   it("runs manual RSVP habit pokes through the native RSVP runner with valid typed metadata", async () => {
     const socketPath = tmpSocketPath("daemon-rsvp-habit-poke-valid")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-rsvp-habit-poke-valid-bundles-"))

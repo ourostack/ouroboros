@@ -375,6 +375,9 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const agentRoot = getAgentRoot()
   const errors: string[] = []
   const habit = applyHabitRuntimeState(agentRoot, readHabitForRun(agentRoot, habitName, errors))
+  if (habit.status === "degraded" && habit.degradedDetail !== null) {
+    errors.push(habit.degradedDetail)
+  }
   const blockedReason = isRsvpHabitName(habitName) && !habit.rsvp
     ? "RSVP habit metadata is required before private runtime execution"
     : null

@@ -553,6 +553,11 @@ describe("ouro rsvp operational CLI wiring", () => {
       ].join("\n"), "utf-8")
       await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
       expect(rsvpMocks.renderRsvpReport).toHaveBeenLastCalledWith(expect.any(Object), {})
+
+      const unreadableHabitPath = path.join(habitsDir, "rsvp-unreadable.md")
+      fs.mkdirSync(unreadableHabitPath)
+      await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "shadow", "--no-send", "--json"], deps)
+      expect(rsvpMocks.renderRsvpReport).toHaveBeenLastCalledWith(expect.any(Object), {})
     } finally {
       tmp.cleanup()
     }

@@ -1493,6 +1493,9 @@ export class OuroDaemon {
       } catch (error) {
         return { skipReason: `RSVP habit metadata invalid: ${messageFromHabitPokeError(error)}` }
       }
+      if (parsedHabit.status === "degraded" && parsedHabit.degradedDetail !== null) {
+        return { skipReason: `RSVP habit metadata invalid: ${parsedHabit.degradedDetail}` }
+      }
       if (!parsedHabit.rsvp) return { skipReason: "RSVP habit metadata is required before private runtime wake" }
     }
 

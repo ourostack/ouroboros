@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
-import { parseHabitFile } from "../../habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../../habits/habit-parser"
 import { applyHabitRuntimeState } from "../../habits/habit-runtime-state"
 import { readHabitSessionSummary, type HabitSessionSummarySelector } from "../../habits/habit-session-summary"
 import { getAgentBundlesRoot } from "../../identity"
@@ -607,38 +607,38 @@ export function readHabitView(agentRoot: string, options: MailboxReadOptions = {
 
   for (const file of safeReaddir(habitsDir)) {
     if (!file.endsWith(".md")) continue
+    const filePath = path.join(habitsDir, file)
+    let habit: HabitFile
     try {
-      const filePath = path.join(habitsDir, file)
       const raw = fs.readFileSync(filePath, "utf-8")
-      if (!/^---\r?\n[\s\S]*?\r?\n---/.test(raw)) continue
-      const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(raw, filePath))
-
-      const cadenceMs = parseCadenceMs(habit.cadence)
-      let isOverdue = false
-      let overdueMs: number | null = null
-      if (habit.status === "active" && habit.lastRun && cadenceMs) {
-        const elapsed = now.getTime() - Date.parse(habit.lastRun)
-        if (elapsed > cadenceMs) {
-          isOverdue = true
-          overdueMs = elapsed - cadenceMs
-        }
-      }
-
-      items.push({
-        name: habit.name,
-        title: habit.title,
-        cadence: habit.cadence,
-        status: habit.status,
-        lastRun: habit.lastRun,
-        bodyExcerpt: truncateExcerpt(habit.body, 120),
-        isDegraded: false,
-        degradedReason: null,
-        isOverdue,
-        overdueMs,
-      })
+      habit = applyHabitRuntimeState(agentRoot, parseHabitFile(raw, filePath))
     } catch {
-      // skip unparseable habit files
+      habit = createDegradedHabitFile(filePath, "read_error")
     }
+
+    const cadenceMs = parseCadenceMs(habit.cadence)
+    let isOverdue = false
+    let overdueMs: number | null = null
+    if (habit.status === "active" && habit.lastRun && cadenceMs) {
+      const elapsed = now.getTime() - Date.parse(habit.lastRun)
+      if (elapsed > cadenceMs) {
+        isOverdue = true
+        overdueMs = elapsed - cadenceMs
+      }
+    }
+
+    items.push({
+      name: habit.name,
+      title: habit.title,
+      cadence: habit.cadence,
+      status: habit.status,
+      lastRun: habit.lastRun,
+      bodyExcerpt: truncateExcerpt(habit.body, 120),
+      isDegraded: habit.status === "degraded",
+      degradedReason: habit.status === "degraded" ? habit.degradedReason : null,
+      isOverdue,
+      overdueMs,
+    })
   }
 
   items.sort((a, b) => {

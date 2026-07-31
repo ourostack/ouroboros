@@ -977,7 +977,10 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       let habitSurface: HabitSurface = { family: true, originator: true, extra: [] }
       if (preparedHabit) {
         if (rsvpHabit && !preparedHabit.rsvp) {
-          throw new Error(`RSVP habit metadata is required before private runtime execution: ${habitName}`)
+          const detail = preparedHabit.status === "degraded"
+            ? preparedHabit.degradedDetail
+            : null
+          throw new Error(`RSVP habit metadata is required before private runtime execution: ${detail ?? habitName}`)
         }
         habitBody = preparedHabit.body || undefined
         habitTitle = preparedHabit.title || habitName
@@ -990,7 +993,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           const habitContent = fs.readFileSync(habitFilePath, "utf-8")
           const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
           if (rsvpHabit && !parsed.rsvp) {
-            throw new Error(`RSVP habit metadata is required before private runtime execution: ${habitName}`)
+            const detail = parsed.status === "degraded" ? parsed.degradedDetail : null
+            throw new Error(detail ?? habitName)
           }
           habitBody = parsed.body || undefined
           habitTitle = parsed.title || habitName
