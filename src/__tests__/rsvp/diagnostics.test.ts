@@ -31,6 +31,29 @@ function writeFile(agentRoot: string, relativePath: string, content: string): vo
   fs.writeFileSync(filePath, content, "utf-8")
 }
 
+function rsvpHabitDefinition(status: string): string {
+  return [
+    "---",
+    "title: Wedding RSVPs",
+    `status: ${status}`,
+    "cadence: 0 10 * * *",
+    "rsvp:",
+    "  policyVersion: rsvp-habit/v1",
+    "  mode: shadow",
+    "  sense: bluebubbles",
+    "  source: aisleplanner",
+    "  routeRef: rsvp/config.json#bluebubblesRoute",
+    "  snapshotRef: state/rsvp/snapshots/latest.json",
+    "  outboundStateRef: state/rsvp/outbound-state.json",
+    "  budgetRef: state/rsvp/spend-ledger.json",
+    "  idempotencyRef: state/rsvp/outbound-state.json",
+    "  liveSendEligible: false",
+    "---",
+    "",
+    "Inspect RSVP state.",
+  ].join("\n")
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true })
@@ -88,6 +111,76 @@ describe("RSVP diagnostics", () => {
       status: "fail",
       detail: "RSVP spend ledger is malformed",
       runs: 0,
+    })
+  })
+
+  it("serializes cancelled and degraded RSVP habit definitions without activating them", () => {
+    const cancelledRoot = makeAgentRoot()
+    writeFile(cancelledRoot, "habits/rsvp-cancelled.md", rsvpHabitDefinition("cancelled"))
+
+    const cancelled = collectRsvpDiagnostics(cancelledRoot, deps())
+
+    expect(cancelled.habitSchedule).toMatchObject({
+      status: "warn",
+      detail: "no active RSVP habit found",
+      habitStates: [{
+        name: "rsvp-cancelled",
+        status: "cancelled",
+        degradedReason: null,
+      }],
+    })
+
+    const degradedRoot = makeAgentRoot()
+    writeFile(degradedRoot, "habits/rsvp-invalid.md", rsvpHabitDefinition("running"))
+
+    const degraded = collectRsvpDiagnostics(degradedRoot, deps())
+
+    expect(degraded.habitSchedule).toMatchObject({
+      status: "fail",
+      detail: "RSVP habit definitions degraded",
+      habitStates: [{
+        name: "rsvp-invalid",
+        status: "degraded",
+        degradedReason: "invalid_status",
+      }],
+    })
+
+    const mixedRoot = makeAgentRoot()
+    writeFile(mixedRoot, "habits/rsvp-active.md", rsvpHabitDefinition("active"))
+    writeFile(mixedRoot, "habits/rsvp-cancelled.md", rsvpHabitDefinition("cancelled"))
+    writeFile(mixedRoot, "habits/rsvp-invalid.md", rsvpHabitDefinition("running"))
+
+    const mixed = collectRsvpDiagnostics(mixedRoot, deps())
+
+    expect(mixed.habitSchedule).toMatchObject({
+      status: "fail",
+      detail: "RSVP habit definitions degraded",
+      habitStates: [
+        { name: "rsvp-active", status: "active", degradedReason: null },
+        { name: "rsvp-cancelled", status: "cancelled", degradedReason: null },
+        { name: "rsvp-invalid", status: "degraded", degradedReason: "invalid_status" },
+      ],
+    })
+  })
+
+  it("serializes an active RSVP-named definition that lacks typed RSVP metadata", () => {
+    const agentRoot = makeAgentRoot()
+    writeFile(agentRoot, "habits/rsvp-untyped.md", [
+      "---",
+      "title: Untyped RSVP",
+      "status: active",
+      "cadence: 1h",
+      "---",
+      "",
+      "Inspect only.",
+    ].join("\n"))
+
+    const diagnostics = collectRsvpDiagnostics(agentRoot, deps())
+
+    expect(diagnostics.habitSchedule).toMatchObject({
+      status: "fail",
+      detail: "activeHabit=rsvp-untyped; typed RSVP habit metadata missing",
+      habitStates: [{ name: "rsvp-untyped", status: "active", degradedReason: null }],
     })
   })
 

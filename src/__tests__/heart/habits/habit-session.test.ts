@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import type { HabitFile } from "../../../heart/habits/habit-parser"
+import { parseHabitFile, type HabitFile } from "../../../heart/habits/habit-parser"
 import type { FriendRecord, TrustLevel, FriendStore } from "@ouro.bot/friends"
 import type { ToolDefinition, ToolRiskProfile } from "../../../repertoire/tools-base"
 import {
@@ -156,6 +156,35 @@ describe("habit-session helpers", () => {
     expect(envelope.warnings.join("\n")).toContain("Unknown")
     expect(envelope.warnings.join("\n")).toContain("unsafe")
   })
+
+  it.each([
+    ["paused", "paused"],
+    ["cancelled", "cancelled"],
+    ["running", "degraded"],
+  ])(
+    "serializes %s definitions as non-executable %s permission envelopes",
+    async (rawStatus, status) => {
+      const habit = parseHabitFile([
+        "---",
+        "title: Non-executable habit",
+        "cadence: 30m",
+        `status: ${rawStatus}`,
+        "---",
+        "",
+        "Inspect only.",
+      ].join("\n"), `/bundles/agent.ouro/habits/${status}.md`)
+      expect(habit.status).toBe(status)
+      const envelope = await normalizeHabitPermissionEnvelope(habit, { agentRoot })
+
+      expect(envelope).toEqual({
+        schemaVersion: 1,
+        canMessageOutward: false,
+        returnRoutes: [],
+        deniedTools: ["send_message", "surface"],
+        warnings: [`habit status ${status} is non-executable`],
+      })
+    },
+  )
 
   it("removes outward messaging tools when every return route is disabled or unresolved", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
@@ -692,6 +721,24 @@ describe("habit-session helpers", () => {
     expect(buildHabitRunReceipt(base).nextRunAt).toBeNull()
     expect(buildHabitRunReceipt({ ...base, nextRunAt: "2026-06-12T00:00:00.000Z" }).nextRunAt)
       .toBe("2026-06-12T00:00:00.000Z")
+
+    for (const [rawStatus, expectedStatus] of [["cancelled", "cancelled"], ["running", "degraded"]] as const) {
+      const habit = parseHabitFile([
+        "---",
+        "title: Inactive receipt",
+        "cadence: 30m",
+        `status: ${rawStatus}`,
+        "---",
+        "",
+        "Inspect only.",
+      ].join("\n"), `/bundles/agent.ouro/habits/${expectedStatus}.md`)
+      expect(habit.status).toBe(expectedStatus)
+      expect(buildHabitRunReceipt({
+        ...base,
+        habit,
+        endedAt: "2026-06-11T17:30:00.000Z",
+      }).nextRunAt).toBeNull()
+    }
   })
 
   it("computes nextRunAt for fixed daily cron habits from the next local civil occurrence", async () => {

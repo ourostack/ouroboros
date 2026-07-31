@@ -109,7 +109,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     expect(fs.existsSync(path.join(bundleRoot, "habits", "2026-03-08-0930-daily-reflection.md"))).toBe(false)
   })
 
-  it("maps status: processing -> active, paused -> paused", async () => {
+  it("maps processing to active while preserving paused and cancelled", async () => {
     emitNervesEvent({
       component: "daemon",
       event: "daemon.migration_test_start",
@@ -147,6 +147,18 @@ describe("migrateHabitsFromTaskSystem", () => {
       "",
     ].join("\n"), "utf-8")
 
+    fs.writeFileSync(path.join(oldHabitsDir, "2026-03-08-1200-cancelled-habit.md"), [
+      "---",
+      "title: Cancelled Habit",
+      "status: cancelled",
+      "cadence: \"2h\"",
+      "lastRun: null",
+      "---",
+      "",
+      "Body.",
+      "",
+    ].join("\n"), "utf-8")
+
     const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
@@ -155,6 +167,9 @@ describe("migrateHabitsFromTaskSystem", () => {
 
     const pausedContent = fs.readFileSync(path.join(bundleRoot, "habits", "paused-habit.md"), "utf-8")
     expect(pausedContent).toContain("status: paused")
+
+    const cancelledContent = fs.readFileSync(path.join(bundleRoot, "habits", "cancelled-habit.md"), "utf-8")
+    expect(cancelledContent).toContain("status: cancelled")
   })
 
   it("skips done habits during migration", async () => {
@@ -471,7 +486,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     expect(habitFiles).not.toContain("README.md")
   })
 
-  it("maps unknown task status to active", async () => {
+  it("preserves an explicit unknown task status so the migrated habit degrades", async () => {
     emitNervesEvent({
       component: "daemon",
       event: "daemon.migration_test_start",
@@ -500,7 +515,38 @@ describe("migrateHabitsFromTaskSystem", () => {
     migrateHabitsFromTaskSystem(bundleRoot)
 
     const content = fs.readFileSync(path.join(bundleRoot, "habits", "weird-status.md"), "utf-8")
-    expect(content).toContain("status: active")
+    expect(content).toContain("status: in_review")
+    const { parseHabitFile } = await import("../../../heart/habits/habit-parser")
+    const habit = parseHabitFile(content, path.join(bundleRoot, "habits", "weird-status.md"))
+    expect(habit.status).toBe("degraded")
+    expect("degradedReason" in habit ? habit.degradedReason : undefined).toBe("invalid_status")
+  })
+
+  it("preserves an explicit non-string task status so it cannot become active", async () => {
+    const bundleRoot = makeTempDir("migrate-non-string-status")
+    cleanup.push(bundleRoot)
+    const oldHabitsDir = path.join(bundleRoot, "tasks", "habits")
+    fs.mkdirSync(oldHabitsDir, { recursive: true })
+    fs.writeFileSync(path.join(oldHabitsDir, "boolean-status.md"), [
+      "---",
+      "title: Boolean Status",
+      "status: true",
+      "cadence: 1h",
+      "---",
+      "",
+      "Inspect only.",
+    ].join("\n"), "utf-8")
+
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
+    migrateHabitsFromTaskSystem(bundleRoot)
+
+    const targetPath = path.join(bundleRoot, "habits", "boolean-status.md")
+    const content = fs.readFileSync(targetPath, "utf-8")
+    expect(content).toContain("status: true")
+    const { parseHabitFile } = await import("../../../heart/habits/habit-parser")
+    const habit = parseHabitFile(content, targetPath)
+    expect(habit.status).toBe("degraded")
+    expect("degradedReason" in habit ? habit.degradedReason : undefined).toBe("invalid_status")
   })
 
   it("handles unreadable individual file gracefully", async () => {
@@ -648,6 +694,27 @@ describe("migrateHabitsFromTaskSystem", () => {
     migrateHabitsFromTaskSystem(bundleRoot)
 
     expect(fs.existsSync(path.join(bundleRoot, "habits", "broken.md"))).toBe(false)
+  })
+
+  it("skips syntactically malformed closed frontmatter instead of emitting an active habit", async () => {
+    const bundleRoot = makeTempDir("migrate-malformed-frontmatter")
+    cleanup.push(bundleRoot)
+    const oldHabitsDir = path.join(bundleRoot, "tasks", "habits")
+    fs.mkdirSync(oldHabitsDir, { recursive: true })
+    fs.writeFileSync(path.join(oldHabitsDir, "malformed.md"), [
+      "---",
+      "title: Malformed",
+      "this line is not a mapping",
+      "status: processing",
+      "---",
+      "",
+      "Must not become active.",
+    ].join("\n"), "utf-8")
+
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
+    migrateHabitsFromTaskSystem(bundleRoot)
+
+    expect(fs.existsSync(path.join(bundleRoot, "habits", "malformed.md"))).toBe(false)
   })
 
   it("handles habit file without status field (defaults to active)", async () => {

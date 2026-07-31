@@ -46,11 +46,13 @@ describe("RSVP habit metadata parsing", () => {
     })
   })
 
-  it("rejects RSVP habits that use channel-shaped metadata instead of sense-shaped metadata", () => {
-    expect(() => parseHabitFile([
+  it("marks invalid RSVP metadata degraded instead of throwing or activating it", () => {
+    const habit = parseHabitFile([
       "---",
       "title: Wedding RSVPs",
+      "status: active",
       "cadence: 0 10 * * *",
+      "tools: [send_message, shell]",
       "rsvp:",
       "  policyVersion: rsvp-habit/v1",
       "  mode: shadow",
@@ -62,6 +64,41 @@ describe("RSVP habit metadata parsing", () => {
       "",
       "Check native RSVP state.",
       "",
-    ].join("\n"), "/bundles/slugger.ouro/habits/rsvp-wedding.md")).toThrow(/rsvp.*sense/i)
+    ].join("\n"), "/bundles/slugger.ouro/habits/rsvp-wedding.md")
+
+    expect(habit.status).toBe("degraded")
+    expect("degradedReason" in habit ? habit.degradedReason : undefined).toBe("invalid_metadata")
+    expect("degradedDetail" in habit ? habit.degradedDetail : undefined).toBe(
+      "RSVP habit metadata requires sense, not channel",
+    )
+    expect(habit.rsvp).toBeUndefined()
+    expect(habit.tools).toBeUndefined()
+  })
+
+  it("preserves typed RSVP metadata while recognizing cancelled lifecycle state", () => {
+    const habit = parseHabitFile([
+      "---",
+      "title: Wedding RSVPs",
+      "status: cancelled",
+      "cadence: 0 10 * * *",
+      "rsvp:",
+      "  policyVersion: rsvp-habit/v1",
+      "  mode: shadow",
+      "  sense: bluebubbles",
+      "  source: aisleplanner",
+      "  routeRef: rsvp/config.json#bluebubblesRoute",
+      "  snapshotRef: state/rsvp/snapshots/latest.json",
+      "  outboundStateRef: state/rsvp/outbound-state.json",
+      "  budgetRef: state/rsvp/spend-ledger.json",
+      "  idempotencyRef: state/rsvp/outbound-state.json",
+      "  liveSendEligible: false",
+      "---",
+      "",
+      "Do not run again.",
+    ].join("\n"), "/bundles/slugger.ouro/habits/rsvp-wedding.md")
+
+    expect(habit.status).toBe("cancelled")
+    expect(habit.rsvp?.sense).toBe("bluebubbles")
+    expect(habit.tools).toEqual(["rsvp_query", "rsvp_summary"])
   })
 })

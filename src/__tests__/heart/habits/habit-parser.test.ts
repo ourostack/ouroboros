@@ -8,6 +8,10 @@ import {
   type HabitStatus,
 } from "../../../heart/habits/habit-parser"
 
+function degradedReason(habit: HabitFile): unknown {
+  return "degradedReason" in habit ? habit.degradedReason : undefined
+}
+
 describe("parseHabitFile", () => {
   it("parses a valid habit file with all fields", () => {
     const content = [
@@ -69,6 +73,30 @@ describe("parseHabitFile", () => {
     expect(result.status).toBe("active")
   })
 
+  it("parses BOM-prefixed CRLF frontmatter without losing cancelled status", () => {
+    const result = parseHabitFile(
+      "\uFEFF---\r\ntitle: Windows habit\r\nstatus: cancelled\r\n---\r\n\r\nDo not run.\r\n",
+      "/bundles/agent.ouro/habits/windows-habit.md",
+    )
+
+    expect(result).toMatchObject({
+      name: "windows-habit",
+      title: "Windows habit",
+      status: "cancelled",
+      body: "Do not run.",
+    })
+  })
+
+  it("keeps an empty but closed frontmatter document as legacy-compatible active", () => {
+    const result = parseHabitFile("---\n---\n", "/bundles/agent.ouro/habits/empty-frontmatter.md")
+
+    expect(result).toMatchObject({
+      name: "empty-frontmatter",
+      status: "active",
+      body: "",
+    })
+  })
+
   it("uses filename stem as title when title is missing", () => {
     const content = [
       "---",
@@ -119,12 +147,13 @@ describe("parseHabitFile", () => {
     expect(result.cadence).toBeNull()
   })
 
-  it("handles unterminated frontmatter gracefully", () => {
+  it("marks unterminated frontmatter degraded instead of treating it as legacy body-only", () => {
     const content = "---\ntitle: Oops\ncadence: 30m"
 
     const result = parseHabitFile(content, "/bundles/agent.ouro/habits/oops.md")
     expect(result.name).toBe("oops")
-    // Unterminated frontmatter treated as no frontmatter
+    expect(result.status).toBe("degraded")
+    expect(degradedReason(result)).toBe("unterminated_frontmatter")
     expect(result.body).toBe("---\ntitle: Oops\ncadence: 30m")
   })
 
@@ -160,7 +189,24 @@ describe("parseHabitFile", () => {
     expect(result.status).toBe("paused")
   })
 
-  it("treats unknown status as active", () => {
+  it("normalizes cancelled as a terminal status", () => {
+    const content = [
+      "---",
+      "title: Cancelled habit",
+      "cadence: 2h",
+      "status: cancelled",
+      "created: 2026-03-27",
+      "---",
+      "",
+      "This must not run again.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/cancelled-habit.md")
+    expect(result.status).toBe("cancelled")
+    expect(degradedReason(result)).toBeUndefined()
+  })
+
+  it("marks an explicit unknown status degraded instead of active", () => {
     const content = [
       "---",
       "title: Weird status",
@@ -171,7 +217,60 @@ describe("parseHabitFile", () => {
     ].join("\n")
 
     const result = parseHabitFile(content, "/bundles/agent.ouro/habits/weird.md")
-    expect(result.status).toBe("active")
+    expect(result.status).toBe("degraded")
+    expect(degradedReason(result)).toBe("invalid_status")
+  })
+
+  it.each([
+    ["null", "null"],
+    ["boolean", "true"],
+    ["array", "[]"],
+    ["empty scalar", "\"\""],
+  ])("marks an explicit %s status degraded", (_label, rawStatus) => {
+    const result = parseHabitFile([
+      "---",
+      "title: Invalid status type",
+      `status: ${rawStatus}`,
+      "---",
+      "",
+      "Inspect only.",
+    ].join("\n"), "/bundles/agent.ouro/habits/invalid-status-type.md")
+
+    expect(result.status).toBe("degraded")
+    expect(degradedReason(result)).toBe("invalid_status")
+  })
+
+  it("marks syntactically malformed frontmatter degraded", () => {
+    const content = [
+      "---",
+      "title: Broken metadata",
+      "this line has no mapping delimiter",
+      "status: active",
+      "---",
+      "",
+      "Body remains inspectable.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/malformed.md")
+    expect(result.status).toBe("degraded")
+    expect(degradedReason(result)).toBe("malformed_frontmatter")
+    expect(result.body).toBe("Body remains inspectable.")
+  })
+
+  it("marks scalar nested RSVP metadata degraded as invalid metadata", () => {
+    const result = parseHabitFile([
+      "---",
+      "title: Invalid nested metadata",
+      "status: active",
+      "rsvp: scalar",
+      "---",
+      "",
+      "Inspect only.",
+    ].join("\n"), "/bundles/agent.ouro/habits/invalid-nested.md")
+
+    expect(result.status).toBe("degraded")
+    expect(degradedReason(result)).toBe("invalid_metadata")
+    expect(result.tools).toBeUndefined()
   })
 
   it("handles lastRun as null frontmatter value", () => {
@@ -291,8 +390,15 @@ describe("parseHabitFile", () => {
   it("exports HabitStatus type correctly", () => {
     const active: HabitStatus = "active"
     const paused: HabitStatus = "paused"
+    const cancelled: HabitStatus = "cancelled"
     expect(active).toBe("active")
     expect(paused).toBe("paused")
+    expect(cancelled).toBe("cancelled")
+  })
+
+  it("returns discriminated degraded fields at runtime", () => {
+    const result = parseHabitFile("---\nstatus: invalid\n---\n", "/bundles/agent.ouro/habits/typed-degraded.md")
+    expect(result).toMatchObject({ status: "degraded", degradedReason: "invalid_status" })
   })
 
   it("parses nested stateful continuity and defaults invalid continuity to fresh", () => {
