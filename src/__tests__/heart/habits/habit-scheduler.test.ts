@@ -380,6 +380,153 @@ describe("HabitScheduler", () => {
       expect(onHabitFire).not.toHaveBeenCalled()
     })
 
+    it("fails closed when changed bytes cannot be parsed during revalidation", () => {
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn()
+        .mockReturnValueOnce("active content")
+        .mockReturnValue("malformed content")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockImplementation((content: string) => {
+        if (content === "malformed content") throw new Error("invalid changed definition")
+        return makeHeartbeatHabit()
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(cronManager.sync).toHaveBeenCalledWith([])
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(scheduler.getParseErrors()).toContainEqual({
+        file: "heartbeat.md",
+        error: "invalid changed definition",
+      })
+    })
+
+    it("clears a stale degraded diagnostic when revalidation recovers to active", () => {
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn()
+        .mockReturnValueOnce("degraded content")
+        .mockReturnValue("active content")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockImplementation((content: string) =>
+        content === "degraded content" ? makeDegradedHabit("heartbeat") : makeHeartbeatHabit())
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(cronManager.sync).toHaveBeenCalledWith([expect.objectContaining({ taskId: "heartbeat" })])
+      expect(scheduler.getParseErrors()).toEqual([])
+    })
+
+    it("replaces a stale degraded reason with the current finite reason", () => {
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn()
+        .mockReturnValueOnce("malformed content")
+        .mockReturnValue("invalid-status content")
+      deps = makeDeps({ readdir, readFile })
+      mockParseHabitFile.mockImplementation((content: string) => content === "malformed content"
+        ? makeDegradedHabit("heartbeat")
+        : {
+          ...makeDegradedHabit("heartbeat"),
+          degradedReason: "invalid_status" as const,
+        })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(scheduler.getParseErrors()).toEqual([{
+        file: "heartbeat.md",
+        error: "habit definition degraded: invalid_status",
+      }])
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
+    it("revalidates each overdue candidate after an earlier habit fires", () => {
+      let betaStatus: "active" | "cancelled" = "active"
+      deps = makeDeps({
+        readdir: vi.fn(() => ["alpha.md", "beta.md"]),
+        readFile: vi.fn((filePath: string) => {
+          if (filePath.endsWith("alpha.md")) return "alpha active content"
+          return betaStatus === "active" ? "beta active content" : "beta cancelled content"
+        }),
+      })
+      mockParseHabitFile.mockImplementation((content: string) => {
+        if (content === "alpha active content") {
+          return { ...makeHeartbeatHabit(), name: "alpha", title: "Alpha" }
+        }
+        if (content === "beta active content") {
+          return { ...makeHeartbeatHabit(), name: "beta", title: "Beta" }
+        }
+        return makeCancelledHabit("beta")
+      })
+      onHabitFire.mockImplementation((habitName: string) => {
+        if (habitName === "alpha") betaStatus = "cancelled"
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(onHabitFire).toHaveBeenCalledTimes(1)
+      expect(onHabitFire).toHaveBeenCalledWith("alpha", "overdue", expect.any(Object))
+    })
+
+    it("skips a habit that becomes unreadable immediately before overdue dispatch", () => {
+      let phase: "active" | "missing" = "active"
+      let cadenceBuilds = 0
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => {
+          if (phase === "missing") throw new Error("ENOENT")
+          return "active content"
+        }),
+      })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+      mockParseCadenceToCron.mockImplementation(() => {
+        cadenceBuilds += 1
+        if (cadenceBuilds === 4) phase = "missing"
+        return "*/30 * * * *"
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(scheduler.getParseErrors()).toContainEqual({
+        file: "heartbeat.md",
+        error: "habit definition unreadable during scheduler revalidation: ENOENT",
+      })
+    })
+
     it("removes an active job that becomes cancelled after sync but before cron verification", () => {
       let phase: "active" | "cancelled" = "active"
       const sync = vi.fn(() => { phase = "cancelled" })
@@ -413,6 +560,38 @@ describe("HabitScheduler", () => {
       }))
     })
 
+    it("stops the cycle when post-sync cancellation cannot be corrected", () => {
+      let phase: "active" | "cancelled" = "active"
+      const sync = vi.fn()
+        .mockImplementationOnce(() => { phase = "cancelled" })
+        .mockImplementationOnce(() => { throw new Error("post-sync correction failed") })
+      const removeAll = vi.fn()
+      const execForVerify = vi.fn(() => "")
+      cronManager = makeMockCronManager({ sync, removeAll })
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => phase === "active" ? "active content" : "cancelled content"),
+      })
+      mockParseHabitFile.mockImplementation((content: string) =>
+        content === "active content" ? makeHeartbeatHabit() : makeCancelledHabit("heartbeat"))
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(sync).toHaveBeenCalledTimes(2)
+      expect(removeAll).toHaveBeenCalledTimes(1)
+      expect(execForVerify).not.toHaveBeenCalled()
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
     it("removes an active job that becomes cancelled after verification but before overdue dispatch", () => {
       let phase: "active" | "cancelled" = "active"
       const sync = vi.fn()
@@ -441,6 +620,79 @@ describe("HabitScheduler", () => {
 
       expect(sync).toHaveBeenNthCalledWith(1, [expect.objectContaining({ taskId: "heartbeat" })])
       expect(sync).toHaveBeenLastCalledWith([])
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
+    it("stops the cycle when cancellation during verification cannot be corrected", () => {
+      let phase: "active" | "cancelled" = "active"
+      const sync = vi.fn()
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => { throw new Error("verification correction failed") })
+      const removeAll = vi.fn()
+      cronManager = makeMockCronManager({ sync, removeAll })
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => phase === "active" ? "active content" : "cancelled content"),
+      })
+      mockParseHabitFile.mockImplementation((content: string) =>
+        content === "active content" ? makeHeartbeatHabit() : makeCancelledHabit("heartbeat"))
+      const execForVerify = vi.fn(() => {
+        phase = "cancelled"
+        return "bot.ouro.slugger.heartbeat\n"
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(sync).toHaveBeenCalledTimes(2)
+      expect(removeAll).toHaveBeenCalledTimes(1)
+      expect(execForVerify).toHaveBeenCalledTimes(1)
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
+    it("stops the cycle when the final pre-dispatch correction cannot synchronize", () => {
+      let phase: "active" | "cancelled" = "active"
+      let cadenceBuilds = 0
+      const sync = vi.fn()
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => { throw new Error("pre-dispatch correction failed") })
+      const removeAll = vi.fn()
+      cronManager = makeMockCronManager({ sync, removeAll })
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => phase === "active" ? "active content" : "cancelled content"),
+      })
+      mockParseHabitFile.mockImplementation((content: string) =>
+        content === "active content" ? makeHeartbeatHabit() : makeCancelledHabit("heartbeat"))
+      mockParseCadenceToCron.mockImplementation(() => {
+        cadenceBuilds += 1
+        if (cadenceBuilds === 4) phase = "cancelled"
+        return "*/30 * * * *"
+      })
+      const execForVerify = vi.fn(() => "bot.ouro.slugger.heartbeat\n")
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(sync).toHaveBeenCalledTimes(2)
+      expect(removeAll).toHaveBeenCalledTimes(1)
+      expect(execForVerify).toHaveBeenCalledTimes(1)
       expect(onHabitFire).not.toHaveBeenCalled()
     })
 
@@ -1600,6 +1852,39 @@ describe("HabitScheduler", () => {
       }))
     })
 
+    it("rejects a trigger when its definition disappears immediately before dispatch", async () => {
+      let phase: "active" | "missing" = "active"
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => {
+          if (phase === "missing") throw new Error("ENOENT")
+          return "active content"
+        }),
+      })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+      mockParseCadenceToCron.mockImplementationOnce(() => {
+        phase = "missing"
+        return "*/30 * * * *"
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      await expect(scheduler.triggerJob("slugger:heartbeat:cadence")).resolves.toEqual({
+        ok: false,
+        message: "unknown habit job: slugger:heartbeat:cadence",
+      })
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(scheduler.getParseErrors()).toContainEqual({
+        file: "heartbeat.md",
+        error: "habit definition unreadable during scheduler revalidation: ENOENT",
+      })
+    })
+
     it("uses a never occurrence label for cron jobs without lastRun", async () => {
       const readdir = vi.fn(() => ["heartbeat.md"])
       const readFile = vi.fn(() => "content")
@@ -1919,6 +2204,104 @@ describe("HabitScheduler", () => {
       expect(sync).toHaveBeenCalledTimes(2)
       expect(removeAll).toHaveBeenCalledTimes(1)
       expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
+    it("bounds unstable cron verification, removes jobs fail-closed, and recovers on the next watcher event", () => {
+      let cadence: "30m" | "2h" = "30m"
+      let remainingOscillations = 5
+      const execForVerify = vi.fn(() => {
+        if (remainingOscillations > 0) {
+          remainingOscillations -= 1
+          cadence = cadence === "30m" ? "2h" : "30m"
+        }
+        return "bot.ouro.slugger.heartbeat\n"
+      })
+      const sync = vi.fn()
+      const removeAll = vi.fn()
+      cronManager = makeMockCronManager({ sync, removeAll })
+      const watchDeps = makeWatchableDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => `${cadence} content`),
+      })
+      mockParseHabitFile.mockImplementation((content: string) => ({
+        ...makeHeartbeatHabit(),
+        cadence: content === "30m content" ? "30m" : "2h",
+      }))
+      mockEvaluateCadenceDue.mockReturnValue({ due: false, elapsedMs: 0, occurrenceId: null })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps: watchDeps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(execForVerify).toHaveBeenCalledTimes(3)
+      expect(sync).toHaveBeenCalledTimes(4)
+      expect(removeAll).toHaveBeenCalledTimes(1)
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith({
+        level: "error",
+        component: "daemon",
+        event: "daemon.habit_cron_verification_unstable",
+        message: "habit scheduler cron verification did not stabilize; fail-closed cleanup attempted",
+        meta: { agent: "slugger", attempts: 3, jobCount: 1, cleanupError: null },
+      })
+
+      remainingOscillations = 0
+      scheduler.watchForChanges()
+      mockWatcher.callback!("change", "heartbeat.md")
+      vi.advanceTimersByTime(250)
+
+      expect(execForVerify).toHaveBeenCalledTimes(4)
+      expect(sync).toHaveBeenCalledTimes(5)
+      expect(removeAll).toHaveBeenCalledTimes(1)
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
+    it("contains fail-closed cleanup errors after unstable cron verification", () => {
+      let cadence: "30m" | "2h" = "30m"
+      let remainingOscillations = 5
+      const execForVerify = vi.fn(() => {
+        if (remainingOscillations > 0) {
+          remainingOscillations -= 1
+          cadence = cadence === "30m" ? "2h" : "30m"
+        }
+        return "bot.ouro.slugger.heartbeat\n"
+      })
+      const removeAll = vi.fn(() => { throw "unstable cleanup failed" })
+      cronManager = makeMockCronManager({ removeAll })
+      const watchDeps = makeWatchableDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => `${cadence} content`),
+      })
+      mockParseHabitFile.mockImplementation((content: string) => ({
+        ...makeHeartbeatHabit(),
+        cadence: content === "30m content" ? "30m" : "2h",
+      }))
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps: watchDeps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      expect(() => scheduler.start()).not.toThrow()
+
+      expect(removeAll).toHaveBeenCalledTimes(1)
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.habit_cron_verification_unstable",
+        meta: expect.objectContaining({ cleanupError: "unstable cleanup failed" }),
+      }))
     })
 
     it("multiple rapid events result in only one reconcile (debounce)", () => {
@@ -2262,6 +2645,52 @@ describe("HabitScheduler", () => {
       expect(degraded).toHaveLength(0)
     })
 
+    it("re-verifies a corrected job generation before creating fallbacks", () => {
+      let betaStatus: "paused" | "active" = "paused"
+      const execForVerify = vi.fn()
+        .mockImplementationOnce(() => {
+          betaStatus = "active"
+          return "bot.ouro.slugger.alpha\n"
+        })
+        .mockReturnValue("bot.ouro.slugger.alpha\nbot.ouro.slugger.beta\n")
+      deps = makeDeps({
+        readdir: vi.fn(() => ["alpha.md", "beta.md"]),
+        readFile: vi.fn((filePath: string) => {
+          if (filePath.endsWith("alpha.md")) return "alpha active content"
+          return betaStatus === "active" ? "beta active content" : "beta paused content"
+        }),
+      })
+      mockParseHabitFile.mockImplementation((content: string) => {
+        if (content === "alpha active content") {
+          return { ...makeHeartbeatHabit(), name: "alpha", title: "Alpha" }
+        }
+        if (content === "beta active content") {
+          return { ...makeHeartbeatHabit(), name: "beta", title: "Beta" }
+        }
+        return { ...makePausedHabit(), name: "beta", title: "Beta" }
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(execForVerify).toHaveBeenCalledTimes(2)
+      expect(cronManager.sync).toHaveBeenNthCalledWith(1, [expect.objectContaining({ taskId: "alpha" })])
+      expect(cronManager.sync).toHaveBeenLastCalledWith([
+        expect.objectContaining({ taskId: "alpha" }),
+        expect.objectContaining({ taskId: "beta" }),
+      ])
+      expect(scheduler.getDegradedHabits()).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
     it("timer fallback fires onHabitFire at cadence interval", () => {
       const execForVerify = vi.fn(() => "")
 
@@ -2298,6 +2727,41 @@ describe("HabitScheduler", () => {
       expect(onHabitFire).toHaveBeenLastCalledWith("heartbeat", "overdue", expect.objectContaining({
         occurrenceId: expect.stringMatching(/^timer:heartbeat:cadence-ms:1800000:slot:/),
       }))
+    })
+
+    it("keeps one timer owner when a fallback callback re-enters reconciliation", () => {
+      mockEvaluateCadenceDue.mockReturnValue({ due: false, elapsedMs: 0, occurrenceId: null })
+      const execForVerify = vi.fn(() => "")
+      const { scheduler } = makeSchedulerWithVerify({ execForVerify })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+      onHabitFire.mockImplementation(() => scheduler.reconcile())
+
+      scheduler.start()
+      expect(vi.getTimerCount()).toBe(1)
+
+      vi.advanceTimersByTime(30 * 60 * 1000)
+
+      expect(onHabitFire).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(1)
+      scheduler.stop()
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it("replaces an existing timer owner when start is invoked again", () => {
+      mockEvaluateCadenceDue.mockReturnValue({ due: false, elapsedMs: 0, occurrenceId: null })
+      const execForVerify = vi.fn(() => "")
+      const { scheduler } = makeSchedulerWithVerify({ execForVerify })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+
+      scheduler.start()
+      expect(vi.getTimerCount()).toBe(1)
+      scheduler.start()
+
+      expect(vi.getTimerCount()).toBe(1)
+      expect(scheduler.getDegradedHabits()).toEqual([{
+        name: "heartbeat",
+        reason: "cron registration failed — using timer fallback",
+      }])
     })
 
     it("getDegradedHabits returns habits on timer fallback", () => {
@@ -2443,6 +2907,73 @@ describe("HabitScheduler", () => {
       expect(vi.getTimerCount()).toBe(0)
     })
 
+    it("prunes a fallback when the habit is cancelled as the timer is created", () => {
+      let phase: "active" | "cancelled" = "active"
+      const execForVerify = vi.fn(() => "")
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => phase === "active" ? "active content" : "cancelled content"),
+      })
+      mockParseHabitFile.mockImplementation((content: string) =>
+        content === "active content" ? makeHeartbeatHabit() : makeCancelledHabit("heartbeat"))
+      mockCadenceFallbackDelayMs.mockImplementationOnce(() => {
+        phase = "cancelled"
+        return 30 * 60 * 1000
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(cronManager.sync).toHaveBeenNthCalledWith(1, [expect.objectContaining({ taskId: "heartbeat" })])
+      expect(cronManager.sync).toHaveBeenLastCalledWith([])
+      expect(scheduler.getDegradedHabits()).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
+    it("prunes a fallback whose cadence changes as the timer is created", () => {
+      let cadence: "30m" | "2h" = "30m"
+      const execForVerify = vi.fn(() => "")
+      mockEvaluateCadenceDue.mockReturnValue({ due: false, elapsedMs: 0, occurrenceId: null })
+      deps = makeDeps({
+        readdir: vi.fn(() => ["heartbeat.md"]),
+        readFile: vi.fn(() => cadence === "30m" ? "30m content" : "2h content"),
+      })
+      mockParseHabitFile.mockImplementation((content: string) => ({
+        ...makeHeartbeatHabit(),
+        cadence: content === "30m content" ? "30m" : "2h",
+      }))
+      mockCadenceFallbackDelayMs.mockImplementationOnce(() => {
+        cadence = "2h"
+        return 30 * 60 * 1000
+      })
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "darwin",
+      })
+
+      scheduler.start()
+
+      expect(cronManager.sync).toHaveBeenNthCalledWith(1, [expect.objectContaining({ schedule: "*/30 * * * *" })])
+      expect(cronManager.sync).toHaveBeenLastCalledWith([expect.objectContaining({ schedule: "0 */2 * * *" })])
+      expect(scheduler.getDegradedHabits()).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+      expect(onHabitFire).not.toHaveBeenCalled()
+    })
+
     it("when verification succeeds on later reconciliation: removes timer, cron takes over", () => {
       const execForVerify = vi.fn()
         .mockReturnValueOnce("") // first: verification fails
@@ -2536,16 +3067,8 @@ describe("HabitScheduler", () => {
         ...makeHeartbeatHabit(),
         cadence: "*/30 * * * *", // raw cron string: parseCadenceToCron works but parseCadenceToMs returns null
       })
-      // parseCadenceToCron will be called by buildJobs
-      mockParseCadenceToCron.mockReturnValueOnce("*/30 * * * *")
-      // parseCadenceToMs will be called by verifyCronAndCreateFallbacks via getHabitFile
-      // The second call to parseHabitFile (from getHabitFile) needs to return the same habit
-      mockParseHabitFile.mockReturnValueOnce({
-        ...makeHeartbeatHabit(),
-        cadence: "*/30 * * * *",
-      })
-      mockParseCadenceToMs.mockReturnValueOnce(null) // for start() overdue check
-      mockParseCadenceToMs.mockReturnValueOnce(null) // for verifyCronAndCreateFallbacks
+      // Revalidation rebuilds the job at each execution boundary.
+      mockParseCadenceToCron.mockReturnValue("*/30 * * * *")
 
       const scheduler = new HabitScheduler({
         agent: "slugger",
@@ -2563,20 +3086,22 @@ describe("HabitScheduler", () => {
       const degraded = scheduler.getDegradedHabits()
       expect(degraded).toHaveLength(1)
       expect(degraded[0].name).toBe("heartbeat")
+      expect(degraded[0].reason).toBe("cron registration failed — no timer fallback available")
     })
 
-    it("handles habit with null cadence from getHabitFile during verification", () => {
-      const execForVerify = vi.fn(() => "")
+    it("removes a job whose cadence disappears during verification", () => {
+      let phase: "active" | "no-cadence" = "active"
+      const execForVerify = vi.fn(() => {
+        phase = "no-cadence"
+        return ""
+      })
       const readdir = vi.fn(() => ["heartbeat.md"])
-      const readFile = vi.fn(() => "content")
+      const readFile = vi.fn(() => phase === "active" ? "active content" : "no-cadence content")
       deps = makeDeps({ readdir, readFile })
 
-      mockParseHabitFile.mockReturnValueOnce(makeHeartbeatHabit())
-      // getHabitFile call returns habit with null cadence
-      mockParseHabitFile.mockReturnValueOnce({
-        ...makeHeartbeatHabit(),
-        cadence: null,
-      })
+      mockParseHabitFile.mockImplementation((content: string) => content === "active content"
+        ? makeHeartbeatHabit()
+        : { ...makeHeartbeatHabit(), cadence: null })
 
       const scheduler = new HabitScheduler({
         agent: "slugger",
@@ -2590,9 +3115,10 @@ describe("HabitScheduler", () => {
 
       scheduler.start()
 
-      // Marked degraded but no timer fallback (null cadence)
-      const degraded = scheduler.getDegradedHabits()
-      expect(degraded).toHaveLength(1)
+      expect(cronManager.sync).toHaveBeenNthCalledWith(1, [expect.objectContaining({ taskId: "heartbeat" })])
+      expect(cronManager.sync).toHaveBeenLastCalledWith([])
+      expect(scheduler.getDegradedHabits()).toEqual([])
+      expect(onHabitFire).not.toHaveBeenCalled()
     })
 
     it("on macOS, only matches specific habit labels not the daemon plist", () => {
