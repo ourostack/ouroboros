@@ -40,6 +40,16 @@ const mocks = vi.hoisted(() => ({
   repairEvent: vi.fn(async (event: unknown) => event),
   getMessageText: vi.fn(async () => null),
   recordMutation: vi.fn(),
+  initializeSemanticCutover: vi.fn(),
+  writeSemanticCapture: vi.fn(),
+  acquireSemanticClaim: vi.fn(),
+  releaseSemanticClaim: vi.fn(),
+  writeSemanticHandled: vi.fn(),
+  allocateSemanticCoordinate: vi.fn(),
+  listPendingSemanticCaptures: vi.fn(),
+  semanticCaptures: new Map<string, any>(),
+  semanticHandled: new Map<string, any>(),
+  semanticClaims: new Map<string, { lease: any; released: Promise<void>; resolve: () => void }>(),
   createServer: vi.fn(),
   listen: vi.fn((_: number, cb?: () => void) => cb?.()),
   handleInboundTurn: vi.fn(),
@@ -215,6 +225,22 @@ vi.mock("../../../senses/bluebubbles/client", () => ({
     getMessageText: (...args: any[]) => mocks.getMessageText(...args),
   })),
 }))
+
+vi.mock("../../../senses/bluebubbles/semantic-receipts", async () => {
+  const actual = await vi.importActual<typeof import("../../../senses/bluebubbles/semantic-receipts")>(
+    "../../../senses/bluebubbles/semantic-receipts",
+  )
+  return {
+    ...actual,
+    initializeBlueBubblesSemanticCutover: (...args: any[]) => mocks.initializeSemanticCutover(...args),
+    writeBlueBubblesSemanticCapture: (...args: any[]) => mocks.writeSemanticCapture(...args),
+    acquireBlueBubblesSemanticClaim: (...args: any[]) => mocks.acquireSemanticClaim(...args),
+    releaseBlueBubblesSemanticClaim: (...args: any[]) => mocks.releaseSemanticClaim(...args),
+    writeBlueBubblesSemanticHandled: (...args: any[]) => mocks.writeSemanticHandled(...args),
+    allocateBlueBubblesReactionCoordinate: (...args: any[]) => mocks.allocateSemanticCoordinate(...args),
+    listPendingBlueBubblesSemanticCaptures: (...args: any[]) => mocks.listPendingSemanticCaptures(...args),
+  }
+})
 
 vi.mock("node:http", () => ({
   createServer: (...args: any[]) => mocks.createServer(...args),
@@ -455,6 +481,7 @@ function makeCatchUpMessage(overrides: Partial<{
       externalId: "ari@mendelow.me",
       rawId: "ari@mendelow.me",
       displayName: "ari@mendelow.me",
+      observed: true,
     },
     chat: {
       chatGuid: "any;-;ari@mendelow.me",
@@ -530,6 +557,76 @@ const groupWithParticipantsPayload = {
       },
     ],
   },
+}
+
+async function makeStoredSemanticCapture(
+  payload: unknown = dmTopLevelPayload,
+  options: {
+    capturedAt?: string
+    targetAuthorship?: "agent" | "non_agent_unknown" | null
+  } = {},
+) {
+  const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+  const { buildBlueBubblesSemanticCapture } = await import("../../../senses/bluebubbles/semantic-receipts")
+  const normalized = normalizeBlueBubblesEvent(payload)
+  const capture = buildBlueBubblesSemanticCapture({
+    cutover: {
+      schemaVersion: 1,
+      providerNamespace: "11111111-1111-4111-8111-111111111111",
+      effectiveAt: "2026-07-30T00:00:00.000Z",
+    },
+    capturedAt: options.capturedAt ?? "2026-07-30T18:00:00.000Z",
+    event: normalized,
+    targetAuthorship: options.targetAuthorship ?? null,
+    coordinateGeneration: normalized.kind === "mutation" && normalized.mutationType === "reaction"
+      ? 0
+      : undefined,
+  })
+  expect(capture).not.toBeNull()
+  return capture!
+}
+
+async function queueStoredSemanticCapture(
+  payload: unknown = dmTopLevelPayload,
+  options: {
+    capturedAt?: string
+    targetAuthorship?: "agent" | "non_agent_unknown" | null
+  } = {},
+) {
+  const capture = await makeStoredSemanticCapture(payload, options)
+  mocks.semanticCaptures.set(capture.keyHash, capture)
+  return capture
+}
+
+async function makeStoredSemanticCaptureFromEvent(
+  event: ReturnType<typeof makeCatchUpMessage>,
+  options: { capturedAt?: string } = {},
+) {
+  const { buildBlueBubblesSemanticCapture } = await import("../../../senses/bluebubbles/semantic-receipts")
+  const capture = buildBlueBubblesSemanticCapture({
+    cutover: {
+      schemaVersion: 1,
+      providerNamespace: "11111111-1111-4111-8111-111111111111",
+      effectiveAt: "2026-07-30T00:00:00.000Z",
+    },
+    capturedAt: options.capturedAt ?? "2026-07-30T18:00:00.000Z",
+    event: {
+      ...event,
+      sender: { ...event.sender, observed: true },
+    },
+    targetAuthorship: null,
+  })
+  expect(capture).not.toBeNull()
+  return capture!
+}
+
+async function queueStoredSemanticCaptureFromEvent(
+  event: ReturnType<typeof makeCatchUpMessage>,
+  options: { capturedAt?: string } = {},
+) {
+  const capture = await makeStoredSemanticCaptureFromEvent(event, options)
+  mocks.semanticCaptures.set(capture.keyHash, capture)
+  return capture
 }
 
 const defaultFriendContext = {
@@ -663,6 +760,76 @@ function resetMocks(): void {
   mocks.listRecentMessages.mockReset().mockResolvedValue([])
   mocks.repairEvent.mockReset().mockImplementation(async (event: unknown) => event)
   mocks.recordMutation.mockReset()
+  mocks.initializeSemanticCutover.mockReset().mockReturnValue({
+    schemaVersion: 1,
+    providerNamespace: "11111111-1111-4111-8111-111111111111",
+    effectiveAt: "2026-07-30T00:00:00.000Z",
+  })
+  mocks.semanticCaptures.clear()
+  mocks.semanticHandled.clear()
+  mocks.semanticClaims.clear()
+  mocks.writeSemanticCapture.mockReset().mockImplementation((_agentName: string, capture: any) => {
+    if (mocks.semanticCaptures.has(capture.keyHash)) return "semantic_capture_duplicate"
+    mocks.semanticCaptures.set(capture.keyHash, capture)
+    return "semantic_capture_published"
+  })
+  mocks.acquireSemanticClaim.mockReset().mockImplementation(async (
+    _agentName: string,
+    identity: { canonicalKey: string; keyHash: string },
+  ) => {
+    const inFlight = mocks.semanticClaims.get(identity.keyHash)
+    if (inFlight) await inFlight.released
+    const handled = mocks.semanticHandled.get(identity.keyHash)
+    if (handled) return { status: "already_handled", record: handled }
+    const lease = {
+      status: "acquired",
+      record: {
+        schemaVersion: 1,
+        canonicalKey: identity.canonicalKey,
+        keyHash: identity.keyHash,
+        owner: {
+          operationId: `semantic-handle:${identity.keyHash}`,
+          pid: 4242,
+          bootIdentity: "test-boot",
+          processStartedAt: "test-process",
+          acquiredAt: "2026-07-30T18:00:00.000Z",
+        },
+      },
+    }
+    let resolve!: () => void
+    const released = new Promise<void>((done) => {
+      resolve = done
+    })
+    mocks.semanticClaims.set(identity.keyHash, { lease, released, resolve })
+    return lease
+  })
+  mocks.releaseSemanticClaim.mockReset().mockImplementation((_agentName: string, lease: any) => {
+    const keyHash = lease?.record?.keyHash
+    const claim = mocks.semanticClaims.get(keyHash)
+    if (!claim || claim.lease !== lease) return false
+    mocks.semanticClaims.delete(keyHash)
+    claim.resolve()
+    return true
+  })
+  mocks.writeSemanticHandled.mockReset().mockImplementation((_agentName: string, record: any) => {
+    if (mocks.semanticHandled.has(record.keyHash)) return "semantic_handled_duplicate"
+    mocks.semanticHandled.set(record.keyHash, record)
+    return "semantic_handled_published"
+  })
+  mocks.allocateSemanticCoordinate.mockReset().mockImplementation(async (
+    _agentName: string,
+    input: { coordinateKey: string; coordinateHash: string; canonicalAction: "add" | "remove" },
+  ) => ({
+    schemaVersion: 1,
+    coordinateKey: input.coordinateKey,
+    coordinateHash: input.coordinateHash,
+    generation: 0,
+    lastAction: input.canonicalAction,
+    updatedAt: "2026-07-30T18:00:00.000Z",
+  }))
+  mocks.listPendingSemanticCaptures.mockReset().mockImplementation(() => (
+    [...mocks.semanticCaptures.values()].filter((capture) => !mocks.semanticHandled.has(capture.keyHash))
+  ))
   mocks.listen.mockReset().mockImplementation((_: number, cb?: () => void) => cb?.())
   mocks.createServer.mockReset().mockImplementation((handler: unknown) => ({
     listen: mocks.listen,
@@ -703,7 +870,7 @@ function createMockRequest(method: string, url: string, body?: unknown): Readabl
   return req
 }
 
-function createMockResponse() {
+function createMockResponse(onEnd?: () => void) {
   let statusCode = 200
   const headers = new Map<string, string>()
   let body = ""
@@ -732,6 +899,7 @@ function createMockResponse() {
       if (typeof chunk !== "undefined") {
         body += chunk.toString()
       }
+      onEnd?.()
       resolver?.()
     },
   }
@@ -3138,6 +3306,389 @@ describe("BlueBubbles sense runtime", () => {
     await flushAsyncWork()
   })
 
+  it("publishes the semantic capture before acknowledging a valid webhook", async () => {
+    const order: string[] = []
+    mocks.writeSemanticCapture.mockImplementationOnce(() => {
+      order.push("capture")
+      return "semantic_capture_published"
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      dmTopLevelPayload,
+    )
+    const res = createMockResponse(() => order.push("ack"))
+
+    await handler(req as any, res.res as any)
+    await res.done
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await flushAsyncWork()
+
+    expect(order.slice(0, 2)).toEqual(["capture", "ack"])
+    expect(res.res.statusCode).toBe(200)
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        schemaVersion: 1,
+        event: expect.objectContaining({
+          kind: "message",
+          eventGuid: "b20d4e2b-2e6e-48b5-95cd-6e24a368e4a7",
+          actor: expect.objectContaining({ externalId: "ari@mendelow.me" }),
+        }),
+      }),
+    )
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("returns the exact retryable response and starts no work when semantic capture fails", async () => {
+    mocks.writeSemanticCapture.mockImplementationOnce(() => {
+      throw new Error("semantic_capture_failed")
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      dmTopLevelPayload,
+    )
+    const res = createMockResponse()
+
+    await handler(req as any, res.res as any)
+    await res.done
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await flushAsyncWork()
+
+    expect(res.res.statusCode).toBe(503)
+    expect(res.getHeader("content-type")).toBe("application/json")
+    expect(res.getBody()).toBe('{"ok":false,"error":"semantic_capture_failed"}')
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+  })
+
+  it("returns the exact retryable response for a mutation identity collision", async () => {
+    mocks.writeSemanticCapture.mockReturnValueOnce("semantic_identity_collision")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      reactionPayload,
+    )
+    const res = createMockResponse()
+
+    await handler(req as any, res.res as any)
+    await res.done
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await flushAsyncWork()
+
+    expect(res.res.statusCode).toBe(503)
+    expect(res.getHeader("content-type")).toBe("application/json")
+    expect(res.getBody()).toBe('{"ok":false,"error":"semantic_capture_failed"}')
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.recordMutation).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+  })
+
+  it("claims a durable semantic capture before repair and writes handled before release", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const order: string[] = []
+    let publishedCapture: { canonicalKey: string; keyHash: string } | null = null
+    mocks.writeSemanticCapture.mockImplementationOnce((_agentName: string, capture: any) => {
+      order.push("capture")
+      publishedCapture = capture
+      return "semantic_capture_published"
+    })
+    const defaultAcquire = mocks.acquireSemanticClaim.getMockImplementation()!
+    let acquiredLease: unknown
+    mocks.acquireSemanticClaim.mockImplementationOnce(async (...args: any[]) => {
+      order.push("claim")
+      acquiredLease = await defaultAcquire(...args)
+      return acquiredLease
+    })
+    mocks.repairEvent.mockImplementationOnce(async (event: unknown) => {
+      order.push("repair")
+      return event
+    })
+    const defaultHandle = mocks.handleInboundTurn.getMockImplementation()!
+    mocks.handleInboundTurn.mockImplementationOnce(async (...args: any[]) => {
+      order.push("handle")
+      return defaultHandle(...args)
+    })
+    mocks.writeSemanticHandled.mockImplementationOnce(() => {
+      order.push("handled")
+      return "semantic_handled_published"
+    })
+    mocks.releaseSemanticClaim.mockImplementationOnce(() => {
+      order.push("release")
+      return true
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(order).toEqual(["capture", "claim", "repair", "handle", "handled", "release"])
+    expect(publishedCapture).not.toBeNull()
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledWith("testagent", {
+      canonicalKey: publishedCapture!.canonicalKey,
+      keyHash: publishedCapture!.keyHash,
+    })
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        schemaVersion: 1,
+        canonicalKey: publishedCapture!.canonicalKey,
+        keyHash: publishedCapture!.keyHash,
+        outcome: "message_completed",
+        detailCode: null,
+      }),
+    )
+    expect(mocks.releaseSemanticClaim).toHaveBeenCalledWith("testagent", acquiredLease)
+  })
+
+  it("leaves a timed-out semantic claim pending without repair or handling", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    let publishedCapture: { canonicalKey: string; keyHash: string } | null = null
+    mocks.writeSemanticCapture.mockImplementationOnce((_agentName: string, capture: any) => {
+      publishedCapture = capture
+      return "semantic_capture_published"
+    })
+    mocks.acquireSemanticClaim.mockResolvedValueOnce({
+      status: "timeout",
+      code: "semantic_claim_timeout",
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result).toEqual({
+      handled: false,
+      notifiedAgent: false,
+      kind: "message",
+      reason: "semantic_claim_timeout",
+    })
+    expect(publishedCapture).not.toBeNull()
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledWith("testagent", {
+      canonicalKey: publishedCapture!.canonicalKey,
+      keyHash: publishedCapture!.keyHash,
+    })
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledTimes(1)
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.releaseSemanticClaim).not.toHaveBeenCalled()
+  })
+
+  it("recovers after restart when the webhook process stops after capture and before claim", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await makeStoredSemanticCapture()
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      dmTopLevelPayload,
+    )
+    const res = createMockResponse()
+
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledTimes(1)
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    vi.clearAllTimers()
+    vi.useRealTimers()
+
+    mocks.listPendingSemanticCaptures.mockReturnValue([capture])
+    vi.resetModules()
+    const restarted = await import("../../../senses/bluebubbles")
+    const result = await restarted.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(1)
+    expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
+  })
+
+  it("reaps an unreleased claim after process death and recovers exactly once across fresh runtimes", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await makeStoredSemanticCapture()
+    mocks.listPendingSemanticCaptures.mockReturnValue([capture])
+    const defaultAcquire = mocks.acquireSemanticClaim.getMockImplementation()!
+    let handledRecord: any = null
+    mocks.acquireSemanticClaim.mockImplementation(async (...args: any[]) => (
+      handledRecord
+        ? { status: "already_handled", record: handledRecord }
+        : defaultAcquire(...args)
+    ))
+    mocks.writeSemanticHandled.mockImplementation((_agentName: string, record: any) => {
+      handledRecord = record
+      return "semantic_handled_published"
+    })
+    mocks.repairEvent.mockRejectedValueOnce(new Error("worker crashed after claim"))
+    mocks.releaseSemanticClaim.mockImplementationOnce(() => {
+      throw new Error("process terminated before claim release")
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload))
+      .rejects.toThrow("process terminated before claim release")
+    expect(mocks.releaseSemanticClaim).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+
+    // The real store reaps this lease from PID/boot/process-start evidence.
+    // Clearing only the mock's process-local view models the fresh runtime.
+    mocks.semanticClaims.clear()
+    vi.resetModules()
+    const restarted = await import("../../../senses/bluebubbles")
+    const recovered = await restarted.recoverCapturedBlueBubblesInboundMessages()
+
+    vi.resetModules()
+    const restartedAgain = await import("../../../senses/bluebubbles")
+    const duplicate = await restartedAgain.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(recovered).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(duplicate).toEqual({ recovered: 0, skipped: 1, failed: 0 })
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(3)
+    expect(mocks.repairEvent).toHaveBeenCalledTimes(2)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
+    expect(mocks.releaseSemanticClaim).toHaveBeenCalledTimes(2)
+  })
+
+  it("collapses repeated new/new/updated reaction aliases onto one handled semantic turn", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const handledKeys = new Set<string>()
+    const leases = new Map<string, unknown>()
+    mocks.acquireSemanticClaim.mockImplementation(async (
+      _agentName: string,
+      identity: { canonicalKey: string; keyHash: string },
+    ) => {
+      if (handledKeys.has(identity.keyHash)) {
+        return {
+          status: "already_handled",
+          record: expect.objectContaining({ keyHash: identity.keyHash }),
+        }
+      }
+      const lease = {
+        status: "acquired",
+        record: {
+          schemaVersion: 1,
+          canonicalKey: identity.canonicalKey,
+          keyHash: identity.keyHash,
+          owner: {
+            operationId: `semantic-handle:${identity.keyHash}`,
+            pid: 4242,
+            bootIdentity: "test-boot",
+            processStartedAt: "test-process",
+            acquiredAt: "2026-07-30T18:00:00.000Z",
+          },
+        },
+      }
+      leases.set(identity.keyHash, lease)
+      return lease
+    })
+    mocks.writeSemanticHandled.mockImplementation((
+      _agentName: string,
+      record: { keyHash: string },
+    ) => {
+      handledKeys.add(record.keyHash)
+      return "semantic_handled_published"
+    })
+    const updatedAlias = { ...reactionPayload, type: "updated-message" }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(reactionPayload)
+    await bluebubbles.handleBlueBubblesEvent(reactionPayload)
+    await bluebubbles.handleBlueBubblesEvent(updatedAlias)
+
+    const captures = mocks.writeSemanticCapture.mock.calls.map((call: unknown[]) => call[1] as {
+      canonicalKey: string
+      keyHash: string
+    })
+    expect(new Set(captures.map((capture) => capture.keyHash)).size).toBe(1)
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledTimes(3)
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(3)
+    const capturedIdentity = {
+      canonicalKey: captures[0]!.canonicalKey,
+      keyHash: captures[0]!.keyHash,
+    }
+    expect(mocks.acquireSemanticClaim.mock.calls.map((call: unknown[]) => call[1])).toEqual([
+      capturedIdentity,
+      capturedIdentity,
+      capturedIdentity,
+    ])
+    expect(leases.size).toBe(1)
+    expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining(capturedIdentity),
+    )
+  })
+
+  it("keeps pre-v1 inbound and group mutation rows audit-only without synthesizing an actor", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
+    recordBlueBubblesInbound(
+      "testagent",
+      normalizeBlueBubblesEvent(groupThreadPayload) as any,
+      "webhook",
+    )
+    recordBlueBubblesMutation("testagent", normalizeBlueBubblesEvent({
+      ...readPayload,
+      data: {
+        ...readPayload.data,
+        chats: groupThreadPayload.data.chats,
+      },
+    }) as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const captured = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    const mutations = await bluebubbles.recoverMissedBlueBubblesMessages()
+
+    expect(captured.recovered).toBe(0)
+    expect(mutations.recovered).toBe(0)
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_legacy_recovery_blocked",
+      meta: expect.objectContaining({
+        schemaVersion: 0,
+        actorPresent: false,
+        reason: "legacy_or_actorless",
+      }),
+    }))
+  })
+
   it("treats known guidless BlueBubbles chat state events as ignorable webhook noise", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler()
@@ -3211,37 +3762,19 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.listen).toHaveBeenCalledWith(18790, expect.any(Function))
   })
 
-  it("replays unrecovered state-only mutations through the agent once the full message can be repaired", async () => {
+  it("repairs and handles a captured v1 message once during recovery", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
-
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "missed-message-guid",
-      timestamp: Date.parse("2026-03-11T18:15:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    const capture = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "missed-message-guid",
+        text: "you there?",
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as delivered",
-      requiresRepair: false,
     })
+    mocks.listPendingSemanticCaptures.mockReturnValue([capture])
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "message",
       eventType: "new-message",
@@ -3270,11 +3803,9 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    const first = await bluebubbles.recoverMissedBlueBubblesMessages()
-    const second = await bluebubbles.recoverMissedBlueBubblesMessages()
+    const first = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(first).toEqual(expect.objectContaining({ recovered: 1, pending: 0, failed: 0 }))
-    expect(second).toEqual(expect.objectContaining({ recovered: 0, skipped: 1 }))
+    expect(first).toEqual(expect.objectContaining({ recovered: 1, failed: 0 }))
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
     expect(mocks.runAgent).toHaveBeenCalledWith(
       expect.arrayContaining([
@@ -3290,7 +3821,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("keeps unrepaired backlog mutations pending until BlueBubbles can hydrate a real message", async () => {
+  it("keeps pre-v1 backlog mutations audit-only instead of hydrating them", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -3350,17 +3881,18 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 1, failed: 0 }))
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "senses.bluebubbles_recovery_complete",
-        meta: expect.objectContaining({ pending: 1 }),
+        event: "senses.bluebubbles_legacy_recovery_blocked",
+        meta: expect.objectContaining({ actorPresent: false }),
       }),
     )
   })
 
-  it("records backlog recovery failures without crashing the recovery pass", async () => {
+  it("does not invoke repair for a broken pre-v1 backlog row", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -3396,19 +3928,17 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 0, failed: 1 }))
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "senses.bluebubbles_recovery_error",
-        meta: expect.objectContaining({
-          messageGuid: "broken-message-guid",
-          reason: "repair exploded",
-        }),
+        event: "senses.bluebubbles_legacy_recovery_blocked",
+        meta: expect.objectContaining({ actorPresent: false }),
       }),
     )
   })
 
-  it("keeps timed-out backlog recovery turns pending instead of marking them processed", async () => {
+  it("does not start timeout-prone turns for pre-v1 backlog rows", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -3456,24 +3986,23 @@ describe("BlueBubbles sense runtime", () => {
     await vi.advanceTimersByTimeAsync(600_000)
     const result = await recovery
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 0, failed: 1 }))
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-timeout-guid")).toBe(false)
     const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"mutation-timeout-guid\"")
     const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
-    expect(queued).toEqual(expect.objectContaining({ recovered: 1, failed: 0, pendingRecoveryCount: 0 }))
+    expect(queued).toEqual(expect.objectContaining({ recovered: 0, failed: 0, pendingRecoveryCount: 0 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "senses.bluebubbles_recovery_error",
-      meta: expect.objectContaining({
-        messageGuid: "mutation-timeout-guid",
-        reason: "bluebubbles recovery turn timed out after 600000ms",
-      }),
+      event: "senses.bluebubbles_legacy_recovery_blocked",
+      meta: expect.objectContaining({ actorPresent: false }),
     }))
   })
 
-  it("keeps named recovery timeout errors from alternate Error realms pending", async () => {
+  it("does not expose pre-v1 rows to alternate-realm timeout errors", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -3515,18 +4044,17 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 0, failed: 1 }))
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-named-timeout-guid")).toBe(false)
     const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"mutation-named-timeout-guid\"")
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "senses.bluebubbles_recovery_error",
-      meta: expect.objectContaining({
-        messageGuid: "mutation-named-timeout-guid",
-        reason: "bluebubbles recovery turn timed out after 600000ms",
-      }),
+      event: "senses.bluebubbles_legacy_recovery_blocked",
+      meta: expect.objectContaining({ actorPresent: false }),
     }))
   })
 
@@ -3700,17 +4228,24 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("skips catch-up messages that are outgoing, too old, or already processed", async () => {
+  it("skips catch-up messages that are outgoing, too old, or already semantically handled", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
     const now = Date.now()
 
-    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    recordProcessedBlueBubblesMessage("testagent", makeCatchUpMessage({
+    const alreadyHandled = await queueStoredSemanticCaptureFromEvent(makeCatchUpMessage({
       messageGuid: "already-recorded-guid",
       timestamp: now - 1_000,
-    }), "webhook", "turn-complete")
+    }))
+    mocks.semanticHandled.set(alreadyHandled.keyHash, {
+      schemaVersion: 1,
+      canonicalKey: alreadyHandled.canonicalKey,
+      keyHash: alreadyHandled.keyHash,
+      handledAt: new Date(now).toISOString(),
+      outcome: "message_completed",
+      detailCode: null,
+    })
 
     mocks.listRecentMessages.mockResolvedValueOnce([
       makeCatchUpMessage({ messageGuid: "from-me-guid", timestamp: now - 1_000, fromMe: true }),
@@ -3735,18 +4270,17 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).not.toHaveBeenCalled()
   })
 
-  it("does not let a captured-but-unprocessed inbound sidecar suppress catch-up recovery", async () => {
+  it("does not let a captured-but-unhandled semantic record suppress catch-up recovery", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
     const now = Date.now()
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", makeCatchUpMessage({
+    await queueStoredSemanticCaptureFromEvent(makeCatchUpMessage({
       messageGuid: "captured-only-guid",
       timestamp: now - 1_000,
       textForAgent: "this was captured but never handled",
-    }), "webhook")
+    }))
 
     mocks.listRecentMessages.mockResolvedValueOnce([
       makeCatchUpMessage({
@@ -3774,18 +4308,17 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
   })
 
-  it("does not double-queue captured catch-up messages when runtime sync is only discovering work", async () => {
+  it("does not double-queue semantic captures when runtime sync is only discovering work", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
     const now = Date.now()
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", makeCatchUpMessage({
+    await queueStoredSemanticCaptureFromEvent(makeCatchUpMessage({
       messageGuid: "captured-runtime-queued-guid",
       timestamp: now - 1_000,
       textForAgent: "already queued for recovery",
-    }), "upstream-catchup")
+    }))
 
     mocks.listRecentMessages.mockResolvedValueOnce([
       makeCatchUpMessage({
@@ -4058,7 +4591,7 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("recovers identifier-only backlog candidates by falling back to unknown routing metadata", async () => {
+  it("keeps identifier-only pre-v1 backlog candidates audit-only instead of inventing routing or sender metadata", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4084,63 +4617,32 @@ describe("BlueBubbles sense runtime", () => {
       "utf-8",
     )
 
-    const beforeRecovery = Date.now()
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverMissedBlueBubblesMessages()
-    const repairedEvent = mocks.repairEvent.mock.calls[0]?.[0]
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 1, failed: 0 }))
-    expect(repairedEvent).toEqual(
-      expect.objectContaining({
-        kind: "mutation",
-        messageGuid: "fallback-routing-guid",
-        timestamp: expect.any(Number),
-        sender: expect.objectContaining({
-          externalId: "unknown",
-          rawId: "unknown",
-          displayName: "Unknown",
-        }),
-        chat: expect.objectContaining({
-          chatGuid: undefined,
-          chatIdentifier: undefined,
-          sessionKey: "chat_identifier:missing-target",
-          sendTarget: { kind: "chat_identifier", value: "unknown" },
-        }),
-      }),
-    )
-    expect(repairedEvent?.timestamp).toBeGreaterThanOrEqual(beforeRecovery)
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_legacy_recovery_blocked",
+      meta: expect.objectContaining({ actorPresent: false }),
+    }))
   })
 
-  it("still recovers messages when the repaired agent text is empty and the session cannot dedupe by content", async () => {
+  it("still recovers v1 semantic messages when the repaired agent text is empty and the session cannot dedupe by content", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "empty-fragment-guid",
-      timestamp: Date.parse("2026-03-11T18:17:30.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "empty-fragment-guid",
+        text: "",
+        dateCreated: Date.parse("2026-03-11T18:17:29.000Z"),
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as delivered",
-      requiresRepair: false,
     })
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "message",
@@ -4170,9 +4672,9 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 1, skipped: 0, pending: 0, failed: 0 }))
+    expect(result).toEqual(expect.objectContaining({ recovered: 1, skipped: 0, failed: 0 }))
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
   })
 
@@ -4274,57 +4776,27 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
-  it("counts captured inbound sidecars as unique pending recovery during runtime sync", async () => {
+  it("counts only unhandled v1 semantic captures as pending recovery during runtime sync", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const captured = makeCatchUpMessage({
+    await queueStoredSemanticCaptureFromEvent(makeCatchUpMessage({
       messageGuid: "captured-runtime-pending-guid",
       textForAgent: "captured runtime pending",
-    })
-    const processed = makeCatchUpMessage({
+    }))
+    const handled = await queueStoredSemanticCaptureFromEvent(makeCatchUpMessage({
       messageGuid: "captured-runtime-processed-guid",
       textForAgent: "captured runtime processed",
+    }))
+    mocks.semanticHandled.set(handled.keyHash, {
+      schemaVersion: 1,
+      canonicalKey: handled.canonicalKey,
+      keyHash: handled.keyHash,
+      handledAt: "2026-07-30T18:01:00.000Z",
+      outcome: "message_completed",
+      detailCode: null,
     })
-    const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
-    fs.mkdirSync(path.dirname(logPath), { recursive: true })
-    fs.writeFileSync(
-      logPath,
-      [
-        JSON.stringify({
-          recordedAt: new Date(captured.timestamp).toISOString(),
-          messageGuid: captured.messageGuid,
-          chatGuid: captured.chat.chatGuid,
-          chatIdentifier: captured.chat.chatIdentifier,
-          sessionKey: captured.chat.sessionKey,
-          textForAgent: captured.textForAgent,
-          source: "webhook",
-        }),
-        JSON.stringify({
-          recordedAt: new Date(captured.timestamp + 1).toISOString(),
-          messageGuid: captured.messageGuid,
-          chatGuid: captured.chat.chatGuid,
-          chatIdentifier: captured.chat.chatIdentifier,
-          sessionKey: captured.chat.sessionKey,
-          textForAgent: "duplicate should not count twice",
-          source: "webhook",
-        }),
-        JSON.stringify({
-          recordedAt: new Date(processed.timestamp).toISOString(),
-          messageGuid: processed.messageGuid,
-          chatGuid: processed.chat.chatGuid,
-          chatIdentifier: processed.chat.chatIdentifier,
-          sessionKey: processed.chat.sessionKey,
-          textForAgent: processed.textForAgent,
-          source: "webhook",
-        }),
-      ].join("\n") + "\n",
-      "utf-8",
-    )
-    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    recordProcessedBlueBubblesMessage("testagent", processed, "webhook", "turn-complete")
 
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -4348,7 +4820,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
-  it("marks old captured inbound sidecars superseded when the chat session already advanced", async () => {
+  it("does not promote old captured inbound sidecars into pending or handled authority when the session advanced", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4405,22 +4877,13 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
-    const { hasProcessedBlueBubblesMessage, getBlueBubblesProcessedLogPath } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", staleCaptured.chat.sessionKey, staleCaptured.messageGuid)).toBe(true)
-    const processedLog = fs.readFileSync(getBlueBubblesProcessedLogPath("testagent", staleCaptured.chat.sessionKey), "utf-8")
-    expect(processedLog).toContain("\"outcome\":\"recovery-superseded\"")
-    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "senses.bluebubbles_recovery_skip",
-        meta: expect.objectContaining({
-          messageGuid: "captured-superseded-guid",
-          dedupeReason: "session_superseded",
-        }),
-      }),
-    )
+    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
+    expect(hasProcessedBlueBubblesMessage("testagent", staleCaptured.chat.sessionKey, staleCaptured.messageGuid)).toBe(false)
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
   })
 
-  it("keeps old captured inbound sidecars pending when the matching session file vanishes during scan", async () => {
+  it("does not expose old captured inbound sidecars as pending when the matching session file vanishes", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4454,20 +4917,19 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
-    await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+    await waitFor(() => fs.existsSync(runtimePath))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
-        pendingRecoveryCount: 1,
+        detail: "upstream reachable",
+        pendingRecoveryCount: 0,
       }),
     )
     expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
-  it("keeps captured inbound sidecars pending when session activity cannot prove they were superseded", async () => {
+  it("does not expose actorless pre-v1 sidecars as pending when session activity is inconclusive", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4577,13 +5039,12 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
-    await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("4 recovery item"))
+    await waitFor(() => fs.existsSync(runtimePath))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 4 recovery item(s) queued",
-        pendingRecoveryCount: 4,
+        detail: "upstream reachable",
+        pendingRecoveryCount: 0,
       }),
     )
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(
@@ -4596,7 +5057,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
-  it("counts captured and mutation sidecars for the same GUID as one pending recovery item", async () => {
+  it("keeps overlapping pre-v1 capture and mutation sidecars out of the pending semantic count", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4631,62 +5092,41 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
-    await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+    await waitFor(() => fs.existsSync(runtimePath))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
-        pendingRecoveryCount: 1,
+        detail: "upstream reachable",
+        pendingRecoveryCount: 0,
       }),
     )
     expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
-  it("does not count recovered GUIDs as pending when recovery repaired the session key", async () => {
+  it("does not count semantically handled captures as pending regardless of repaired routing", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const canonicalInbound = makeCatchUpMessage({
+    const handledInbound = await queueStoredSemanticCaptureFromEvent(makeCatchUpMessage({
       messageGuid: "repaired-captured-guid",
       textForAgent: "already recovered captured message",
-    })
-    const degradedInbound = {
-      ...canonicalInbound,
-      chat: {
-        ...canonicalInbound.chat,
-        chatGuid: undefined,
-        chatIdentifier: "unknown",
-        sessionKey: "chat_identifier:unknown",
-        sendTarget: { kind: "chat_identifier" as const, value: "unknown" },
-      },
-    }
-    const canonicalMutation = makeCatchUpMessage({
+    }))
+    const handledMutation = await queueStoredSemanticCaptureFromEvent(makeCatchUpMessage({
       messageGuid: "repaired-mutation-guid",
       textForAgent: "already recovered mutation message",
-    })
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-
-    recordBlueBubblesInbound("testagent", degradedInbound, "upstream-catchup")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: canonicalMutation.messageGuid,
-      timestamp: canonicalMutation.timestamp,
-      fromMe: false,
-      sender: canonicalMutation.sender,
-      chat: degradedInbound.chat,
-      shouldNotifyAgent: false,
-      textForAgent: canonicalMutation.textForAgent,
-      requiresRepair: false,
-    })
-    recordProcessedBlueBubblesMessage("testagent", canonicalInbound, "webhook", "turn-complete")
-    recordProcessedBlueBubblesMessage("testagent", canonicalMutation, "webhook", "turn-complete")
+    }))
+    for (const capture of [handledInbound, handledMutation]) {
+      mocks.semanticHandled.set(capture.keyHash, {
+        schemaVersion: 1,
+        canonicalKey: capture.canonicalKey,
+        keyHash: capture.keyHash,
+        handledAt: "2026-07-30T18:01:00.000Z",
+        outcome: "message_completed",
+        detailCode: null,
+      })
+    }
 
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -4740,31 +5180,9 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "unhealthy-message-guid",
-      timestamp: Date.parse("2026-03-11T18:18:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as delivered",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "unhealthy-message-guid", text: "pending while unhealthy" },
     })
     mocks.checkHealth.mockRejectedValueOnce(new Error("upstream unreachable"))
 
@@ -4787,7 +5205,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("records inbound sidecars when trust-gated message events are auto-replied instead of reaching the agent", async () => {
+  it("settles a trust-gated message with a semantic handled receipt after its audit sidecar", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4812,6 +5230,11 @@ describe("BlueBubbles sense runtime", () => {
     expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
     const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7")).toBe(true)
+    const capture = mocks.writeSemanticCapture.mock.calls[0]?.[1]
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_observed" }),
+    )
   })
 
   it("writes only one inbound sidecar entry per handled message turn", async () => {
@@ -4869,9 +5292,14 @@ describe("BlueBubbles sense runtime", () => {
 
     const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
     expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9")).toBe(false)
+    const capture = mocks.writeSemanticCapture.mock.calls[0]?.[1]
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "edit_capture_only" }),
+    )
   })
 
-  it("skips webhook delivery when the processed sidecar already recorded the message guid", async () => {
+  it("does not let a legacy processed sidecar suppress a newly captured v1 semantic message", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4907,13 +5335,13 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
-    expect(result).toEqual({
+    expect(result).toEqual(expect.objectContaining({
       handled: true,
-      notifiedAgent: false,
+      notifiedAgent: true,
       kind: "message",
-      reason: "already_processed",
-    })
-    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    }))
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
   })
 
   // Regression guard for the double-VLM bug observed live on 2026-04-08T00:58Z:
@@ -4927,56 +5355,30 @@ describe("BlueBubbles sense runtime", () => {
   // double the MiniMax VLM token spend, for a turn that was going to be
   // deduped downstream anyway. See `handleBlueBubblesEvent` in index.ts for
   // the pre-repair dedup.
-  it("skips repairEvent entirely when an updated-message arrives for an already-processed messageGuid (no duplicate VLM describe)", async () => {
+  it("skips repairEvent entirely when an updated-message semantic identity is already handled (no duplicate VLM describe)", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    // Seed the inbound sidecar with the messageGuid as if the first
-    // webhook already processed it fully.
-    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    recordProcessedBlueBubblesMessage("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: editPayload.data.guid,
-      timestamp: Date.parse("2026-04-08T00:58:15.745Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "wrong flight and you're forgetting how time zones work",
-      textForAgent: "wrong flight and you're forgetting how time zones work",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook", "turn-complete")
-
-    // Sanity check: the record we just wrote must be readable via the
-    // processed-log helper. If this fails, the test isn't actually exercising
-    // the dedup path — it's a setup error.
-    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", editPayload.data.guid)).toBe(true)
+    const capture = await makeStoredSemanticCapture(editPayload)
+    mocks.semanticCaptures.set(capture.keyHash, capture)
+    mocks.semanticHandled.set(capture.keyHash, {
+      schemaVersion: 1,
+      canonicalKey: capture.canonicalKey,
+      keyHash: capture.keyHash,
+      handledAt: "2026-07-30T18:01:00.000Z",
+      outcome: "edit_capture_only",
+      detailCode: null,
+    })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(editPayload)
 
-    // Verify the early dedup check fired by looking for its nerves event.
-    // If this assertion fails, my pre-repair dedup isn't running.
-    const dedupCalls = mocks.emitNervesEvent.mock.calls.filter(
-      (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_repair_skipped_duplicate",
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ canonicalKey: capture.canonicalKey, keyHash: capture.keyHash }),
     )
-    expect(dedupCalls.length).toBe(1)
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(result.handled).toBe(true)
   })
 
@@ -5012,10 +5414,9 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(invocationCount).toBe(1)
     expect(results.some((result) => result.reason === "already_processed")).toBe(true)
-    const duplicateEvents = mocks.emitNervesEvent.mock.calls.filter(
-      (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_repair_skipped_duplicate",
-    )
-    expect(duplicateEvents.some((call: unknown[]) => (call[0] as { meta?: { dedupeReason?: string } })?.meta?.dedupeReason === "in_flight")).toBe(true)
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledTimes(2)
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(2)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
   })
 
   it("does not repair the same webhook message guid twice when duplicate deliveries race before hydrate finishes", async () => {
@@ -5049,13 +5450,12 @@ describe("BlueBubbles sense runtime", () => {
     expect(repairCount).toBe(1)
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
     expect(results.some((result) => result.reason === "already_processed")).toBe(true)
-    const duplicateEvents = mocks.emitNervesEvent.mock.calls.filter(
-      (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_repair_skipped_duplicate",
-    )
-    expect(duplicateEvents.some((call: unknown[]) => (call[0] as { meta?: { dedupeReason?: string } })?.meta?.dedupeReason === "in_flight")).toBe(true)
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledTimes(2)
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(2)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
   })
 
-  it("releases a webhook preclaim when repair discovers the message was already processed", async () => {
+  it("does not let a legacy processed row appearing during repair become semantic authority", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -5072,60 +5472,39 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
 
-    expect(result).toEqual({
+    expect(result).toEqual(expect.objectContaining({
       handled: true,
-      notifiedAgent: false,
+      notifiedAgent: true,
       kind: "message",
-      reason: "already_processed",
-    })
-    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
-    const processedSkips = mocks.emitNervesEvent.mock.calls.filter(
-      (call: unknown[]) => (call[0] as { event?: string; meta?: { dedupeReason?: string } })?.event === "senses.bluebubbles_recovery_skip"
-        && (call[0] as { meta?: { dedupeReason?: string } })?.meta?.dedupeReason === "processed",
-    )
-    expect(processedSkips.length).toBe(1)
+    }))
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
+    expect(mocks.releaseSemanticClaim).toHaveBeenCalledTimes(1)
   })
 
-  it("recovers captured-but-unprocessed inbound sidecars from the audit log itself", async () => {
+  it("recovers captured-but-unhandled v1 semantic messages", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
-
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-recovery-guid",
-      timestamp: Date.parse("2026-04-24T23:20:14.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    const capture = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "captured-recovery-guid",
+        text: "captured recovery",
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "captured recovery",
-      textForAgent: "captured recovery",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValue([capture])
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
     expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
-    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "captured-recovery-guid")).toBe(true)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_completed" }),
+    )
   })
 
   it("runs queued captured recovery shortly after startup without running inside runtime sync", async () => {
@@ -5134,33 +5513,15 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "delayed-captured-recovery-guid",
-      timestamp: Date.parse("2026-04-24T23:20:14.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    const capture = await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "delayed-captured-recovery-guid",
+        text: "delayed captured recovery",
+        dateCreated: Date.parse("2026-04-24T23:20:14.289Z"),
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "delayed captured recovery",
-      textForAgent: "delayed captured recovery",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    })
 
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -5180,8 +5541,10 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
-    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "delayed-captured-recovery-guid")).toBe(true)
+    expect(mocks.semanticHandled.get(capture.keyHash)).toEqual(expect.objectContaining({
+      keyHash: capture.keyHash,
+      outcome: "message_completed",
+    }))
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
@@ -5194,7 +5557,7 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
-  it("recovers guidless captured sidecars without crashing the in-flight dedupe guards", async () => {
+  it("keeps guidless pre-v1 captured sidecars audit-only instead of fabricating event identity", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -5215,86 +5578,41 @@ describe("BlueBubbles sense runtime", () => {
       })}\n`,
       "utf-8",
     )
-    mocks.repairEvent.mockImplementation(async (event: any) => ({
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: event.messageGuid,
-      timestamp: event.timestamp,
-      fromMe: false,
-      sender: event.sender,
-      chat: event.chat,
-      text: event.textForAgent,
-      textForAgent: event.textForAgent,
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }))
-
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
-    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_legacy_recovery_blocked",
+      meta: expect.objectContaining({ actorPresent: false }),
+    }))
   })
 
-  it("replays multiple captured inbound entries in recorded timestamp order", async () => {
+  it("replays multiple v1 semantic captures in captured timestamp order", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-newer-guid",
-      timestamp: Date.parse("2026-04-24T23:25:14.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    const newer = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "captured-newer-guid",
+        text: "newer captured message",
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
+    }, { capturedAt: "2026-07-30T18:01:00.000Z" })
+    const older = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "captured-older-guid",
+        text: "older captured message",
       },
-      text: "newer captured message",
-      textForAgent: "newer captured message",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-older-guid",
-      timestamp: Date.parse("2026-04-24T23:24:14.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "older captured message",
-      textForAgent: "older captured message",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    }, { capturedAt: "2026-07-30T18:00:00.000Z" })
+    mocks.listPendingSemanticCaptures.mockReturnValue([newer, older])
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
@@ -5308,78 +5626,25 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("filters duplicate captured inbound GUIDs before repairing the remaining unique entries", async () => {
+  it("settles duplicate v1 capture rows by semantic identity before repairing the remaining unique entry", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
-    fs.mkdirSync(path.dirname(logPath), { recursive: true })
-    fs.writeFileSync(
-      logPath,
-      [
-        JSON.stringify({
-          recordedAt: "2026-04-24T23:24:14.289Z",
-          messageGuid: "captured-duplicate-guid",
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
-          sessionKey: "chat:any;-;ari@mendelow.me",
-          textForAgent: "first copy",
-          source: "webhook",
-        }),
-        JSON.stringify({
-          recordedAt: "2026-04-24T23:24:15.289Z",
-          messageGuid: "captured-duplicate-guid",
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
-          sessionKey: "chat:any;-;ari@mendelow.me",
-          textForAgent: "second copy",
-          source: "webhook",
-        }),
-        JSON.stringify({
-          recordedAt: "2026-04-24T23:24:16.289Z",
-          messageGuid: "captured-unique-guid",
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
-          sessionKey: "chat:any;-;ari@mendelow.me",
-          textForAgent: "unique copy",
-          source: "webhook",
-        }),
-      ].join("\n") + "\n",
-      "utf-8",
-    )
-    mocks.repairEvent.mockImplementation(async (event: any) => ({
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: event.messageGuid,
-      timestamp: Date.parse(event.timestamp ?? "2026-04-24T23:24:14.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: event.messageGuid,
-      textForAgent: event.messageGuid,
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }))
+    const duplicate = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-duplicate-guid", text: "first copy" },
+    })
+    const unique = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-unique-guid", text: "unique copy" },
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValue([duplicate, duplicate, unique])
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 2, skipped: 0, failed: 0 })
+    expect(result).toEqual({ recovered: 2, skipped: 1, failed: 0 })
     expect(mocks.repairEvent).toHaveBeenCalledTimes(2)
     expect(mocks.repairEvent.mock.calls.map((call) => call[0]?.messageGuid)).toEqual([
       "captured-duplicate-guid",
@@ -5387,7 +5652,7 @@ describe("BlueBubbles sense runtime", () => {
     ])
   })
 
-  it("repairs session-key-only captured entries with fallback chat metadata and invalid recordedAt ordering", async () => {
+  it("keeps session-key-only pre-v1 captures audit-only instead of reconstructing chat metadata", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -5433,28 +5698,13 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 2, skipped: 0, failed: 0 })
-    expect(mocks.repairEvent.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      messageGuid: "captured-group-fallback-guid",
-      chat: expect.objectContaining({
-        chatGuid: "any;+;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: true,
-        sendTarget: { kind: "chat_guid", value: "any;+;ari@mendelow.me" },
-      }),
-    }))
-    expect(mocks.repairEvent.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-      messageGuid: "captured-chat-identifier-guid",
-      chat: expect.objectContaining({
-        chatGuid: undefined,
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sendTarget: { kind: "chat_identifier", value: "ari@mendelow.me" },
-      }),
-    }))
+    expect(result).toEqual({ recovered: 0, skipped: 2, failed: 0 })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
   })
 
-  it("falls back to unknown chat metadata when a captured inbound record only has an opaque session key", async () => {
+  it("keeps opaque-session pre-v1 captures audit-only instead of fabricating unknown actors", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -5491,24 +5741,13 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
-    expect(mocks.repairEvent.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      messageGuid: "captured-unknown-session-guid",
-      chat: expect.objectContaining({
-        chatGuid: undefined,
-        chatIdentifier: "unknown",
-        isGroup: false,
-        sessionKey: "mystery-session",
-        sendTarget: { kind: "chat_identifier", value: "unknown" },
-      }),
-      sender: expect.objectContaining({
-        externalId: "unknown",
-        displayName: "unknown",
-      }),
-    }))
+    expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
   })
 
-  it("keeps captured inbound recovery stable when every recordedAt value is invalid", async () => {
+  it("keeps invalid-timestamp pre-v1 captures audit-only without attempting recovery", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -5558,49 +5797,30 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 2, skipped: 0, failed: 0 })
-    expect(mocks.repairEvent.mock.calls.map((call) => call[0]?.messageGuid)).toEqual([
-      "captured-invalid-order-first",
-      "captured-invalid-order-second",
-    ])
+    expect(result).toEqual({ recovered: 0, skipped: 2, failed: 0 })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
   })
 
-  it("skips captured inbound entries that are already marked processed before recovery starts", async () => {
+  it("skips v1 semantic captures that are already handled before recovery starts", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const capturedEvent = {
-      kind: "message" as const,
-      eventType: "new-message",
-      messageGuid: "captured-preprocessed-guid",
-      timestamp: Date.parse("2026-04-24T23:20:44.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle" as const,
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "already handled",
-      textForAgent: "already handled",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }
-
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", capturedEvent, "webhook")
-    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    recordProcessedBlueBubblesMessage("testagent", capturedEvent, "webhook", "turn-complete")
+    const capture = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-preprocessed-guid", text: "already handled" },
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValue([capture])
+    mocks.semanticHandled.set(capture.keyHash, {
+      schemaVersion: 1,
+      canonicalKey: capture.canonicalKey,
+      keyHash: capture.keyHash,
+      handledAt: "2026-07-30T18:01:00.000Z",
+      outcome: "message_completed",
+      detailCode: null,
+    })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
@@ -5610,38 +5830,15 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
-  it("skips captured inbound recovery when repair resolves to a non-message event", async () => {
+  it("settles a v1 message capture when repair resolves it to an audit-only event", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-mutation-guid",
-      timestamp: Date.parse("2026-04-24T23:20:59.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "turns into mutation",
-      textForAgent: "turns into mutation",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    const capture = await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-mutation-guid", text: "turns into mutation" },
+    })
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "mutation",
       eventType: "updated-message",
@@ -5673,77 +5870,39 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
     expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "delivery_audit_only" }),
+    )
   })
 
-  it("treats captured recovery races as skipped when another worker processes the message first", async () => {
+  it("treats an already-handled semantic claim race as skipped before repair", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-race-guid",
-      timestamp: Date.parse("2026-04-24T23:21:14.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    const capture = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-race-guid", text: "captured race" },
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValue([capture])
+    mocks.acquireSemanticClaim.mockResolvedValueOnce({
+      status: "already_handled",
+      record: {
+        schemaVersion: 1,
+        canonicalKey: capture.canonicalKey,
+        keyHash: capture.keyHash,
+        handledAt: "2026-07-30T18:01:00.000Z",
+        outcome: "message_completed",
+        detailCode: null,
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "captured race",
-      textForAgent: "captured race",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
-
-    mocks.repairEvent.mockImplementationOnce(async () => {
-      const repairedEvent = {
-        kind: "message" as const,
-        eventType: "new-message",
-        messageGuid: "captured-race-guid",
-        timestamp: Date.parse("2026-04-24T23:21:14.289Z"),
-        fromMe: false,
-        sender: {
-          provider: "imessage-handle" as const,
-          externalId: "ari@mendelow.me",
-          rawId: "ari@mendelow.me",
-          displayName: "ari@mendelow.me",
-        },
-        chat: {
-          chatGuid: "any;-;ari@mendelow.me",
-          chatIdentifier: "ari@mendelow.me",
-          isGroup: false,
-          sessionKey: "chat:any;-;ari@mendelow.me",
-          sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
-          participantHandles: [],
-        },
-        text: "captured race",
-        textForAgent: "captured race",
-        attachments: [],
-        hasPayloadData: false,
-        requiresRepair: false,
-      }
-      const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-      recordProcessedBlueBubblesMessage("testagent", repairedEvent, "mutation-recovery", "turn-complete")
-      return repairedEvent
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
     expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
@@ -5752,33 +5911,10 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-failure-guid",
-      timestamp: Date.parse("2026-04-24T23:22:14.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "captured failure",
-      textForAgent: "captured failure",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-failure-guid", text: "captured failure" },
+    })
     mocks.repairEvent.mockRejectedValueOnce("capture recovery string failure")
 
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -5802,33 +5938,10 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-timeout-guid",
-      timestamp: Date.parse("2026-04-24T23:22:29.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "captured timeout",
-      textForAgent: "captured timeout",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    const capture = await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-timeout-guid", text: "captured timeout" },
+    })
     mocks.handleInboundTurn.mockImplementationOnce(() => new Promise(() => undefined))
 
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -5852,6 +5965,7 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(result).toEqual({ recovered: 0, skipped: 0, failed: 1 })
     expect(timeoutTurnCalls()[0]?.[0]?.signal.aborted).toBe(true)
+    expect(mocks.semanticHandled.has(capture.keyHash)).toBe(false)
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "captured-timeout-guid")).toBe(false)
     const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
@@ -5885,11 +5999,14 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", makeCatchUpMessage({
-      messageGuid: "queued-health-ok-guid",
-      textForAgent: "queued recovery should update runtime state",
-    }), "webhook")
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "queued-health-ok-guid",
+        text: "queued recovery should update runtime state",
+      },
+    })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverQueuedBlueBubblesMessages()
@@ -5910,7 +6027,6 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     const { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
     writeBlueBubblesRuntimeState("testagent", {
       upstreamStatus: "error",
@@ -5918,104 +6034,17 @@ describe("BlueBubbles sense runtime", () => {
       pendingRecoveryCount: 1,
       lastRecoveredAt: "2026-04-24T22:00:00.000Z",
     })
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "queued-still-pending-guid",
-      timestamp: Date.parse("2026-04-24T23:23:39.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "delivery update still needs hydration",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "queued-still-pending-guid", text: "first pending" },
     })
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "queued-still-pending-guid-2",
-      timestamp: Date.parse("2026-04-24T23:23:40.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "second delivery update still needs hydration",
-      requiresRepair: false,
-    })
-    mocks.repairEvent.mockResolvedValueOnce({
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "queued-still-pending-guid",
-      timestamp: Date.parse("2026-04-24T23:23:39.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "delivery update still needs hydration",
-      requiresRepair: false,
-    }).mockResolvedValueOnce({
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "queued-still-pending-guid-2",
-      timestamp: Date.parse("2026-04-24T23:23:40.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "second delivery update still needs hydration",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "queued-still-pending-guid-2", text: "second pending" },
+    }, { capturedAt: "2026-07-30T18:01:00.000Z" })
+    mocks.acquireSemanticClaim.mockResolvedValue({
+      status: "timeout",
+      code: "semantic_claim_timeout",
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -6033,37 +6062,28 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("does not rerun queued recovery for mutation GUIDs already processed under a repaired session key", async () => {
+  it("does not rerun queued recovery for an already-handled semantic capture", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const canonical = makeCatchUpMessage({
-      messageGuid: "already-repaired-queued-guid",
-      textForAgent: "already recovered under canonical session",
-    })
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: canonical.messageGuid,
-      timestamp: Date.parse("2026-04-24T23:23:41.289Z"),
-      fromMe: false,
-      sender: canonical.sender,
-      chat: {
-        ...canonical.chat,
-        chatGuid: undefined,
-        chatIdentifier: "unknown",
-        sessionKey: "chat_identifier:unknown",
-        sendTarget: { kind: "chat_identifier", value: "unknown" },
+    const capture = await makeStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "already-repaired-queued-guid",
+        text: "already recovered under canonical identity",
       },
-      shouldNotifyAgent: false,
-      textForAgent: canonical.textForAgent,
-      requiresRepair: false,
     })
-    recordProcessedBlueBubblesMessage("testagent", canonical, "webhook", "turn-complete")
+    mocks.semanticCaptures.set(capture.keyHash, capture)
+    mocks.semanticHandled.set(capture.keyHash, {
+      schemaVersion: 1,
+      canonicalKey: capture.canonicalKey,
+      keyHash: capture.keyHash,
+      handledAt: "2026-07-30T18:01:00.000Z",
+      outcome: "message_completed",
+      detailCode: null,
+    })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverQueuedBlueBubblesMessages()
@@ -6078,33 +6098,10 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "queued-health-error-guid",
-      timestamp: Date.parse("2026-04-24T23:22:39.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "queued health error",
-      textForAgent: "queued health error",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "queued-health-error-guid", text: "queued health error" },
+    })
     mocks.checkHealth.mockRejectedValueOnce(new Error("upstream folded after recovery"))
 
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -6125,7 +6122,6 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
     const { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
     writeBlueBubblesRuntimeState("testagent", {
       upstreamStatus: "error",
@@ -6133,55 +6129,17 @@ describe("BlueBubbles sense runtime", () => {
       pendingRecoveryCount: 1,
       lastRecoveredAt: "2026-04-24T21:00:00.000Z",
     })
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "queued-error-still-pending-guid",
-      timestamp: Date.parse("2026-04-24T23:24:39.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "queued-error-still-pending-guid",
+        text: "still pending after health failure",
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "delivery update still needs hydration",
-      requiresRepair: false,
     })
-    mocks.repairEvent.mockResolvedValueOnce({
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "queued-error-still-pending-guid",
-      timestamp: Date.parse("2026-04-24T23:24:39.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "delivery update still needs hydration",
-      requiresRepair: false,
+    mocks.acquireSemanticClaim.mockResolvedValue({
+      status: "timeout",
+      code: "semantic_claim_timeout",
     })
     mocks.checkHealth.mockRejectedValueOnce("upstream string failure after pending recovery")
 
@@ -6203,33 +6161,10 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-error-guid",
-      timestamp: Date.parse("2026-04-24T23:22:44.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "captured error",
-      textForAgent: "captured error",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "captured-error-guid", text: "captured error" },
+    })
     mocks.repairEvent.mockRejectedValueOnce(new Error("capture recovery exploded"))
 
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -6252,33 +6187,14 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    recordBlueBubblesInbound("testagent", {
-      kind: "message",
-      eventType: "new-message",
-      messageGuid: "captured-deleted-cwd-guid",
-      timestamp: Date.parse("2026-04-24T23:22:44.289Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "captured-deleted-cwd-guid",
+        text: "captured after cwd vanished",
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      text: "captured after cwd vanished",
-      textForAgent: "captured after cwd vanished",
-      attachments: [],
-      hasPayloadData: false,
-      requiresRepair: false,
-    }, "webhook")
+    })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
 
@@ -6340,7 +6256,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(started).toBe(2)
   })
 
-  it("bootstraps skipped recovery candidates into the inbound sidecar when the session already has the message text", async () => {
+  it("settles a v1 recovery capture when the session already contains the message text", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -6352,31 +6268,13 @@ describe("BlueBubbles sense runtime", () => {
       ],
     })
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "session-already-has-message",
-      timestamp: Date.parse("2026-03-11T18:20:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
+    const capture = await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "session-already-has-message",
+        text: "you already saw this",
       },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as delivered",
-      requiresRepair: false,
     })
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "message",
@@ -6406,15 +6304,14 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, pending: 0, failed: 0 }))
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
     expect(mocks.runAgent).not.toHaveBeenCalled()
-
-    const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    expect(hasRecordedBlueBubblesInbound("testagent", "chat:any;-;ari@mendelow.me", "session-already-has-message")).toBe(true)
-    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "session-already-has-message")).toBe(true)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_observed" }),
+    )
   })
 
   it("records pending recovery backlog even when the BlueBubbles upstream is reachable", async () => {
@@ -6422,31 +6319,9 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "pending-runtime-sync",
-      timestamp: Date.parse("2026-03-11T18:21:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as delivered",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "pending-runtime-sync", text: "pending runtime sync" },
     })
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -6475,31 +6350,9 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "slow-recovery-runtime-sync",
-      timestamp: Date.parse("2026-03-11T18:21:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as delivered",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "slow-recovery-runtime-sync", text: "slow recovery" },
     })
     const listRecentMessages = createDeferred<any[]>()
     mocks.listRecentMessages.mockReturnValueOnce(listRecentMessages.promise)
@@ -6531,31 +6384,9 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "read",
-      messageGuid: "failed-runtime-sync",
-      timestamp: Date.parse("2026-03-11T18:22:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as read",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "failed-runtime-sync", text: "failed runtime sync" },
     })
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -6584,31 +6415,9 @@ describe("BlueBubbles sense runtime", () => {
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "delivery",
-      messageGuid: "recovered-runtime-sync",
-      timestamp: Date.parse("2026-03-11T18:23:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as delivered",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "recovered-runtime-sync", text: "queued runtime sync" },
     })
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -6665,13 +6474,13 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
 
-    const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
-    const logPath = getBlueBubblesInboundLogPath("testagent", "chat:any;-;ari@mendelow.me")
-    const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n")
-    expect(JSON.parse(lines[0] ?? "{}")).toEqual(expect.objectContaining({
-      messageGuid: "runtime-catchup-guid",
-      source: "upstream-catchup",
-    }))
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        schemaVersion: 1,
+        event: expect.objectContaining({ eventGuid: "runtime-catchup-guid" }),
+      }),
+    )
   })
 
   it("stringifies non-Error runtime sync failures when the upstream health probe rejects with a bare value", async () => {
@@ -6698,46 +6507,24 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("stringifies non-Error backlog recovery failures in nerves metadata", async () => {
+  it("stringifies non-Error v1 semantic recovery failures in nerves metadata", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
 
-    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
-    recordBlueBubblesMutation("testagent", {
-      kind: "mutation",
-      eventType: "updated-message",
-      mutationType: "read",
-      messageGuid: "string-recovery-failure",
-      timestamp: Date.parse("2026-03-11T18:24:00.000Z"),
-      fromMe: false,
-      sender: {
-        provider: "imessage-handle",
-        externalId: "ari@mendelow.me",
-        rawId: "ari@mendelow.me",
-        displayName: "ari@mendelow.me",
-      },
-      chat: {
-        chatGuid: "any;-;ari@mendelow.me",
-        chatIdentifier: "ari@mendelow.me",
-        isGroup: false,
-        sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
-        participantHandles: [],
-      },
-      shouldNotifyAgent: false,
-      textForAgent: "message marked as read",
-      requiresRepair: false,
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "string-recovery-failure", text: "string failure" },
     })
     mocks.repairEvent.mockRejectedValueOnce("string repair failure")
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    const result = await bluebubbles.recoverMissedBlueBubblesMessages()
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
     expect(result).toEqual(expect.objectContaining({ failed: 1 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: "senses.bluebubbles_recovery_error",
+        event: "senses.bluebubbles_capture_recovery_error",
         meta: expect.objectContaining({
           messageGuid: "string-recovery-failure",
           reason: "string repair failure",
