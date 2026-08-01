@@ -28,10 +28,7 @@ import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
 import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
 import {
-  BACKGROUND_ONLY_INSTRUCTION,
-  EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION,
   buildOrientationFrame,
-  priorWorkInstruction,
   renderOrientationFrame,
   type OrientationFrame,
 } from "./orientation-frame";
@@ -884,54 +881,23 @@ function upsertSystemPrompt(
   }
 }
 
-const CURRENT_TRIGGER_HEADING = "## Current trigger (authoritative)";
-const FALLBACK_ORIENTATION_HEADINGS = new Set([
-  CURRENT_TRIGGER_HEADING,
-  "## orientation frame",
-]);
-
-function isFallbackPromptSectionBoundary(line: string): boolean {
-  return line.startsWith("# ")
-    || line.startsWith("## ")
-    || /^\*\*[^*]+:\*\*(?:\s.*)?$/.test(line);
-}
+const GENERATED_DYNAMIC_STATE_HEADING = "# dynamic state for this turn";
 
 /**
- * A prompt refresh failure must not turn the previous turn's trigger back into
- * authority. Preserve the usable prompt around it, remove every stale trigger
- * section, normalise prior-work labels to the current structured resume flag,
- * and put the freshly derived trigger first.
+ * A prompt refresh failure must not revive action-looking state from an older
+ * turn or release. Preserve only the known generated prefix before the dynamic
+ * state boundary. Prompts without that boundary are not safe to reconstruct,
+ * so fail closed to the minimal base and put the freshly derived trigger first.
  */
 function repairFallbackSystemPrompt(
   existingSystemText: string | undefined,
   orientationFrame: OrientationFrame,
-  resumePriorWork: boolean,
 ): string {
-  const fallbackBase = existingSystemText ?? "You are a helpful assistant.";
-  const retainedLines: string[] = [];
-  let skippingCurrentTrigger = false;
-
-  for (const line of fallbackBase.split("\n")) {
-    if (FALLBACK_ORIENTATION_HEADINGS.has(line)) {
-      skippingCurrentTrigger = true;
-      continue;
-    }
-    if (skippingCurrentTrigger) {
-      if (!isFallbackPromptSectionBoundary(line)) continue;
-      skippingCurrentTrigger = false;
-    }
-    retainedLines.push(line);
-  }
-
-  const currentPriorWorkInstruction = priorWorkInstruction(resumePriorWork);
-  const repairedBase = retainedLines
-    .map((line) => (
-      line === BACKGROUND_ONLY_INSTRUCTION || line === EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION
-        ? currentPriorWorkInstruction
-        : line
-    ))
-    .join("\n")
-    .trim();
+  const existingLines = existingSystemText?.split("\n");
+  const dynamicStateIndex = existingLines?.indexOf(GENERATED_DYNAMIC_STATE_HEADING) ?? -1;
+  const repairedBase = dynamicStateIndex > 0
+    ? existingLines!.slice(0, dynamicStateIndex).join("\n").trim()
+    : "You are a helpful assistant.";
 
   return `${renderOrientationFrame(orientationFrame)}\n\n${repairedBase}`;
 }
@@ -1151,8 +1117,8 @@ export async function runAgent(
     ?? (channel ? buildOrientationFrame({ channel, messages }) : undefined);
 
   // Refresh system prompt at start of each turn when channel is provided.
-  // If refresh fails, keep existing system prompt (or inject a minimal safe fallback)
-  // so turn execution remains consistent and non-fatal.
+  // If refresh fails, retain only a recognised stable prefix (or inject a
+  // minimal safe fallback) so stale dynamic state cannot regain authority.
   let structuredSystemPrompt: SystemPrompt | undefined;
   if (channel) {
     try {
@@ -1172,7 +1138,6 @@ export async function runAgent(
       const fallback = repairFallbackSystemPrompt(
         existingSystemText,
         turnOrientationFrame!,
-        options?.resumePriorWork === true,
       );
       upsertSystemPrompt(messages, fallback);
       emitNervesEvent({

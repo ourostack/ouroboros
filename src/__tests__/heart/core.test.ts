@@ -4547,7 +4547,7 @@ describe("runAgent", () => {
     expect(messages.some((m: any) => m.role === "user" && m.content === "hello from history")).toBe(true)
   })
 
-  it("repairs the current-trigger authority while preserving stable prompt content when refresh fails", async () => {
+  it("discards pre-upgrade dynamic prompt state while preserving stable content when refresh fails", async () => {
     vi.resetModules()
     mockCreate.mockReset()
     mockResponsesCreate.mockReset()
@@ -4575,8 +4575,14 @@ describe("runAgent", () => {
         {
           role: "system",
           content: [
-            "# stable fallback prompt",
-            "keep this durable instruction",
+            "# who i am",
+            "keep this durable identity",
+            "",
+            "# my tools & capabilities",
+            "keep this stable safety contract",
+            "",
+            "current date and time: 2026-07-30 11:09 PDT",
+            "my rhythms: wedding-rsvp-report",
             "",
             "# dynamic state for this turn",
             "",
@@ -4586,37 +4592,102 @@ describe("runAgent", () => {
             "current user speech:",
             "- stale legacy speech from before the upgrade",
             "",
-            "## Current trigger (authoritative)",
-            "channel: teams",
-            "action policy: normal",
-            "current user speech:",
-            "- stale speech from the prior turn",
-            "",
+            "## Arc resume",
             "**Next:**",
-            "Background only; do not execute.",
             "finish the earlier report",
             "",
-            "## active bridge work",
-            "Prior work explicitly resumed by the current trigger.",
+            "## live world-state",
+            "send the old RSVP update",
+            "",
+            "## live coding work",
             "publish the earlier report",
+            "",
+            "## where my attention is",
+            "i have unfinished work from before this turn",
+            "",
+            "## my commitments",
+            "- Ari: deliver the old report",
+            "",
+            "## active bridge work",
+            "resume the old task",
           ].join("\n"),
         },
         { role: "user", content: "fresh speech for this turn" },
       ]
 
-      await core.runAgent(messages, callbacks, "teams", undefined, { resumePriorWork: true })
+      await core.runAgent(messages, callbacks, "teams", undefined, { resumePriorWork: false })
 
       expect(messages[0].role).toBe("system")
-      expect(messages[0].content).toContain("# stable fallback prompt")
-      expect(messages[0].content).toContain("keep this durable instruction")
+      expect(messages[0].content).toContain("# who i am")
+      expect(messages[0].content).toContain("keep this durable identity")
+      expect(messages[0].content).toContain("# my tools & capabilities")
+      expect(messages[0].content).toContain("keep this stable safety contract")
       expect(messages[0].content.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
       expect(messages[0].content).toContain("- fresh speech for this turn")
-      expect(messages[0].content).not.toContain("stale speech from the prior turn")
+      expect(messages[0].content).not.toContain("# dynamic state for this turn")
       expect(messages[0].content).not.toContain("## orientation frame")
       expect(messages[0].content).not.toContain("stale legacy speech from before the upgrade")
-      expect(messages[0].content).not.toContain("Background only; do not execute.")
-      expect(messages[0].content.match(/Prior work explicitly resumed by the current trigger\./g)).toHaveLength(2)
+      expect(messages[0].content).not.toContain("## Arc resume")
+      expect(messages[0].content).not.toContain("finish the earlier report")
+      expect(messages[0].content).not.toContain("## live world-state")
+      expect(messages[0].content).not.toContain("send the old RSVP update")
+      expect(messages[0].content).not.toContain("## live coding work")
+      expect(messages[0].content).not.toContain("publish the earlier report")
+      expect(messages[0].content).not.toContain("## where my attention is")
+      expect(messages[0].content).not.toContain("i have unfinished work from before this turn")
+      expect(messages[0].content).not.toContain("## my commitments")
+      expect(messages[0].content).not.toContain("deliver the old report")
+      expect(messages[0].content).not.toContain("## active bridge work")
+      expect(messages[0].content).not.toContain("resume the old task")
       expect(messages.some((m: any) => m.role === "user" && m.content === "fresh speech for this turn")).toBe(true)
+      expect(mockCreate).toHaveBeenCalled()
+    } finally {
+      vi.doUnmock("../../mind/prompt")
+      vi.resetModules()
+    }
+  })
+
+  it("drops an unrecognized stale system prompt when refresh fails", async () => {
+    vi.resetModules()
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupMinimax()
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockRejectedValue(new Error("prompt refresh failed")),
+    }))
+
+    try {
+      const core = await import("../../heart/core")
+      mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+
+      const callbacks: ChannelCallbacks = {
+        onModelStart: () => {},
+        onModelStreamStart: () => {},
+        onTextChunk: () => {},
+        onReasoningChunk: () => {},
+        onToolStart: () => {},
+        onToolEnd: () => {},
+        onError: () => {},
+      }
+
+      const messages: any[] = [
+        {
+          role: "system",
+          content: "unrecognized stale prompt\n**Next:**\nresume the old work",
+        },
+        { role: "user", content: "handle only this request" },
+      ]
+
+      await core.runAgent(messages, callbacks, "teams")
+
+      expect(messages[0].role).toBe("system")
+      expect(messages[0].content).toContain("You are a helpful assistant.")
+      expect(messages[0].content.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
+      expect(messages[0].content).toContain("- handle only this request")
+      expect(messages[0].content).not.toContain("unrecognized stale prompt")
+      expect(messages[0].content).not.toContain("resume the old work")
+      expect(messages.some((m: any) => m.role === "user" && m.content === "handle only this request")).toBe(true)
       expect(mockCreate).toHaveBeenCalled()
     } finally {
       vi.doUnmock("../../mind/prompt")
