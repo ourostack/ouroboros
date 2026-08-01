@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.725",
       "changes": [
-        "Fix reaction orientation, grounded habit cancellation, send fencing, and streamed Unicode."
+        "Fix reaction orientation, grounded habit cancellation, send fencing, and streamed Unicode.",
+        "Harden actor authorization, semantic receipt quarantine, and ownership commit ordering."
       ]
     },
     {
