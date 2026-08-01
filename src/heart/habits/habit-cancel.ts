@@ -778,8 +778,8 @@ function classifyConcurrentSendBoundary(
   const candidates = listHabitLifecycleJournals({ agentRoot, habitId }, deps)
     .filter((journal) => journal.operationKind === "send"
       && journal.intentAt !== null
-      && journal.intentAt >= requestObservedAt
-      && journal.intentAt <= cancelledAt)
+      && journal.intentAt <= cancelledAt
+      && (journal.classifiedAt === null || journal.classifiedAt >= requestObservedAt))
   if (candidates.some((journal) => journal.state === "crossed")) return "crossed"
   if (candidates.some((journal) => (
     journal.state === "crossing_unknown" || journal.state === "send_intent"

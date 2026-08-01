@@ -212,16 +212,16 @@ async function leaveCancellationAtGeneration(
 async function seedSendJournal(
   agentRoot: string,
   boundaryState: HabitBoundaryState | null,
+  times: readonly [string, string, string] = [
+    "2026-07-01T12:02:00.000Z",
+    "2026-07-01T12:03:00.000Z",
+    "2026-07-01T12:04:00.000Z",
+  ],
 ): Promise<void> {
   const operation = buildHabitSendOperation({
     habitId: SYNTHETIC_HABIT_ID,
     outboundIdempotencyKey: `synthetic-${boundaryState ?? "unclassified"}`,
   })
-  const times = [
-    "2026-07-01T12:02:00.000Z",
-    "2026-07-01T12:03:00.000Z",
-    "2026-07-01T12:04:00.000Z",
-  ]
   let timeIndex = 0
   const deps: HabitLifecycleDeps = {
     ...lifecycleDeps(),
@@ -1860,6 +1860,56 @@ describe("atomic habit cancellation", () => {
       writeSyntheticHabitDefinition(agentRoot)
       const capture = writeSyntheticCaptureEvidence(agentRoot)
       await seedSendJournal(agentRoot, sendState)
+
+      const receipt = await cancelCapture(agentRoot, capture)
+
+      expect(receipt.transition.boundaryState).toBe(expectedBoundary)
+      expect(receipt.acknowledgement).toBe(renderHabitCancellationAcknowledgement(
+        SYNTHETIC_HABIT_ID,
+        SYNTHETIC_ACTOR,
+        expectedBoundary,
+      ))
+    },
+  )
+
+  it.each([
+    {
+      label: "still in flight after a pre-request intent",
+      sendState: null,
+      times: [
+        "2026-07-01T11:58:00.000Z",
+        "2026-07-01T11:59:00.000Z",
+        "2026-07-01T12:04:00.000Z",
+      ],
+      expectedBoundary: "crossing_unknown",
+    },
+    {
+      label: "definitively accepted after a pre-request intent",
+      sendState: "crossed",
+      times: [
+        "2026-07-01T11:58:00.000Z",
+        "2026-07-01T11:59:00.000Z",
+        "2026-07-01T12:04:00.000Z",
+      ],
+      expectedBoundary: "crossed",
+    },
+    {
+      label: "completed before the request",
+      sendState: "crossed",
+      times: [
+        "2026-07-01T11:56:00.000Z",
+        "2026-07-01T11:57:00.000Z",
+        "2026-07-01T11:59:00.000Z",
+      ],
+      expectedBoundary: "not_crossed",
+    },
+  ] as const)(
+    "classifies a send that $label as $expectedBoundary",
+    async ({ sendState, times, expectedBoundary }) => {
+      const agentRoot = temporaryAgentRoot()
+      writeSyntheticHabitDefinition(agentRoot)
+      const capture = writeSyntheticCaptureEvidence(agentRoot)
+      await seedSendJournal(agentRoot, sendState, times)
 
       const receipt = await cancelCapture(agentRoot, capture)
 
