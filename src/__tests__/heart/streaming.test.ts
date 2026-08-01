@@ -1157,10 +1157,10 @@ describe("SettleParser", () => {
     expect(result).toBe('line1\nline2\t\\end\\/quote"done')
   })
 
-  it("handles unknown escape (e.g. \\x) by passing through the character", () => {
+  it("rejects an unknown JSON escape instead of leaking its raw character", () => {
     const parser = new SettleParser()
-    const result = parser.process('{"answer":"test\\xvalue"}')
-    expect(result).toBe("testxvalue")
+    parser.process('{"answer":"test\\xvalue"}')
+    expect(parser.finish()).toEqual({ ok: false, errorCode: "invalid_settle_arguments" })
   })
 
   it("emits nothing before prefix \"answer\":\" is matched", () => {
@@ -1173,12 +1173,14 @@ describe("SettleParser", () => {
 
   it("emits incrementally across multiple process() calls (delta chunking)", () => {
     const parser = new SettleParser()
-    let out = ""
-    out += parser.process('{"ans')
-    out += parser.process('wer":"hel')
-    out += parser.process('lo wor')
-    out += parser.process('ld"}')
-    expect(out).toBe("hello world")
+    const chunks = [
+      parser.process('{"ans'),
+      parser.process('wer":"hel'),
+      parser.process('lo wor'),
+      parser.process('ld"}'),
+    ]
+    expect(chunks).toEqual(["", "hel", "lo wor", "ld"])
+    expect(chunks.join("")).toBe("hello world")
     expect(parser.active).toBe(true)
     expect(parser.complete).toBe(true)
   })
@@ -1246,6 +1248,178 @@ describe("SettleParser", () => {
     out += parser.process('{"answer":"hello\\')
     out += parser.process('nworld"}')
     expect(out).toBe("hello\nworld")
+  })
+
+  const validJsonStringCases: ReadonlyArray<{
+    label: string
+    json: string
+    answer: string
+    supplementaryPair?: boolean
+  }> = [
+    { label: "escaped quote", json: String.raw`{"answer":"say \"hello\""}`, answer: 'say "hello"' },
+    { label: "escaped backslash", json: String.raw`{"answer":"left\\right"}`, answer: "left\\right" },
+    { label: "escaped slash", json: String.raw`{"answer":"left\/right"}`, answer: "left/right" },
+    { label: "all escaped controls", json: String.raw`{"answer":"a\bb\fc\nd\re\tf"}`, answer: "a\bb\fc\nd\re\tf" },
+    { label: "BMP unicode escape", json: String.raw`{"answer":"got it \u2014 now"}`, answer: "got it — now" },
+    { label: "escaped supplementary pair", json: String.raw`{"answer":"hello \uD83E\uDD9D"}`, answer: "hello 🦝", supplementaryPair: true },
+    { label: "literal supplementary scalar", json: '{"answer":"hello 🦝"}', answer: "hello 🦝", supplementaryPair: true },
+    {
+      label: "escaped high plus literal low surrogate",
+      json: String.raw`{"answer":"mixed:\uD83E${"\uDD9D"}"}`,
+      answer: "mixed:🦝",
+      supplementaryPair: true,
+    },
+    {
+      label: "literal high plus escaped low surrogate",
+      json: String.raw`{"answer":"mixed:${"\uD83E"}\uDD9D"}`,
+      answer: "mixed:🦝",
+      supplementaryPair: true,
+    },
+    { label: "escaped lone high surrogate", json: String.raw`{"answer":"high:\uD800:end"}`, answer: "high:\uD800:end" },
+    { label: "escaped lone low surrogate", json: String.raw`{"answer":"low:\uDC00:end"}`, answer: "low:\uDC00:end" },
+    { label: "literal lone high surrogate", json: `{"answer":"high:${"\uD800"}:end"}`, answer: `high:${"\uD800"}:end` },
+    { label: "literal lone low surrogate", json: `{"answer":"low:${"\uDC00"}:end"}`, answer: `low:${"\uDC00"}:end` },
+    { label: "empty answer", json: '{"answer":""}', answer: "" },
+    { label: "answer after non-answer fields", json: '{"intent":"reply","count":2,"answer":"grounded"}', answer: "grounded" },
+    { label: "fields after answer", json: '{"answer":"first","intent":"reply"}', answer: "first" },
+    { label: "JSON whitespace around top-level answer", json: '{\n\t"answer"\t:\n"spaced"\n}\t ', answer: "spaced" },
+    { label: "nested answer before top-level answer", json: '{"meta":{"answer":"fake"},"answer":"real"}', answer: "real" },
+  ]
+
+  it.each(validJsonStringCases)("matches JSON.parse for $label at every UTF-16 split", ({ json, answer, supplementaryPair }) => {
+    expect((JSON.parse(json) as { answer: string }).answer).toBe(answer)
+    for (let split = 0; split <= json.length; split += 1) {
+      const parser = new SettleParser()
+      const chunks = [parser.process(json.slice(0, split)), parser.process(json.slice(split))]
+      expect(chunks.join(""), `split=${split}`).toBe(answer)
+      const terminal = parser.finish()
+      expect(terminal, `split=${split}`).toEqual({ ok: true, answer })
+      expect(parser.finish(), `repeat split=${split}`).toEqual(terminal)
+      if (supplementaryPair) {
+        expect(chunks.every((chunk) => !/[\uD800-\uDBFF]$/.test(chunk)), `split=${split}`).toBe(true)
+      }
+    }
+
+    const characterParser = new SettleParser()
+    const characterChunks = json.split("").flatMap((character) => {
+      const emitted = characterParser.process(character)
+      return emitted ? [emitted] : []
+    })
+    expect(characterChunks.join("")).toBe(answer)
+    const terminal = characterParser.finish()
+    expect(terminal).toEqual({ ok: true, answer })
+    expect(characterParser.finish()).toEqual(terminal)
+    if (supplementaryPair) {
+      expect(characterChunks.every((chunk) => !/[\uD800-\uDBFF]$/.test(chunk))).toBe(true)
+    }
+  })
+
+  it("decodes a split em dash escape without leaking raw u2014 text", () => {
+    const parser = new SettleParser()
+    const chunks = [
+      parser.process(String.raw`{"answer":"got it \u`),
+      parser.process("20"),
+      parser.process('14 now"}'),
+    ]
+    expect(chunks).toEqual(["got it ", "", "— now"])
+    expect(chunks.join("")).toBe("got it — now")
+    expect(chunks.join("")).not.toContain("u2014")
+    expect(parser.finish()).toEqual({ ok: true, answer: "got it — now" })
+  })
+
+  const terminalErrorCases = [
+    { label: "unknown escape", json: String.raw`{"answer":"bad\xvalue"}`, eagerOutput: "bad", errorCode: "invalid_settle_arguments" },
+    { label: "malformed unicode hex position 1", json: String.raw`{"answer":"bad\uG234"}`, eagerOutput: "bad", errorCode: "invalid_settle_arguments" },
+    { label: "malformed unicode hex position 2", json: String.raw`{"answer":"bad\u1G34"}`, eagerOutput: "bad", errorCode: "invalid_settle_arguments" },
+    { label: "malformed unicode hex position 3", json: String.raw`{"answer":"bad\u12G4"}`, eagerOutput: "bad", errorCode: "invalid_settle_arguments" },
+    { label: "malformed unicode hex position 4", json: String.raw`{"answer":"bad\u123G"}`, eagerOutput: "bad", errorCode: "invalid_settle_arguments" },
+    { label: "malformed escape after a high surrogate", json: String.raw`{"answer":"pair:\uD83E\x"}`, eagerOutput: "pair:", errorCode: "invalid_settle_arguments" },
+    { label: "trailing payload", json: '{"answer":"done"} trailing', eagerOutput: "done", errorCode: "invalid_settle_arguments" },
+    { label: "non-string answer", json: '{"answer":42}', eagerOutput: "", errorCode: "invalid_settle_arguments" },
+    { label: "non-answer fields only", json: '{"intent":"observe"}', eagerOutput: "", errorCode: "invalid_settle_arguments" },
+    { label: "empty arguments", json: "", eagerOutput: "", errorCode: "incomplete_settle_arguments" },
+    { label: "missing closing quote", json: '{"answer":"unfinished', eagerOutput: "unfinished", errorCode: "incomplete_settle_arguments" },
+    { label: "incomplete escape", json: '{"answer":"unfinished' + "\\", eagerOutput: "unfinished", errorCode: "incomplete_settle_arguments" },
+    { label: "incomplete unicode escape", json: String.raw`{"answer":"unfinished\u12`, eagerOutput: "unfinished", errorCode: "incomplete_settle_arguments" },
+    { label: "incomplete high surrogate", json: String.raw`{"answer":"pair:\uD83E`, eagerOutput: "pair:", errorCode: "incomplete_settle_arguments" },
+  ] as const
+
+  it.each(terminalErrorCases)("returns the exact terminal code for $label at every split", ({ json, eagerOutput, errorCode }) => {
+    for (let split = 0; split <= json.length; split += 1) {
+      const parser = new SettleParser()
+      const emitted = parser.process(json.slice(0, split)) + parser.process(json.slice(split))
+      expect(emitted, `split=${split}`).toBe(eagerOutput)
+      const terminal = parser.finish()
+      expect(terminal, `split=${split}`).toEqual({ ok: false, errorCode })
+      expect(parser.finish(), `repeat split=${split}`).toEqual(terminal)
+    }
+
+    const characterParser = new SettleParser()
+    const emitted = json.split("").map((character) => characterParser.process(character)).join("")
+    expect(emitted).toBe(eagerOutput)
+    const terminal = characterParser.finish()
+    expect(terminal).toEqual({ ok: false, errorCode })
+    expect(characterParser.finish()).toEqual(terminal)
+  })
+
+  it("recognizes an escaped top-level answer key without matching escaped text as a prefix", () => {
+    const parser = new SettleParser()
+    const json = String.raw`{"answ\u0065r":"decoded"}`
+    expect(parser.process(json)).toBe("decoded")
+    expect(parser.finish()).toEqual({ ok: true, answer: "decoded" })
+  })
+
+  it("supports nested arrays while rejecting a root array as settle arguments", () => {
+    const nested = new SettleParser()
+    expect(nested.process('{"meta":[{"answer":"fake"}],"answer":"real"}')).toBe("real")
+    expect(nested.finish()).toEqual({ ok: true, answer: "real" })
+
+    const root = new SettleParser()
+    expect(root.process('["answer","not a settle object"]')).toBe("")
+    expect(root.finish()).toEqual({ ok: false, errorCode: "invalid_settle_arguments" })
+  })
+
+  it.each([
+    { label: "invalid escape in a root key", json: String.raw`{"ans\qwer":"value"}`, eagerOutput: "" },
+    { label: "missing colon after answer key", json: '{"answer" "value"}', eagerOutput: "" },
+    { label: "mismatched nested closer", json: '{"meta":[}', eagerOutput: "" },
+    { label: "raw control character in answer", json: '{"answer":"safe\nunsafe"}', eagerOutput: "safe" },
+    { label: "duplicate answer changes parsed value", json: '{"answer":"first","answer":"second"}', eagerOutput: "first" },
+  ])("fails closed for $label", ({ json, eagerOutput }) => {
+    const parser = new SettleParser()
+    expect(parser.process(json)).toBe(eagerOutput)
+    expect(parser.finish()).toEqual({ ok: false, errorCode: "invalid_settle_arguments" })
+  })
+
+  it.each([
+    '{"intent":',
+    '{"intent":1',
+  ])("classifies truncated pre-answer JSON as incomplete: %s", (json) => {
+    const parser = new SettleParser()
+    expect(parser.process(json)).toBe("")
+    expect(parser.finish()).toEqual({ ok: false, errorCode: "incomplete_settle_arguments" })
+  })
+
+  it("freezes after finish so later deltas cannot rewrite terminal truth", () => {
+    const parser = new SettleParser()
+    expect(parser.process('{"answer":"final"}')).toBe("final")
+    expect(parser.finish()).toEqual({ ok: true, answer: "final" })
+    expect(parser.process(" trailing")).toBe("")
+    expect(parser.finish()).toEqual({ ok: true, answer: "final" })
+  })
+
+  it.each([
+    { label: "non-syntax parser failure", error: new Error("unexpected parser failure") },
+    { label: "syntax failure without a position", error: new SyntaxError("opaque parser failure") },
+  ])("fails closed for defensive $label", ({ error }) => {
+    const parser = new SettleParser()
+    parser.process("x")
+    const parse = vi.spyOn(JSON, "parse").mockImplementation(() => { throw error })
+    try {
+      expect(parser.finish()).toEqual({ ok: false, errorCode: "invalid_settle_arguments" })
+    } finally {
+      parse.mockRestore()
+    }
   })
 })
 

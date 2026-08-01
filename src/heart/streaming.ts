@@ -52,59 +52,293 @@ export interface TurnResult {
   settleStreamed?: boolean;
 }
 
-// Character-level state machine that extracts the answer value from
-// `settle` tool call JSON arguments as they stream in.
-// Scans for prefix `"answer":"` or `"answer": "` in the character stream,
-// then emits text handling JSON escapes, stopping at unescaped closing `"`.
+export type SettleParserErrorCode = "incomplete_settle_arguments" | "invalid_settle_arguments";
+
+export type SettleParserFinishResult =
+  | { ok: true; answer: string }
+  | { ok: false; errorCode: SettleParserErrorCode };
+
+type JsonContainer = "array" | "object";
+type AnswerKeyState = "none" | "after_key" | "after_colon";
+type AnswerDecodeState = "normal" | "escape" | "unicode";
+
+function isJsonWhitespace(character: string): boolean {
+  return character === " " || character === "\t" || character === "\n" || character === "\r";
+}
+
+function isHighSurrogate(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return code >= 0xD800 && code <= 0xDBFF;
+}
+
+function isLowSurrogate(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return code >= 0xDC00 && code <= 0xDFFF;
+}
+
+// Incremental JSON string decoder for the top-level `answer` property in
+// streamed settle arguments. JSON.parse remains the terminal authority; this
+// state machine exists only to emit validated string units before EOF.
 export class SettleParser {
-  // Possible prefixes to match (with and without space after colon)
-  private static readonly PREFIXES = ['"answer":"', '"answer": "'];
-  // Buffer of characters seen so far (pre-activation only)
-  private buf = "";
+  private rawArguments = "";
   private _active = false;
   private _complete = false;
-  private inEscape = false;
+  private invalid = false;
+  private terminalResult: SettleParserFinishResult | undefined;
+
+  private containers: JsonContainer[] = [];
+  private rootLastSignificant = "";
+  private scanInString = false;
+  private scanEscape = false;
+  private scanStringRaw = "";
+  private scanStringIsRootKey = false;
+  private answerKeyState: AnswerKeyState = "none";
+
+  private decodeState: AnswerDecodeState = "normal";
+  private unicodeDigits = "";
+  private pendingHighSurrogate = "";
+  private decodedAnswer = "";
 
   get active(): boolean { return this._active; }
   get complete(): boolean { return this._complete; }
 
   process(delta: string): string {
-    if (this._complete) return "";
+    if (this.terminalResult) return "";
+    this.rawArguments += delta;
+    if (this._complete || this.invalid) return "";
+
     let out = "";
     for (let i = 0; i < delta.length; i++) {
       const ch = delta[i];
-      if (!this._active) {
-        this.buf += ch;
-        // Check if any prefix has been fully matched in the buffer
-        for (const prefix of SettleParser.PREFIXES) {
-          if (this.buf.endsWith(prefix)) {
-            this._active = true;
-            break;
-          }
-        }
+      if (this._active) {
+        out += this.processAnswerCharacter(ch);
       } else {
-        // Active: emit characters, handling JSON escapes
-        if (this.inEscape) {
-          this.inEscape = false;
-          switch (ch) {
-            case '"': out += '"'; break;
-            case '\\': out += '\\'; break;
-            case 'n': out += '\n'; break;
-            case 't': out += '\t'; break;
-            case '/': out += '/'; break;
-            default: out += ch; break; // unknown escape: pass through character
-          }
-        } else if (ch === '\\') {
-          this.inEscape = true;
-        } else if (ch === '"') {
-          this._complete = true;
-          return out; // stop processing, closing quote found
-        } else {
-          out += ch;
-        }
+        this.scanForTopLevelAnswer(ch);
       }
+      if (this._complete || this.invalid) break;
     }
     return out;
+  }
+
+  finish(): SettleParserFinishResult {
+    if (this.terminalResult) return this.terminalResult;
+
+    if (this.invalid) {
+      return this.setTerminalFailure("invalid_settle_arguments");
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(this.rawArguments);
+    } catch (error) {
+      const errorCode = this.isIncompleteAtEof(error)
+        ? "incomplete_settle_arguments"
+        : "invalid_settle_arguments";
+      return this.setTerminalFailure(errorCode);
+    }
+
+    if (
+      typeof parsed !== "object"
+      || parsed === null
+      || Array.isArray(parsed)
+      || typeof (parsed as Record<string, unknown>).answer !== "string"
+      || !this._active
+      || !this._complete
+    ) {
+      return this.setTerminalFailure("invalid_settle_arguments");
+    }
+
+    const answer = (parsed as { answer: string }).answer;
+    if (answer !== this.decodedAnswer) {
+      return this.setTerminalFailure("invalid_settle_arguments");
+    }
+
+    this.terminalResult = { ok: true, answer };
+    return this.terminalResult;
+  }
+
+  private scanForTopLevelAnswer(character: string): void {
+    if (this.scanInString) {
+      if (this.scanEscape) {
+        this.scanStringRaw += character;
+        this.scanEscape = false;
+        return;
+      }
+      if (character === "\\") {
+        this.scanStringRaw += character;
+        this.scanEscape = true;
+        return;
+      }
+      if (character !== '"') {
+        this.scanStringRaw += character;
+        return;
+      }
+
+      this.scanInString = false;
+      this.rootLastSignificant = '"';
+      if (this.scanStringIsRootKey) {
+        try {
+          if (JSON.parse(`"${this.scanStringRaw}"`) === "answer") {
+            this.answerKeyState = "after_key";
+          }
+        } catch {
+          this.invalid = true;
+        }
+      }
+      this.scanStringRaw = "";
+      this.scanStringIsRootKey = false;
+      return;
+    }
+
+    if (this.answerKeyState === "after_key") {
+      if (isJsonWhitespace(character)) return;
+      if (character === ":") {
+        this.answerKeyState = "after_colon";
+        this.rootLastSignificant = character;
+        return;
+      }
+      this.invalid = true;
+      return;
+    }
+
+    if (this.answerKeyState === "after_colon") {
+      if (isJsonWhitespace(character)) return;
+      this.answerKeyState = "none";
+      if (character === '"') {
+        this._active = true;
+        this.rootLastSignificant = "value";
+        return;
+      }
+    }
+
+    if (isJsonWhitespace(character)) return;
+
+    const atRootObject = this.containers.length === 1 && this.containers[0] === "object";
+    if (character === '"') {
+      this.scanInString = true;
+      this.scanEscape = false;
+      this.scanStringRaw = "";
+      this.scanStringIsRootKey = atRootObject
+        && (this.rootLastSignificant === "{" || this.rootLastSignificant === ",");
+      return;
+    }
+
+    if (character === "{" || character === "[") {
+      if (atRootObject) this.rootLastSignificant = "value";
+      this.containers.push(character === "{" ? "object" : "array");
+      if (this.containers.length === 1 && character === "{") {
+        this.rootLastSignificant = character;
+      }
+      return;
+    }
+
+    if (character === "}" || character === "]") {
+      const expected = character === "}" ? "object" : "array";
+      if (this.containers.at(-1) !== expected) {
+        this.invalid = true;
+        return;
+      }
+      this.containers.pop();
+      if (this.containers.length === 1 && this.containers[0] === "object") {
+        this.rootLastSignificant = "value";
+      }
+      return;
+    }
+
+    if (atRootObject) this.rootLastSignificant = character;
+  }
+
+  private processAnswerCharacter(character: string): string {
+    if (this.decodeState === "unicode") {
+      if (!/^[0-9A-Fa-f]$/.test(character)) {
+        this.invalid = true;
+        return "";
+      }
+      this.unicodeDigits += character;
+      if (this.unicodeDigits.length < 4) return "";
+      const decoded = String.fromCharCode(Number.parseInt(this.unicodeDigits, 16));
+      this.unicodeDigits = "";
+      this.decodeState = "normal";
+      return this.appendDecodedUnit(decoded);
+    }
+
+    if (this.decodeState === "escape") {
+      this.decodeState = "normal";
+      switch (character) {
+        case '"': return this.appendDecodedUnit('"');
+        case "\\": return this.appendDecodedUnit("\\");
+        case "/": return this.appendDecodedUnit("/");
+        case "b": return this.appendDecodedUnit("\b");
+        case "f": return this.appendDecodedUnit("\f");
+        case "n": return this.appendDecodedUnit("\n");
+        case "r": return this.appendDecodedUnit("\r");
+        case "t": return this.appendDecodedUnit("\t");
+        case "u":
+          this.decodeState = "unicode";
+          return "";
+        default:
+          this.invalid = true;
+          return "";
+      }
+    }
+
+    if (character === "\\") {
+      this.decodeState = "escape";
+      return "";
+    }
+    if (character === '"') {
+      const trailing = this.flushPendingHighSurrogate();
+      this._complete = true;
+      return trailing;
+    }
+    if (character.charCodeAt(0) <= 0x1F) {
+      this.invalid = true;
+      return "";
+    }
+    return this.appendDecodedUnit(character);
+  }
+
+  private appendDecodedUnit(character: string): string {
+    let out = "";
+    if (this.pendingHighSurrogate) {
+      if (isLowSurrogate(character)) {
+        const pair = this.pendingHighSurrogate + character;
+        this.pendingHighSurrogate = "";
+        this.decodedAnswer += pair;
+        return pair;
+      }
+      out = this.flushPendingHighSurrogate();
+    }
+
+    if (isHighSurrogate(character)) {
+      this.pendingHighSurrogate = character;
+      return out;
+    }
+
+    this.decodedAnswer += character;
+    return out + character;
+  }
+
+  private flushPendingHighSurrogate(): string {
+    if (!this.pendingHighSurrogate) return "";
+    const pending = this.pendingHighSurrogate;
+    this.pendingHighSurrogate = "";
+    this.decodedAnswer += pending;
+    return pending;
+  }
+
+  private isIncompleteAtEof(error: unknown): boolean {
+    if (this._active && !this._complete) return true;
+    if (this.rawArguments.length === 0) return true;
+    if (!(error instanceof SyntaxError)) return false;
+    if (/Unexpected end|Unterminated string/i.test(error.message)) return true;
+    const position = /position (\d+)/i.exec(error.message);
+    return position ? Number(position[1]) >= this.rawArguments.length : false;
+  }
+
+  private setTerminalFailure(errorCode: SettleParserErrorCode): SettleParserFinishResult {
+    this.terminalResult = { ok: false, errorCode };
+    return this.terminalResult;
   }
 }
 
