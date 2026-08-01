@@ -325,4 +325,32 @@ describe("BlueBubbles mutation log", () => {
       }),
     ])
   })
+
+  it("retains unknown mutation direction for audit but never treats it as recoverable inbound", async () => {
+    const {
+      getBlueBubblesMutationLogPath,
+      listBlueBubblesRecoveryCandidates,
+      listRecordedBlueBubblesMutations,
+    } = await import("../../../senses/bluebubbles/mutation-log")
+    const logPath = getBlueBubblesMutationLogPath("slugger", "chat:any;-;ari@mendelow.me")
+    fs.mkdirSync(path.dirname(logPath), { recursive: true })
+    fs.writeFileSync(logPath, `${JSON.stringify({
+      recordedAt: new Date(1).toISOString(),
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "unknown-direction-mutation",
+      targetMessageGuid: null,
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+      sessionKey: "chat:any;-;ari@mendelow.me",
+      shouldNotifyAgent: false,
+      textForAgent: "delivery direction unknown",
+      fromMe: null,
+    })}\n`, "utf-8")
+
+    expect(listRecordedBlueBubblesMutations("slugger")).toEqual([
+      expect.objectContaining({ messageGuid: "unknown-direction-mutation", fromMe: null }),
+    ])
+    expect(listBlueBubblesRecoveryCandidates("slugger")).toEqual([])
+  })
 })

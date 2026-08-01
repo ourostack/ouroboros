@@ -1064,6 +1064,10 @@ describe("BlueBubbles semantic identity and cutover", () => {
       ...base,
       event: { ...message, sender: { ...message.sender, observed: undefined } },
     })).toBeNull()
+    expect(buildBlueBubblesSemanticCapture({
+      ...base,
+      event: { ...message, fromMe: null } as unknown as typeof message,
+    })).toBeNull()
 
     expect(buildBlueBubblesSemanticCapture({
       ...base,
@@ -4355,6 +4359,15 @@ describe("BlueBubbles semantic store exhaustive boundaries", () => {
     ["from-me", (record: Record<string, unknown>) => ({
       ...record,
       event: { ...(record.event as Record<string, unknown>), fromMe: "false" },
+    })],
+    ["missing from-me", (record: Record<string, unknown>) => {
+      const event = { ...(record.event as Record<string, unknown>) }
+      delete event.fromMe
+      return { ...record, event }
+    }],
+    ["null from-me", (record: Record<string, unknown>) => ({
+      ...record,
+      event: { ...(record.event as Record<string, unknown>), fromMe: null },
     })],
     ["actor record", (record: Record<string, unknown>) => ({
       ...record,

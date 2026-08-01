@@ -535,6 +535,7 @@ export function buildBlueBubblesSemanticIdentity(
 export function buildBlueBubblesSemanticCapture(
   input: BlueBubblesSemanticCaptureInput,
 ): BlueBubblesSemanticCaptureV1 | null {
+  if (typeof input.event.fromMe !== "boolean") return null
   const providerNamespace = normalizeProviderNamespace(input.cutover.providerNamespace)
   const capturedAt = exactIsoMilliseconds(input.capturedAt)
   const sender = input.event.sender

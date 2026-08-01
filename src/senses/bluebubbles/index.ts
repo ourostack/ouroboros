@@ -1390,8 +1390,16 @@ async function shouldFilterAgentSelfHandle(
   return true
 }
 
-async function handleBlueBubblesNormalizedEvent(
+type BlueBubblesDirectionObservedEvent = BlueBubblesNormalizedEvent & { fromMe: boolean }
+
+function hasObservedBlueBubblesDirection(
   event: BlueBubblesNormalizedEvent,
+): event is BlueBubblesDirectionObservedEvent {
+  return typeof event.fromMe === "boolean"
+}
+
+async function handleBlueBubblesNormalizedEvent(
+  event: BlueBubblesDirectionObservedEvent,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
   options: CapturedBlueBubblesHandleOptions,
@@ -1882,7 +1890,7 @@ async function handleBlueBubblesNormalizedEvent(
 interface CapturedBlueBubblesSemanticEvent {
   status: "captured"
   capture: BlueBubblesSemanticCaptureV1
-  normalized: BlueBubblesNormalizedEvent
+  normalized: BlueBubblesDirectionObservedEvent
   writeResult: BlueBubblesSemanticCaptureWriteResult
   resolvedReactionTarget?: BlueBubblesReactionTarget
 }
@@ -1903,7 +1911,7 @@ function recordBlueBubblesAuditSidecar(
   resolvedDeps: RuntimeDeps,
 ): void {
   if (event.kind === "message") {
-    if (!event.fromMe) recordBlueBubblesInbound(agentName, event, source)
+    if (event.fromMe !== true) recordBlueBubblesInbound(agentName, event, source)
     return
   }
   try {
@@ -1933,45 +1941,61 @@ async function captureBlueBubblesSemanticEvent(
   source: BlueBubblesInboundSource,
 ): Promise<BlueBubblesSemanticCaptureResult> {
   const agentName = resolvedDeps.getAgentName()
+  if (!hasObservedBlueBubblesDirection(normalized)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_direction_unobserved",
+      message: "kept bluebubbles event audit-only because message direction was unobserved",
+      meta: {
+        messageGuid: normalized.messageGuid,
+        kind: normalized.kind,
+        source,
+      },
+    })
+    recordBlueBubblesAuditSidecar(agentName, normalized, source, resolvedDeps)
+    return { status: "audit_only", normalized }
+  }
+  const observed = normalized
   const cutover = initializeBlueBubblesSemanticCutover(agentName)
   let resolvedReactionTarget: BlueBubblesReactionTarget | undefined
   let targetAuthorship: IngressTargetAuthorship = null
   if (
-    normalized.kind === "mutation"
-    && normalized.mutationType === "reaction"
-    && normalized.targetMessageGuid
+    observed.kind === "mutation"
+    && observed.mutationType === "reaction"
+    && observed.targetMessageGuid
   ) {
     resolvedReactionTarget = await resolveReactionTarget(
       resolvedDeps.createClient(),
-      normalized.targetMessageGuid,
+      observed.targetMessageGuid,
     )
     targetAuthorship = reactionTargetAuthorship(resolvedReactionTarget)
   }
 
   let coordinateGeneration: number | undefined
   if (
-    normalized.kind === "mutation"
-    && normalized.mutationType === "reaction"
-    && normalized.reaction
-    && !normalized.revision
-    && !Number.isFinite(normalized.effectiveTimestamp)
-    && normalized.sender.observed === true
+    observed.kind === "mutation"
+    && observed.mutationType === "reaction"
+    && observed.reaction
+    && !observed.revision
+    && !Number.isFinite(observed.effectiveTimestamp)
+    && observed.sender.observed === true
   ) {
     const identity = buildBlueBubblesSemanticIdentity({
       providerNamespace: cutover.providerNamespace,
       kind: "reaction",
-      eventGuid: normalized.messageGuid,
-      targetGuid: normalized.targetMessageGuid,
-      actorExternalId: normalized.sender.externalId,
-      canonicalValue: normalized.reaction.canonicalValue,
-      canonicalAction: normalized.reaction.action,
+      eventGuid: observed.messageGuid,
+      targetGuid: observed.targetMessageGuid,
+      actorExternalId: observed.sender.externalId,
+      canonicalValue: observed.reaction.canonicalValue,
+      canonicalAction: observed.reaction.action,
       coordinateGeneration: 0,
     })
     if (identity?.coordinateKey && identity.coordinateHash) {
       const coordinate = await allocateBlueBubblesReactionCoordinate(agentName, {
         coordinateKey: identity.coordinateKey,
         coordinateHash: identity.coordinateHash,
-        canonicalAction: normalized.reaction.action,
+        canonicalAction: observed.reaction.action,
       })
       coordinateGeneration = coordinate.generation
     }
@@ -1980,25 +2004,25 @@ async function captureBlueBubblesSemanticEvent(
   const capture = buildBlueBubblesSemanticCapture({
     cutover,
     capturedAt: new Date().toISOString(),
-    event: normalized,
+    event: observed,
     targetAuthorship,
     coordinateGeneration,
   })
   if (!capture) {
-    classifyBlueBubblesRecoveryRecord(normalized, cutover)
-    recordBlueBubblesAuditSidecar(agentName, normalized, source, resolvedDeps)
-    return { status: "audit_only", normalized }
+    classifyBlueBubblesRecoveryRecord(observed, cutover)
+    recordBlueBubblesAuditSidecar(agentName, observed, source, resolvedDeps)
+    return { status: "audit_only", normalized: observed }
   }
 
   const writeResult = writeBlueBubblesSemanticCapture(agentName, capture)
   if (writeResult === "semantic_identity_collision") {
     throw new Error("semantic_capture_failed")
   }
-  recordBlueBubblesAuditSidecar(agentName, normalized, source, resolvedDeps)
+  recordBlueBubblesAuditSidecar(agentName, observed, source, resolvedDeps)
   return {
     status: "captured",
     capture,
-    normalized,
+    normalized: observed,
     writeResult,
     ...(resolvedReactionTarget ? { resolvedReactionTarget } : {}),
   }
@@ -2047,7 +2071,7 @@ function isAuditOnlySemanticCapture(capture: BlueBubblesSemanticCaptureV1): bool
 
 function semanticCaptureToNormalizedEvent(
   capture: BlueBubblesSemanticCaptureV1,
-): BlueBubblesNormalizedEvent | null {
+): BlueBubblesDirectionObservedEvent | null {
   const event = capture.event
   const messageGuid = event.eventGuid?.trim()
   const chat = semanticCaptureChat(capture)
@@ -2148,6 +2172,7 @@ interface CapturedReactionClassification {
 }
 
 type RestrictedBlueBubblesReactionEvent = BlueBubblesNormalizedMutation & {
+  fromMe: boolean
   mutationType: "reaction"
   reaction: NonNullable<BlueBubblesNormalizedMutation["reaction"]>
   targetMessageGuid: string
@@ -2410,7 +2435,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
       return result
     }
 
-    let handledEvent = captured.normalized
+    let handledEvent: BlueBubblesNormalizedEvent = captured.normalized
     let result: BlueBubblesHandleResult
     if (isAuditOnlySemanticCapture(captured.capture)) {
       result = {
@@ -2428,7 +2453,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
       ) {
         throw new Error("semantic_capture_routing_invalid")
       }
-      const identityGroundedRepaired: BlueBubblesNormalizedEvent = {
+      const identityGroundedRepaired: BlueBubblesDirectionObservedEvent = {
         ...repaired,
         fromMe: captured.normalized.fromMe,
         sender: captured.normalized.sender,

@@ -473,7 +473,7 @@ const fromMePayload = {
 function makeCatchUpMessage(overrides: Partial<{
   messageGuid: string
   timestamp: number
-  fromMe: boolean
+  fromMe: boolean | null
   text: string
   textForAgent: string
 }> = {}) {
@@ -483,7 +483,9 @@ function makeCatchUpMessage(overrides: Partial<{
     eventType: "new-message",
     messageGuid: overrides.messageGuid ?? "catchup-guid",
     timestamp: overrides.timestamp ?? Date.now(),
-    fromMe: overrides.fromMe ?? false,
+    fromMe: Object.prototype.hasOwnProperty.call(overrides, "fromMe")
+      ? overrides.fromMe ?? null
+      : false,
     sender: {
       provider: "imessage-handle" as const,
       externalId: "ari@mendelow.me",
@@ -531,6 +533,7 @@ const identifierOnlyPayload = {
       id: "+1 (973) 508-0289",
     },
     attachments: [],
+    isFromMe: false,
     chats: [
       {
         identifier: "+1 (973) 508-0289",
@@ -2473,6 +2476,73 @@ describe("BlueBubbles sense runtime", () => {
     expect(bluebubbles.getDiscoveredOwnHandles()).toEqual([])
   })
 
+  it.each([
+    ["missing", undefined],
+    ["malformed", "false"],
+  ])("keeps a trusted 1:1 peer with %s direction audit-only before cancellation authority exists", async (_label, isFromMe) => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const payload = {
+      ...dmThreadPayload,
+      data: {
+        ...dmThreadPayload.data,
+        guid: `DM-UNKNOWN-DIRECTION-${_label}`,
+        isFromMe,
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({
+      handled: true,
+      notifiedAgent: false,
+      reason: "ignored",
+    }))
+    expect(mocks.writeSemanticCapture).not.toHaveBeenCalled()
+    expect(mocks.semanticCaptures.size).toBe(0)
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_direction_unobserved",
+      meta: expect.objectContaining({
+        messageGuid: `DM-UNKNOWN-DIRECTION-${_label}`,
+        source: "webhook",
+      }),
+    }))
+
+    const { listRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    expect(listRecordedBlueBubblesInbound("testagent")).toEqual([
+      expect.objectContaining({
+        messageGuid: `DM-UNKNOWN-DIRECTION-${_label}`,
+        fromMe: null,
+        source: "webhook",
+      }),
+    ])
+  })
+
+  it("keeps a group message with unobserved direction audit-only before self-handle policy", async () => {
+    const payload = {
+      ...groupThreadPayload,
+      data: {
+        ...groupThreadPayload.data,
+        guid: "GROUP-UNKNOWN-DIRECTION",
+        isFromMe: null,
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({
+      handled: true,
+      notifiedAgent: false,
+      reason: "ignored",
+    }))
+    expect(mocks.writeSemanticCapture).not.toHaveBeenCalled()
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+  })
+
   it("discovers own handles from group-chat from-me echoes only", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent({
@@ -3290,6 +3360,34 @@ describe("BlueBubbles sense runtime", () => {
     await waitFor(() => mocks.emitNervesEvent.mock.calls.some(
       (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_from_me_ignored",
     ))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("acks a webhook with missing direction as audit-only without queuing a turn", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const { isFromMe: _omitted, ...data } = dmThreadPayload.data
+    const payload = {
+      ...dmThreadPayload,
+      data: { ...data, guid: "WEBHOOK-UNKNOWN-DIRECTION" },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const req = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", payload)
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(JSON.parse(res.getBody())).toEqual(expect.objectContaining({
+      handled: true,
+      notifiedAgent: false,
+      kind: "message",
+      queued: false,
+      reason: "ignored",
+    }))
+    expect(mocks.writeSemanticCapture).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
@@ -4474,6 +4572,44 @@ describe("BlueBubbles sense runtime", () => {
       failed: 0,
     }))
     expect(mocks.repairEvent).not.toHaveBeenCalled()
+  })
+
+  it("keeps catch-up messages with unobserved direction audit-only before recovery", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    mocks.listRecentMessages.mockResolvedValueOnce([
+      makeCatchUpMessage({
+        messageGuid: "catchup-unknown-direction",
+        timestamp: now - 1_000,
+        fromMe: null,
+      }),
+    ])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "down",
+      pendingRecoveryCount: 0,
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      inspected: 1,
+      recovered: 0,
+      skipped: 1,
+      failed: 0,
+    }))
+    expect(mocks.writeSemanticCapture).not.toHaveBeenCalled()
+    expect(mocks.acquireSemanticClaim).not.toHaveBeenCalled()
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_direction_unobserved",
+      meta: expect.objectContaining({
+        messageGuid: "catchup-unknown-direction",
+        source: "upstream-catchup",
+      }),
+    }))
   })
 
   it("does not let a captured-but-unhandled semantic record suppress catch-up recovery", async () => {

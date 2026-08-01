@@ -113,10 +113,26 @@ describe("BlueBubbles inbound log", () => {
     expect(JSON.parse(lines[0] ?? "{}")).toEqual(
       expect.objectContaining({
         messageGuid: "msg-1",
+        fromMe: false,
         source: "webhook",
       }),
     )
     expect(hasRecordedBlueBubblesInbound("slugger", messageEvent.chat.sessionKey, "msg-1")).toBe(true)
+  })
+
+  it("retains unobserved direction as null in the audit sidecar", async () => {
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    const logPath = recordBlueBubblesInbound("slugger", {
+      ...messageEvent,
+      messageGuid: "unknown-direction",
+      fromMe: null,
+    } as unknown as typeof messageEvent, "upstream-catchup")
+
+    expect(JSON.parse(fs.readFileSync(logPath, "utf-8").trim())).toEqual(expect.objectContaining({
+      messageGuid: "unknown-direction",
+      fromMe: null,
+      source: "upstream-catchup",
+    }))
   })
 
   it("keeps pre-v1 rows readable as raw audit without inventing an actor field", async () => {

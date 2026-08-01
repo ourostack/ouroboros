@@ -16,7 +16,7 @@ export interface BlueBubblesMutationLogEntry {
   sessionKey: string
   shouldNotifyAgent: boolean
   textForAgent: string
-  fromMe: boolean
+  fromMe: boolean | null
 }
 
 export function getBlueBubblesMutationLogPath(agentName: string, sessionKey: string): string {
@@ -111,7 +111,7 @@ export function listBlueBubblesRecoveryCandidates(agentName: string): BlueBubble
   const deduped = new Map<string, BlueBubblesMutationLogEntry>()
   for (const entry of readBlueBubblesMutationRows(agentName)) {
     if (
-      entry.fromMe
+      entry.fromMe !== false
       || entry.shouldNotifyAgent
       || (entry.mutationType !== "read" && entry.mutationType !== "delivery")
     ) {

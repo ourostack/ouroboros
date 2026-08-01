@@ -43,7 +43,8 @@ export type BlueBubblesNormalizedMessage = {
   eventType: string
   messageGuid: string
   timestamp: number
-  fromMe: boolean
+  /** Transport-observed direction; null means BlueBubbles omitted or malformed isFromMe. */
+  fromMe: boolean | null
   sender: BlueBubblesSenderRef
   chat: BlueBubblesChatRef
   text: string
@@ -92,7 +93,8 @@ export type BlueBubblesNormalizedMutation = {
   messageGuid: string
   targetMessageGuid?: string
   timestamp: number
-  fromMe: boolean
+  /** Transport-observed direction; null means BlueBubbles omitted or malformed isFromMe. */
+  fromMe: boolean | null
   sender: BlueBubblesSenderRef
   chat: BlueBubblesChatRef
   shouldNotifyAgent: boolean
@@ -465,7 +467,7 @@ export function normalizeBlueBubblesEvent(payload: unknown): BlueBubblesNormaliz
   const chat = buildChatRef(data, threadOriginatorGuid)
   const sender = extractSender(data, chat)
   const timestamp = readNumber(data, "dateCreated") ?? Date.now()
-  const fromMe = readBoolean(data, "isFromMe") ?? false
+  const fromMe = readBoolean(data, "isFromMe") ?? null
   const attachments = extractAttachments(data)
   const reactionName = normalizeReactionName(data.associatedMessageType)
   const reaction = reactionName

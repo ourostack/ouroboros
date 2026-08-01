@@ -1076,11 +1076,28 @@ describe("renderBlueBubblesReactionText", () => {
       expect(result.chat.sendTarget).toEqual({ kind: "chat_identifier", value: "unknown" })
       expect(result.sender.externalId).toBe("Slugger Device")
       expect(result.timestamp).toBe(1772949500000)
-      expect(result.fromMe).toBe(false)
+      expect(result.fromMe).toBeNull()
       expect(result.requiresRepair).toBe(true)
     } finally {
       now.mockRestore()
     }
+  })
+
+  it.each([
+    ["missing", undefined],
+    ["malformed", "false"],
+  ])("retains %s isFromMe as unknown direction", async (_label, isFromMe) => {
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const result = normalizeBlueBubblesEvent({
+      ...dmThreadPayload,
+      data: {
+        ...dmThreadPayload.data,
+        guid: `UNKNOWN-DIRECTION-${_label}`,
+        isFromMe,
+      },
+    })
+
+    expect(result.fromMe).toBeNull()
   })
 
   it("normalizes delivery updates as silent mutations with repair required", async () => {
