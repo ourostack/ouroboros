@@ -8,7 +8,7 @@
         "Harden actor authorization, semantic receipt quarantine, and ownership commit ordering.",
         "Prevent final-only narration leaks, cancelled-habit resurrection, and hidden incident Nerves evidence.",
         "Align both package entry points on the Node 22 runtime floor.",
-        "Fail closed on pre-upgrade dynamic prompt state when refresh fails."
+        "Drop cached actor, trust, tool, and prior-work prompt state when refresh fails."
       ]
     },
     {
