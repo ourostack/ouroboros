@@ -395,9 +395,10 @@ it("replays the minimized reaction/orientation incident without duplicate work o
     ).toMatchObject({ activeTurnCount: 0, stalledTurnCount: 0 })
 
     let visibleAnswer = ""
+    const commitAcceptedAnswer = (text: string): void => { visibleAnswer += text }
     const settle = new SettleStreamer({
       onModelStreamStart: vi.fn(),
-      onTextChunk: (text) => { visibleAnswer += text },
+      onTextChunk: commitAcceptedAnswer,
       onReasoningChunk: vi.fn(),
       onToolStart: vi.fn(),
       onToolEnd: vi.fn(),
@@ -406,11 +407,14 @@ it("replays the minimized reaction/orientation incident without duplicate work o
     settle.activate()
     for (const chunk of fixture.stream.argumentChunks) settle.processDelta(chunk)
     expect.soft(visibleAnswer, "final-only output stays hidden before finalization").toBe("")
-    expect.soft(settle.finish(fixture.stream.completedArguments), "Unicode settle finalization").toEqual({
+    const finalization = settle.finish(fixture.stream.completedArguments)
+    expect.soft(finalization, "Unicode settle finalization").toEqual({
       ok: true,
       answer: fixture.stream.expectedAnswer,
     })
-    expect.soft(visibleAnswer, "Unicode answer is emitted exactly once and intact").toBe(
+    expect.soft(visibleAnswer, "final-only parser does not own semantic commit").toBe("")
+    if (finalization.ok) commitAcceptedAnswer(finalization.answer)
+    expect.soft(visibleAnswer, "accepted Unicode answer is committed exactly once and intact").toBe(
       fixture.stream.expectedAnswer,
     )
   } finally {
