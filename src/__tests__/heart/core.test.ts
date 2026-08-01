@@ -4547,7 +4547,7 @@ describe("runAgent", () => {
     expect(messages.some((m: any) => m.role === "user" && m.content === "hello from history")).toBe(true)
   })
 
-  it("discards pre-upgrade dynamic prompt state while preserving stable content when refresh fails", async () => {
+  it("drops the complete pre-upgrade generated prompt when refresh fails", async () => {
     vi.resetModules()
     mockCreate.mockReset()
     mockResponsesCreate.mockReset()
@@ -4576,10 +4576,22 @@ describe("runAgent", () => {
           role: "system",
           content: [
             "# who i am",
-            "keep this durable identity",
+            "i am the cached identity from the prior turn",
             "",
             "# my tools & capabilities",
-            "keep this stable safety contract",
+            "## my tools",
+            "- shell: cached write-capable tool listing",
+            "",
+            "# how i work",
+            "## tool guardrails",
+            "cached trusted actor may modify external files",
+            "",
+            "# social context",
+            "## trust context",
+            "level: trusted",
+            "basis: cached prior actor",
+            "permits: write files, run network commands",
+            "related group: cached-group-id",
             "",
             "current date and time: 2026-07-30 11:09 PDT",
             "my rhythms: wedding-rsvp-report",
@@ -4618,12 +4630,23 @@ describe("runAgent", () => {
       await core.runAgent(messages, callbacks, "teams", undefined, { resumePriorWork: false })
 
       expect(messages[0].role).toBe("system")
-      expect(messages[0].content).toContain("# who i am")
-      expect(messages[0].content).toContain("keep this durable identity")
-      expect(messages[0].content).toContain("# my tools & capabilities")
-      expect(messages[0].content).toContain("keep this stable safety contract")
+      expect(messages[0].content).toContain("You are a helpful assistant.")
       expect(messages[0].content.match(/^## Current trigger \(authoritative\)$/gm)).toHaveLength(1)
       expect(messages[0].content).toContain("- fresh speech for this turn")
+      expect(messages[0].content).not.toContain("# who i am")
+      expect(messages[0].content).not.toContain("cached identity from the prior turn")
+      expect(messages[0].content).not.toContain("# my tools & capabilities")
+      expect(messages[0].content).not.toContain("cached write-capable tool listing")
+      expect(messages[0].content).not.toContain("# how i work")
+      expect(messages[0].content).not.toContain("cached trusted actor")
+      expect(messages[0].content).not.toContain("# social context")
+      expect(messages[0].content).not.toContain("## trust context")
+      expect(messages[0].content).not.toContain("level: trusted")
+      expect(messages[0].content).not.toContain("cached prior actor")
+      expect(messages[0].content).not.toContain("write files, run network commands")
+      expect(messages[0].content).not.toContain("cached-group-id")
+      expect(messages[0].content).not.toContain("current date and time: 2026-07-30 11:09 PDT")
+      expect(messages[0].content).not.toContain("my rhythms: wedding-rsvp-report")
       expect(messages[0].content).not.toContain("# dynamic state for this turn")
       expect(messages[0].content).not.toContain("## orientation frame")
       expect(messages[0].content).not.toContain("stale legacy speech from before the upgrade")

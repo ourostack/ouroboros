@@ -881,25 +881,16 @@ function upsertSystemPrompt(
   }
 }
 
-const GENERATED_DYNAMIC_STATE_HEADING = "# dynamic state for this turn";
-
 /**
- * A prompt refresh failure must not revive action-looking state from an older
- * turn or release. Preserve only the known generated prefix before the dynamic
- * state boundary. Prompts without that boundary are not safe to reconstruct,
- * so fail closed to the minimal base and put the freshly derived trigger first.
+ * A prompt refresh failure must not revive any generated text from an older
+ * turn or release. Even the nominally stable region contains actor-scoped trust,
+ * tool, and channel context, so it is not safe to reconstruct. Fail closed to a
+ * neutral base and put the freshly derived trigger first.
  */
 function repairFallbackSystemPrompt(
-  existingSystemText: string | undefined,
   orientationFrame: OrientationFrame,
 ): string {
-  const existingLines = existingSystemText?.split("\n");
-  const dynamicStateIndex = existingLines?.indexOf(GENERATED_DYNAMIC_STATE_HEADING) ?? -1;
-  const repairedBase = dynamicStateIndex > 0
-    ? existingLines!.slice(0, dynamicStateIndex).join("\n").trim()
-    : "You are a helpful assistant.";
-
-  return `${renderOrientationFrame(orientationFrame)}\n\n${repairedBase}`;
+  return `${renderOrientationFrame(orientationFrame)}\n\nYou are a helpful assistant.`;
 }
 
 // Remove orphan tool_calls from the last assistant message and any
@@ -1134,9 +1125,7 @@ export async function runAgent(
       upsertSystemPrompt(messages, flattenSystemPrompt(refreshed));
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
-      const existingSystemText = hadExistingSystemPrompt ? (messages[0].content as string) : undefined;
       const fallback = repairFallbackSystemPrompt(
-        existingSystemText,
         turnOrientationFrame!,
       );
       upsertSystemPrompt(messages, fallback);
