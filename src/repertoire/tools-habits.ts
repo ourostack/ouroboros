@@ -1,8 +1,30 @@
+import { TRUSTED_LEVELS } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import { cancelHabit } from "../heart/habits/habit-cancel"
+import { readBlueBubblesSemanticCaptureAtRoot } from "../senses/bluebubbles/semantic-receipts"
 import type { ToolDefinition } from "./tools-base"
 
 const CAPTURE_LOCATOR_PATTERN = /^capture:([a-f0-9]{64})$/
+const ACTOR_AUTHORITY_ERROR = "habit_cancel requires trusted current-ingress actor authority"
+
+async function requireTrustedCurrentIngressActor(
+  agentRoot: string,
+  captureKeyHash: string,
+  context: Parameters<NonNullable<ToolDefinition["handler"]>>[1],
+): Promise<void> {
+  const capture = readBlueBubblesSemanticCaptureAtRoot(agentRoot, captureKeyHash)
+  const actor = capture?.event.actor
+  if (!actor || !context?.friendStore) throw new Error(ACTOR_AUTHORITY_ERROR)
+
+  try {
+    const friend = await context.friendStore.findByExternalId(actor.provider, actor.externalId)
+    if (!TRUSTED_LEVELS.has(friend?.trustLevel ?? "stranger")) {
+      throw new Error(ACTOR_AUTHORITY_ERROR)
+    }
+  } catch {
+    throw new Error(ACTOR_AUTHORITY_ERROR)
+  }
+}
 
 export const habitToolDefinitions: ToolDefinition[] = [
   {
@@ -69,6 +91,11 @@ export const habitToolDefinitions: ToolDefinition[] = [
         throw new Error("habit_cancel evidence mismatch with current ingress evidence")
       }
       if (!context?.agentRoot) throw new Error("habit_cancel requires an agent root")
+      await requireTrustedCurrentIngressActor(
+        context.agentRoot,
+        currentIngressEvidence.captureKeyHash,
+        context,
+      )
       const receipt = await cancelHabit({
         agentRoot: context.agentRoot,
         habitId: args.habit,

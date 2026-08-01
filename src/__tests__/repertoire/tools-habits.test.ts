@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { baseToolDefinitions } from "../../repertoire/tools-base"
 import { habitToolDefinitions } from "../../repertoire/tools-habits"
@@ -177,6 +177,9 @@ describe("grounded habit cancellation tool", () => {
           provider: "bluebubbles",
           captureKeyHash: capture.capture.keyHash,
         },
+        friendStore: {
+          findByExternalId: vi.fn().mockResolvedValue({ trustLevel: "friend" }),
+        } as any,
       })
 
       expect(result).toMatch(new RegExp(`^Cancelled habit ${JSON.stringify(SYNTHETIC_HABIT_ID)} from confirmed requester `))
@@ -185,6 +188,133 @@ describe("grounded habit cancellation tool", () => {
         .toContain("status: cancelled")
     } finally {
       temporary.cleanup()
+    }
+  })
+
+  it("does not inherit cancellation authority from a trusted group participant", async () => {
+    const definition = habitCancelTool()
+    const temporary = temporaryAgentRoot()
+    try {
+      writeSyntheticHabitDefinition(temporary.agentRoot)
+      const capture = writeSyntheticCaptureEvidence(temporary.agentRoot)
+      const findByExternalId = vi.fn(async (_provider: string, externalId: string) => {
+        if (externalId === "casey@example.invalid") return { trustLevel: "acquaintance" }
+        if (externalId === "morgan@example.invalid") return { trustLevel: "family" }
+        return null
+      })
+
+      await expect(definition.handler({
+        habit: SYNTHETIC_HABIT_ID,
+        evidence: capture.locator,
+      }, {
+        signin: async () => undefined,
+        agentRoot: temporary.agentRoot,
+        currentIngressEvidence: {
+          schemaVersion: 1,
+          provider: "bluebubbles",
+          captureKeyHash: capture.capture.keyHash,
+        },
+        friendStore: { findByExternalId } as any,
+        context: {
+          friend: { trustLevel: "family" },
+          isGroupChat: true,
+        } as any,
+      })).rejects.toThrow(/trusted current-ingress actor authority/i)
+
+      expect(findByExternalId).toHaveBeenCalledTimes(1)
+      expect(findByExternalId).toHaveBeenCalledWith(
+        "imessage-handle",
+        "casey@example.invalid",
+      )
+      expect(fs.readFileSync(
+        path.join(temporary.agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`),
+        "utf8",
+      )).toContain("status: active")
+      expectLifecycleUntouched(temporary.agentRoot)
+    } finally {
+      temporary.cleanup()
+    }
+  })
+
+  it.each(["friend", "family"] as const)(
+    "authorizes the immutable captured actor with explicit %s trust independent of group trust",
+    async (trustLevel) => {
+      const definition = habitCancelTool()
+      const temporary = temporaryAgentRoot()
+      try {
+        writeSyntheticHabitDefinition(temporary.agentRoot)
+        const capture = writeSyntheticCaptureEvidence(temporary.agentRoot)
+        const findByExternalId = vi.fn().mockResolvedValue({ trustLevel })
+
+        await expect(definition.handler({
+          habit: SYNTHETIC_HABIT_ID,
+          evidence: capture.locator,
+        }, {
+          signin: async () => undefined,
+          agentRoot: temporary.agentRoot,
+          currentIngressEvidence: {
+            schemaVersion: 1,
+            provider: "bluebubbles",
+            captureKeyHash: capture.capture.keyHash,
+          },
+          friendStore: { findByExternalId } as any,
+          context: {
+            friend: { trustLevel: "stranger" },
+            isGroupChat: true,
+          } as any,
+        })).resolves.toMatch(/^Cancelled habit/)
+
+        expect(findByExternalId).toHaveBeenCalledTimes(1)
+        expect(findByExternalId).toHaveBeenCalledWith(
+          "imessage-handle",
+          "casey@example.invalid",
+        )
+      } finally {
+        temporary.cleanup()
+      }
+    },
+  )
+
+  it("fails closed when captured-actor authorization is unavailable", async () => {
+    const definition = habitCancelTool()
+    const cases = [
+      { label: "missing friend store", friendStore: undefined },
+      {
+        label: "missing actor record",
+        friendStore: { findByExternalId: vi.fn().mockResolvedValue(null) } as any,
+      },
+      {
+        label: "actor lookup failure",
+        friendStore: { findByExternalId: vi.fn().mockRejectedValue(new Error("friend store unavailable")) } as any,
+      },
+    ]
+
+    for (const testCase of cases) {
+      const temporary = temporaryAgentRoot()
+      try {
+        writeSyntheticHabitDefinition(temporary.agentRoot)
+        const capture = writeSyntheticCaptureEvidence(temporary.agentRoot)
+        await expect(definition.handler({
+          habit: SYNTHETIC_HABIT_ID,
+          evidence: capture.locator,
+        }, {
+          signin: async () => undefined,
+          agentRoot: temporary.agentRoot,
+          currentIngressEvidence: {
+            schemaVersion: 1,
+            provider: "bluebubbles",
+            captureKeyHash: capture.capture.keyHash,
+          },
+          ...(testCase.friendStore ? { friendStore: testCase.friendStore } : {}),
+        })).rejects.toThrow(/trusted current-ingress actor authority/i)
+        expect(fs.readFileSync(
+          path.join(temporary.agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`),
+          "utf8",
+        ), testCase.label).toContain("status: active")
+        expectLifecycleUntouched(temporary.agentRoot)
+      } finally {
+        temporary.cleanup()
+      }
     }
   })
 
