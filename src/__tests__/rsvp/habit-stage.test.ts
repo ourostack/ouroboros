@@ -4,10 +4,21 @@ import * as path from "path"
 import { describe, expect, it } from "vitest"
 
 import { parseHabitFile } from "../../heart/habits/habit-parser"
-import { stageRsvpHabit } from "../../rsvp/habit-stage"
+import { RsvpHabitStageError, stageRsvpHabit } from "../../rsvp/habit-stage"
 import { createTmpBundle } from "../test-helpers/tmpdir-bundle"
 
 describe("RSVP native habit staging", () => {
+  it("constructs a stable stage error when no lower-level cause exists", () => {
+    const error = new RsvpHabitStageError("habit_stage_exists")
+
+    expect(error).toMatchObject({
+      name: "RsvpHabitStageError",
+      message: "habit_stage_exists",
+      code: "habit_stage_exists",
+    })
+    expect(error.cause).toBeUndefined()
+  })
+
   it("writes a generic RSVP habit as a native typed habit instead of a script placeholder", async () => {
     const tmp = createTmpBundle({ agentName: "agent" })
     try {

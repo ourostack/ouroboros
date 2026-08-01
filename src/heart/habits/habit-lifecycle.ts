@@ -793,7 +793,7 @@ export function publishNewHabitDefinition(
       { durabilityUnknown: published, cause: error },
     )
   }
-  if (tempOwned) bestEffortUnlink(tempPath, storeFs)
+  bestEffortUnlink(tempPath, storeFs)
   return published ? "published" : "exists"
 }
 

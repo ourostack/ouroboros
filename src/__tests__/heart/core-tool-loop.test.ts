@@ -438,6 +438,53 @@ describe("runAgent tool loop guard", () => {
     expect(system).toContain("current user speech:\n- stop the synthetic recurring report")
   })
 
+  it("delivers an accepted non-streamed settle through callbacks when no output buffer exists", async () => {
+    const appendToolOutput = vi.fn()
+    vi.doMock("../../heart/providers/minimax", () => ({
+      createMinimaxProviderRuntime: () => ({
+        id: "minimax",
+        model: "test-model",
+        client: {},
+        capabilities: new Set(),
+        resetTurnState: vi.fn(),
+        appendToolOutput,
+        streamTurn: vi.fn().mockResolvedValue({
+          content: "",
+          toolCalls: [{
+            id: "call_non_streamed_settle",
+            name: "settle",
+            arguments: '{"answer":"delivered after validation","intent":"complete"}',
+          }],
+          outputItems: [],
+          settleStreamed: false,
+        }),
+        ping: vi.fn(),
+        classifyError: vi.fn(() => "unknown"),
+      }),
+    }))
+
+    try {
+      const { runAgent } = await import("../../heart/core")
+      const callbacks = makeCallbacks()
+      const result = await runAgent(
+        [{ role: "user", content: "finish this turn" }],
+        callbacks,
+        "cli",
+        undefined,
+        { toolChoiceRequired: true, skipKeptNotes: true },
+      )
+
+      expect(callbacks.onTextChunk).toHaveBeenCalledWith("delivered after validation")
+      expect(appendToolOutput).toHaveBeenCalledWith("call_non_streamed_settle", "(delivered)")
+      expect(result).toMatchObject({
+        outcome: "settled",
+        completion: { answer: "delivered after validation", intent: "complete" },
+      })
+    } finally {
+      vi.doUnmock("../../heart/providers/minimax")
+    }
+  })
+
   it("restricts reaction feedback to one provider invocation and the exact registered read-only tool IDs", async () => {
     let providerTools: Array<{ function: { name: string } }> = []
     mockCreate.mockImplementation((request: any) => {

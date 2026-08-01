@@ -1185,6 +1185,7 @@ describe("habit lifecycle filesystem protocol", () => {
       bytes: cancelledBytes,
     }, fixedDeps())).toBe("exists")
     expect(fs.readFileSync(definitionPath, "utf8")).toBe(activeBytes)
+    expect(fs.readdirSync(path.dirname(definitionPath)).filter((name) => name.endsWith(".tmp"))).toEqual([])
   })
 
   it("keeps new-definition publication failures crash-truthful", () => {
