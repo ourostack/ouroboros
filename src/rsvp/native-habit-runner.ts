@@ -215,6 +215,16 @@ function surfaceAttemptsFor(payload: Record<string, unknown>, requestedSend: boo
   if (payload.sendAllowed === true) {
     const delivery = (refreshRecord(payload)?.delivery ?? {}) as Record<string, unknown>
     const rawStatus = stringField(delivery, "status") ?? stringField(delivery, "result")
+    if (rawStatus === "pending-manual-verification") {
+      return [{
+        recipient: "rsvp",
+        channel: "bluebubbles",
+        reason: "status",
+        result: "unavailable",
+        rawStatus,
+        error: "RSVP transport delivery is unknown",
+      }]
+    }
     if (rawStatus === "failed" || rawStatus === "error") {
       return [{
         recipient: "rsvp",

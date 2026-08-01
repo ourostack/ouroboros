@@ -27,7 +27,13 @@ import { isRsvpHabitName, type RsvpHabitMetadata } from "./habit-policy"
 import { stageRsvpHabit } from "./habit-stage"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
 import { importLegacyRsvpState } from "./migration"
-import { decideRsvpOutboundReport, readRsvpOutboundState, recordRsvpOutboundAttempt } from "./outbound-state"
+import {
+  decideRsvpOutboundReport,
+  executeRsvpSendBoundary,
+  readRsvpOutboundState,
+  recordRsvpOutboundAttempt,
+  type RsvpSendBoundaryResult,
+} from "./outbound-state"
 import { queryRsvpSnapshot } from "./query"
 import { renderLegacyRsvpSnapshotOffline, replayRsvpFixture } from "./replay"
 import { buildRsvpSnapshot, parseRsvpSnapshot, type RsvpSnapshot } from "./snapshot"
@@ -60,6 +66,7 @@ interface RsvpCliPayload {
   delivery?: JsonValue
   checks?: Record<string, JsonValue>
   sendAllowed?: boolean
+  sendBoundary?: JsonValue
   denialReasons?: string[]
   rollback?: Record<string, JsonValue>
   strict?: boolean
@@ -811,40 +818,102 @@ async function executeRefreshInner(
   }
   const sendAllowed = requestedLiveSend && !hardNoSend
   let delivery: JsonValue | undefined
+  let sendBoundary: RsvpSendBoundaryResult | undefined
+  let sendBoundaryMessage: string | undefined
   if (sendAllowed) {
+    if (!command.habitName) {
+      return {
+        ...basePayload(command, false, "RSVP live refresh send requires --habit <name>", {
+          allowSend: true,
+          sendAllowed: false,
+          requires: "--habit <name>",
+          refresh: {
+            snapshotId: currentSnapshot.snapshotId,
+            reportText,
+            outboundDecision: outboundDecision as unknown as JsonValue,
+          },
+        }),
+        ok: false,
+      }
+    }
     const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, machineRuntimeConfig)
     const client = createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig)
-    transportCounter.count += 1
-    const sent = await client.sendText({
-      chat: blueBubblesChatFor(configResult.config),
-      text: reportText,
-      tempGuid: outboundDecision.idempotencyKey,
-    })
-    delivery = normalizeDelivery(sent)
+    sendBoundary = await executeRsvpSendBoundary({
+      agentRoot,
+      habitId: command.habitName,
+      outboundIdempotencyKey: outboundDecision.idempotencyKey,
+      noSend: hardNoSend,
+      invokeTransport: async (markTransportInvoked) => client.sendText({
+        chat: blueBubblesChatFor(configResult.config),
+        text: reportText,
+        tempGuid: outboundDecision.idempotencyKey,
+        onTransportInvocation: () => {
+          transportCounter.count += 1
+          markTransportInvoked()
+        },
+      }),
+    }, deps.rsvpSendBoundaryDeps)
+    const cleanupFailed = sendBoundary.errorCode === "lifecycle_lock_release_failed"
+    const acceptedProof = sendBoundary.boundaryState === "crossed" && !cleanupFailed
+    sendBoundaryMessage = cleanupFailed
+      ? "RSVP transport crossed but lifecycle lock cleanup failed"
+      : sendBoundary.boundaryState === "crossed"
+        ? "RSVP refresh completed"
+      : sendBoundary.boundaryState === "not_crossed"
+        ? "RSVP transport was definitively rejected"
+        : "RSVP transport delivery is unknown"
+    delivery = acceptedProof
+      ? {
+          status: "accepted",
+          ...(normalizeDelivery({ messageGuid: sendBoundary.transportResult.messageGuid }) as Record<string, JsonValue>),
+        }
+      : cleanupFailed
+        ? {
+            status: "failed",
+            error: sendBoundaryMessage,
+            ...(normalizeDelivery({ messageGuid: sendBoundary.transportResult.messageGuid }) as Record<string, JsonValue>),
+          }
+      : sendBoundary.boundaryState === "not_crossed"
+        ? { status: "failed", error: sendBoundaryMessage }
+        : { status: "pending-manual-verification", error: sendBoundaryMessage }
     recordRsvpOutboundAttempt({
       agentRoot,
       currentSnapshot,
       reportText,
       bluebubblesRecord: {
         recordId: outboundDecision.idempotencyKey,
-        status: "accepted",
+        status: acceptedProof
+          ? "accepted"
+          : sendBoundary.boundaryState === "not_crossed" || cleanupFailed
+            ? "failed"
+            : "pending-manual-verification",
         tempGuid: outboundDecision.idempotencyKey,
-        ...((delivery as Record<string, unknown>).guid ? { messageGuid: String((delivery as Record<string, unknown>).guid) } : {}),
+        ...(sendBoundary.transportResult.messageGuid
+          ? { messageGuid: sendBoundary.transportResult.messageGuid }
+          : {}),
       },
       recordedAt: new Date().toISOString(),
     })
   }
 
-  return basePayload(command, sendAllowed, "RSVP refresh completed", {
-    allowSend: command.mode === "live" && command.allowSend === true,
-    sendAllowed,
-    refresh: {
-      snapshotId: currentSnapshot.snapshotId,
-      reportText,
-      outboundDecision: outboundDecision as unknown as JsonValue,
-      ...(delivery ? { delivery } : {}),
+  const message = sendBoundaryMessage ?? "RSVP refresh completed"
+  const payload = basePayload(
+    command,
+    sendBoundary?.transportInvoked === true && sendBoundary.replayed === false,
+    message,
+    {
+      allowSend: command.mode === "live" && command.allowSend === true,
+      sendAllowed,
+      ...(sendBoundary ? { sendBoundary: sendBoundary as unknown as JsonValue } : {}),
+      refresh: {
+        snapshotId: currentSnapshot.snapshotId,
+        reportText,
+        outboundDecision: outboundDecision as unknown as JsonValue,
+        ...(delivery ? { delivery } : {}),
+      },
     },
-  })
+  )
+  return sendBoundary && !sendBoundary.ok ? { ...payload, ok: false } : payload
 }
 
 async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {

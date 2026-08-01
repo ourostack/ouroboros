@@ -23,6 +23,7 @@ import type { RsvpCutoverAction, RsvpCutoverDeps } from "../../rsvp/cutover"
 import type { MailroomRegistry } from "../../mailroom/core"
 import type { MailroomRuntimeConfig } from "../../mailroom/reader"
 import type { HabitCancelDeps } from "../habits/habit-cancel"
+import type { RsvpSendBoundaryDeps } from "../../rsvp/outbound-state"
 export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
 export type RuntimeConfigScope = "agent" | "machine"
@@ -225,6 +226,8 @@ export interface OuroCliDeps {
   runBootSyncProbeImpl?: typeof import("./boot-sync-probe").runBootSyncProbe
   /** Test/alternate-host injection for side-effect-safe RSVP legacy cutover probes. */
   rsvpCutoverDeps?: RsvpCutoverDeps
+  /** Test/alternate-host injection for the durable RSVP send boundary. */
+  rsvpSendBoundaryDeps?: RsvpSendBoundaryDeps
 }
 
 export interface SessionEntry {

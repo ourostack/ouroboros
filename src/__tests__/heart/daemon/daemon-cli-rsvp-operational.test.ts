@@ -114,8 +114,11 @@ vi.mock("../../../heart/runtime-credentials", async () => {
 
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 import {
+  HABIT_LIFECYCLE_POLL_MS,
+  HABIT_LIFECYCLE_TIMEOUT_MS,
   buildHabitSendOperation,
   readHabitLifecycleJournal,
+  releaseHabitLifecycleLock,
 } from "../../../heart/habits/habit-lifecycle"
 import { runRsvpCliCommand } from "../../../rsvp/cli"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
@@ -1498,6 +1501,70 @@ describe("ouro rsvp operational CLI wiring", () => {
       expect(rsvpMocks.loadOrCreateMachineIdentity).not.toHaveBeenCalled()
       expect(rsvpMocks.refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
       expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
+
+      rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:rejected" })
+      rsvpMocks.sendText.mockImplementation(async (params) => {
+        params.onTransportInvocation()
+        throw Object.assign(new Error("forbidden"), {
+          httpStatus: 403,
+          errorCode: "http_403",
+          transportInvoked: true,
+        })
+      })
+      const rejected = JSON.parse(await runOuroCli([
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--habit",
+        "rsvp-wedding",
+        "--mode",
+        "live",
+        "--allow-send",
+        "--json",
+      ], deps))
+      expect(rejected).toMatchObject({
+        ok: false,
+        sideEffect: true,
+        sendAllowed: true,
+        message: "RSVP transport was definitively rejected",
+        sendBoundary: {
+          boundaryState: "not_crossed",
+          transportInvoked: true,
+          transportResult: { httpStatus: 403, messageGuid: null, errorCode: "http_403" },
+        },
+        refresh: {
+          delivery: { status: "failed", error: "RSVP transport was definitively rejected" },
+        },
+      })
+      expect(rsvpMocks.recordRsvpOutboundAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+        bluebubblesRecord: {
+          recordId: "rsvp:rejected",
+          status: "failed",
+          tempGuid: "rsvp:rejected",
+        },
+      }))
+
+      rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:unbound" })
+      const sendsBeforeUnbound = rsvpMocks.sendText.mock.calls.length
+      const unbound = JSON.parse(await runOuroCli([
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--mode",
+        "live",
+        "--allow-send",
+        "--json",
+      ], deps))
+      expect(unbound).toMatchObject({
+        ok: false,
+        sideEffect: false,
+        sendAllowed: false,
+        requires: "--habit <name>",
+        message: "RSVP live refresh send requires --habit <name>",
+      })
+      expect(rsvpMocks.sendText).toHaveBeenCalledTimes(sendsBeforeUnbound)
     } finally {
       unregister()
       tmp.cleanup()
@@ -1567,6 +1634,130 @@ describe("ouro rsvp operational CLI wiring", () => {
       expect(rsvpMocks.createBlueBubblesClient).not.toHaveBeenCalled()
       expect(rsvpMocks.sendText).not.toHaveBeenCalled()
       expect(rsvpMocks.recordRsvpOutboundAttempt).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("replays a crossed send to clean an exhausted lease without invoking transport twice", async () => {
+    mockRuntimeCredentials()
+    const legacyRoot = seedLegacyCutoverRoot()
+    const tmp = seedBundle(legacyRoot)
+    fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tmp.agentRoot, "habits", "rsvp-wedding.md"),
+      explicitRsvpHabitDefinition("active"),
+      "utf-8",
+    )
+    rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: configWithCutover(legacyRoot) })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({
+      status: "ready",
+      credentials: { username: "user@example.com", password: "secret" },
+      checks: [],
+    })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: previousSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({
+      currentSnapshotId: "snap_current",
+      newRsvps: [],
+      statusChanges: [],
+      newGuests: [],
+      removedGuests: [],
+      summary: currentSnapshot.summary,
+    })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nCleanup replay.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({
+      action: "send",
+      idempotencyKey: "rsvp:cleanup-replay",
+    })
+    rsvpMocks.sendText.mockImplementation(async (params) => {
+      params.onTransportInvocation()
+      return { messageGuid: "bluebubbles-guid" }
+    })
+    const releaseAttempts = Math.floor(HABIT_LIFECYCLE_TIMEOUT_MS / HABIT_LIFECYCLE_POLL_MS) + 1
+    const releaseLifecycleLock = vi.fn((lease, lifecycle) => (
+      releaseLifecycleLock.mock.calls.length <= releaseAttempts
+        ? false
+        : releaseHabitLifecycleLock(lease, lifecycle)
+    ))
+    const deps = createMockDeps({
+      bundlesRoot: tmp.bundlesRoot,
+      rsvpCutoverDeps: defaultCredentialCutoverDeps(),
+      ...({
+        rsvpSendBoundaryDeps: {
+          lifecycle: { sleep: async () => undefined },
+          releaseLifecycleLock,
+        },
+      } as Record<string, unknown>),
+    })
+
+    try {
+      const command = [
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--habit",
+        "rsvp-wedding",
+        "--mode",
+        "live",
+        "--allow-send",
+        "--json",
+      ]
+      const first = JSON.parse(await runOuroCli(command, deps))
+      expect(first).toMatchObject({
+        ok: false,
+        sideEffect: true,
+        transportInvocationCount: 1,
+        message: "RSVP transport crossed but lifecycle lock cleanup failed",
+        sendBoundary: {
+          boundaryState: "crossed",
+          transportInvoked: true,
+          replayed: false,
+          errorCode: "lifecycle_lock_release_failed",
+        },
+        refresh: {
+          delivery: {
+            status: "failed",
+            error: "RSVP transport crossed but lifecycle lock cleanup failed",
+          },
+        },
+      })
+      expect(rsvpMocks.recordRsvpOutboundAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+        bluebubblesRecord: expect.objectContaining({
+          recordId: "rsvp:cleanup-replay",
+          status: "failed",
+          messageGuid: "bluebubbles-guid",
+        }),
+      }))
+
+      const replay = JSON.parse(await runOuroCli(command, deps))
+      expect(replay).toMatchObject({
+        ok: true,
+        sideEffect: false,
+        transportInvocationCount: 0,
+        sendBoundary: {
+          boundaryState: "crossed",
+          transportInvoked: true,
+          replayed: true,
+        },
+        refresh: { delivery: { status: "accepted", messageGuid: "bluebubbles-guid" } },
+      })
+      expect(rsvpMocks.sendText).toHaveBeenCalledTimes(1)
+      expect(releaseLifecycleLock).toHaveBeenCalledTimes(releaseAttempts + 1)
+      expect(rsvpMocks.recordRsvpOutboundAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+        bluebubblesRecord: expect.objectContaining({
+          recordId: "rsvp:cleanup-replay",
+          status: "accepted",
+          messageGuid: "bluebubbles-guid",
+        }),
+      }))
     } finally {
       tmp.cleanup()
     }
@@ -1678,10 +1869,16 @@ describe("ouro rsvp operational CLI wiring", () => {
     }
   })
 
-  it("records refresh sends even when BlueBubbles returns no receipt body", async () => {
+  it("records an invoked BlueBubbles 2xx response without a GUID as delivery unknown", async () => {
     mockRuntimeCredentials()
     const legacyRoot = seedLegacyCutoverRoot()
     const tmp = seedBundle(legacyRoot)
+    fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tmp.agentRoot, "habits", "rsvp-wedding.md"),
+      explicitRsvpHabitDefinition("active"),
+      "utf-8",
+    )
     rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: configWithCutover(legacyRoot) })
     rsvpMocks.validateRsvpReadiness.mockReturnValue({ status: "ready", credentials: { username: "user@example.com", password: "secret" }, checks: [] })
     rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
@@ -1695,23 +1892,52 @@ describe("ouro rsvp operational CLI wiring", () => {
     rsvpMocks.computeRsvpDelta.mockReturnValue({ currentSnapshotId: "snap_current", newRsvps: [], statusChanges: [], newGuests: [], removedGuests: [], summary: currentSnapshot.summary })
     rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nAccepted without receipt.")
     rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:no-receipt" })
-    rsvpMocks.sendText.mockResolvedValue(null)
+    rsvpMocks.sendText.mockImplementation(async (params) => {
+      params.onTransportInvocation()
+      return null
+    })
     const liveCutoverDeps = defaultCredentialCutoverDeps()
     const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: liveCutoverDeps })
     try {
-      const result = JSON.parse(await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "live", "--allow-send", "--json"], deps))
+      const result = JSON.parse(await runOuroCli([
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--habit",
+        "rsvp-wedding",
+        "--mode",
+        "live",
+        "--allow-send",
+        "--json",
+      ], deps))
 
       expect(result).toMatchObject({
-        ok: true,
+        ok: false,
         command: "rsvp.refresh",
         sideEffect: true,
-        refresh: { delivery: {} },
+        sendAllowed: true,
+        sendBoundary: {
+          boundaryState: "crossing_unknown",
+          transportInvoked: true,
+          transportResult: {
+            httpStatus: 200,
+            messageGuid: null,
+            errorCode: "missing_message_guid",
+          },
+        },
+        refresh: {
+          delivery: {
+            status: "pending-manual-verification",
+            error: "RSVP transport delivery is unknown",
+          },
+        },
       })
       expectExplicitBlueBubblesClientConfig()
       expect(rsvpMocks.recordRsvpOutboundAttempt).toHaveBeenCalledWith(expect.objectContaining({
         bluebubblesRecord: {
           recordId: "rsvp:no-receipt",
-          status: "accepted",
+          status: "pending-manual-verification",
           tempGuid: "rsvp:no-receipt",
         },
       }))
@@ -1760,7 +1986,7 @@ describe("ouro rsvp operational CLI wiring", () => {
       expect(result).toMatchObject({ ok: true, command: "rsvp.smoke", answer: expect.stringContaining("Casey Pending") })
       expect(replay).toMatchObject({ ok: true, command: "rsvp.smoke", answer: expect.stringContaining("Casey Pending") })
 
-      rsvpMocks.sendText.mockResolvedValue({ ok: true, guid: "sent-guid" })
+      rsvpMocks.sendText.mockResolvedValue(null)
       const liveText = await runOuroCli([
         "rsvp",
         "smoke",
