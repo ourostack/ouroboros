@@ -898,6 +898,40 @@ describe("runAgent tool loop guard", () => {
     expect(result).toMatchObject({ outcome: "errored" })
   })
 
+  it("binds the exact current capture locator into the provider-facing habit cancellation schema", async () => {
+    let evidenceSchema: Record<string, unknown> | undefined
+    mockCreate.mockImplementation((request: any) => {
+      const tool = request.tools.find((entry: any) => entry.function.name === "habit_cancel")
+      evidenceSchema = tool?.function.parameters.properties.evidence
+      return makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_final",
+          function: { name: "settle", arguments: '{"answer":"oriented"}' },
+        }]),
+      ])
+    })
+
+    const { runAgent } = await import("../../heart/core")
+    const captureKeyHash = "c".repeat(64)
+    await runAgent([{ role: "user", content: "Please end this report." }], makeCallbacks(), "bluebubbles", undefined, {
+      toolChoiceRequired: true,
+      toolContext: {
+        signin: async () => undefined,
+        agentRoot: "/tmp/synthetic-agent.ouro",
+        currentIngressEvidence: {
+          schemaVersion: 1,
+          provider: "bluebubbles",
+          captureKeyHash,
+        },
+      },
+    })
+
+    expect(evidenceSchema).toMatchObject({
+      enum: [`capture:${captureKeyHash}`],
+    })
+  })
+
   it("executes a sole terminal-projection cancellation once, clears buffered prose, and returns its receipt verbatim", async () => {
     const terminalToolName = "synthetic_terminal_projection"
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
@@ -948,7 +982,7 @@ describe("runAgent tool loop guard", () => {
     const onToolResult = vi.fn()
     const callbacks = makeCallbacks({
       onTextChunk,
-      onClearText: () => { visibleText.length = 0 },
+      onClearText: vi.fn(() => { visibleText.length = 0 }),
       onToolResult,
     })
     const result = await runAgent(
@@ -1005,6 +1039,149 @@ describe("runAgent tool loop guard", () => {
       outcome: "settled",
       completion: { answer: acknowledgement, intent: "complete" },
     })
+  })
+
+  it("fails a rejected terminal projection closed without asking the model to narrate success", async () => {
+    const terminalToolName = "synthetic_terminal_projection_failure"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic metadata-driven terminal projection failure",
+          parameters: {
+            type: "object",
+            properties: { habit: { type: "string" }, evidence: { type: "string" } },
+            required: ["habit", "evidence"],
+            additionalProperties: false,
+          },
+        },
+      },
+      handler: async () => "unused",
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: true,
+      },
+    })
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk("untrusted success prose"),
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_terminal_failure",
+          function: {
+            name: terminalToolName,
+            arguments: `{"habit":"rsvp-demo","evidence":"capture:${"a".repeat(64)}"}`,
+          },
+        }]),
+      ]))
+      .mockImplementationOnce(() => {
+        throw new Error("provider must not be called after a terminal failure")
+      })
+
+    const { runAgent } = await import("../../heart/core")
+    const execTool = vi.fn().mockRejectedValue(new Error("durability unknown"))
+    const visibleText: string[] = []
+    const callbacks = makeCallbacks({
+      onTextChunk: vi.fn((text: string) => { visibleText.push(text) }),
+      onClearText: vi.fn(() => { visibleText.length = 0 }),
+    })
+    const result = await runAgent(
+      [{ role: "user", content: "Please end this report." }],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [{
+          type: "function",
+          function: {
+            name: terminalToolName,
+            description: "cancel a habit from grounded ingress evidence",
+            parameters: {
+              type: "object",
+              properties: { habit: { type: "string" }, evidence: { type: "string" } },
+              required: ["habit", "evidence"],
+              additionalProperties: false,
+            },
+          },
+        }],
+        execTool,
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), false)
+    expect(visibleText).toEqual(["error: durability unknown"])
+    expect(result).toMatchObject({
+      outcome: "blocked",
+      completion: { answer: "error: durability unknown", intent: "blocked" },
+    })
+  })
+
+  it("fails closed before terminal side effects when buffered-text clearing fails", async () => {
+    const terminalToolName = "synthetic_terminal_projection_clear_failure"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic terminal clear failure",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      },
+      handler: async () => "unused",
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: true,
+      },
+    })
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("buffered model prose"),
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_terminal_clear_failure",
+        function: { name: terminalToolName, arguments: "{}" },
+      }]),
+    ]))
+
+    const { runAgent } = await import("../../heart/core")
+    const execTool = vi.fn().mockResolvedValue("must not execute")
+    const callbacks = makeCallbacks({
+      onClearText: vi.fn(() => { throw new Error("synthetic clear failure") }),
+    })
+    const result = await runAgent(
+      [{ role: "user", content: "Please end this report." }],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [{
+          type: "function",
+          function: {
+            name: terminalToolName,
+            description: "synthetic terminal clear failure",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        }],
+        execTool,
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).not.toHaveBeenCalled()
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "synthetic clear failure",
+    }), "terminal")
+    expect(result).toMatchObject({ outcome: "errored", error: expect.any(Error) })
   })
 
   it("rejects a mixed terminal projection without changing ordinary companion-tool behavior", async () => {

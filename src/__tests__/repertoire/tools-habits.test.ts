@@ -6,6 +6,11 @@ import { describe, expect, it } from "vitest"
 
 import { baseToolDefinitions } from "../../repertoire/tools-base"
 import { habitToolDefinitions } from "../../repertoire/tools-habits"
+import {
+  SYNTHETIC_HABIT_ID,
+  writeSyntheticCaptureEvidence,
+  writeSyntheticHabitDefinition,
+} from "../fixtures/habits/habit-cancel-evidence"
 
 const CAPTURE_HASH = "a".repeat(64)
 
@@ -153,5 +158,63 @@ describe("grounded habit cancellation tool", () => {
     } finally {
       temporary.cleanup()
     }
+  })
+
+  it("executes grounded cancellation and returns only its deterministic acknowledgement", async () => {
+    const definition = habitCancelTool()
+    const temporary = temporaryAgentRoot()
+    try {
+      writeSyntheticHabitDefinition(temporary.agentRoot)
+      const capture = writeSyntheticCaptureEvidence(temporary.agentRoot)
+      const result = await definition.handler({
+        habit: SYNTHETIC_HABIT_ID,
+        evidence: capture.locator,
+      }, {
+        signin: async () => undefined,
+        agentRoot: temporary.agentRoot,
+        currentIngressEvidence: {
+          schemaVersion: 1,
+          provider: "bluebubbles",
+          captureKeyHash: capture.capture.keyHash,
+        },
+      })
+
+      expect(result).toMatch(new RegExp(`^Cancelled habit ${JSON.stringify(SYNTHETIC_HABIT_ID)} from confirmed requester `))
+      expect(result).toContain("No concurrent send crossed the transport boundary.")
+      expect(fs.readFileSync(path.join(temporary.agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`), "utf8"))
+        .toContain("status: cancelled")
+    } finally {
+      temporary.cleanup()
+    }
+  })
+
+  it("rejects incomplete arguments, malformed context, and missing agent root", async () => {
+    const definition = habitCancelTool()
+    const validArgs = { habit: "rsvp-demo", evidence: `capture:${CAPTURE_HASH}` }
+    const ingress = {
+      schemaVersion: 1 as const,
+      provider: "bluebubbles" as const,
+      captureKeyHash: CAPTURE_HASH,
+    }
+    await expect(definition.handler({ evidence: validArgs.evidence }, {
+      signin: async () => undefined,
+      currentIngressEvidence: ingress,
+    })).rejects.toThrow(/exactly habit and evidence/i)
+    await expect(definition.handler({ habit: " ", evidence: validArgs.evidence }, {
+      signin: async () => undefined,
+      currentIngressEvidence: ingress,
+    })).rejects.toThrow(/exactly habit and evidence/i)
+    await expect(definition.handler(validArgs, {
+      signin: async () => undefined,
+      currentIngressEvidence: { ...ingress, extra: true } as any,
+    })).rejects.toThrow(/authoritative current ingress/i)
+    await expect(definition.handler(validArgs, {
+      signin: async () => undefined,
+      currentIngressEvidence: { ...ingress, captureKeyHash: "invalid" },
+    })).rejects.toThrow(/authoritative current ingress/i)
+    await expect(definition.handler(validArgs, {
+      signin: async () => undefined,
+      currentIngressEvidence: ingress,
+    })).rejects.toThrow(/agent root/i)
   })
 })

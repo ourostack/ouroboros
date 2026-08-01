@@ -18,8 +18,11 @@ import {
   buildHabitLifecycleOwner,
   buildHabitSendOperation,
   classifyHabitLifecycleOwner,
+  confirmHabitLifecyclePathDurability,
   createHabitLifecycleJournal,
   getHabitLifecyclePaths,
+  habitLifecycleLeaseIsCurrent,
+  listHabitLifecycleJournals,
   probeHabitBootIdentity,
   probeHabitProcessLiveness,
   probeHabitProcessStartedAt,
@@ -27,6 +30,7 @@ import {
   readHabitLifecycleJournal,
   readHabitLifecycleReceipt,
   releaseHabitLifecycleLock,
+  renderHabitCancellationAcknowledgement as renderLifecycleCancellationAcknowledgement,
   serializeHabitLifecycleJson,
   transitionHabitLifecycleJournal,
   writeHabitLifecycleDefinition,
@@ -223,7 +227,7 @@ function cancellationReceiptForHabit(
     operationId: `cancel:${evidenceKeyHash}`,
     evidenceKeyHash,
     evidenceLocator: { kind: "capture", id: captureKeyHash },
-    actor: { displayName: "Ari", provider: "bluebubbles", externalId: "synthetic-handle" },
+    actor: { displayName: "Casey", provider: "bluebubbles", externalId: "synthetic-handle" },
     request: {
       text: "Please end this report.",
       sha256: sha256("Please end this report."),
@@ -235,7 +239,7 @@ function cancellationReceiptForHabit(
       cancelledAt: THIRD_NOW,
       boundaryState: "not_crossed",
     },
-    acknowledgement: `Cancelled habit ${JSON.stringify(habitId)} from confirmed requester \"Ari\". No concurrent send crossed the transport boundary.`,
+    acknowledgement: `Cancelled habit ${JSON.stringify(habitId)} from confirmed requester \"Casey\". No concurrent send crossed the transport boundary.`,
     createdAt: THIRD_NOW,
     ...overrides,
   }
@@ -2021,8 +2025,8 @@ describe("habit lifecycle filesystem protocol", () => {
     for (const boundaryState of ["crossing_unknown", "crossed"] as const) {
       const captureHash = sha256(`receipt-${boundaryState}`)
       const acknowledgement = boundaryState === "crossing_unknown"
-        ? "Cancelled habit \"rsvp-demo\" from confirmed requester \"Ari\". A concurrent send may have crossed the transport boundary; delivery is unknown."
-        : "Cancelled habit \"rsvp-demo\" from confirmed requester \"Ari\". A concurrent send crossed the transport boundary before cancellation took effect."
+        ? "Cancelled habit \"rsvp-demo\" from confirmed requester \"Casey\". A concurrent send may have crossed the transport boundary; delivery is unknown."
+        : "Cancelled habit \"rsvp-demo\" from confirmed requester \"Casey\". A concurrent send crossed the transport boundary before cancellation took effect."
       const receipt = cancellationReceipt(captureHash, {
         transition: {
           fromStatus: "active",
@@ -2172,7 +2176,7 @@ describe("habit lifecycle filesystem protocol", () => {
         cancelledAt: THIRD_NOW,
         boundaryState: "crossed",
       },
-      acknowledgement: "Cancelled habit \"rsvp-demo\" from confirmed requester \"Ari\". A concurrent send crossed the transport boundary before cancellation took effect.",
+      acknowledgement: "Cancelled habit \"rsvp-demo\" from confirmed requester \"Casey\". A concurrent send crossed the transport boundary before cancellation took effect.",
     })
     const crossedPreparation = cancellationPreparation(crossedReceipt)
     const missingJournalKey = { ...validJournal } as Record<string, unknown>
@@ -2236,8 +2240,8 @@ describe("habit lifecycle filesystem protocol", () => {
       { ...validReceipt, evidenceKeyHash: "c".repeat(64) },
       { ...validReceipt, evidenceLocator: { id: CAPTURE_HASH, kind: "capture" } },
       { ...validReceipt, evidenceLocator: { ...validReceipt.evidenceLocator, unexpected: true } },
-      { ...validReceipt, actor: { provider: "bluebubbles", displayName: "Ari", externalId: "synthetic-handle" } },
-      { ...validReceipt, actor: { displayName: "Ari", provider: "bluebubbles" } },
+      { ...validReceipt, actor: { provider: "bluebubbles", displayName: "Casey", externalId: "synthetic-handle" } },
+      { ...validReceipt, actor: { displayName: "Casey", provider: "bluebubbles" } },
       { ...validReceipt, actor: { ...validReceipt.actor, unexpected: true } },
       { ...validReceipt, request: { ...validReceipt.request, text: "Different text" } },
       { ...validReceipt, request: { ...validReceipt.request, sha256: "c".repeat(64) } },
@@ -2263,7 +2267,7 @@ describe("habit lifecycle filesystem protocol", () => {
 
     fs.writeFileSync(paths.journal!, "{bad-json\n", "utf8")
     fs.writeFileSync(paths.receipt!, "{bad-json\n", "utf8")
-    expect(() => readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" })).toThrow(/lifecycle_journal_invalid/)
+    expect(() => readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: validOperationId })).toThrow(/lifecycle_journal_invalid/)
     expect(() => readHabitLifecycleReceipt({ agentRoot, habitId: "rsvp-demo", evidenceKeyHash: validEvidenceHash })).toThrow(/lifecycle_receipt_invalid/)
 
     const result = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:new" }, fixedDeps())
@@ -2282,5 +2286,147 @@ describe("habit lifecycle filesystem protocol", () => {
       unregister()
       expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
     }
+  })
+
+  it("reconfirms lifecycle path durability and distinguishes missing owners from inspection I/O", async () => {
+    const agentRoot = makeRoot("habit-lifecycle-durability-confirm-")
+    const lock = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: "rsvp-demo",
+      operationId: "cancel:durability-confirm",
+    }, fixedDeps())
+    expect(lock.status).toBe("acquired")
+    if (lock.status !== "acquired") return
+    const target = path.join(agentRoot, "habits", "rsvp-demo.md")
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, "---\nstatus: cancelled\n---\n", "utf8")
+
+    expect(habitLifecycleLeaseIsCurrent(lock.lease)).toBe(true)
+    expect(() => confirmHabitLifecyclePathDurability(lock.lease, target)).not.toThrow()
+    const outsideRoot = makeRoot("habit-lifecycle-durability-outside-")
+    const outside = path.join(outsideRoot, "outside.md")
+    fs.writeFileSync(outside, "outside\n", "utf8")
+    expect(() => confirmHabitLifecyclePathDurability(lock.lease, outside))
+      .toThrow(/lifecycle_durability_unknown/)
+
+    let closeCalls = 0
+    const fsyncFailure = Object.create(fs) as typeof fs
+    fsyncFailure.fsyncSync = () => { throw new Error("synthetic fsync failure") }
+    fsyncFailure.closeSync = ((descriptor: number) => {
+      closeCalls += 1
+      fs.closeSync(descriptor)
+    }) as typeof fs.closeSync
+    expect(() => confirmHabitLifecyclePathDurability(lock.lease, target, fixedDeps({ fs: fsyncFailure })))
+      .toThrow(/lifecycle_durability_unknown/)
+    expect(closeCalls).toBeGreaterThan(0)
+
+    const inspectionFailure = Object.create(fs) as typeof fs
+    inspectionFailure.lstatSync = (() => {
+      throw Object.assign(new Error("synthetic owner I/O"), { code: "EIO" })
+    }) as typeof fs.lstatSync
+    expect(() => habitLifecycleLeaseIsCurrent(lock.lease, { fs: inspectionFailure }))
+      .toThrow(/lifecycle_owner_inspection_failed/)
+
+    const readFailure = Object.create(fs) as typeof fs
+    readFailure.readFileSync = (() => {
+      throw Object.assign(new Error("synthetic owner read I/O"), { code: "EIO" })
+    }) as typeof fs.readFileSync
+    expect(() => habitLifecycleLeaseIsCurrent(lock.lease, { fs: readFailure }))
+      .toThrow(/lifecycle_owner_inspection_failed/)
+
+    fs.writeFileSync(lock.lease.ownerPath, serializeHabitLifecycleJson(owner("cancel:replacement")), "utf8")
+    expect(() => confirmHabitLifecyclePathDurability(lock.lease, target))
+      .toThrow(/lifecycle_lease_lost/)
+    expect(habitLifecycleLeaseIsCurrent(lock.lease)).toBe(false)
+
+    fs.unlinkSync(lock.lease.ownerPath)
+    expect(habitLifecycleLeaseIsCurrent(lock.lease)).toBe(false)
+  })
+
+  it("fails closed while listing unreadable or corrupt lifecycle journals", () => {
+    const readdirRoot = makeRoot("habit-lifecycle-list-readdir-")
+    const readdirFailure = Object.create(fs) as typeof fs
+    readdirFailure.readdirSync = (() => {
+      throw Object.assign(new Error("synthetic readdir I/O"), { code: "EIO" })
+    }) as typeof fs.readdirSync
+    expect(() => listHabitLifecycleJournals({ agentRoot: readdirRoot, habitId: "rsvp-demo" }, { fs: readdirFailure }))
+      .toThrow(/lifecycle_journal_read_failed/)
+
+    const readRoot = makeRoot("habit-lifecycle-list-read-")
+    const operationId = "cancel:list-read"
+    const paths = getHabitLifecyclePaths({ agentRoot: readRoot, habitId: "rsvp-demo", operationId })
+    fs.mkdirSync(paths.journalDirectory, { recursive: true })
+    const journal = createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId,
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    })
+    fs.writeFileSync(paths.journal!, serializeHabitLifecycleJson(journal), "utf8")
+    fs.writeFileSync(path.join(paths.journalDirectory, "ignored.txt"), "ignored\n", "utf8")
+    expect(listHabitLifecycleJournals({ agentRoot: readRoot, habitId: "rsvp-demo" }))
+      .toEqual([journal])
+    const readFailure = Object.create(fs) as typeof fs
+    readFailure.readFileSync = ((filePath: fs.PathLike, ...args: unknown[]) => {
+      if (String(filePath).endsWith(".json")) {
+        throw Object.assign(new Error("synthetic read I/O"), { code: "EIO" })
+      }
+      return Reflect.apply(fs.readFileSync, fs, [filePath, ...args] as Parameters<typeof fs.readFileSync>)
+    }) as typeof fs.readFileSync
+    expect(() => listHabitLifecycleJournals({ agentRoot: readRoot, habitId: "rsvp-demo" }, { fs: readFailure }))
+      .toThrow(/lifecycle_journal_read_failed/)
+
+    fs.writeFileSync(paths.journal!, "{bad-json\n", "utf8")
+    expect(() => listHabitLifecycleJournals({ agentRoot: readRoot, habitId: "rsvp-demo" }))
+      .toThrow(/lifecycle_journal_invalid/)
+    const mismatched = createHabitLifecycleJournal({
+      habitId: "other-habit",
+      operationId,
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    })
+    fs.writeFileSync(paths.journal!, serializeHabitLifecycleJson(mismatched), "utf8")
+    expect(() => listHabitLifecycleJournals({ agentRoot: readRoot, habitId: "rsvp-demo" }))
+      .toThrow(/lifecycle_journal_invalid/)
+  })
+
+  it("rejects cancellation preparation and boundary mismatches at transition time", () => {
+    const preparation = cancellationPreparation()
+    const initial = createHabitLifecycleJournal({
+      habitId: "rsvp-demo",
+      operationId: preparation.receipt.operationId,
+      operationKind: "cancel",
+      updatedAt: FIXED_NOW,
+    })
+    expect(() => transitionHabitLifecycleJournal(initial, {
+      state: "cancellation_intent",
+      at: NEXT_NOW,
+      evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+      cancellationPreparation: { ...preparation, unexpected: true } as HabitCancellationPreparation,
+    })).toThrow(/cancellation_preparation_invalid/)
+
+    const otherPreparation = cancellationPreparation(cancellationReceipt(sha256("other-transition-evidence")))
+    expect(() => transitionHabitLifecycleJournal(initial, {
+      state: "cancellation_intent",
+      at: NEXT_NOW,
+      evidenceKeyHash: otherPreparation.receipt.evidenceKeyHash,
+      cancellationPreparation: otherPreparation,
+    })).toThrow(/cancellation_preparation_invalid/)
+
+    const intent = transitionHabitLifecycleJournal(initial, {
+      state: "cancellation_intent",
+      at: NEXT_NOW,
+      evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+      cancellationPreparation: preparation,
+    })
+    expect(() => transitionHabitLifecycleJournal(intent, {
+      state: "definition_cancelled",
+      at: THIRD_NOW,
+      boundaryState: "crossed",
+    })).toThrow(/lifecycle_transition_invalid/)
+    expect(() => renderLifecycleCancellationAcknowledgement("../invalid", "Casey", "not_crossed"))
+      .toThrow(/lifecycle_receipt_invalid/)
+    expect(() => renderLifecycleCancellationAcknowledgement("rsvp-demo", " ", "not_crossed"))
+      .toThrow(/lifecycle_receipt_invalid/)
   })
 })

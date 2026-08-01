@@ -125,6 +125,7 @@ export function usage(): string {
     "  ouro habit runs [--agent <name>] [--limit <n>]",
     "  ouro habit inspect [--agent <name>] <runId>",
     "  ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
+    "  ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
@@ -289,6 +290,42 @@ function parseHabitCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
 
   const sub = rest[0]
+  if (sub === "cancel") {
+    if (
+      args.filter((value) => value === "--agent").length !== 1
+      || !agent
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)
+    ) {
+      throw new Error(`Usage\n${usage()}`)
+    }
+    let habitName: string | undefined
+    let evidenceLocator: string | undefined
+    const options = rest.slice(1)
+    for (let index = 0; index < options.length; index += 1) {
+      const option = options[index]
+      const value = options[index + 1]
+      if ((option !== "--habit" && option !== "--evidence") || value === undefined) {
+        throw new Error(`Usage\n${usage()}`)
+      }
+      if (option === "--habit") {
+        if (habitName !== undefined) throw new Error(`Usage\n${usage()}`)
+        habitName = value
+      } else {
+        if (evidenceLocator !== undefined) throw new Error(`Usage\n${usage()}`)
+        evidenceLocator = value
+      }
+      index += 1
+    }
+    if (!habitName || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(habitName)) {
+      throw new Error("habit cancellation requires a valid --habit name")
+    }
+    if (
+      !evidenceLocator
+      || evidenceLocator.startsWith("capture:")
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(evidenceLocator)
+    ) throw new Error("habit cancellation requires an offline evidence bridge ID")
+    return { kind: "habit.cancel", agent, habitName, evidenceLocator }
+  }
   if (sub === "list") {
     return { kind: "habit.list", ...(agent ? { agent } : {}) }
   }

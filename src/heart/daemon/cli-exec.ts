@@ -8266,7 +8266,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── habit subcommands (local, no daemon socket needed) ──
-  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary") {
+  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary" || command.kind === "habit.cancel") {
     const { createDegradedHabitFile, parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
@@ -8278,6 +8278,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     )
     /* v8 ignore stop */
     const habitsDir = path.join(bundleRoot, "habits")
+
+    if (command.kind === "habit.cancel") {
+      const { cancelHabit } = await import("../habits/habit-cancel")
+      const receipt = await cancelHabit({
+        agentRoot: bundleRoot,
+        habitId: command.habitName,
+        evidenceLocator: command.evidenceLocator,
+        authority: { kind: "offline_bridge" },
+      }, deps.habitCancelDeps)
+      deps.writeStdout(receipt.acknowledgement)
+      return receipt.acknowledgement
+    }
 
     if (command.kind === "habit.list") {
       let files: string[]

@@ -1729,6 +1729,7 @@ async function handleBlueBubblesNormalizedEvent(
           orientationFrame,
           toolContext: {
             signin: async () => undefined,
+            agentRoot: getAgentRoot(),
             currentIngressEvidence: options.currentIngressEvidence,
           },
         },

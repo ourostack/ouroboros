@@ -1170,6 +1170,7 @@ describe("BlueBubbles sense runtime", () => {
       "provider",
       "captureKeyHash",
     ])
+    expect(firstRunAgentOptions().toolContext.agentRoot).toBe("/mock/agent/root")
     expect(ingressEvidence).not.toHaveProperty("actor")
     expect(ingressEvidence).not.toHaveProperty("request")
     expect(ingressEvidence).not.toHaveProperty("participants")

@@ -200,7 +200,19 @@ export function writeSyntheticBridgeEvidence(agentRoot: string): SyntheticBridge
 
   const contextPath = path.join(sourceRoot, "context.json")
   const contextBytes = `${JSON.stringify({
-    chronology: [{ eventGuid: SYNTHETIC_EVENT_GUID }],
+    anchorMessageGuid: SYNTHETIC_EVENT_GUID,
+    messages: [
+      {
+        timestamp: "2026-07-01T11:57:00.000Z",
+        authorLabel: "Synthetic agent",
+        bodyPreview: "Earlier synthetic report one.",
+      },
+      {
+        timestamp: "2026-07-01T11:58:00.000Z",
+        authorLabel: "Synthetic agent",
+        bodyPreview: "Earlier synthetic report two.",
+      },
+    ],
   }, null, 2)}\n`
   fs.writeFileSync(contextPath, contextBytes, "utf8")
 

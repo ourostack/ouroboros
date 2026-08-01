@@ -4,10 +4,14 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 
+import Database from "better-sqlite3"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 import {
   acquireHabitLifecycleLock,
+  buildHabitCancellationOperation,
+  buildHabitEvidenceIdentity,
   buildHabitSendOperation,
   createHabitLifecycleJournal,
   getHabitLifecyclePaths,
@@ -21,7 +25,9 @@ import {
   cancelHabit,
   HISTORICAL_HABIT_EVIDENCE_BRIDGE_SHA256,
   renderHabitCancellationAcknowledgement,
+  resolveHistoricalHabitEvidenceBridgeTrust,
   validateHabitEvidenceBridge,
+  type HabitCancelInput,
   type HabitCancelDeps,
   type HabitCancellationAuthority,
 } from "../../../heart/habits/habit-cancel"
@@ -114,17 +120,9 @@ function spawnCancellationChild(input: {
     "__tests__",
     "fixtures",
     "habits",
-    "habit-cancel-child-process.test.ts",
+    "habit-cancel-child-process.mjs",
   )
-  const child = spawn(process.execPath, [
-    path.join(process.cwd(), "node_modules", "vitest", "vitest.mjs"),
-    "run",
-    fixture,
-    "--config",
-    path.join(process.cwd(), "vitest.config.ts"),
-    "--pool",
-    "threads",
-  ], {
+  const child = spawn(process.execPath, [fixture], {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -178,6 +176,37 @@ async function cancelBridge(
     evidenceLocator: bridge.locator,
     authority: offlineAuthority(),
   }, deps)
+}
+
+function cancellationPathsForCapture(agentRoot: string, capture: SyntheticCaptureEvidence) {
+  const identity = buildHabitEvidenceIdentity({
+    habitId: SYNTHETIC_HABIT_ID,
+    kind: "capture",
+    id: capture.capture.keyHash,
+  })
+  const operation = buildHabitCancellationOperation(identity.evidenceKeyHash)
+  return getHabitLifecyclePaths({
+    agentRoot,
+    habitId: SYNTHETIC_HABIT_ID,
+    operationId: operation.operationId,
+    evidenceKeyHash: identity.evidenceKeyHash,
+  })
+}
+
+async function leaveCancellationAtGeneration(
+  agentRoot: string,
+  capture: SyntheticCaptureEvidence,
+  generation: 1 | 2,
+): Promise<Record<string, any>> {
+  const failingFs = generation === 1
+    ? failJournalDirectoryFsyncAtState(agentRoot, "cancellation_intent")
+    : failReceiptPublicationOnce()
+  await cancelCapture(agentRoot, capture, lifecycleDeps({ fs: failingFs })).catch(() => undefined)
+  const journal = readJson(cancellationPathsForCapture(agentRoot, capture).journal!)
+  if (journal.generation !== generation) {
+    throw new Error(`expected cancellation generation ${generation}, got ${String(journal.generation)}`)
+  }
+  return journal
 }
 
 async function seedSendJournal(
@@ -272,6 +301,288 @@ function failReceiptPublicationOnce(): typeof fs {
             throw new Error("synthetic receipt publication failure")
           }
           fs.linkSync(existingPath, newPath)
+        }
+      }
+      return Reflect.get(target, property)
+    },
+  }) as typeof fs
+}
+
+function failJournalDirectoryFsyncAtState(
+  agentRoot: string,
+  state: string,
+): typeof fs {
+  const journalDirectory = path.resolve(getHabitLifecyclePaths({
+    agentRoot,
+    habitId: SYNTHETIC_HABIT_ID,
+  }).journalDirectory)
+  const descriptors = new Map<number, string>()
+  let failDirectorySync = false
+  let failed = false
+  return new Proxy(fs, {
+    get(target, property) {
+      if (property === "openSync") {
+        return (filePath: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode): number => {
+          const descriptor = fs.openSync(filePath, flags, mode)
+          descriptors.set(descriptor, path.resolve(String(filePath)))
+          return descriptor
+        }
+      }
+      if (property === "closeSync") {
+        return (descriptor: number): void => {
+          descriptors.delete(descriptor)
+          fs.closeSync(descriptor)
+        }
+      }
+      if (property === "renameSync") {
+        return (from: fs.PathLike, to: fs.PathLike): void => {
+          fs.renameSync(from, to)
+          if (String(to).includes(`${path.sep}journal${path.sep}`)) {
+            const journal = readJson(String(to))
+            if (journal.state === state) failDirectorySync = true
+          }
+        }
+      }
+      if (property === "fsyncSync") {
+        return (descriptor: number): void => {
+          if (
+            failDirectorySync
+            && !failed
+            && descriptors.get(descriptor) === journalDirectory
+          ) {
+            failed = true
+            failDirectorySync = false
+            throw new Error(`synthetic ${state} directory fsync failure`)
+          }
+          fs.fsyncSync(descriptor)
+        }
+      }
+      return Reflect.get(target, property)
+    },
+  }) as typeof fs
+}
+
+function traceRecoveryDurability(agentRoot: string, definitionPath: string): {
+  fs: typeof fs
+  events: string[]
+} {
+  const paths = getHabitLifecyclePaths({ agentRoot, habitId: SYNTHETIC_HABIT_ID })
+  const watchedDirectories = new Map([
+    [path.resolve(paths.journalDirectory), "journal:fsync"],
+    [path.resolve(path.dirname(definitionPath)), "definition:fsync"],
+    [path.resolve(paths.receiptsDirectory), "receipt:fsync"],
+  ])
+  const descriptors = new Map<number, string>()
+  const events: string[] = []
+  return {
+    events,
+    fs: new Proxy(fs, {
+      get(target, property) {
+        if (property === "openSync") {
+          return (filePath: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode): number => {
+            const descriptor = fs.openSync(filePath, flags, mode)
+            descriptors.set(descriptor, path.resolve(String(filePath)))
+            return descriptor
+          }
+        }
+        if (property === "closeSync") {
+          return (descriptor: number): void => {
+            descriptors.delete(descriptor)
+            fs.closeSync(descriptor)
+          }
+        }
+        if (property === "fsyncSync") {
+          return (descriptor: number): void => {
+            const event = watchedDirectories.get(descriptors.get(descriptor) ?? "")
+            if (event) events.push(event)
+            fs.fsyncSync(descriptor)
+          }
+        }
+        if (property === "renameSync") {
+          return (from: fs.PathLike, to: fs.PathLike): void => {
+            if (path.resolve(String(to)) === path.resolve(definitionPath)) events.push("definition:rename")
+            fs.renameSync(from, to)
+          }
+        }
+        if (property === "linkSync") {
+          return (from: fs.PathLike, to: fs.PathLike): void => {
+            if (String(to).includes(`${path.sep}receipts${path.sep}`)) events.push("receipt:link")
+            fs.linkSync(from, to)
+          }
+        }
+        return Reflect.get(target, property)
+      },
+    }) as typeof fs,
+  }
+}
+
+function trackDirectoryFsyncs(directories: Set<string>): { fs: typeof fs; synced: Set<string> } {
+  const descriptors = new Map<number, string>()
+  const synced = new Set<string>()
+  return {
+    synced,
+    fs: new Proxy(fs, {
+      get(target, property) {
+        if (property === "openSync") {
+          return (filePath: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode): number => {
+            const descriptor = fs.openSync(filePath, flags, mode)
+            const resolved = path.resolve(String(filePath))
+            if (directories.has(resolved)) descriptors.set(descriptor, resolved)
+            return descriptor
+          }
+        }
+        if (property === "fsyncSync") {
+          return (descriptor: number): void => {
+            const directory = descriptors.get(descriptor)
+            if (directory) synced.add(directory)
+            fs.fsyncSync(descriptor)
+          }
+        }
+        if (property === "closeSync") {
+          return (descriptor: number): void => {
+            descriptors.delete(descriptor)
+            fs.closeSync(descriptor)
+          }
+        }
+        return Reflect.get(target, property)
+      },
+    }) as typeof fs,
+  }
+}
+
+function blockReleaseAfterCommit(agentRoot: string): {
+  fs: typeof fs
+  close: () => void
+} {
+  const coordinationPath = getHabitLifecyclePaths({
+    agentRoot,
+    habitId: SYNTHETIC_HABIT_ID,
+  }).coordination
+  let blocker: Database.Database | null = null
+  const adapter = new Proxy(fs, {
+    get(target, property) {
+      if (property === "renameSync") {
+        return (from: fs.PathLike, to: fs.PathLike): void => {
+          fs.renameSync(from, to)
+          if (String(to).includes(`${path.sep}journal${path.sep}`)) {
+            const journal = readJson(String(to))
+            if (journal.state === "cancellation_receipt_committed" && blocker === null) {
+              blocker = new Database(coordinationPath)
+              blocker.exec("BEGIN IMMEDIATE")
+            }
+          }
+        }
+      }
+      return Reflect.get(target, property)
+    },
+  }) as typeof fs
+  return {
+    fs: adapter,
+    close: () => {
+      if (!blocker) return
+      blocker.exec("ROLLBACK")
+      blocker.close()
+      blocker = null
+    },
+  }
+}
+
+function failOwnerInspectionAfterCommit(agentRoot: string): {
+  fs: typeof fs
+  recover: () => void
+} {
+  const ownerPath = getHabitLifecyclePaths({
+    agentRoot,
+    habitId: SYNTHETIC_HABIT_ID,
+  }).owner
+  let failing = false
+  return {
+    fs: new Proxy(fs, {
+      get(target, property) {
+        if (property === "renameSync") {
+          return (from: fs.PathLike, to: fs.PathLike): void => {
+            fs.renameSync(from, to)
+            if (String(to).includes(`${path.sep}journal${path.sep}`)) {
+              const journal = readJson(String(to))
+              if (journal.state === "cancellation_receipt_committed") failing = true
+            }
+          }
+        }
+        if (property === "lstatSync") {
+          return (targetPath: fs.PathLike): fs.Stats => {
+            if (failing && path.resolve(String(targetPath)) === path.resolve(ownerPath)) {
+              throw Object.assign(new Error("synthetic owner inspection failure"), { code: "EIO" })
+            }
+            return fs.lstatSync(targetPath)
+          }
+        }
+        return Reflect.get(target, property)
+      },
+    }) as typeof fs,
+    recover: () => { failing = false },
+  }
+}
+
+function failOwnerUnlinkAfterCommit(agentRoot: string): {
+  fs: typeof fs
+  recover: () => void
+} {
+  const ownerPath = path.resolve(getHabitLifecyclePaths({
+    agentRoot,
+    habitId: SYNTHETIC_HABIT_ID,
+  }).owner)
+  let failing = false
+  return {
+    fs: new Proxy(fs, {
+      get(target, property) {
+        if (property === "renameSync") {
+          return (from: fs.PathLike, to: fs.PathLike): void => {
+            fs.renameSync(from, to)
+            if (String(to).includes(`${path.sep}journal${path.sep}`)) {
+              const journal = readJson(String(to))
+              if (journal.state === "cancellation_receipt_committed") failing = true
+            }
+          }
+        }
+        if (property === "unlinkSync") {
+          return (targetPath: fs.PathLike): void => {
+            if (failing && path.resolve(String(targetPath)) === ownerPath) {
+              throw Object.assign(new Error("synthetic owner unlink failure"), { code: "EIO" })
+            }
+            fs.unlinkSync(targetPath)
+          }
+        }
+        return Reflect.get(target, property)
+      },
+    }) as typeof fs,
+    recover: () => { failing = false },
+  }
+}
+
+function missFirstOwnerInspectionAfterCommit(agentRoot: string): typeof fs {
+  const ownerPath = path.resolve(getHabitLifecyclePaths({
+    agentRoot,
+    habitId: SYNTHETIC_HABIT_ID,
+  }).owner)
+  let missNextOwnerInspection = false
+  return new Proxy(fs, {
+    get(target, property) {
+      if (property === "renameSync") {
+        return (from: fs.PathLike, to: fs.PathLike): void => {
+          fs.renameSync(from, to)
+          if (String(to).includes(`${path.sep}journal${path.sep}`)) {
+            const journal = readJson(String(to))
+            if (journal.state === "cancellation_receipt_committed") missNextOwnerInspection = true
+          }
+        }
+      }
+      if (property === "lstatSync") {
+        return (targetPath: fs.PathLike): fs.Stats => {
+          if (missNextOwnerInspection && path.resolve(String(targetPath)) === ownerPath) {
+            missNextOwnerInspection = false
+            return { isFile: () => false } as fs.Stats
+          }
+          return fs.lstatSync(targetPath)
         }
       }
       return Reflect.get(target, property)
@@ -499,6 +810,126 @@ describe("grounded habit cancellation evidence", () => {
     }
   })
 
+  it("rejects malformed authority shapes, offline captures, and missing cutover authority", async () => {
+    const agentRoot = temporaryAgentRoot()
+    const definition = writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const invalidInputs: HabitCancelInput[] = [
+      {
+        agentRoot,
+        habitId: SYNTHETIC_HABIT_ID,
+        evidenceLocator: capture.locator,
+        authority: null as unknown as HabitCancellationAuthority,
+      },
+      {
+        agentRoot,
+        habitId: SYNTHETIC_HABIT_ID,
+        evidenceLocator: "synthetic-bridge",
+        authority: captureAuthority(capture),
+      },
+      {
+        agentRoot,
+        habitId: SYNTHETIC_HABIT_ID,
+        evidenceLocator: capture.locator,
+        authority: { kind: "invented" } as unknown as HabitCancellationAuthority,
+      },
+      {
+        agentRoot,
+        habitId: SYNTHETIC_HABIT_ID,
+        evidenceLocator: capture.locator,
+        authority: offlineAuthority(),
+      },
+      {
+        agentRoot,
+        habitId: SYNTHETIC_HABIT_ID,
+        evidenceLocator: capture.locator,
+        authority: {
+          kind: "current_ingress",
+          currentIngressEvidence: {
+            schemaVersion: 1,
+            provider: "bluebubbles",
+            captureKeyHash: capture.capture.keyHash,
+            extra: true,
+          },
+        } as unknown as HabitCancellationAuthority,
+      },
+    ]
+    for (const input of invalidInputs) {
+      await expect(cancelHabit(input, lifecycleDeps())).rejects.toThrow(/authority|capture|evidence/i)
+    }
+    const cutoverPath = path.join(
+      agentRoot,
+      "state",
+      "senses",
+      "bluebubbles",
+      "semantic-receipts",
+      "cutover.json",
+    )
+    fs.unlinkSync(cutoverPath)
+    await expect(cancelCapture(agentRoot, capture)).rejects.toThrow(/cutover/i)
+    expect(fs.readFileSync(definition.path, "utf8")).toBe(definition.bytes)
+    expect(fs.existsSync(lifecycleRoot(agentRoot))).toBe(false)
+  })
+
+  it("wraps unexpected preflight failures while still emitting a paired diagnostic event", async () => {
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.component === "daemon" && entry.event.startsWith("habit_cancel_")) events.push(entry)
+    })
+    const hostileInput = new Proxy({
+      agentRoot: temporaryAgentRoot(),
+      habitId: SYNTHETIC_HABIT_ID,
+      evidenceLocator: `capture:${"a".repeat(64)}`,
+      authority: offlineAuthority(),
+    }, {
+      get(target, property, receiver) {
+        if (property === "authority") throw new Error("synthetic unexpected preflight failure")
+        return Reflect.get(target, property, receiver)
+      },
+    }) as HabitCancelInput
+    try {
+      await expect(cancelHabit(hostileInput, lifecycleDeps()))
+        .rejects.toThrow(/habit_cancellation_failed/)
+    } finally {
+      unregister()
+    }
+    expect(events.map((entry) => entry.event)).toEqual(["habit_cancel_start", "habit_cancel_error"])
+    expect(events[0].meta).toEqual(expect.objectContaining({
+      habitId: SYNTHETIC_HABIT_ID,
+      operationId: null,
+      evidenceKeyHash: null,
+    }))
+  })
+
+  it("fails before mutation when grounded evidence changes between preflight and locked revalidation", async () => {
+    const agentRoot = temporaryAgentRoot()
+    const definition = writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    let captureReads = 0
+    const changingFs = new Proxy(fs, {
+      get(target, property) {
+        if (property === "readFileSync") {
+          return (filePath: fs.PathOrFileDescriptor, ...args: unknown[]): unknown => {
+            if (path.resolve(String(filePath)) === path.resolve(capture.path)) {
+              captureReads += 1
+              if (captureReads === 2) {
+                const value = readJson(capture.path)
+                value.event.actor.displayName = "Changed synthetic requester"
+                writeJson(capture.path, value)
+              }
+            }
+            return Reflect.apply(fs.readFileSync, fs, [filePath, ...args] as Parameters<typeof fs.readFileSync>)
+          }
+        }
+        return Reflect.get(target, property)
+      },
+    }) as typeof fs
+
+    await expect(cancelCapture(agentRoot, capture, lifecycleDeps({ fs: changingFs })))
+      .rejects.toThrow(/evidence.*changed/i)
+    expect(fs.readFileSync(definition.path, "utf8")).toBe(definition.bytes)
+  })
+
   it("validates the exact bridge shape, source hashes, unique request, session normalization, and participant-only role", () => {
     const agentRoot = temporaryAgentRoot()
     const bridge = writeSyntheticBridgeEvidence(agentRoot)
@@ -535,10 +966,47 @@ describe("grounded habit cancellation evidence", () => {
     expect(bridgeBytes.endsWith("\n\n")).toBe(false)
   })
 
+  it("validates durable screenshot copies without depending on volatile source attachments", () => {
+    const agentRoot = temporaryAgentRoot()
+    const bridge = writeSyntheticBridgeEvidence(agentRoot)
+    const value = readJson(bridge.bridgePath)
+    for (const screenshot of value.evidence.screenshots) fs.unlinkSync(screenshot.sourcePath)
+
+    expect(validateHabitEvidenceBridge({
+      agentRoot,
+      bridgeId: bridge.bridgeId,
+    }, lifecycleDeps())).toMatchObject({
+      locator: { kind: "bridge", id: bridge.bridgeId },
+      actor: { displayName: SYNTHETIC_ACTOR },
+    })
+  })
+
+  it("cancels from a fully validated offline bridge without importing participant roles", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const bridge = writeSyntheticBridgeEvidence(agentRoot)
+
+    const receipt = await cancelBridge(agentRoot, bridge)
+
+    expect(receipt.evidenceLocator).toEqual({ kind: "bridge", id: bridge.bridgeId })
+    expect(receipt.actor).toEqual({ displayName: SYNTHETIC_ACTOR, provider: null, externalId: null })
+    expect(receipt.acknowledgement).not.toContain(SYNTHETIC_PARTICIPANT)
+    expect(fs.readFileSync(path.join(agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`), "utf8"))
+      .toContain(`cancelledEvidence: ${bridge.bridgeId}`)
+  })
+
   it("pins the production historical bridge to the independently recorded manifest digest", async () => {
     expect(HISTORICAL_HABIT_EVIDENCE_BRIDGE_SHA256).toBe(
       "34a90f6ce3f7b092edb8114cf7ab640486fd7e6d7667acfd0249408fff394201",
     )
+    expect(resolveHistoricalHabitEvidenceBridgeTrust(
+      HISTORICAL_HABIT_EVIDENCE_BRIDGE_SHA256,
+      SYNTHETIC_ACTOR,
+    )).toEqual({
+      cancellationReason:
+        `Confirmed requester ${SYNTHETIC_ACTOR} asked to end the RSVP report after the wedding.`,
+    })
+    expect(resolveHistoricalHabitEvidenceBridgeTrust("f".repeat(64), SYNTHETIC_ACTOR)).toBeNull()
     const agentRoot = temporaryAgentRoot()
     const definition = writeSyntheticHabitDefinition(agentRoot)
     const bridge = writeSyntheticBridgeEvidence(agentRoot)
@@ -598,9 +1066,252 @@ describe("grounded habit cancellation evidence", () => {
     expect(fs.existsSync(lifecycleRoot(untrustedRoot))).toBe(false)
     expect(fs.readFileSync(untrustedDefinition.path, "utf8")).toBe(untrustedDefinition.bytes)
   })
+
+  it("rejects every malformed bridge record, artifact, and source relationship", () => {
+    type Mutation = (
+      bridge: SyntheticBridgeEvidence,
+      value: Record<string, any>,
+    ) => boolean | void
+    const rewriteSource = (source: Record<string, any>, value: unknown): void => {
+      writeJson(source.path, value)
+      source.fileSha256 = sha256Utf8(fs.readFileSync(source.path))
+    }
+    const cases: Array<[string, Mutation]> = [
+      ["non-canonical manifest", (bridge) => {
+        fs.appendFileSync(bridge.bridgePath, "\n", "utf8")
+        return false
+      }],
+      ["invalid manifest JSON", (bridge) => {
+        fs.writeFileSync(bridge.bridgePath, "{\n", "utf8")
+        return false
+      }],
+      ["non-record manifest", (bridge) => {
+        fs.writeFileSync(bridge.bridgePath, "[]\n", "utf8")
+        return false
+      }],
+      ["missing top-level key", (_bridge, value) => { delete value.schemaVersion }],
+      ["schema version", (_bridge, value) => { value.schemaVersion = 2 }],
+      ["embedded bridge id", (_bridge, value) => { value.bridgeId = `${value.bridgeId}-other` }],
+      ["source kind", (_bridge, value) => { value.sourceKind = "other" }],
+      ["created timestamp", (_bridge, value) => { value.createdAt = "2026-07-01T12:00:00Z" }],
+      ["confirmed timestamp", (_bridge, value) => { value.confirmedAt = "2026-07-01T12:00:01.000Z" }],
+      ["actor record", (_bridge, value) => { value.actor = null }],
+      ["actor keys", (_bridge, value) => { value.actor.extra = true }],
+      ["actor display", (_bridge, value) => { value.actor.displayName = "" }],
+      ["actor display line", (_bridge, value) => { value.actor.displayName = "Casey\nInvented" }],
+      ["actor provider", (_bridge, value) => { value.actor.provider = "invented" }],
+      ["actor external id", (_bridge, value) => { value.actor.externalId = "invented" }],
+      ["participants shape", (_bridge, value) => { value.participants = null }],
+      ["participants empty", (_bridge, value) => { value.participants = [] }],
+      ["participant record", (_bridge, value) => { value.participants[0] = null }],
+      ["participant keys", (_bridge, value) => { value.participants[0].extra = true }],
+      ["participant display", (_bridge, value) => { value.participants[0].displayName = "" }],
+      ["participant provider", (_bridge, value) => { value.participants[0].provider = "invented" }],
+      ["participant external id", (_bridge, value) => { value.participants[0].externalId = "invented" }],
+      ["participant role", (_bridge, value) => { value.participants[0].role = "requester" }],
+      ["request record", (_bridge, value) => { value.request = null }],
+      ["request keys", (_bridge, value) => { value.request.extra = true }],
+      ["request guid", (_bridge, value) => { value.request.eventGuid = "" }],
+      ["request text", (_bridge, value) => { value.request.text = "" }],
+      ["request hash format", (_bridge, value) => { value.request.sha256 = "INVALID" }],
+      ["request digest", (_bridge, value) => { value.request.text += " changed" }],
+      ["evidence record", (_bridge, value) => { value.evidence = null }],
+      ["evidence keys", (_bridge, value) => { value.evidence.extra = true }],
+      ["confirmation record", (_bridge, value) => { value.evidence.operatorConfirmation = null }],
+      ["confirmation keys", (_bridge, value) => { value.evidence.operatorConfirmation.extra = true }],
+      ["confirmation traversal", (_bridge, value) => { value.evidence.operatorConfirmation.path = "../confirmation.md" }],
+      ["confirmation dot path", (_bridge, value) => { value.evidence.operatorConfirmation.path = "." }],
+      ["confirmation hash format", (_bridge, value) => { value.evidence.operatorConfirmation.sha256 = "INVALID" }],
+      ["confirmation missing", (bridge, value) => {
+        fs.unlinkSync(path.join(path.dirname(bridge.bridgePath), value.evidence.operatorConfirmation.path))
+      }],
+      ["confirmation digest", (bridge, value) => {
+        fs.appendFileSync(path.join(path.dirname(bridge.bridgePath), value.evidence.operatorConfirmation.path), "changed", "utf8")
+      }],
+      ["confirmation missing LF", (bridge, value) => {
+        const target = path.join(path.dirname(bridge.bridgePath), value.evidence.operatorConfirmation.path)
+        const bytes = fs.readFileSync(target, "utf8").replace(/\n$/, "")
+        fs.writeFileSync(target, bytes, "utf8")
+        value.evidence.operatorConfirmation.sha256 = sha256Utf8(bytes)
+      }],
+      ["confirmation duplicate LF", (bridge, value) => {
+        const target = path.join(path.dirname(bridge.bridgePath), value.evidence.operatorConfirmation.path)
+        fs.appendFileSync(target, "\n", "utf8")
+        value.evidence.operatorConfirmation.sha256 = sha256Utf8(fs.readFileSync(target))
+      }],
+      ["confirmation CR", (bridge, value) => {
+        const target = path.join(path.dirname(bridge.bridgePath), value.evidence.operatorConfirmation.path)
+        fs.appendFileSync(target, "\r", "utf8")
+        value.evidence.operatorConfirmation.sha256 = sha256Utf8(fs.readFileSync(target))
+      }],
+      ["screenshots shape", (_bridge, value) => { value.evidence.screenshots = null }],
+      ["screenshots length", (_bridge, value) => { value.evidence.screenshots.pop() }],
+      ["screenshot record", (_bridge, value) => { value.evidence.screenshots[0] = null }],
+      ["screenshot keys", (_bridge, value) => { value.evidence.screenshots[0].extra = true }],
+      ["screenshot index", (_bridge, value) => { value.evidence.screenshots[0].index = 2 }],
+      ["screenshot source path", (_bridge, value) => { value.evidence.screenshots[0].sourcePath = "relative.jpg" }],
+      ["screenshot artifact traversal", (_bridge, value) => { value.evidence.screenshots[0].artifactPath = "../copy.jpg" }],
+      ["screenshot hash", (_bridge, value) => { value.evidence.screenshots[0].sha256 = "INVALID" }],
+      ["screenshot missing", (bridge, value) => {
+        fs.unlinkSync(path.join(path.dirname(bridge.bridgePath), value.evidence.screenshots[0].artifactPath))
+      }],
+      ["screenshot digest", (bridge, value) => {
+        fs.appendFileSync(path.join(path.dirname(bridge.bridgePath), value.evidence.screenshots[0].artifactPath), "changed")
+      }],
+      ["sources shape", (_bridge, value) => { value.evidence.sources = null }],
+      ["sources length", (_bridge, value) => { value.evidence.sources.pop() }],
+      ["inbound record", (_bridge, value) => { value.evidence.sources[0] = null }],
+      ["inbound keys", (_bridge, value) => { value.evidence.sources[0].extra = true }],
+      ["inbound role", (_bridge, value) => { value.evidence.sources[0].role = "other" }],
+      ["inbound guid", (_bridge, value) => { value.evidence.sources[0].eventGuid = "other" }],
+      ["inbound request hash", (_bridge, value) => { value.evidence.sources[0].requestSha256 = "f".repeat(64) }],
+      ["inbound source path", (_bridge, value) => { value.evidence.sources[0].path = "" }],
+      ["inbound file hash", (_bridge, value) => { value.evidence.sources[0].fileSha256 = "INVALID" }],
+      ["inbound missing", (_bridge, value) => { fs.unlinkSync(value.evidence.sources[0].path) }],
+      ["inbound file digest", (_bridge, value) => { fs.appendFileSync(value.evidence.sources[0].path, "changed") }],
+      ["inbound JSON", (_bridge, value) => {
+        const source = value.evidence.sources[0]
+        fs.writeFileSync(source.path, "{\n", "utf8")
+        source.fileSha256 = sha256Utf8(fs.readFileSync(source.path))
+      }],
+      ["inbound row record", (_bridge, value) => {
+        const source = value.evidence.sources[0]
+        fs.writeFileSync(source.path, "[]\n", "utf8")
+        source.fileSha256 = sha256Utf8(fs.readFileSync(source.path))
+      }],
+      ["inbound duplicate", (_bridge, value) => {
+        const source = value.evidence.sources[0]
+        fs.appendFileSync(source.path, fs.readFileSync(source.path))
+        source.fileSha256 = sha256Utf8(fs.readFileSync(source.path))
+      }],
+      ["inbound request text", (_bridge, value) => {
+        const source = value.evidence.sources[0]
+        rewriteSource(source, { messageGuid: value.request.eventGuid, textForAgent: "different" })
+      }],
+      ["session record", (_bridge, value) => { value.evidence.sources[1] = null }],
+      ["session keys", (_bridge, value) => { value.evidence.sources[1].extra = true }],
+      ["session role", (_bridge, value) => { value.evidence.sources[1].role = "other" }],
+      ["session request hash", (_bridge, value) => { value.evidence.sources[1].normalizedRequestSha256 = "f".repeat(64) }],
+      ["session events", (_bridge, value) => { rewriteSource(value.evidence.sources[1], { events: null }) }],
+      ["session event missing", (_bridge, value) => { rewriteSource(value.evidence.sources[1], { events: [] }) }],
+      ["session content", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[1], { events: [{ id: value.evidence.sources[1].eventId, content: null }] })
+      }],
+      ["session prefix", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[1], { events: [{ id: value.evidence.sources[1].eventId, content: value.request.text }] })
+      }],
+      ["session normalized text", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[1], { events: [{ id: value.evidence.sources[1].eventId, content: `Casey: ${value.request.text} ` }] })
+      }],
+      ["context record", (_bridge, value) => { value.evidence.sources[2] = null }],
+      ["context keys", (_bridge, value) => { value.evidence.sources[2].extra = true }],
+      ["context role", (_bridge, value) => { value.evidence.sources[2].role = "other" }],
+      ["context guid", (_bridge, value) => { value.evidence.sources[2].eventGuid = "other" }],
+      ["context anchor", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[2], { anchorMessageGuid: "other", messages: [{}, {}] })
+      }],
+      ["context messages", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[2], { anchorMessageGuid: value.request.eventGuid, messages: null })
+      }],
+      ["context message count", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[2], { anchorMessageGuid: value.request.eventGuid, messages: [] })
+      }],
+      ["context message record", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[2], { anchorMessageGuid: value.request.eventGuid, messages: [null, null] })
+      }],
+      ["context author", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[2], {
+          anchorMessageGuid: value.request.eventGuid,
+          messages: [
+            { authorLabel: null, bodyPreview: "one", timestamp: SYNTHETIC_CAPTURED_AT },
+            { authorLabel: "Agent", bodyPreview: "two", timestamp: SYNTHETIC_CAPTURED_AT },
+          ],
+        })
+      }],
+      ["context preview", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[2], {
+          anchorMessageGuid: value.request.eventGuid,
+          messages: [
+            { authorLabel: "Agent", bodyPreview: null, timestamp: SYNTHETIC_CAPTURED_AT },
+            { authorLabel: "Agent", bodyPreview: "two", timestamp: SYNTHETIC_CAPTURED_AT },
+          ],
+        })
+      }],
+      ["context timestamp", (_bridge, value) => {
+        rewriteSource(value.evidence.sources[2], {
+          anchorMessageGuid: value.request.eventGuid,
+          messages: [
+            { authorLabel: "Agent", bodyPreview: "one", timestamp: null },
+            { authorLabel: "Agent", bodyPreview: "two", timestamp: SYNTHETIC_CAPTURED_AT },
+          ],
+        })
+      }],
+    ]
+
+    for (const [name, mutate] of cases) {
+      const agentRoot = temporaryAgentRoot()
+      const bridge = writeSyntheticBridgeEvidence(agentRoot)
+      const value = readJson(bridge.bridgePath)
+      const rewriteManifest = mutate(bridge, value) !== false
+      if (rewriteManifest) writeJson(bridge.bridgePath, value)
+      expect(
+        () => validateHabitEvidenceBridge({ agentRoot, bridgeId: bridge.bridgeId }, lifecycleDeps()),
+        name,
+      ).toThrow(/bridge/i)
+    }
+  })
+
+  it("rejects invalid bridge roots, identifiers, and trust metadata", () => {
+    expect(() => validateHabitEvidenceBridge({ agentRoot: "", bridgeId: "synthetic" }, lifecycleDeps()))
+      .toThrow(/agent.root/i)
+    for (const bridgeId of ["", ".", "..", "../bridge", "bridge/path"]) {
+      expect(() => validateHabitEvidenceBridge({ agentRoot: temporaryAgentRoot(), bridgeId }, lifecycleDeps()))
+        .toThrow(/bridge.*id/i)
+    }
+
+    const missingRoot = temporaryAgentRoot()
+    expect(() => validateHabitEvidenceBridge({ agentRoot: missingRoot, bridgeId: "synthetic" }, lifecycleDeps()))
+      .toThrow(/bridge.*missing/i)
+
+    const agentRoot = temporaryAgentRoot()
+    const bridge = writeSyntheticBridgeEvidence(agentRoot)
+    expect(() => validateHabitEvidenceBridge({ agentRoot, bridgeId: bridge.bridgeId }, lifecycleDeps({
+      trustedBridge: () => ({ cancellationReason: "invented\nreason" }),
+    }))).toThrow(/cancellation.reason/i)
+  })
 })
 
 describe("atomic habit cancellation", () => {
+  it("emits exact paired cancellation lifecycle events with stable operation identity", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.component === "daemon" && entry.event.startsWith("habit_cancel_")) events.push(entry)
+    })
+    let receipt
+    try {
+      receipt = await cancelCapture(agentRoot, capture)
+    } finally {
+      unregister()
+    }
+
+    expect(events.map((entry) => entry.event)).toEqual(["habit_cancel_start", "habit_cancel_end"])
+    expect(events.map((entry) => entry.meta)).toEqual([
+      expect.objectContaining({
+        habitId: SYNTHETIC_HABIT_ID,
+        operationId: receipt.operationId,
+        evidenceKeyHash: receipt.evidenceKeyHash,
+      }),
+      expect.objectContaining({
+        habitId: SYNTHETIC_HABIT_ID,
+        operationId: receipt.operationId,
+        evidenceKeyHash: receipt.evidenceKeyHash,
+      }),
+    ])
+  })
+
   it("rejects missing or degraded definitions without creating cancellation authority", async () => {
     for (const definitionBytes of [null, "---\nstatus: invented\n---\n\nDo not run.\n"]) {
       const agentRoot = temporaryAgentRoot()
@@ -617,6 +1328,62 @@ describe("atomic habit cancellation", () => {
       } else {
         expect(fs.readFileSync(definitionPath, "utf8")).toBe(definitionBytes)
       }
+    }
+  })
+
+  it("rejects invalid habit identifiers, clocks, and already-cancelled definitions", async () => {
+    const invalidRoot = temporaryAgentRoot()
+    const invalidCapture = writeSyntheticCaptureEvidence(invalidRoot)
+    await expect(cancelHabit({
+      agentRoot: invalidRoot,
+      habitId: "../invalid",
+      evidenceLocator: invalidCapture.locator,
+      authority: captureAuthority(invalidCapture),
+    }, lifecycleDeps())).rejects.toThrow(/habit|definition|id/i)
+
+    const clockRoot = temporaryAgentRoot()
+    const clockDefinition = writeSyntheticHabitDefinition(clockRoot)
+    const clockCapture = writeSyntheticCaptureEvidence(clockRoot)
+    await expect(cancelCapture(clockRoot, clockCapture, lifecycleDeps({
+      now: () => new Date(Number.NaN),
+    }))).rejects.toThrow(/clock/i)
+    expect(fs.readFileSync(clockDefinition.path, "utf8")).toBe(clockDefinition.bytes)
+
+    const cancelledRoot = temporaryAgentRoot()
+    const cancelledPath = path.join(cancelledRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`)
+    fs.mkdirSync(path.dirname(cancelledPath), { recursive: true })
+    fs.writeFileSync(cancelledPath, "---\nstatus: cancelled\n---\nAlready ended.\n", "utf8")
+    const cancelledCapture = writeSyntheticCaptureEvidence(cancelledRoot)
+    await expect(cancelCapture(cancelledRoot, cancelledCapture))
+      .rejects.toThrow(/already.cancelled/i)
+  })
+
+  it("times out behind a distinct live owner for the same cancellation operation", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const identity = buildHabitEvidenceIdentity({
+      habitId: SYNTHETIC_HABIT_ID,
+      kind: "capture",
+      id: capture.capture.keyHash,
+    })
+    const operation = buildHabitCancellationOperation(identity.evidenceKeyHash)
+    let tick = Date.parse(SYNTHETIC_CANCELLED_AT)
+    const deps = lifecycleDeps({
+      now: () => new Date((tick += 6_000)),
+      sleep: async () => undefined,
+    })
+    const lock = await acquireHabitLifecycleLock({
+      agentRoot,
+      habitId: SYNTHETIC_HABIT_ID,
+      operationId: operation.operationId,
+    }, deps)
+    expect(lock.status).toBe("acquired")
+    if (lock.status !== "acquired") return
+    try {
+      await expect(cancelCapture(agentRoot, capture, deps)).rejects.toThrow(/lock.*timeout/i)
+    } finally {
+      expect(releaseHabitLifecycleLock(lock.lease, deps)).toBe(true)
     }
   })
 
@@ -666,6 +1433,364 @@ describe("atomic habit cancellation", () => {
     expect(second).toEqual(first)
     expect(fs.readFileSync(receiptPath, "utf8")).toBe(receiptBytes)
     expect(fs.readFileSync(definition.path, "utf8")).toBe(firstDefinition)
+  })
+
+  it.each([
+    ["body-only", "Run the synthetic report while this legacy habit is active.\n"],
+    ["body-only without terminal LF", "Run the synthetic report while this legacy habit is active."],
+    ["frontmatter-without-status", [
+      "---",
+      "title: Legacy synthetic report",
+      "cadence: 24h",
+      "---",
+      "",
+      "Run the synthetic report while this legacy habit is active.",
+      "",
+    ].join("\n")],
+  ])("cancels parser-valid active %s definitions by insertion while preserving every original byte", async (name, bytes) => {
+    const agentRoot = temporaryAgentRoot()
+    const definitionPath = path.join(agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`)
+    fs.mkdirSync(path.dirname(definitionPath), { recursive: true })
+    fs.writeFileSync(definitionPath, bytes, "utf8")
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+
+    const receipt = await cancelCapture(agentRoot, capture)
+    const cancelled = fs.readFileSync(definitionPath, "utf8")
+    const lifecycleBlock = [
+      "status: cancelled",
+      `cancelledAt: ${SYNTHETIC_CANCELLED_AT}`,
+      `cancelledEvidence: capture:${capture.capture.keyHash}`,
+      `cancelledReason: Confirmed requester ${SYNTHETIC_ACTOR} asked to end this habit.`,
+    ].join("\n")
+    const expected = name.startsWith("body-only")
+      ? `---\n${lifecycleBlock}\n---\n${bytes}`
+      : bytes.replace("\n---\n", `\n${lifecycleBlock}\n---\n`)
+
+    expect(receipt.transition.fromStatus).toBe("active")
+    expect(cancelled).toBe(expected)
+  })
+
+  it.each([
+    ["BOM/CRLF", "\uFEFF---\r\ntitle: Legacy CRLF report\r\nstatus: active\r\n---\r\nRun it.\r\n"],
+    ["body status lookalike", "---\ntitle: Explicit report\nstatus: active\n---\nThe literal body follows:\nstatus: active\n"],
+    ["whitespace delimiters", " --- \ntitle: Spaced delimiters\nstatus: active\n --- \nRun it.\n"],
+    ["trailing status whitespace", "---\ntitle: Trailing status\nstatus: active   \n---\nRun it.\n"],
+  ])("cancels %s active frontmatter without rewriting line endings or a body status lookalike", async (_name, bytes) => {
+    const agentRoot = temporaryAgentRoot()
+    const definitionPath = path.join(agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`)
+    fs.mkdirSync(path.dirname(definitionPath), { recursive: true })
+    fs.writeFileSync(definitionPath, bytes, "utf8")
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const lineEnding = bytes.includes("\r\n") ? "\r\n" : "\n"
+    const lifecycleBlock = [
+      "status: cancelled",
+      `cancelledAt: ${SYNTHETIC_CANCELLED_AT}`,
+      `cancelledEvidence: capture:${capture.capture.keyHash}`,
+      `cancelledReason: Confirmed requester ${SYNTHETIC_ACTOR} asked to end this habit.`,
+    ].join(lineEnding)
+
+    await cancelCapture(agentRoot, capture)
+
+    expect(fs.readFileSync(definitionPath, "utf8"))
+      .toBe(bytes.replace(/status: active[ \t]*(?=\r?$)/m, lifecycleBlock))
+  })
+
+  it.each([
+    ["pre-existing lifecycle authority", "---\nstatus: active\ncancelledAt: 2026-01-01T00:00:00.000Z\n---\nRun it.\n"],
+    ["duplicate status authority", "---\nstatus: paused\nstatus: active\n---\nRun it.\n"],
+  ])("rejects %s instead of rendering ambiguous cancellation state", async (_name, bytes) => {
+    const agentRoot = temporaryAgentRoot()
+    const definitionPath = path.join(agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`)
+    fs.mkdirSync(path.dirname(definitionPath), { recursive: true })
+    fs.writeFileSync(definitionPath, bytes, "utf8")
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+
+    await expect(cancelCapture(agentRoot, capture)).rejects.toThrow(/lifecycle.lines|status.line/i)
+    expect(fs.readFileSync(definitionPath, "utf8")).toBe(bytes)
+  })
+
+  it("re-establishes definition, receipt, and journal parent durability before returning an idempotent acknowledgement", async () => {
+    const agentRoot = temporaryAgentRoot()
+    const definition = writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const first = await cancelCapture(agentRoot, capture)
+    const paths = getHabitLifecyclePaths({
+      agentRoot,
+      habitId: SYNTHETIC_HABIT_ID,
+      operationId: first.operationId,
+      evidenceKeyHash: first.evidenceKeyHash,
+    })
+    const requiredDirectories = new Set([
+      path.resolve(path.dirname(definition.path)),
+      path.resolve(paths.journalDirectory),
+      path.resolve(paths.receiptsDirectory),
+    ])
+    const tracking = trackDirectoryFsyncs(requiredDirectories)
+
+    const duplicate = await cancelCapture(agentRoot, capture, lifecycleDeps({ fs: tracking.fs }))
+
+    expect(duplicate).toEqual(first)
+    expect(tracking.synced).toEqual(requiredDirectories)
+  })
+
+  it("returns the committed receipt idempotently after raw ingress evidence expires", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const first = await cancelCapture(agentRoot, capture)
+    fs.unlinkSync(capture.path)
+
+    await expect(cancelCapture(agentRoot, capture)).resolves.toEqual(first)
+  })
+
+  it("rejects a committed journal whose cancelled digest points at an active definition", async () => {
+    const agentRoot = temporaryAgentRoot()
+    const definition = writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const first = await cancelCapture(agentRoot, capture)
+    const journalPath = getHabitLifecyclePaths({
+      agentRoot,
+      habitId: SYNTHETIC_HABIT_ID,
+      operationId: first.operationId,
+    }).journal!
+    const journal = readJson(journalPath)
+    journal.cancellationPreparation.definitionCancelledSha256 = sha256Utf8(definition.bytes)
+    writeJson(journalPath, journal)
+    fs.writeFileSync(definition.path, definition.bytes, "utf8")
+
+    await expect(cancelCapture(agentRoot, capture))
+      .rejects.toThrow(/definition.*state/i)
+    expect(fs.readFileSync(definition.path, "utf8")).toBe(definition.bytes)
+  })
+
+  it("fails closed on missing or digest-divergent committed receipt authority", async () => {
+    const missingRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(missingRoot)
+    const missingCapture = writeSyntheticCaptureEvidence(missingRoot)
+    await cancelCapture(missingRoot, missingCapture)
+    fs.unlinkSync(cancellationPathsForCapture(missingRoot, missingCapture).receipt!)
+    await expect(cancelCapture(missingRoot, missingCapture))
+      .rejects.toThrow(/committed.*state/i)
+
+    const digestRoot = temporaryAgentRoot()
+    const digestDefinition = writeSyntheticHabitDefinition(digestRoot)
+    const digestCapture = writeSyntheticCaptureEvidence(digestRoot)
+    await cancelCapture(digestRoot, digestCapture)
+    fs.appendFileSync(digestDefinition.path, "# divergent but still parsed cancelled\n", "utf8")
+    await expect(cancelCapture(digestRoot, digestCapture))
+      .rejects.toThrow(/definition.*digest/i)
+  })
+
+  it("fails closed if committed preflight authority regresses before the lock is inspected", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    await cancelCapture(agentRoot, capture)
+    const journalPath = cancellationPathsForCapture(agentRoot, capture).journal!
+    const committedBytes = fs.readFileSync(journalPath, "utf8")
+    const regressed = JSON.parse(committedBytes)
+    regressed.state = "definition_cancelled"
+    regressed.generation = 2
+    const regressedBytes = `${JSON.stringify(regressed, null, 2)}\n`
+    let journalReads = 0
+    const racingFs = new Proxy(fs, {
+      get(target, property) {
+        if (property === "readFileSync") {
+          return (filePath: fs.PathOrFileDescriptor, ...args: unknown[]): unknown => {
+            if (path.resolve(String(filePath)) === path.resolve(journalPath)) {
+              journalReads += 1
+              return journalReads === 1 ? committedBytes : regressedBytes
+            }
+            return Reflect.apply(fs.readFileSync, fs, [filePath, ...args] as Parameters<typeof fs.readFileSync>)
+          }
+        }
+        return Reflect.get(target, property)
+      },
+    }) as typeof fs
+
+    await expect(cancelCapture(agentRoot, capture, lifecycleDeps({ fs: racingFs })))
+      .rejects.toThrow(/evidence.*required/i)
+  })
+
+  it("rejects orphan receipts and a cancelled definition without lifecycle intent", async () => {
+    const orphanRoot = temporaryAgentRoot()
+    const orphanDefinition = writeSyntheticHabitDefinition(orphanRoot)
+    const orphanCapture = writeSyntheticCaptureEvidence(orphanRoot)
+    await cancelCapture(orphanRoot, orphanCapture)
+    const orphanPaths = cancellationPathsForCapture(orphanRoot, orphanCapture)
+    fs.unlinkSync(orphanPaths.journal!)
+    fs.writeFileSync(orphanDefinition.path, orphanDefinition.bytes, "utf8")
+    await expect(cancelCapture(orphanRoot, orphanCapture))
+      .rejects.toThrow(/receipt.*without.*intent/i)
+
+    const cancelledRoot = temporaryAgentRoot()
+    const cancelledPath = path.join(cancelledRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`)
+    fs.mkdirSync(path.dirname(cancelledPath), { recursive: true })
+    fs.writeFileSync(cancelledPath, "---\nstatus: cancelled\n---\nAlready ended.\n", "utf8")
+    const cancelledCapture = writeSyntheticCaptureEvidence(cancelledRoot)
+    await expect(cancelCapture(cancelledRoot, cancelledCapture))
+      .rejects.toThrow(/already.cancelled/i)
+  })
+
+  it("rejects every semantically divergent prepared cancellation state", async () => {
+    const actorRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(actorRoot)
+    const actorCapture = writeSyntheticCaptureEvidence(actorRoot)
+    const actorJournal = await leaveCancellationAtGeneration(actorRoot, actorCapture, 1)
+    actorJournal.cancellationPreparation.receipt.actor.displayName = "Different requester"
+    actorJournal.cancellationPreparation.receipt.acknowledgement = renderHabitCancellationAcknowledgement(
+      SYNTHETIC_HABIT_ID,
+      "Different requester",
+      actorJournal.cancellationPreparation.receipt.transition.boundaryState,
+    )
+    writeJson(cancellationPathsForCapture(actorRoot, actorCapture).journal!, actorJournal)
+    await expect(cancelCapture(actorRoot, actorCapture))
+      .rejects.toThrow(/prepared.*receipt.*mismatch/i)
+
+    const statusRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(statusRoot)
+    const statusCapture = writeSyntheticCaptureEvidence(statusRoot)
+    const statusJournal = await leaveCancellationAtGeneration(statusRoot, statusCapture, 1)
+    statusJournal.cancellationPreparation.receipt.transition.fromStatus = "paused"
+    writeJson(cancellationPathsForCapture(statusRoot, statusCapture).journal!, statusJournal)
+    await expect(cancelCapture(statusRoot, statusCapture))
+      .rejects.toThrow(/definition.*state/i)
+
+    const renderRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(renderRoot)
+    const renderCapture = writeSyntheticCaptureEvidence(renderRoot)
+    const renderJournal = await leaveCancellationAtGeneration(renderRoot, renderCapture, 1)
+    renderJournal.cancellationPreparation.definitionCancelledSha256 = "f".repeat(64)
+    writeJson(cancellationPathsForCapture(renderRoot, renderCapture).journal!, renderJournal)
+    await expect(cancelCapture(renderRoot, renderCapture))
+      .rejects.toThrow(/definition.*digest/i)
+
+    const unknownRoot = temporaryAgentRoot()
+    const unknownDefinition = writeSyntheticHabitDefinition(unknownRoot)
+    const unknownCapture = writeSyntheticCaptureEvidence(unknownRoot)
+    await leaveCancellationAtGeneration(unknownRoot, unknownCapture, 1)
+    fs.appendFileSync(unknownDefinition.path, "# divergent definition\n", "utf8")
+    await expect(cancelCapture(unknownRoot, unknownCapture))
+      .rejects.toThrow(/definition.*digest/i)
+  })
+
+  it("rejects g2 definition regressions and confirms an already-published matching receipt", async () => {
+    const beforeRoot = temporaryAgentRoot()
+    const beforeDefinition = writeSyntheticHabitDefinition(beforeRoot)
+    const beforeCapture = writeSyntheticCaptureEvidence(beforeRoot)
+    await leaveCancellationAtGeneration(beforeRoot, beforeCapture, 2)
+    fs.writeFileSync(beforeDefinition.path, beforeDefinition.bytes, "utf8")
+    await expect(cancelCapture(beforeRoot, beforeCapture))
+      .rejects.toThrow(/definition.*state/i)
+
+    const statusRoot = temporaryAgentRoot()
+    const statusDefinition = writeSyntheticHabitDefinition(statusRoot)
+    const statusCapture = writeSyntheticCaptureEvidence(statusRoot)
+    const statusJournal = await leaveCancellationAtGeneration(statusRoot, statusCapture, 2)
+    statusJournal.cancellationPreparation.definitionBeforeSha256 = "f".repeat(64)
+    statusJournal.cancellationPreparation.definitionCancelledSha256 = sha256Utf8(statusDefinition.bytes)
+    writeJson(cancellationPathsForCapture(statusRoot, statusCapture).journal!, statusJournal)
+    fs.writeFileSync(statusDefinition.path, statusDefinition.bytes, "utf8")
+    await expect(cancelCapture(statusRoot, statusCapture))
+      .rejects.toThrow(/definition.*state/i)
+
+    const receiptRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(receiptRoot)
+    const receiptCapture = writeSyntheticCaptureEvidence(receiptRoot)
+    const first = await cancelCapture(receiptRoot, receiptCapture)
+    const receiptPaths = cancellationPathsForCapture(receiptRoot, receiptCapture)
+    const receiptJournal = readJson(receiptPaths.journal!)
+    receiptJournal.state = "definition_cancelled"
+    receiptJournal.generation = 2
+    writeJson(receiptPaths.journal!, receiptJournal)
+    await expect(cancelCapture(receiptRoot, receiptCapture)).resolves.toEqual(first)
+  })
+
+  it("retains and reuses a same-process lease after release contention instead of wedging retries", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const releaseBlocker = blockReleaseAfterCommit(agentRoot)
+
+    await expect(cancelCapture(agentRoot, capture, lifecycleDeps({
+      fs: releaseBlocker.fs,
+      sleep: async () => undefined,
+    })))
+      .rejects.toThrow(/lock.*release/i)
+    releaseBlocker.close()
+
+    let tick = Date.parse(SYNTHETIC_CANCELLED_AT)
+    const recovered = await cancelCapture(agentRoot, capture, lifecycleDeps({
+      now: () => new Date((tick += 6_000)),
+      sleep: async () => undefined,
+    }))
+    expect(recovered.transition.toStatus).toBe("cancelled")
+    expect(fs.existsSync(getHabitLifecyclePaths({
+      agentRoot,
+      habitId: SYNTHETIC_HABIT_ID,
+    }).owner)).toBe(false)
+  })
+
+  it("retains a same-process lease when owner inspection fails transiently during release", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+    const inspection = failOwnerInspectionAfterCommit(agentRoot)
+
+    await expect(cancelCapture(agentRoot, capture, lifecycleDeps({
+      fs: inspection.fs,
+      sleep: async () => undefined,
+    }))).rejects.toThrow(/lock.*release/i)
+    inspection.recover()
+
+    const recovered = await cancelCapture(agentRoot, capture)
+    expect(recovered.transition.toStatus).toBe("cancelled")
+    expect(fs.existsSync(getHabitLifecyclePaths({
+      agentRoot,
+      habitId: SYNTHETIC_HABIT_ID,
+    }).owner)).toBe(false)
+  })
+
+  it("retains leases across release exceptions and discards a missing retained owner on retry", async () => {
+    const exceptionRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(exceptionRoot)
+    const exceptionCapture = writeSyntheticCaptureEvidence(exceptionRoot)
+    const unlinkFailure = failOwnerUnlinkAfterCommit(exceptionRoot)
+    await expect(cancelCapture(exceptionRoot, exceptionCapture, lifecycleDeps({ fs: unlinkFailure.fs })))
+      .rejects.toThrow(/lock.*release/i)
+    unlinkFailure.recover()
+    await expect(cancelCapture(exceptionRoot, exceptionCapture)).resolves.toMatchObject({
+      transition: { toStatus: "cancelled" },
+    })
+
+    const missingRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(missingRoot)
+    const missingCapture = writeSyntheticCaptureEvidence(missingRoot)
+    const blocker = blockReleaseAfterCommit(missingRoot)
+    await expect(cancelCapture(missingRoot, missingCapture, lifecycleDeps({
+      fs: blocker.fs,
+      sleep: async () => undefined,
+    }))).rejects.toThrow(/lock.*release/i)
+    blocker.close()
+    const ownerPath = getHabitLifecyclePaths({
+      agentRoot: missingRoot,
+      habitId: SYNTHETIC_HABIT_ID,
+    }).owner
+    fs.unlinkSync(ownerPath)
+    await expect(cancelCapture(missingRoot, missingCapture)).resolves.toMatchObject({
+      transition: { toStatus: "cancelled" },
+    })
+  })
+
+  it("retries one transient false release with the default bounded wait", async () => {
+    const agentRoot = temporaryAgentRoot()
+    writeSyntheticHabitDefinition(agentRoot)
+    const capture = writeSyntheticCaptureEvidence(agentRoot)
+
+    await expect(cancelCapture(agentRoot, capture, lifecycleDeps({
+      fs: missFirstOwnerInspectionAfterCommit(agentRoot),
+      sleep: undefined,
+    }))).resolves.toMatchObject({ transition: { toStatus: "cancelled" } })
   })
 
   it("serializes concurrent cancellation into one definition transition and one immutable receipt", async () => {
@@ -761,6 +1886,43 @@ describe("atomic habit cancellation", () => {
     expect(recovered.transition.fromStatus).toBe("active")
     expect(recovered.transition.toStatus).toBe("cancelled")
     expect(fs.readFileSync(definition.path, "utf8")).toBe(cancelledDefinitionBytes)
+  })
+
+  it("re-establishes each visible journal generation before its dependent mutation", async () => {
+    const g1Root = temporaryAgentRoot()
+    const g1Definition = writeSyntheticHabitDefinition(g1Root)
+    const g1Capture = writeSyntheticCaptureEvidence(g1Root)
+    await expect(cancelCapture(g1Root, g1Capture, lifecycleDeps({
+      fs: failJournalDirectoryFsyncAtState(g1Root, "cancellation_intent"),
+    }))).rejects.toThrow(/durability/i)
+    expect(fs.readFileSync(g1Definition.path, "utf8")).toBe(g1Definition.bytes)
+    const g1Trace = traceRecoveryDurability(g1Root, g1Definition.path)
+    await cancelCapture(g1Root, g1Capture, lifecycleDeps({ fs: g1Trace.fs }))
+    expect(g1Trace.events.indexOf("journal:fsync")).toBeGreaterThanOrEqual(0)
+    expect(g1Trace.events.indexOf("journal:fsync"))
+      .toBeLessThan(g1Trace.events.indexOf("definition:rename"))
+
+    const g2Root = temporaryAgentRoot()
+    const g2Definition = writeSyntheticHabitDefinition(g2Root)
+    const g2Capture = writeSyntheticCaptureEvidence(g2Root)
+    await expect(cancelCapture(g2Root, g2Capture, lifecycleDeps({
+      fs: failReceiptPublicationOnce(),
+    }))).rejects.toThrow(/write/i)
+    const g2Trace = traceRecoveryDurability(g2Root, g2Definition.path)
+    await cancelCapture(g2Root, g2Capture, lifecycleDeps({ fs: g2Trace.fs }))
+    expect(g2Trace.events.indexOf("journal:fsync")).toBeGreaterThanOrEqual(0)
+    expect(g2Trace.events.indexOf("journal:fsync"))
+      .toBeLessThan(g2Trace.events.indexOf("receipt:link"))
+
+    const g3Root = temporaryAgentRoot()
+    const g3Definition = writeSyntheticHabitDefinition(g3Root)
+    const g3Capture = writeSyntheticCaptureEvidence(g3Root)
+    const receipt = await cancelCapture(g3Root, g3Capture)
+    const g3Trace = traceRecoveryDurability(g3Root, g3Definition.path)
+    await expect(cancelCapture(g3Root, g3Capture, lifecycleDeps({ fs: g3Trace.fs })))
+      .resolves.toEqual(receipt)
+    expect(g3Trace.events.filter((event) => event.endsWith(":fsync")).slice(0, 3))
+      .toEqual(["journal:fsync", "definition:fsync", "receipt:fsync"])
   })
 
   it.each(["active", "paused"] as const)(

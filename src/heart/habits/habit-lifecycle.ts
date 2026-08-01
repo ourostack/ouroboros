@@ -31,6 +31,7 @@ const JOURNAL_KEYS = [
   "updatedAt",
   "generation",
   "evidenceKeyHash",
+  "cancellationPreparation",
   "intentAt",
   "transportInvokedAt",
   "classifiedAt",
@@ -86,6 +87,7 @@ export interface HabitLifecycleJournal {
   updatedAt: string
   generation: number
   evidenceKeyHash: string | null
+  cancellationPreparation: HabitCancellationPreparation | null
   intentAt: string | null
   transportInvokedAt: string | null
   classifiedAt: string | null
@@ -120,6 +122,12 @@ export interface HabitCancellationReceipt {
   }
   acknowledgement: string
   createdAt: string
+}
+
+export interface HabitCancellationPreparation {
+  receipt: HabitCancellationReceipt
+  definitionBeforeSha256: string
+  definitionCancelledSha256: string
 }
 
 export interface HabitLifecyclePaths {
@@ -483,6 +491,45 @@ export function releaseHabitLifecycleLock(
   return attempt.value
 }
 
+export function habitLifecycleLeaseIsCurrent(
+  lease: HabitLifecycleLease,
+  deps: Pick<HabitLifecycleDeps, "fs"> = {},
+): boolean {
+  return snapshotMatchesLease(inspectOwner(lease.ownerPath, deps.fs ?? fs, true), lease)
+}
+
+export function confirmHabitLifecyclePathDurability(
+  lease: HabitLifecycleLease,
+  filePath: string,
+  deps: HabitLifecycleDeps = {},
+): void {
+  const storeFs = deps.fs ?? fs
+  let descriptor: number | null = null
+  try {
+    assertLease(lease, storeFs)
+    const resolvedPath = path.resolve(requiredString(filePath, "definition_path_invalid"))
+    const resolvedRoot = path.resolve(lease.agentRoot)
+    if (!resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+      throw new HabitLifecycleError("definition_path_invalid")
+    }
+    descriptor = storeFs.openSync(resolvedPath, "r")
+    storeFs.fsyncSync(descriptor)
+    storeFs.closeSync(descriptor)
+    descriptor = null
+    fsyncDirectory(path.dirname(resolvedPath), storeFs)
+  } catch (error) {
+    if (descriptor !== null) bestEffortClose(descriptor, storeFs)
+    const wrapped = error instanceof HabitLifecycleError && error.code === "lifecycle_lease_lost"
+      ? error
+      : new HabitLifecycleError("lifecycle_durability_unknown", {
+        durabilityUnknown: true,
+        cause: error,
+      })
+    emitWriteError(lease, wrapped)
+    throw wrapped
+  }
+}
+
 export function createHabitLifecycleJournal(input: {
   habitId: string
   operationId: string
@@ -506,6 +553,7 @@ export function createHabitLifecycleJournal(input: {
     updatedAt: validatedTimestamp(input.updatedAt, "lifecycle_timestamp_invalid"),
     generation: 0,
     evidenceKeyHash: null,
+    cancellationPreparation: null,
     intentAt: null,
     transportInvokedAt: null,
     classifiedAt: null,
@@ -518,7 +566,12 @@ export function transitionHabitLifecycleJournal(
   current: HabitLifecycleJournal,
   transition:
     | { state: "lock_acquired"; at: string }
-    | { state: "cancellation_intent"; at: string; evidenceKeyHash: string }
+    | {
+      state: "cancellation_intent"
+      at: string
+      evidenceKeyHash: string
+      cancellationPreparation: HabitCancellationPreparation
+    }
     | { state: "definition_cancelled"; at: string; boundaryState: HabitBoundaryState }
     | { state: "cancellation_receipt_committed"; at: string }
     | { state: "send_intent"; at: string }
@@ -551,6 +604,7 @@ export function transitionHabitLifecycleJournal(
     updatedAt: at,
     generation: current.generation + 1,
     evidenceKeyHash: current.evidenceKeyHash,
+    cancellationPreparation: current.cancellationPreparation,
     intentAt: current.intentAt,
     transportInvokedAt: current.transportInvokedAt,
     classifiedAt: current.classifiedAt,
@@ -559,10 +613,19 @@ export function transitionHabitLifecycleJournal(
   }
   if (transition.state === "cancellation_intent") {
     next.evidenceKeyHash = validatedHash(transition.evidenceKeyHash, "evidence_key_hash_invalid")
+    next.cancellationPreparation = validatedCancellationPreparation(
+      transition.cancellationPreparation,
+      current.habitId,
+      current.operationId,
+      next.evidenceKeyHash,
+    )
     next.intentAt = at
   } else if (transition.state === "definition_cancelled") {
     next.classifiedAt = at
     next.boundaryState = validatedBoundaryState(transition.boundaryState)
+    if (next.boundaryState !== current.cancellationPreparation?.receipt.transition.boundaryState) {
+      throw new HabitLifecycleError("lifecycle_transition_invalid")
+    }
   } else if (transition.state === "send_intent") {
     next.intentAt = at
   } else if (
@@ -608,11 +671,12 @@ export function readHabitLifecycleJournal(input: {
   agentRoot: string
   habitId: string
   operationId: string
-}): HabitLifecycleJournal | null {
+}, deps: Pick<HabitLifecycleDeps, "fs"> = {}): HabitLifecycleJournal | null {
   const paths = getHabitLifecyclePaths(input)
+  const storeFs = deps.fs ?? fs
   let bytes: string
   try {
-    bytes = fs.readFileSync(paths.journal!, "utf8")
+    bytes = storeFs.readFileSync(paths.journal!, "utf8")
   } catch (error) {
     if (isNodeError(error, "ENOENT")) return null
     throw new HabitLifecycleError("lifecycle_journal_read_failed", { cause: error })
@@ -625,6 +689,40 @@ export function readHabitLifecycleJournal(input: {
     || serializeHabitLifecycleJson(value) !== bytes
   ) throw new HabitLifecycleError("lifecycle_journal_invalid")
   return value
+}
+
+export function listHabitLifecycleJournals(input: {
+  agentRoot: string
+  habitId: string
+}, deps: Pick<HabitLifecycleDeps, "fs"> = {}): HabitLifecycleJournal[] {
+  const paths = getHabitLifecyclePaths(input)
+  const storeFs = deps.fs ?? fs
+  let names: string[]
+  try {
+    names = storeFs.readdirSync(paths.journalDirectory)
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return []
+    throw new HabitLifecycleError("lifecycle_journal_read_failed", { cause: error })
+  }
+  const journals: HabitLifecycleJournal[] = []
+  for (const name of names.filter((entry) => HASH_PATTERN.test(entry.slice(0, -5)) && entry.endsWith(".json")).sort()) {
+    const journalPath = path.join(paths.journalDirectory, name)
+    let bytes: string
+    try {
+      bytes = storeFs.readFileSync(journalPath, "utf8")
+    } catch (error) {
+      throw new HabitLifecycleError("lifecycle_journal_read_failed", { cause: error })
+    }
+    const value = parseJson(bytes, "lifecycle_journal_invalid")
+    if (
+      !isValidJournal(value)
+      || value.habitId !== input.habitId
+      || sha256(value.operationId) !== name.slice(0, -5)
+      || serializeHabitLifecycleJson(value) !== bytes
+    ) throw new HabitLifecycleError("lifecycle_journal_invalid")
+    journals.push(value)
+  }
+  return journals
 }
 
 export function writeHabitLifecycleDefinition(
@@ -674,7 +772,7 @@ export function publishHabitLifecycleReceipt(
       agentRoot: lease.agentRoot,
       habitId: lease.habitId,
       evidenceKeyHash: hash,
-    })
+    }, deps)
     if (existing !== null && serializeHabitLifecycleJson(existing) === bytes) return "duplicate"
     throw new HabitLifecycleError("lifecycle_receipt_collision")
   } catch (error) {
@@ -687,11 +785,12 @@ export function readHabitLifecycleReceipt(input: {
   agentRoot: string
   habitId: string
   evidenceKeyHash: string
-}): HabitCancellationReceipt | null {
+}, deps: Pick<HabitLifecycleDeps, "fs"> = {}): HabitCancellationReceipt | null {
   const paths = getHabitLifecyclePaths(input)
+  const storeFs = deps.fs ?? fs
   let bytes: string
   try {
-    bytes = fs.readFileSync(paths.receipt!, "utf8")
+    bytes = storeFs.readFileSync(paths.receipt!, "utf8")
   } catch (error) {
     if (isNodeError(error, "ENOENT")) return null
     throw new HabitLifecycleError("lifecycle_receipt_read_failed", { cause: error })
@@ -924,12 +1023,13 @@ function snapshotMatchesLease(snapshot: OwnerSnapshot, lease: HabitLifecycleLeas
     && sameIdentity(snapshot.identity!, lease.ownerIdentity)
 }
 
-function inspectOwner(ownerPath: string, storeFs: typeof fs): OwnerSnapshot {
+function inspectOwner(ownerPath: string, storeFs: typeof fs, failOnIo = false): OwnerSnapshot {
   let before: fs.Stats
   try {
     before = storeFs.lstatSync(ownerPath)
   } catch (error) {
     if (isNodeError(error, "ENOENT")) return { status: "missing" }
+    if (failOnIo) throw new HabitLifecycleError("lifecycle_owner_inspection_failed", { cause: error })
     return { status: "invalid" }
   }
   if (!before.isFile()) return { status: "invalid" }
@@ -940,6 +1040,7 @@ function inspectOwner(ownerPath: string, storeFs: typeof fs): OwnerSnapshot {
     after = storeFs.lstatSync(ownerPath)
   } catch (error) {
     if (isNodeError(error, "ENOENT")) return { status: "missing" }
+    if (failOnIo) throw new HabitLifecycleError("lifecycle_owner_inspection_failed", { cause: error })
     return { status: "invalid" }
   }
   const beforeIdentity = fileIdentity(before)
@@ -1049,6 +1150,7 @@ function isValidJournal(value: unknown): value is HabitLifecycleJournal {
     || !Number.isInteger(value.generation)
     || (value.generation as number) < 0
     || (value.evidenceKeyHash !== null && !isHash(value.evidenceKeyHash))
+    || (value.cancellationPreparation !== null && !isValidCancellationPreparation(value.cancellationPreparation))
     || !isNullableTimestamp(value.intentAt)
     || !isNullableTimestamp(value.transportInvokedAt)
     || !isNullableTimestamp(value.classifiedAt)
@@ -1059,6 +1161,7 @@ function isValidJournal(value: unknown): value is HabitLifecycleJournal {
   if (value.state === "lock_acquired") {
     return value.generation === 0
       && value.evidenceKeyHash === null
+      && value.cancellationPreparation === null
       && value.intentAt === null
       && value.transportInvokedAt === null
       && value.classifiedAt === null
@@ -1069,6 +1172,7 @@ function isValidJournal(value: unknown): value is HabitLifecycleJournal {
     return value.operationKind === "cancel"
       && value.generation === 1
       && value.evidenceKeyHash !== null
+      && cancellationPreparationMatchesJournal(value)
       && value.intentAt !== null
       && value.transportInvokedAt === null
       && value.classifiedAt === null
@@ -1079,6 +1183,8 @@ function isValidJournal(value: unknown): value is HabitLifecycleJournal {
     return value.operationKind === "cancel"
       && value.generation === (value.state === "definition_cancelled" ? 2 : 3)
       && value.evidenceKeyHash !== null
+      && cancellationPreparationMatchesJournal(value)
+      && value.boundaryState === value.cancellationPreparation!.receipt.transition.boundaryState
       && value.intentAt !== null
       && value.transportInvokedAt === null
       && value.classifiedAt !== null
@@ -1089,6 +1195,7 @@ function isValidJournal(value: unknown): value is HabitLifecycleJournal {
     return value.operationKind === "send"
       && value.generation === 1
       && value.evidenceKeyHash === null
+      && value.cancellationPreparation === null
       && value.intentAt !== null
       && value.transportInvokedAt === null
       && value.classifiedAt === null
@@ -1098,6 +1205,7 @@ function isValidJournal(value: unknown): value is HabitLifecycleJournal {
   return value.operationKind === "send"
     && value.generation === 2
     && value.evidenceKeyHash === null
+    && value.cancellationPreparation === null
     && value.intentAt !== null
     && (value.state === "not_crossed" || value.transportInvokedAt !== null)
     && value.classifiedAt !== null
@@ -1148,18 +1256,21 @@ function isValidCancellationReceipt(value: unknown): value is HabitCancellationR
   } catch {
     return false
   }
-  return value.acknowledgement === cancellationAcknowledgement(
+  return value.acknowledgement === renderHabitCancellationAcknowledgement(
     value.habitId,
     value.actor.displayName,
     value.transition.boundaryState,
   )
 }
 
-function cancellationAcknowledgement(
+export function renderHabitCancellationAcknowledgement(
   habitId: string,
   actorDisplayName: string,
   boundaryState: HabitBoundaryState,
 ): string {
+  if (!isValidHabitId(habitId) || typeof actorDisplayName !== "string" || actorDisplayName.trim().length === 0) {
+    throw new HabitLifecycleError("lifecycle_receipt_invalid")
+  }
   const prefix = `Cancelled habit ${JSON.stringify(habitId)} from confirmed requester ${JSON.stringify(actorDisplayName)}.`
   if (boundaryState === "not_crossed") {
     return `${prefix} No concurrent send crossed the transport boundary.`
@@ -1168,6 +1279,43 @@ function cancellationAcknowledgement(
     return `${prefix} A concurrent send may have crossed the transport boundary; delivery is unknown.`
   }
   return `${prefix} A concurrent send crossed the transport boundary before cancellation took effect.`
+}
+
+function isValidCancellationPreparation(value: unknown): value is HabitCancellationPreparation {
+  return isRecord(value)
+    && hasExactKeys(value, ["receipt", "definitionBeforeSha256", "definitionCancelledSha256"])
+    && isValidCancellationReceipt(value.receipt)
+    && isHash(value.definitionBeforeSha256)
+    && isHash(value.definitionCancelledSha256)
+}
+
+function cancellationPreparationMatchesJournal(value: Record<string, unknown>): boolean {
+  const preparation = value.cancellationPreparation
+  return isValidCancellationPreparation(preparation)
+    && preparation.receipt.habitId === value.habitId
+    && preparation.receipt.operationId === value.operationId
+    && preparation.receipt.evidenceKeyHash === value.evidenceKeyHash
+}
+
+function validatedCancellationPreparation(
+  value: HabitCancellationPreparation,
+  habitId: string,
+  operationId: string,
+  evidenceKeyHash: string,
+): HabitCancellationPreparation {
+  if (!isValidCancellationPreparation(value)) {
+    throw new HabitLifecycleError("cancellation_preparation_invalid")
+  }
+  if (
+    value.receipt.habitId !== habitId
+    || value.receipt.operationId !== operationId
+    || value.receipt.evidenceKeyHash !== evidenceKeyHash
+  ) throw new HabitLifecycleError("cancellation_preparation_invalid")
+  return {
+    receipt: value.receipt,
+    definitionBeforeSha256: value.definitionBeforeSha256,
+    definitionCancelledSha256: value.definitionCancelledSha256,
+  }
 }
 
 function validatedTransportResult(value: HabitTransportResult): HabitTransportResult {

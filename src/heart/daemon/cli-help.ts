@@ -160,7 +160,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     description: "Manage agent habits",
     usage: "ouro habit <subcommand> [--agent <name>]",
     example: "ouro habit list",
-    subcommands: ["list", "create", "runs", "inspect", "summary", "poke"],
+    subcommands: ["list", "create", "runs", "inspect", "summary", "poke", "cancel"],
   },
   rsvp: {
     category: "Habits",
@@ -387,6 +387,11 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
 }
 
 const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
+  "habit cancel": {
+    description: "Cancel a habit offline from a previously verified evidence bridge",
+    usage: "ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
+    example: "ouro habit cancel --agent slugger --habit report-name --evidence pre-v1-bluebubbles-event-id",
+  },
   "private decisions": {
     description: "Read recent private-runtime allow/deny decisions from the policy ledger",
     usage: "ouro private decisions [--agent <name>] [--limit <n>] [--json]",

@@ -22,6 +22,7 @@ import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 import type { RsvpCutoverAction, RsvpCutoverDeps } from "../../rsvp/cutover"
 import type { MailroomRegistry } from "../../mailroom/core"
 import type { MailroomRuntimeConfig } from "../../mailroom/reader"
+import type { HabitCancelDeps } from "../habits/habit-cancel"
 export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
 export type RuntimeConfigScope = "agent" | "machine"
@@ -110,6 +111,7 @@ export type OuroCliCommand =
   | { kind: "habit.runs"; agent?: string; limit: number }
   | { kind: "habit.inspect"; agent?: string; runId: string }
   | { kind: "habit.summary"; agent?: string; runId?: string; habitName?: string; operationId?: string; which?: HabitSummaryWhich; json: boolean }
+  | { kind: "habit.cancel"; agent: string; habitName: string; evidenceLocator: string }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
@@ -187,6 +189,8 @@ export interface OuroCliDeps {
   getInstalledBinaryPath?: () => string | null
   execInstalledBinary?: (binaryPath: string, args: string[]) => never
   agentBundleRoot?: string
+  /** Test/alternate-host dependencies for grounded offline habit cancellation. */
+  habitCancelDeps?: HabitCancelDeps
   /**
    * Root directory containing all `<agent>.ouro` bundles. Defaults to
    * `getAgentBundlesRoot()` (~/AgentBundles). Tests should set this to a
@@ -284,7 +288,7 @@ export type NervesReviewCliCommand = Extract<OuroCliCommand, { kind: "nerves-rev
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
-export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" } | { kind: "habit.runs" } | { kind: "habit.inspect" } | { kind: "habit.summary" }>
+export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" } | { kind: "habit.runs" } | { kind: "habit.inspect" } | { kind: "habit.summary" } | { kind: "habit.cancel" }>
 export type DeskCliCommand = Extract<OuroCliCommand, { kind: "desk" }>
 export type MigrateToDeskCliCommand = Extract<OuroCliCommand, { kind: "migrate-to-desk" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>

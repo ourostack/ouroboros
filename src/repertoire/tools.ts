@@ -152,11 +152,16 @@ export function getRestrictedReactionFeedbackTools(): OpenAI.ChatCompletionFunct
   return [settleTool, observeTool, orientationGetTool]
 }
 
-// Look up a tool definition from the combined registry (native + MCP).
-function findDefinition(toolName: string): ToolDefinition | undefined {
-  return allDefinitions.find((d) => d.tool.function.name === toolName)
+// Look up a tool definition from the live combined registry (native + MCP).
+// The base registry is intentionally consulted at call time so tests and
+// runtime extensions cannot leave execution metadata behind a stale snapshot.
+export function resolveToolDefinition(toolName: string): ToolDefinition | undefined {
+  return baseToolDefinitions.find((d) => d.tool.function.name === toolName)
+    ?? allDefinitions.find((d) => d.tool.function.name === toolName)
     ?? mcpDefinitions.find((d) => d.tool.function.name === toolName)
 }
+
+const findDefinition = resolveToolDefinition
 
 function normalizeGuardArgs(_name: string, args: Record<string, string>): Record<string, string> {
   return args

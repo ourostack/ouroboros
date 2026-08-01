@@ -245,8 +245,12 @@ export type BlueBubblesRecoveryDisposition =
   | { disposition: "audit_only"; reason: "legacy_or_actorless" | "before_cutover" | "audit_event" }
 
 export function getBlueBubblesSemanticPaths(agentName: string): BlueBubblesSemanticPaths {
+  return getBlueBubblesSemanticPathsAtRoot(getAgentRoot(agentName))
+}
+
+export function getBlueBubblesSemanticPathsAtRoot(agentRoot: string): BlueBubblesSemanticPaths {
   const root = path.join(
-    getAgentRoot(agentName),
+    agentRoot,
     "state",
     "senses",
     "bluebubbles",
@@ -416,10 +420,19 @@ export function rotateBlueBubblesSemanticCutover(
 }
 
 export function readBlueBubblesSemanticCutover(agentName: string): BlueBubblesSemanticCutover | null {
-  const filePath = getBlueBubblesSemanticPaths(agentName).cutover
-  if (!fs.existsSync(filePath)) return null
+  return readBlueBubblesSemanticCutoverAtRoot(getAgentRoot(agentName), {}, agentName)
+}
+
+export function readBlueBubblesSemanticCutoverAtRoot(
+  agentRoot: string,
+  deps: Pick<BlueBubblesSemanticStoreDeps, "fs"> = {},
+  diagnosticIdentity = path.basename(agentRoot),
+): BlueBubblesSemanticCutover | null {
+  const storeFs = deps.fs ?? fs
+  const filePath = getBlueBubblesSemanticPathsAtRoot(agentRoot).cutover
+  if (!storeFs.existsSync(filePath)) return null
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    const parsed: unknown = JSON.parse(storeFs.readFileSync(filePath, "utf8"))
     return isBlueBubblesSemanticCutover(parsed) ? parsed : null
   } catch (error) {
     emitNervesEvent({
@@ -428,7 +441,7 @@ export function readBlueBubblesSemanticCutover(agentName: string): BlueBubblesSe
       event: "senses.bluebubbles_semantic_cutover_error",
       message: "failed to read bluebubbles semantic cutover",
       meta: {
-        agentName,
+        agentName: diagnosticIdentity,
         reason: error instanceof Error ? error.message : String(error),
       },
     })
@@ -738,6 +751,22 @@ export function readBlueBubblesSemanticCapture(
   deps: BlueBubblesSemanticStoreDeps = {},
 ): BlueBubblesSemanticCaptureV1 | null {
   const paths = getBlueBubblesSemanticPaths(agentName)
+  const finalPath = semanticRecordPath(paths.captures, keyHash)
+  return readSemanticRecord(
+    finalPath,
+    "capture",
+    keyHash,
+    (value) => isBlueBubblesSemanticCapture(value, keyHash),
+    deps,
+  )
+}
+
+export function readBlueBubblesSemanticCaptureAtRoot(
+  agentRoot: string,
+  keyHash: string,
+  deps: BlueBubblesSemanticStoreDeps = {},
+): BlueBubblesSemanticCaptureV1 | null {
+  const paths = getBlueBubblesSemanticPathsAtRoot(agentRoot)
   const finalPath = semanticRecordPath(paths.captures, keyHash)
   return readSemanticRecord(
     finalPath,

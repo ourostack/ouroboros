@@ -31,6 +31,7 @@ import { evolutionToolDefinitions } from "./tools-evolution"
 import { runtimeToolDefinitions } from "./tools-runtime"
 import { orientationToolDefinitions } from "./tools-orientation"
 import { rsvpToolDefinitions } from "./tools-rsvp"
+import { habitToolDefinitions } from "./tools-habits"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
@@ -143,6 +144,11 @@ export interface ToolDefinition {
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
   riskProfile?: ToolRiskProfile | ToolRiskProfileResolver;
+  terminalProjection?: {
+    mode: "verbatim";
+    requiresSoleCall: true;
+    clearBufferedText: true;
+  };
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;
 }
@@ -180,6 +186,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...orientationToolDefinitions,
   ...runtimeToolDefinitions,
   ...rsvpToolDefinitions,
+  ...habitToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).

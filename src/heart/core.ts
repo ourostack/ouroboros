@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, getRestrictedReactionFeedbackTools, riskProfileForToolName } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, getRestrictedReactionFeedbackTools, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
@@ -526,6 +526,40 @@ export type RunAgentOutcome =
  *  synchronously. Mail is batch. Anything else (unknown channel) treats as non-chat. */
 export function isChatStyleChannel(channel: string): boolean {
   return channel === "cli" || channel === "teams" || channel === "bluebubbles" || channel === "voice";
+}
+
+function bindCurrentIngressEvidenceLocator(
+  toolList: OpenAI.ChatCompletionFunctionTool[],
+  evidence: ToolContext["currentIngressEvidence"],
+): OpenAI.ChatCompletionFunctionTool[] {
+  if (
+    !evidence
+    || evidence.schemaVersion !== 1
+    || evidence.provider !== "bluebubbles"
+    || !/^[a-f0-9]{64}$/.test(evidence.captureKeyHash)
+  ) return toolList
+  const locator = `capture:${evidence.captureKeyHash}`
+  return toolList.map((tool) => {
+    if (tool.function.name !== "habit_cancel") return tool
+    const parameters = tool.function.parameters as Record<string, unknown>
+    const properties = parameters.properties as Record<string, Record<string, unknown>>
+    return {
+      ...tool,
+      function: {
+        ...tool.function,
+        parameters: {
+          ...parameters,
+          properties: {
+            ...properties,
+            evidence: {
+              ...properties.evidence,
+              enum: [locator],
+            },
+          },
+        },
+      },
+    }
+  })
 }
 
 // Sole-call tools must be the only tool call in a turn. When they appear
@@ -1237,7 +1271,7 @@ export async function runAgent(
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
 
   const toolPreferences = currentContext?.friend?.toolPreferences;
-  const baseTools = restrictedReactionFeedback
+  const unboundBaseTools = restrictedReactionFeedback
     ? getRestrictedReactionFeedbackTools()
     : options?.tools ?? getToolsForChannel(
       channel ? getChannelCapabilities(channel) : undefined,
@@ -1247,6 +1281,12 @@ export async function runAgent(
       options?.mcpManager,
       providerRuntime.model,
     );
+  const baseTools = restrictedReactionFeedback
+    ? unboundBaseTools
+    : bindCurrentIngressEvidenceLocator(
+      unboundBaseTools,
+      options?.toolContext?.currentIngressEvidence,
+    )
   // Augment tool context with reasoning effort controls from provider
   const baseToolContext: ToolContext | undefined = options?.toolContext
     ?? (turnOrientationFrame ? { signin: async () => undefined, orientationFrame: turnOrientationFrame } : undefined)
@@ -1735,6 +1775,62 @@ export async function runAgent(
           continue
         }
         await streamCallbackBuffer?.flush();
+        const soleTerminalCall = result.toolCalls.length === 1
+          ? result.toolCalls[0]
+          : null
+        const soleTerminalProjection = soleTerminalCall
+          ? resolveToolDefinition(soleTerminalCall.name)?.terminalProjection
+          : undefined
+        if (soleTerminalCall && soleTerminalProjection?.mode === "verbatim") {
+          let terminalArgs: Record<string, string> = {}
+          try {
+            const parsed = JSON.parse(soleTerminalCall.arguments)
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              terminalArgs = parsed as Record<string, string>
+            }
+          } catch {
+            // The registered handler owns exact argument validation.
+          }
+          if (soleTerminalProjection.clearBufferedText) callbacks.onClearText?.()
+          callbacks.onToolStart(soleTerminalCall.name, terminalArgs)
+          let terminalResult: string
+          try {
+            const execToolFn = options?.execTool ?? execTool
+            terminalResult = await execToolFn(
+              soleTerminalCall.name,
+              terminalArgs,
+              augmentedToolContext,
+            )
+          } catch (error) {
+            callbacks.onToolEnd(
+              soleTerminalCall.name,
+              summarizeArgs(soleTerminalCall.name, terminalArgs),
+              false,
+            )
+            messages.push(msg)
+            const failure = error instanceof Error ? `error: ${error.message}` : `error: ${String(error)}`
+            messages.push({ role: "tool", tool_call_id: soleTerminalCall.id, content: failure })
+            providerRuntime.appendToolOutput(soleTerminalCall.id, failure)
+            callbacks.onTextChunk(failure)
+            completion = { answer: failure, intent: "blocked" }
+            outcome = "blocked"
+            done = true
+            continue
+          }
+          callbacks.onToolEnd(
+            soleTerminalCall.name,
+            summarizeArgs(soleTerminalCall.name, terminalArgs),
+            true,
+          )
+          messages.push(msg)
+          messages.push({ role: "tool", tool_call_id: soleTerminalCall.id, content: terminalResult })
+          providerRuntime.appendToolOutput(soleTerminalCall.id, terminalResult)
+          callbacks.onTextChunk(terminalResult)
+          completion = { answer: terminalResult, intent: "complete" }
+          outcome = "settled"
+          done = true
+          continue
+        }
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
@@ -1918,7 +2014,11 @@ export async function runAgent(
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
           // Reject sole-call tools when mixed with other tool calls
-          const soleCallRejection = SOLE_CALL_REJECTION[tc.name];
+          const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
+          const soleCallRejection = SOLE_CALL_REJECTION[tc.name]
+            ?? (terminalProjection?.requiresSoleCall
+              ? `rejected: ${tc.name} must be the only tool call.`
+              : undefined);
           if (soleCallRejection) {
             messages.push({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
             providerRuntime.appendToolOutput(tc.id, soleCallRejection);
