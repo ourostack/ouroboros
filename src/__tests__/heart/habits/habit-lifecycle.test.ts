@@ -342,6 +342,14 @@ afterEach(async () => {
 })
 
 describe("habit lifecycle filesystem protocol", () => {
+  it("preserves lifecycle error causes without requiring an ES2022 Error constructor", () => {
+    const cause = new Error("underlying failure")
+    const error = new HabitLifecycleError("lifecycle_write_failed", { cause })
+
+    expect((error as Error & { cause?: unknown }).cause).toBe(cause)
+    expect(Object.keys(error)).not.toContain("cause")
+  })
+
   it("derives every fixed root, journal, receipt, evidence, cancellation, and send identity", () => {
     const agentRoot = "/tmp/bundles/demo.ouro"
     const evidence = buildHabitEvidenceIdentity({ habitId: "rsvp-demo", kind: "capture", id: CAPTURE_HASH })

@@ -180,7 +180,14 @@ export class HabitLifecycleError extends Error {
   readonly durabilityUnknown: boolean
 
   constructor(code: string, options: { durabilityUnknown?: boolean; cause?: unknown } = {}) {
-    super(code, options.cause === undefined ? undefined : { cause: options.cause })
+    super(code)
+    if (options.cause !== undefined) {
+      Object.defineProperty(this, "cause", {
+        value: options.cause,
+        configurable: true,
+        writable: true,
+      })
+    }
     this.name = "HabitLifecycleError"
     this.code = code
     this.durabilityUnknown = options.durabilityUnknown ?? false
