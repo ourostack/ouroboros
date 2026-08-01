@@ -113,6 +113,10 @@ vi.mock("../../../heart/runtime-credentials", async () => {
 })
 
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
+import {
+  buildHabitSendOperation,
+  readHabitLifecycleJournal,
+} from "../../../heart/habits/habit-lifecycle"
 import { runRsvpCliCommand } from "../../../rsvp/cli"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
@@ -1370,6 +1374,12 @@ describe("ouro rsvp operational CLI wiring", () => {
     mockRuntimeCredentials()
     const legacyRoot = seedLegacyCutoverRoot()
     const tmp = seedBundle(legacyRoot)
+    fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tmp.agentRoot, "habits", "rsvp-wedding.md"),
+      explicitRsvpHabitDefinition("active"),
+      "utf-8",
+    )
     rsvpMocks.readRsvpConfig.mockReturnValue({ ok: true, config: { ...configWithCutover(legacyRoot), bluebubblesRoute: { chatGuid: "iMessage;-;chat-guid" } } })
     rsvpMocks.validateRsvpReadiness.mockReturnValue({
       status: "ready",
@@ -1387,13 +1397,40 @@ describe("ouro rsvp operational CLI wiring", () => {
     rsvpMocks.computeRsvpDelta.mockReturnValue({ currentSnapshotId: "snap_current", newRsvps: [], statusChanges: [], newGuests: [], removedGuests: [], summary: currentSnapshot.summary })
     rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nCasey is pending.")
     rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:snap_current:hash" })
-    rsvpMocks.sendText.mockResolvedValue({ ok: true, messageGuid: "bluebubbles-guid" })
+    const boundaryOrder: string[] = []
+    const boundaryEvents: LogEvent[] = []
+    const unregister = registerGlobalLogSink((event) => {
+      if (event.component === "rsvp" && [
+        "habit_send_intent",
+        "habit_transport_invoked",
+        "habit_send_boundary_classified",
+      ].includes(event.event)) {
+        boundaryEvents.push(event)
+        boundaryOrder.push(event.event)
+      }
+    })
+    rsvpMocks.sendText.mockImplementation(async (params) => {
+      boundaryOrder.push("client_send_text")
+      params.onTransportInvocation()
+      return { ok: true, messageGuid: "bluebubbles-guid" }
+    })
     const liveCutoverDeps = defaultCredentialCutoverDeps()
     const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: liveCutoverDeps })
     try {
-      const result = JSON.parse(await runOuroCli(["rsvp", "refresh", "--agent", "slugger", "--mode", "live", "--allow-send", "--json"], deps))
+      const result = JSON.parse(await runOuroCli([
+        "rsvp",
+        "refresh",
+        "--agent",
+        "slugger",
+        "--habit",
+        "rsvp-wedding",
+        "--mode",
+        "live",
+        "--allow-send",
+        "--json",
+      ], deps))
 
-      expect(rsvpMocks.sendText).toHaveBeenCalledWith({
+      expect(rsvpMocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
         chat: expect.objectContaining({
           chatGuid: "iMessage;-;chat-guid",
           sendTarget: { kind: "chat_guid", value: "iMessage;-;chat-guid" },
@@ -1401,7 +1438,8 @@ describe("ouro rsvp operational CLI wiring", () => {
         }),
         text: "RSVP Update\n\nCasey is pending.",
         tempGuid: "rsvp:snap_current:hash",
-      })
+        onTransportInvocation: expect.any(Function),
+      }))
       expectExplicitBlueBubblesClientConfig()
       expect(rsvpMocks.recordRsvpOutboundAttempt).toHaveBeenCalledWith(expect.objectContaining({
         bluebubblesRecord: expect.objectContaining({
@@ -1417,12 +1455,51 @@ describe("ouro rsvp operational CLI wiring", () => {
         refresh: {
           delivery: { guid: "bluebubbles-guid", messageGuid: "bluebubbles-guid" },
         },
+        sendBoundary: {
+          boundaryState: "crossed",
+          transportInvoked: true,
+          replayed: false,
+          transportResult: {
+            httpStatus: 200,
+            messageGuid: "bluebubbles-guid",
+            errorCode: null,
+          },
+        },
       })
+      const operation = buildHabitSendOperation({
+        habitId: "rsvp-wedding",
+        outboundIdempotencyKey: "rsvp:snap_current:hash",
+      })
+      expect(readHabitLifecycleJournal({
+        agentRoot: tmp.agentRoot,
+        habitId: "rsvp-wedding",
+        operationId: operation.operationId,
+      })).toMatchObject({
+        state: "crossed",
+        generation: 2,
+        transportResult: { httpStatus: 200, messageGuid: "bluebubbles-guid", errorCode: null },
+      })
+      expect(boundaryOrder).toEqual([
+        "habit_send_intent",
+        "client_send_text",
+        "habit_transport_invoked",
+        "habit_send_boundary_classified",
+      ])
+      expect(boundaryEvents.map((event) => event.meta)).toEqual([
+        expect.objectContaining({ habitId: "rsvp-wedding", operationId: operation.operationId }),
+        expect.objectContaining({ habitId: "rsvp-wedding", operationId: operation.operationId }),
+        expect.objectContaining({
+          habitId: "rsvp-wedding",
+          operationId: operation.operationId,
+          boundaryState: "crossed",
+        }),
+      ])
       expect(liveCutoverDeps.fetchImpl).toHaveBeenCalled()
       expect(rsvpMocks.loadOrCreateMachineIdentity).not.toHaveBeenCalled()
       expect(rsvpMocks.refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
       expect(rsvpMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     } finally {
+      unregister()
       tmp.cleanup()
     }
   })

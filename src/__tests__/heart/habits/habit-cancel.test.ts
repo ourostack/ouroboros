@@ -1850,6 +1850,7 @@ describe("atomic habit cancellation", () => {
 
   it.each([
     [null, "crossing_unknown"],
+    ["not_crossed", "not_crossed"],
     ["crossing_unknown", "crossing_unknown"],
     ["crossed", "crossed"],
   ] as const)(

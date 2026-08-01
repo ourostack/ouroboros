@@ -272,6 +272,87 @@ describe("native RSVP habit runner", () => {
   })
 
   it.each([
+    ["not_crossed", false, "failed", "failed"],
+    ["crossing_unknown", false, "unavailable", "blocked"],
+    ["crossed", true, "sent", "succeeded"],
+  ] as const)(
+    "threads %s send-boundary truth through the native habit trace",
+    async (boundaryState, payloadOk, surfaceResult, traceStatus) => {
+      const tmp = seedRsvpHabit("live")
+      const message = boundaryState === "crossed"
+        ? "RSVP refresh completed"
+        : boundaryState === "not_crossed"
+          ? "RSVP transport was definitively rejected"
+          : "RSVP transport delivery is unknown"
+      const runRefresh = vi.fn(async () => JSON.stringify({
+        ok: payloadOk,
+        command: "rsvp.refresh",
+        sideEffect: boundaryState !== "not_crossed",
+        agent: "slugger",
+        mode: "live",
+        message,
+        sendAllowed: true,
+        sendBoundary: {
+          operationId: `send:${"a".repeat(64)}`,
+          boundaryState,
+          transportInvoked: boundaryState !== "not_crossed",
+          replayed: false,
+          transportResult: {
+            httpStatus: boundaryState === "crossed" ? 200 : boundaryState === "not_crossed" ? 403 : null,
+            messageGuid: boundaryState === "crossed" ? "message-guid" : null,
+            errorCode: boundaryState === "crossed" ? null : boundaryState === "not_crossed" ? "http_403" : "timeout",
+          },
+        },
+        refresh: {
+          snapshotId: "snap-boundary",
+          reportText: "RSVP Boundary",
+          outboundDecision: { action: "send" },
+          delivery: boundaryState === "crossed"
+            ? { status: "accepted", messageGuid: "message-guid" }
+            : boundaryState === "not_crossed"
+              ? { status: "failed", error: message }
+              : { status: "pending-manual-verification", error: message },
+        },
+      }))
+
+      try {
+        const result = await runNativeRsvpHabit({
+          agent: "slugger",
+          bundlesRoot: tmp.bundlesRoot,
+          habitName: "rsvp-wedding",
+          trigger: "manual",
+          occurrenceId: `boundary:${boundaryState}`,
+          now: () => "2026-07-12T17:00:08.000Z",
+          runRefresh,
+        })
+
+        expect(result).toMatchObject({
+          ok: payloadOk,
+          lifecycle: payloadOk ? "completed" : "error",
+          payload: { sendBoundary: { boundaryState } },
+        })
+        const receipt = listHabitRunReceipts(tmp.agentRoot)[0]
+        expect(receipt.surfaceAttempts).toEqual([
+          expect.objectContaining({
+            channel: "bluebubbles",
+            result: surfaceResult,
+            ...(boundaryState === "crossed" ? {} : { error: message }),
+          }),
+        ])
+        expect(receipt.traceSteps).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            stepId: "send",
+            status: traceStatus,
+            surfaceAttempt: expect.objectContaining({ result: surfaceResult }),
+          }),
+        ]))
+      } finally {
+        tmp.cleanup()
+      }
+    },
+  )
+
+  it.each([
     {
       label: "missing noSend evidence",
       mutate: (payload: Record<string, unknown>) => { delete payload.noSend },

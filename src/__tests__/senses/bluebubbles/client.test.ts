@@ -93,6 +93,107 @@ describe("BlueBubbles client", () => {
     })
   })
 
+  it("marks the exact transport boundary immediately before the send fetch", async () => {
+    const order: string[] = []
+    global.fetch = vi.fn(async () => {
+      order.push("fetch")
+      return new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })
+    }) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+
+    const result = await (client.sendText as any)({
+      chat: dmChat,
+      text: "boundary marker",
+      onTransportInvocation: () => order.push("boundary"),
+    })
+
+    expect(result).toEqual({ messageGuid: "sent-guid" })
+    expect(order).toEqual(["boundary", "fetch"])
+  })
+
+  it.each([300, 399, 400, 408, 409, 425, 429, 499, 500, 503])(
+    "preserves HTTP %i as typed send-boundary evidence",
+    async (status) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response("synthetic failure", { status })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+      const onTransportInvocation = vi.fn()
+
+      const error = await (client.sendText as any)({
+        chat: dmChat,
+        text: "typed boundary failure",
+        onTransportInvocation,
+      }).catch((caught: unknown) => caught)
+
+      expect(onTransportInvocation).toHaveBeenCalledTimes(1)
+      expect(error).toMatchObject({
+        name: "BlueBubblesSendError",
+        httpStatus: status,
+        errorCode: `http_${status}`,
+        transportInvoked: true,
+      })
+    },
+  )
+
+  it("preserves a malformed HTTP 2xx payload as typed invoked boundary evidence", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response("{not-json", { status: 200 })) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+    const onTransportInvocation = vi.fn()
+
+    const error = await (client.sendText as any)({
+      chat: dmChat,
+      text: "malformed boundary response",
+      onTransportInvocation,
+    }).catch((caught: unknown) => caught)
+
+    expect(onTransportInvocation).toHaveBeenCalledTimes(1)
+    expect(error).toMatchObject({
+      name: "BlueBubblesSendError",
+      httpStatus: 200,
+      errorCode: "malformed_response",
+      transportInvoked: true,
+    })
+  })
+
+  it.each([
+    ["timeout", Object.assign(new Error("timed out"), { name: "TimeoutError" }), "timeout"],
+    ["abort", Object.assign(new Error("aborted"), { name: "AbortError" }), "abort"],
+    ["socket", new TypeError("socket closed"), "socket"],
+  ] as const)("preserves an invoked %s exception as typed boundary evidence", async (_label, rejection, errorCode) => {
+    global.fetch = vi.fn().mockRejectedValue(rejection) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+    const onTransportInvocation = vi.fn()
+
+    const error = await (client.sendText as any)({
+      chat: dmChat,
+      text: "typed boundary exception",
+      onTransportInvocation,
+    }).catch((caught: unknown) => caught)
+
+    expect(onTransportInvocation).toHaveBeenCalledTimes(1)
+    expect(error).toMatchObject({
+      name: "BlueBubblesSendError",
+      httpStatus: null,
+      errorCode,
+      transportInvoked: true,
+    })
+  })
+
   it("supports plain sends and root-level message guid responses", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ guid: "root-guid" }), { status: 200 }),
