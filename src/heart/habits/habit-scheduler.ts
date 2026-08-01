@@ -420,7 +420,6 @@ export class HabitScheduler {
       const delayMs = cadenceFallbackDelayMs(cadence, this.deps.now()) ?? firstDelayMs
       const timer = setTimeout(() => {
         const owner = this.timerFallbacks.get(habitName)
-        /* v8 ignore next -- a cleared native timer cannot deterministically enter this stale callback in fake timers @preserve */
         if (!owner || owner.handle !== timer || owner.generation !== generation) return
         const currentHabit = this.revalidateHabit(habitName)
         const currentJob = currentHabit === null

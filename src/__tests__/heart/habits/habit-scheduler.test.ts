@@ -2764,6 +2764,35 @@ describe("HabitScheduler", () => {
       }])
     })
 
+    it("ignores a cleared fallback callback after a replacement owns the habit", () => {
+      mockEvaluateCadenceDue.mockReturnValue({ due: false, elapsedMs: 0, occurrenceId: null })
+      const scheduledCallbacks: Array<() => void> = []
+      const fakeSetTimeout = globalThis.setTimeout
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: TimerHandler, delay?: number, ...args: any[]) => {
+        if (typeof callback === "function") {
+          scheduledCallbacks.push(() => callback(...args))
+        }
+        return fakeSetTimeout(callback, delay, ...args)
+      }) as typeof setTimeout)
+      const { scheduler } = makeSchedulerWithVerify({ execForVerify: vi.fn(() => "") })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+
+      scheduler.start()
+      const staleCallback = scheduledCallbacks[0]
+      scheduler.start()
+      expect(scheduledCallbacks).toHaveLength(2)
+      onHabitFire.mockClear()
+
+      staleCallback()
+
+      expect(onHabitFire).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(1)
+      expect(scheduler.getDegradedHabits()).toEqual([{
+        name: "heartbeat",
+        reason: "cron registration failed — using timer fallback",
+      }])
+    })
+
     it("getDegradedHabits returns habits on timer fallback", () => {
       const execForVerify = vi.fn(() => "")
 

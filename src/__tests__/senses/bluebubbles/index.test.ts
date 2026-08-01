@@ -10594,6 +10594,45 @@ describe("BlueBubbles reaction capture-only policy", () => {
     )
   })
 
+  it("supports restricted feedback without timer unref and keeps signin a harmless no-op", async () => {
+    const nativeSetTimeout = globalThis.setTimeout
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((
+      (callback: TimerHandler, delay?: number, ...args: any[]) => {
+        if (delay === 2 * 60_000) return 0 as unknown as ReturnType<typeof setTimeout>
+        return nativeSetTimeout(callback, delay, ...args)
+      }
+    ) as typeof setTimeout)
+    mocks.findByExternalId.mockResolvedValueOnce({
+      ...defaultFriendContext.friend,
+      trustLevel: "friend",
+    })
+    mocks.runAgent.mockImplementationOnce(async (
+      _messages: any,
+      _callbacks: any,
+      _channel: any,
+      _signal: any,
+      options: any,
+    ) => {
+      await expect(options.toolContext.signin("graph")).resolves.toBeUndefined()
+      return { outcome: "observed" }
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    const result = await bluebubbles.handleBlueBubblesEvent(
+      policyReactionPayload("question"),
+      { createClient: () => policyClient(true) as any },
+    )
+
+    expect(result).toEqual(expect.objectContaining({
+      handled: true,
+      notifiedAgent: false,
+      reason: "restricted_feedback_observed",
+    }))
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 2 * 60_000)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
   it("presents a trusted group reaction as Ari's reaction with Rachel only a participant and an agent-authored target", async () => {
     const payload = policyReactionPayload("question") as typeof reactionPayload
     const groupPayload = {

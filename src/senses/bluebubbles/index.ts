@@ -2269,7 +2269,6 @@ async function handleRestrictedBlueBubblesReactionFeedback(input: {
       controller.abort(error)
       reject(error)
     }, timeoutMs)
-    /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
     if (typeof (timeoutTimer as { unref?: () => void }).unref === "function") {
       (timeoutTimer as { unref: () => void }).unref()
     }
@@ -2288,7 +2287,6 @@ async function handleRestrictedBlueBubblesReactionFeedback(input: {
           skipKeptNotes: true,
           orientationFrame,
           toolContext: {
-            /* v8 ignore next -- ToolContext requires signin; restricted tools cannot invoke it @preserve */
             signin: async () => undefined,
             context,
             currentIngressEvidence: options.currentIngressEvidence,
