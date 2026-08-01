@@ -8304,6 +8304,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary" || command.kind === "habit.cancel") {
     const { createDegradedHabitFile, parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+    const { publishNewHabitDefinition } = await import("../habits/habit-lifecycle")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
     const { readHabitSessionSummary } = await import("../habits/habit-session-summary")
@@ -8446,12 +8447,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // habit.create
     const filePath = path.join(habitsDir, `${command.name}.md`)
-    if (fs.existsSync(filePath)) {
-      const message = `error: habit '${command.name}' already exists`
-      deps.writeStdout(message)
-      return message
-    }
-    fs.mkdirSync(habitsDir, { recursive: true })
     const now = new Date().toISOString()
     const habitContent = renderHabitFile(
       {
@@ -8462,7 +8457,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       },
       `Habit: ${command.name}`,
     )
-    fs.writeFileSync(filePath, habitContent, "utf-8")
+    const publication = publishNewHabitDefinition({
+      agentRoot: bundleRoot,
+      habitId: command.name,
+      bytes: habitContent,
+    })
+    if (publication === "exists") {
+      const message = `error: habit '${command.name}' already exists`
+      deps.writeStdout(message)
+      return message
+    }
     const message = `created: ${filePath}`
     deps.writeStdout(message)
     return message

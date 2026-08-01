@@ -26,6 +26,7 @@ import {
   probeHabitBootIdentity,
   probeHabitProcessLiveness,
   probeHabitProcessStartedAt,
+  publishNewHabitDefinition,
   publishHabitLifecycleReceipt,
   readHabitLifecycleJournal,
   readHabitLifecycleReceipt,
@@ -266,7 +267,7 @@ async function waitForPath(filePath: string, timeoutMs = 3_000): Promise<void> {
 }
 
 function spawnLifecycleChild(input: {
-  mode: "lock" | "abandon" | "receipt" | "coordination"
+  mode: "lock" | "abandon" | "receipt" | "definition" | "coordination"
   agentRoot: string
   readyPath: string
   startPath: string
@@ -277,6 +278,7 @@ function spawnLifecycleChild(input: {
   lease?: HabitLifecycleLease
   evidenceKeyHash?: string
   receipt?: HabitCancellationReceipt
+  definitionBytes?: string
   precommitPath?: string
   peerPrecommitPath?: string
   attemptingPath?: string
@@ -306,6 +308,7 @@ function spawnLifecycleChild(input: {
       HABIT_LIFECYCLE_CHILD_LEASE: input.lease ? JSON.stringify(input.lease) : "",
       HABIT_LIFECYCLE_CHILD_EVIDENCE_HASH: input.evidenceKeyHash ?? "",
       HABIT_LIFECYCLE_CHILD_RECEIPT: input.receipt ? JSON.stringify(input.receipt) : "",
+      HABIT_LIFECYCLE_CHILD_DEFINITION_BYTES: input.definitionBytes ?? "",
       HABIT_LIFECYCLE_CHILD_PRECOMMIT: input.precommitPath ?? "",
       HABIT_LIFECYCLE_CHILD_PEER_PRECOMMIT: input.peerPrecommitPath ?? "",
       HABIT_LIFECYCLE_CHILD_ATTEMPTING: input.attemptingPath ?? `${input.resultPath}.attempting`,
@@ -1149,6 +1152,88 @@ describe("habit lifecycle filesystem protocol", () => {
     expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
   })
 
+  it("publishes new habit definitions durably without clobbering an existing definition", () => {
+    const agentRoot = makeRoot("habit-definition-publish-")
+    const definitionPath = path.join(agentRoot, "habits", "rsvp-demo.md")
+    const activeBytes = "---\nstatus: active\n---\n"
+    const cancelledBytes = "---\nstatus: cancelled\n---\n"
+    const operations: string[] = []
+
+    expect(publishNewHabitDefinition({
+      agentRoot,
+      habitId: "rsvp-demo",
+      bytes: activeBytes,
+    }, fixedDeps({ fs: tracingFs(operations) }))).toBe("published")
+    expectAtomicSequence(operations, {
+      finalPath: definitionPath,
+      directoryPath: path.dirname(definitionPath),
+      publication: "link",
+      cleanupTemp: true,
+    })
+
+    expect(publishNewHabitDefinition({
+      agentRoot,
+      habitId: "rsvp-demo",
+      bytes: cancelledBytes,
+    }, fixedDeps())).toBe("exists")
+    expect(fs.readFileSync(definitionPath, "utf8")).toBe(activeBytes)
+  })
+
+  it("keeps new-definition publication failures crash-truthful", () => {
+    const beforePublishFailures = [
+      { operation: "openSync" },
+      { operation: "write" },
+      { operation: "fsyncSync", occurrence: 1 },
+      { operation: "closeSync" },
+      { operation: "linkSync" },
+    ]
+    for (const [index, failure] of beforePublishFailures.entries()) {
+      const agentRoot = makeRoot(`habit-definition-publish-failure-${index}-`)
+      const definitionPath = path.join(agentRoot, "habits", "rsvp-demo.md")
+      let caught: unknown
+      try {
+        publishNewHabitDefinition({
+          agentRoot,
+          habitId: "rsvp-demo",
+          bytes: "---\nstatus: active\n---\n",
+        }, fixedDeps({ fs: tracingFs([], failure) }))
+      } catch (error) {
+        caught = error
+      }
+      expectLifecycleError(caught, "lifecycle_write_failed")
+      expect(fs.existsSync(definitionPath)).toBe(false)
+      expect(fs.existsSync(path.dirname(definitionPath))
+        ? fs.readdirSync(path.dirname(definitionPath)).filter((name) => name.endsWith(".tmp"))
+        : []).toEqual([])
+    }
+
+    const durabilityRoot = makeRoot("habit-definition-publish-durability-")
+    const durabilityPath = path.join(durabilityRoot, "habits", "rsvp-demo.md")
+    let durabilityError: unknown
+    try {
+      publishNewHabitDefinition({
+        agentRoot: durabilityRoot,
+        habitId: "rsvp-demo",
+        bytes: "---\nstatus: active\n---\n",
+      }, fixedDeps({ fs: tracingFs([], { operation: "fsyncSync", occurrence: 2 }) }))
+    } catch (error) {
+      durabilityError = error
+    }
+    expectLifecycleError(durabilityError, "lifecycle_durability_unknown", true)
+    expect(fs.readFileSync(durabilityPath, "utf8")).toBe("---\nstatus: active\n---\n")
+
+    expect(() => publishNewHabitDefinition({
+      agentRoot: durabilityRoot,
+      habitId: "invalid/id",
+      bytes: "",
+    })).toThrow(/habit_id_invalid/)
+    expect(() => publishNewHabitDefinition({
+      agentRoot: durabilityRoot,
+      habitId: "valid-id",
+      bytes: null as unknown as string,
+    })).toThrow(/definition_bytes_invalid/)
+  })
+
   it("keeps prior journal and definition bytes authoritative before rename and exposes post-rename durability", async () => {
     const failures = [
       { operation: "openSync" },
@@ -1428,6 +1513,44 @@ describe("habit lifecycle filesystem protocol", () => {
       evidenceKeyHash: collisionHash,
     }))
     expect(releaseHabitLifecycleLock(collisionLock.lease, fixedDeps())).toBe(true)
+  }, 45_000)
+
+  it("uses one cross-process no-clobber boundary for concurrent habit creators", async () => {
+    const agentRoot = makeRoot("habit-definition-process-race-")
+    const habitId = "rsvp-demo"
+    const startPath = path.join(agentRoot, "definition.start")
+    const readyPaths = [0, 1].map((index) => path.join(agentRoot, `definition.${index}.ready`))
+    const resultPaths = [0, 1].map((index) => path.join(agentRoot, `definition.${index}.result`))
+    const precommitPaths = [0, 1].map((index) => path.join(agentRoot, `definition.${index}.precommit`))
+    const definitions = [
+      "---\nstatus: active\ncreated: first\n---\n",
+      "---\nstatus: active\ncreated: second\n---\n",
+    ] as const
+    const children = [0, 1].map((index) => spawnLifecycleChild({
+      mode: "definition",
+      agentRoot,
+      habitId,
+      readyPath: readyPaths[index]!,
+      startPath,
+      resultPath: resultPaths[index]!,
+      definitionBytes: definitions[index]!,
+      precommitPath: precommitPaths[index]!,
+      peerPrecommitPath: precommitPaths[index === 0 ? 1 : 0]!,
+    }))
+
+    await Promise.all(readyPaths.map((readyPath) => waitForPath(readyPath)))
+    fs.writeFileSync(startPath, "start\n", "utf8")
+    await Promise.all(resultPaths.map((resultPath) => waitForPath(resultPath, 10_000)))
+    const completions = await Promise.all(children.map(({ completion }) => completion))
+    expect(completions.map(({ code }) => code)).toEqual([0, 0])
+    const outcomes = resultPaths.map((resultPath) => (
+      JSON.parse(fs.readFileSync(resultPath, "utf8")) as { outcome: string }
+    ).outcome)
+    expect(outcomes.sort()).toEqual(["exists", "published"])
+    expect(definitions).toContain(fs.readFileSync(
+      path.join(agentRoot, "habits", `${habitId}.md`),
+      "utf8",
+    ))
   }, 45_000)
 
   it("preserves cancelled definition and journal state for operation-owned recovery and idempotent retry", async () => {

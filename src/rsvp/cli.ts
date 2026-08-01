@@ -698,7 +698,7 @@ async function executeHabitStage(command: RsvpHabitStageCommand, deps: OuroCliDe
       requires: "--agent",
     }
   }
-  const result = stageRsvpHabit({
+  const result = await stageRsvpHabit({
     agent: command.agent,
     agentRoot,
     ...(command.habitName ? { habitName: command.habitName } : {}),

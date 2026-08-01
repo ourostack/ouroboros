@@ -3,6 +3,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { isHabitFrontmatterSyntaxValid, renderHabitFile } from "./habit-parser"
 import { writeHabitLastRun } from "./habit-runtime-state"
+import { publishNewHabitDefinition } from "./habit-lifecycle"
 import { parseFrontmatter } from "../../util/frontmatter"
 
 /** Fields that belong to the task system and should be stripped from migrated habits. */
@@ -69,17 +70,6 @@ export function migrateHabitsFromTaskSystem(bundleRoot: string): void {
     const slugName = stripTimestampPrefix(file)
     const targetPath = path.join(newHabitsDir, slugName)
 
-    // Skip if already migrated
-    if (fs.existsSync(targetPath)) {
-      emitNervesEvent({
-        component: "daemon",
-        event: "daemon.habit_migration_skip",
-        message: "habit already exists at target, skipping",
-        meta: { file, targetPath },
-      })
-      continue
-    }
-
     const sourcePath = path.join(oldHabitsDir, file)
     let content: string
     try {
@@ -138,7 +128,20 @@ export function migrateHabitsFromTaskSystem(bundleRoot: string): void {
     }
 
     const rendered = renderHabitFile(newFrontmatter, body)
-    fs.writeFileSync(targetPath, rendered, "utf-8")
+    const publication = publishNewHabitDefinition({
+      agentRoot: bundleRoot,
+      habitId: path.basename(slugName, ".md"),
+      bytes: rendered,
+    })
+    if (publication === "exists") {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.habit_migration_skip",
+        message: "habit already exists at target, skipping",
+        meta: { file, targetPath },
+      })
+      continue
+    }
     if (legacyLastRun) {
       writeHabitLastRun(bundleRoot, path.basename(slugName, ".md"), legacyLastRun)
     }

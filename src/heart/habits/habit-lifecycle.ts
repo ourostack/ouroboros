@@ -745,6 +745,51 @@ export function writeHabitLifecycleDefinition(
   }
 }
 
+/** Publish a new habit definition without ever replacing an existing path.
+ * This is the creation-side counterpart to lease-owned definition mutation:
+ * concurrent creators race at link(2), while cancellation remains the sole
+ * cooperative writer allowed to replace an existing definition. */
+export function publishNewHabitDefinition(
+  input: { agentRoot: string; habitId: string; bytes: string },
+  deps: Pick<HabitLifecycleDeps, "fs" | "randomUUID"> = {},
+): "published" | "exists" {
+  const storeFs = deps.fs ?? fs
+  const agentRoot = path.resolve(requiredString(input.agentRoot, "agent_root_required"))
+  const habitId = validatedHabitId(input.habitId)
+  if (typeof input.bytes !== "string") throw new HabitLifecycleError("definition_bytes_invalid")
+  const definitionPath = path.join(agentRoot, "habits", `${habitId}.md`)
+  const directoryPath = path.dirname(definitionPath)
+  storeFs.mkdirSync(directoryPath, { recursive: true })
+  const tempPath = lifecycleTempPath(definitionPath, deps)
+  let tempFd: number | null = null
+  let tempOwned = false
+  let published = false
+  try {
+    tempFd = storeFs.openSync(tempPath, "wx", 0o600)
+    tempOwned = true
+    storeFs.writeFileSync(tempFd, input.bytes, "utf8")
+    storeFs.fsyncSync(tempFd)
+    storeFs.closeSync(tempFd)
+    tempFd = null
+    try {
+      storeFs.linkSync(tempPath, definitionPath)
+      published = true
+    } catch (error) {
+      if (!isNodeError(error, "EEXIST")) throw error
+    }
+    if (published) fsyncDirectory(directoryPath, storeFs)
+  } catch (error) {
+    if (tempFd !== null) bestEffortClose(tempFd, storeFs)
+    if (tempOwned) bestEffortUnlink(tempPath, storeFs)
+    throw new HabitLifecycleError(
+      published ? "lifecycle_durability_unknown" : "lifecycle_write_failed",
+      { durabilityUnknown: published, cause: error },
+    )
+  }
+  if (tempOwned) bestEffortUnlink(tempPath, storeFs)
+  return published ? "published" : "exists"
+}
+
 export function publishHabitLifecycleReceipt(
   lease: HabitLifecycleLease,
   evidenceKeyHash: string,

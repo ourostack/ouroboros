@@ -8,10 +8,10 @@ import { stageRsvpHabit } from "../../rsvp/habit-stage"
 import { createTmpBundle } from "../test-helpers/tmpdir-bundle"
 
 describe("RSVP native habit staging", () => {
-  it("writes a generic RSVP habit as a native typed habit instead of a script placeholder", () => {
+  it("writes a generic RSVP habit as a native typed habit instead of a script placeholder", async () => {
     const tmp = createTmpBundle({ agentName: "agent" })
     try {
-      const result = stageRsvpHabit({
+      const result = await stageRsvpHabit({
         agent: "agent",
         agentRoot: tmp.agentRoot,
         mode: "shadow",
@@ -83,10 +83,10 @@ describe("RSVP native habit staging", () => {
     }
   })
 
-  it("lets the bundle own routine-specific naming and report title", () => {
+  it("lets the bundle own routine-specific naming and report title", async () => {
     const tmp = createTmpBundle({ agentName: "agent" })
     try {
-      const result = stageRsvpHabit({
+      const result = await stageRsvpHabit({
         agent: "agent",
         agentRoot: tmp.agentRoot,
         habitName: "rsvp-wedding",
@@ -107,10 +107,10 @@ describe("RSVP native habit staging", () => {
     }
   })
 
-  it("uses the current time when no staging timestamp is injected", () => {
+  it("uses the current time when no staging timestamp is injected", async () => {
     const tmp = createTmpBundle({ agentName: "agent" })
     try {
-      const result = stageRsvpHabit({
+      const result = await stageRsvpHabit({
         agent: "agent",
         agentRoot: tmp.agentRoot,
         mode: "live",
@@ -128,16 +128,49 @@ describe("RSVP native habit staging", () => {
     }
   })
 
-  it("rejects habit names outside the RSVP habit family", () => {
+  it("rejects habit names outside the RSVP habit family", async () => {
     const tmp = createTmpBundle({ agentName: "agent" })
     try {
-      expect(() => stageRsvpHabit({
+      await expect(Promise.resolve().then(() => stageRsvpHabit({
         agent: "agent",
         agentRoot: tmp.agentRoot,
         habitName: "rsvp",
         mode: "shadow",
         cadence: "0 10 * * *",
-      })).toThrow(/must start with rsvp-/)
+      }))).rejects.toThrow(/must start with rsvp-/)
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("refuses to reactivate a cancelled RSVP habit", async () => {
+    const tmp = createTmpBundle({ agentName: "agent" })
+    try {
+      const habitPath = path.join(tmp.agentRoot, "habits", "rsvp-wedding.md")
+      const cancelled = [
+        "---",
+        "title: Wedding RSVPs",
+        "status: cancelled",
+        "cancelledAt: 2026-07-10T20:00:00.000Z",
+        "---",
+        "",
+        "Stopped.",
+        "",
+      ].join("\n")
+      fs.mkdirSync(path.dirname(habitPath), { recursive: true })
+      fs.writeFileSync(habitPath, cancelled, "utf-8")
+
+      await expect(Promise.resolve().then(() => stageRsvpHabit({
+        agent: "agent",
+        agentRoot: tmp.agentRoot,
+        habitName: "rsvp-wedding",
+        mode: "live",
+        cadence: "0 11 * * *",
+        now: new Date("2026-07-11T20:00:00.000Z"),
+      }))).rejects.toThrow("habit_stage_exists")
+      expect(fs.readFileSync(habitPath, "utf-8")).toBe(cancelled)
+      expect(fs.existsSync(path.join(tmp.agentRoot, "state", "rsvp", "outbound-state.json"))).toBe(false)
+      expect(fs.existsSync(path.join(tmp.agentRoot, "state", "rsvp", "spend-ledger.json"))).toBe(false)
     } finally {
       tmp.cleanup()
     }

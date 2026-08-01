@@ -123,6 +123,48 @@ describe("hatch flow", () => {
     expect(fs.existsSync(path.join(sentinelDir, "receipts"))).toBe(true)
   })
 
+  it("does not reactivate an existing cancelled heartbeat when a bundle is re-hatched", async () => {
+    const bundlesRoot = makeTempDir("rehatch-bundles")
+    const specialistSource = makeTempDir("rehatch-specialist")
+    const specialistTarget = makeTempDir("rehatch-specialist-target")
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
+    fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
+
+    const bundleRoot = path.join(bundlesRoot, "Hatchling.ouro")
+    const heartbeatPath = path.join(bundleRoot, "habits", "heartbeat.md")
+    const cancelledHeartbeat = [
+      "---",
+      "title: Heartbeat check-in",
+      "cadence: 30m",
+      "status: cancelled",
+      "cancelledAt: 2026-03-08T00:00:00.000Z",
+      "---",
+      "",
+      "Stopped.",
+      "",
+    ].join("\n")
+    fs.mkdirSync(path.dirname(heartbeatPath), { recursive: true })
+    fs.writeFileSync(heartbeatPath, cancelledHeartbeat, "utf-8")
+
+    await runHatchFlow(
+      {
+        agentName: "Hatchling",
+        humanName: "Ari",
+        provider: "anthropic",
+        credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      },
+      {
+        bundlesRoot,
+        specialistIdentitySourceDir: specialistSource,
+        specialistIdentityTargetDir: specialistTarget,
+        now: () => new Date("2026-03-09T00:00:00.000Z"),
+        random: () => 0,
+      },
+    )
+
+    expect(fs.readFileSync(heartbeatPath, "utf-8")).toBe(cancelledHeartbeat)
+  })
+
   it("writes hatchling provider selection into agent.json", async () => {
     const homeDir = makeTempDir("hatch-agent.json provider selection-home")
     const bundlesRoot = path.join(homeDir, "AgentBundles")

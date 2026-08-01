@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest"
 import {
   acquireHabitLifecycleLock,
   getHabitLifecyclePaths,
+  publishNewHabitDefinition,
   publishHabitLifecycleReceipt,
   releaseHabitLifecycleLock,
   type HabitCancellationReceipt,
@@ -25,7 +26,7 @@ async function enterStartBarrier(): Promise<void> {
   }
 }
 
-function receiptRaceFs(): typeof fs {
+function publicationRaceFs(): typeof fs {
   const precommitPath = process.env.HABIT_LIFECYCLE_CHILD_PRECOMMIT!
   const peerPrecommitPath = process.env.HABIT_LIFECYCLE_CHILD_PEER_PRECOMMIT!
   const adapter = Object.create(fs) as Record<string, unknown>
@@ -110,13 +111,35 @@ describe.skipIf(childMode !== "receipt")(
           lease,
           process.env.HABIT_LIFECYCLE_CHILD_EVIDENCE_HASH!,
           receipt,
-          { fs: receiptRaceFs() },
+          { fs: publicationRaceFs() },
         )
       } catch (error) {
         outcome = error instanceof Error && "code" in error ? String(error.code) : String(error)
       }
       fs.writeFileSync(resultPath, JSON.stringify({ outcome }), "utf8")
       expect(["published", "duplicate", "lifecycle_receipt_collision"]).toContain(outcome)
+    })
+  },
+)
+
+describe.skipIf(childMode !== "definition")(
+  "habit definition publication child process",
+  () => {
+    it("races one new definition at the no-clobber boundary", async () => {
+      const resultPath = process.env.HABIT_LIFECYCLE_CHILD_RESULT!
+      await enterStartBarrier()
+      let outcome: string
+      try {
+        outcome = publishNewHabitDefinition({
+          agentRoot: process.env.HABIT_LIFECYCLE_CHILD_AGENT_ROOT!,
+          habitId: process.env.HABIT_LIFECYCLE_CHILD_HABIT_ID!,
+          bytes: process.env.HABIT_LIFECYCLE_CHILD_DEFINITION_BYTES!,
+        }, { fs: publicationRaceFs() })
+      } catch (error) {
+        outcome = error instanceof Error && "code" in error ? String(error.code) : String(error)
+      }
+      fs.writeFileSync(resultPath, JSON.stringify({ outcome }), "utf8")
+      expect(["published", "exists"]).toContain(outcome)
     })
   },
 )
