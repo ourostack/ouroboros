@@ -4026,7 +4026,7 @@ describe("BlueBubbles sense runtime", () => {
     const result = await bluebubbles.handleBlueBubblesEvent({
       type: "chat-read-status-changed",
       data: {
-        chatGuid: "any;-;ari@mendelow.me",
+        chatGuid: "any;-;peer@example.test",
       },
     })
 
@@ -6189,7 +6189,7 @@ describe("BlueBubbles sense runtime", () => {
       timestamp: Date.parse("2026-04-24T23:21:00.289Z"),
       fromMe: false,
       sender: {
-        provider: "imessage-handle",
+        provider: "imessage-handle" as const,
         externalId: "ari@mendelow.me",
         rawId: "ari@mendelow.me",
         displayName: "ari@mendelow.me",
@@ -6199,7 +6199,7 @@ describe("BlueBubbles sense runtime", () => {
         chatIdentifier: "ari@mendelow.me",
         isGroup: false,
         sessionKey: "chat:any;-;ari@mendelow.me",
-        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
         participantHandles: [],
       },
       shouldNotifyAgent: false,

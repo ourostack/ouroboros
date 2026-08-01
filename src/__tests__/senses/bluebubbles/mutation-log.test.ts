@@ -332,7 +332,7 @@ describe("BlueBubbles mutation log", () => {
       listBlueBubblesRecoveryCandidates,
       listRecordedBlueBubblesMutations,
     } = await import("../../../senses/bluebubbles/mutation-log")
-    const logPath = getBlueBubblesMutationLogPath("slugger", "chat:any;-;ari@mendelow.me")
+    const logPath = getBlueBubblesMutationLogPath("slugger", "chat:any;-;peer@example.test")
     fs.mkdirSync(path.dirname(logPath), { recursive: true })
     fs.writeFileSync(logPath, `${JSON.stringify({
       recordedAt: new Date(1).toISOString(),
@@ -340,9 +340,9 @@ describe("BlueBubbles mutation log", () => {
       mutationType: "delivery",
       messageGuid: "unknown-direction-mutation",
       targetMessageGuid: null,
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
-      sessionKey: "chat:any;-;ari@mendelow.me",
+      chatGuid: "any;-;peer@example.test",
+      chatIdentifier: "peer@example.test",
+      sessionKey: "chat:any;-;peer@example.test",
       shouldNotifyAgent: false,
       textForAgent: "delivery direction unknown",
       fromMe: null,
