@@ -1809,6 +1809,63 @@ describe("BlueBubbles durable semantic store", () => {
     expect(store.readBlueBubblesSemanticCapture("synthetic-agent", after.keyHash)).toEqual(after)
   })
 
+  it.each(["capture", "handled"] as const)(
+    "revalidates a corrupt %s before quarantine so a valid replacement is never removed",
+    async (recordKind) => {
+      const store = await loadSemanticStore()
+      const capture = makeSemanticCapture(`quarantine-replacement-${recordKind}`)
+      const replacement = recordKind === "capture" ? capture : makeHandled(capture)
+      const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+      const recordDirectory = recordKind === "capture" ? paths.captures : paths.handled
+      const finalPath = path.join(recordDirectory, `${capture.keyHash}.json`)
+      writeRawSemanticRecord(finalPath, "{torn")
+      const tornBytes = fs.readFileSync(finalPath, "utf8")
+      let replacementPublished = false
+      const adapter = semanticFsAdapter({
+        readFileSync: (...args: unknown[]) => {
+          if (!replacementPublished && String(args[0]) === finalPath) {
+            replacementPublished = true
+            const writerDeps = semanticStoreDeps({
+              randomUUID: () => "11111111-1111-4111-8111-111111111111",
+            })
+            if (recordKind === "capture") {
+              expect(store.writeBlueBubblesSemanticCapture(
+                "synthetic-agent",
+                capture,
+                writerDeps,
+              )).toBe("semantic_capture_published")
+            } else {
+              expect(store.writeBlueBubblesSemanticHandled(
+                "synthetic-agent",
+                replacement,
+                writerDeps,
+              )).toBe("semantic_handled_published")
+            }
+            return tornBytes
+          }
+          return Reflect.apply(fs.readFileSync, fs, args)
+        },
+      })
+      const readerDeps = semanticStoreDeps({
+        fs: adapter,
+        randomUUID: () => "22222222-2222-4222-8222-222222222222",
+      })
+
+      const observed = recordKind === "capture"
+        ? store.readBlueBubblesSemanticCapture("synthetic-agent", capture.keyHash, readerDeps)
+        : store.readBlueBubblesSemanticHandled("synthetic-agent", capture.keyHash, readerDeps)
+
+      expect(observed).toEqual(replacement)
+      expect(fs.readFileSync(finalPath, "utf8"))
+        .toBe(serializeBlueBubblesSemanticJson(replacement))
+      const quarantineDirectory = path.join(paths.quarantine, recordKind)
+      const quarantineFiles = fs.readdirSync(quarantineDirectory)
+      expect(quarantineFiles).toHaveLength(1)
+      expect(fs.readFileSync(path.join(quarantineDirectory, quarantineFiles[0]!), "utf8"))
+        .toBe(tornBytes)
+    },
+  )
+
   it("reports degraded quarantine failure without deleting adjacent valid records", async () => {
     const store = await loadSemanticStore()
     const valid = makeSemanticCapture("message-store-valid")
@@ -2353,6 +2410,70 @@ describe("BlueBubbles durable semantic store", () => {
     } finally {
       if (blocker.inTransaction) blocker.exec("ROLLBACK")
       blocker.close()
+    }
+  })
+
+  it("acquires SQLite exclusion before publishing owner evidence that must survive commit", async () => {
+    const store = await loadSemanticStore()
+    const seed = makeSemanticCapture("sqlite-reader-contention-seed")
+    const seedLease = await store.acquireBlueBubblesSemanticClaim(
+      "synthetic-agent",
+      seed,
+      semanticStoreDeps(),
+    )
+    expect(seedLease.status).toBe("acquired")
+    expect(store.releaseBlueBubblesSemanticClaim(
+      "synthetic-agent",
+      seedLease as SemanticClaimLeaseForTest,
+      semanticStoreDeps(),
+    )).toBe(true)
+
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const reader = new Database(paths.ownership)
+    reader.pragma("busy_timeout = 0")
+    reader.exec("BEGIN")
+    reader.prepare("SELECT count(*) FROM owner_leases").pluck().get()
+    const capture = makeSemanticCapture("sqlite-reader-contention-acquire")
+    const ownerPath = path.join(paths.claims, `${capture.keyHash}.owner.json`)
+    const evidenceObservedDuringSleep: boolean[] = []
+    let clockOffsetMs = 0
+    try {
+      const lease = await store.acquireBlueBubblesSemanticClaim(
+        "synthetic-agent",
+        capture,
+        semanticStoreDeps({
+          now: () => new Date(Date.parse(CAPTURED_AT) + clockOffsetMs),
+          sleep: async () => {
+            evidenceObservedDuringSleep.push(fs.existsSync(ownerPath))
+            reader.exec("COMMIT")
+            clockOffsetMs += 5_000
+          },
+        }),
+      )
+
+      expect(evidenceObservedDuringSleep).toEqual([false])
+      expect(lease.status).toBe("acquired")
+      const ownership = new Database(paths.ownership, { readonly: true })
+      try {
+        expect(ownership.prepare(
+          "SELECT resource_key, owner_json FROM owner_leases WHERE resource_key = ?",
+        ).get(`claim:${capture.keyHash}`)).toEqual({
+          resource_key: `claim:${capture.keyHash}`,
+          owner_json: serializeBlueBubblesSemanticJson(
+            (lease as SemanticClaimLeaseForTest).record,
+          ),
+        })
+      } finally {
+        ownership.close()
+      }
+      expect(store.releaseBlueBubblesSemanticClaim(
+        "synthetic-agent",
+        lease as SemanticClaimLeaseForTest,
+        semanticStoreDeps(),
+      )).toBe(true)
+    } finally {
+      if (reader.inTransaction) reader.exec("ROLLBACK")
+      reader.close()
     }
   })
 

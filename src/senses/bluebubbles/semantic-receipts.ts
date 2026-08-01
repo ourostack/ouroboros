@@ -1270,7 +1270,7 @@ async function acquireExclusiveSemanticOwner(
   const leaseId = semanticRandomUuid(deps)
   const startedAt = semanticNow(deps).getTime()
   while (true) {
-    const attempt = withImmediateSemanticOwnership(
+    const attempt = withExclusiveSemanticOwnership(
       input.ownershipPath,
       deps,
       (database) => acquireSemanticOwnerInTransaction(
@@ -1297,7 +1297,7 @@ function releaseExclusiveSemanticOwner(
 ): boolean {
   const startedAt = semanticNow(deps).getTime()
   while (true) {
-    const result = withImmediateSemanticOwnership(input.ownershipPath, deps, (database) => {
+    const result = withExclusiveSemanticOwnership(input.ownershipPath, deps, (database) => {
       const row = readSemanticOwnershipRow(database, input.resourceKey)
       if (!row || row.lease_id !== input.leaseId) return false
       const rowOwner = parseSemanticOwnershipRow(row, {
@@ -1380,7 +1380,7 @@ type SemanticOwnerEvidence =
   | { status: "valid"; record: BlueBubblesSemanticClaimRecord; bytes: string }
   | { status: "invalid"; reason: unknown }
 
-function withImmediateSemanticOwnership<T>(
+function withExclusiveSemanticOwnership<T>(
   ownershipPath: string,
   deps: BlueBubblesSemanticStoreDeps,
   operation: (database: Database.Database) => T,
@@ -1393,7 +1393,7 @@ function withImmediateSemanticOwnership<T>(
     database.pragma("busy_timeout = 0")
     database.pragma("journal_mode = DELETE")
     database.pragma("synchronous = FULL")
-    database.exec("BEGIN IMMEDIATE")
+    database.exec("BEGIN EXCLUSIVE")
     initializeSemanticOwnershipSchema(database)
     fsyncSemanticDirectory(path.dirname(ownershipPath), storeFs)
     const value = operation(database)
@@ -1670,8 +1670,41 @@ function readSemanticRecord<T>(
   validate: (value: unknown) => value is T,
   deps: BlueBubblesSemanticStoreDeps,
 ): T | null {
+  const initial = inspectSemanticRecord(finalPath, keyHash, validate, deps)
+  if (initial.status === "missing") return null
+  if (initial.status === "valid") return initial.value
+
+  const ownershipPath = path.join(path.dirname(path.dirname(finalPath)), "ownership.sqlite")
+  const startedAt = semanticNow(deps).getTime()
+  while (true) {
+    const result = withExclusiveSemanticOwnership(ownershipPath, deps, () => {
+      const current = inspectSemanticRecord(finalPath, keyHash, validate, deps)
+      if (current.status === "missing") return null
+      if (current.status === "valid") return current.value
+      quarantineSemanticRecord(finalPath, recordKind, keyHash, deps, current.reason)
+      return null
+    })
+    if (result.status === "completed") return result.value
+    if (semanticNow(deps).getTime() - startedAt >= SEMANTIC_CLAIM_TIMEOUT_MS) {
+      throw semanticStoreError("semantic_ownership_busy")
+    }
+    semanticSleepSync(SEMANTIC_CLAIM_POLL_MS, deps)
+  }
+}
+
+type SemanticRecordInspection<T> =
+  | { status: "missing" }
+  | { status: "valid"; value: T }
+  | { status: "invalid"; reason: unknown }
+
+function inspectSemanticRecord<T>(
+  finalPath: string,
+  keyHash: string,
+  validate: (value: unknown) => value is T,
+  deps: BlueBubblesSemanticStoreDeps,
+): SemanticRecordInspection<T> {
   const storeFs = semanticFs(deps)
-  if (!storeFs.existsSync(finalPath)) return null
+  if (!storeFs.existsSync(finalPath)) return { status: "missing" }
   let bytes: string
   try {
     bytes = storeFs.readFileSync(finalPath, "utf8")
@@ -1683,20 +1716,15 @@ function readSemanticRecord<T>(
   try {
     value = JSON.parse(bytes)
   } catch (error) {
-    quarantineSemanticRecord(finalPath, recordKind, keyHash, deps, error)
-    return null
+    return { status: "invalid", reason: error }
   }
   if (!validate(value)) {
-    quarantineSemanticRecord(
-      finalPath,
-      recordKind,
-      keyHash,
-      deps,
-      semanticStoreError("semantic_record_invalid"),
-    )
-    return null
+    return {
+      status: "invalid",
+      reason: semanticStoreError("semantic_record_invalid"),
+    }
   }
-  return value
+  return { status: "valid", value }
 }
 
 function quarantineSemanticRecord(
