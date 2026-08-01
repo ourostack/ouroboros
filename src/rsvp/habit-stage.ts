@@ -47,8 +47,8 @@ export interface StageRsvpHabitDeps {
 export class RsvpHabitStageError extends Error {
   readonly code: string
 
-  constructor(code: string, options: { cause?: unknown } = {}) {
-    super(code, options.cause === undefined ? undefined : { cause: options.cause })
+  constructor(code: string) {
+    super(code)
     this.name = "RsvpHabitStageError"
     this.code = code
   }
