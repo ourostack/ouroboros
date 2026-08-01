@@ -1866,6 +1866,44 @@ describe("BlueBubbles durable semantic store", () => {
     },
   )
 
+  it("returns missing when another reader quarantines the invalid record before revalidation", async () => {
+    const store = await loadSemanticStore()
+    const capture = makeSemanticCapture("quarantine-revalidation-missing")
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const finalPath = path.join(paths.captures, `${capture.keyHash}.json`)
+    writeRawSemanticRecord(finalPath, "{torn")
+    const tornBytes = fs.readFileSync(finalPath, "utf8")
+    let raced = false
+    const adapter = semanticFsAdapter({
+      readFileSync: (...args: unknown[]) => {
+        if (!raced && String(args[0]) === finalPath) {
+          raced = true
+          expect(store.readBlueBubblesSemanticCapture(
+            "synthetic-agent",
+            capture.keyHash,
+            semanticStoreDeps({
+              randomUUID: () => "11111111-1111-4111-8111-111111111111",
+            }),
+          )).toBeNull()
+          return tornBytes
+        }
+        return Reflect.apply(fs.readFileSync, fs, args)
+      },
+    })
+
+    expect(store.readBlueBubblesSemanticCapture(
+      "synthetic-agent",
+      capture.keyHash,
+      semanticStoreDeps({ fs: adapter }),
+    )).toBeNull()
+    expect(fs.existsSync(finalPath)).toBe(false)
+    const quarantineDirectory = path.join(paths.quarantine, "capture")
+    const quarantineFiles = fs.readdirSync(quarantineDirectory)
+    expect(quarantineFiles).toHaveLength(1)
+    expect(fs.readFileSync(path.join(quarantineDirectory, quarantineFiles[0]!), "utf8"))
+      .toBe(tornBytes)
+  })
+
   it("reports degraded quarantine failure without deleting adjacent valid records", async () => {
     const store = await loadSemanticStore()
     const valid = makeSemanticCapture("message-store-valid")
