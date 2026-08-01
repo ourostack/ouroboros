@@ -158,6 +158,33 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "daily-standup", habitName: undefined })
   })
 
+  it("preserves no-send only for a habit probe worker message", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createPrivateRuntimeWorker(runTurn)
+    const privateTurnDecision = { result: "allow", triggerSource: "habit-manual" }
+
+    await worker.handleMessage({
+      type: "habit",
+      habitName: "daily-reflection",
+      trigger: "manual",
+      noSend: true,
+      privateTurnDecision,
+    })
+    await worker.handleMessage({
+      type: "message",
+      noSend: true,
+      privateTurnDecision,
+    })
+
+    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      reason: "habit",
+      habitName: "daily-reflection",
+      noSend: true,
+      privateTurnDecision,
+    }))
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ noSend: true }))
+  })
+
   it("passes undefined taskId when poke has no taskId", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
     const worker = createPrivateRuntimeWorker(runTurn)

@@ -271,6 +271,65 @@ describe("native RSVP habit runner", () => {
     }
   })
 
+  it.each([
+    {
+      label: "missing noSend evidence",
+      mutate: (payload: Record<string, unknown>) => { delete payload.noSend },
+    },
+    {
+      label: "nonzero transport count",
+      mutate: (payload: Record<string, unknown>) => { payload.transportInvocationCount = 1 },
+    },
+    {
+      label: "widened send permission",
+      mutate: (payload: Record<string, unknown>) => { payload.sendAllowed = true },
+    },
+    {
+      label: "claimed side effect",
+      mutate: (payload: Record<string, unknown>) => { payload.sideEffect = true },
+    },
+  ])("fails a native no-send probe on $label", async ({ mutate }) => {
+    const tmp = seedRsvpHabit("live")
+    const payload: Record<string, unknown> = {
+      ok: true,
+      command: "rsvp.refresh",
+      sideEffect: false,
+      agent: "slugger",
+      mode: "live",
+      message: "RSVP refresh completed",
+      allowSend: true,
+      noSend: true,
+      sendAllowed: false,
+      transportInvocationCount: 0,
+    }
+    mutate(payload)
+
+    try {
+      const result = await runNativeRsvpHabit({
+        agent: "slugger",
+        bundlesRoot: tmp.bundlesRoot,
+        habitName: "rsvp-wedding",
+        trigger: "manual",
+        occurrenceId: "probe:malicious-result",
+        noSend: true,
+        now: () => "2026-07-12T17:00:07.000Z",
+        runRefresh: vi.fn(async () => JSON.stringify(payload)),
+      })
+
+      expect(result).toMatchObject({
+        ok: false,
+        lifecycle: "error",
+        payload: {
+          ok: false,
+          status: "active",
+          message: "RSVP refresh violated the immutable no-send result contract",
+        },
+      })
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("records blocked refresh payloads as errored habit runs and advances the cursor", async () => {
     const tmp = seedRsvpHabit("shadow")
     const runRefresh = vi.fn(async () => JSON.stringify({

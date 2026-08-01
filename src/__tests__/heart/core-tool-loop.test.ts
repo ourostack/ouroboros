@@ -1123,6 +1123,64 @@ describe("runAgent tool loop guard", () => {
     })
   })
 
+  it("fails a default-handler terminal projection safely for non-object arguments and non-Error rejection", async () => {
+    const terminalToolName = "synthetic_terminal_projection_default_failure"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic terminal default-handler failure",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      },
+      handler: async () => Promise.reject("opaque terminal failure"),
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: false,
+      },
+    })
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_terminal_default_failure",
+        function: { name: terminalToolName, arguments: "[]" },
+      }]),
+    ]))
+
+    const { runAgent } = await import("../../heart/core")
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{ role: "user", content: "Please end this report." }],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [{
+          type: "function",
+          function: {
+            name: terminalToolName,
+            description: "synthetic terminal default-handler failure",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        }],
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(callbacks.onClearText).not.toHaveBeenCalled()
+    expect(callbacks.onToolStart).toHaveBeenCalledWith(terminalToolName, {})
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), false)
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith("error: opaque terminal failure")
+    expect(result).toMatchObject({
+      outcome: "blocked",
+      completion: { answer: "error: opaque terminal failure", intent: "blocked" },
+    })
+  })
+
   it("fails closed before terminal side effects when buffered-text clearing fails", async () => {
     const terminalToolName = "synthetic_terminal_projection_clear_failure"
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")

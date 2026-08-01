@@ -2045,6 +2045,51 @@ describe("daemon command plane branches", () => {
     } as any)
     expect(widened).toMatchObject({ ok: false, error: expect.stringMatching(/noSend.*true/) })
     expect(rsvpHabitRunner).toHaveBeenCalledTimes(1)
+
+    rsvpHabitRunner.mockResolvedValueOnce({
+      ok: false,
+      message: "native probe failed after entering the runner",
+      lifecycle: "error" as const,
+      runId: "rsvp-native-probe-failed",
+      payload: { noSend: true, status: 7, transportInvocationCount: 0 },
+    })
+    await expect(daemon.handleCommand(probeCommand)).resolves.toEqual({
+      ok: false,
+      error: "native probe failed after entering the runner",
+      data: {
+        ok: false,
+        noSend: true,
+        status: "degraded",
+        transportInvocationCount: null,
+        error: "native probe failed after entering the runner",
+      },
+    })
+
+    for (const payload of [
+      { noSend: false, status: "active", transportInvocationCount: 0 },
+      { noSend: true, status: 7, transportInvocationCount: 0 },
+      { noSend: true, status: "active", transportInvocationCount: "0" },
+      { noSend: true, status: "active", transportInvocationCount: 1 },
+    ]) {
+      rsvpHabitRunner.mockResolvedValueOnce({
+        ok: true,
+        message: "malicious probe result",
+        lifecycle: "completed" as const,
+        runId: "rsvp-native-probe-malicious",
+        payload,
+      })
+      await expect(daemon.handleCommand(probeCommand)).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/violated.*no-send/i),
+        data: {
+          ok: false,
+          noSend: true,
+          status: typeof payload.status === "string" ? payload.status : "degraded",
+          transportInvocationCount: null,
+          error: expect.stringMatching(/violated.*no-send/i),
+        },
+      })
+    }
   })
 
   it("reports a cancelled RSVP probe as a zero-transport lifecycle rejection", async () => {
@@ -2079,6 +2124,30 @@ describe("daemon command plane branches", () => {
     expect(rsvpHabitRunner).not.toHaveBeenCalled()
   })
 
+  it("reports a missing RSVP probe definition as degraded without invoking a runner", async () => {
+    const socketPath = tmpSocketPath("daemon-missing-rsvp-habit-probe")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-missing-rsvp-habit-probe-bundles-"))
+    const rsvpHabitRunner = vi.fn()
+    const { daemon } = make(socketPath, bundlesRoot, { rsvpHabitRunner })
+
+    const response = await daemon.handleCommand({
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "rsvp-missing",
+    })
+
+    expect(response).toEqual({
+      ok: true,
+      message: "habit probe rejected by lifecycle: status=degraded",
+      data: {
+        noSend: true,
+        status: "degraded",
+        transportInvocationCount: 0,
+      },
+    })
+    expect(rsvpHabitRunner).not.toHaveBeenCalled()
+  })
+
   it("preserves no-send through a non-RSVP private-runtime probe dispatch", async () => {
     const socketPath = tmpSocketPath("daemon-private-habit-probe")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-private-habit-probe-bundles-"))
@@ -2096,13 +2165,90 @@ describe("daemon command plane branches", () => {
     } satisfies Extract<DaemonCommand, { kind: "habit.probe" }>
     const response = await daemon.handleCommand(command)
 
-    expect(response).toMatchObject({ ok: true })
+    expect(response).toEqual({
+      ok: false,
+      error: "non-RSVP habit probe completion is asynchronous; zero-transport evidence is unverified",
+      data: {
+        ok: false,
+        noSend: true,
+        status: "active",
+        transportInvocationCount: null,
+        error: "non-RSVP habit probe completion is asynchronous; zero-transport evidence is unverified",
+      },
+    })
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({
       type: "habit",
       habitName: "daily-probe",
       trigger: "manual",
       noSend: true,
     }))
+  })
+
+  it("does not project verified non-RSVP probe evidence when private-runtime policy denies execution", async () => {
+    const socketPath = tmpSocketPath("daemon-private-habit-probe-denied")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-private-habit-probe-denied-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `private-habit-probe-denied-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "daily-probe", cadence: "30m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "deny"),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    await expect(daemon.handleCommand({
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "daily-probe",
+      noSend: true,
+    })).resolves.toEqual({
+      ok: false,
+      error: "non-RSVP habit probe was not executed because private-runtime policy denied execution",
+      data: {
+        ok: false,
+        noSend: true,
+        status: "active",
+        transportInvocationCount: null,
+        error: "non-RSVP habit probe was not executed because private-runtime policy denied execution",
+      },
+    })
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("rejects a non-RSVP probe when no managed private runtime exists", async () => {
+    const socketPath = tmpSocketPath("daemon-private-habit-probe-unmanaged")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-private-habit-probe-unmanaged-bundles-"))
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "daily-probe", cadence: "30m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot)
+
+    await expect(daemon.handleCommand({
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "daily-probe",
+    })).resolves.toEqual({
+      ok: false,
+      error: "No managed agent 'slugger' is registered with daemon-managed private runtime.",
+    })
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("does not project successful probe data if the managed runtime disappears before dispatch", async () => {
+    const socketPath = tmpSocketPath("daemon-private-habit-probe-runtime-race")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-private-habit-probe-runtime-race-bundles-"))
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "daily-probe", cadence: "30m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot)
+    processManager.listAgentSnapshots
+      .mockReturnValueOnce([registeredSnapshot()])
+      .mockReturnValueOnce([])
+
+    await expect(daemon.handleCommand({
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "daily-probe",
+    })).resolves.toEqual({
+      ok: false,
+      error: "No managed agent 'slugger' is registered with daemon-managed private runtime.",
+    })
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })
 
   it("uses the production native RSVP runner when no daemon test seam is injected", async () => {
@@ -2567,6 +2713,30 @@ describe("daemon command plane branches", () => {
       }),
       expect.any(Object),
     )
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("rejects private wakes whose no-send payload and provenance disagree", async () => {
+    const socketPath = tmpSocketPath("daemon-private-wake-no-send-mismatch")
+    const ledgerPath = path.join(os.tmpdir(), `private-wake-no-send-mismatch-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager } = make(socketPath, undefined, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    await expect(daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      noSend: true,
+      originRefs: [{ kind: "daemon-command", id: "private.wake" }],
+    })).rejects.toThrow(/no-send capability.*origin/i)
+    await expect(daemon.handleCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      originRefs: [{ kind: "capability", id: "no-send" }],
+    })).rejects.toThrow(/no-send capability.*origin/i)
+
+    expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
     expect(processManager.startAgent).not.toHaveBeenCalled()
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
   })

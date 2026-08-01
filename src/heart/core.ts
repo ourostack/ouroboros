@@ -480,7 +480,11 @@ async function habitToolBatchBlockReason(
   toolCalls: Array<{ name: string; arguments: string }>,
   delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
   activeToolNames: ReadonlySet<string>,
+  noSend: boolean,
 ): Promise<string | null> {
+  if (noSend && toolCalls.some((call) => call.name === "ponder")) {
+    return "habit tool 'ponder' cannot create continuations under immutable no-send authority"
+  }
   if (!habitSession) return null
   const granted = new Set(habitSession.toolPolicy.grantedTools)
   const denied = new Set(habitSession.toolPolicy.deniedTools)
@@ -1336,7 +1340,7 @@ export async function runAgent(
       ? filteredBaseTools
       : [
         ...filteredBaseTools,
-        ponderTool,
+        ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
         ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
         ...(isPrivateRuntimeChannel ? [restTool] : []),
         ...(!isPrivateRuntimeChannel ? [observeTool] : []),
@@ -1744,7 +1748,9 @@ export async function runAgent(
           messages.push({
             role: "user",
             content: isPrivateRuntimeChannel
-              ? "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
+              ? augmentedToolContext?.noSend === true
+                ? "no tool was called this turn. this is an immutable no-send turn; call rest now without creating a continuation."
+                : "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
               : "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now.",
           });
           continue;
@@ -1755,7 +1761,13 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
-        const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins, activeToolNames)
+        const habitBlockReason = await habitToolBatchBlockReason(
+          habitSession,
+          result.toolCalls,
+          augmentedToolContext?.delegatedOrigins,
+          activeToolNames,
+          augmentedToolContext?.noSend === true,
+        )
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
           recordBlockedHabitSurfaceAttempts(habitSession, result.toolCalls, habitBlockReason)

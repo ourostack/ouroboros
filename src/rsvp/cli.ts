@@ -43,6 +43,8 @@ interface RsvpCliPayload {
   action?: string
   legacyRoot?: string
   allowSend?: boolean
+  noSend?: boolean
+  transportInvocationCount?: number
   requires?: string
   message: string
   inputs?: Record<string, JsonValue>
@@ -703,7 +705,12 @@ async function executeHabitStage(command: RsvpHabitStageCommand, deps: OuroCliDe
   })
 }
 
-async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+async function executeRefreshInner(
+  command: RsvpRefreshCommand,
+  deps: OuroCliDeps,
+  transportCounter: { count: number },
+  hardNoSend: boolean,
+): Promise<RsvpCliPayload> {
   const agentRoot = maybeAgentRoot(command, deps)
   if (!command.agent || !agentRoot) {
     return {
@@ -783,8 +790,9 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
   const delta = computeRsvpDelta(previousSnapshot, currentSnapshot)
   const reportText = renderRsvpReport(delta, reportCopy)
   const outboundDecision = decideRsvpOutboundReport({ agentRoot, currentSnapshot, reportText })
-  const wantsLiveSend = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
-  if (wantsLiveSend) {
+  const requestedLiveSend = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
+  const sendAllowedBeforeCutover = requestedLiveSend && !hardNoSend
+  if (sendAllowedBeforeCutover) {
     const cutover = await checkLiveSendCutover({
       agent: command.agent,
       config: configResult.config,
@@ -801,11 +809,13 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
       })
     }
   }
-  const sendAllowed = wantsLiveSend
+  const sendAllowed = requestedLiveSend && !hardNoSend
   let delivery: JsonValue | undefined
   if (sendAllowed) {
     const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, machineRuntimeConfig)
-    const sent = await createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig).sendText({
+    const client = createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig)
+    transportCounter.count += 1
+    const sent = await client.sendText({
       chat: blueBubblesChatFor(configResult.config),
       text: reportText,
       tempGuid: outboundDecision.idempotencyKey,
@@ -826,7 +836,7 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
   }
 
   return basePayload(command, sendAllowed, "RSVP refresh completed", {
-    allowSend: sendAllowed,
+    allowSend: command.mode === "live" && command.allowSend === true,
     sendAllowed,
     refresh: {
       snapshotId: currentSnapshot.snapshotId,
@@ -835,6 +845,17 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
       ...(delivery ? { delivery } : {}),
     },
   })
+}
+
+async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+  const transportCounter = { count: 0 }
+  const hardNoSend = command.noSend === true
+  const payload = await executeRefreshInner(command, deps, transportCounter, hardNoSend)
+  return {
+    ...payload,
+    ...(hardNoSend ? { noSend: true } : {}),
+    transportInvocationCount: transportCounter.count,
+  }
 }
 
 async function executeCompare(command: RsvpCompareCommand): Promise<RsvpCliPayload> {

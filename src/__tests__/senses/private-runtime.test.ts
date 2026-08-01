@@ -338,6 +338,7 @@ describe("private runtime", () => {
     if (typeof options.taskId === "string") originRefs.push({ kind: "task", id: options.taskId })
     if (typeof options.habitName === "string") originRefs.push({ kind: "habit", id: options.habitName })
     if (typeof options.awaitName === "string") originRefs.push({ kind: "await", id: options.awaitName })
+    if (options.noSend === true) originRefs.push({ kind: "capability", id: "no-send" })
     originRefs.push({ kind: "unit-test", id: `approved-${privateDecisionCounter + 1}` })
     return {
       ...options,
@@ -1218,6 +1219,49 @@ describe("private runtime", () => {
         instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
         now: () => new Date("2026-03-06T12:00:00.000Z"),
       })).rejects.toThrow(/missing task payload|task-a/i)
+
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockRunAgent).not.toHaveBeenCalled()
+    })
+
+    it("fails closed when no-send capability provenance and runtime options disagree", async () => {
+      const capabilityWithoutOption = writeLedgeredPrivateTurnDecision({
+        request: {
+          originRefs: [
+            { kind: "capability", id: "no-send" },
+            { kind: "unit-test", id: "capability-without-option" },
+          ],
+        },
+      })
+      const optionWithoutCapability = writeLedgeredPrivateTurnDecision()
+      const duplicateCapability = writeLedgeredPrivateTurnDecision({
+        request: {
+          originRefs: [
+            { kind: "capability", id: "no-send" },
+            { kind: "capability", id: "no-send" },
+          ],
+        },
+      })
+      const baseOptions = {
+        reason: "instinct",
+        instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+        now: () => new Date("2026-03-06T12:00:00.000Z"),
+      }
+
+      await expect((runPrivateRuntimeTurn as any)({
+        ...baseOptions,
+        privateTurnDecision: capabilityWithoutOption,
+      })).rejects.toThrow(/no-send capability binding/i)
+      await expect((runPrivateRuntimeTurn as any)({
+        ...baseOptions,
+        noSend: true,
+        privateTurnDecision: optionWithoutCapability,
+      })).rejects.toThrow(/no-send capability binding/i)
+      await expect((runPrivateRuntimeTurn as any)({
+        ...baseOptions,
+        noSend: true,
+        privateTurnDecision: duplicateCapability,
+      })).rejects.toThrow(/no-send capability binding/i)
 
       expect(mockHandleInboundTurn).not.toHaveBeenCalled()
       expect(mockRunAgent).not.toHaveBeenCalled()
@@ -4160,6 +4204,68 @@ describe("private runtime", () => {
     })
     expect(input.runAgentOptions.toolContext.habitSession)
       .toBe(input.runAgentOptions.habitSession)
+  })
+
+  it("reduces an existing habit session without losing its non-authority callbacks", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "private-probe-session.md"),
+      "---\ntitle: Private Probe Session\ncadence: 1h\nstatus: active\n---\n\nProbe without sending.",
+      "utf8",
+    )
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+    const recordError = vi.fn()
+    const habitSession = {
+      runId: "probe-session-run",
+      permissionEnvelope: {
+        schemaVersion: 1 as const,
+        canMessageOutward: true,
+        returnRoutes: [{ kind: "family" as const, recipient: "family", status: "allowed" as const }],
+        deniedTools: ["mail_send"],
+        warnings: ["existing warning"],
+      },
+      toolPolicy: {
+        requestedTools: ["read", "send_message"],
+        grantedTools: ["read", "send_message"],
+        deniedTools: ["shell"],
+        outwardMessagingAllowed: true,
+      },
+      recordError,
+    }
+
+    await runApprovedPrivateRuntimeTurn({
+      reason: "habit",
+      habitName: "private-probe-session",
+      habitSession,
+      noSend: true,
+      now: () => new Date("2026-03-06T12:06:00.000Z"),
+    })
+
+    const effective = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.habitSession
+    expect(effective).toMatchObject({
+      runId: "probe-session-run",
+      noSend: true,
+      recordError,
+      permissionEnvelope: {
+        canMessageOutward: false,
+        returnRoutes: [],
+        deniedTools: expect.arrayContaining(["mail_send", "read", "send_message", "shell", "surface"]),
+        warnings: ["existing warning"],
+      },
+      toolPolicy: {
+        requestedTools: ["read", "send_message"],
+        grantedTools: [],
+        deniedTools: expect.arrayContaining(["mail_send", "read", "send_message", "shell", "surface"]),
+        outwardMessagingAllowed: false,
+      },
+    })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.habitSession).toBe(effective)
   })
 
   it("silently excludes unknown tool names from habit tools field (fail closed)", async () => {

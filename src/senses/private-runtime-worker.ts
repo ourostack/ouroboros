@@ -50,6 +50,7 @@ export interface PrivateRuntimeWorkerMessage {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
+  noSend?: true
   privateTurnDecision?: PrivateTurnDecision
 }
 
@@ -61,6 +62,7 @@ export interface PrivateRuntimeWorkerRunOptions {
   trigger?: HabitRunReceipt["trigger"]
   habitSession?: HabitSessionToolContext
   preparedHabit?: PreparedHabitContext
+  noSend?: true
   privateTurnDecision?: PrivateTurnDecision
 }
 
@@ -72,6 +74,7 @@ export interface PrivateRuntimeWorkerController {
     awaitName?: string,
     trigger?: HabitRunReceipt["trigger"],
     privateTurnDecision?: PrivateTurnDecision,
+    noSend?: true,
   ): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
@@ -87,6 +90,7 @@ interface QueueEntry {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
+  noSend?: true
   privateTurnDecision?: PrivateTurnDecision
 }
 
@@ -554,9 +558,10 @@ export function createPrivateRuntimeWorker(
     awaitName?: string,
     trigger?: HabitRunReceipt["trigger"],
     privateTurnDecision?: PrivateTurnDecision,
+    noSend?: true,
   ): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision })
+      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision, noSend })
       return
     }
 
@@ -568,6 +573,7 @@ export function createPrivateRuntimeWorker(
       let nextAwaitName = awaitName
       let nextTrigger = trigger
       let nextPrivateTurnDecision = privateTurnDecision
+      let nextNoSend = reason === "habit" ? noSend : undefined
       let nextHabitRun: PreparedHabitRun | null = null
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
@@ -575,6 +581,7 @@ export function createPrivateRuntimeWorker(
         const currentReason = nextReason
         const currentHabitName = nextHabitName
         const currentTrigger = nextTrigger ?? "overdue"
+        const currentNoSend = nextNoSend
         const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
           ? nextHabitRun && nextHabitRun.habit.name === currentHabitName
             ? nextHabitRun
@@ -622,6 +629,7 @@ export function createPrivateRuntimeWorker(
               taskId: nextTaskId,
               habitName: nextHabitName,
               awaitName: nextAwaitName,
+              ...(currentNoSend ? { noSend: true } : {}),
               ...(nextPrivateTurnDecision ? { privateTurnDecision: nextPrivateTurnDecision } : {}),
               ...(currentHabitRun
                 ? {
@@ -691,6 +699,7 @@ export function createPrivateRuntimeWorker(
           nextAwaitName = next.awaitName
           nextTrigger = next.trigger
           nextPrivateTurnDecision = next.privateTurnDecision
+          nextNoSend = next.reason === "habit" ? next.noSend : undefined
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
         }
@@ -729,6 +738,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = currentTrigger
             nextPrivateTurnDecision = undefined
+            nextNoSend = currentNoSend
             nextHabitRun = currentHabitRun
           } else {
             finalizeCurrentHabitRun()
@@ -739,6 +749,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = undefined
             nextPrivateTurnDecision = undefined
+            nextNoSend = undefined
           }
           continue
         }
@@ -762,7 +773,7 @@ export function createPrivateRuntimeWorker(
         return
       }
       recordHabitFireForRecursion(habitName)
-      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision)
+      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision, maybeMessage.noSend)
       return
     }
     if (maybeMessage.type === "await") {

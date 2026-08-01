@@ -126,6 +126,7 @@ export function usage(): string {
     "  ouro habit inspect [--agent <name>] <runId>",
     "  ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
     "  ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
+    "  ouro habit probe --agent <name> --habit <name> --no-send [--json]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
@@ -290,6 +291,45 @@ function parseHabitCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
 
   const sub = rest[0]
+  if (sub === "probe") {
+    if (args.includes("--allow-send")) {
+      throw new Error("habit probe cannot allow send")
+    }
+    if (
+      args.filter((value) => value === "--agent").length !== 1
+      || !agent
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)
+    ) throw new Error("habit probe requires --agent <name>")
+    let habitName: string | undefined
+    let json = false
+    let sawNoSend = false
+    const options = rest.slice(1)
+    for (let index = 0; index < options.length; index += 1) {
+      const option = options[index]
+      if (option === "--json") {
+        if (json) throw new Error("habit probe received duplicate --json")
+        json = true
+        continue
+      }
+      if (option === "--no-send") {
+        if (sawNoSend) throw new Error("habit probe received duplicate --no-send")
+        sawNoSend = true
+        continue
+      }
+      if (option === "--habit" && options[index + 1]) {
+        if (habitName !== undefined) throw new Error("habit probe received duplicate --habit")
+        habitName = options[index + 1]
+        index += 1
+        continue
+      }
+      throw new Error("Usage: ouro habit probe --agent <name> --habit <name> --no-send [--json]")
+    }
+    if (!habitName) throw new Error("habit probe requires --habit <name>")
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(habitName)) {
+      throw new Error("habit probe requires a valid --habit name")
+    }
+    return { kind: "habit.probe", agent, habitName, noSend: true, json }
+  }
   if (sub === "cancel") {
     if (
       args.filter((value) => value === "--agent").length !== 1

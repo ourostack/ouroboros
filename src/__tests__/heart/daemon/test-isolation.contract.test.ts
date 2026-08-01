@@ -182,6 +182,9 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   "src/__tests__/repertoire/mcp-wiring.test.ts",
   "src/__tests__/heart/daemon/daemon-mcp-commands.test.ts",
   "src/__tests__/heart/daemon/daemon-startup-sense-drain.test.ts",
+  // Exercises the complete CLI-to-command-plane projection without starting
+  // the daemon; every daemon dependency and bundle root is test-local.
+  "src/__tests__/heart/daemon/daemon-cli-rsvp.test.ts",
   // Pairing-regression test constructs OuroDaemon to exercise the new
   // try/catch in start() that emits daemon.server_error on mid-startup
   // throws. Can't be tested through a higher-level seam because the

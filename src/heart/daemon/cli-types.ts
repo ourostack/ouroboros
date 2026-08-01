@@ -112,6 +112,7 @@ export type OuroCliCommand =
   | { kind: "habit.inspect"; agent?: string; runId: string }
   | { kind: "habit.summary"; agent?: string; runId?: string; habitName?: string; operationId?: string; which?: HabitSummaryWhich; json: boolean }
   | { kind: "habit.cancel"; agent: string; habitName: string; evidenceLocator: string }
+  | { kind: "habit.probe"; agent: string; habitName: string; noSend: true; json: boolean }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }

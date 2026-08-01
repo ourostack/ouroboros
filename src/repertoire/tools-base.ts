@@ -83,6 +83,7 @@ export interface HabitSessionToolContext {
   recordProducedRef?: (ref: FlightRecorderProducedRef) => void;
   recordSurfaceAttempt?: (attempt: HabitSurfaceAttempt) => void;
   recordError?: (error: string) => void;
+  readonly noSend?: true;
 }
 
 export interface ToolContext {
@@ -117,6 +118,8 @@ export interface ToolContext {
     provider: "bluebubbles";
     captureKeyHash: string;
   }>;
+  /** Irrevocable per-turn capability reduction used by transport-safe probes. */
+  readonly noSend?: true;
   habitSession?: HabitSessionToolContext;
   daemonSocketPath?: string;
   agentRoot?: string;

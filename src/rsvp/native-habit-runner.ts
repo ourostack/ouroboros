@@ -30,6 +30,7 @@ export interface RunNativeRsvpHabitInput {
   habitName: string
   trigger: HabitRunTrigger
   occurrenceId?: string
+  noSend?: true
   now?: () => string | Date
   runRefresh?: RsvpRefreshRunner
 }
@@ -161,7 +162,8 @@ function refreshCommandFor(input: RunNativeRsvpHabitInput, sendAllowed: boolean,
     habitName: input.habitName,
     mode,
     json: true,
-    ...(sendAllowed ? { allowSend: true } : { noSend: true }),
+    ...(sendAllowed ? { allowSend: true } : {}),
+    ...(input.noSend || !sendAllowed ? { noSend: true } : {}),
   }
 }
 
@@ -555,6 +557,7 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
 
   const habit = resolution.habit
   const policy = rsvpHabitRuntimePolicy(habit.rsvp)
+  const effectiveSendAllowed = policy.sendAllowed && input.noSend !== true
   const command = refreshCommandFor(input, policy.sendAllowed, habit.rsvp.mode)
   const deps = noopCliDeps(input, agentRoot)
 
@@ -562,7 +565,25 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
   let errorMessage: string | null = null
   try {
     payload = parseRefreshPayload(await (input.runRefresh ?? defaultRunRefresh)(command, deps))
+    payload = { ...payload, status: habit.status }
     errorMessage = payloadError(payload)
+    if (
+      input.noSend === true
+      && (
+        payload.noSend !== true
+        || payload.transportInvocationCount !== 0
+        || payload.sendAllowed === true
+        || payload.sideEffect === true
+      )
+    ) {
+      errorMessage = "RSVP refresh violated the immutable no-send result contract"
+      payload = {
+        ...payload,
+        ok: false,
+        status: habit.status,
+        message: errorMessage,
+      }
+    }
   } catch (error) {
     payload = {
       ok: false,
@@ -570,6 +591,7 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
       sideEffect: false,
       agent: input.agent,
       mode: habit.rsvp.mode,
+      status: habit.status,
       message: error instanceof Error ? error.message : String(error),
     }
     errorMessage = stringField(payload, "message") ?? "RSVP refresh failed"
@@ -577,7 +599,7 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
 
   const endedAt = nowIso(input.now)
   const lifecycle: Extract<RunLedgerLifecycle, "completed" | "error"> = errorMessage ? "error" : "completed"
-  const surfaceAttempts = surfaceAttemptsFor(payload, policy.sendAllowed, errorMessage)
+  const surfaceAttempts = surfaceAttemptsFor(payload, effectiveSendAllowed, errorMessage)
   const errors = errorMessage ? [errorMessage] : []
   const producedRefs = producedRefsFor(payload)
 
@@ -598,7 +620,7 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
     trigger: input.trigger,
     mode: habit.rsvp.mode,
     source: habit.rsvp.source,
-    sendAllowed: policy.sendAllowed,
+    sendAllowed: effectiveSendAllowed,
     startedAt,
     endedAt,
     payload,
@@ -616,8 +638,8 @@ export async function runNativeRsvpHabit(input: RunNativeRsvpHabitInput): Promis
     startedAt,
     endedAt,
     operationId: `rsvp-native:${input.trigger}:${input.occurrenceId ?? runId}`,
-    permissionEnvelope: permissionEnvelope(policy.sendAllowed),
-    toolPolicy: toolPolicy(policy.sendAllowed),
+    permissionEnvelope: permissionEnvelope(effectiveSendAllowed),
+    toolPolicy: toolPolicy(effectiveSendAllowed),
     producedRefs,
     surfaceAttempts,
     traceSteps,

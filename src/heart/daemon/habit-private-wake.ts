@@ -4,6 +4,7 @@ import type { DaemonCommand } from "./daemon"
 
 export type HabitPrivateWakeSourceRef =
   | { kind: "daemon-command"; id: "habit.poke" }
+  | { kind: "daemon-command"; id: "habit.probe" }
   | { kind: "daemon-entry"; id: "habit-scheduler" }
 
 export type HabitPrivateWakeTriggerSource = `habit-${HabitRunTrigger}`
@@ -16,6 +17,7 @@ export function buildHabitPrivateWakeCommand(options: {
   trigger: HabitRunTrigger
   sourceRef: HabitPrivateWakeSourceRef
   occurrenceId?: string
+  noSend?: true
   now?: () => Date
 }): PrivateWakeCommand {
   const firedAt = (options.now ?? (() => new Date()))().toISOString()
@@ -45,22 +47,26 @@ export function buildHabitPrivateWakeCommand(options: {
       { kind: "habit-trigger", id: options.trigger },
       { kind: "habit-occurrence", id: occurrenceId },
       options.sourceRef,
+      ...(options.noSend ? [{ kind: "capability", id: "no-send" }] : []),
     ],
+    ...(options.noSend ? { noSend: true } : {}),
   }
 }
 
 export function habitMessageFromPrivateWakeCommand(
   command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
-): { habitName: string; trigger: HabitRunTrigger } | null {
+): { habitName: string; trigger: HabitRunTrigger; noSend?: true } | null {
   if (command.kind !== "private.wake") return null
   if (typeof command.triggerSource !== "string" || !command.triggerSource.startsWith("habit-")) return null
   const habitRef = command.originRefs?.find((ref) => ref.kind === "habit" && typeof ref.id === "string")
   const triggerRef = command.originRefs?.find((ref) => ref.kind === "habit-trigger" && typeof ref.id === "string")
+  const noSendRef = command.originRefs?.some((ref) => ref.kind === "capability" && ref.id === "no-send") ?? false
   if (!habitRef || typeof habitRef.id !== "string" || !triggerRef || typeof triggerRef.id !== "string") return null
+  if ((command.noSend === true) !== noSendRef) return null
   const habitName = habitRef.id.trim()
   const trigger = triggerRef.id.trim()
   if (habitName.length === 0) return null
   if (!isHabitRunTrigger(trigger)) return null
   if (command.triggerSource !== `habit-${trigger}`) return null
-  return { habitName, trigger }
+  return { habitName, trigger, ...(noSendRef ? { noSend: true } : {}) }
 }
