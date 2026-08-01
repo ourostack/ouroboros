@@ -5,6 +5,9 @@
   "bin": {
     "ouro.bot": "index.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ourostack/ouroboros.git"

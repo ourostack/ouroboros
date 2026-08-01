@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest"
 import * as path from "path"
 
 const packageJson = require(path.resolve(__dirname, "../../../package.json"))
+const wrapperPackageJson = require(path.resolve(__dirname, "../../../packages/ouro.bot/package.json"))
 const {
   PACKAGE_PAYLOAD_PATH_PREFIXES,
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
 describe("package metadata", () => {
+  it("declares the same Node runtime floor on the CLI and public wrapper", () => {
+    expect(wrapperPackageJson.engines?.node).toBe(packageJson.engines.node)
+  })
+
   it("ships the RepairGuide bundle in the npm package", () => {
     expect(packageJson.files).toContain("RepairGuide.ouro/")
   })
