@@ -2413,6 +2413,74 @@ describe("BlueBubbles durable semantic store", () => {
     }
   })
 
+  it("polls corrupt-record quarantine contention and fails closed at exactly 5,000 ms", async () => {
+    const store = await loadSemanticStore()
+    const seed = makeSemanticCapture("quarantine-authority-busy-seed")
+    const seedLease = await store.acquireBlueBubblesSemanticClaim(
+      "synthetic-agent",
+      seed,
+      semanticStoreDeps(),
+    )
+    expect(seedLease.status).toBe("acquired")
+    expect(store.releaseBlueBubblesSemanticClaim(
+      "synthetic-agent",
+      seedLease as SemanticClaimLeaseForTest,
+      semanticStoreDeps(),
+    )).toBe(true)
+
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const retried = makeSemanticCapture("quarantine-authority-busy-retry")
+    const retriedPath = path.join(paths.captures, `${retried.keyHash}.json`)
+    writeRawSemanticRecord(retriedPath, "{torn")
+    const retryBlocker = new Database(paths.ownership)
+    retryBlocker.pragma("busy_timeout = 0")
+    retryBlocker.exec("BEGIN")
+    retryBlocker.prepare("SELECT count(*) FROM owner_leases").pluck().get()
+    const sleeps: number[] = []
+    try {
+      expect(store.readBlueBubblesSemanticCapture(
+        "synthetic-agent",
+        retried.keyHash,
+        semanticStoreDeps({
+          sleepSync: (milliseconds) => {
+            sleeps.push(milliseconds)
+            retryBlocker.exec("COMMIT")
+          },
+        }),
+      )).toBeNull()
+      expect(sleeps).toEqual([50])
+      expect(fs.existsSync(retriedPath)).toBe(false)
+    } finally {
+      if (retryBlocker.inTransaction) retryBlocker.exec("ROLLBACK")
+      retryBlocker.close()
+    }
+
+    const timedOut = makeSemanticCapture("quarantine-authority-busy-timeout")
+    const timedOutPath = path.join(paths.captures, `${timedOut.keyHash}.json`)
+    writeRawSemanticRecord(timedOutPath, "{still-torn")
+    const timeoutBlocker = new Database(paths.ownership)
+    timeoutBlocker.pragma("busy_timeout = 0")
+    timeoutBlocker.exec("BEGIN")
+    timeoutBlocker.prepare("SELECT count(*) FROM owner_leases").pluck().get()
+    let clockCalls = 0
+    const sleepSync = vi.fn()
+    try {
+      expect(() => store.readBlueBubblesSemanticCapture(
+        "synthetic-agent",
+        timedOut.keyHash,
+        semanticStoreDeps({
+          now: () => new Date(Date.parse(CAPTURED_AT) + (clockCalls++ === 0 ? 0 : 5_000)),
+          sleepSync,
+        }),
+      )).toThrow("semantic_ownership_busy")
+      expect(sleepSync).not.toHaveBeenCalled()
+      expect(fs.readFileSync(timedOutPath, "utf8")).toBe("{still-torn")
+    } finally {
+      timeoutBlocker.exec("ROLLBACK")
+      timeoutBlocker.close()
+    }
+  })
+
   it("acquires SQLite exclusion before publishing owner evidence that must survive commit", async () => {
     const store = await loadSemanticStore()
     const seed = makeSemanticCapture("sqlite-reader-contention-seed")
