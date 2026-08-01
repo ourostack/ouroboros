@@ -4,6 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { Readable } from "node:stream"
+import { currentTestObservedNervesEvent } from "../../helpers/current-test-nerves"
 
 const mocks = vi.hoisted(() => ({
   runAgent: vi.fn(),
@@ -209,9 +210,16 @@ vi.mock("../../../heart/runtime-cwd", () => ({
   recoverRuntimeCwd: (...args: any[]) => mocks.recoverRuntimeCwd(...args),
 }))
 
-vi.mock("../../../nerves/runtime", () => ({
-  emitNervesEvent: (...args: any[]) => mocks.emitNervesEvent(...args),
-}))
+vi.mock("../../../nerves/runtime", async () => {
+  const actual = await vi.importActual<typeof import("../../../nerves/runtime")>("../../../nerves/runtime")
+  return {
+    ...actual,
+    emitNervesEvent: (event: Parameters<typeof actual.emitNervesEvent>[0]) => {
+      mocks.emitNervesEvent(event)
+      return actual.emitNervesEvent(event)
+    },
+  }
+})
 
 vi.mock("../../../senses/bluebubbles/client", () => ({
   createBlueBubblesClient: vi.fn(() => ({
@@ -10489,6 +10497,19 @@ describe("BlueBubbles reaction capture-only policy", () => {
       targetFromMe: true,
       expectTrustLookup: true,
     })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_reaction_trust_lookup_error",
+      meta: expect.objectContaining({
+        provider: "imessage-handle",
+        reason: failure instanceof Error ? failure.message : failure,
+      }),
+    }))
+    expect(currentTestObservedNervesEvent(
+      "senses",
+      "senses.bluebubbles_reaction_trust_lookup_error",
+    )).toBe(true)
   })
 
   it("does not elevate an untrusted group actor through a trusted participant", async () => {

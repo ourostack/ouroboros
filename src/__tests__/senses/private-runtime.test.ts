@@ -3,6 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import type OpenAI from "openai"
+import { currentTestObservedNervesEvent } from "../helpers/current-test-nerves"
 
 const mockBuildSystem = vi.fn()
 const mockRunAgent = vi.fn()
@@ -20,7 +21,7 @@ const mockHandleInboundTurn = vi.fn()
 const mockGetChannelCapabilities = vi.fn()
 const mockEnforceTrustGate = vi.fn()
 const mockAccumulateFriendTokens = vi.fn()
-const mockEmitNervesEvent = vi.fn()
+const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
 const mockListSessionActivity = vi.fn()
 const mockFindFreshestFriendSession = vi.fn()
 const mockGetBridge = vi.fn()
@@ -64,9 +65,16 @@ vi.mock("../../mind/pending", () => ({
   PRIVATE_RUNTIME_PENDING: { friendId: "self", channel: "inner", key: "dialog" },
 }))
 
-vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
-}))
+vi.mock("../../nerves/runtime", async () => {
+  const actual = await vi.importActual<typeof import("../../nerves/runtime")>("../../nerves/runtime")
+  return {
+    ...actual,
+    emitNervesEvent: (event: Parameters<typeof actual.emitNervesEvent>[0]) => {
+      mockEmitNervesEvent(event)
+      return actual.emitNervesEvent(event)
+    },
+  }
+})
 
 vi.mock("../../senses/pipeline", () => ({
   handleInboundTurn: (...args: any[]) => mockHandleInboundTurn(...args),
@@ -2530,6 +2538,7 @@ describe("private runtime", () => {
         degradedReason: "read_error",
       }),
     }))
+    expect(currentTestObservedNervesEvent("senses", "senses.habit_lifecycle_rejected")).toBe(true)
   })
 
   it("rejects direct RSVP habit turns with malformed metadata before provider execution", async () => {

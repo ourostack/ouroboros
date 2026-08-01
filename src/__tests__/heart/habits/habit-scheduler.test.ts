@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { OsCronManager } from "../../../heart/daemon/os-cron"
 import type { ScheduledTaskJob } from "../../../heart/daemon/task-scheduler"
+import { currentTestObservedNervesEvent } from "../../helpers/current-test-nerves"
 
-const mockEmitNervesEvent = vi.fn()
-vi.mock("../../../nerves/runtime", () => ({
-  emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
-}))
+const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
+vi.mock("../../../nerves/runtime", async () => {
+  const actual = await vi.importActual<typeof import("../../../nerves/runtime")>("../../../nerves/runtime")
+  return {
+    ...actual,
+    emitNervesEvent: (event: Parameters<typeof actual.emitNervesEvent>[0]) => {
+      mockEmitNervesEvent(event)
+      return actual.emitNervesEvent(event)
+    },
+  }
+})
 
 // We need to mock the parseHabitFile since it calls emitNervesEvent
 const mockParseHabitFile = vi.fn()
@@ -719,6 +727,7 @@ describe("HabitScheduler", () => {
         event: "daemon.habit_scheduler_sync_error",
         meta: expect.objectContaining({ agent: "slugger", error: "sync failed", cleanupError: null }),
       }))
+      expect(currentTestObservedNervesEvent("daemon", "daemon.habit_scheduler_sync_error")).toBe(true)
     })
 
     it("preserves both sync and cleanup errors when fail-closed cron removal also throws", () => {
@@ -2252,6 +2261,7 @@ describe("HabitScheduler", () => {
         message: "habit scheduler cron verification did not stabilize; fail-closed cleanup attempted",
         meta: { agent: "slugger", attempts: 3, jobCount: 1, cleanupError: null },
       })
+      expect(currentTestObservedNervesEvent("daemon", "daemon.habit_cron_verification_unstable")).toBe(true)
 
       remainingOscillations = 0
       scheduler.watchForChanges()

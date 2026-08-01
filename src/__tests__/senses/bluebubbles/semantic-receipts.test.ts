@@ -6,6 +6,7 @@ import * as path from "node:path"
 
 import Database from "better-sqlite3"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { currentTestObservedNervesEvent } from "../../helpers/current-test-nerves"
 
 import type {
   BlueBubblesMutationType,
@@ -107,6 +108,7 @@ describe("BlueBubbles semantic identity and cutover", () => {
     process.env.HOME = originalHome
     vi.restoreAllMocks()
     vi.doUnmock("node:fs")
+    vi.doUnmock("../../../nerves/runtime")
     vi.resetModules()
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   })
@@ -3671,6 +3673,7 @@ describe("BlueBubbles semantic store exhaustive boundaries", () => {
         fs: createTracingFs([], { operation, matches, code: "EIO" }),
       }),
     )).toThrow("semantic_capture_failed")
+    expect(currentTestObservedNervesEvent("senses", "bluebubbles_semantic_capture_error")).toBe(true)
     if (_label !== "temp cleanup") {
       expect(fs.existsSync(path.join(paths.captures, `${capture.keyHash}.json`))).toBe(false)
     }
