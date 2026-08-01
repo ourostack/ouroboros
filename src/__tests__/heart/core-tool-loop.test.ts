@@ -897,4 +897,203 @@ describe("runAgent tool loop guard", () => {
     expect(callbacks.onClearText).toHaveBeenCalledTimes(1)
     expect(result).toMatchObject({ outcome: "errored" })
   })
+
+  it("executes a sole terminal-projection cancellation once, clears buffered prose, and returns its receipt verbatim", async () => {
+    const terminalToolName = "synthetic_terminal_projection"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic metadata-driven terminal projection",
+          parameters: {
+            type: "object",
+            properties: { habit: { type: "string" }, evidence: { type: "string" } },
+            required: ["habit", "evidence"],
+            additionalProperties: false,
+          },
+        },
+      },
+      handler: async () => "unused",
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: true,
+      },
+    })
+    const acknowledgement = "Cancelled habit \"rsvp-demo\" from confirmed requester \"Casey\". No concurrent send crossed the transport boundary."
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk("model-authored prose that must be cleared"),
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_habit_cancel",
+            function: {
+              name: terminalToolName,
+              arguments: `{"habit":"rsvp-demo","evidence":"capture:${"a".repeat(64)}"}`,
+            },
+          },
+        ]),
+      ]))
+      .mockImplementationOnce(() => {
+        throw new Error("provider must not be called after terminal projection")
+      })
+
+    const { runAgent } = await import("../../heart/core")
+    const execTool = vi.fn().mockResolvedValue(acknowledgement)
+    const visibleText: string[] = []
+    const onTextChunk = vi.fn((text: string) => { visibleText.push(text) })
+    const onToolResult = vi.fn()
+    const callbacks = makeCallbacks({
+      onTextChunk,
+      onClearText: () => { visibleText.length = 0 },
+      onToolResult,
+    })
+    const result = await runAgent(
+      [{ role: "user", content: "Please end this report." }],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [{
+          type: "function",
+          function: {
+            name: terminalToolName,
+            description: "cancel a habit from grounded ingress evidence",
+            parameters: {
+              type: "object",
+              properties: { habit: { type: "string" }, evidence: { type: "string" } },
+              required: ["habit", "evidence"],
+              additionalProperties: false,
+            },
+          },
+        }],
+        execTool,
+        toolContext: {
+          signin: async () => undefined,
+          agentRoot: "/tmp/synthetic-agent.ouro",
+          currentIngressEvidence: {
+            schemaVersion: 1,
+            provider: "bluebubbles",
+            captureKeyHash: "a".repeat(64),
+          },
+        },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(execTool).toHaveBeenCalledWith(
+      terminalToolName,
+      { habit: "rsvp-demo", evidence: `capture:${"a".repeat(64)}` },
+      expect.objectContaining({
+        agentRoot: "/tmp/synthetic-agent.ouro",
+        currentIngressEvidence: expect.objectContaining({ captureKeyHash: "a".repeat(64) }),
+      }),
+    )
+    expect(callbacks.onClearText).toHaveBeenCalledTimes(1)
+    expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), true)
+    expect(onTextChunk).toHaveBeenCalledTimes(2)
+    expect(onTextChunk).toHaveBeenLastCalledWith(acknowledgement)
+    expect(onToolResult).not.toHaveBeenCalled()
+    expect(visibleText).toEqual([acknowledgement])
+    expect(result).toMatchObject({
+      outcome: "settled",
+      completion: { answer: acknowledgement, intent: "complete" },
+    })
+  })
+
+  it("rejects a mixed terminal projection without changing ordinary companion-tool behavior", async () => {
+    const terminalToolName = "synthetic_terminal_projection"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic metadata-driven terminal projection",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      },
+      handler: async () => "unused",
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: true,
+      },
+    })
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_mixed_cancel",
+            function: {
+              name: terminalToolName,
+              arguments: `{"habit":"rsvp-demo","evidence":"capture:${"b".repeat(64)}"}`,
+            },
+          },
+          {
+            index: 1,
+            id: "call_mixed_write",
+            function: { name: "write_file", arguments: '{"path":"note.md","content":"side effect"}' },
+          },
+        ]),
+      ]))
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_recovery_observe",
+            function: { name: "observe", arguments: '{"reason":"mixed batch rejected"}' },
+          },
+        ]),
+      ]))
+
+    const { runAgent } = await import("../../heart/core")
+    const execTool = vi.fn().mockResolvedValue("side effect")
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{ role: "user", content: "Please end this report." }],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: terminalToolName,
+              description: "cancel a habit",
+              parameters: { type: "object", properties: {}, additionalProperties: false },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "write_file",
+              description: "write a file",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+        execTool,
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(execTool).toHaveBeenCalledWith(
+      "write_file",
+      { path: "note.md", content: "side effect" },
+      expect.anything(),
+    )
+    expect(execTool).not.toHaveBeenCalledWith(terminalToolName, expect.anything(), expect.anything())
+    expect(result).toMatchObject({ outcome: "observed" })
+  })
 })

@@ -32,6 +32,7 @@ import {
   writeHabitLifecycleDefinition,
   writeHabitLifecycleJournal,
   type HabitLifecycleDeps,
+  type HabitCancellationPreparation,
   type HabitCancellationReceipt,
   type HabitLifecycleJournal,
   type HabitLifecycleLease,
@@ -203,14 +204,22 @@ function cancellationReceipt(
   captureKeyHash = CAPTURE_HASH,
   overrides: Partial<HabitCancellationReceipt> = {},
 ): HabitCancellationReceipt {
+  return cancellationReceiptForHabit("rsvp-demo", captureKeyHash, overrides)
+}
+
+function cancellationReceiptForHabit(
+  habitId: string,
+  captureKeyHash = CAPTURE_HASH,
+  overrides: Partial<HabitCancellationReceipt> = {},
+): HabitCancellationReceipt {
   const { evidenceKeyHash } = buildHabitEvidenceIdentity({
-    habitId: "rsvp-demo",
+    habitId,
     kind: "capture",
     id: captureKeyHash,
   })
   return {
     schemaVersion: 1,
-    habitId: "rsvp-demo",
+    habitId,
     operationId: `cancel:${evidenceKeyHash}`,
     evidenceKeyHash,
     evidenceLocator: { kind: "capture", id: captureKeyHash },
@@ -226,8 +235,20 @@ function cancellationReceipt(
       cancelledAt: THIRD_NOW,
       boundaryState: "not_crossed",
     },
-    acknowledgement: "Cancelled habit \"rsvp-demo\" from confirmed requester \"Ari\". No concurrent send crossed the transport boundary.",
+    acknowledgement: `Cancelled habit ${JSON.stringify(habitId)} from confirmed requester \"Ari\". No concurrent send crossed the transport boundary.`,
     createdAt: THIRD_NOW,
+    ...overrides,
+  }
+}
+
+function cancellationPreparation(
+  receipt = cancellationReceipt(),
+  overrides: Partial<HabitCancellationPreparation> = {},
+): HabitCancellationPreparation {
+  return {
+    receipt,
+    definitionBeforeSha256: "c".repeat(64),
+    definitionCancelledSha256: "d".repeat(64),
     ...overrides,
   }
 }
@@ -371,21 +392,23 @@ describe("habit lifecycle filesystem protocol", () => {
     })
     expect(serializeHabitLifecycleJson(exactOwner)).toBe(`${JSON.stringify(exactOwner, null, 2)}\n`)
 
+    const preparation = cancellationPreparation()
     const initial = createHabitLifecycleJournal({
       habitId: "rsvp-demo",
-      operationId: "cancel:demo",
+      operationId: preparation.receipt.operationId,
       operationKind: "cancel",
       updatedAt: FIXED_NOW,
     })
     expect(initial).toEqual({
       schemaVersion: 1,
       habitId: "rsvp-demo",
-      operationId: "cancel:demo",
+      operationId: preparation.receipt.operationId,
       operationKind: "cancel",
       state: "lock_acquired",
       updatedAt: FIXED_NOW,
       generation: 0,
       evidenceKeyHash: null,
+      cancellationPreparation: null,
       intentAt: null,
       transportInvokedAt: null,
       classifiedAt: null,
@@ -395,7 +418,8 @@ describe("habit lifecycle filesystem protocol", () => {
     const intent = transitionHabitLifecycleJournal(initial, {
       state: "cancellation_intent",
       at: NEXT_NOW,
-      evidenceKeyHash: "b".repeat(64),
+      evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+      cancellationPreparation: preparation,
     })
     const definition = transitionHabitLifecycleJournal(intent, {
       state: "definition_cancelled",
@@ -413,7 +437,8 @@ describe("habit lifecycle filesystem protocol", () => {
       ["cancellation_receipt_committed", 3],
     ])
     expect(receipt).toMatchObject({
-      evidenceKeyHash: "b".repeat(64),
+      evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+      cancellationPreparation: preparation,
       intentAt: NEXT_NOW,
       classifiedAt: THIRD_NOW,
       boundaryState: "not_crossed",
@@ -441,7 +466,12 @@ describe("habit lifecycle filesystem protocol", () => {
     }
 
     expect(() => transitionHabitLifecycleJournal(initial, { state: "send_intent", at: NEXT_NOW })).toThrow(/lifecycle_transition_invalid/)
-    expect(() => transitionHabitLifecycleJournal(receipt, { state: "cancellation_intent", at: NEXT_NOW, evidenceKeyHash: "b".repeat(64) })).toThrow(/lifecycle_transition_invalid/)
+    expect(() => transitionHabitLifecycleJournal(receipt, {
+      state: "cancellation_intent",
+      at: NEXT_NOW,
+      evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+      cancellationPreparation: preparation,
+    })).toThrow(/lifecycle_transition_invalid/)
 
     const sendInitial = createHabitLifecycleJournal({
       habitId: "rsvp-demo",
@@ -461,7 +491,12 @@ describe("habit lifecycle filesystem protocol", () => {
     ]
     const nextInputs = [
       { state: "lock_acquired", at: FOURTH_NOW },
-      { state: "cancellation_intent", at: FOURTH_NOW, evidenceKeyHash: "b".repeat(64) },
+      {
+        state: "cancellation_intent",
+        at: FOURTH_NOW,
+        evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+        cancellationPreparation: preparation,
+      },
       { state: "definition_cancelled", at: FOURTH_NOW, boundaryState: "not_crossed" },
       { state: "cancellation_receipt_committed", at: FOURTH_NOW },
       { state: "send_intent", at: FOURTH_NOW },
@@ -1120,12 +1155,19 @@ describe("habit lifecycle filesystem protocol", () => {
     ]
     for (const [index, failure] of failures.entries()) {
       const agentRoot = makeRoot(`habit-lifecycle-journal-failure-${index}-`)
-      const result = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" }, fixedDeps())
+      const preparation = cancellationPreparation()
+      const operationId = preparation.receipt.operationId
+      const result = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId }, fixedDeps())
       expect(result.status).toBe("acquired")
       if (result.status !== "acquired") continue
-      const initial = createHabitLifecycleJournal({ habitId: "rsvp-demo", operationId: "cancel:demo", operationKind: "cancel", updatedAt: FIXED_NOW })
+      const initial = createHabitLifecycleJournal({ habitId: "rsvp-demo", operationId, operationKind: "cancel", updatedAt: FIXED_NOW })
       writeHabitLifecycleJournal(result.lease, initial, fixedDeps())
-      const intent = transitionHabitLifecycleJournal(initial, { state: "cancellation_intent", at: NEXT_NOW, evidenceKeyHash: "b".repeat(64) })
+      const intent = transitionHabitLifecycleJournal(initial, {
+        state: "cancellation_intent",
+        at: NEXT_NOW,
+        evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+        cancellationPreparation: preparation,
+      })
       let caught: unknown
       try {
         writeHabitLifecycleJournal(result.lease, intent, fixedDeps({ fs: tracingFs([], failure) }))
@@ -1133,19 +1175,26 @@ describe("habit lifecycle filesystem protocol", () => {
         caught = error
       }
       expectLifecycleError(caught, "lifecycle_write_failed")
-      expect(readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" })).toEqual(initial)
+      expect(readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId })).toEqual(initial)
       expect(fs.readdirSync(getHabitLifecyclePaths({ agentRoot, habitId: "rsvp-demo" }).journalDirectory)
         .filter((name) => name.endsWith(".tmp"))).toEqual([])
       expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
     }
 
     const agentRoot = makeRoot("habit-lifecycle-dir-fsync-")
-    const result = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" }, fixedDeps())
+    const preparation = cancellationPreparation()
+    const operationId = preparation.receipt.operationId
+    const result = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId }, fixedDeps())
     expect(result.status).toBe("acquired")
     if (result.status !== "acquired") return
-    const initial = createHabitLifecycleJournal({ habitId: "rsvp-demo", operationId: "cancel:demo", operationKind: "cancel", updatedAt: FIXED_NOW })
+    const initial = createHabitLifecycleJournal({ habitId: "rsvp-demo", operationId, operationKind: "cancel", updatedAt: FIXED_NOW })
     writeHabitLifecycleJournal(result.lease, initial, fixedDeps())
-    const intent = transitionHabitLifecycleJournal(initial, { state: "cancellation_intent", at: NEXT_NOW, evidenceKeyHash: "b".repeat(64) })
+    const intent = transitionHabitLifecycleJournal(initial, {
+      state: "cancellation_intent",
+      at: NEXT_NOW,
+      evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+      cancellationPreparation: preparation,
+    })
     let caught: unknown
     try {
       writeHabitLifecycleJournal(result.lease, intent, fixedDeps({
@@ -1155,7 +1204,7 @@ describe("habit lifecycle filesystem protocol", () => {
       caught = error
     }
     expectLifecycleError(caught, "lifecycle_durability_unknown", true)
-    expect(readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" })).toEqual(intent)
+    expect(readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId })).toEqual(intent)
     expect(releaseHabitLifecycleLock(result.lease, fixedDeps())).toBe(true)
 
     for (const [index, failure] of failures.entries()) {
@@ -1384,8 +1433,13 @@ describe("habit lifecycle filesystem protocol", () => {
     const operationId = `cancel:${evidenceKeyHash}`
     const definitionPath = path.join(agentRoot, "habits", "rsvp-demo.md")
     fs.mkdirSync(path.dirname(definitionPath), { recursive: true })
-    fs.writeFileSync(definitionPath, "---\nstatus: active\n---\n", "utf8")
+    const activeBytes = "---\nstatus: active\n---\n"
+    fs.writeFileSync(definitionPath, activeBytes, "utf8")
     const cancelledBytes = "---\nstatus: cancelled\ncancelledAt: 2026-07-31T20:30:02.000Z\n---\n"
+    const preparation = cancellationPreparation(receipt, {
+      definitionBeforeSha256: sha256(activeBytes),
+      definitionCancelledSha256: sha256(cancelledBytes),
+    })
 
     const firstLock = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId }, fixedDeps())
     expect(firstLock.status).toBe("acquired")
@@ -1401,6 +1455,7 @@ describe("habit lifecycle filesystem protocol", () => {
       state: "cancellation_intent",
       at: NEXT_NOW,
       evidenceKeyHash,
+      cancellationPreparation: preparation,
     })
     writeHabitLifecycleJournal(firstLock.lease, intent, fixedDeps())
     writeHabitLifecycleDefinition(firstLock.lease, definitionPath, cancelledBytes, fixedDeps())
@@ -1997,16 +2052,18 @@ describe("habit lifecycle filesystem protocol", () => {
       fixedDeps({ randomUUID: () => "invalid" }),
     )).rejects.toMatchObject({ code: "lifecycle_uuid_invalid" })
 
+    const preparation = cancellationPreparation()
     const initial = createHabitLifecycleJournal({
       habitId: "rsvp-demo",
-      operationId: "cancel:invalid-boundary",
+      operationId: preparation.receipt.operationId,
       operationKind: "cancel",
       updatedAt: FIXED_NOW,
     })
     const intent = transitionHabitLifecycleJournal(initial, {
       state: "cancellation_intent",
       at: NEXT_NOW,
-      evidenceKeyHash: "b".repeat(64),
+      evidenceKeyHash: preparation.receipt.evidenceKeyHash,
+      cancellationPreparation: preparation,
     })
     expect(() => transitionHabitLifecycleJournal(intent, {
       state: "definition_cancelled",
@@ -2078,10 +2135,12 @@ describe("habit lifecycle filesystem protocol", () => {
     const agentRoot = makeRoot()
     const validReceipt = cancellationReceipt()
     const validEvidenceHash = validReceipt.evidenceKeyHash
+    const validPreparation = cancellationPreparation(validReceipt)
+    const validOperationId = validReceipt.operationId
     const paths = getHabitLifecyclePaths({
       agentRoot,
       habitId: "rsvp-demo",
-      operationId: "cancel:demo",
+      operationId: validOperationId,
       evidenceKeyHash: validEvidenceHash,
     })
     fs.mkdirSync(paths.journalDirectory, { recursive: true })
@@ -2089,10 +2148,33 @@ describe("habit lifecycle filesystem protocol", () => {
 
     const validJournal = createHabitLifecycleJournal({
       habitId: "rsvp-demo",
-      operationId: "cancel:demo",
+      operationId: validOperationId,
       operationKind: "cancel",
       updatedAt: FIXED_NOW,
     })
+    const validIntent = transitionHabitLifecycleJournal(validJournal, {
+      state: "cancellation_intent",
+      at: NEXT_NOW,
+      evidenceKeyHash: validPreparation.receipt.evidenceKeyHash,
+      cancellationPreparation: validPreparation,
+    })
+    const validDefinition = transitionHabitLifecycleJournal(validIntent, {
+      state: "definition_cancelled",
+      at: THIRD_NOW,
+      boundaryState: "not_crossed",
+    })
+    const otherEvidencePreparation = cancellationPreparation(cancellationReceipt(sha256("other evidence")))
+    const otherHabitPreparation = cancellationPreparation(cancellationReceiptForHabit("other-habit"))
+    const crossedReceipt = cancellationReceipt(CAPTURE_HASH, {
+      transition: {
+        fromStatus: "active",
+        toStatus: "cancelled",
+        cancelledAt: THIRD_NOW,
+        boundaryState: "crossed",
+      },
+      acknowledgement: "Cancelled habit \"rsvp-demo\" from confirmed requester \"Ari\". A concurrent send crossed the transport boundary before cancellation took effect.",
+    })
+    const crossedPreparation = cancellationPreparation(crossedReceipt)
     const missingJournalKey = { ...validJournal } as Record<string, unknown>
     delete missingJournalKey.operationId
     const invalidJournals: unknown[] = [
@@ -2110,16 +2192,34 @@ describe("habit lifecycle filesystem protocol", () => {
       { ...validJournal, generation: 1 },
       { ...validJournal, state: "cancellation_intent" },
       { ...validJournal, evidenceKeyHash: "b".repeat(64) },
+      { ...validJournal, cancellationPreparation: validPreparation },
       { ...validJournal, intentAt: NEXT_NOW },
       { ...validJournal, state: "crossed", generation: 2, boundaryState: "crossed" },
+      { ...validIntent, cancellationPreparation: null },
+      { ...validIntent, cancellationPreparation: { ...validPreparation, unexpected: true } },
+      {
+        ...validIntent,
+        cancellationPreparation: { ...validPreparation, definitionBeforeSha256: "B".repeat(64) },
+      },
+      {
+        ...validIntent,
+        cancellationPreparation: {
+          ...validPreparation,
+          receipt: { ...validPreparation.receipt, evidenceKeyHash: "b".repeat(64) },
+        },
+      },
+      { ...validIntent, cancellationPreparation: otherEvidencePreparation },
+      { ...validIntent, cancellationPreparation: otherHabitPreparation },
+      { ...validDefinition, cancellationPreparation: crossedPreparation },
+      { ...validDefinition, boundaryState: "crossed" },
     ]
     for (const invalidJournal of invalidJournals) {
       fs.writeFileSync(paths.journal!, serializeHabitLifecycleJson(invalidJournal), "utf8")
-      expect(() => readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" }))
+      expect(() => readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: validOperationId }))
         .toThrow(/lifecycle_journal_invalid/)
     }
     fs.writeFileSync(paths.journal!, `${JSON.stringify({ operationId: validJournal.operationId, ...validJournal }, null, 2)}\n`, "utf8")
-    expect(() => readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" }))
+    expect(() => readHabitLifecycleJournal({ agentRoot, habitId: "rsvp-demo", operationId: validOperationId }))
       .toThrow(/lifecycle_journal_invalid/)
 
     const missingReceiptKey = { ...validReceipt } as Record<string, unknown>

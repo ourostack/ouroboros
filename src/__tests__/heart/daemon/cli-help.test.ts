@@ -186,6 +186,21 @@ describe("getCommandHelp()", () => {
     expect(sentinelHelp).toContain("explicitly refresh")
   })
 
+  it("documents grounded offline habit cancellation at parent and nested help", () => {
+    expect(COMMAND_REGISTRY.habit.subcommands).toContain("cancel")
+    const parent = getCommandHelp("habit")!
+    const nested = getCommandHelp("habit cancel")!
+    expect(parent).toContain("cancel")
+    expect(nested).toContain(
+      "ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
+    )
+    expect(nested).toContain("offline")
+    expect(nested).toContain("evidence bridge")
+    expect(nested).not.toContain("--actor")
+    expect(nested).not.toContain("--request")
+    expect(nested).not.toContain("--trust")
+  })
+
   it("documents ouro as the nerves-review default process", () => {
     const result = getCommandHelp("nerves-review")!
     expect(result).toContain("default: ouro")
@@ -423,6 +438,8 @@ describe("parseOuroCommand help handling", () => {
     expect(parseOuroCommand(["a2a", "card", "--help"])).toEqual({ kind: "help", command: "a2a card" })
     expect(parseOuroCommand(["a2a", "onboard", "--help"])).toEqual({ kind: "help", command: "a2a onboard" })
     expect(parseOuroCommand(["a2a", "serve", "--help"])).toEqual({ kind: "help", command: "a2a serve" })
+    expect(parseOuroCommand(["habit", "cancel", "--help"])).toEqual({ kind: "help", command: "habit cancel" })
+    expect(parseOuroCommand(["help", "habit", "cancel"])).toEqual({ kind: "help", command: "habit cancel" })
   })
 })
 

@@ -90,6 +90,13 @@ import {
   writeHabitRunReceipt,
   type HabitRunReceipt,
 } from "../../../arc/flight-recorder"
+import {
+  SYNTHETIC_CANCELLED_AT,
+  SYNTHETIC_CANCELLATION_REASON,
+  SYNTHETIC_HABIT_ID,
+  writeSyntheticBridgeEvidence,
+  writeSyntheticHabitDefinition,
+} from "../../fixtures/habits/habit-cancel-evidence"
 
 const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
@@ -8420,6 +8427,49 @@ describe("ouro habit CLI parsing", () => {
     expect(() => parseOuroCommand(["habit", "inspect", "--agent", "slugger"])).toThrow("Usage")
   })
 
+  it("parses offline habit cancellation with only agent, habit, and bridge evidence", () => {
+    const evidence = "pre-v1-bluebubbles-11111111-2222-4333-8444-555555555555"
+    expect(parseOuroCommand([
+      "habit",
+      "cancel",
+      "--agent",
+      "synthetic-agent",
+      "--habit",
+      "rsvp-synthetic",
+      "--evidence",
+      evidence,
+    ])).toEqual({
+      kind: "habit.cancel",
+      agent: "synthetic-agent",
+      habitName: "rsvp-synthetic",
+      evidenceLocator: evidence,
+    })
+  })
+
+  it("rejects capture evidence, caller-authored claims, duplicate flags, positional values, and incomplete cancellation", () => {
+    const evidence = "pre-v1-bluebubbles-11111111-2222-4333-8444-555555555555"
+    const baseline = ["habit", "cancel", "--agent", "synthetic-agent"]
+    const rejected = [
+      [...baseline, "--habit", "rsvp-synthetic", "--evidence", `capture:${"a".repeat(64)}`],
+      [...baseline, "--habit", "rsvp-synthetic", "--evidence", evidence, "--actor", "invented"],
+      [...baseline, "--habit", "rsvp-synthetic", "--evidence", evidence, "--request", "invented"],
+      [...baseline, "--habit", "rsvp-synthetic", "--evidence", evidence, "--trust", "invented"],
+      [...baseline, "--agent", "other-agent", "--habit", "rsvp-synthetic", "--evidence", evidence],
+      [...baseline, "--habit", "one", "--habit", "two", "--evidence", evidence],
+      [...baseline, "--habit", "rsvp-synthetic", "--evidence", evidence, "--evidence", evidence],
+      [...baseline, "rsvp-synthetic", "--evidence", evidence],
+      [...baseline, "--habit", "rsvp-synthetic"],
+      [...baseline, "--evidence", evidence],
+      [...baseline, "--habit", "", "--evidence", evidence],
+      [...baseline, "--habit", "rsvp-synthetic", "--evidence", ""],
+      [...baseline, "--habit", "rsvp-synthetic", "--evidence", "../bridge"],
+      ["habit", "cancel", "--habit", "rsvp-synthetic", "--evidence", evidence],
+    ]
+    for (const argv of rejected) {
+      expect(() => parseOuroCommand(argv)).toThrow(/Usage|bridge|evidence|habit/i)
+    }
+  })
+
   it("parses poke --habit <name> as habit poke", () => {
     expect(parseOuroCommand(["poke", "slugger", "--habit", "heartbeat"])).toEqual({
       kind: "habit.poke",
@@ -8569,6 +8619,49 @@ describe("ouro habit CLI execution", () => {
       const entry = cleanup.pop()
       if (entry) fs.rmSync(entry, { recursive: true, force: true })
     }
+  })
+
+  it("cancels from a validated bridge locally without contacting the daemon", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-cancel-cli-"))
+    cleanup.push(tempBundle)
+    const definition = writeSyntheticHabitDefinition(tempBundle, "paused")
+    const bridge = writeSyntheticBridgeEvidence(tempBundle)
+    const deps = makeDeps({
+      agentBundleRoot: tempBundle,
+      habitCancelDeps: {
+        now: () => new Date(SYNTHETIC_CANCELLED_AT),
+        pid: () => process.pid,
+        bootIdentity: () => "synthetic-boot",
+        processStartedAt: () => "synthetic-process-start",
+        processLiveness: () => "alive",
+        trustedBridge: (_bridgeId: string, sha256: string) => sha256 === bridge.bridgeSha256
+          ? { cancellationReason: SYNTHETIC_CANCELLATION_REASON }
+          : null,
+      },
+    })
+
+    const result = await runOuroCli([
+      "habit",
+      "cancel",
+      "--agent",
+      "synthetic-agent",
+      "--habit",
+      SYNTHETIC_HABIT_ID,
+      "--evidence",
+      bridge.bridgeId,
+    ], deps)
+
+    expect(result).toBe(
+      `Cancelled habit ${JSON.stringify(SYNTHETIC_HABIT_ID)} from confirmed requester ${JSON.stringify("Casey")}. No concurrent send crossed the transport boundary.`,
+    )
+    expect(deps.writeStdout).toHaveBeenCalledWith(result)
+    expect(vi.mocked(deps.writeStdout).mock.calls).toEqual([[result]])
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+    const cancelled = fs.readFileSync(definition.path, "utf8")
+    expect(cancelled).toContain("status: cancelled")
+    expect(cancelled).toContain(`cancelledEvidence: ${bridge.bridgeId}`)
+    expect(cancelled).toContain(`cancelledReason: ${SYNTHETIC_CANCELLATION_REASON}`)
+    expect(cancelled).not.toContain("Morgan")
   })
 
   it("ouro habit list scans habits/ and displays resolved name/cadence/status/lastRun", async () => {
