@@ -308,6 +308,19 @@ describe("runSenseTurn", () => {
     expect(result.ponderDeferred).toBe(false)
   })
 
+  it("declares shared-turn settle output as retractable before outward delivery", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.callbacks.settleOutputMode).toBe("retractable_buffer")
+  })
+
   it("does not fabricate a deferral message when a turn has no callback text", async () => {
     mockHandleInboundTurn.mockResolvedValue({
       resolvedContext: makeResolvedContext(),

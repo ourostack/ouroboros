@@ -339,6 +339,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
 
   /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
   const callbacks: ChannelCallbacks = {
+    settleOutputMode: "retractable_buffer",
     onModelStart: () => {},
     onModelStreamStart: () => {},
     onTextChunk: (chunk: string) => { pendingResponseText += chunk },

@@ -136,6 +136,196 @@ describe("Anthropic prompt caching integration", () => {
     mockAnthropicMessagesCreate.mockClear()
   })
 
+  async function makeRuntime() {
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
+    })
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    return createAnthropicProviderRuntime("claude-opus-4-6")
+  }
+
+  function makeCallbacks(mode: "retractable_buffer" | "final_only") {
+    let visible = ""
+    const onTextChunk = vi.fn((text: string) => { visible += text })
+    const onClearText = vi.fn(() => { visible = "" })
+    return {
+      callbacks: {
+        onModelStart: vi.fn(),
+        onModelStreamStart: vi.fn(),
+        onTextChunk,
+        onReasoningChunk: vi.fn(),
+        onToolStart: vi.fn(),
+        onToolEnd: vi.fn(),
+        onError: vi.fn(),
+        onClearText,
+        settleOutputMode: mode,
+      },
+      onTextChunk,
+      onClearText,
+      visible: () => visible,
+    }
+  }
+
+  function anthropicSettleStream(argumentsParts: string[]) {
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "settle", input: {} } }
+        for (const partial_json of argumentsParts) {
+          yield { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json } }
+        }
+        yield { type: "content_block_stop", index: 0 }
+      },
+    }
+  }
+
+  it("finalizes valid Anthropic settle arguments once before final-only emission", async () => {
+    const runtime = await makeRuntime()
+    const { SettleParser } = await import("../../heart/streaming")
+    const finish = vi.spyOn(SettleParser.prototype, "finish")
+    const harness = makeCallbacks("final_only")
+    mockAnthropicMessagesCreate.mockImplementationOnce(() => anthropicSettleStream([
+      '{"answer":"hel',
+      'lo"}',
+    ]))
+
+    try {
+      const result = await runtime.streamTurn({
+        messages: [{ role: "user", content: "hi" }],
+        activeTools: [],
+        callbacks: harness.callbacks as any,
+      })
+
+      expect(mockAnthropicMessagesCreate).toHaveBeenCalledTimes(1)
+      expect(finish).toHaveBeenCalledTimes(1)
+      expect(harness.onTextChunk).toHaveBeenCalledOnce()
+      expect(harness.onTextChunk).toHaveBeenCalledWith("hello")
+      expect(result.settleFinalization).toEqual({ ok: true, answer: "hello" })
+      expect(result.settleStreamed).toBe(true)
+    } finally {
+      finish.mockRestore()
+    }
+  })
+
+  it.each([
+    { label: "incomplete", args: '{"answer":"partial', errorCode: "incomplete_settle_arguments" },
+    { label: "invalid", args: String.raw`{"answer":"partial\x"}`, errorCode: "invalid_settle_arguments" },
+  ])("returns exact $label Anthropic finalization without retrying", async ({ args, errorCode }) => {
+    const runtime = await makeRuntime()
+    const harness = makeCallbacks("retractable_buffer")
+    mockAnthropicMessagesCreate.mockImplementationOnce(() => anthropicSettleStream([args]))
+
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: harness.callbacks as any,
+    })
+
+    expect(mockAnthropicMessagesCreate).toHaveBeenCalledTimes(1)
+    expect(result.settleFinalization).toEqual({ ok: false, errorCode })
+    expect(harness.visible()).toBe("")
+    expect(harness.onClearText).toHaveBeenCalledTimes(2)
+  })
+
+  it("drops ordinary provider text before an invalid final-only Anthropic settle", async () => {
+    const runtime = await makeRuntime()
+    const harness = makeCallbacks("final_only")
+    const invalidArgs = String.raw`{"answer":"partial\x"}`
+    mockAnthropicMessagesCreate.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "must stay private" } }
+        yield { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "tool-1", name: "settle", input: {} } }
+        yield { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: invalidArgs } }
+        yield { type: "content_block_stop", index: 1 }
+      },
+    }))
+
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: harness.callbacks as any,
+    })
+
+    expect(result.settleFinalization).toEqual({
+      ok: false,
+      errorCode: "invalid_settle_arguments",
+    })
+    expect(harness.onTextChunk).not.toHaveBeenCalled()
+    expect(harness.visible()).toBe("")
+  })
+
+  it("releases ordinary final-only Anthropic text when no settle is present", async () => {
+    const runtime = await makeRuntime()
+    const harness = makeCallbacks("final_only")
+    mockAnthropicMessagesCreate.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ordinary " } }
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "answer" } }
+      },
+    }))
+
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: harness.callbacks as any,
+    })
+
+    expect(result.settleFinalization).toBeUndefined()
+    expect(harness.onTextChunk).toHaveBeenCalledOnce()
+    expect(harness.onTextChunk).toHaveBeenCalledWith("ordinary answer")
+    expect(harness.visible()).toBe("ordinary answer")
+  })
+
+  it("cancels a partial final-only Anthropic settle without finalizing or emitting", async () => {
+    const runtime = await makeRuntime()
+    const harness = makeCallbacks("final_only")
+    const controller = new AbortController()
+    mockAnthropicMessagesCreate.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "settle", input: {} } }
+        yield { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"answer":"partial' } }
+        controller.abort()
+        yield { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '"}' } }
+      },
+    }))
+
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: harness.callbacks as any,
+      signal: controller.signal,
+    })
+
+    expect(mockAnthropicMessagesCreate).toHaveBeenCalledTimes(1)
+    expect(harness.onTextChunk).not.toHaveBeenCalled()
+    expect(result.settleFinalization).toBeUndefined()
+    expect(result.settleStreamed).toBe(false)
+  })
+
+  it("retracts a partial Anthropic settle when stream iteration fails", async () => {
+    const runtime = await makeRuntime()
+    const harness = makeCallbacks("retractable_buffer")
+    const failure = new Error("anthropic stream failed")
+    mockAnthropicMessagesCreate.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "settle", input: {} } }
+        yield { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"answer":"partial' } }
+        throw failure
+      },
+    }))
+
+    await expect(runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: harness.callbacks as any,
+    })).rejects.toBe(failure)
+
+    expect(harness.visible()).toBe("")
+    expect(harness.onClearText).toHaveBeenCalledTimes(2)
+  })
+
   it("buildSystem stable prefix does NOT contain date/time or rhythm status", async () => {
     emitTestEvent("integration: stable has no date")
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

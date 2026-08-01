@@ -74,6 +74,8 @@ export interface CompletionMetadata {
   intent: "complete" | "blocked" | "direct_reply";
 }
 
+export type SettleOutputMode = "retractable_buffer" | "final_only";
+
 export interface ProviderRuntime {
   id: ProviderId;
   model: string;
@@ -280,6 +282,9 @@ export interface ChannelCallbacks {
   /** Called after each tool result is pushed to messages. Use for incremental session persistence. */
   onToolResult?(messages: OpenAI.ChatCompletionMessageParam[]): void;
   onError(error: Error, severity: "transient" | "terminal"): void;
+  /** Controls whether a streamed settle answer may enter a callback-owned,
+   * retractable buffer before its completed JSON arguments are validated. */
+  settleOutputMode?: SettleOutputMode;
   onKick?(): void;
   // Clear any buffered text accumulated during streaming. Called before emitting
   // the settle answer so streamed noise (e.g. refusal text) is discarded.
@@ -593,16 +598,9 @@ interface ParsedPonderArgs {
 
 function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
   try {
-    const parsed = JSON.parse(argumentsText);
-    if (typeof parsed === "string") {
-      return { answer: parsed };
-    }
-    if (!parsed || typeof parsed !== "object") {
-      return {};
-    }
-
-    const answer = typeof parsed.answer === "string" ? parsed.answer : undefined;
-    const rawIntent = parsed.intent;
+    const parsed = JSON.parse(argumentsText) as Record<string, unknown> | null;
+    const answer = typeof parsed?.answer === "string" ? parsed.answer : undefined;
+    const rawIntent = parsed?.intent;
     const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
       ? rawIntent
       : undefined;
@@ -1480,6 +1478,19 @@ export async function runAgent(
       const streamCallbackBuffer = habitCallbackBufferRef.current;
       habitCallbackBufferRef.current = null;
 
+      if (result.settleFinalization && !result.settleFinalization.ok) {
+        // A completed settle payload is terminal provider output, not a prompt
+        // for another model turn. Retractable callbacks have already cleared;
+        // buffered habit callbacks must be discarded before surfacing the exact
+        // parser failure through the ordinary terminal-error path.
+        streamCallbackBuffer?.discard();
+        finishTerminalProviderError(
+          new Error(result.settleFinalization.errorCode),
+          "unknown",
+        );
+        continue;
+      }
+
       // Track usage from the latest API call
       if (result.usage) lastUsage = result.usage;
 
@@ -1876,7 +1887,9 @@ export async function runAgent(
             continue;
           }
 
-          const deliveredAnswer = answer
+          // The provider finalizer has already established a top-level string
+          // answer before ordinary settle handling reaches this point.
+          const deliveredAnswer = answer as string
           const retryError = privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
             ?? privateReturnMissingPonderError({
               latestUserRequest: latestUserMessageText(messages),
@@ -1896,28 +1909,15 @@ export async function runAgent(
               sawExternalStateQuery,
             )
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
-          const validTerminalIntent = intent === "complete" || intent === "blocked";
-          const validClosure = deliveredAnswer != null
-            && !retryError
-            && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
-          if (validClosure) {
+          if (retryError === null) {
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
             completion = {
               answer: deliveredAnswer,
               intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
             };
-            if (result.settleStreamed) {
-              // The streaming layer already parsed and emitted the answer
-              // progressively via SettleParser. Skip clearing and
-              // re-emitting to avoid double-delivery.
-            } else {
-              // Clear any streamed noise (e.g. refusal text) before emitting.
-              callbacks.onClearText?.();
-              // Emit the answer through the callback pipeline so channels receive it.
-              // Never truncate -- channel adapters handle splitting long messages.
-              callbacks.onTextChunk(deliveredAnswer);
-            }
+            // Successful provider finalization already committed the exact
+            // answer through SettleStreamer. Core must not emit it a second time.
             messages.push(msg);
             if (validDirectReply) {
               const resumeWork = "direct reply delivered. resume the unresolved obligation now and keep working until you can finish or clearly report that you are blocked.";
@@ -1931,14 +1931,12 @@ export async function runAgent(
               done = true;
             }
           } else {
-            // Answer is undefined -- the model's settle was incomplete or
-            // malformed. Clear any partial streamed text or noise, then push the
-            // assistant msg + error tool result and let the model try again.
+            // The payload is structurally final, but a semantic continuation
+            // gate rejected it. Return that exact gate reason to the model.
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
             const toolRetryMessage = retryError
-              ?? "your settle was incomplete or malformed. call settle again with your complete response."
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, toolRetryMessage);
           }

@@ -672,6 +672,91 @@ describe("runAgent tool loop guard", () => {
   })
 
   it.each([
+    ["incomplete", '{"answer":"partial', "incomplete_settle_arguments"],
+    ["invalid", String.raw`{"answer":"partial\x"}`, "invalid_settle_arguments"],
+  ])("fails ordinary %s settle finalization without another provider turn", async (_label, argumentsText, errorCode) => {
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_invalid_finalization",
+          function: { name: "settle", arguments: argumentsText },
+        }]),
+      ]))
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_forbidden_retry",
+          function: { name: "settle", arguments: '{"answer":"must not run"}' },
+        }]),
+      ]))
+
+    const { runAgent } = await import("../../heart/core")
+    const callbacks = makeCallbacks({
+      settleOutputMode: "final_only",
+    } as any)
+    const result = await runAgent(
+      [{ role: "user", content: "finish once" }],
+      callbacks,
+      "cli",
+      undefined,
+      { toolChoiceRequired: true, skipKeptNotes: true },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: errorCode },
+    })
+    expect(callbacks.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: errorCode }),
+      "terminal",
+    )
+  })
+
+  it("does not retry a provider turn when final-only callback commit throws", async () => {
+    vi.useFakeTimers()
+    try {
+      mockCreate.mockReturnValue(makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_callback_failure",
+          function: { name: "settle", arguments: '{"answer":"done"}' },
+        }]),
+      ]))
+      const callbackFailure = new Error("callback failed")
+      const outward: string[] = []
+      const callbacks = makeCallbacks({
+        settleOutputMode: "final_only",
+        onTextChunk: vi.fn((text: string) => {
+          if (text) throw callbackFailure
+          outward.push(text)
+        }),
+      } as any)
+      const { runAgent } = await import("../../heart/core")
+      const pending = runAgent(
+        [{ role: "user", content: "finish once" }],
+        callbacks,
+        "cli",
+        undefined,
+        { toolChoiceRequired: true, skipKeptNotes: true },
+      )
+      await vi.runAllTimersAsync()
+      const result = await pending
+
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect(outward).toEqual([])
+      expect(result).toMatchObject({
+        outcome: "errored",
+        error: { message: "settle finalization callback failed: callback failed" },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
     ["missing answer", '{"intent":"complete"}'],
     ["continuation intent", '{"answer":"keep going","intent":"direct_reply"}'],
     ["unknown intent", '{"answer":"must not leak","intent":"resume_work"}'],

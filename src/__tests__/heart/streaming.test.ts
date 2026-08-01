@@ -595,8 +595,9 @@ describe("streamChatCompletion", () => {
       onToolStart: vi.fn(),
       onToolEnd: vi.fn(),
       onError: vi.fn(),
+      settleOutputMode: "retractable_buffer",
       ...overrides,
-    }
+    } as ChannelCallbacks
   }
 
   beforeEach(async () => {
@@ -1425,10 +1426,12 @@ describe("SettleParser", () => {
 
 describe("SettleStreamer", () => {
   let SettleStreamer: any
+  let finalizeSettleStream: any
 
   beforeAll(async () => {
     const streaming = await import("../../heart/streaming")
     SettleStreamer = streaming.SettleStreamer
+    finalizeSettleStream = streaming.finalizeSettleStream
   })
 
   it("activate() calls onClearText and sets detected", () => {
@@ -1441,6 +1444,7 @@ describe("SettleStreamer", () => {
       onToolEnd: () => {},
       onClearText: () => { cleared = true },
       flushMarkdown: () => {},
+      settleOutputMode: "retractable_buffer",
     })
     expect(streamer.detected).toBe(false)
     streamer.activate()
@@ -1458,6 +1462,7 @@ describe("SettleStreamer", () => {
       onToolEnd: () => {},
       onClearText: () => { clearCount++ },
       flushMarkdown: () => {},
+      settleOutputMode: "retractable_buffer",
     })
     streamer.activate()
     streamer.activate()
@@ -1474,10 +1479,13 @@ describe("SettleStreamer", () => {
       onToolEnd: () => {},
       onClearText: () => {},
       flushMarkdown: () => {},
+      settleOutputMode: "retractable_buffer",
     })
     streamer.activate()
     streamer.processDelta('{"answer":"hello"}')
     expect(chunks.join("")).toBe("hello")
+    expect(streamer.streamed).toBe(false)
+    expect(streamer.finish('{"answer":"hello"}')).toEqual({ ok: true, answer: "hello" })
     expect(streamer.streamed).toBe(true)
   })
 
@@ -1514,6 +1522,204 @@ describe("SettleStreamer", () => {
     expect(streamer.detected).toBe(false)
     expect(chunks).toEqual([])
     expect(streamer.streamed).toBe(false)
+  })
+
+  function makeFinalizationCallbacks(mode: "retractable_buffer" | "final_only") {
+    let visible = ""
+    let clearCount = 0
+    const onTextChunk = vi.fn((text: string) => { visible += text })
+    const onClearText = vi.fn(() => { visible = ""; clearCount += 1 })
+    const callbacks = {
+      onModelStart: vi.fn(),
+      onModelStreamStart: vi.fn(),
+      onTextChunk,
+      onReasoningChunk: vi.fn(),
+      onToolStart: vi.fn(),
+      onToolEnd: vi.fn(),
+      onError: vi.fn(),
+      onClearText,
+      settleOutputMode: mode,
+    }
+    return {
+      callbacks,
+      visible: () => visible,
+      clearCount: () => clearCount,
+      onTextChunk,
+      onClearText,
+    }
+  }
+
+  it("finalizes retractable output once and emits only the not-yet-seen suffix", () => {
+    const harness = makeFinalizationCallbacks("retractable_buffer")
+    const streamer = new SettleStreamer(harness.callbacks)
+    streamer.activate()
+    streamer.processDelta('{"answer":"hello')
+    expect(harness.visible()).toBe("hello")
+    expect(harness.clearCount()).toBe(1)
+
+    const terminal = streamer.finish('{"answer":"hello world"}')
+    expect(terminal).toEqual({ ok: true, answer: "hello world" })
+    expect(harness.visible()).toBe("hello world")
+    expect(harness.onTextChunk.mock.calls.map(([text]) => text)).toEqual(["hello", " world"])
+
+    expect(streamer.finish('{"answer":"conflicting replacement"}')).toEqual(terminal)
+    expect(harness.onTextChunk).toHaveBeenCalledTimes(2)
+    expect(harness.clearCount()).toBe(1)
+  })
+
+  it("replaces divergent streamed arguments with the provider's authoritative final value", () => {
+    const harness = makeFinalizationCallbacks("retractable_buffer")
+    const streamer = new SettleStreamer(harness.callbacks)
+    streamer.activate()
+    streamer.processDelta('{"answer":"stale')
+    expect(harness.visible()).toBe("stale")
+
+    expect(streamer.finish('{"answer":"authoritative"}')).toEqual({
+      ok: true,
+      answer: "authoritative",
+    })
+    expect(harness.visible()).toBe("authoritative")
+    expect(harness.clearCount()).toBe(2)
+    expect(harness.onTextChunk.mock.calls.map(([text]) => text)).toEqual([
+      "stale",
+      "authoritative",
+    ])
+  })
+
+  it.each([
+    { label: "incomplete", args: '{"answer":"unsafe', errorCode: "incomplete_settle_arguments" },
+    { label: "invalid", args: String.raw`{"answer":"unsafe\x"}`, errorCode: "invalid_settle_arguments" },
+  ])("retracts $label eager output during finalization", ({ args, errorCode }) => {
+    const harness = makeFinalizationCallbacks("retractable_buffer")
+    const streamer = new SettleStreamer(harness.callbacks)
+    streamer.activate()
+    streamer.processDelta(args)
+    expect(harness.visible()).toBe("unsafe")
+    expect(harness.clearCount()).toBe(1)
+
+    const terminal = streamer.finish(args)
+    expect(terminal).toEqual({ ok: false, errorCode })
+    expect(harness.visible()).toBe("")
+    expect(harness.clearCount()).toBe(2)
+    expect(streamer.finish(args)).toEqual(terminal)
+    expect(harness.clearCount()).toBe(2)
+  })
+
+  it("keeps final-only answer invisible until successful finalization", () => {
+    const harness = makeFinalizationCallbacks("final_only")
+    const streamer = new SettleStreamer(harness.callbacks)
+    streamer.activate()
+    streamer.processDelta('{"answer":"private until done"}')
+    expect(harness.visible()).toBe("")
+    expect(harness.clearCount()).toBe(0)
+
+    const terminal = streamer.finish('{"answer":"private until done"}')
+    expect(terminal).toEqual({ ok: true, answer: "private until done" })
+    expect(harness.visible()).toBe("private until done")
+    expect(harness.onTextChunk).toHaveBeenCalledTimes(1)
+    expect(streamer.finish('{"answer":"conflicting replacement"}')).toEqual(terminal)
+    expect(harness.onTextChunk).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    { label: "incomplete", args: '{"answer":"unsafe', errorCode: "incomplete_settle_arguments" },
+    { label: "invalid", args: String.raw`{"answer":"unsafe\x"}`, errorCode: "invalid_settle_arguments" },
+  ])("never exposes $label final-only output", ({ args, errorCode }) => {
+    const harness = makeFinalizationCallbacks("final_only")
+    const streamer = new SettleStreamer(harness.callbacks)
+    streamer.activate()
+    streamer.processDelta(args)
+    expect(harness.visible()).toBe("")
+    expect(streamer.finish(args)).toEqual({ ok: false, errorCode })
+    expect(harness.visible()).toBe("")
+    expect(harness.onClearText).not.toHaveBeenCalled()
+  })
+
+  it("cancels retractable and final-only streams without committing partial output", () => {
+    for (const mode of ["retractable_buffer", "final_only"] as const) {
+      const harness = makeFinalizationCallbacks(mode)
+      const streamer = new SettleStreamer(harness.callbacks)
+      streamer.activate()
+      streamer.processDelta('{"answer":"partial')
+      streamer.cancel()
+      streamer.cancel()
+      streamer.processDelta(' ignored"}')
+      expect(harness.visible(), mode).toBe("")
+      expect(streamer.finish('{"answer":"partial"}'), mode).toBeUndefined()
+      expect(harness.onTextChunk, mode).toHaveBeenCalledTimes(mode === "retractable_buffer" ? 1 : 0)
+    }
+  })
+
+  it("caches a successful finish before propagating a final callback failure", () => {
+    const failure = new Error("callback failed")
+    const onTextChunk = vi.fn(() => { throw failure })
+    const streamer = new SettleStreamer({
+      onModelStart: vi.fn(),
+      onModelStreamStart: vi.fn(),
+      onTextChunk,
+      onReasoningChunk: vi.fn(),
+      onToolStart: vi.fn(),
+      onToolEnd: vi.fn(),
+      onError: vi.fn(),
+      settleOutputMode: "final_only",
+    })
+    streamer.activate()
+    streamer.processDelta('{"answer":"done"}')
+    expect(() => streamer.finish('{"answer":"done"}')).toThrow(failure)
+    expect(streamer.finish('{"answer":"conflicting replacement"}')).toEqual({ ok: true, answer: "done" })
+    expect(onTextChunk).toHaveBeenCalledTimes(1)
+  })
+
+  it("wraps a non-Error final callback throw as structurally non-retryable", () => {
+    const streamer = new SettleStreamer({
+      ...makeFinalizationCallbacks("final_only").callbacks,
+      onTextChunk: vi.fn(() => { throw "callback string failure" }), // eslint-disable-line no-throw-literal
+    })
+    streamer.activate()
+    streamer.processDelta('{"answer":"done"}')
+
+    let caught: any
+    try {
+      finalizeSettleStream(streamer, '{"answer":"done"}')
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toMatchObject({
+      name: "SettleFinalizationCallbackError",
+      message: "settle finalization callback failed: callback string failure",
+      retryable: false,
+      cause: { message: "callback string failure" },
+    })
+    expect(finalizeSettleStream(streamer, '{"answer":"conflicting"}')).toEqual({
+      ok: true,
+      answer: "done",
+    })
+  })
+
+  it("keeps unactivated and terminal cancellation guards inert", () => {
+    const harness = makeFinalizationCallbacks("retractable_buffer")
+    const streamer = new SettleStreamer(harness.callbacks)
+    expect(streamer.finish('{"answer":"unused"}')).toBeUndefined()
+    streamer.cancel()
+    expect(harness.onClearText).not.toHaveBeenCalled()
+
+    streamer.activate()
+    streamer.processDelta('{"answer":"done"}')
+    expect(streamer.finish('{"answer":"done"}')).toEqual({ ok: true, answer: "done" })
+    streamer.cancel()
+    streamer.processDelta("ignored")
+    expect(harness.visible()).toBe("done")
+  })
+
+  it("keeps disabled finalization inert", () => {
+    const harness = makeFinalizationCallbacks("retractable_buffer")
+    const streamer = new SettleStreamer(harness.callbacks, false)
+    streamer.activate()
+    streamer.processDelta('{"answer":"done"}')
+    streamer.cancel()
+    expect(streamer.finish('{"answer":"done"}')).toBeUndefined()
+    expect(harness.visible()).toBe("")
+    expect(harness.onClearText).not.toHaveBeenCalled()
   })
 })
 
@@ -1614,6 +1820,127 @@ describe("streamChatCompletion settle streaming", () => {
     const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
     expect(result.settleStreamed).toBe(false)
   })
+
+  it("finalizes a valid final-only settle exactly once after all arguments arrive", async () => {
+    const { SettleParser } = await import("../../heart/streaming")
+    const finish = vi.spyOn(SettleParser.prototype, "finish")
+    const textChunks: string[] = []
+    const create = vi.fn().mockReturnValue(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"hel' } }]),
+      makeChunk(undefined, [{ index: 0, function: { arguments: 'lo"}' } }]),
+    ]))
+    const client = { chat: { completions: { create } } }
+    const callbacks = makeCallbacks({
+      onTextChunk: (text: string) => textChunks.push(text),
+      settleOutputMode: "final_only",
+    } as any)
+    try {
+      const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(finish).toHaveBeenCalledTimes(1)
+      expect(textChunks).toEqual(["hello"])
+      expect(result.settleFinalization).toEqual({ ok: true, answer: "hello" })
+      expect(result.settleStreamed).toBe(true)
+    } finally {
+      finish.mockRestore()
+    }
+  })
+
+  it.each([
+    { label: "incomplete", args: '{"answer":"partial', errorCode: "incomplete_settle_arguments" },
+    { label: "invalid", args: String.raw`{"answer":"partial\x"}`, errorCode: "invalid_settle_arguments" },
+  ])("returns exact $label finalization without retrying Chat Completions", async ({ args, errorCode }) => {
+    let visible = "noise"
+    const onClearText = vi.fn(() => { visible = "" })
+    const create = vi.fn().mockReturnValue(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: args } }]),
+    ]))
+    const client = { chat: { completions: { create } } }
+    const callbacks = makeCallbacks({
+      onTextChunk: (text: string) => { visible += text },
+      onClearText,
+    })
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(result.settleFinalization).toEqual({ ok: false, errorCode })
+    expect(visible).toBe("")
+    expect(onClearText).toHaveBeenCalledTimes(2)
+  })
+
+  it("drops ordinary provider text before an invalid final-only Chat Completions settle", async () => {
+    const onTextChunk = vi.fn()
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      makeChunk("must stay private", [{
+        index: 0,
+        id: "call_1",
+        function: { name: "settle", arguments: String.raw`{"answer":"partial\x"}` },
+      }]),
+    ])) } } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
+
+    expect(result.settleFinalization).toEqual({
+      ok: false,
+      errorCode: "invalid_settle_arguments",
+    })
+    expect(onTextChunk).not.toHaveBeenCalled()
+  })
+
+  it("releases ordinary final-only Chat Completions text when no settle is present", async () => {
+    const onTextChunk = vi.fn()
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      makeChunk("ordinary "),
+      makeChunk("answer"),
+    ])) } } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
+
+    expect(result.settleFinalization).toBeUndefined()
+    expect(onTextChunk).toHaveBeenCalledOnce()
+    expect(onTextChunk).toHaveBeenCalledWith("ordinary answer")
+  })
+
+  it("cancels a partial final-only Chat Completions settle without finalizing or emitting", async () => {
+    const controller = new AbortController()
+    const onTextChunk = vi.fn()
+    const create = vi.fn().mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {
+        yield makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"partial' } }])
+        controller.abort()
+        yield makeChunk(undefined, [{ index: 0, function: { arguments: '"}' } }])
+      },
+    })
+    const client = { chat: { completions: { create } } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks, controller.signal)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(onTextChunk).not.toHaveBeenCalled()
+    expect(result.settleFinalization).toBeUndefined()
+    expect(result.settleStreamed).toBe(false)
+  })
+
+  it("retracts a partial Chat Completions settle when stream iteration fails", async () => {
+    const failure = new Error("stream failed")
+    let visible = ""
+    const onClearText = vi.fn(() => { visible = "" })
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {
+        yield makeChunk(undefined, [{ index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"partial' } }])
+        throw failure
+      },
+    }) } } }
+    const callbacks = makeCallbacks({
+      onTextChunk: (text: string) => { visible += text },
+      onClearText,
+      settleOutputMode: "retractable_buffer",
+    } as any)
+
+    await expect(streamChatCompletion(client, { messages: [], stream: true }, callbacks)).rejects.toBe(failure)
+    expect(visible).toBe("")
+    expect(onClearText).toHaveBeenCalledTimes(2)
+  })
 })
 
 // --- Unit 20a: streamResponsesApi settle streaming integration tests ---
@@ -1640,8 +1967,9 @@ describe("streamResponsesApi settle streaming", () => {
       onToolStart: vi.fn(),
       onToolEnd: vi.fn(),
       onError: vi.fn(),
+      settleOutputMode: "retractable_buffer",
       ...overrides,
-    }
+    } as ChannelCallbacks
   }
 
   beforeEach(async () => {
@@ -1706,5 +2034,151 @@ describe("streamResponsesApi settle streaming", () => {
     // Third delta has answer text
     expect(textChunks.join("")).toBe("hello")
     expect(result.settleStreamed).toBe(true)
+  })
+
+  it("finalizes a valid final-only Responses settle from the completed arguments", async () => {
+    const { SettleParser } = await import("../../heart/streaming")
+    const finish = vi.spyOn(SettleParser.prototype, "finish")
+    const onTextChunk = vi.fn()
+    const create = vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
+      { type: "response.function_call_arguments.delta", delta: '{"answer":"hel' },
+      { type: "response.function_call_arguments.delta", delta: 'lo"}' },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: '{"answer":"hello"}' } },
+    ]))
+    const client = { responses: { create } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+    try {
+      const result = await streamResponsesApi(client, {}, callbacks)
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(finish).toHaveBeenCalledTimes(1)
+      expect(onTextChunk).toHaveBeenCalledOnce()
+      expect(onTextChunk).toHaveBeenCalledWith("hello")
+      expect(result.settleFinalization).toEqual({ ok: true, answer: "hello" })
+    } finally {
+      finish.mockRestore()
+    }
+  })
+
+  it.each([
+    { label: "incomplete", args: '{"answer":"partial', errorCode: "incomplete_settle_arguments" },
+    { label: "invalid", args: String.raw`{"answer":"partial\x"}`, errorCode: "invalid_settle_arguments" },
+  ])("returns exact $label finalization without retrying Responses", async ({ args, errorCode }) => {
+    let visible = "noise"
+    const onClearText = vi.fn(() => { visible = "" })
+    const create = vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
+      { type: "response.function_call_arguments.delta", delta: args },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: args } },
+    ]))
+    const client = { responses: { create } }
+    const callbacks = makeCallbacks({
+      onTextChunk: (text: string) => { visible += text },
+      onClearText,
+    })
+    const result = await streamResponsesApi(client, {}, callbacks)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(result.settleFinalization).toEqual({ ok: false, errorCode })
+    expect(visible).toBe("")
+    expect(onClearText).toHaveBeenCalledTimes(2)
+  })
+
+  it("drops ordinary provider text before an incomplete final-only Responses settle", async () => {
+    const onTextChunk = vi.fn()
+    const args = '{"answer":"partial'
+    const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_text.delta", delta: "must stay private" },
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
+      { type: "response.function_call_arguments.delta", delta: args },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: args } },
+    ])) } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+
+    const result = await streamResponsesApi(client, {}, callbacks)
+
+    expect(result.settleFinalization).toEqual({
+      ok: false,
+      errorCode: "incomplete_settle_arguments",
+    })
+    expect(onTextChunk).not.toHaveBeenCalled()
+  })
+
+  it("releases ordinary final-only Responses text when no settle is present", async () => {
+    const onTextChunk = vi.fn()
+    const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_text.delta", delta: "ordinary " },
+      { type: "response.output_text.delta", delta: "answer" },
+    ])) } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+
+    const result = await streamResponsesApi(client, {}, callbacks)
+
+    expect(result.settleFinalization).toBeUndefined()
+    expect(onTextChunk).toHaveBeenCalledOnce()
+    expect(onTextChunk).toHaveBeenCalledWith("ordinary answer")
+  })
+
+  it("finalizes a sole Responses settle from buffered arguments at normal EOF", async () => {
+    const onTextChunk = vi.fn()
+    const create = vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
+      { type: "response.function_call_arguments.delta", delta: '{"answer":"eof"}' },
+    ]))
+    const client = { responses: { create } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+
+    const result = await streamResponsesApi(client, {}, callbacks)
+
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(result.toolCalls).toEqual([{
+      id: "c1",
+      name: "settle",
+      arguments: '{"answer":"eof"}',
+    }])
+    expect(result.settleFinalization).toEqual({ ok: true, answer: "eof" })
+    expect(onTextChunk).toHaveBeenCalledOnce()
+    expect(onTextChunk).toHaveBeenCalledWith("eof")
+  })
+
+  it("cancels a partial final-only Responses settle without finalizing or emitting", async () => {
+    const controller = new AbortController()
+    const onTextChunk = vi.fn()
+    const create = vi.fn().mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } }
+        yield { type: "response.function_call_arguments.delta", delta: '{"answer":"partial' }
+        controller.abort()
+        yield { type: "response.function_call_arguments.delta", delta: '"}' }
+      },
+    })
+    const client = { responses: { create } }
+    const callbacks = makeCallbacks({ onTextChunk, settleOutputMode: "final_only" } as any)
+    const result = await streamResponsesApi(client, {}, callbacks, controller.signal)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(onTextChunk).not.toHaveBeenCalled()
+    expect(result.settleFinalization).toBeUndefined()
+    expect(result.settleStreamed).toBe(false)
+  })
+
+  it("retracts a partial Responses settle when stream iteration fails", async () => {
+    const failure = new Error("responses stream failed")
+    let visible = ""
+    const onClearText = vi.fn(() => { visible = "" })
+    const client = { responses: { create: vi.fn().mockReturnValue({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } }
+        yield { type: "response.function_call_arguments.delta", delta: '{"answer":"partial' }
+        throw failure
+      },
+    }) } }
+    const callbacks = makeCallbacks({
+      onTextChunk: (text: string) => { visible += text },
+      onClearText,
+      settleOutputMode: "retractable_buffer",
+    } as any)
+
+    await expect(streamResponsesApi(client, {}, callbacks)).rejects.toBe(failure)
+    expect(visible).toBe("")
+    expect(onClearText).toHaveBeenCalledTimes(2)
   })
 })

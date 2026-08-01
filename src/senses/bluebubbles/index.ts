@@ -1073,6 +1073,7 @@ export function createBlueBubblesCallbacks(
   }
 
   return {
+    settleOutputMode: "retractable_buffer",
     onModelStart(): void {
       if (outboundClosed) return
       if (options.enableSilenceWatchdog !== false) startSilenceWatchdog()

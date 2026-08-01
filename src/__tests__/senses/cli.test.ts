@@ -69,6 +69,13 @@ describe("CLI adapter - createCliCallbacks", () => {
     expect(typeof callbacks.onError).toBe("function")
   }, 10_000)
 
+  it("declares settle output as final-only because stdout cannot retract", async () => {
+    const agent = await import("../../senses/cli")
+    const callbacks = agent.createCliCallbacks()
+    expect((callbacks as any).settleOutputMode).toBe("final_only")
+    callbacks.flushMarkdown()
+  })
+
   it("exposes flushNow as a function (for the `speak` tool)", async () => {
     const agent = await import("../../senses/cli")
     const callbacks = agent.createCliCallbacks()

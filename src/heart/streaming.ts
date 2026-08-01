@@ -50,6 +50,7 @@ export interface TurnResult {
   outputItems: ResponseItem[];
   usage?: UsageData;
   settleStreamed?: boolean;
+  settleFinalization?: SettleParserFinishResult;
 }
 
 export type SettleParserErrorCode = "incomplete_settle_arguments" | "invalid_settle_arguments";
@@ -57,6 +58,18 @@ export type SettleParserErrorCode = "incomplete_settle_arguments" | "invalid_set
 export type SettleParserFinishResult =
   | { ok: true; answer: string }
   | { ok: false; errorCode: SettleParserErrorCode };
+
+export class SettleFinalizationCallbackError extends Error {
+  readonly retryable = false;
+  readonly cause: Error;
+
+  constructor(cause: unknown) {
+    const normalized = cause instanceof Error ? cause : new Error(String(cause));
+    super(`settle finalization callback failed: ${normalized.message}`);
+    this.name = "SettleFinalizationCallbackError";
+    this.cause = normalized;
+  }
+}
 
 type JsonContainer = "array" | "object";
 type AnswerKeyState = "none" | "after_key" | "after_colon";
@@ -348,31 +361,139 @@ export class SettleParser {
 export class SettleStreamer {
   private parser = new SettleParser();
   private _detected = false;
+  private _streamed = false;
   private callbacks: ChannelCallbacks;
   private enabled: boolean;
+  private mode: "retractable_buffer" | "final_only";
+  private observedArguments = "";
+  private eagerAnswer = "";
+  private terminalResult: SettleParserFinishResult | undefined;
+  private cancelled = false;
 
   constructor(callbacks: ChannelCallbacks, enabled = true) {
     this.callbacks = callbacks;
     this.enabled = enabled;
+    // Production callback owners declare their mode explicitly. Retain the
+    // historical retractable default for third-party/in-test callback objects.
+    this.mode = callbacks.settleOutputMode ?? "retractable_buffer";
   }
 
   get detected(): boolean { return this._detected; }
-  get streamed(): boolean { return this.parser.active; }
+  get streamed(): boolean { return this._streamed; }
 
   /** Mark settle as detected. Calls onClearText on the callbacks. */
   activate(): void {
     if (!this.enabled) return;
     if (this._detected) return;
     this._detected = true;
-    this.callbacks.onClearText?.();
+    if (this.mode === "retractable_buffer") this.callbacks.onClearText?.();
   }
 
   /** Feed an argument delta through the parser. Emits text via onTextChunk. */
   processDelta(delta: string): void {
     if (!this.enabled) return;
     if (!this._detected) return;
+    if (this.cancelled || this.terminalResult) return;
+    this.observedArguments += delta;
     const text = this.parser.process(delta);
-    if (text) this.callbacks.onTextChunk(text);
+    if (text && this.mode === "retractable_buffer") {
+      this.callbacks.onTextChunk(text);
+      this.eagerAnswer += text;
+    }
+  }
+
+  /** Validate the completed provider arguments exactly once, then commit or
+   * retract callback-visible output according to the callback owner's mode. */
+  finish(completedArguments: string): SettleParserFinishResult | undefined {
+    if (!this.enabled || !this._detected || this.cancelled) return undefined;
+    if (this.terminalResult) return this.terminalResult;
+
+    let finalSuffix = "";
+    let replacedObservedArguments = false;
+    if (completedArguments.startsWith(this.observedArguments)) {
+      const suffix = completedArguments.slice(this.observedArguments.length);
+      this.observedArguments = completedArguments;
+      finalSuffix = this.parser.process(suffix);
+    } else {
+      // A provider may normalize or replace its streamed argument fragments in
+      // the completed tool call. Re-parse that one authoritative final value;
+      // any eager output from the divergent fragment is retracted below.
+      replacedObservedArguments = true;
+      this.parser = new SettleParser();
+      this.observedArguments = completedArguments;
+      finalSuffix = this.parser.process(completedArguments);
+    }
+
+    const result = this.parser.finish();
+    // Cache before invoking callbacks: a callback failure must never make a
+    // repeated finish parse or commit the answer again.
+    this.terminalResult = result;
+
+    if (!result.ok) {
+      if (this.mode === "retractable_buffer") this.callbacks.onClearText?.();
+      return result;
+    }
+
+    if (this.mode === "final_only") {
+      this.callbacks.onTextChunk(result.answer);
+    } else if (replacedObservedArguments) {
+      this.callbacks.onClearText?.();
+      this.callbacks.onTextChunk(result.answer);
+    } else if (finalSuffix) {
+      this.callbacks.onTextChunk(finalSuffix);
+    }
+    this._streamed = true;
+    return result;
+  }
+
+  /** Cancel a partial provider stream without terminal parsing or commit. */
+  cancel(): void {
+    if (!this.enabled || !this._detected || this.cancelled || this.terminalResult) return;
+    this.cancelled = true;
+    if (this.mode === "retractable_buffer" && this.eagerAnswer) {
+      this.callbacks.onClearText?.();
+    }
+  }
+}
+
+export function finalizeSettleStream(
+  streamer: SettleStreamer,
+  completedArguments: string,
+): SettleParserFinishResult | undefined {
+  try {
+    return streamer.finish(completedArguments);
+  } catch (error) {
+    throw new SettleFinalizationCallbackError(error);
+  }
+}
+
+/** Holds ordinary provider text until a final-only response is known not to be
+ * an invalid settle. Retractable callback owners continue receiving deltas. */
+export class ProviderTextOutput {
+  private bufferedText = "";
+  private readonly deferred: boolean;
+
+  constructor(private readonly callbacks: ChannelCallbacks) {
+    this.deferred = callbacks.settleOutputMode === "final_only";
+  }
+
+  emit(text: string): void {
+    if (this.deferred) {
+      this.bufferedText += text;
+    } else {
+      this.callbacks.onTextChunk(text);
+    }
+  }
+
+  discard(): void {
+    this.bufferedText = "";
+  }
+
+  flush(): void {
+    if (!this.bufferedText) return;
+    const text = this.bufferedText;
+    this.bufferedText = "";
+    this.callbacks.onTextChunk(text);
   }
 }
 
@@ -558,6 +679,7 @@ export async function streamChatCompletion(
   let streamStarted = false;
   let usage: UsageData | undefined;
   const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
+  const textOutput = new ProviderTextOutput(callbacks);
 
   // State machine for parsing inline <think> tags (MiniMax pattern)
   let contentBuf = "";
@@ -596,7 +718,7 @@ export async function streamChatCompletion(
         const start = contentBuf.indexOf(OPEN_TAG);
         if (start !== -1) {
           const text = contentBuf.slice(0, start);
-          if (text) callbacks.onTextChunk(text);
+          if (text) textOutput.emit(text);
           contentBuf = contentBuf.slice(start + OPEN_TAG.length);
           inThinkTag = true;
         } else {
@@ -608,21 +730,22 @@ export async function streamChatCompletion(
             }
             if (retain > 0) {
               const text = contentBuf.slice(0, -retain);
-              if (text) callbacks.onTextChunk(text);
+              if (text) textOutput.emit(text);
               contentBuf = contentBuf.slice(-retain);
               return;
             }
           }
           // All content, flush it
-          callbacks.onTextChunk(contentBuf);
+          textOutput.emit(contentBuf);
           contentBuf = "";
         }
       }
     }
   }
 
-  for await (const chunk of response) {
-    if (signal?.aborted) break;
+  try {
+    for await (const chunk of response) {
+      if (signal?.aborted) break;
     // Capture usage from final chunk (sent when stream_options.include_usage is true)
     if (chunk.usage) {
       const u = chunk.usage;
@@ -633,67 +756,90 @@ export async function streamChatCompletion(
         total_tokens: u.total_tokens,
       };
     }
-    const d = chunk.choices[0]?.delta as StreamDelta | undefined;
-    if (!d) continue;
+      const d = chunk.choices[0]?.delta as StreamDelta | undefined;
+      if (!d) continue;
 
     // Handle reasoning_content (Azure AI models like DeepSeek-R1)
-    if (d.reasoning_content) {
-      if (!streamStarted) {
-        callbacks.onModelStreamStart();
-        streamStarted = true;
+      if (d.reasoning_content) {
+        if (!streamStarted) {
+          callbacks.onModelStreamStart();
+          streamStarted = true;
+        }
+        callbacks.onReasoningChunk(d.reasoning_content);
       }
-      callbacks.onReasoningChunk(d.reasoning_content);
-    }
 
-    if (d.content) {
-      if (!streamStarted) {
-        callbacks.onModelStreamStart();
-        streamStarted = true;
+      if (d.content) {
+        if (!streamStarted) {
+          callbacks.onModelStreamStart();
+          streamStarted = true;
+        }
+        content += d.content;
+        contentBuf += d.content;
+        processContentBuf(false);
       }
-      content += d.content;
-      contentBuf += d.content;
-      processContentBuf(false);
-    }
-    if (d.tool_calls) {
-      for (const tc of d.tool_calls) {
-        if (!toolCalls[tc.index])
-          toolCalls[tc.index] = {
-            id: tc.id ?? "",
-            name: tc.function?.name ?? "",
-            arguments: "",
-          };
-        if (tc.id) toolCalls[tc.index].id = tc.id;
-        if (tc.function?.name) {
-          toolCalls[tc.index].name = tc.function.name;
-          // Detect settle tool call on first name delta.
-          // Only activate streaming if this is the sole tool call (index 0
-          // and no other indices seen). Mixed calls are rejected by core.ts.
-          if (tc.function.name === "settle" && !answerStreamer.detected
-              && tc.index === 0 && Object.keys(toolCalls).length === 1) {
-            answerStreamer.activate();
+      if (d.tool_calls) {
+        for (const tc of d.tool_calls) {
+          if (!toolCalls[tc.index])
+            toolCalls[tc.index] = {
+              id: tc.id ?? "",
+              name: tc.function?.name ?? "",
+              arguments: "",
+            };
+          if (tc.id) toolCalls[tc.index].id = tc.id;
+          if (tc.function?.name) {
+            toolCalls[tc.index].name = tc.function.name;
+            // Detect settle tool call on first name delta.
+            // Only activate streaming if this is the sole tool call (index 0
+            // and no other indices seen). Mixed calls are rejected by core.ts.
+            if (tc.function.name === "settle" && !answerStreamer.detected
+                && tc.index === 0 && Object.keys(toolCalls).length === 1) {
+              answerStreamer.activate();
+            }
+          }
+          if (tc.function?.arguments) {
+            toolCalls[tc.index].arguments += tc.function.arguments;
+            // Feed settle argument deltas to the parser for progressive
+            // streaming, but only when it appears to be the sole tool call.
+            if (answerStreamer.detected && toolCalls[tc.index].name === "settle"
+                && Object.keys(toolCalls).length === 1) {
+              answerStreamer.processDelta(tc.function.arguments);
+            }
           }
         }
-        if (tc.function?.arguments) {
-          toolCalls[tc.index].arguments += tc.function.arguments;
-          // Feed settle argument deltas to the parser for progressive
-          // streaming, but only when it appears to be the sole tool call.
-          if (answerStreamer.detected && toolCalls[tc.index].name === "settle"
-              && Object.keys(toolCalls).length === 1) {
-            answerStreamer.processDelta(tc.function.arguments);
-          }
-        }
       }
     }
+  } catch (error) {
+    textOutput.discard();
+    answerStreamer.cancel();
+    throw error;
   }
   // Flush any remaining buffer at end of stream
   if (contentBuf) processContentBuf(true);
 
+  const completedToolCalls = Object.values(toolCalls);
+  let settleFinalization: SettleParserFinishResult | undefined;
+  if (signal?.aborted) {
+    textOutput.discard();
+    answerStreamer.cancel();
+  } else if (
+    completedToolCalls.length === 1
+    && completedToolCalls[0].name === "settle"
+    && answerStreamer.detected
+  ) {
+    textOutput.discard();
+    settleFinalization = finalizeSettleStream(answerStreamer, completedToolCalls[0].arguments);
+  } else {
+    answerStreamer.cancel();
+    textOutput.flush();
+  }
+
   return {
     content,
-    toolCalls: Object.values(toolCalls),
+    toolCalls: completedToolCalls,
     outputItems: [],
     usage,
     settleStreamed: answerStreamer.streamed,
+    ...(settleFinalization ? { settleFinalization } : {}),
   };
 }
 
@@ -723,12 +869,14 @@ export async function streamResponsesApi(
   let currentToolCall: { call_id: string; name: string; arguments: string } | null = null;
   let usage: UsageData | undefined;
   const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
+  const textOutput = new ProviderTextOutput(callbacks);
   let functionCallCount = 0;
 
-  for await (const event of response) {
-    if (signal?.aborted) break;
+  try {
+    for await (const event of response) {
+      if (signal?.aborted) break;
 
-    switch (event.type) {
+      switch (event.type) {
       case "response.output_text.delta":
       case "response.reasoning_summary_text.delta": {
         if (!streamStarted) {
@@ -737,7 +885,7 @@ export async function streamResponsesApi(
         }
         const delta = String(event.delta);
         if (event.type === "response.output_text.delta") {
-          callbacks.onTextChunk(delta);
+          textOutput.emit(delta);
           content += delta;
         } else {
           callbacks.onReasoningChunk(delta);
@@ -798,9 +946,39 @@ export async function streamResponsesApi(
         }
         break;
       }
-      default:
-        // Unknown/unhandled events silently ignored
-        break;
+        default:
+          // Unknown/unhandled events silently ignored
+          break;
+      }
+    }
+  } catch (error) {
+    textOutput.discard();
+    answerStreamer.cancel();
+    throw error;
+  }
+
+  let settleFinalization: SettleParserFinishResult | undefined;
+  if (signal?.aborted) {
+    textOutput.discard();
+    answerStreamer.cancel();
+  } else {
+    if (toolCalls.length === 0 && functionCallCount === 1 && currentToolCall?.name === "settle") {
+      toolCalls.push({
+        id: currentToolCall.call_id,
+        name: currentToolCall.name,
+        arguments: currentToolCall.arguments,
+      });
+      currentToolCall = null;
+    }
+    const completedSettle = toolCalls.length === 1 && toolCalls[0].name === "settle"
+      ? toolCalls[0]
+      : undefined;
+    if (completedSettle && answerStreamer.detected) {
+      textOutput.discard();
+      settleFinalization = finalizeSettleStream(answerStreamer, completedSettle.arguments);
+    } else {
+      answerStreamer.cancel();
+      textOutput.flush();
     }
   }
 
@@ -810,5 +988,6 @@ export async function streamResponsesApi(
     outputItems,
     usage,
     settleStreamed: answerStreamer.streamed,
+    ...(settleFinalization ? { settleFinalization } : {}),
   };
 }

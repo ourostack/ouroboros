@@ -191,6 +191,41 @@ describe("provider attempt runner", () => {
     expect(sleep).not.toHaveBeenCalled()
   })
 
+  it("returns a structurally non-retryable error after one attempt", async () => {
+    emitTestEvent("provider attempt non-retryable")
+    const finalizationError = Object.assign(new Error("final callback failed"), {
+      retryable: false,
+    })
+    const run = vi.fn(async () => { throw finalizationError })
+    const sleep = vi.fn(async () => undefined)
+    const onRetry = vi.fn()
+
+    const result = await runProviderAttempt({
+      operation: "turn",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      run,
+      classifyError: () => "unknown",
+      sleep,
+      onRetry,
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      error: finalizationError,
+      classification: "unknown",
+      attempts: [expect.objectContaining({
+        attempt: 1,
+        ok: false,
+        errorMessage: "final callback failed",
+        willRetry: false,
+      })],
+    })
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(onRetry).not.toHaveBeenCalled()
+    expect(sleep).not.toHaveBeenCalled()
+  })
+
   it("classifies non-Error throws as unknown while preserving metadata", async () => {
     emitTestEvent("provider attempt non-error throw")
     const run = vi.fn(async () => { throw "plain string" }) // eslint-disable-line no-throw-literal

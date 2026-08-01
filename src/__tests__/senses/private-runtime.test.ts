@@ -1361,6 +1361,17 @@ describe("private runtime", () => {
     expect(mockHandleInboundTurn).toHaveBeenCalledTimes(1)
   })
 
+  it("declares private-runtime settle output as final-only", async () => {
+    await runApprovedPrivateRuntimeTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.callbacks.settleOutputMode).toBe("final_only")
+  })
+
   it("passes channel 'inner' and senseType 'internal' capabilities to pipeline", async () => {
     await runApprovedPrivateRuntimeTurn({
       reason: "boot",

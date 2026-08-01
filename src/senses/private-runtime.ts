@@ -563,6 +563,7 @@ function extractToolCallNames(messages: OpenAI.ChatCompletionMessageParam[]): st
 
 function createPrivateRuntimeCallbacks(): ChannelCallbacks {
   return {
+    settleOutputMode: "final_only",
     onModelStart: () => {},
     onModelStreamStart: () => {},
     onTextChunk: () => {},

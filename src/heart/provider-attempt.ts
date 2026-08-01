@@ -87,6 +87,10 @@ function delayForAttempt(policy: ProviderAttemptPolicy, attempt: number): number
   return policy.baseDelayMs * Math.pow(policy.backoffMultiplier, attempt - 1)
 }
 
+function isRetryable(error: Error): boolean {
+  return (error as Error & { retryable?: unknown }).retryable !== false
+}
+
 export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): Promise<ProviderAttemptResult<T>> {
   const policy = normalizePolicy(input.policy)
   const maxAttempts = Math.max(1, Math.floor(policy.maxAttempts))
@@ -116,7 +120,7 @@ export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): 
       if (caught instanceof ProviderAttemptAbortError) throw caught
       const error = toError(caught)
       const classification = classify(caught, input.classifyError)
-      const willRetry = attempt < maxAttempts
+      const willRetry = isRetryable(error) && attempt < maxAttempts
       const delayMs = willRetry ? delayForAttempt(policy, attempt) : undefined
       const record: ProviderAttemptRecord = {
         attempt,

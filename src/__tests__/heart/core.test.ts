@@ -7736,7 +7736,7 @@ describe("tool_choice required and settle", () => {
     expect(deliveredMsg.content).toBe("(delivered)")
   })
 
-  it("settle with empty object arg: retries (no answer field)", async () => {
+  it("settle with empty object arg: fails terminal without a provider retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -7766,16 +7766,16 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // {} has no answer field, so first attempt retries
-    expect(callCount).toBe(2)
-    // Error tool result for first attempt
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs[0].tool_call_id).toBe("call_1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    // Successful answer from second attempt
-    expect(textChunks).toEqual(["got it"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
   it("settle is never passed to execTool (intercepted before execution)", async () => {
@@ -7869,7 +7869,7 @@ describe("tool_choice required and settle", () => {
     // config cleanup handled by resetConfigCache in beforeEach
   })
 
-  it("Azure: truncated settle retries and pushes function_call_output to azureInput", async () => {
+  it("Azure: truncated settle fails terminal without another Responses request", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
@@ -7907,19 +7907,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await core.runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await core.runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // Should have retried
-    expect(callCount).toBe(2)
-    // Error tool result for first attempt
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs[0].tool_call_id).toBe("c1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    // Valid answer from retry
-    expect(textChunks).toEqual(["complete"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "incomplete_settle_arguments" },
+    })
   })
 
-  it("settle with invalid JSON arguments: retries (does not re-emit already-streamed content)", async () => {
+  it("settle with invalid JSON arguments: clears noise and fails without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -7950,19 +7950,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // Invalid JSON triggers retry
-    expect(callCount).toBe(2)
-    // Error tool result for first attempt
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs[0].tool_call_id).toBe("call_1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    // Only the valid answer from retry should be emitted (noise was cleared)
-    expect(textChunks).toEqual(["valid now"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
-  it("settle with valid JSON but no answer field: retries (does not re-emit already-streamed content)", async () => {
+  it("settle with valid JSON but no answer field: clears noise and fails without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -7993,19 +7993,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // No answer field triggers retry
-    expect(callCount).toBe(2)
-    // Error tool result for first attempt
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs[0].tool_call_id).toBe("call_1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    // Only the valid answer from retry (noise was cleared by onClearText)
-    expect(textChunks).toEqual(["proper answer"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
-  it("settle with invalid JSON and no content: retries (pushes error tool result)", async () => {
+  it("settle with invalid JSON and no content: fails terminal without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8035,19 +8035,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // Invalid JSON triggers retry
-    expect(callCount).toBe(2)
-    // Error tool result for first attempt
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs[0].tool_call_id).toBe("call_1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    // Recovered answer from retry
-    expect(textChunks).toEqual(["recovered"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
-  it("settle with valid non-object JSON: retries", async () => {
+  it("settle with valid non-object JSON: fails terminal without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8077,16 +8077,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(2)
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs[0].tool_call_id).toBe("call_1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    expect(textChunks).toEqual(["recovered from scalar"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
-  it("settle with valid JSON, no answer field, and no content: retries", async () => {
+  it("settle with valid JSON, no answer field, and no content: fails terminal without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8116,16 +8119,16 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // No answer field triggers retry
-    expect(callCount).toBe(2)
-    // Error tool result for first attempt
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs[0].tool_call_id).toBe("call_1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    // Proper answer from retry
-    expect(textChunks).toEqual(["proper"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
   it("calls onClearText before emitting valid settle when content was streamed", async () => {
@@ -8244,8 +8247,7 @@ describe("tool_choice required and settle", () => {
 
   // -- Unit 14b: settle answer extraction tests --
 
-  it("settle with JSON string argument: uses string directly as answer", async () => {
-    // Model passes a plain JSON string instead of {"answer":"..."}
+  it("settle with JSON string argument: rejects the non-object provider payload", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
@@ -8266,19 +8268,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // The plain string should be emitted as the answer
-    expect(textChunks).toEqual(["just a plain string response"])
-    // Should terminate (done = true)
+    expect(textChunks).toEqual([])
     expect(mockCreate).toHaveBeenCalledTimes(1)
-    // Synthetic tool response present
     const toolResults = messages.filter((m: any) => m.role === "tool")
-    expect(toolResults).toHaveLength(1)
-    expect(toolResults[0].content).toBe("(delivered)")
+    expect(toolResults).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
-  it("settle with truncated JSON: retries by pushing error and continuing loop", async () => {
+  it("settle with truncated JSON: fails terminal without continuing the loop", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8312,22 +8314,20 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // Should have made 2 API calls (retry after truncation)
-    expect(callCount).toBe(2)
-    // The error result should be in messages (assistant msg + tool error from first attempt)
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    const errorToolMsg = toolMsgs.find((m: any) => m.tool_call_id === "call_1")
-    expect(errorToolMsg).toBeDefined()
-    expect(errorToolMsg.content).toContain("incomplete or malformed")
-    // The successful answer should be emitted
-    expect(textChunks).toEqual(["complete response"])
-    // No terminal errors
-    expect(errors).toEqual([])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(errors).toEqual(["incomplete_settle_arguments"])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "incomplete_settle_arguments" },
+    })
   })
 
-  it("settle with wrong-shape JSON (no answer field): retries", async () => {
+  it("settle with wrong-shape JSON (no answer field): fails terminal without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8359,20 +8359,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // Should have retried
-    expect(callCount).toBe(2)
-    // Error message pushed for first attempt
+    expect(callCount).toBe(1)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    const errorToolMsg = toolMsgs.find((m: any) => m.tool_call_id === "call_1")
-    expect(errorToolMsg).toBeDefined()
-    expect(errorToolMsg.content).toContain("incomplete or malformed")
-    // Final answer emitted from second attempt
-    expect(textChunks).toEqual(["correct answer"])
+    expect(toolMsgs).toEqual([])
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
-  it("settle retry then succeed: emits answer on successful retry", async () => {
+  it("settle invalid then valid response: never starts the forbidden second turn", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8404,21 +8403,19 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(2)
-    // The successful answer from retry is emitted
-    expect(textChunks).toEqual(["success after retry"])
-    // Both tool results present: error for first, delivered for second
+    expect(callCount).toBe(1)
+    expect(textChunks).toEqual([])
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toHaveLength(2)
-    expect(toolMsgs[0].tool_call_id).toBe("call_1")
-    expect(toolMsgs[0].content).toContain("incomplete or malformed")
-    expect(toolMsgs[1].tool_call_id).toBe("call_2")
-    expect(toolMsgs[1].content).toBe("(delivered)")
+    expect(toolMsgs).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
   })
 
-  it("settle retry clears streamed noise via onClearText on both attempts", async () => {
+  it("failed settle clears streamed noise without starting a second turn", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8452,15 +8449,17 @@ describe("tool_choice required and settle", () => {
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]
-    await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
+    const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // onClearText is called 3 times:
-    // 1. Streaming layer clears noise when first detecting settle (attempt 1)
-    // 2. Core.ts clears partial streamed text on retry (truncated JSON)
-    // 3. Streaming layer clears noise when detecting settle (attempt 2)
-    expect(clearCount).toBe(3)
-    // Only the final clean answer should remain
-    expect(textChunks).toEqual(["clean answer"])
+    expect(callCount).toBe(1)
+    // Detection clears ordinary streamed noise; failed finalization retracts
+    // the partial answer. No second-turn clear occurs.
+    expect(clearCount).toBe(2)
+    expect(textChunks).toEqual([])
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "incomplete_settle_arguments" },
+    })
   })
 })
 

@@ -250,6 +250,7 @@ export function createTuiCallbacks(store: TuiStore): ChannelCallbacks & { flushM
   })
 
   return {
+    settleOutputMode: "retractable_buffer",
     onModelStart: () => { store.modelStart() },
     onModelStreamStart: () => {},
     onClearText: () => { store.clearText() },
