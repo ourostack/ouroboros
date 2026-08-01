@@ -270,7 +270,7 @@ describe("MCP send_message tool", () => {
   it("canonicalizes local MCP friend ids before running a sense turn", async () => {
     vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      id: "11111111-2222-4333-8444-555555555555",
       name: "arimendelow",
       externalIds: [{ provider: "local", externalId: "arimendelow" }],
     }))
@@ -301,11 +301,11 @@ describe("MCP send_message tool", () => {
     await outputPromise
     server.stop()
 
-    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(server.friendId).toBe("11111111-2222-4333-8444-555555555555")
     expect(mockSendDaemonCommand).toHaveBeenCalledWith(
       "/tmp/test.sock",
       expect.objectContaining({
-        friendId: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+        friendId: "11111111-2222-4333-8444-555555555555",
       }),
     )
   })
@@ -313,7 +313,7 @@ describe("MCP send_message tool", () => {
   it("canonicalizes local MCP friend ids that include a machine suffix", async () => {
     vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      id: "11111111-2222-4333-8444-555555555555",
       name: "arimendelow",
       externalIds: [{ provider: "local", externalId: "arimendelow@macbook" }],
     }))
@@ -327,13 +327,13 @@ describe("MCP send_message tool", () => {
       stdout,
     })
 
-    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(server.friendId).toBe("11111111-2222-4333-8444-555555555555")
   })
 
   it("canonicalizes named MCP friend ids before running a sense turn", async () => {
     vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      id: "11111111-2222-4333-8444-555555555555",
       name: "Ari",
       externalIds: [{ provider: "local", externalId: "arimendelow" }],
     }))
@@ -364,17 +364,17 @@ describe("MCP send_message tool", () => {
     await outputPromise
     server.stop()
 
-    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(server.friendId).toBe("11111111-2222-4333-8444-555555555555")
     expect(mockSendDaemonCommand).toHaveBeenCalledWith(
       "/tmp/test.sock",
       expect.objectContaining({
-        friendId: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+        friendId: "11111111-2222-4333-8444-555555555555",
       }),
     )
   })
 
   it("preserves explicit UUID friend ids without reading bundle friends", async () => {
-    const uuid = "0e2b9e85-fe43-4340-87fd-4ea018dee8a5"
+    const uuid = "11111111-2222-4333-8444-555555555555"
 
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
@@ -394,7 +394,7 @@ describe("MCP send_message tool", () => {
     vi.mocked(fs.readFileSync)
       .mockReturnValueOnce(JSON.stringify({ name: "Missing Id" }))
       .mockReturnValueOnce(JSON.stringify({
-        id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+        id: "11111111-2222-4333-8444-555555555555",
         name: "Ari",
         externalIds: [{ provider: "github", externalId: "arimendelow" }],
       }))

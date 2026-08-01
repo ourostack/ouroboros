@@ -2836,6 +2836,7 @@ describe("BlueBubbles sense runtime", () => {
       ...editPayload,
       data: {
         ...editPayload.data,
+        handle: { address: "casey@example.test", service: "iMessage" },
         chats: groupReactionPayload.data.chats,
       },
     })
@@ -2844,7 +2845,7 @@ describe("BlueBubbles sense runtime", () => {
       expect.arrayContaining([
         expect.objectContaining({
           role: "user",
-          content: "ari@mendelow.me edited message: edited version",
+          content: "casey@example.test edited message: edited version",
         }),
       ]),
     )
@@ -3501,10 +3502,17 @@ describe("BlueBubbles sense runtime", () => {
     })
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler()
+    const payload = {
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        handle: { address: "casey@example.test", service: "iMessage" },
+      },
+    }
     const req = createMockRequest(
       "POST",
       "/bluebubbles-webhook?password=secret-token",
-      dmTopLevelPayload,
+      payload,
     )
     const res = createMockResponse(() => order.push("ack"))
 
@@ -3522,7 +3530,7 @@ describe("BlueBubbles sense runtime", () => {
         event: expect.objectContaining({
           kind: "message",
           eventGuid: "b20d4e2b-2e6e-48b5-95cd-6e24a368e4a7",
-          actor: expect.objectContaining({ externalId: "ari@mendelow.me" }),
+          actor: expect.objectContaining({ externalId: "casey@example.test" }),
         }),
       }),
     )
@@ -3889,7 +3897,7 @@ describe("BlueBubbles sense runtime", () => {
       {
         type: "chat-read-status-changed",
         data: {
-          chatGuid: "any;-;ari@mendelow.me",
+          chatGuid: "any;-;casey@example.test",
         },
       },
     )
@@ -9996,7 +10004,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       data: {
         guid: "RECOVERABLE-UNKNOWN-ROUTE",
         text: "recover me by immutable guid",
-        handle: { address: "ari@mendelow.me", service: "iMessage" },
+        handle: { address: "casey@example.test", service: "iMessage" },
         attachments: [],
         dateCreated: 1772946889999,
         isFromMe: false,
@@ -10014,7 +10022,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       ...event,
       chat: {
         ...makeCatchUpMessage().chat,
-        sessionKey: "chat:any;-;ari@mendelow.me",
+        sessionKey: "chat:any;-;casey@example.test",
       },
       requiresRepair: false,
     }))
@@ -10122,11 +10130,17 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       ...identifierEditBase,
       event: {
         ...identifierEditBase.event,
+        actor: {
+          ...identifierEditBase.event.actor,
+          externalId: "casey@example.test",
+          displayName: "casey@example.test",
+        },
+        sessionKey: "chat_identifier:casey@example.test",
         chatGuid: null,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "casey@example.test",
         participants: [
-          { provider: "imessage-handle" as const, externalId: "ari@mendelow.me", displayName: null },
-          { provider: "imessage-handle" as const, externalId: "rachel@example.com", displayName: null },
+          { provider: "imessage-handle" as const, externalId: "casey@example.test", displayName: null },
+          { provider: "imessage-handle" as const, externalId: "morgan@example.test", displayName: null },
         ],
       },
     }
@@ -10173,11 +10187,11 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       messageGuid: "recovered-identifier-edit",
       chat: expect.objectContaining({
         chatGuid: undefined,
-        chatIdentifier: "ari@mendelow.me",
+        chatIdentifier: "casey@example.test",
         isGroup: true,
-        participantHandles: ["ari@mendelow.me", "rachel@example.com"],
+        participantHandles: ["casey@example.test", "morgan@example.test"],
       }),
-      sender: expect.objectContaining({ displayName: "ari@mendelow.me" }),
+      sender: expect.objectContaining({ displayName: "casey@example.test" }),
       revision: "revision-1",
     }))
     expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -10256,6 +10270,7 @@ describe("BlueBubbles reaction capture-only policy", () => {
         ...reactionPayload.data,
         guid: `POLICY-${raw.replace(/[^a-z0-9]/gi, "-").toUpperCase()}`,
         associatedMessageType: raw,
+        handle: { address: "casey@example.test", service: "iMessage" },
         isFromMe: fromMe,
       },
     }
@@ -10349,7 +10364,7 @@ describe("BlueBubbles reaction capture-only policy", () => {
       expect(mocks.findByExternalId).toHaveBeenCalledTimes(1)
       expect(mocks.findByExternalId).toHaveBeenCalledWith(
         "imessage-handle",
-        input.expectedActorExternalId ?? "ari@mendelow.me",
+        input.expectedActorExternalId ?? "casey@example.test",
       )
     } else {
       expect(mocks.findByExternalId).not.toHaveBeenCalled()
@@ -10550,7 +10565,7 @@ describe("BlueBubbles reaction capture-only policy", () => {
       notifiedAgent: true,
       kind: "mutation",
     }))
-    expect(mocks.findByExternalId).toHaveBeenCalledWith("imessage-handle", "ari@mendelow.me")
+    expect(mocks.findByExternalId).toHaveBeenCalledWith("imessage-handle", "casey@example.test")
     expect(firstRunAgentOptions()).toEqual(expect.objectContaining({
       isReactionSignal: true,
       restrictedReactionFeedback: true,

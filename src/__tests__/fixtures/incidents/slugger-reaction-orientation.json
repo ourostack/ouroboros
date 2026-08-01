@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "actor": {
+    "displayName": "Casey",
+    "handle": "casey.requester@example.test"
+  },
+  "participant": {
+    "displayName": "Morgan",
+    "handle": "morgan.participant@example.test"
+  },
+  "chat": {
+    "guid": "iMessage;+;synthetic-rsvp-group",
+    "identifier": "synthetic-rsvp-group",
+    "displayName": "Synthetic RSVP Group"
+  },
+  "rsvpTarget": {
+    "habitId": "synthetic-rsvp-report",
+    "reportTitle": "RSVP Update — Casey & Morgan",
+    "messageGuid": "SYNTHETIC-RSVP-REPORT-GUID",
+    "messageText": "RSVP Update — Casey & Morgan\nNo changes since the prior synthetic check."
+  },
+  "staleCheckpoint": "Continue sending the prior daily RSVP report.",
+  "cancellation": {
+    "capturedAt": "2026-07-01T12:00:00.000Z",
+    "cancelledAt": "2026-07-01T12:05:00.000Z",
+    "payload": {
+      "type": "new-message",
+      "data": {
+        "guid": "SYNTHETIC-CANCELLATION-REQUEST-GUID",
+        "text": "The event is complete; please end this daily RSVP report.",
+        "handle": {
+          "address": "casey.requester@example.test",
+          "service": "iMessage"
+        },
+        "attachments": [],
+        "dateCreated": 1782907200000,
+        "isFromMe": false,
+        "chats": [
+          {
+            "guid": "iMessage;+;synthetic-rsvp-group",
+            "style": 43,
+            "chatIdentifier": "synthetic-rsvp-group",
+            "displayName": "Synthetic RSVP Group",
+            "participants": [
+              {
+                "address": "casey.requester@example.test"
+              },
+              {
+                "address": "morgan.participant@example.test"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "reactionDeliveries": [
+    {
+      "type": "new-message",
+      "data": {
+        "guid": "SYNTHETIC-CUSTOM-REACTION-GUID",
+        "associatedMessageGuid": "p:0/SYNTHETIC-RSVP-REPORT-GUID",
+        "associatedMessageType": 2006,
+        "handle": {
+          "address": "casey.requester@example.test",
+          "service": "iMessage"
+        },
+        "attachments": [],
+        "dateCreated": 1782907500000,
+        "isFromMe": false,
+        "chats": [
+          {
+            "guid": "iMessage;+;synthetic-rsvp-group",
+            "style": 43,
+            "chatIdentifier": "synthetic-rsvp-group",
+            "displayName": "Synthetic RSVP Group",
+            "participants": [
+              {
+                "address": "casey.requester@example.test"
+              },
+              {
+                "address": "morgan.participant@example.test"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "new-message",
+      "data": {
+        "guid": "SYNTHETIC-CUSTOM-REACTION-GUID",
+        "associatedMessageGuid": "p:0/SYNTHETIC-RSVP-REPORT-GUID",
+        "associatedMessageType": "2006",
+        "handle": {
+          "address": "casey.requester@example.test",
+          "service": "iMessage"
+        },
+        "attachments": [],
+        "dateCreated": 1782907500000,
+        "isFromMe": false,
+        "chats": [
+          {
+            "guid": "iMessage;+;synthetic-rsvp-group",
+            "style": 43,
+            "chatIdentifier": "synthetic-rsvp-group",
+            "displayName": "Synthetic RSVP Group",
+            "participants": [
+              {
+                "address": "casey.requester@example.test"
+              },
+              {
+                "address": "morgan.participant@example.test"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "updated-message",
+      "data": {
+        "guid": "SYNTHETIC-CUSTOM-REACTION-GUID",
+        "associatedMessageGuid": "p:0/SYNTHETIC-RSVP-REPORT-GUID",
+        "associatedMessageType": 2006,
+        "handle": {
+          "address": "casey.requester@example.test",
+          "service": "iMessage"
+        },
+        "attachments": [],
+        "dateCreated": 1782907500000,
+        "isFromMe": false,
+        "chats": [
+          {
+            "guid": "iMessage;+;synthetic-rsvp-group",
+            "style": 43,
+            "chatIdentifier": "synthetic-rsvp-group",
+            "displayName": "Synthetic RSVP Group",
+            "participants": [
+              {
+                "address": "casey.requester@example.test"
+              },
+              {
+                "address": "morgan.participant@example.test"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "stream": {
+    "argumentChunks": [
+      "{\"answer\":\"Cancelled report \\u2",
+      "014 complete \\ud83e",
+      "\\udee1 \\ud83d",
+      "\\udc9c\"}"
+    ],
+    "completedArguments": "{\"answer\":\"Cancelled report \\u2014 complete \\ud83e\\udee1 \\ud83d\\udc9c\"}",
+    "expectedAnswer": "Cancelled report — complete 🫡 💜"
+  }
+}

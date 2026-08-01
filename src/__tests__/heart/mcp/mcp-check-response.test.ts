@@ -202,7 +202,7 @@ describe("MCP check_response tool", () => {
   it("drains pending responses from the canonical local friend id", async () => {
     vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      id: "11111111-2222-4333-8444-555555555555",
       name: "arimendelow",
       externalIds: [{ provider: "local", externalId: "arimendelow" }],
     }))
@@ -228,10 +228,10 @@ describe("MCP check_response tool", () => {
     await new Promise((r) => setTimeout(r, 200))
     server.stop()
 
-    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(server.friendId).toBe("11111111-2222-4333-8444-555555555555")
     expect(mockGetPendingDir).toHaveBeenCalledWith(
       "test-agent",
-      "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      "11111111-2222-4333-8444-555555555555",
       "mcp",
       "session-check-test",
     )
