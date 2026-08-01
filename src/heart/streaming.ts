@@ -472,17 +472,24 @@ export function finalizeSettleStream(
 export class ProviderTextOutput {
   private bufferedText = "";
   private readonly deferred: boolean;
+  private suppressed = false;
 
   constructor(private readonly callbacks: ChannelCallbacks) {
     this.deferred = callbacks.settleOutputMode === "final_only";
   }
 
   emit(text: string): void {
+    if (this.suppressed) return;
     if (this.deferred) {
       this.bufferedText += text;
     } else {
       this.callbacks.onTextChunk(text);
     }
+  }
+
+  suppress(): void {
+    this.bufferedText = "";
+    this.suppressed = true;
   }
 
   discard(): void {
@@ -794,6 +801,7 @@ export async function streamChatCompletion(
             if (tc.function.name === "settle" && !answerStreamer.detected
                 && tc.index === 0 && Object.keys(toolCalls).length === 1) {
               answerStreamer.activate();
+              textOutput.suppress();
             }
           }
           if (tc.function?.arguments) {
@@ -905,6 +913,7 @@ export async function streamResponsesApi(
           // Mixed calls are rejected by core.ts; no need to stream their args.
           if (String(event.item.name) === "settle" && functionCallCount === 1) {
             answerStreamer.activate();
+            textOutput.suppress();
           }
         }
         break;

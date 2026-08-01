@@ -1850,6 +1850,29 @@ describe("streamChatCompletion settle streaming", () => {
     }
   })
 
+  it("keeps a retractable Chat Completions settle exact when provider text follows it", async () => {
+    let visible = ""
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_1",
+        function: { name: "settle", arguments: '{"answer":"answer"}' },
+      }]),
+      makeChunk("after"),
+    ])) } } }
+    const callbacks = makeCallbacks({
+      onTextChunk: (text: string) => { visible += text },
+      onClearText: () => { visible = "" },
+      settleOutputMode: "retractable_buffer",
+    } as any)
+
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
+
+    expect(result.settleFinalization).toEqual({ ok: true, answer: "answer" })
+    expect(result.settleStreamed).toBe(true)
+    expect(visible).toBe("answer")
+  })
+
   it.each([
     { label: "incomplete", args: '{"answer":"partial', errorCode: "incomplete_settle_arguments" },
     { label: "invalid", args: String.raw`{"answer":"partial\x"}`, errorCode: "invalid_settle_arguments" },
@@ -2062,6 +2085,28 @@ describe("streamResponsesApi settle streaming", () => {
     } finally {
       finish.mockRestore()
     }
+  })
+
+  it("keeps a retractable Responses settle exact when provider text follows it", async () => {
+    let visible = ""
+    const args = '{"answer":"answer"}'
+    const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_item.added", item: { type: "function_call", call_id: "c1", name: "settle", arguments: "" } },
+      { type: "response.function_call_arguments.delta", delta: args },
+      { type: "response.output_text.delta", delta: "after" },
+      { type: "response.output_item.done", item: { type: "function_call", call_id: "c1", name: "settle", arguments: args } },
+    ])) } }
+    const callbacks = makeCallbacks({
+      onTextChunk: (text: string) => { visible += text },
+      onClearText: () => { visible = "" },
+      settleOutputMode: "retractable_buffer",
+    } as any)
+
+    const result = await streamResponsesApi(client, {}, callbacks)
+
+    expect(result.settleFinalization).toEqual({ ok: true, answer: "answer" })
+    expect(result.settleStreamed).toBe(true)
+    expect(visible).toBe("answer")
   })
 
   it.each([

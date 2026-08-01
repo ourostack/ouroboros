@@ -207,6 +207,31 @@ describe("Anthropic prompt caching integration", () => {
     }
   })
 
+  it("keeps a retractable Anthropic settle exact when provider text follows it", async () => {
+    const runtime = await makeRuntime()
+    const harness = makeCallbacks("retractable_buffer")
+    const args = '{"answer":"answer"}'
+    mockAnthropicMessagesCreate.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tool-1", name: "settle", input: {} } }
+        yield { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: args } }
+        yield { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } }
+        yield { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "after" } }
+        yield { type: "content_block_stop", index: 0 }
+      },
+    }))
+
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [],
+      callbacks: harness.callbacks as any,
+    })
+
+    expect(result.settleFinalization).toEqual({ ok: true, answer: "answer" })
+    expect(result.settleStreamed).toBe(true)
+    expect(harness.visible()).toBe("answer")
+  })
+
   it.each([
     { label: "incomplete", args: '{"answer":"partial', errorCode: "incomplete_settle_arguments" },
     { label: "invalid", args: String.raw`{"answer":"partial\x"}`, errorCode: "invalid_settle_arguments" },

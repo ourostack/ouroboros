@@ -330,6 +330,7 @@ async function streamAnthropicMessages(
           /* v8 ignore next -- settle streaming activation, tested via SettleStreamer unit tests @preserve */
           if (name === "settle" && toolCalls.size === 1) {
             answerStreamer.activate();
+            textOutput.suppress();
           }
         }
         continue;
