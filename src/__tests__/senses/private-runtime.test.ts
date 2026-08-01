@@ -145,6 +145,7 @@ import {
   deriveResumeCheckpoint,
   loadPrivateRuntimeInstincts,
   runPrivateRuntimeTurn,
+  type RunPrivateRuntimeTurnOptions,
 } from "../../senses/private-runtime"
 
 describe("private runtime", () => {
@@ -4109,6 +4110,56 @@ describe("private runtime", () => {
     expect(tools).toBeDefined()
     expect(tools).toHaveLength(2)
     expect(tools.map((t: any) => t.function.name).sort()).toEqual(["read", "shell"])
+  })
+
+  it("reduces a private habit probe to no-send tools and context even when the habit is unrestricted", async () => {
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "private-probe.md"),
+      "---\ntitle: Private Probe\ncadence: 1h\nstatus: active\n---\n\nProbe without sending.",
+      "utf8",
+    )
+    mockGetToolsForChannel.mockReturnValue([
+      { type: "function", function: { name: "read", description: "Read", parameters: {} } },
+      { type: "function", function: { name: "send_message", description: "Send", parameters: {} } },
+      { type: "function", function: { name: "surface", description: "Surface", parameters: {} } },
+      { type: "function", function: { name: "mail_send", description: "Mail", parameters: {} } },
+      { type: "function", function: { name: "teams_send_message", description: "Teams", parameters: {} } },
+      { type: "function", function: { name: "a2a_send_message", description: "A2A", parameters: {} } },
+      { type: "function", function: { name: "shell", description: "Shell", parameters: {} } },
+      { type: "function", function: { name: "unknown_mcp_transport", description: "Unknown", parameters: {} } },
+    ])
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "assistant", content: "ready" },
+      ],
+    })
+
+    const options = {
+      reason: "habit",
+      habitName: "private-probe",
+      noSend: true,
+      now: () => new Date("2026-03-06T12:05:00.000Z"),
+    } satisfies RunPrivateRuntimeTurnOptions
+    await runApprovedPrivateRuntimeTurn(options)
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.runAgentOptions.tools).toEqual([])
+    expect(input.runAgentOptions.toolContext.noSend).toBe(true)
+    expect(input.runAgentOptions.habitSession).toMatchObject({
+      noSend: true,
+      permissionEnvelope: {
+        canMessageOutward: false,
+        returnRoutes: [],
+      },
+      toolPolicy: {
+        outwardMessagingAllowed: false,
+      },
+    })
+    expect(input.runAgentOptions.toolContext.habitSession)
+      .toBe(input.runAgentOptions.habitSession)
   })
 
   it("silently excludes unknown tool names from habit tools field (fail closed)", async () => {

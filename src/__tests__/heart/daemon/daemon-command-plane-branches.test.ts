@@ -9,7 +9,7 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
 }))
 
-import { OuroDaemon, handleAgentSenseTurn, messageFromHabitPokeError } from "../../../heart/daemon/daemon"
+import { OuroDaemon, handleAgentSenseTurn, messageFromHabitPokeError, type DaemonCommand } from "../../../heart/daemon/daemon"
 import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-private-wake"
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 
@@ -1977,6 +1977,132 @@ describe("daemon command plane branches", () => {
     expect(fs.existsSync(ledgerPath)).toBe(false)
     expect(processManager.startAgent).not.toHaveBeenCalled()
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("forces an RSVP habit probe through native dispatch with immutable no-send authority", async () => {
+    const socketPath = tmpSocketPath("daemon-rsvp-habit-probe")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-rsvp-habit-probe-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `rsvp-habit-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const rsvpHabitRunner = vi.fn(async () => ({
+      ok: true,
+      message: "native RSVP habit probe completed",
+      lifecycle: "completed" as const,
+      runId: "rsvp-native-probe-run",
+      payload: { noSend: true, status: "active", transportInvocationCount: 0 },
+    }))
+    writeRawHabitFile({
+      bundlesRoot,
+      agent: "slugger",
+      habitName: "rsvp-probe",
+      content: [
+        "---",
+        "title: RSVP Probe",
+        "cadence: 0 10 * * *",
+        "status: active",
+        "rsvp:",
+        "  policyVersion: rsvp-habit/v1",
+        "  mode: live",
+        "  sense: bluebubbles",
+        "  source: aisleplanner",
+        "  routeRef: rsvp/config.json#bluebubblesRoute",
+        "  snapshotRef: state/rsvp/snapshots/latest.json",
+        "  outboundStateRef: state/rsvp/outbound-state.json",
+        "  budgetRef: state/rsvp/spend-ledger.json",
+        "  idempotencyRef: state/rsvp/outbound-state.json",
+        "  liveSendEligible: true",
+        "---",
+        "",
+        "Probe the RSVP habit.",
+      ].join("\n"),
+    })
+    const { daemon } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps, rsvpHabitRunner })
+
+    const probeCommand = {
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "rsvp-probe",
+    } satisfies Extract<DaemonCommand, { kind: "habit.probe" }>
+    const response = await daemon.handleCommand(probeCommand)
+
+    expect(response).toEqual({
+      ok: true,
+      message: "native RSVP habit probe completed",
+      data: { noSend: true, status: "active", transportInvocationCount: 0 },
+    })
+    expect(rsvpHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
+      agent: "slugger",
+      habitName: "rsvp-probe",
+      trigger: "manual",
+      noSend: true,
+    }))
+
+    const widened = await daemon.handleCommand({
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "rsvp-probe",
+      noSend: false,
+    } as any)
+    expect(widened).toMatchObject({ ok: false, error: expect.stringMatching(/noSend.*true/) })
+    expect(rsvpHabitRunner).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports a cancelled RSVP probe as a zero-transport lifecycle rejection", async () => {
+    const socketPath = tmpSocketPath("daemon-cancelled-rsvp-habit-probe")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-cancelled-rsvp-habit-probe-bundles-"))
+    const rsvpHabitRunner = vi.fn()
+    writeRawHabitFile({
+      bundlesRoot,
+      agent: "slugger",
+      habitName: "rsvp-ended",
+      content: "---\nstatus: cancelled\ncadence: 0 10 * * *\n---\n\nEnded report.",
+    })
+    const { daemon } = make(socketPath, bundlesRoot, { rsvpHabitRunner })
+
+    const command = {
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "rsvp-ended",
+      noSend: true,
+    } satisfies Extract<DaemonCommand, { kind: "habit.probe" }>
+    const response = await daemon.handleCommand(command)
+
+    expect(response).toEqual({
+      ok: true,
+      message: "habit probe rejected by lifecycle: status=cancelled",
+      data: {
+        noSend: true,
+        status: "cancelled",
+        transportInvocationCount: 0,
+      },
+    })
+    expect(rsvpHabitRunner).not.toHaveBeenCalled()
+  })
+
+  it("preserves no-send through a non-RSVP private-runtime probe dispatch", async () => {
+    const socketPath = tmpSocketPath("daemon-private-habit-probe")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-private-habit-probe-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `private-habit-probe-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    writeHabitFile({ bundlesRoot, agent: "slugger", habitName: "daily-probe", cadence: "30m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    const command = {
+      kind: "habit.probe",
+      agent: "slugger",
+      habitName: "daily-probe",
+      noSend: true,
+    } satisfies Extract<DaemonCommand, { kind: "habit.probe" }>
+    const response = await daemon.handleCommand(command)
+
+    expect(response).toMatchObject({ ok: true })
+    expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({
+      type: "habit",
+      habitName: "daily-probe",
+      trigger: "manual",
+      noSend: true,
+    }))
   })
 
   it("uses the production native RSVP runner when no daemon test seam is injected", async () => {

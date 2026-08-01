@@ -1427,6 +1427,74 @@ describe("ouro rsvp operational CLI wiring", () => {
     }
   })
 
+  it("keeps hard no-send independent of live allow-send through the final transport branch", async () => {
+    mockRuntimeCredentials()
+    const legacyRoot = seedLegacyCutoverRoot()
+    const tmp = seedBundle(legacyRoot)
+    fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tmp.agentRoot, "habits", "rsvp-wedding.md"),
+      explicitRsvpHabitDefinition("active"),
+      "utf-8",
+    )
+    rsvpMocks.readRsvpConfig.mockReturnValue({
+      ok: true,
+      config: { ...configWithCutover(legacyRoot), bluebubblesRoute: { chatGuid: "iMessage;-;chat-guid" } },
+    })
+    rsvpMocks.validateRsvpReadiness.mockReturnValue({
+      status: "ready",
+      credentials: { username: "user@example.com", password: "secret" },
+      checks: [],
+    })
+    rsvpMocks.fetchAislePlannerRsvps.mockResolvedValue({
+      ok: true,
+      fetchedAt: "2026-07-09T17:00:00.000Z",
+      guests: { "pending-1": { first_name: "Casey", last_name: "Pending", attending_status: "pending" } },
+      allGuests: { "pending-1": { first_name: "Casey", last_name: "Pending" } },
+    })
+    rsvpMocks.buildRsvpSnapshot.mockReturnValue(currentSnapshot)
+    rsvpMocks.parseRsvpSnapshot.mockReturnValue({ ok: true, snapshot: previousSnapshot })
+    rsvpMocks.computeRsvpDelta.mockReturnValue({
+      currentSnapshotId: "snap_current",
+      newRsvps: [],
+      statusChanges: [],
+      newGuests: [],
+      removedGuests: [],
+      summary: currentSnapshot.summary,
+    })
+    rsvpMocks.renderRsvpReport.mockReturnValue("RSVP Update\n\nProbe must not send.")
+    rsvpMocks.decideRsvpOutboundReport.mockReturnValue({ action: "send", idempotencyKey: "rsvp:no-send-probe" })
+    rsvpMocks.sendText.mockResolvedValue({ ok: true, messageGuid: "must-not-exist" })
+    const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, rsvpCutoverDeps: defaultCredentialCutoverDeps() })
+
+    try {
+      const result = JSON.parse(await runRsvpCliCommand({
+        kind: "rsvp.refresh",
+        agent: "slugger",
+        habitName: "rsvp-wedding",
+        mode: "live",
+        allowSend: true,
+        noSend: true,
+        json: true,
+      }, deps))
+
+      expect(result).toMatchObject({
+        ok: true,
+        command: "rsvp.refresh",
+        sideEffect: false,
+        allowSend: true,
+        noSend: true,
+        sendAllowed: false,
+        transportInvocationCount: 0,
+      })
+      expect(rsvpMocks.createBlueBubblesClient).not.toHaveBeenCalled()
+      expect(rsvpMocks.sendText).not.toHaveBeenCalled()
+      expect(rsvpMocks.recordRsvpOutboundAttempt).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("blocks live refresh sends until the legacy cutover gate passes", async () => {
     mockRuntimeCredentials()
     const legacyRoot = seedLegacyCutoverRoot({ sendEnabled: true })

@@ -7,7 +7,7 @@ import { listHabitRunReceipts } from "../../arc/flight-recorder"
 import { readRunLedger, runLedgerHash } from "../../heart/run-ledger"
 import { readHabitLastRun } from "../../heart/habits/habit-runtime-state"
 import { readRsvpSpendLedger } from "../../rsvp/spend-ledger"
-import { runNativeRsvpHabit } from "../../rsvp/native-habit-runner"
+import { runNativeRsvpHabit, type RunNativeRsvpHabitInput } from "../../rsvp/native-habit-runner"
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 
 function seedRsvpHabit(mode: "shadow" | "live" = "live"): { bundlesRoot: string; agentRoot: string; cleanup: () => void } {
@@ -215,6 +215,56 @@ describe("native RSVP habit runner", () => {
         habitName: "rsvp-wedding",
         lifecycle: "completed",
         contentStored: false,
+      })
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("threads hard no-send through a live send-eligible native probe", async () => {
+    const tmp = seedRsvpHabit("live")
+    const runRefresh = vi.fn(async () => JSON.stringify({
+      ok: true,
+      command: "rsvp.refresh",
+      sideEffect: false,
+      agent: "slugger",
+      mode: "live",
+      message: "RSVP refresh completed",
+      allowSend: true,
+      noSend: true,
+      sendAllowed: false,
+      transportInvocationCount: 0,
+      refresh: {
+        snapshotId: "snap-probe-1",
+        reportText: "RSVP Probe",
+        outboundDecision: { action: "send" },
+      },
+    }))
+
+    try {
+      const input = {
+        agent: "slugger",
+        bundlesRoot: tmp.bundlesRoot,
+        habitName: "rsvp-wedding",
+        trigger: "manual",
+        occurrenceId: "probe:manual",
+        noSend: true,
+        now: () => "2026-07-12T17:00:06.000Z",
+        runRefresh,
+      } satisfies RunNativeRsvpHabitInput
+      const result = await runNativeRsvpHabit(input)
+
+      expect(runRefresh).toHaveBeenCalledWith(expect.objectContaining({
+        kind: "rsvp.refresh",
+        mode: "live",
+        allowSend: true,
+        noSend: true,
+        json: true,
+      }), expect.any(Object))
+      expect(result.payload).toMatchObject({
+        noSend: true,
+        sendAllowed: false,
+        transportInvocationCount: 0,
       })
     } finally {
       tmp.cleanup()

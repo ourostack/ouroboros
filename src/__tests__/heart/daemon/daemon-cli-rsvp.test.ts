@@ -69,8 +69,10 @@ vi.mock("../../../heart/machine-identity", () => ({
 import {
   parseOuroCommand,
   runOuroCli,
+  type OuroCliCommand,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
+import { OuroDaemon } from "../../../heart/daemon/daemon"
 import { buildRsvpSnapshot } from "../../../rsvp/snapshot"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
@@ -1089,5 +1091,128 @@ describe("ouro rsvp CLI execution", () => {
     } finally {
       tmp.cleanup()
     }
+  })
+})
+
+describe("habit probe no-send CLI contract", () => {
+  it("parses one exact immutable no-send probe command and rejects authority widening", () => {
+    const expected = {
+      kind: "habit.probe",
+      agent: "test-agent",
+      habitName: "rsvp-demo",
+      noSend: true,
+      json: true,
+    } satisfies Extract<OuroCliCommand, { kind: "habit.probe" }>
+    expect(parseOuroCommand([
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--json",
+    ])).toEqual(expected)
+    expect(parseOuroCommand([
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--no-send",
+    ])).toEqual({
+      kind: "habit.probe",
+      agent: "test-agent",
+      habitName: "rsvp-demo",
+      noSend: true,
+      json: false,
+    })
+    expect(() => parseOuroCommand(["habit", "probe", "--habit", "rsvp-demo"])).toThrow(/requires --agent/)
+    expect(() => parseOuroCommand(["habit", "probe", "--agent", "test-agent"])).toThrow(/requires --habit/)
+    expect(() => parseOuroCommand([
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--allow-send",
+    ])).toThrow(/cannot allow send/i)
+  })
+
+  it("dispatches the exact no-send daemon command and projects probe JSON verbatim", async () => {
+    const tmp = createTmpBundle({ agentName: "test-agent" })
+    fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tmp.agentRoot, "habits", "rsvp-demo.md"),
+      "---\nstatus: cancelled\ncadence: 1h\n---\n\nEnded report.",
+      "utf-8",
+    )
+    const processManager = {
+      listAgentSnapshots: vi.fn(() => []),
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      sendToAgent: vi.fn(),
+    }
+    const daemon = new OuroDaemon({
+      socketPath: "/tmp/ouro-test.sock",
+      bundlesRoot: tmp.bundlesRoot,
+      processManager,
+      scheduler: {
+        listJobs: vi.fn(() => []),
+        listDegradedJobs: vi.fn(() => []),
+        triggerJob: vi.fn(async () => ({ ok: true, message: "triggered" })),
+        reconcile: vi.fn(async () => undefined),
+      },
+      healthMonitor: {
+        runChecks: vi.fn(async () => []),
+        getLastResults: vi.fn(() => []),
+        stopPeriodicChecks: vi.fn(),
+      },
+      router: { send: vi.fn(), pollInbox: vi.fn(() => []) },
+      senseManager: { startAutoStartSenses: vi.fn(), stopAll: vi.fn(), listSenseRows: vi.fn(() => []) },
+      mailboxServerFactory: vi.fn(),
+    } as any)
+    const sendCommand: OuroCliDeps["sendCommand"] = vi.fn((_socketPath, command) => daemon.handleCommand(command))
+    const deps = createMockDeps({ sendCommand })
+
+    try {
+      const output = await runOuroCli([
+        "habit",
+        "probe",
+        "--agent",
+        "test-agent",
+        "--habit",
+        "rsvp-demo",
+        "--no-send",
+        "--json",
+      ], deps)
+      const data = {
+        noSend: true,
+        status: "cancelled",
+        transportInvocationCount: 0,
+      }
+
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", {
+        kind: "habit.probe",
+        agent: "test-agent",
+        habitName: "rsvp-demo",
+        noSend: true,
+      })
+      expect(JSON.parse(output)).toEqual(data)
+      expect(deps.writeStdout).toHaveBeenCalledWith(JSON.stringify(data, null, 2))
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("renders focused habit probe help with the immutable no-send contract", async () => {
+    const deps = createMockDeps()
+    const output = await runOuroCli(["help", "habit", "probe"], deps)
+
+    expect(output).toContain("ouro habit probe --agent <name> --habit <name> --no-send [--json]")
+    expect(output).toMatch(/cannot send|zero transport/i)
   })
 })
