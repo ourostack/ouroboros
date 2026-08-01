@@ -271,6 +271,89 @@ describe("runAgent tool loop guard", () => {
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("coding_status", "sessionId=coding-001", false)
   })
 
+  it("releases final-only commentary for an admissible ordinary tool batch", async () => {
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk("checking the current status"),
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_status",
+          function: { name: "coding_status", arguments: '{"sessionId":"coding-001"}' },
+        }]),
+      ]))
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_final",
+          function: { name: "settle", arguments: '{"answer":"status checked"}' },
+        }]),
+      ]))
+
+    const visibleText: string[] = []
+    const callbacks = makeCallbacks({
+      settleOutputMode: "final_only",
+      onTextChunk: vi.fn((text: string) => { visibleText.push(text) }),
+    })
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent(
+      [{ role: "user", content: "check it" }],
+      callbacks,
+      "cli",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        execTool: vi.fn().mockResolvedValue("status: running"),
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(visibleText).toEqual(["checking the current status", "status checked"])
+    expect(result).toMatchObject({
+      outcome: "settled",
+      completion: { answer: "status checked", intent: "complete" },
+    })
+  })
+
+  it("does not execute ordinary tools when final-only commentary commit fails", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("checking the current status"),
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_status",
+        function: { name: "coding_status", arguments: '{"sessionId":"coding-001"}' },
+      }]),
+    ]))
+
+    const execTool = vi.fn().mockResolvedValue("status: running")
+    const callbacks = makeCallbacks({
+      settleOutputMode: "final_only",
+      onTextChunk: vi.fn(() => { throw new Error("outward commit failed") }),
+    })
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent(
+      [{ role: "user", content: "check it" }],
+      callbacks,
+      "cli",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        execTool,
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).not.toHaveBeenCalled()
+    expect(callbacks.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "outward commit failed" }),
+      "terminal",
+    )
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "outward commit failed" },
+    })
+  })
+
   it("passes a run-level orientation frame into tool execution even without an existing tool context", async () => {
     mockCreate
       .mockReturnValueOnce(makeStream([
@@ -1119,6 +1202,71 @@ describe("runAgent tool loop guard", () => {
     expect(onTextChunk).toHaveBeenCalledTimes(2)
     expect(onTextChunk).toHaveBeenLastCalledWith(acknowledgement)
     expect(onToolResult).not.toHaveBeenCalled()
+    expect(visibleText).toEqual([acknowledgement])
+    expect(result).toMatchObject({
+      outcome: "settled",
+      completion: { answer: acknowledgement, intent: "complete" },
+    })
+  })
+
+  it("does not expose preceding provider prose before a final-only terminal projection", async () => {
+    const terminalToolName = "synthetic_final_only_terminal_projection"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic final-only terminal projection",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      },
+      handler: async () => "unused",
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: true,
+      },
+    })
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("untrusted provider narration"),
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_final_only_terminal",
+        function: { name: terminalToolName, arguments: "{}" },
+      }]),
+    ]))
+
+    const acknowledgement = "Cancelled the habit from grounded evidence."
+    const visibleText: string[] = []
+    const callbacks = makeCallbacks({
+      settleOutputMode: "final_only",
+      onTextChunk: vi.fn((text: string) => { visibleText.push(text) }),
+      // Models an irreversible callback owner: clear cannot retract writes.
+      onClearText: vi.fn(),
+    })
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent(
+      [{ role: "user", content: "cancel it" }],
+      callbacks,
+      "cli",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [{
+          type: "function",
+          function: {
+            name: terminalToolName,
+            description: "synthetic final-only terminal projection",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        }],
+        execTool: vi.fn().mockResolvedValue(acknowledgement),
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
     expect(visibleText).toEqual([acknowledgement])
     expect(result).toMatchObject({
       outcome: "settled",

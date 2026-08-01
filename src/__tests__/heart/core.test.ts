@@ -7730,6 +7730,7 @@ describe("tool_choice required and settle", () => {
       callCount++
       if (callCount === 1) {
         return makeStream([
+          makeChunk("untrusted prose before a mixed settle"),
           makeChunk(undefined, [
             { index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"a.txt"}' } },
             { index: 1, id: "call_2", function: { name: "settle", arguments: '{"answer":"done"}' } },
@@ -7747,6 +7748,7 @@ describe("tool_choice required and settle", () => {
     const toolStarts: string[] = []
     const textChunks: string[] = []
     const callbacks: ChannelCallbacks = {
+      settleOutputMode: "final_only",
       onModelStart: () => {},
       onModelStreamStart: () => {},
       onTextChunk: (text) => textChunks.push(text),
@@ -7754,6 +7756,7 @@ describe("tool_choice required and settle", () => {
       onToolStart: (name) => toolStarts.push(name),
       onToolEnd: () => {},
       onError: () => {},
+      onClearText: () => {},
     }
 
     const messages: any[] = [{ role: "system", content: "test" }]

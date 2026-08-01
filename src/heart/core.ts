@@ -316,17 +316,23 @@ export interface HabitCallbackBuffer {
   discard(): void;
 }
 
-export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+function createCallbackBuffer(
+  callbacks: ChannelCallbacks,
+  mode: "all" | "text-only",
+): HabitCallbackBuffer {
   const events: HabitBufferedCallbackEvent[] = [];
+  const bufferedCallbacks: ChannelCallbacks = {
+    ...callbacks,
+    onTextChunk: (text) => { events.push({ kind: "text", text }) },
+    onClearText: () => { events.push({ kind: "clear" }) },
+    flushNow: () => { events.push({ kind: "flush" }) },
+  };
+  if (mode === "all") {
+    bufferedCallbacks.onModelStreamStart = () => { events.push({ kind: "stream-start" }) };
+    bufferedCallbacks.onReasoningChunk = (text) => { events.push({ kind: "reasoning", text }) };
+  }
   return {
-    callbacks: {
-      ...callbacks,
-      onModelStreamStart: () => { events.push({ kind: "stream-start" }) },
-      onTextChunk: (text) => { events.push({ kind: "text", text }) },
-      onReasoningChunk: (text) => { events.push({ kind: "reasoning", text }) },
-      onClearText: () => { events.push({ kind: "clear" }) },
-      flushNow: () => { events.push({ kind: "flush" }) },
-    },
+    callbacks: bufferedCallbacks,
     async flush(): Promise<void> {
       for (const event of events.splice(0)) {
         switch (event.kind) {
@@ -352,6 +358,14 @@ export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCal
       events.splice(0);
     },
   };
+}
+
+export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+  return createCallbackBuffer(callbacks, "all");
+}
+
+function createFinalOnlyTextBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+  return createCallbackBuffer(callbacks, "text-only");
 }
 
 export interface RunAgentOptions {
@@ -1375,10 +1389,14 @@ export async function runAgent(
       break;
     }
     try {
-      const habitCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
+      const turnCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
         callbacks.onModelStart();
-        habitCallbackBufferRef.current = habitSession ? createHabitCallbackBuffer(callbacks) : null;
+        turnCallbackBufferRef.current = habitSession
+          ? createHabitCallbackBuffer(callbacks)
+          : callbacks.settleOutputMode === "final_only"
+            ? createFinalOnlyTextBuffer(callbacks)
+            : null;
         try {
           const promptBudget = applyPromptBudget({
             messages,
@@ -1393,7 +1411,7 @@ export async function runAgent(
           return await providerRuntime.streamTurn({
             messages,
             activeTools,
-            callbacks: habitCallbackBufferRef.current?.callbacks ?? callbacks,
+            callbacks: turnCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
             traceId,
             toolChoiceRequired,
@@ -1402,8 +1420,8 @@ export async function runAgent(
             systemPrompt: structuredSystemPrompt,
           });
         } catch (error) {
-          habitCallbackBufferRef.current?.discard();
-          habitCallbackBufferRef.current = null;
+          turnCallbackBufferRef.current?.discard();
+          turnCallbackBufferRef.current = null;
           if (signal?.aborted) throw new ProviderAttemptAbortError()
           throw error
         }
@@ -1476,13 +1494,13 @@ export async function runAgent(
       }
 
       const result = attempt.value;
-      const streamCallbackBuffer = habitCallbackBufferRef.current;
-      habitCallbackBufferRef.current = null;
+      const streamCallbackBuffer = turnCallbackBufferRef.current;
+      turnCallbackBufferRef.current = null;
 
       if (result.settleFinalization && !result.settleFinalization.ok) {
         // A completed settle payload is terminal provider output, not a prompt
         // for another model turn. Retractable callbacks have already cleared;
-        // buffered habit callbacks must be discarded before surfacing the exact
+        // core-owned callback buffers must be discarded before surfacing the exact
         // parser failure through the ordinary terminal-error path.
         streamCallbackBuffer?.discard();
         finishTerminalProviderError(
@@ -1600,7 +1618,7 @@ export async function runAgent(
             continue;
           }
 
-          await streamCallbackBuffer?.flush();
+          streamCallbackBuffer?.discard();
           callbacks.onToolEnd("settle", summarizeArgs("settle", callbackArgs), true);
           const completionIntent = intent === "blocked" ? "blocked" : "complete";
           completion = { answer, intent: completionIntent };
@@ -1622,6 +1640,7 @@ export async function runAgent(
         }
 
         if (restrictedCall.name === "observe") {
+          streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
           callbacks.onToolStart("observe", callbackArgs);
           const reason = typeof callbackArgs.reason === "string" ? callbackArgs.reason : undefined;
@@ -1688,8 +1707,8 @@ export async function runAgent(
         : null;
 
       if (!result.toolCalls.length) {
-        await streamCallbackBuffer?.flush();
         if (privateReturnTextAckRetryError) {
+          streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
           if (noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
             noToolCallRetries++;
@@ -1737,6 +1756,7 @@ export async function runAgent(
           continue;
         }
         if (onlyThinkContent && toolChoiceRequired && noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
+          streamCallbackBuffer?.discard();
           // Provider-level violation: tool_choice was required, model emitted
           // only a <think>...</think> block (or empty content) with no tool
           // call. Retry with a corrective nudge up to NO_TOOL_CALL_MAX_RETRIES
@@ -1768,6 +1788,7 @@ export async function runAgent(
           continue;
         }
         // Legitimate text-only response, or cap reached — accept as-is.
+        await streamCallbackBuffer?.flush();
         messages.push(msg);
         done = true;
       } else {
@@ -1798,7 +1819,6 @@ export async function runAgent(
           })
           continue
         }
-        await streamCallbackBuffer?.flush();
         const soleTerminalCall = result.toolCalls.length === 1
           ? result.toolCalls[0]
           : null
@@ -1814,6 +1834,14 @@ export async function runAgent(
             }
           } catch {
             // The registered handler owns exact argument validation.
+          }
+          if (
+            soleTerminalProjection.clearBufferedText
+            || callbacks.settleOutputMode === "final_only"
+          ) {
+            streamCallbackBuffer?.discard()
+          } else {
+            await streamCallbackBuffer?.flush()
           }
           if (soleTerminalProjection.clearBufferedText) callbacks.onClearText?.()
           callbacks.onToolStart(soleTerminalCall.name, terminalArgs)
@@ -1863,6 +1891,7 @@ export async function runAgent(
           // Private-runtime attention queue gate: reject settle if items remain
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (isPrivateRuntimeChannel && attentionQueue && attentionQueue.length > 0) {
+            streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
@@ -1878,6 +1907,7 @@ export async function runAgent(
 
           // Private-runtime settle: no CompletionMetadata, "(settled)" ack
           if (isPrivateRuntimeChannel) {
+            streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
             messages.push(msg);
             const settled = "(settled)";
@@ -1916,8 +1946,8 @@ export async function runAgent(
               if (!result.settleStreamed) {
                 const acceptedOutputCallbacks = streamCallbackBuffer?.callbacks ?? callbacks
                 acceptedOutputCallbacks.onTextChunk(deliveredAnswer)
-                await streamCallbackBuffer?.flush()
               }
+              await streamCallbackBuffer?.flush()
             } catch (error) {
               callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)
               streamCallbackBuffer?.discard()
@@ -1949,6 +1979,7 @@ export async function runAgent(
           } else {
             // The payload is structurally final, but a semantic continuation
             // gate rejected it. Return that exact gate reason to the model.
+            streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
@@ -1962,6 +1993,7 @@ export async function runAgent(
         // Check for observe sole call: intercept before tool execution
         const isSoleObserve = result.toolCalls.length === 1 && result.toolCalls[0].name === "observe";
         if (isSoleObserve) {
+          streamCallbackBuffer?.discard();
           /* v8 ignore next -- defensive: JSON.parse catch for malformed observe args @preserve */
           const observeArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           let reason: string | undefined;
@@ -1986,6 +2018,7 @@ export async function runAgent(
         // Check for rest sole call: intercept before tool execution
         const isSoleRest = result.toolCalls.length === 1 && result.toolCalls[0].name === "rest";
         if (isSoleRest) {
+          streamCallbackBuffer?.discard();
           const restArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           callbacks.onToolStart("rest", restArgs);
 
@@ -2035,6 +2068,17 @@ export async function runAgent(
           continue;
         }
 
+        const containsSoleCallOnlyViolation = result.toolCalls.length > 1
+          && result.toolCalls.some((call) => {
+            const terminalProjection = resolveToolDefinition(call.name)?.terminalProjection
+            return SOLE_CALL_REJECTION[call.name] !== undefined
+              || terminalProjection?.requiresSoleCall === true
+          })
+        if (callbacks.settleOutputMode === "final_only" && containsSoleCallOnlyViolation) {
+          streamCallbackBuffer?.discard()
+        } else {
+          await streamCallbackBuffer?.flush()
+        }
         messages.push(msg);
         // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
