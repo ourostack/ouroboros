@@ -1605,7 +1605,7 @@ describe("SettleStreamer", () => {
     expect(harness.clearCount()).toBe(2)
   })
 
-  it("keeps final-only answer invisible until successful finalization", () => {
+  it("keeps structurally valid final-only output owned by core until semantic acceptance", () => {
     const harness = makeFinalizationCallbacks("final_only")
     const streamer = new SettleStreamer(harness.callbacks)
     streamer.activate()
@@ -1615,10 +1615,11 @@ describe("SettleStreamer", () => {
 
     const terminal = streamer.finish('{"answer":"private until done"}')
     expect(terminal).toEqual({ ok: true, answer: "private until done" })
-    expect(harness.visible()).toBe("private until done")
-    expect(harness.onTextChunk).toHaveBeenCalledTimes(1)
+    expect(harness.visible()).toBe("")
+    expect(harness.onTextChunk).not.toHaveBeenCalled()
+    expect(streamer.streamed).toBe(false)
     expect(streamer.finish('{"answer":"conflicting replacement"}')).toEqual(terminal)
-    expect(harness.onTextChunk).toHaveBeenCalledTimes(1)
+    expect(harness.onTextChunk).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -1650,7 +1651,7 @@ describe("SettleStreamer", () => {
     }
   })
 
-  it("caches a successful finish before propagating a final callback failure", () => {
+  it("caches a successful final-only finish without invoking the irreversible callback", () => {
     const failure = new Error("callback failed")
     const onTextChunk = vi.fn(() => { throw failure })
     const streamer = new SettleStreamer({
@@ -1665,18 +1666,21 @@ describe("SettleStreamer", () => {
     })
     streamer.activate()
     streamer.processDelta('{"answer":"done"}')
-    expect(() => streamer.finish('{"answer":"done"}')).toThrow(failure)
+    expect(streamer.finish('{"answer":"done"}')).toEqual({ ok: true, answer: "done" })
     expect(streamer.finish('{"answer":"conflicting replacement"}')).toEqual({ ok: true, answer: "done" })
-    expect(onTextChunk).toHaveBeenCalledTimes(1)
+    expect(onTextChunk).not.toHaveBeenCalled()
+    expect(streamer.streamed).toBe(false)
   })
 
   it("wraps a non-Error final callback throw as structurally non-retryable", () => {
     const streamer = new SettleStreamer({
-      ...makeFinalizationCallbacks("final_only").callbacks,
-      onTextChunk: vi.fn(() => { throw "callback string failure" }), // eslint-disable-line no-throw-literal
+      ...makeFinalizationCallbacks("retractable_buffer").callbacks,
+      onTextChunk: vi.fn((text: string) => {
+        if (text === "ne") throw "callback string failure" // eslint-disable-line no-throw-literal
+      }),
     })
     streamer.activate()
-    streamer.processDelta('{"answer":"done"}')
+    streamer.processDelta('{"answer":"do')
 
     let caught: any
     try {
@@ -1838,9 +1842,9 @@ describe("streamChatCompletion settle streaming", () => {
       const result = await streamChatCompletion(client, { messages: [], stream: true }, callbacks)
       expect(create).toHaveBeenCalledTimes(1)
       expect(finish).toHaveBeenCalledTimes(1)
-      expect(textChunks).toEqual(["hello"])
+      expect(textChunks).toEqual([])
       expect(result.settleFinalization).toEqual({ ok: true, answer: "hello" })
-      expect(result.settleStreamed).toBe(true)
+      expect(result.settleStreamed).toBe(false)
     } finally {
       finish.mockRestore()
     }
@@ -2052,9 +2056,9 @@ describe("streamResponsesApi settle streaming", () => {
       const result = await streamResponsesApi(client, {}, callbacks)
       expect(create).toHaveBeenCalledTimes(1)
       expect(finish).toHaveBeenCalledTimes(1)
-      expect(onTextChunk).toHaveBeenCalledOnce()
-      expect(onTextChunk).toHaveBeenCalledWith("hello")
+      expect(onTextChunk).not.toHaveBeenCalled()
       expect(result.settleFinalization).toEqual({ ok: true, answer: "hello" })
+      expect(result.settleStreamed).toBe(false)
     } finally {
       finish.mockRestore()
     }
@@ -2136,8 +2140,8 @@ describe("streamResponsesApi settle streaming", () => {
       arguments: '{"answer":"eof"}',
     }])
     expect(result.settleFinalization).toEqual({ ok: true, answer: "eof" })
-    expect(onTextChunk).toHaveBeenCalledOnce()
-    expect(onTextChunk).toHaveBeenCalledWith("eof")
+    expect(onTextChunk).not.toHaveBeenCalled()
+    expect(result.settleStreamed).toBe(false)
   })
 
   it("cancels a partial final-only Responses settle without finalizing or emitting", async () => {

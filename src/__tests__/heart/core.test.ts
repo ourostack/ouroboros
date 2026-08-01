@@ -7517,6 +7517,50 @@ describe("tool_choice required and settle", () => {
     })
   })
 
+  it("does not expose final-only settle output rejected by semantic continuation gates", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      return makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: `call_${callCount}`,
+          function: {
+            name: "settle",
+            arguments: callCount === 1
+              ? '{"answer":"still working"}'
+              : '{"answer":"blocked on credentials","intent":"blocked"}',
+          },
+        }]),
+      ])
+    })
+
+    const irrevocableOutput: string[] = []
+    const callbacks: ChannelCallbacks = {
+      settleOutputMode: "final_only",
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (text) => irrevocableOutput.push(text),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => {},
+    }
+
+    const result = await runAgent(
+      [{ role: "system", content: "test" }],
+      callbacks,
+      undefined,
+      undefined,
+      { toolChoiceRequired: true, mustResolveBeforeHandoff: true },
+    )
+
+    expect(callCount).toBe(2)
+    expect(result.outcome).toBe("blocked")
+    expect(irrevocableOutput).toEqual(["blocked on credentials"])
+  })
+
   it("treats direct_reply as non-terminal when a newer steering follow-up exists", async () => {
     let callCount = 0
     let drainCount = 0

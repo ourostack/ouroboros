@@ -434,15 +434,15 @@ export class SettleStreamer {
       return result;
     }
 
-    if (this.mode === "final_only") {
-      this.callbacks.onTextChunk(result.answer);
-    } else if (replacedObservedArguments) {
-      this.callbacks.onClearText?.();
-      this.callbacks.onTextChunk(result.answer);
-    } else if (finalSuffix) {
-      this.callbacks.onTextChunk(finalSuffix);
+    if (this.mode === "retractable_buffer") {
+      if (replacedObservedArguments) {
+        this.callbacks.onClearText?.();
+        this.callbacks.onTextChunk(result.answer);
+      } else if (finalSuffix) {
+        this.callbacks.onTextChunk(finalSuffix);
+      }
+      this._streamed = true;
     }
-    this._streamed = true;
     return result;
   }
 

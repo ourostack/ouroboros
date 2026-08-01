@@ -8,6 +8,7 @@ import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../r
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
+import { SettleFinalizationCallbackError } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
@@ -1911,13 +1912,28 @@ export async function runAgent(
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
 
           if (retryError === null) {
+            try {
+              if (!result.settleStreamed) {
+                const acceptedOutputCallbacks = streamCallbackBuffer?.callbacks ?? callbacks
+                acceptedOutputCallbacks.onTextChunk(deliveredAnswer)
+                await streamCallbackBuffer?.flush()
+              }
+            } catch (error) {
+              callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)
+              streamCallbackBuffer?.discard()
+              finishTerminalProviderError(
+                new SettleFinalizationCallbackError(error),
+                "unknown",
+              )
+              continue
+            }
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
             completion = {
               answer: deliveredAnswer,
               intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
             };
-            // Successful provider finalization already committed the exact
-            // answer through SettleStreamer. Core must not emit it a second time.
+            // Retractable owners already hold the validated answer. Final-only
+            // owners receive it here, after every semantic continuation gate.
             messages.push(msg);
             if (validDirectReply) {
               const resumeWork = "direct reply delivered. resume the unresolved obligation now and keep working until you can finish or clearly report that you are blocked.";

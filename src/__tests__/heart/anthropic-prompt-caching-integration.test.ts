@@ -180,7 +180,7 @@ describe("Anthropic prompt caching integration", () => {
     }
   }
 
-  it("finalizes valid Anthropic settle arguments once before final-only emission", async () => {
+  it("finalizes valid Anthropic settle arguments without pre-acceptance final-only emission", async () => {
     const runtime = await makeRuntime()
     const { SettleParser } = await import("../../heart/streaming")
     const finish = vi.spyOn(SettleParser.prototype, "finish")
@@ -199,10 +199,9 @@ describe("Anthropic prompt caching integration", () => {
 
       expect(mockAnthropicMessagesCreate).toHaveBeenCalledTimes(1)
       expect(finish).toHaveBeenCalledTimes(1)
-      expect(harness.onTextChunk).toHaveBeenCalledOnce()
-      expect(harness.onTextChunk).toHaveBeenCalledWith("hello")
+      expect(harness.onTextChunk).not.toHaveBeenCalled()
       expect(result.settleFinalization).toEqual({ ok: true, answer: "hello" })
-      expect(result.settleStreamed).toBe(true)
+      expect(result.settleStreamed).toBe(false)
     } finally {
       finish.mockRestore()
     }
