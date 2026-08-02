@@ -1,6 +1,9 @@
-import * as fs from "node:fs"
 import * as path from "node:path"
 
+import {
+  publishNewHabitDefinition,
+  type HabitLifecycleDeps,
+} from "../heart/habits/habit-lifecycle"
 import { renderHabitFile } from "../heart/habits/habit-parser"
 import { emitNervesEvent } from "../nerves/runtime"
 import { ensureRsvpOutboundState } from "./outbound-state"
@@ -37,6 +40,20 @@ export interface StageRsvpHabitResult {
   rsvp: RsvpHabitMetadata
 }
 
+export interface StageRsvpHabitDeps {
+  lifecycle?: HabitLifecycleDeps
+}
+
+export class RsvpHabitStageError extends Error {
+  readonly code: string
+
+  constructor(code: string) {
+    super(code)
+    this.name = "RsvpHabitStageError"
+    this.code = code
+  }
+}
+
 function defaultRsvpHabitMetadata(mode: RsvpHabitMode, reportTitle: string): RsvpHabitMetadata {
   return {
     policyVersion: RSVP_HABIT_POLICY_VERSION,
@@ -68,7 +85,10 @@ function normalizeHabitName(name: string | undefined): string {
   return normalized
 }
 
-export function stageRsvpHabit(input: StageRsvpHabitInput): StageRsvpHabitResult {
+export async function stageRsvpHabit(
+  input: StageRsvpHabitInput,
+  deps: StageRsvpHabitDeps = {},
+): Promise<StageRsvpHabitResult> {
   const habitName = normalizeHabitName(input.habitName)
   const title = input.title?.trim() || "RSVP Updates"
   const rsvp = defaultRsvpHabitMetadata(input.mode, input.reportTitle?.trim() || title)
@@ -84,8 +104,12 @@ export function stageRsvpHabit(input: StageRsvpHabitInput): StageRsvpHabitResult
     rsvp,
   }, stagedHabitBody())
 
-  fs.mkdirSync(path.dirname(habitPath), { recursive: true })
-  fs.writeFileSync(habitPath, content, "utf-8")
+  const publication = publishNewHabitDefinition({
+    agentRoot: input.agentRoot,
+    habitId: habitName,
+    bytes: content,
+  }, deps.lifecycle)
+  if (publication === "exists") throw new RsvpHabitStageError("habit_stage_exists")
   ensureRsvpOutboundState(input.agentRoot, created)
   ensureRsvpSpendLedger(input.agentRoot, created)
   emitNervesEvent({

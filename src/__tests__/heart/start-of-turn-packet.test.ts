@@ -18,6 +18,15 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
+const BACKGROUND_ONLY = "Background only; do not execute."
+const EXPLICIT_RESUME = "Prior work explicitly resumed by the current trigger."
+
+function expectInstructionImmediatelyAfter(rendered: string, marker: string, instruction: string): void {
+  const markerIndex = rendered.indexOf(marker)
+  expect(markerIndex, `missing prompt marker ${marker}`).toBeGreaterThanOrEqual(0)
+  expect(rendered.slice(markerIndex + marker.length).trimStart().startsWith(instruction)).toBe(true)
+}
+
 function makeEpisode(overrides: Partial<EpisodeRecord> = {}): EpisodeRecord {
   return {
     id: "ep-1",
@@ -261,6 +270,69 @@ describe("start-of-turn packet", () => {
   })
 
   describe("renderStartOfTurnPacket", () => {
+    it("labels every executable continuity surface as background by default", () => {
+      const packet = buildStartOfTurnPacket(makeView({
+        activeObligations: [makeObligation({
+          content: "continue the stale digest",
+          meaning: {
+            salience: "high",
+            stalenessClass: "fresh",
+            resumeHint: "send the next digest update",
+          },
+        })],
+      }), {
+        flightRecorderResume: makeFlightRecorderResume({
+          currentAsk: { value: "continue the stale digest", confidence: "current", sourceEventIds: ["fr-old"] },
+        }) as any,
+        recoverySentinel: {
+          schemaVersion: 1,
+          latest: null,
+          latestReady: null,
+          history: [],
+          degraded: { issues: ["synthetic stale checkpoint"] },
+        },
+      })
+
+      const rendered = renderStartOfTurnPacket(packet)
+
+      for (const marker of ["**Next:**", "**Arc:**", "**Recovery Sentinel:**", "**Owed:**"]) {
+        expectInstructionImmediatelyAfter(rendered, marker, BACKGROUND_ONLY)
+      }
+      expect(rendered).not.toContain(EXPLICIT_RESUME)
+    })
+
+    it("uses the explicit-resume label only when the structured caller flag is true", () => {
+      const packet = buildStartOfTurnPacket(makeView({
+        activeObligations: [makeObligation({
+          content: "resume the synthetic migration",
+          meaning: {
+            salience: "high",
+            stalenessClass: "fresh",
+            resumeHint: "resume the synthetic migration",
+          },
+        })],
+      }), {
+        flightRecorderResume: makeFlightRecorderResume(),
+        recoverySentinel: {
+          schemaVersion: 1,
+          latest: null,
+          latestReady: null,
+          history: [],
+          degraded: { issues: [] },
+        },
+      })
+
+      const textSimilarityOnly = renderStartOfTurnPacket(packet)
+      const explicitlyResumed = renderStartOfTurnPacket(packet, { resumePriorWork: true } as any)
+
+      for (const marker of ["**Next:**", "**Arc:**", "**Recovery Sentinel:**", "**Owed:**"]) {
+        expectInstructionImmediatelyAfter(textSimilarityOnly, marker, BACKGROUND_ONLY)
+        expectInstructionImmediatelyAfter(explicitlyResumed, marker, EXPLICIT_RESUME)
+      }
+      expect(textSimilarityOnly).not.toContain(EXPLICIT_RESUME)
+      expect(explicitlyResumed).not.toContain(BACKGROUND_ONLY)
+    })
+
     it("produces output within brief token budget", () => {
       const view = makeView({ tempo: "brief" })
       const packet = buildStartOfTurnPacket(view)
@@ -791,6 +863,27 @@ describe("start-of-turn packet", () => {
       const packet = buildStartOfTurnPacket(view)
       const compact = renderCompactStartOfTurnPacket(packet)
       expect(compact.length).toBeGreaterThan(0)
+    })
+
+    it("labels compact next and obligation surfaces with the structured resume state", () => {
+      const packet = buildStartOfTurnPacket(makeView({
+        activeObligations: [makeObligation({
+          content: "synthetic prior work",
+          meaning: {
+            salience: "high",
+            stalenessClass: "fresh",
+            resumeHint: "continue synthetic prior work",
+          },
+        })],
+      }))
+
+      const background = renderCompactStartOfTurnPacket(packet)
+      const resumed = renderCompactStartOfTurnPacket(packet, { resumePriorWork: true })
+
+      expect(background).toContain("next:\nBackground only; do not execute.\ncontinue synthetic prior work")
+      expect(background).toContain("owed:\nBackground only; do not execute.\nsynthetic prior work")
+      expect(resumed).toContain("next:\nPrior work explicitly resumed by the current trigger.\ncontinue synthetic prior work")
+      expect(resumed).toContain("owed:\nPrior work explicitly resumed by the current trigger.\nsynthetic prior work")
     })
 
     it("handles empty packet gracefully", () => {

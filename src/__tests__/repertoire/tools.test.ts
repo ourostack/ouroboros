@@ -82,6 +82,7 @@ vi.mock("../../heart/identity", () => {
 import * as fs from "fs"
 import { execSync, spawnSync } from "child_process"
 import { listSkills, loadSkill } from "../../repertoire/skills"
+import type { ToolContext } from "../../repertoire/tools-base"
 
 describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
@@ -1164,6 +1165,24 @@ describe("settleTool", () => {
   })
 })
 
+describe("restricted reaction feedback tool registry", () => {
+  it("registers the three schemas used by the restricted reaction allowlist", async () => {
+    vi.resetModules()
+    const { settleTool, observeTool } = await import("../../repertoire/tools")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const orientation = baseToolDefinitions.find(
+      (definition) => definition.tool.function.name === "orientation_get",
+    )
+
+    expect(orientation).toBeDefined()
+    expect([settleTool, observeTool, orientation!.tool].map((tool) => tool.function.name)).toEqual([
+      "settle",
+      "observe",
+      "orientation_get",
+    ])
+  })
+})
+
 describe("getToolsForChannel with ChannelCapabilities", () => {
   it("returns only base tools when no integrations available", async () => {
     vi.resetModules()
@@ -1689,6 +1708,31 @@ describe("ToolContext shape", () => {
     // If adoOrganizations were required, TypeScript would error.
     // We just verify the interface shape by checking the module exports.
     expect(toolsBase).toBeDefined()
+  })
+
+  it("carries only an immutable BlueBubbles capture locator as current ingress evidence", () => {
+    const ctx: ToolContext = {
+      signin: vi.fn(),
+      currentIngressEvidence: {
+        schemaVersion: 1,
+        provider: "bluebubbles",
+        captureKeyHash: "b".repeat(64),
+      },
+    }
+
+    expect(ctx.currentIngressEvidence).toEqual({
+      schemaVersion: 1,
+      provider: "bluebubbles",
+      captureKeyHash: "b".repeat(64),
+    })
+    expect(Object.keys(ctx.currentIngressEvidence ?? {})).toEqual([
+      "schemaVersion",
+      "provider",
+      "captureKeyHash",
+    ])
+    expect(ctx.currentIngressEvidence).not.toHaveProperty("actor")
+    expect(ctx.currentIngressEvidence).not.toHaveProperty("request")
+    expect(ctx.currentIngressEvidence).not.toHaveProperty("participants")
   })
 })
 

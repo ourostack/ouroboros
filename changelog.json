@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.725",
+      "changes": [
+        "Fix reaction orientation, grounded habit cancellation, send fencing, and streamed Unicode.",
+        "Harden actor authorization, semantic receipt quarantine, and ownership commit ordering.",
+        "Prevent final-only narration leaks, cancelled-habit resurrection, and hidden incident Nerves evidence.",
+        "Align both package entry points on the Node 22 runtime floor.",
+        "Drop cached actor, trust, tool, and prior-work prompt state when refresh fails.",
+        "Keep BlueBubbles events audit-only when message direction is missing or malformed, before actor authority or recovery can be created.",
+        "Classify sends by full overlap with cancellation and suppress provider prose after settle becomes authoritative."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.724",
       "changes": [
         "mail sense records key coverage each scan cycle and raises a distinct nerves alarm when the registry declares a mail key the vault has no private half for",

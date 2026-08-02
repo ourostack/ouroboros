@@ -54,7 +54,7 @@ import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
 import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-visibility"
-import { buildOrientationFrame } from "../heart/orientation-frame"
+import { buildOrientationFrame, type OrientationFrame } from "../heart/orientation-frame"
 import type { StructuredOutput } from "../heart/structured-output"
 import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flight-recorder"
 import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
@@ -215,6 +215,20 @@ function latestUserAuthoredText(messages: ChatCompletionMessageParam[], continui
   return userMessages[userMessages.length - 1]
 }
 
+export function selectCheckpointCurrentAsk(input: {
+  currentUserMessage?: string
+  orientationFrame?: OrientationFrame
+}): string | null {
+  const frameSpeech = input.orientationFrame?.currentUserSpeech
+    .map((speech) => speech.trim())
+    .filter(Boolean)
+    .at(-1) ?? null
+  if (input.orientationFrame?.speechKind === "reaction") return frameSpeech
+
+  const currentUtterance = input.currentUserMessage?.trim()
+  return currentUtterance || frameSpeech
+}
+
 function sessionRefForFlightRecorder(session: { friendId: string; channel: Channel; key: string }): string {
   return `${session.friendId}/${session.channel}/${session.key}`
 }
@@ -226,6 +240,27 @@ function isTerminalWithoutContinuation(outcome: RunAgentOutcome, hasActiveContin
     || outcome === "rested"
     || outcome === "superseded"
   )
+}
+
+function selectPostTurnContinuityState(input: {
+  outcome: RunAgentOutcome
+  mustResolveBeforeHandoff: boolean
+  lastFriendActivityAt?: string
+}): SessionContinuityState | undefined {
+  const continuingState: SessionContinuityState = {
+    ...(input.mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
+    ...(typeof input.lastFriendActivityAt === "string" ? { lastFriendActivityAt: input.lastFriendActivityAt } : {}),
+  }
+  const clearsMustResolveBeforeHandoff = input.outcome === "settled"
+    || input.outcome === "blocked"
+    || input.outcome === "superseded"
+    || input.outcome === "observed"
+  if (!clearsMustResolveBeforeHandoff) {
+    return Object.keys(continuingState).length > 0 ? continuingState : undefined
+  }
+  return typeof input.lastFriendActivityAt === "string"
+    ? { lastFriendActivityAt: input.lastFriendActivityAt }
+    : undefined
 }
 
 interface FlightRecorderArcSnapshot {
@@ -249,12 +284,13 @@ function readPostTurnFlightRecorderArcSnapshot(agentRoot: string): FlightRecorde
   }
 }
 
-function recordPostTurnFlightRecorderCheckpoint(input: {
+function recordTurnFlightRecorderCheckpoint(input: {
   agentRoot: string
   currentSession: { friendId: string; channel: Channel; key: string; sessionPath: string }
   currentAsk: string | null
   nextSafeAction: string | null
   outcome: RunAgentOutcome
+  sessionPersisted: boolean
   mustResolveBeforeHandoff: boolean
   activeObligationIds: string[]
   activeReturnObligationIds: string[]
@@ -280,9 +316,11 @@ function recordPostTurnFlightRecorderCheckpoint(input: {
       : "continue the current held work and update Arc/Desk with the next checkpoint")
 
   recordFlightRecorderEvent(input.agentRoot, {
-    kind: "post_turn_persisted",
+    kind: input.sessionPersisted ? "post_turn_persisted" : "blocker_detected",
     sessionRef: sessionRefForFlightRecorder(input.currentSession),
-    summary: `persisted ${input.currentSession.channel}/${input.currentSession.key} turn with outcome ${input.outcome}`,
+    summary: input.sessionPersisted
+      ? `persisted ${input.currentSession.channel}/${input.currentSession.key} turn with outcome ${input.outcome}`
+      : `runAgent threw before session persistence for ${input.currentSession.channel}/${input.currentSession.key}`,
     currentAsk: input.currentAsk,
     nextSafeAction,
     blockedBecause,
@@ -295,6 +333,7 @@ function recordPostTurnFlightRecorderCheckpoint(input: {
     unverifiedClaimIds: input.unverifiedClaimIds,
     meta: {
       outcome: input.outcome,
+      sessionPersisted: input.sessionPersisted,
       mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
       sessionPath: input.currentSession.sessionPath,
     },
@@ -642,6 +681,10 @@ function prepareInboundRunLedger(input: Omit<Parameters<typeof buildInboundRunLe
 }
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  // Continuity resumption is structured caller intent. Never infer it from the
+  // current message or from similarity to prior obligations.
+  const resumePriorWork = input.runAgentOptions?.resumePriorWork === true
+
   // Reset session-scoped state when the session changes
   const sessionKey = `${input.channel}/${input.sessionKey ?? "session"}`
   if (sessionKey !== _lastSessionKey) {
@@ -1035,7 +1078,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     if (capabilities) {
       startOfTurnPacket.capabilities = capabilities
     }
-    renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket)
+    renderedStartOfTurnPacket = renderStartOfTurnPacket(startOfTurnPacket, { resumePriorWork })
     if (!renderedStartOfTurnPacket) renderedStartOfTurnPacket = undefined
 
     // Update self-presence
@@ -1063,6 +1106,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ?? latestUserAuthoredText(input.messages, input.continuityIngressTexts)
   let runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
+    resumePriorWork,
     ...(orientationFrame ? { orientationFrame } : {}),
     ...(liveLatencyMode ? { skipKeptNotes: true } : {}),
     bridgeContext,
@@ -1105,6 +1149,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       runAgentOptions,
     }),
   )
+  const checkpointCurrentAsk = selectCheckpointCurrentAsk({
+    currentUserMessage: runAgentOptions.toolContext?.currentUserMessage ?? currentUserMessage,
+    orientationFrame: runAgentOptions.orientationFrame,
+  })
 
   const runLedger = prepareInboundRunLedger({
     channel: input.channel,
@@ -1138,6 +1186,36 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       usage: usageMetadataFromUsageData(undefined, "reported-unavailable"),
       errorName: error instanceof Error ? error.name : "NonErrorThrown",
     }))
+    try {
+      const agentRoot = getAgentRoot()
+      const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
+      recordTurnFlightRecorderCheckpoint({
+        agentRoot,
+        currentSession,
+        currentAsk: checkpointCurrentAsk,
+        nextSafeAction: activeWorkFrame.resumeHandle?.nextAction
+          ?? activeWorkFrame.primaryObligation?.nextAction?.trim()
+          ?? null,
+        outcome: "errored",
+        sessionPersisted: false,
+        mustResolveBeforeHandoff,
+        activeObligationIds: postTurnArc.activeObligationIds,
+        activeReturnObligationIds: postTurnArc.activeReturnObligationIds,
+        activePacketIds: postTurnArc.activePacketIds,
+        openEvolutionCaseIds: postTurnArc.openEvolutionCaseIds,
+        recentClaimIds: postTurnArc.recentClaimIds,
+        unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
+      })
+      await refreshContextLossSentinelNonFatal({ agentName: getAgentName(), agentRoot, trigger: "post_turn" })
+    } catch (checkpointError) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.flight_recorder_checkpoint_error",
+        message: "failed to record thrown-turn flight recorder checkpoint",
+        meta: { error: checkpointError instanceof Error ? checkpointError.message : String(checkpointError) },
+      })
+    }
     throw error
   }
 
@@ -1173,19 +1251,22 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         { currentLane },
       )
       input.failoverState.pending = failoverContext
-      await input.postTurn(sessionMessages, session.sessionPath, result.usage)
+      const failoverNextState = selectPostTurnContinuityState({
+        outcome: "errored",
+        mustResolveBeforeHandoff,
+        lastFriendActivityAt,
+      })
+      await input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, failoverNextState)
       try {
         const agentRoot = getAgentRoot()
         const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
-        recordPostTurnFlightRecorderCheckpoint({
+        recordTurnFlightRecorderCheckpoint({
           agentRoot,
           currentSession,
-          currentAsk: currentObligation
-            ?? activeWorkFrame.primaryObligation?.content?.trim()
-            ?? currentUserMessage
-            ?? null,
+          currentAsk: checkpointCurrentAsk,
           nextSafeAction: failoverContext.userMessage,
           outcome: "errored",
+          sessionPersisted: true,
           mustResolveBeforeHandoff,
           activeObligationIds: postTurnArc.activeObligationIds,
           activeReturnObligationIds: postTurnArc.activeReturnObligationIds,
@@ -1238,31 +1319,25 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   }
 
   // Step 6: postTurn
-  const continuingState = {
-    ...(mustResolveBeforeHandoff ? { mustResolveBeforeHandoff: true } : {}),
-    ...(typeof lastFriendActivityAt === "string" ? { lastFriendActivityAt } : {}),
-  }
-  const nextState = result.outcome === "settled" || result.outcome === "blocked" || result.outcome === "superseded" || result.outcome === "observed"
-    ? (typeof lastFriendActivityAt === "string"
-      ? { lastFriendActivityAt }
-      : undefined)
-    : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
+  const nextState = selectPostTurnContinuityState({
+    outcome: result.outcome,
+    mustResolveBeforeHandoff,
+    lastFriendActivityAt,
+  })
   await input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   try {
     const agentRoot = getAgentRoot()
     const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
-    recordPostTurnFlightRecorderCheckpoint({
+    recordTurnFlightRecorderCheckpoint({
       agentRoot,
       currentSession,
-      currentAsk: currentObligation
-        ?? activeWorkFrame.primaryObligation?.content?.trim()
-        ?? currentUserMessage
-        ?? null,
+      currentAsk: checkpointCurrentAsk,
       nextSafeAction: activeWorkFrame.resumeHandle?.nextAction
         ?? activeWorkFrame.primaryObligation?.nextAction?.trim()
         ?? null,
       outcome: result.outcome ?? "observed",
+      sessionPersisted: true,
       mustResolveBeforeHandoff,
       activeObligationIds: postTurnArc.activeObligationIds,
       activeReturnObligationIds: postTurnArc.activeReturnObligationIds,

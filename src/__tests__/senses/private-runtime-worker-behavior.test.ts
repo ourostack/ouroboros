@@ -158,6 +158,33 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "daily-standup", habitName: undefined })
   })
 
+  it("preserves no-send only for a habit probe worker message", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createPrivateRuntimeWorker(runTurn)
+    const privateTurnDecision = { result: "allow", triggerSource: "habit-manual" }
+
+    await worker.handleMessage({
+      type: "habit",
+      habitName: "daily-reflection",
+      trigger: "manual",
+      noSend: true,
+      privateTurnDecision,
+    })
+    await worker.handleMessage({
+      type: "message",
+      noSend: true,
+      privateTurnDecision,
+    })
+
+    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      reason: "habit",
+      habitName: "daily-reflection",
+      noSend: true,
+      privateTurnDecision,
+    }))
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ noSend: true }))
+  })
+
   it("passes undefined taskId when poke has no taskId", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
     const worker = createPrivateRuntimeWorker(runTurn)
@@ -839,26 +866,168 @@ describe("private-runtime-worker", () => {
 
       await worker.handleMessage({ type: "habit", habitName: "missing", trigger: "poke" })
 
-      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
-        habitSession: expect.objectContaining({
-          permissionEnvelope: expect.objectContaining({
-            canMessageOutward: false,
-            deniedTools: ["send_message", "surface"],
-          }),
-          toolPolicy: expect.objectContaining({
-            requestedTools: [],
-            grantedTools: [],
-          }),
-        }),
-      }))
+      expect(runTurn).not.toHaveBeenCalled()
+      expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         habitName: "missing",
         outcome: "error",
-        errors: [expect.stringContaining("habit missing")],
+        permissionEnvelope: expect.objectContaining({
+          canMessageOutward: false,
+          deniedTools: ["send_message", "surface"],
+        }),
+        toolPolicy: expect.objectContaining({
+          requestedTools: [],
+          grantedTools: [],
+        }),
+        errors: expect.arrayContaining([
+          expect.stringContaining("habit missing"),
+          "habit status degraded is non-executable before private runtime execution",
+        ]),
       }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(1)
+      expect(mockRecordHabitRun).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        "missing",
+        "2026-06-08T12:00:00.000Z",
+        expect.objectContaining({ latestRunId: "habit-run-id" }),
+      )
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         event: "senses.habit_file_read_error",
         level: "warn",
+      }))
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_lifecycle_rejected",
+        level: "warn",
+        meta: expect.objectContaining({
+          boundary: "private-runtime-worker",
+          habitName: "missing",
+          status: "degraded",
+          degradedReason: "read_error",
+        }),
+      }))
+    })
+
+    it.each([
+      ["paused", "paused"],
+      ["cancelled", "cancelled"],
+      ["retired", "degraded"],
+    ] as const)("blocks a %s habit before provider, budget, or tools", async (definitionStatus, runtimeStatus) => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/lifecycle-check.md")) {
+          return [
+            "---",
+            `status: ${definitionStatus}`,
+            "tools: [shell, send_message]",
+            "---",
+            "",
+            "This must not execute while non-active.",
+            "",
+          ].join("\n")
+        }
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "lifecycle-check", trigger: "manual" })
+
+      expect(runTurn).not.toHaveBeenCalled()
+      expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "lifecycle-check",
+        trigger: "manual",
+        outcome: "error",
+        permissionEnvelope: expect.objectContaining({ canMessageOutward: false }),
+        toolPolicy: expect.objectContaining({
+          requestedTools: [],
+          grantedTools: [],
+          outwardMessagingAllowed: false,
+        }),
+        errors: expect.arrayContaining([
+          `habit status ${runtimeStatus} is non-executable before private runtime execution`,
+        ]),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(1)
+      expect(mockRecordHabitRun).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        "lifecycle-check",
+        "2026-06-08T12:00:00.000Z",
+        expect.objectContaining({ latestRunId: "habit-run-id" }),
+      )
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_lifecycle_rejected",
+        level: "warn",
+        meta: expect.objectContaining({
+          boundary: "private-runtime-worker",
+          habitName: "lifecycle-check",
+          status: runtimeStatus,
+        }),
+      }))
+    })
+
+    it.each([
+      [
+        "unterminated frontmatter",
+        [
+          "---",
+          "status: active",
+          "tools: [shell, send_message]",
+          "This frontmatter never closes.",
+        ].join("\n"),
+        "unterminated_frontmatter",
+      ],
+      [
+        "malformed frontmatter",
+        [
+          "---",
+          "status: active",
+          "tools: [shell, send_message]",
+          "not valid frontmatter",
+          "---",
+          "This malformed habit must not execute.",
+        ].join("\n"),
+        "malformed_frontmatter",
+      ],
+    ] as const)("blocks %s before provider, budget, or tools", async (_label, definition, degradedReason) => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/parse-failure.md")) return definition
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createPrivateRuntimeWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "parse-failure", trigger: "manual" })
+
+      expect(runTurn).not.toHaveBeenCalled()
+      expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "parse-failure",
+        outcome: "error",
+        toolPolicy: expect.objectContaining({
+          requestedTools: [],
+          grantedTools: [],
+          outwardMessagingAllowed: false,
+        }),
+        errors: expect.arrayContaining([
+          "habit status degraded is non-executable before private runtime execution",
+        ]),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(1)
+      expect(mockRecordHabitRun).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        "parse-failure",
+        "2026-06-08T12:00:00.000Z",
+        expect.objectContaining({ latestRunId: "habit-run-id" }),
+      )
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_lifecycle_rejected",
+        level: "warn",
+        meta: expect.objectContaining({
+          boundary: "private-runtime-worker",
+          habitName: "parse-failure",
+          status: "degraded",
+          degradedReason,
+        }),
       }))
     })
 
@@ -1082,10 +1251,32 @@ describe("private-runtime-worker", () => {
 
       await worker.handleMessage({ type: "habit", habitName: "string-missing", trigger: "poke" })
 
+      expect(runTurn).not.toHaveBeenCalled()
+      expect(mockReserveAutonomyBudget).not.toHaveBeenCalled()
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         habitName: "string-missing",
         outcome: "error",
-        errors: [expect.stringContaining("habit missing as string")],
+        toolPolicy: expect.objectContaining({ requestedTools: [], grantedTools: [] }),
+        errors: expect.arrayContaining([
+          expect.stringContaining("habit missing as string"),
+          "habit status degraded is non-executable before private runtime execution",
+        ]),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(1)
+      expect(mockRecordHabitRun).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        "string-missing",
+        "2026-06-08T12:00:00.000Z",
+        expect.objectContaining({ latestRunId: "habit-run-id" }),
+      )
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_lifecycle_rejected",
+        meta: expect.objectContaining({
+          boundary: "private-runtime-worker",
+          habitName: "string-missing",
+          status: "degraded",
+          degradedReason: "read_error",
+        }),
       }))
     })
 
@@ -1452,6 +1643,48 @@ describe("private-runtime-worker", () => {
       )
       expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
         expect.objectContaining({ event: "senses.habit_recursion_suspected" }),
+      )
+    })
+
+    it("records blocked evidence and clears the rest shield when heartbeat becomes cancelled", async () => {
+      const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 10_500_000
+      const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/heartbeat.md")) {
+          return "---\nstatus: cancelled\n---\n\nDo not run."
+        }
+        return ""
+      })
+      now += 60_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(mockWriteHabitRunReceipt).toHaveBeenNthCalledWith(2, "/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "heartbeat",
+        outcome: "error",
+        errors: expect.arrayContaining([
+          "habit status cancelled is non-executable before private runtime execution",
+        ]),
+      }))
+      expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.heartbeat_ok_rest_reused" }),
+      )
+
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/heartbeat.md")) return "heartbeat body"
+        return ""
+      })
+      now += 60_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(3)
+      expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.heartbeat_ok_rest_reused" }),
       )
     })
 

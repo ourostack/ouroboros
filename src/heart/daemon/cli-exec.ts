@@ -1845,7 +1845,43 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+  if (command.kind === "habit.probe") {
+    return {
+      kind: "habit.probe",
+      agent: command.agent,
+      habitName: command.habitName,
+      noSend: true,
+    }
+  }
   return command
+}
+
+function habitProbeJsonResponse(response: DaemonResponse): string {
+  const data = response.data && typeof response.data === "object" && !Array.isArray(response.data)
+    ? response.data as Record<string, unknown>
+    : null
+  const status = typeof data?.status === "string" ? data.status : "degraded"
+  if (
+    response.ok
+    && data?.noSend === true
+    && typeof data.transportInvocationCount === "number"
+    && data.transportInvocationCount === 0
+  ) {
+    return JSON.stringify({
+      noSend: true,
+      status,
+      transportInvocationCount: 0,
+    }, null, 2)
+  }
+  return JSON.stringify({
+    ok: false,
+    noSend: true,
+    status,
+    transportInvocationCount: null,
+    error: response.error
+      ?? (!response.ok ? response.message : undefined)
+      ?? "habit probe did not produce verified zero-transport evidence",
+  }, null, 2)
 }
 
 // ── Hatch input resolution ──
@@ -8266,8 +8302,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── habit subcommands (local, no daemon socket needed) ──
-  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary") {
-    const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+  if (command.kind === "habit.list" || command.kind === "habit.create" || command.kind === "habit.runs" || command.kind === "habit.inspect" || command.kind === "habit.summary" || command.kind === "habit.cancel") {
+    const { createDegradedHabitFile, parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+    const { publishNewHabitDefinition } = await import("../habits/habit-lifecycle")
     const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     const { listHabitRunReceipts, readHabitRunReceipt } = await import("../../arc/flight-recorder")
     const { readHabitSessionSummary } = await import("../habits/habit-session-summary")
@@ -8279,10 +8316,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore stop */
     const habitsDir = path.join(bundleRoot, "habits")
 
+    if (command.kind === "habit.cancel") {
+      const { cancelHabit } = await import("../habits/habit-cancel")
+      const receipt = await cancelHabit({
+        agentRoot: bundleRoot,
+        habitId: command.habitName,
+        evidenceLocator: command.evidenceLocator,
+        authority: { kind: "offline_bridge" },
+      }, deps.habitCancelDeps)
+      deps.writeStdout(receipt.acknowledgement)
+      return receipt.acknowledgement
+    }
+
     if (command.kind === "habit.list") {
       let files: string[]
       try {
-        files = fs.readdirSync(habitsDir).filter((f) => f.endsWith(".md") && f !== "README.md")
+        files = fs.readdirSync(habitsDir).filter((f) => f.endsWith(".md") && f !== "README.md").sort()
       } catch {
         const message = "no habits found"
         deps.writeStdout(message)
@@ -8295,10 +8344,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
       const lines: string[] = []
       for (const file of files) {
-        const fileContent = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-        const habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fileContent, path.join(habitsDir, file)))
+        const filePath = path.join(habitsDir, file)
+        let habit
+        try {
+          const fileContent = fs.readFileSync(filePath, "utf-8")
+          habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fileContent, filePath))
+        } catch (error) {
+          habit = createDegradedHabitFile(
+            filePath,
+            "read_error",
+            "",
+            error instanceof Error ? error.message : String(error),
+          )
+        }
         const lastRunStr = habit.lastRun ?? "never"
-        lines.push(`${habit.name}  cadence=${habit.cadence ?? "none"}  status=${habit.status}  lastRun=${lastRunStr}`)
+        const degradedReason = habit.status === "degraded" ? `  degradedReason=${habit.degradedReason}` : ""
+        lines.push(`${habit.name}  cadence=${habit.cadence ?? "none"}  status=${habit.status}${degradedReason}  lastRun=${lastRunStr}`)
       }
       const message = lines.join("\n")
       deps.writeStdout(message)
@@ -8386,12 +8447,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // habit.create
     const filePath = path.join(habitsDir, `${command.name}.md`)
-    if (fs.existsSync(filePath)) {
-      const message = `error: habit '${command.name}' already exists`
-      deps.writeStdout(message)
-      return message
-    }
-    fs.mkdirSync(habitsDir, { recursive: true })
     const now = new Date().toISOString()
     const habitContent = renderHabitFile(
       {
@@ -8402,7 +8457,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       },
       `Habit: ${command.name}`,
     )
-    fs.writeFileSync(filePath, habitContent, "utf-8")
+    const publication = publishNewHabitDefinition({
+      agentRoot: bundleRoot,
+      habitId: command.name,
+      bytes: habitContent,
+    })
+    if (publication === "exists") {
+      const message = `error: habit '${command.name}' already exists`
+      deps.writeStdout(message)
+      return message
+    }
     const message = `created: ${filePath}`
     deps.writeStdout(message)
     return message
@@ -9425,6 +9489,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     ? command.json
       ? formatDaemonStatusJsonOutput(response)
       : formatDaemonStatusOutput(response, fallbackMessage)
+    : command.kind === "habit.probe" && command.json
+      ? habitProbeJsonResponse(response)
     : fallbackMessage
   deps.writeStdout(message)
   return message

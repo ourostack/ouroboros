@@ -139,6 +139,12 @@ describe("Teams createTeamsCallbacks - flushNow (speak tool)", () => {
     expect(typeof (callbacks as any).flushNow).toBe("function")
   }, 10_000)
 
+  it("declares settle output as final-only because visible stream writes cannot retract", async () => {
+    const teams = await import("../../senses/teams")
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+    expect((callbacks as any).settleOutputMode).toBe("final_only")
+  })
+
   it("flushNow after onTextChunk emits buffered text via stream.emit exactly once", async () => {
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)

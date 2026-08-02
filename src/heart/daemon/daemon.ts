@@ -48,13 +48,17 @@ import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from "./await-private-wake"
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
-import { parseHabitFile } from "../habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
+
+type HabitDispatchResolution =
+  | { kind: "ready"; habit: HabitFile; occurrenceId?: string }
+  | { kind: "skipped"; habit: HabitFile; skipReason: string }
 
 /**
  * Defense-in-depth: detect if we're running under vitest. The pidfile lives
@@ -465,11 +469,13 @@ export type DaemonCommand =
     budgetClass?: string
     idempotencyKey?: string
     originRefs?: PrivateTurnOriginRef[]
+    noSend?: true
   }
   | { kind: "inner.wake"; agent: string }
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger?: HabitRunTrigger; occurrenceId?: string }
+  | { kind: "habit.probe"; agent: string; habitName: string; noSend?: true }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
@@ -698,6 +704,14 @@ function isValidHabitPokeCommand(command: Extract<DaemonCommand, { kind: "habit.
     && command.agent.trim().length > 0
     && typeof command.habitName === "string"
     && command.habitName.trim().length > 0
+}
+
+function isValidHabitProbeCommand(command: Extract<DaemonCommand, { kind: "habit.probe" }>): boolean {
+  return typeof command.agent === "string"
+    && command.agent.trim().length > 0
+    && typeof command.habitName === "string"
+    && command.habitName.trim().length > 0
+    && (command.noSend === undefined || command.noSend === true)
 }
 
 function taskIdFromTaskPokePrivateWakeCommand(
@@ -1420,6 +1434,13 @@ export class OuroDaemon {
       }
     }
 
+    const hasNoSendCapability = command.originRefs?.some(
+      (ref) => ref.kind === "capability" && ref.id === "no-send",
+    ) ?? false
+    if ((command.noSend === true) !== hasNoSendCapability) {
+      throw new Error("private-runtime no-send capability does not match its bound origin reference")
+    }
+
     return {
       agent: command.agent,
       origin: "daemon.private.wake",
@@ -1478,37 +1499,141 @@ export class OuroDaemon {
     }
   }
 
-  private resolveHabitPokeOccurrenceId(
-    command: Extract<DaemonCommand, { kind: "habit.poke" }>,
-    trigger: HabitRunTrigger,
-  ): string | { skipReason: string } | undefined {
-    const agentRoot = path.join(this.bundlesRoot, `${command.agent}.ouro`)
-    const habitPath = path.join(agentRoot, "habits", `${command.habitName}.md`)
-    let parsedHabit: ReturnType<typeof parseHabitFile> | null = null
+  private resolveHabitDispatch(options: {
+    agent: string
+    habitName: string
+    trigger: HabitRunTrigger
+    source: "habit-poke" | "habit-probe" | "private-wake"
+    occurrenceId?: string
+  }): HabitDispatchResolution {
+    const agentRoot = path.join(this.bundlesRoot, `${options.agent}.ouro`)
+    const habitPath = path.join(agentRoot, "habits", `${options.habitName}.md`)
+    const isRsvp = isRsvpHabitName(options.habitName)
+    let readFailure: "missing" | "read" | null = null
+    let habit: HabitFile
 
-    if (isRsvpHabitName(command.habitName)) {
-      if (!fs.existsSync(habitPath)) return { skipReason: "RSVP habit file not found" }
+    if (!fs.existsSync(habitPath)) {
+      readFailure = "missing"
+      habit = createDegradedHabitFile(habitPath, "read_error", "", "habit file not found")
+    } else {
       try {
-        parsedHabit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
+        habit = applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
       } catch (error) {
-        return { skipReason: `RSVP habit metadata invalid: ${messageFromHabitPokeError(error)}` }
+        readFailure = "read"
+        habit = createDegradedHabitFile(habitPath, "read_error", "", messageFromHabitPokeError(error))
       }
-      if (!parsedHabit.rsvp) return { skipReason: "RSVP habit metadata is required before private runtime wake" }
     }
 
-    if (trigger === "poke" || trigger === "manual") return undefined
-    if (typeof command.occurrenceId === "string" && command.occurrenceId.trim().length > 0) return command.occurrenceId.trim()
+    if (habit.status !== "active") {
+      let skipReason = `habit status ${habit.status} is non-executable`
+      if (isRsvp && habit.status === "degraded") {
+        if (readFailure === "missing") {
+          skipReason = "RSVP habit file not found"
+        } else {
+          skipReason = `RSVP habit metadata invalid: ${habit.degradedDetail ?? habit.degradedReason}`
+        }
+      } else if (
+        readFailure === "missing"
+        && options.source === "habit-poke"
+        && options.trigger !== "manual"
+        && options.trigger !== "poke"
+      ) {
+        skipReason = "habit file not found"
+      }
+      return { kind: "skipped", habit, skipReason }
+    }
 
-    if (!fs.existsSync(habitPath)) return { skipReason: "habit file not found" }
+    if (isRsvp && !habit.rsvp) {
+      return {
+        kind: "skipped",
+        habit,
+        skipReason: "RSVP habit metadata is required before private runtime wake",
+      }
+    }
 
-    const habit = parsedHabit ?? applyHabitRuntimeState(agentRoot, parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath))
-    if (habit.cadence === null) return { skipReason: "habit has no cadence" }
-    const cadence = habit.cadence
-    if (habit.lastRun === null) return `${trigger}:first-run:${cadence}`
-    return `${trigger}:last-run:${habit.lastRun}:cadence:${cadence}`
+    if (options.trigger === "poke" || options.trigger === "manual") {
+      return { kind: "ready", habit }
+    }
+    if (typeof options.occurrenceId === "string" && options.occurrenceId.trim().length > 0) {
+      return { kind: "ready", habit, occurrenceId: options.occurrenceId.trim() }
+    }
+    if (habit.cadence === null) {
+      return { kind: "skipped", habit, skipReason: "habit has no cadence" }
+    }
+    if (habit.lastRun === null) {
+      return { kind: "ready", habit, occurrenceId: `${options.trigger}:first-run:${habit.cadence}` }
+    }
+    return {
+      kind: "ready",
+      habit,
+      occurrenceId: `${options.trigger}:last-run:${habit.lastRun}:cadence:${habit.cadence}`,
+    }
   }
 
-  private async runNativeRsvpHabit(command: Extract<DaemonCommand, { kind: "habit.poke" }>, trigger: HabitRunTrigger, occurrenceId?: string): Promise<DaemonResponse> {
+  private emitHabitDispatchSkipped(options: {
+    agent: string
+    habitName: string
+    trigger: HabitRunTrigger
+    resolution: Extract<HabitDispatchResolution, { kind: "skipped" }>
+  }): void {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.habit_dispatch_skipped",
+      message: "habit dispatch rejected by current lifecycle state",
+      meta: {
+        agent: options.agent,
+        habitName: options.habitName,
+        trigger: options.trigger,
+        status: options.resolution.habit.status,
+        degradedReason: options.resolution.habit.status === "degraded"
+          ? options.resolution.habit.degradedReason
+          : null,
+        detail: options.resolution.habit.status === "degraded"
+          ? options.resolution.habit.degradedDetail
+          : null,
+        reason: options.resolution.skipReason,
+      },
+    })
+  }
+
+  private emitHabitDispatchReady(options: {
+    agent: string
+    habitName: string
+    trigger: HabitRunTrigger
+    resolution: Extract<HabitDispatchResolution, { kind: "ready" }>
+  }): void {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.habit_dispatch_ready",
+      message: "habit dispatch accepted by current lifecycle state",
+      meta: {
+        agent: options.agent,
+        habitName: options.habitName,
+        trigger: options.trigger,
+        status: options.resolution.habit.status,
+        occurrenceId: options.resolution.occurrenceId ?? null,
+      },
+    })
+  }
+
+  private skippedHabitDispatchResponse(options: {
+    agent: string
+    habitName: string
+    skipReason: string
+  }): DaemonResponse {
+    return {
+      ok: true,
+      message: `skipped scheduled habit ${options.habitName} for ${options.agent}: ${options.skipReason}`,
+    }
+  }
+
+  private async runNativeRsvpHabit(
+    command: Pick<Extract<DaemonCommand, { kind: "habit.poke" | "habit.probe" }>, "agent" | "habitName">,
+    trigger: HabitRunTrigger,
+    occurrenceId?: string,
+    noSend = false,
+  ): Promise<DaemonResponse> {
     const runner = this.rsvpHabitRunner ?? (async (input: RunNativeRsvpHabitInput): Promise<RunNativeRsvpHabitResult> => {
       const { runNativeRsvpHabit } = await import("../../rsvp/native-habit-runner")
       return runNativeRsvpHabit(input)
@@ -1519,7 +1644,50 @@ export class OuroDaemon {
       habitName: command.habitName,
       trigger,
       ...(occurrenceId ? { occurrenceId } : {}),
+      ...(noSend ? { noSend: true } : {}),
     })
+    if (noSend) {
+      const payload = result.payload
+      const status = payload?.status
+      const transportInvocationCount = payload?.transportInvocationCount
+      const contractError = "native RSVP habit probe violated the immutable no-send result contract"
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: result.message,
+          data: {
+            ok: false,
+            noSend: true,
+            status: typeof status === "string" ? status : "degraded",
+            transportInvocationCount: null,
+            error: result.message,
+          },
+        }
+      }
+      if (
+        payload?.noSend !== true
+        || typeof status !== "string"
+        || typeof transportInvocationCount !== "number"
+        || transportInvocationCount !== 0
+      ) {
+        return {
+          ok: false,
+          error: contractError,
+          data: {
+            ok: false,
+            noSend: true,
+            status: typeof status === "string" ? status : "degraded",
+            transportInvocationCount: null,
+            error: contractError,
+          },
+        }
+      }
+      return {
+        ok: true,
+        message: result.message,
+        data: { noSend: true, status, transportInvocationCount: 0 },
+      }
+    }
     return {
       ok: result.ok,
       message: result.message,
@@ -1553,6 +1721,7 @@ export class OuroDaemon {
         type: "habit",
         habitName: habitMessage.habitName,
         trigger: habitMessage.trigger,
+        ...(habitMessage.noSend ? { noSend: true } : {}),
         privateTurnDecision: decision,
       }
     }
@@ -1910,8 +2079,43 @@ export class OuroDaemon {
       }
       case "inner.wake":
         return this.handlePrivateRuntimeWake(command)
-      case "private.wake":
+      case "private.wake": {
+        const scheduledHabit = habitMessageFromPrivateWakeCommand(command)
+        if (!scheduledHabit || !this.hasManagedPrivateRuntime(command.agent)) {
+          return this.handlePrivateRuntimeWake(command)
+        }
+        const occurrenceRef = command.originRefs?.find((ref) => ref.kind === "habit-occurrence")
+        const occurrenceId = typeof occurrenceRef?.id === "string" && occurrenceRef.id.trim().length > 0
+          ? occurrenceRef.id.trim()
+          : undefined
+        const resolution = this.resolveHabitDispatch({
+          agent: command.agent,
+          habitName: scheduledHabit.habitName,
+          trigger: scheduledHabit.trigger,
+          source: "private-wake",
+          ...(occurrenceId ? { occurrenceId } : {}),
+        })
+        if (resolution.kind === "skipped") {
+          this.emitHabitDispatchSkipped({
+            agent: command.agent,
+            habitName: scheduledHabit.habitName,
+            trigger: scheduledHabit.trigger,
+            resolution,
+          })
+          return this.skippedHabitDispatchResponse({
+            agent: command.agent,
+            habitName: scheduledHabit.habitName,
+            skipReason: resolution.skipReason,
+          })
+        }
+        this.emitHabitDispatchReady({
+          agent: command.agent,
+          habitName: scheduledHabit.habitName,
+          trigger: scheduledHabit.trigger,
+          resolution,
+        })
         return this.handlePrivateRuntimeWake(command)
+      }
       case "chat.connect":
         await this.processManager.startAgent(command.agent)
         return {
@@ -1959,23 +2163,114 @@ export class OuroDaemon {
             error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
           }
         }
-        const occurrenceId = this.resolveHabitPokeOccurrenceId(command, trigger)
-        if (typeof occurrenceId === "object") {
-          return {
-            ok: true,
-            message: `skipped scheduled habit ${command.habitName} for ${command.agent}: ${occurrenceId.skipReason}`,
-          }
+        const resolution = this.resolveHabitDispatch({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          source: "habit-poke",
+          ...(command.occurrenceId ? { occurrenceId: command.occurrenceId } : {}),
+        })
+        if (resolution.kind === "skipped") {
+          this.emitHabitDispatchSkipped({
+            agent: command.agent,
+            habitName: command.habitName,
+            trigger,
+            resolution,
+          })
+          return this.skippedHabitDispatchResponse({
+            agent: command.agent,
+            habitName: command.habitName,
+            skipReason: resolution.skipReason,
+          })
         }
+        this.emitHabitDispatchReady({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          resolution,
+        })
         if (isRsvpHabitName(command.habitName)) {
-          return this.runNativeRsvpHabit(command, trigger, occurrenceId)
+          return this.runNativeRsvpHabit(command, trigger, resolution.occurrenceId)
         }
         return this.handlePrivateRuntimeWake(buildHabitPrivateWakeCommand({
           agent: command.agent,
           habitName: command.habitName,
           trigger,
           sourceRef: { kind: "daemon-command", id: "habit.poke" },
-          occurrenceId,
+          occurrenceId: resolution.occurrenceId,
         }))
+      }
+      case "habit.probe": {
+        if (!isValidHabitProbeCommand(command)) {
+          return {
+            ok: false,
+            error: "Invalid habit.probe payload: expected non-empty agent/habitName and noSend=true.",
+          }
+        }
+        const trigger: HabitRunTrigger = "manual"
+        if (!isRsvpHabitName(command.habitName) && !this.hasManagedPrivateRuntime(command.agent)) {
+          return {
+            ok: false,
+            error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
+          }
+        }
+        const resolution = this.resolveHabitDispatch({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          source: "habit-probe",
+        })
+        if (resolution.kind === "skipped") {
+          this.emitHabitDispatchSkipped({
+            agent: command.agent,
+            habitName: command.habitName,
+            trigger,
+            resolution,
+          })
+          return {
+            ok: true,
+            message: `habit probe rejected by lifecycle: status=${resolution.habit.status}`,
+            data: {
+              noSend: true,
+              status: resolution.habit.status,
+              transportInvocationCount: 0,
+            },
+          }
+        }
+        this.emitHabitDispatchReady({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          resolution,
+        })
+        if (isRsvpHabitName(command.habitName)) {
+          return this.runNativeRsvpHabit(command, trigger, resolution.occurrenceId, true)
+        }
+        const wake = await this.handlePrivateRuntimeWake(buildHabitPrivateWakeCommand({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          sourceRef: { kind: "daemon-command", id: "habit.probe" },
+          occurrenceId: resolution.occurrenceId,
+          noSend: true,
+        }))
+        if (!wake.ok) return wake
+        const denied = (wake.data as { decision?: { executable?: unknown } } | undefined)
+          ?.decision?.executable === false
+        const error = denied
+          ? "non-RSVP habit probe was not executed because private-runtime policy denied execution"
+          : "non-RSVP habit probe completion is asynchronous; zero-transport evidence is unverified"
+        return {
+          ok: false,
+          error,
+          data: {
+            ok: false,
+            noSend: true,
+            status: resolution.habit.status,
+            transportInvocationCount: null,
+            error,
+          },
+        }
       }
       case "await.poke": {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))

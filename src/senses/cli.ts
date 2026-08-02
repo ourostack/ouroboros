@@ -291,6 +291,7 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
   const wrapper = new StreamingWordWrapper()
 
   return {
+    settleOutputMode: "final_only",
     onModelStart: () => {
       currentSpinner?.stop()
       setSpinner(null)

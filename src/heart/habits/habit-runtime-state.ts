@@ -1,4 +1,3 @@
-import * as fs from "fs"
 import * as path from "path"
 import { readJsonFile, writeJsonFile } from "../../arc/json-store"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -30,22 +29,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function nullableCursor(value: unknown): string | null {
   return isNonEmptyString(value) ? value.trim() : null
-}
-
-function stripLegacyLastRunFromDefinition(definitionPath: string): void {
-  const content = fs.readFileSync(definitionPath, "utf-8")
-  const lines = content.split(/\r?\n/)
-  if (lines[0]?.trim() !== "---") return
-
-  const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---")
-  if (closing === -1) return
-
-  const frontmatterLines = lines.slice(1, closing)
-  const filtered = frontmatterLines.filter((line) => !/^\s*lastRun\s*:/.test(line) && !/^\s*last_run\s*:/.test(line))
-  if (filtered.length === frontmatterLines.length) return
-
-  const nextContent = ["---", ...filtered, "---", ...lines.slice(closing + 1)].join("\n")
-  fs.writeFileSync(definitionPath, nextContent, "utf-8")
 }
 
 export function readHabitLastRun(agentRoot: string, habitName: string): string | null {
@@ -99,10 +82,7 @@ export function recordHabitRun(
   options: { definitionPath?: string } & HabitRuntimeCursorOptions = {},
 ): void {
   writeHabitLastRun(agentRoot, habitName, lastRun, lastRun, options)
-  if (!options.definitionPath) return
-  try {
-    stripLegacyLastRunFromDefinition(options.definitionPath)
-  } catch {
-    // Missing/deleted habit files should never block runtime-state recording.
-  }
+  // Runtime cursor state is the sole authority for lastRun. Definition files
+  // are lifecycle-owned and must never be opportunistically rewritten from a
+  // run-completion path, even for legacy-field cleanup.
 }

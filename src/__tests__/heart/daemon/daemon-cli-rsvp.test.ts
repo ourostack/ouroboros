@@ -69,8 +69,10 @@ vi.mock("../../../heart/machine-identity", () => ({
 import {
   parseOuroCommand,
   runOuroCli,
+  type OuroCliCommand,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
+import { OuroDaemon } from "../../../heart/daemon/daemon"
 import { buildRsvpSnapshot } from "../../../rsvp/snapshot"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 
@@ -87,6 +89,15 @@ function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
     fallbackPendingMessage: vi.fn().mockReturnValue("pending"),
     ...overrides,
   }
+}
+
+function matchesVerifiedNoSendProbe(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return record.noSend === true
+    && record.status === "cancelled"
+    && typeof record.transportInvocationCount === "number"
+    && record.transportInvocationCount === 0
 }
 
 function passingRsvpCutoverDeps(legacyRoot: string): NonNullable<OuroCliDeps["rsvpCutoverDeps"]> {
@@ -1089,5 +1100,313 @@ describe("ouro rsvp CLI execution", () => {
     } finally {
       tmp.cleanup()
     }
+  })
+})
+
+describe("habit probe no-send CLI contract", () => {
+  it("parses one exact immutable no-send probe command and rejects authority widening", () => {
+    const expected = {
+      kind: "habit.probe",
+      agent: "test-agent",
+      habitName: "rsvp-demo",
+      noSend: true,
+      json: true,
+    } satisfies Extract<OuroCliCommand, { kind: "habit.probe" }>
+    expect(parseOuroCommand([
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--json",
+    ])).toEqual(expected)
+    expect(parseOuroCommand([
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--no-send",
+    ])).toEqual({
+      kind: "habit.probe",
+      agent: "test-agent",
+      habitName: "rsvp-demo",
+      noSend: true,
+      json: false,
+    })
+    expect(() => parseOuroCommand(["habit", "probe", "--habit", "rsvp-demo"])).toThrow(/requires --agent/)
+    expect(() => parseOuroCommand(["habit", "probe", "--agent", "test-agent"])).toThrow(/requires --habit/)
+    expect(() => parseOuroCommand([
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--allow-send",
+    ])).toThrow(/cannot allow send/i)
+  })
+
+  it("rejects duplicate, malformed, and unknown habit probe flags", () => {
+    const prefix = ["habit", "probe", "--agent", "test-agent", "--habit", "rsvp-demo"]
+    expect(() => parseOuroCommand([...prefix, "--json", "--json"])).toThrow(/duplicate --json/)
+    expect(() => parseOuroCommand([...prefix, "--no-send", "--no-send"])).toThrow(/duplicate --no-send/)
+    expect(() => parseOuroCommand([...prefix, "--habit", "rsvp-other"])).toThrow(/duplicate --habit/)
+    expect(() => parseOuroCommand([...prefix, "--unknown"])).toThrow(/Usage: ouro habit probe/)
+    expect(() => parseOuroCommand([
+      "habit", "probe", "--agent", "test-agent", "--agent", "other-agent", "--habit", "rsvp-demo",
+    ])).toThrow(/requires --agent/)
+    expect(() => parseOuroCommand([
+      "habit", "probe", "--agent", "bad/agent", "--habit", "rsvp-demo",
+    ])).toThrow(/requires --agent/)
+    expect(() => parseOuroCommand([
+      "habit", "probe", "--agent", "test-agent", "--habit", "bad/habit",
+    ])).toThrow(/valid --habit/)
+  })
+
+  it("dispatches the exact no-send daemon command and projects probe JSON verbatim", async () => {
+    const tmp = createTmpBundle({ agentName: "test-agent" })
+    fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tmp.agentRoot, "habits", "rsvp-demo.md"),
+      "---\nstatus: cancelled\ncadence: 1h\n---\n\nEnded report.",
+      "utf-8",
+    )
+    const processManager = {
+      listAgentSnapshots: vi.fn(() => []),
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      sendToAgent: vi.fn(),
+    }
+    const daemon = new OuroDaemon({
+      socketPath: "/tmp/ouro-test.sock",
+      bundlesRoot: tmp.bundlesRoot,
+      processManager,
+      scheduler: {
+        listJobs: vi.fn(() => []),
+        listDegradedJobs: vi.fn(() => []),
+        triggerJob: vi.fn(async () => ({ ok: true, message: "triggered" })),
+        reconcile: vi.fn(async () => undefined),
+      },
+      healthMonitor: {
+        runChecks: vi.fn(async () => []),
+        getLastResults: vi.fn(() => []),
+        stopPeriodicChecks: vi.fn(),
+      },
+      router: { send: vi.fn(), pollInbox: vi.fn(() => []) },
+      senseManager: { startAutoStartSenses: vi.fn(), stopAll: vi.fn(), listSenseRows: vi.fn(() => []) },
+      mailboxServerFactory: vi.fn(),
+    } as any)
+    const sendCommand: OuroCliDeps["sendCommand"] = vi.fn((_socketPath, command) => daemon.handleCommand(command))
+    const deps = createMockDeps({ sendCommand })
+
+    try {
+      const output = await runOuroCli([
+        "habit",
+        "probe",
+        "--agent",
+        "test-agent",
+        "--habit",
+        "rsvp-demo",
+        "--no-send",
+        "--json",
+      ], deps)
+      const data = {
+        noSend: true,
+        status: "cancelled",
+        transportInvocationCount: 0,
+      }
+
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", {
+        kind: "habit.probe",
+        agent: "test-agent",
+        habitName: "rsvp-demo",
+        noSend: true,
+      })
+      expect(JSON.parse(output)).toEqual(data)
+      expect(deps.writeStdout).toHaveBeenCalledWith(JSON.stringify(data, null, 2))
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("serializes failed daemon responses as unverified probe results", async () => {
+    const sendCommand: OuroCliDeps["sendCommand"] = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: "probe result unavailable" })
+      .mockResolvedValueOnce({ ok: false })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { noSend: true, status: "cancelled", transportInvocationCount: "0" },
+      })
+    const deps = createMockDeps({ sendCommand })
+    const args = [
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--json",
+    ]
+    const output = await runOuroCli(args, deps)
+    const defaultedOutput = await runOuroCli(args, deps)
+    const malformedOutput = await runOuroCli(args, deps)
+
+    expect(JSON.parse(output)).toEqual({
+      ok: false,
+      noSend: true,
+      status: "degraded",
+      transportInvocationCount: null,
+      error: "probe result unavailable",
+    })
+    expect(JSON.parse(defaultedOutput)).toEqual({
+      ok: false,
+      noSend: true,
+      status: "degraded",
+      transportInvocationCount: null,
+      error: "habit probe did not produce verified zero-transport evidence",
+    })
+    expect(JSON.parse(malformedOutput)).toEqual({
+      ok: false,
+      noSend: true,
+      status: "cancelled",
+      transportInvocationCount: null,
+      error: "habit probe did not produce verified zero-transport evidence",
+    })
+    expect(matchesVerifiedNoSendProbe(JSON.parse(output))).toBe(false)
+    expect(matchesVerifiedNoSendProbe(JSON.parse(defaultedOutput))).toBe(false)
+    expect(matchesVerifiedNoSendProbe(JSON.parse(malformedOutput))).toBe(false)
+  })
+
+  it("never projects runner failures or malformed native results as verified CLI evidence", async () => {
+    const tmp = createTmpBundle({ agentName: "test-agent" })
+    fs.mkdirSync(path.join(tmp.agentRoot, "habits"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tmp.agentRoot, "habits", "rsvp-demo.md"),
+      [
+        "---",
+        "status: active",
+        "cadence: 1h",
+        "rsvp:",
+        "  policyVersion: rsvp-habit/v1",
+        "  mode: live",
+        "  sense: bluebubbles",
+        "  source: aisleplanner",
+        "  routeRef: rsvp/config.json#bluebubblesRoute",
+        "  snapshotRef: state/rsvp/snapshots/latest.json",
+        "  outboundStateRef: state/rsvp/outbound-state.json",
+        "  budgetRef: state/rsvp/spend-ledger.json",
+        "  idempotencyRef: state/rsvp/outbound-state.json",
+        "  liveSendEligible: true",
+        "---",
+        "",
+        "Probe only.",
+      ].join("\n"),
+      "utf-8",
+    )
+    const runner = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        message: "native probe failed",
+        lifecycle: "error",
+        runId: "failed-run",
+        payload: { noSend: true, status: "cancelled", transportInvocationCount: 0 },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        message: "native probe omitted evidence",
+        lifecycle: "completed",
+        runId: "absent-run",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        message: "native probe malformed evidence",
+        lifecycle: "completed",
+        runId: "malformed-run",
+        payload: { noSend: true, status: "cancelled", transportInvocationCount: "0" },
+      })
+    const daemon = new OuroDaemon({
+      socketPath: "/tmp/ouro-test.sock",
+      bundlesRoot: tmp.bundlesRoot,
+      processManager: {
+        listAgentSnapshots: vi.fn(() => []),
+        startAutoStartAgents: vi.fn(async () => undefined),
+        stopAll: vi.fn(async () => undefined),
+        startAgent: vi.fn(async () => undefined),
+        resetAgentFailureState: vi.fn(),
+        sendToAgent: vi.fn(),
+      },
+      scheduler: {
+        listJobs: vi.fn(() => []),
+        listDegradedJobs: vi.fn(() => []),
+        triggerJob: vi.fn(async () => ({ ok: true, message: "triggered" })),
+        reconcile: vi.fn(async () => undefined),
+      },
+      healthMonitor: {
+        runChecks: vi.fn(async () => []),
+        getLastResults: vi.fn(() => []),
+        stopPeriodicChecks: vi.fn(),
+      },
+      router: { send: vi.fn(), pollInbox: vi.fn(() => []) },
+      senseManager: { startAutoStartSenses: vi.fn(), stopAll: vi.fn(), listSenseRows: vi.fn(() => []) },
+      mailboxServerFactory: vi.fn(),
+      rsvpHabitRunner: runner,
+    } as any)
+    const deps = createMockDeps({
+      sendCommand: vi.fn((_socketPath, command) => daemon.handleCommand(command)),
+    })
+    const args = [
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--json",
+    ]
+
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        const parsed = JSON.parse(await runOuroCli(args, deps))
+        expect(parsed).toMatchObject({
+          ok: false,
+          noSend: true,
+          transportInvocationCount: null,
+        })
+        expect(matchesVerifiedNoSendProbe(parsed)).toBe(false)
+      }
+      expect(runner).toHaveBeenCalledTimes(3)
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("does not emit probe JSON when daemon communication fails", async () => {
+    const deps = createMockDeps({
+      sendCommand: vi.fn().mockRejectedValue(new Error("daemon socket lost")),
+    })
+
+    await expect(runOuroCli([
+      "habit",
+      "probe",
+      "--agent",
+      "test-agent",
+      "--habit",
+      "rsvp-demo",
+      "--json",
+    ], deps)).rejects.toThrow("daemon socket lost")
+    expect(deps.writeStdout).not.toHaveBeenCalled()
+  })
+
+  it("renders focused habit probe help with the immutable no-send contract", async () => {
+    const deps = createMockDeps()
+    const output = await runOuroCli(["help", "habit", "probe"], deps)
+
+    expect(output).toContain("ouro habit probe --agent <name> --habit <name> --no-send [--json]")
+    expect(output).toMatch(/cannot send|zero transport/i)
   })
 })

@@ -16,7 +16,7 @@ export interface BlueBubblesMutationLogEntry {
   sessionKey: string
   shouldNotifyAgent: boolean
   textForAgent: string
-  fromMe: boolean
+  fromMe: boolean | null
 }
 
 export function getBlueBubblesMutationLogPath(agentName: string, sessionKey: string): string {
@@ -66,7 +66,7 @@ export function recordBlueBubblesMutation(agentName: string, event: BlueBubblesN
   return filePath
 }
 
-export function listBlueBubblesRecoveryCandidates(agentName: string): BlueBubblesMutationLogEntry[] {
+function readBlueBubblesMutationRows(agentName: string): BlueBubblesMutationLogEntry[] {
   const rootDir = path.join(getAgentRoot(agentName), "state", "senses", "bluebubbles", "mutations")
   let files: string[]
   try {
@@ -75,7 +75,7 @@ export function listBlueBubblesRecoveryCandidates(agentName: string): BlueBubble
     return []
   }
 
-  const deduped = new Map<string, BlueBubblesMutationLogEntry>()
+  const entries: BlueBubblesMutationLogEntry[] = []
   for (const file of files.filter((entry) => entry.endsWith(".ndjson")).sort()) {
     const filePath = path.join(rootDir, file)
     let raw = ""
@@ -89,21 +89,35 @@ export function listBlueBubblesRecoveryCandidates(agentName: string): BlueBubble
       const trimmed = line.trim()
       if (!trimmed) continue
       try {
-        const entry = JSON.parse(trimmed) as BlueBubblesMutationLogEntry
-        if (
-          typeof entry.messageGuid !== "string"
-          || !entry.messageGuid.trim()
-          || entry.fromMe
-          || entry.shouldNotifyAgent
-          || (entry.mutationType !== "read" && entry.mutationType !== "delivery")
-        ) {
-          continue
-        }
-        deduped.set(entry.messageGuid, entry)
+        const entry = JSON.parse(trimmed) as Partial<BlueBubblesMutationLogEntry>
+        if (typeof entry.messageGuid !== "string" || !entry.messageGuid.trim()) continue
+        entries.push(entry as BlueBubblesMutationLogEntry)
       } catch {
-        // ignore malformed recovery candidates
+        // Keep malformed legacy rows inert while retaining readable audit rows.
       }
     }
+  }
+
+  return entries
+}
+
+export function listRecordedBlueBubblesMutations(agentName: string): BlueBubblesMutationLogEntry[] {
+  return readBlueBubblesMutationRows(agentName).filter((entry) => (
+    typeof entry.sessionKey === "string" && entry.sessionKey.trim().length > 0
+  ))
+}
+
+export function listBlueBubblesRecoveryCandidates(agentName: string): BlueBubblesMutationLogEntry[] {
+  const deduped = new Map<string, BlueBubblesMutationLogEntry>()
+  for (const entry of readBlueBubblesMutationRows(agentName)) {
+    if (
+      entry.fromMe !== false
+      || entry.shouldNotifyAgent
+      || (entry.mutationType !== "read" && entry.mutationType !== "delivery")
+    ) {
+      continue
+    }
+    deduped.set(entry.messageGuid, entry)
   }
 
   return [...deduped.values()].sort((left, right) => left.recordedAt.localeCompare(right.recordedAt))

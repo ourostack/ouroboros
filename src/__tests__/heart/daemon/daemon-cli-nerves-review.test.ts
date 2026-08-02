@@ -31,7 +31,7 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
 
 function eventLine(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    time: "2026-06-11T20:00:00.000Z",
+    ts: "2026-06-11T20:00:00.000Z",
     level: "info",
     component: "daemon",
     event: "daemon.habit_run_complete",
@@ -73,11 +73,20 @@ describe("ouro nerves-review CLI", () => {
     })
   })
 
+  it("defaults to the active ouro process", () => {
+    expect(parseOuroCommand(["nerves-review"])).toEqual({
+      kind: "nerves-review",
+      process: "ouro",
+      json: false,
+    })
+  })
+
   it("includes nerves-review help in command registry", () => {
     const help = getCommandHelp("nerves-review")
     expect(help).toContain("ouro nerves-review")
     expect(help).toContain("--component")
     expect(help).toContain("--event")
+    expect(help).toContain("default: ouro")
   })
 
   it("prints focused nerves-review help through CLI help routing", async () => {
@@ -89,6 +98,7 @@ describe("ouro nerves-review CLI", () => {
     expect(result).toContain("ouro nerves-review")
     expect(result).toContain("--since <duration>")
     expect(result).toContain("--json")
+    expect(result).toContain("default: ouro")
     expect(deps.writeStdout).toHaveBeenCalledWith(result)
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
@@ -104,7 +114,7 @@ describe("ouro nerves-review CLI", () => {
   it("prints filtered text output from local nerves logs without daemon access", async () => {
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "nerves-review-"))
     cleanup.push(logsDir)
-    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), [
+    fs.writeFileSync(path.join(logsDir, "ouro.ndjson"), [
       eventLine({ component: "mailbox", event: "mailbox.started", message: "mailbox started" }),
       eventLine({ component: "daemon", event: "daemon.habit_run_complete", message: "habit done" }),
     ].join("\n") + "\n", "utf-8")
@@ -123,7 +133,7 @@ describe("ouro nerves-review CLI", () => {
   it("resolves a sole discovered agent and filters by level", async () => {
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "nerves-review-level-"))
     cleanup.push(logsDir)
-    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), [
+    fs.writeFileSync(path.join(logsDir, "ouro.ndjson"), [
       eventLine({ level: "info", message: "quiet info" }),
       eventLine({ level: "warn", message: "important warning" }),
     ].join("\n") + "\n", "utf-8")
@@ -142,9 +152,9 @@ describe("ouro nerves-review CLI", () => {
   it("filters local nerves logs by a valid since duration", async () => {
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "nerves-review-since-"))
     cleanup.push(logsDir)
-    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), [
-      eventLine({ time: new Date(Date.now() - 120 * 60 * 1000).toISOString(), message: "old habit event" }),
-      eventLine({ time: new Date(Date.now() - 5 * 60 * 1000).toISOString(), message: "recent habit event" }),
+    fs.writeFileSync(path.join(logsDir, "ouro.ndjson"), [
+      eventLine({ ts: new Date(Date.now() - 120 * 60 * 1000).toISOString(), message: "old habit event" }),
+      eventLine({ ts: new Date(Date.now() - 5 * 60 * 1000).toISOString(), message: "recent habit event" }),
     ].join("\n") + "\n", "utf-8")
     mockGetAgentDaemonLogsDir.mockReturnValue(logsDir)
     const deps = makeDeps()
@@ -164,7 +174,7 @@ describe("ouro nerves-review CLI", () => {
 
     const result = await runOuroCli(["nerves-review", "--agent", "slugger", "--component", "absent"], deps)
 
-    expect(result).toBe(`(no matching nerves events in ${path.join(logsDir, "daemon.ndjson")})`)
+    expect(result).toBe(`(no matching nerves events in ${path.join(logsDir, "ouro.ndjson")})`)
     expect(deps.writeStdout).toHaveBeenCalledWith(result)
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
@@ -191,6 +201,24 @@ describe("ouro nerves-review CLI", () => {
     const result = await runOuroCli(["nerves-review", "--agent", "slugger", "--process", "mailbox", "--json"], makeDeps())
 
     expect(result).toBe(raw)
+  })
+
+  it("reads only the default or explicitly selected process without aggregation", async () => {
+    const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "nerves-review-processes-"))
+    cleanup.push(logsDir)
+    const rows = {
+      ouro: eventLine({ event: "daemon.ouro_only", message: "ouro only" }),
+      "ouro-bot": eventLine({ event: "daemon.ouro_bot_only", message: "ouro-bot only" }),
+      bluebubbles: eventLine({ event: "senses.bluebubbles_only", message: "bluebubbles only" }),
+    }
+    for (const [processName, row] of Object.entries(rows)) {
+      fs.writeFileSync(path.join(logsDir, `${processName}.ndjson`), `${row}\n`, "utf-8")
+    }
+    mockGetAgentDaemonLogsDir.mockReturnValue(logsDir)
+
+    expect(await runOuroCli(["nerves-review", "--agent", "slugger", "--json"], makeDeps())).toBe(rows.ouro)
+    expect(await runOuroCli(["nerves-review", "--agent", "slugger", "--process", "ouro-bot", "--json"], makeDeps())).toBe(rows["ouro-bot"])
+    expect(await runOuroCli(["nerves-review", "--agent", "slugger", "--process", "bluebubbles", "--json"], makeDeps())).toBe(rows.bluebubbles)
   })
 
   it("sets exit code 2 for invalid durations", async () => {

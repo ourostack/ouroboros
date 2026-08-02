@@ -18,6 +18,7 @@ import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
 import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
+import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -124,6 +125,8 @@ export function usage(): string {
     "  ouro habit runs [--agent <name>] [--limit <n>]",
     "  ouro habit inspect [--agent <name>] <runId>",
     "  ouro habit summary [--agent <name>] (--run-id <id>|--habit <name>|--operation-id <id>) [--which latest|previous|latest-success|latest-failure] [--json]",
+    "  ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
+    "  ouro habit probe --agent <name> --habit <name> --no-send [--json]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
@@ -288,6 +291,81 @@ function parseHabitCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
 
   const sub = rest[0]
+  if (sub === "probe") {
+    if (args.includes("--allow-send")) {
+      throw new Error("habit probe cannot allow send")
+    }
+    if (
+      args.filter((value) => value === "--agent").length !== 1
+      || !agent
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)
+    ) throw new Error("habit probe requires --agent <name>")
+    let habitName: string | undefined
+    let json = false
+    let sawNoSend = false
+    const options = rest.slice(1)
+    for (let index = 0; index < options.length; index += 1) {
+      const option = options[index]
+      if (option === "--json") {
+        if (json) throw new Error("habit probe received duplicate --json")
+        json = true
+        continue
+      }
+      if (option === "--no-send") {
+        if (sawNoSend) throw new Error("habit probe received duplicate --no-send")
+        sawNoSend = true
+        continue
+      }
+      if (option === "--habit" && options[index + 1]) {
+        if (habitName !== undefined) throw new Error("habit probe received duplicate --habit")
+        habitName = options[index + 1]
+        index += 1
+        continue
+      }
+      throw new Error("Usage: ouro habit probe --agent <name> --habit <name> --no-send [--json]")
+    }
+    if (!habitName) throw new Error("habit probe requires --habit <name>")
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(habitName)) {
+      throw new Error("habit probe requires a valid --habit name")
+    }
+    return { kind: "habit.probe", agent, habitName, noSend: true, json }
+  }
+  if (sub === "cancel") {
+    if (
+      args.filter((value) => value === "--agent").length !== 1
+      || !agent
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)
+    ) {
+      throw new Error(`Usage\n${usage()}`)
+    }
+    let habitName: string | undefined
+    let evidenceLocator: string | undefined
+    const options = rest.slice(1)
+    for (let index = 0; index < options.length; index += 1) {
+      const option = options[index]
+      const value = options[index + 1]
+      if ((option !== "--habit" && option !== "--evidence") || value === undefined) {
+        throw new Error(`Usage\n${usage()}`)
+      }
+      if (option === "--habit") {
+        if (habitName !== undefined) throw new Error(`Usage\n${usage()}`)
+        habitName = value
+      } else {
+        if (evidenceLocator !== undefined) throw new Error(`Usage\n${usage()}`)
+        evidenceLocator = value
+      }
+      index += 1
+    }
+    if (!habitName || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(habitName)) {
+      throw new Error("habit cancellation requires a valid --habit name")
+    }
+    if (
+      !evidenceLocator
+      || evidenceLocator.startsWith("capture:")
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(evidenceLocator)
+    ) throw new Error("habit cancellation requires an offline evidence bridge ID")
+    return { kind: "habit.cancel", agent, habitName, evidenceLocator }
+  }
   if (sub === "list") {
     return { kind: "habit.list", ...(agent ? { agent } : {}) }
   }
@@ -2088,7 +2166,7 @@ function parseRsvpSmokeCommand(args: string[]): OuroCliCommand {
 
 function parseNervesReviewCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
-  let processName = "daemon"
+  let processName = DEFAULT_NERVES_PROCESS
   let component: string | undefined
   let event: string | undefined
   let level: string | undefined

@@ -119,7 +119,7 @@ describe("habit-runtime-state", () => {
     expect(resolved.lastRun).toBe("2026-03-27T10:00:00.000Z")
   })
 
-  it("records habit runs in runtime state and strips legacy lastRun from the definition file", () => {
+  it("records habit runs in runtime state without rewriting legacy definition bytes", () => {
     const bundleRoot = makeTempDir("habit-runtime-record")
     cleanup.push(bundleRoot)
 
@@ -139,6 +139,8 @@ describe("habit-runtime-state", () => {
       "",
     ].join("\n"), "utf-8")
 
+    const originalDefinition = fs.readFileSync(definitionPath, "utf-8")
+
     recordHabitRun(bundleRoot, "heartbeat", "2026-03-27T12:00:00.000Z", {
       definitionPath,
       activeOperationId: "op-heartbeat",
@@ -153,10 +155,7 @@ describe("habit-runtime-state", () => {
       latestReceiptLocator: "arc/flight-recorder/habit-receipts/run-heartbeat.json",
     })
     const updatedDefinition = fs.readFileSync(definitionPath, "utf-8")
-    expect(updatedDefinition).not.toContain("lastRun:")
-    expect(updatedDefinition).not.toContain("last_run:")
-    expect(updatedDefinition).toContain("title: Heartbeat")
-    expect(updatedDefinition).toContain("Check in.")
+    expect(updatedDefinition).toBe(originalDefinition)
   })
 
   it("still records runtime state when the habit definition file is missing", () => {

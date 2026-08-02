@@ -5,7 +5,7 @@ import { getAgentName } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
-import { SettleStreamer } from "../streaming";
+import { finalizeSettleStream, ProviderTextOutput, SettleStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
@@ -302,6 +302,7 @@ async function streamAnthropicMessages(
   const thinkingBlocks = new Map<number, { type: "thinking"; thinking: string; signature: string }>();
   const redactedBlocks = new Map<number, { type: "redacted_thinking"; data: string }>();
   const answerStreamer = new SettleStreamer(request.callbacks, request.eagerSettleStreaming);
+  const textOutput = new ProviderTextOutput(request.callbacks);
 
   try {
     for await (const event of response) {
@@ -329,6 +330,7 @@ async function streamAnthropicMessages(
           /* v8 ignore next -- settle streaming activation, tested via SettleStreamer unit tests @preserve */
           if (name === "settle" && toolCalls.size === 1) {
             answerStreamer.activate();
+            textOutput.suppress();
           }
         }
         continue;
@@ -344,7 +346,7 @@ async function streamAnthropicMessages(
           }
           const text = String(delta?.text ?? "");
           content += text;
-          request.callbacks.onTextChunk(text);
+          textOutput.emit(text);
           continue;
         }
         if (deltaType === "thinking_delta") {
@@ -400,7 +402,26 @@ async function streamAnthropicMessages(
       }
     }
   } catch (error) {
+    textOutput.discard();
+    answerStreamer.cancel();
     throw error instanceof Error ? error : /* v8 ignore next -- defensive: stream errors are always Error @preserve */ new Error(String(error));
+  }
+
+  const completedToolCalls = [...toolCalls.values()];
+  let settleFinalization: TurnResult["settleFinalization"];
+  if (request.signal?.aborted) {
+    textOutput.discard();
+    answerStreamer.cancel();
+  } else if (
+    completedToolCalls.length === 1
+    && completedToolCalls[0].name === "settle"
+    && answerStreamer.detected
+  ) {
+    textOutput.discard();
+    settleFinalization = finalizeSettleStream(answerStreamer, completedToolCalls[0].arguments);
+  } else {
+    answerStreamer.cancel();
+    textOutput.flush();
   }
 
   // Collect all thinking blocks (regular + redacted) sorted by index to preserve ordering
@@ -413,10 +434,11 @@ async function streamAnthropicMessages(
 
   return {
     content,
-    toolCalls: [...toolCalls.values()],
+    toolCalls: completedToolCalls,
     outputItems,
     usage,
     settleStreamed: answerStreamer.streamed,
+    ...(settleFinalization ? { settleFinalization } : {}),
   };
 }
 

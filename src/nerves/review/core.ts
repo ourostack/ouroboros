@@ -1,5 +1,7 @@
 import * as fs from "node:fs"
 
+export const DEFAULT_NERVES_PROCESS = "ouro"
+
 export interface NerveReviewFilter {
   componentSubstring?: string
   eventSubstring?: string
@@ -33,14 +35,19 @@ export function parseDuration(value: string): number | null {
   }
 }
 
-function entryTimeMs(parsed: Record<string, unknown> | null): number | null {
+function entryTimestamp(parsed: Record<string, unknown> | null): string | null {
   if (!parsed) return null
-  const time = parsed.time
-  if (typeof time === "string") {
-    const ms = Date.parse(time)
-    return Number.isFinite(ms) ? ms : null
+  if (Object.prototype.hasOwnProperty.call(parsed, "ts")) {
+    return typeof parsed.ts === "string" ? parsed.ts : null
   }
-  return null
+  return typeof parsed.time === "string" ? parsed.time : null
+}
+
+function entryTimeMs(parsed: Record<string, unknown> | null): number | null {
+  const timestamp = entryTimestamp(parsed)
+  if (timestamp === null) return null
+  const ms = Date.parse(timestamp)
+  return Number.isFinite(ms) ? ms : null
 }
 
 function readLastNLines(filePath: string, maxLines: number, maxBytes = 8 * 1024 * 1024): string[] {
@@ -114,7 +121,7 @@ export function reviewNerveEvents(
 export function formatNerveEntry(entry: NerveReviewEntry): string {
   const parsed = entry.parsed
   if (!parsed) return entry.raw
-  const time = String(parsed.time ?? "")
+  const time = entryTimestamp(parsed) ?? ""
   const level = String(parsed.level ?? "info")
   const component = String(parsed.component ?? "?")
   const event = String(parsed.event ?? "?")

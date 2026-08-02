@@ -4,10 +4,18 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import {
   RSVP_HABIT_ALLOWED_TOOLS,
   parseRsvpHabitMetadata,
+  rsvpHabitMetadataErrorDetail,
   type RsvpHabitMetadata,
 } from "../../rsvp/habit-policy"
 
-export type HabitStatus = "active" | "paused"
+export type HabitStatus = "active" | "paused" | "cancelled"
+export type HabitFileStatus = HabitStatus | "degraded"
+export type HabitDegradedReason =
+  | "unterminated_frontmatter"
+  | "malformed_frontmatter"
+  | "invalid_status"
+  | "invalid_metadata"
+  | "read_error"
 
 export interface HabitOrigin {
   friendId: string
@@ -27,11 +35,10 @@ export interface HabitContinuity {
   mode: HabitContinuityMode
 }
 
-export interface HabitFile {
+interface HabitFileBase {
   name: string
   title: string
   cadence: string | null
-  status: HabitStatus
   lastRun: string | null
   created: string | null
   tools: string[] | undefined
@@ -42,8 +49,18 @@ export interface HabitFile {
   body: string
 }
 
+export type HabitFile =
+  | (HabitFileBase & {
+    status: HabitStatus
+  })
+  | (HabitFileBase & {
+    status: "degraded"
+    degradedReason: HabitDegradedReason
+    degradedDetail: string | null
+  })
+
 function isHabitStatus(value: string): value is HabitStatus {
-  return value === "active" || value === "paused"
+  return value === "active" || value === "paused" || value === "cancelled"
 }
 
 function parseToolsField(raw: unknown): string[] | undefined {
@@ -114,20 +131,73 @@ function parseContinuity(raw: unknown): HabitContinuity {
   return { mode: mode === "stateful" ? "stateful" : "fresh" }
 }
 
-function extractFrontmatterAndBody(content: string): { frontmatter: Record<string, unknown>; body: string } | null {
+export function isHabitFrontmatterSyntaxValid(rawFrontmatter: string): boolean {
+  const lines = rawFrontmatter.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (!line.trim()) continue
+    const match = /^([A-Za-z0-9_:-]+):\s*(.*)$/.exec(line)
+    if (!match) return false
+    if (match[2].length > 0) continue
+
+    let cursor = index + 1
+    while (cursor < lines.length && /^\s*-\s+/.test(lines[cursor])) cursor += 1
+    if (cursor > index + 1) {
+      index = cursor - 1
+      continue
+    }
+    while (cursor < lines.length && /^\s+[A-Za-z0-9_:-]+:\s*/.test(lines[cursor])) cursor += 1
+    index = cursor - 1
+  }
+  return true
+}
+
+type ExtractedHabitDocument =
+  | { kind: "legacy_body"; body: string }
+  | { kind: "frontmatter"; frontmatter: Record<string, unknown>; body: string }
+  | { kind: "degraded"; reason: "unterminated_frontmatter" | "malformed_frontmatter"; body: string }
+
+function extractFrontmatterAndBody(content: string): ExtractedHabitDocument {
   const lines = content.split(/\r?\n/)
   if (lines[0]?.trim() !== "---") {
-    return null
+    return { kind: "legacy_body", body: content.trim() }
   }
 
   const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---")
   if (closing === -1) {
-    return null
+    return { kind: "degraded", reason: "unterminated_frontmatter", body: content.trim() }
   }
 
   const rawFrontmatter = lines.slice(1, closing).join("\n")
   const body = lines.slice(closing + 1).join("\n").trim()
-  return { frontmatter: parseFrontmatter(rawFrontmatter), body }
+  if (!isHabitFrontmatterSyntaxValid(rawFrontmatter)) {
+    return { kind: "degraded", reason: "malformed_frontmatter", body }
+  }
+  return { kind: "frontmatter", frontmatter: parseFrontmatter(rawFrontmatter), body }
+}
+
+export function createDegradedHabitFile(
+  filePath: string,
+  degradedReason: HabitDegradedReason,
+  body = "",
+  degradedDetail: string | null = null,
+): Extract<HabitFile, { status: "degraded" }> {
+  const stem = path.basename(filePath, ".md")
+  return {
+    name: stem,
+    title: stem,
+    cadence: null,
+    status: "degraded",
+    degradedReason,
+    degradedDetail,
+    lastRun: null,
+    created: null,
+    tools: undefined,
+    origin: null,
+    surface: { family: false, originator: false, extra: [] },
+    continuity: { mode: "fresh" },
+    body: body.trim(),
+  }
 }
 
 export function parseHabitFile(content: string, filePath: string): HabitFile {
@@ -141,7 +211,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const stem = path.basename(filePath, ".md")
   const parsed = extractFrontmatterAndBody(content)
 
-  if (!parsed) {
+  if (parsed.kind === "legacy_body") {
     return {
       name: stem,
       title: stem,
@@ -153,8 +223,12 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
       origin: null,
       surface: { family: true, originator: true, extra: [] },
       continuity: { mode: "fresh" },
-      body: content.trim(),
+      body: parsed.body,
     }
+  }
+
+  if (parsed.kind === "degraded") {
+    return createDegradedHabitFile(filePath, parsed.reason, parsed.body)
   }
 
   const { frontmatter, body } = parsed
@@ -166,8 +240,14 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const cadence = typeof rawCadence === "string" && rawCadence.length > 0 ? rawCadence : null
 
   const rawStatus = frontmatter.status
-  const status: HabitStatus =
-    typeof rawStatus === "string" && isHabitStatus(rawStatus) ? rawStatus : "active"
+  const status: HabitStatus | null = rawStatus === undefined
+    ? "active"
+    : typeof rawStatus === "string" && isHabitStatus(rawStatus)
+      ? rawStatus
+      : null
+  if (status === null) {
+    return createDegradedHabitFile(filePath, "invalid_status", body)
+  }
 
   const rawLastRun = frontmatter.lastRun ?? frontmatter.last_run
   const lastRun = typeof rawLastRun === "string" && rawLastRun.length > 0 ? rawLastRun : null
@@ -175,7 +255,13 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const rawCreated = frontmatter.created
   const created = typeof rawCreated === "string" && rawCreated.length > 0 ? rawCreated : null
 
-  const rsvp = parseRsvpHabitMetadata(frontmatter.rsvp)
+  let rsvp: RsvpHabitMetadata | null
+  try {
+    rsvp = parseRsvpHabitMetadata(frontmatter.rsvp)
+  } catch (error) {
+    const degradedDetail = rsvpHabitMetadataErrorDetail(error)
+    return createDegradedHabitFile(filePath, "invalid_metadata", body, degradedDetail)
+  }
   const tools = rsvp ? [...RSVP_HABIT_ALLOWED_TOOLS] : parseToolsField(frontmatter.tools)
   const origin = parseOrigin(frontmatter.origin)
   const surface = parseSurface(frontmatter.surface)

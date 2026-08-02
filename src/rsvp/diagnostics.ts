@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { parseHabitFile, type HabitDegradedReason, type HabitFileStatus } from "../heart/habits/habit-parser"
 import { emitNervesEvent } from "../nerves/runtime"
 import { isRsvpHabitName } from "./habit-policy"
 
@@ -32,6 +32,11 @@ export interface RsvpHabitScheduleHealth {
   outboundStateRef?: string
   budgetRef?: string
   idempotencyRef?: string
+  habitStates?: Array<{
+    name: string
+    status: HabitFileStatus
+    degradedReason: HabitDegradedReason | null
+  }>
 }
 
 export interface RsvpLatestFetchHealth {
@@ -143,13 +148,22 @@ function habitScheduleHealth(agentRoot: string, deps: RsvpDiagnosticsDeps): Rsvp
   try {
     const rsvpHabits = deps.readdirSync(habitsDir)
       .filter((name) => name.endsWith(".md") && isRsvpHabitName(name.replace(/\.md$/, "")))
+      .sort((left, right) => left.localeCompare(right))
       .map((name) => {
         const filePath = path.join(habitsDir, name)
         return parseHabitFile(deps.readFileSync(filePath), filePath)
       })
+    const habitStates = rsvpHabits.map((habit) => ({
+      name: habit.name,
+      status: habit.status,
+      degradedReason: habit.status === "degraded" ? habit.degradedReason : null,
+    }))
+    if (rsvpHabits.some((habit) => habit.status === "degraded")) {
+      return { status: "fail", detail: "RSVP habit definitions degraded", habitStates }
+    }
     const active = rsvpHabits.find((habit) => habit.status === "active")
-    if (!active) return { status: "warn", detail: "no active RSVP habit found" }
-    if (!active.rsvp) return { status: "fail", detail: `activeHabit=${active.name}; typed RSVP habit metadata missing` }
+    if (!active) return { status: "warn", detail: "no active RSVP habit found", habitStates }
+    if (!active.rsvp) return { status: "fail", detail: `activeHabit=${active.name}; typed RSVP habit metadata missing`, habitStates }
     const cadence = active.cadence ?? "unspecified"
     return {
       status: "pass",
@@ -170,6 +184,7 @@ function habitScheduleHealth(agentRoot: string, deps: RsvpDiagnosticsDeps): Rsvp
       outboundStateRef: active.rsvp.outboundStateRef,
       budgetRef: active.rsvp.budgetRef,
       idempotencyRef: active.rsvp.idempotencyRef,
+      habitStates,
     }
   } catch (error) {
     return { status: "fail", detail: `habit schedule unreadable: ${error instanceof Error ? error.message : String(error)}` }

@@ -6,7 +6,7 @@ import type { PrivateTurnDecision } from "../heart/private-runtime"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
-import { parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import {
   completeHabitRun,
@@ -40,6 +40,7 @@ import {
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
 import { reserveAutonomyBudget, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
+import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -49,6 +50,7 @@ export interface PrivateRuntimeWorkerMessage {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
+  noSend?: true
   privateTurnDecision?: PrivateTurnDecision
 }
 
@@ -60,6 +62,7 @@ export interface PrivateRuntimeWorkerRunOptions {
   trigger?: HabitRunReceipt["trigger"]
   habitSession?: HabitSessionToolContext
   preparedHabit?: PreparedHabitContext
+  noSend?: true
   privateTurnDecision?: PrivateTurnDecision
 }
 
@@ -71,6 +74,7 @@ export interface PrivateRuntimeWorkerController {
     awaitName?: string,
     trigger?: HabitRunReceipt["trigger"],
     privateTurnDecision?: PrivateTurnDecision,
+    noSend?: true,
   ): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
@@ -86,6 +90,7 @@ interface QueueEntry {
   habitName?: string
   awaitName?: string
   trigger?: HabitRunReceipt["trigger"]
+  noSend?: true
   privateTurnDecision?: PrivateTurnDecision
 }
 
@@ -337,22 +342,6 @@ function deriveHabitSummarySnapshot(habitRun: PreparedHabitRun): HabitRunSummary
   }
 }
 
-function fallbackHabitFile(habitName: string): HabitFile {
-  return {
-    name: habitName,
-    title: habitName,
-    cadence: null,
-    status: "active",
-    lastRun: null,
-    created: null,
-    tools: [],
-    origin: null,
-    surface: { family: false, originator: false, extra: [] },
-    continuity: { mode: "fresh" },
-    body: "",
-  }
-}
-
 function readHabitForRun(agentRoot: string, habitName: string, errors: string[]): HabitFile {
   const habitPath = path.join(agentRoot, "habits", `${habitName}.md`)
   try {
@@ -367,7 +356,7 @@ function readHabitForRun(agentRoot: string, habitName: string, errors: string[])
       message: "habit file could not be read for habit session",
       meta: { habitName, habitPath, reason },
     })
-    return fallbackHabitFile(habitName)
+    return createDegradedHabitFile(habitPath, "read_error")
   }
 }
 
@@ -375,9 +364,13 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
   const agentRoot = getAgentRoot()
   const errors: string[] = []
   const habit = applyHabitRuntimeState(agentRoot, readHabitForRun(agentRoot, habitName, errors))
+  if (habit.status === "degraded" && habit.degradedDetail !== null) {
+    errors.push(habit.degradedDetail)
+  }
+  const lifecycleBlockedReason = privateRuntimeHabitRejectionReason(habit, "private-runtime-worker")
   const blockedReason = isRsvpHabitName(habitName) && !habit.rsvp
     ? "RSVP habit metadata is required before private runtime execution"
-    : null
+    : lifecycleBlockedReason
   if (blockedReason && !errors.includes(blockedReason)) errors.push(blockedReason)
   const runId = createHabitRunId(habitName, new Date(startedAt))
   const operationId = habit.continuity.mode === "stateful" ? `habit:${habit.name}` : null
@@ -498,6 +491,11 @@ export function createPrivateRuntimeWorker(
   async function reuseHeartbeatOkRest(habitName: string): Promise<void> {
     const nowIso = new Date(nowSource()).toISOString()
     const habitRun = await prepareHabitRun(habitName, "overdue", nowIso)
+    if (habitRun.blockedReason) {
+      clearHeartbeatRestShield()
+      recordHabitCompletion(habitRun, nowIso)
+      return
+    }
     habitRun.results.push({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
     recordHabitCompletion(habitRun, nowIso)
     emitNervesEvent({
@@ -560,9 +558,10 @@ export function createPrivateRuntimeWorker(
     awaitName?: string,
     trigger?: HabitRunReceipt["trigger"],
     privateTurnDecision?: PrivateTurnDecision,
+    noSend?: true,
   ): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision })
+      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision, noSend })
       return
     }
 
@@ -574,6 +573,7 @@ export function createPrivateRuntimeWorker(
       let nextAwaitName = awaitName
       let nextTrigger = trigger
       let nextPrivateTurnDecision = privateTurnDecision
+      let nextNoSend = reason === "habit" ? noSend : undefined
       let nextHabitRun: PreparedHabitRun | null = null
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
@@ -581,6 +581,7 @@ export function createPrivateRuntimeWorker(
         const currentReason = nextReason
         const currentHabitName = nextHabitName
         const currentTrigger = nextTrigger ?? "overdue"
+        const currentNoSend = nextNoSend
         const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
           ? nextHabitRun && nextHabitRun.habit.name === currentHabitName
             ? nextHabitRun
@@ -628,6 +629,7 @@ export function createPrivateRuntimeWorker(
               taskId: nextTaskId,
               habitName: nextHabitName,
               awaitName: nextAwaitName,
+              ...(currentNoSend ? { noSend: true } : {}),
               ...(nextPrivateTurnDecision ? { privateTurnDecision: nextPrivateTurnDecision } : {}),
               ...(currentHabitRun
                 ? {
@@ -697,6 +699,7 @@ export function createPrivateRuntimeWorker(
           nextAwaitName = next.awaitName
           nextTrigger = next.trigger
           nextPrivateTurnDecision = next.privateTurnDecision
+          nextNoSend = next.reason === "habit" ? next.noSend : undefined
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
         }
@@ -735,6 +738,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = currentTrigger
             nextPrivateTurnDecision = undefined
+            nextNoSend = currentNoSend
             nextHabitRun = currentHabitRun
           } else {
             finalizeCurrentHabitRun()
@@ -745,6 +749,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = undefined
             nextPrivateTurnDecision = undefined
+            nextNoSend = undefined
           }
           continue
         }
@@ -768,7 +773,7 @@ export function createPrivateRuntimeWorker(
         return
       }
       recordHabitFireForRecursion(habitName)
-      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision)
+      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision, maybeMessage.noSend)
       return
     }
     if (maybeMessage.type === "await") {

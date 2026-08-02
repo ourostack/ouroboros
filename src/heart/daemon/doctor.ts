@@ -29,7 +29,7 @@ import {
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
 import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
-import { parseHabitFile } from "../habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { parseCadenceToCron } from "./cadence"
 import { DEFAULT_MAX_LOG_SIZE_BYTES } from "../../nerves"
 import { readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig, type RsvpReadinessCheck } from "../../rsvp/config"
@@ -578,17 +578,38 @@ export function checkHabits(deps: DoctorDeps): DoctorCategory {
     checks.push({ label: `${agentDir} habits dir`, status: "pass", detail: habitsDir })
 
     const activeScheduledHabits: string[] = []
+    const habitLifecycleRows: HabitFile[] = []
     let unreadableHabits = 0
-    for (const file of deps.readdirSync(habitsDir).filter((entry) => entry.endsWith(".md"))) {
+    for (const file of deps.readdirSync(habitsDir).filter((entry) => entry.endsWith(".md") && entry !== "README.md").sort()) {
       const filePath = `${habitsDir}/${file}`
+      let habit: HabitFile
       try {
-        const habit = parseHabitFile(deps.readFileSync(filePath), filePath)
-        if (habit.status === "active" && habit.cadence && parseCadenceToCron(habit.cadence) !== null) {
-          activeScheduledHabits.push(habit.name)
-        }
-      } catch {
+        habit = parseHabitFile(deps.readFileSync(filePath), filePath)
+      } catch (error) {
         unreadableHabits += 1
+        habit = createDegradedHabitFile(
+          filePath,
+          "read_error",
+          "",
+          error instanceof Error ? error.message : String(error),
+        )
       }
+      habitLifecycleRows.push(habit)
+      if (habit.status === "active" && habit.cadence && parseCadenceToCron(habit.cadence) !== null) {
+        activeScheduledHabits.push(habit.name)
+      }
+    }
+
+    if (habitLifecycleRows.length > 0) {
+      const hasDegradedHabit = habitLifecycleRows.some((habit) => habit.status === "degraded")
+      checks.push({
+        id: "habits.lifecycle",
+        label: `${agentDir} habit lifecycle`,
+        status: hasDegradedHabit ? "fail" : "pass",
+        detail: habitLifecycleRows.map((habit) => habit.status === "degraded"
+          ? `${habit.name}=degraded(${habit.degradedReason})`
+          : `${habit.name}=${habit.status}`).join(", "),
+      })
     }
 
     if (unreadableHabits > 0) {

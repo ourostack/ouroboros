@@ -6,7 +6,7 @@ import type { OuroCliDeps, RsvpCliCommand } from "../heart/daemon/cli-types"
 import { runDoctorChecks } from "../heart/daemon/doctor"
 import type { DoctorDeps } from "../heart/daemon/doctor-types"
 import type { BlueBubblesChannelConfig, BlueBubblesConfig } from "../heart/config"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../heart/habits/habit-parser"
 import { getAgentBundlesRoot } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import {
@@ -27,7 +27,13 @@ import { isRsvpHabitName, type RsvpHabitMetadata } from "./habit-policy"
 import { stageRsvpHabit } from "./habit-stage"
 import { buildRsvpIncidentBundle, writeRsvpIncidentBundle, type RsvpIncidentBundle } from "./incident-bundle"
 import { importLegacyRsvpState } from "./migration"
-import { decideRsvpOutboundReport, readRsvpOutboundState, recordRsvpOutboundAttempt } from "./outbound-state"
+import {
+  decideRsvpOutboundReport,
+  executeRsvpSendBoundary,
+  readRsvpOutboundState,
+  recordRsvpOutboundAttempt,
+  type RsvpSendBoundaryResult,
+} from "./outbound-state"
 import { queryRsvpSnapshot } from "./query"
 import { renderLegacyRsvpSnapshotOffline, replayRsvpFixture } from "./replay"
 import { buildRsvpSnapshot, parseRsvpSnapshot, type RsvpSnapshot } from "./snapshot"
@@ -43,6 +49,8 @@ interface RsvpCliPayload {
   action?: string
   legacyRoot?: string
   allowSend?: boolean
+  noSend?: boolean
+  transportInvocationCount?: number
   requires?: string
   message: string
   inputs?: Record<string, JsonValue>
@@ -58,6 +66,7 @@ interface RsvpCliPayload {
   delivery?: JsonValue
   checks?: Record<string, JsonValue>
   sendAllowed?: boolean
+  sendBoundary?: JsonValue
   denialReasons?: string[]
   rollback?: Record<string, JsonValue>
   strict?: boolean
@@ -235,11 +244,62 @@ function reportCopyFromHabit(title: string, rsvp: RsvpHabitMetadata): RsvpReport
   return copy
 }
 
+function explicitHabitLifecycleError(habitName: string, habit: HabitFile, prefix?: string): Error {
+  const degradedReason = habit.status === "degraded" ? habit.degradedReason : null
+  const degradedDetail = habit.status === "degraded" ? habit.degradedDetail : null
+  const reasonText = degradedReason ? ` reason=${degradedReason}` : ""
+  const detailText = degradedDetail ? ` detail=${degradedDetail}` : ""
+  const message = prefix
+    ? `${prefix}; status=${habit.status}${reasonText}${detailText}`
+    : `RSVP habit ${habitName} lifecycle rejected: status=${habit.status}${reasonText}${detailText}`
+  emitNervesEvent({
+    level: "warn",
+    component: "rsvp",
+    event: "rsvp.habit_lifecycle_rejected",
+    message,
+    meta: {
+      entryPoint: "explicit_refresh",
+      habitName,
+      status: habit.status,
+      degradedReason,
+      degradedDetail,
+    },
+  })
+  return new Error(message)
+}
+
 function requireRsvpHabitReportCopy(agentRoot: string, habitName: string): RsvpReportCopyInput {
   const habitPath = path.join(agentRoot, "habits", `${habitName}.md`)
-  if (!fs.existsSync(habitPath)) throw new Error(`RSVP habit ${habitName} not found at ${habitPath}`)
-  const habit = parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
-  if (!habit.rsvp) throw new Error(`RSVP habit ${habitName} metadata is required before explicit refresh`)
+  if (!fs.existsSync(habitPath)) {
+    const missing = createDegradedHabitFile(habitPath, "read_error", "", "habit file not found")
+    throw explicitHabitLifecycleError(habitName, missing, `RSVP habit ${habitName} not found at ${habitPath}`)
+  }
+  let habit: HabitFile
+  try {
+    habit = parseHabitFile(fs.readFileSync(habitPath, "utf-8"), habitPath)
+  } catch (error) {
+    const unreadable = createDegradedHabitFile(
+      habitPath,
+      "read_error",
+      "",
+      String(error),
+    )
+    throw explicitHabitLifecycleError(habitName, unreadable)
+  }
+  if (habit.status !== "active") throw explicitHabitLifecycleError(habitName, habit)
+  if (!habit.rsvp) {
+    const untyped = createDegradedHabitFile(
+      habitPath,
+      "invalid_metadata",
+      habit.body,
+      "RSVP habit metadata is required",
+    )
+    throw explicitHabitLifecycleError(
+      habitName,
+      untyped,
+      `RSVP habit ${habitName} metadata is required before explicit refresh`,
+    )
+  }
   return reportCopyFromHabit(habit.title, habit.rsvp)
 }
 
@@ -638,7 +698,7 @@ async function executeHabitStage(command: RsvpHabitStageCommand, deps: OuroCliDe
       requires: "--agent",
     }
   }
-  const result = stageRsvpHabit({
+  const result = await stageRsvpHabit({
     agent: command.agent,
     agentRoot,
     ...(command.habitName ? { habitName: command.habitName } : {}),
@@ -652,7 +712,12 @@ async function executeHabitStage(command: RsvpHabitStageCommand, deps: OuroCliDe
   })
 }
 
-async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+async function executeRefreshInner(
+  command: RsvpRefreshCommand,
+  deps: OuroCliDeps,
+  transportCounter: { count: number },
+  hardNoSend: boolean,
+): Promise<RsvpCliPayload> {
   const agentRoot = maybeAgentRoot(command, deps)
   if (!command.agent || !agentRoot) {
     return {
@@ -732,8 +797,9 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
   const delta = computeRsvpDelta(previousSnapshot, currentSnapshot)
   const reportText = renderRsvpReport(delta, reportCopy)
   const outboundDecision = decideRsvpOutboundReport({ agentRoot, currentSnapshot, reportText })
-  const wantsLiveSend = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
-  if (wantsLiveSend) {
+  const requestedLiveSend = command.mode === "live" && command.allowSend === true && outboundDecision.action === "send"
+  const sendAllowedBeforeCutover = requestedLiveSend && !hardNoSend
+  if (sendAllowedBeforeCutover) {
     const cutover = await checkLiveSendCutover({
       agent: command.agent,
       config: configResult.config,
@@ -750,40 +816,115 @@ async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): P
       })
     }
   }
-  const sendAllowed = wantsLiveSend
+  const sendAllowed = requestedLiveSend && !hardNoSend
   let delivery: JsonValue | undefined
+  let sendBoundary: RsvpSendBoundaryResult | undefined
+  let sendBoundaryMessage: string | undefined
   if (sendAllowed) {
+    if (!command.habitName) {
+      return {
+        ...basePayload(command, false, "RSVP live refresh send requires --habit <name>", {
+          allowSend: true,
+          sendAllowed: false,
+          requires: "--habit <name>",
+          refresh: {
+            snapshotId: currentSnapshot.snapshotId,
+            reportText,
+            outboundDecision: outboundDecision as unknown as JsonValue,
+          },
+        }),
+        ok: false,
+      }
+    }
     const bluebubbles = rsvpBlueBubblesClientConfig(configResult.config, machineRuntimeConfig)
-    const sent = await createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig).sendText({
-      chat: blueBubblesChatFor(configResult.config),
-      text: reportText,
-      tempGuid: outboundDecision.idempotencyKey,
-    })
-    delivery = normalizeDelivery(sent)
+    const client = createBlueBubblesClient(bluebubbles.config, bluebubbles.channelConfig)
+    sendBoundary = await executeRsvpSendBoundary({
+      agentRoot,
+      habitId: command.habitName,
+      outboundIdempotencyKey: outboundDecision.idempotencyKey,
+      noSend: hardNoSend,
+      invokeTransport: async (markTransportInvoked) => client.sendText({
+        chat: blueBubblesChatFor(configResult.config),
+        text: reportText,
+        tempGuid: outboundDecision.idempotencyKey,
+        onTransportInvocation: () => {
+          transportCounter.count += 1
+          markTransportInvoked()
+        },
+      }),
+    }, deps.rsvpSendBoundaryDeps)
+    const cleanupFailed = sendBoundary.errorCode === "lifecycle_lock_release_failed"
+    const acceptedProof = sendBoundary.boundaryState === "crossed" && !cleanupFailed
+    sendBoundaryMessage = cleanupFailed
+      ? "RSVP transport crossed but lifecycle lock cleanup failed"
+      : sendBoundary.boundaryState === "crossed"
+        ? "RSVP refresh completed"
+      : sendBoundary.boundaryState === "not_crossed"
+        ? "RSVP transport was definitively rejected"
+        : "RSVP transport delivery is unknown"
+    delivery = acceptedProof
+      ? {
+          status: "accepted",
+          ...(normalizeDelivery({ messageGuid: sendBoundary.transportResult.messageGuid }) as Record<string, JsonValue>),
+        }
+      : cleanupFailed
+        ? {
+            status: "failed",
+            error: sendBoundaryMessage,
+            ...(normalizeDelivery({ messageGuid: sendBoundary.transportResult.messageGuid }) as Record<string, JsonValue>),
+          }
+      : sendBoundary.boundaryState === "not_crossed"
+        ? { status: "failed", error: sendBoundaryMessage }
+        : { status: "pending-manual-verification", error: sendBoundaryMessage }
     recordRsvpOutboundAttempt({
       agentRoot,
       currentSnapshot,
       reportText,
       bluebubblesRecord: {
         recordId: outboundDecision.idempotencyKey,
-        status: "accepted",
+        status: acceptedProof
+          ? "accepted"
+          : sendBoundary.boundaryState === "not_crossed" || cleanupFailed
+            ? "failed"
+            : "pending-manual-verification",
         tempGuid: outboundDecision.idempotencyKey,
-        ...((delivery as Record<string, unknown>).guid ? { messageGuid: String((delivery as Record<string, unknown>).guid) } : {}),
+        ...(sendBoundary.transportResult.messageGuid
+          ? { messageGuid: sendBoundary.transportResult.messageGuid }
+          : {}),
       },
       recordedAt: new Date().toISOString(),
     })
   }
 
-  return basePayload(command, sendAllowed, "RSVP refresh completed", {
-    allowSend: sendAllowed,
-    sendAllowed,
-    refresh: {
-      snapshotId: currentSnapshot.snapshotId,
-      reportText,
-      outboundDecision: outboundDecision as unknown as JsonValue,
-      ...(delivery ? { delivery } : {}),
+  const message = sendBoundaryMessage ?? "RSVP refresh completed"
+  const payload = basePayload(
+    command,
+    sendBoundary?.transportInvoked === true && sendBoundary.replayed === false,
+    message,
+    {
+      allowSend: command.mode === "live" && command.allowSend === true,
+      sendAllowed,
+      ...(sendBoundary ? { sendBoundary: sendBoundary as unknown as JsonValue } : {}),
+      refresh: {
+        snapshotId: currentSnapshot.snapshotId,
+        reportText,
+        outboundDecision: outboundDecision as unknown as JsonValue,
+        ...(delivery ? { delivery } : {}),
+      },
     },
-  })
+  )
+  return sendBoundary && !sendBoundary.ok ? { ...payload, ok: false } : payload
+}
+
+async function executeRefresh(command: RsvpRefreshCommand, deps: OuroCliDeps): Promise<RsvpCliPayload> {
+  const transportCounter = { count: 0 }
+  const hardNoSend = command.noSend === true
+  const payload = await executeRefreshInner(command, deps, transportCounter, hardNoSend)
+  return {
+    ...payload,
+    ...(hardNoSend ? { noSend: true } : {}),
+    transportInvocationCount: transportCounter.count,
+  }
 }
 
 async function executeCompare(command: RsvpCompareCommand): Promise<RsvpCliPayload> {

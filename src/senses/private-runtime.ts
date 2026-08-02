@@ -35,8 +35,15 @@ import { buildHabitTurnMessage, type PriorHabitSessionSummaryInfo } from "./habi
 import { buildAwaitTurnMessage } from "./await-turn-message"
 import { parseAwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
-import { parseHabitFile, type HabitFile, type HabitOrigin, type HabitSurface } from "../heart/habits/habit-parser"
+import {
+  createDegradedHabitFile,
+  parseHabitFile,
+  type HabitFile,
+  type HabitOrigin,
+  type HabitSurface,
+} from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
+import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { isRsvpHabitName } from "../rsvp/habit-policy"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
@@ -82,6 +89,7 @@ export interface RunPrivateRuntimeTurnOptions {
   habitSession?: HabitSessionToolContext
   preparedHabit?: PreparedHabitContext
   privateTurnDecision?: PrivateTurnDecision
+  noSend?: true
 }
 
 export interface PreparedHabitContext {
@@ -395,6 +403,13 @@ function assertPayloadBinding(
   throw new Error(`private-runtime decision payload mismatch: missing ${kind} origin ref ${id}`)
 }
 
+function assertNoSendBinding(decision: PrivateTurnDecision, noSend: true | undefined): void {
+  const refs = decision.originRefs.filter((ref) => ref.kind === "capability" && ref.id === "no-send")
+  if (noSend === true && refs.length === 1) return
+  if (noSend === undefined && refs.length === 0) return
+  throw new Error("private-runtime decision payload mismatch: no-send capability binding does not match the turn")
+}
+
 function ledgerDecisionFor(decision: PrivateTurnDecision): PrivateTurnDecision {
   const ledgerPath = decision.ledgerLocator?.path
   if (!ledgerPath) {
@@ -451,6 +466,7 @@ function assertPrivateTurnDecisionAllowed(input: {
   assertPayloadBinding(decision, "task", options?.taskId)
   assertPayloadBinding(decision, "habit", options?.habitName)
   assertPayloadBinding(decision, "await", options?.awaitName)
+  assertNoSendBinding(decision, options?.noSend)
 
   const ledgerRow = ledgerDecisionFor(decision)
   const decidedAtMs = Date.parse(ledgerRow.decidedAt)
@@ -547,6 +563,7 @@ function extractToolCallNames(messages: OpenAI.ChatCompletionMessageParam[]): st
 
 function createPrivateRuntimeCallbacks(): ChannelCallbacks {
   return {
+    settleOutputMode: "final_only",
     onModelStart: () => {},
     onModelStreamStart: () => {},
     onTextChunk: () => {},
@@ -894,6 +911,35 @@ function buildHabitSurfacePolicy(origin: HabitOrigin | null, surface: HabitSurfa
   return lines.join("\n")
 }
 
+function reduceHabitSessionToNoSend(
+  habitSession: HabitSessionToolContext | undefined,
+): HabitSessionToolContext {
+  const deniedTools = new Set([
+    ...(habitSession?.permissionEnvelope.deniedTools ?? []),
+    ...(habitSession?.toolPolicy.grantedTools ?? []),
+    ...(habitSession?.toolPolicy.deniedTools ?? []),
+    "send_message",
+    "surface",
+  ])
+  return {
+    ...habitSession,
+    noSend: true,
+    permissionEnvelope: {
+      schemaVersion: 1,
+      canMessageOutward: false,
+      returnRoutes: [],
+      deniedTools: [...deniedTools],
+      warnings: [...(habitSession?.permissionEnvelope.warnings ?? [])],
+    },
+    toolPolicy: {
+      requestedTools: habitSession?.toolPolicy.requestedTools ?? null,
+      grantedTools: [],
+      deniedTools: [...deniedTools],
+      outwardMessagingAllowed: false,
+    },
+  }
+}
+
 export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptions): Promise<PrivateRuntimeTurnResult> {
   const now = options?.now ?? (() => new Date())
   const reason = options?.reason ?? "instinct"
@@ -977,35 +1023,42 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       let habitSurface: HabitSurface = { family: true, originator: true, extra: [] }
       if (preparedHabit) {
         if (rsvpHabit && !preparedHabit.rsvp) {
-          throw new Error(`RSVP habit metadata is required before private runtime execution: ${habitName}`)
+          const detail = preparedHabit.status === "degraded"
+            ? preparedHabit.degradedDetail
+            : null
+          throw new Error(`RSVP habit metadata is required before private runtime execution: ${detail ?? habitName}`)
         }
-        habitBody = preparedHabit.body || undefined
-        habitTitle = preparedHabit.title || habitName
-        habitLastRun = preparedHabit.lastRun
-        habitTools = preparedHabit.tools
-        habitOrigin = preparedHabit.origin
-        habitSurface = preparedHabit.surface
-      } else {
-        try {
-          const habitContent = fs.readFileSync(habitFilePath, "utf-8")
-          const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
-          if (rsvpHabit && !parsed.rsvp) {
-            throw new Error(`RSVP habit metadata is required before private runtime execution: ${habitName}`)
-          }
-          habitBody = parsed.body || undefined
-          habitTitle = parsed.title || habitName
-          habitLastRun = parsed.lastRun
-          habitTools = parsed.tools
-          habitOrigin = parsed.origin
-          habitSurface = parsed.surface
-        } catch (error) {
-          if (rsvpHabit) {
-            const reason = error instanceof Error ? error.message : String(error)
-            throw new Error(`RSVP habit metadata is required before private runtime execution: ${reason}`)
-          }
-          // Habit file missing or unreadable
-        }
+        const blockedReason = privateRuntimeHabitRejectionReason(preparedHabit, "private-runtime")
+        if (blockedReason) throw new Error(blockedReason)
       }
+
+      let currentHabit: HabitFile
+      try {
+        const habitContent = fs.readFileSync(habitFilePath, "utf-8")
+        currentHabit = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
+      } catch (error) {
+        const readReason = error instanceof Error ? error.message : String(error)
+        if (rsvpHabit) {
+          throw new Error(`RSVP habit metadata is required before private runtime execution: ${readReason}`)
+        }
+        const degraded = createDegradedHabitFile(habitFilePath, "read_error", "", readReason)
+        const blockedReason = privateRuntimeHabitRejectionReason(degraded, "private-runtime")
+        throw new Error(blockedReason)
+      }
+      if (rsvpHabit && !currentHabit.rsvp) {
+        const detail = currentHabit.status === "degraded" ? currentHabit.degradedDetail : null
+        throw new Error(`RSVP habit metadata is required before private runtime execution: ${detail ?? habitName}`)
+      }
+      const currentBlockedReason = privateRuntimeHabitRejectionReason(currentHabit, "private-runtime")
+      if (currentBlockedReason) throw new Error(currentBlockedReason)
+      const executableHabit = preparedHabit ?? currentHabit
+
+      habitBody = executableHabit.body || undefined
+      habitTitle = executableHabit.title || habitName
+      habitLastRun = executableHabit.lastRun
+      habitTools = executableHabit.tools
+      habitOrigin = executableHabit.origin
+      habitSurface = executableHabit.surface
 
       // If the habit file couldn't be read at all (no body, no title parsed), error message
       if (habitBody === undefined && habitTitle === habitName) {
@@ -1132,6 +1185,13 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       meta: { habitName: options.habitName },
     })
   }
+  if (options?.noSend === true) {
+    habitToolsResolved = []
+  }
+
+  const effectiveHabitSession = options?.noSend === true
+    ? reduceHabitSessionToNoSend(options.habitSession)
+    : options?.habitSession
 
   const sessionLoader = {
     loadOrCreate: async () => {
@@ -1218,9 +1278,10 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       toolContext: {
         signin: async () => undefined,
         delegatedOrigins: attentionQueue,
-        ...(options?.habitSession ? { habitSession: options.habitSession } : {}),
+        ...(options?.noSend ? { noSend: true } : {}),
+        ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
       },
-      ...(options?.habitSession ? { habitSession: options.habitSession } : {}),
+      ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
     },
   })
   // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.

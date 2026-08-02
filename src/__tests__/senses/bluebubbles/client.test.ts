@@ -1,3 +1,4 @@
+import { createServer } from "node:http"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const emitNervesEvent = vi.fn()
@@ -79,6 +80,7 @@ describe("BlueBubbles client", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: expect.any(String),
+        redirect: "manual",
         signal: expect.any(AbortSignal),
       }),
     )
@@ -90,6 +92,163 @@ describe("BlueBubbles client", () => {
       method: "private-api",
       selectedMessageGuid: "incoming-guid",
       partIndex: 0,
+    })
+  })
+
+  it("does not follow an HTTP redirect across the exact send boundary", async () => {
+    let redirectedRequests = 0
+    const server = createServer((request, response) => {
+      if (request.url?.startsWith("/api/v1/message/text")) {
+        response.statusCode = 302
+        response.setHeader("Location", "/redirected-success")
+        response.end()
+        return
+      }
+      redirectedRequests += 1
+      response.statusCode = 200
+      response.setHeader("Content-Type", "application/json")
+      response.end(JSON.stringify({ data: { guid: "false-success-guid" } }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(0, "127.0.0.1", resolve)
+    })
+    const address = server.address()
+    if (address === null || typeof address === "string") {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      throw new Error("synthetic BlueBubbles server did not expose an address")
+    }
+
+    try {
+      global.fetch = originalFetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(
+        {
+          serverUrl: `http://127.0.0.1:${address.port}`,
+          password: "secret-token",
+          accountId: "default",
+        },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+
+      const error = await client.sendText({
+        chat: dmChat,
+        text: "do not follow",
+      }).catch((caught: unknown) => caught)
+
+      expect(error).toMatchObject({
+        name: "BlueBubblesSendError",
+        httpStatus: 302,
+        errorCode: "http_302",
+        transportInvoked: true,
+      })
+      expect(redirectedRequests).toBe(0)
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve())
+      })
+    }
+  })
+
+  it("marks the exact transport boundary immediately before the send fetch", async () => {
+    const order: string[] = []
+    global.fetch = vi.fn(async () => {
+      order.push("fetch")
+      return new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })
+    }) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+
+    const result = await (client.sendText as any)({
+      chat: dmChat,
+      text: "boundary marker",
+      onTransportInvocation: () => order.push("boundary"),
+    })
+
+    expect(result).toEqual({ messageGuid: "sent-guid" })
+    expect(order).toEqual(["boundary", "fetch"])
+  })
+
+  it.each([300, 399, 400, 408, 409, 425, 429, 499, 500, 503])(
+    "preserves HTTP %i as typed send-boundary evidence",
+    async (status) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response("synthetic failure", { status })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(
+        { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+        { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+      )
+      const onTransportInvocation = vi.fn()
+
+      const error = await (client.sendText as any)({
+        chat: dmChat,
+        text: "typed boundary failure",
+        onTransportInvocation,
+      }).catch((caught: unknown) => caught)
+
+      expect(onTransportInvocation).toHaveBeenCalledTimes(1)
+      expect(error).toMatchObject({
+        name: "BlueBubblesSendError",
+        httpStatus: status,
+        errorCode: `http_${status}`,
+        transportInvoked: true,
+      })
+    },
+  )
+
+  it("preserves a malformed HTTP 2xx payload as typed invoked boundary evidence", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response("{not-json", { status: 200 })) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+    const onTransportInvocation = vi.fn()
+
+    const error = await (client.sendText as any)({
+      chat: dmChat,
+      text: "malformed boundary response",
+      onTransportInvocation,
+    }).catch((caught: unknown) => caught)
+
+    expect(onTransportInvocation).toHaveBeenCalledTimes(1)
+    expect(error).toMatchObject({
+      name: "BlueBubblesSendError",
+      httpStatus: 200,
+      errorCode: "malformed_response",
+      transportInvoked: true,
+    })
+  })
+
+  it.each([
+    ["timeout", Object.assign(new Error("timed out"), { name: "TimeoutError" }), "timeout"],
+    ["abort", Object.assign(new Error("aborted"), { name: "AbortError" }), "abort"],
+    ["socket", new TypeError("socket closed"), "socket"],
+    ["generic transport", new Error("transport closed"), "transport_error"],
+  ] as const)("preserves an invoked %s exception as typed boundary evidence", async (_label, rejection, errorCode) => {
+    global.fetch = vi.fn().mockRejectedValue(rejection) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+    const onTransportInvocation = vi.fn()
+
+    const error = await (client.sendText as any)({
+      chat: dmChat,
+      text: "typed boundary exception",
+      onTransportInvocation,
+    }).catch((caught: unknown) => caught)
+
+    expect(onTransportInvocation).toHaveBeenCalledTimes(1)
+    expect(error).toMatchObject({
+      name: "BlueBubblesSendError",
+      httpStatus: null,
+      errorCode,
+      transportInvoked: true,
     })
   })
 
@@ -157,6 +316,39 @@ describe("BlueBubbles client", () => {
 
     const request = JSON.parse((global.fetch as any).mock.calls[0][1].body)
     expect(request.tempGuid).toBe("temp-from-ledger")
+  })
+
+  it("composes caller cancellation into the BlueBubbles send request signal", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+    const controller = new AbortController()
+
+    await client.sendText({
+      chat: dmChat,
+      text: "deadline-bound send",
+      signal: controller.signal,
+    })
+
+    const requestSignal = (global.fetch as any).mock.calls[0][1].signal as AbortSignal
+    expect(requestSignal).toBeInstanceOf(AbortSignal)
+    expect(requestSignal.aborted).toBe(false)
+    controller.abort(new Error("restricted deadline elapsed"))
+    expect(requestSignal.aborted).toBe(true)
   })
 
   it("edits outbound messages through the BlueBubbles edit endpoint", async () => {
@@ -767,7 +959,7 @@ describe("BlueBubbles client", () => {
     ).rejects.toThrow("BlueBubbles send failed (403): private api required")
   })
 
-  it("treats empty or invalid response bodies as guid-less success and repairs events as passthrough", async () => {
+  it("distinguishes empty or guid-less responses from malformed JSON and repairs events as passthrough", async () => {
     const responses = [
       new Response("", { status: 200 }),
       new Response("not-json", { status: 200 }),
@@ -790,7 +982,12 @@ describe("BlueBubbles client", () => {
     )
 
     await expect(client.sendText({ chat: dmChat, text: "hello once" })).resolves.toEqual({ messageGuid: undefined })
-    await expect(client.sendText({ chat: dmChat, text: "hello twice" })).resolves.toEqual({ messageGuid: undefined })
+    await expect(client.sendText({ chat: dmChat, text: "hello twice" })).rejects.toMatchObject({
+      name: "BlueBubblesSendError",
+      httpStatus: 200,
+      errorCode: "malformed_response",
+      transportInvoked: true,
+    })
     await expect(client.sendText({ chat: dmChat, text: "hello thrice" })).resolves.toEqual({ messageGuid: undefined })
 
     const event = {
@@ -1114,12 +1311,16 @@ describe("BlueBubbles client", () => {
       [{ guid: "root-array-guid", text: "from root array" }],
       { data: { nope: [] } },
     ].map((payload) => new Response(JSON.stringify(payload), { status: 200 }))
+    responses.push(new Response("not-json", { status: 200 }))
+    responses.push(new Response("", { status: 200 }))
     global.fetch = vi.fn()
       .mockResolvedValueOnce(responses[0])
       .mockResolvedValueOnce(responses[1])
       .mockResolvedValueOnce(responses[2])
       .mockResolvedValueOnce(responses[3])
-      .mockResolvedValueOnce(responses[4]) as typeof fetch
+      .mockResolvedValueOnce(responses[4])
+      .mockResolvedValueOnce(responses[5])
+      .mockResolvedValueOnce(responses[6]) as typeof fetch
 
     const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
     const client = createBlueBubblesClient(
@@ -1147,6 +1348,8 @@ describe("BlueBubbles client", () => {
     await expect(client.listRecentMessages?.()).resolves.toEqual([
       expect.objectContaining({ messageGuid: "root-array-guid" }),
     ])
+    await expect(client.listRecentMessages?.()).resolves.toEqual([])
+    await expect(client.listRecentMessages?.()).resolves.toEqual([])
     await expect(client.listRecentMessages?.()).resolves.toEqual([])
   })
 

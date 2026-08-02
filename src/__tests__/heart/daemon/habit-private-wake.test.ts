@@ -45,6 +45,48 @@ describe("habit private wake helpers", () => {
     })
   })
 
+  it("binds no-send probes into both the wake payload and immutable provenance", () => {
+    const command = buildHabitPrivateWakeCommand({
+      agent: "slugger",
+      habitName: "daily-probe",
+      trigger: "manual",
+      sourceRef: { kind: "daemon-command", id: "habit.probe" },
+      occurrenceId: "probe-1",
+      noSend: true,
+      now: () => new Date("2026-07-04T08:06:00.000Z"),
+    })
+
+    expect(command).toMatchObject({
+      noSend: true,
+      originRefs: expect.arrayContaining([{ kind: "capability", id: "no-send" }]),
+    })
+    expect(habitMessageFromPrivateWakeCommand(command)).toEqual({
+      habitName: "daily-probe",
+      trigger: "manual",
+      noSend: true,
+    })
+  })
+
+  it("rejects either direction of a no-send payload/provenance mismatch", () => {
+    const base = buildHabitPrivateWakeCommand({
+      agent: "slugger",
+      habitName: "daily-probe",
+      trigger: "manual",
+      sourceRef: { kind: "daemon-command", id: "habit.probe" },
+      occurrenceId: "probe-2",
+      now: () => new Date("2026-07-04T08:07:00.000Z"),
+    })
+
+    expect(habitMessageFromPrivateWakeCommand({
+      ...base,
+      noSend: true,
+    })).toBeNull()
+    expect(habitMessageFromPrivateWakeCommand({
+      ...base,
+      originRefs: [...(base.originRefs ?? []), { kind: "capability", id: "no-send" }],
+    })).toBeNull()
+  })
+
   it("ignores non-habit private wake commands", () => {
     expect(habitMessageFromPrivateWakeCommand({ kind: "inner.wake", agent: "slugger" })).toBeNull()
     expect(habitMessageFromPrivateWakeCommand({
@@ -59,6 +101,11 @@ describe("habit private wake helpers", () => {
   })
 
   it("ignores malformed habit private wake origin refs", () => {
+    expect(habitMessageFromPrivateWakeCommand({
+      kind: "private.wake",
+      agent: "slugger",
+      triggerSource: "habit-cron",
+    })).toBeNull()
     expect(habitMessageFromPrivateWakeCommand({
       kind: "private.wake",
       agent: "slugger",

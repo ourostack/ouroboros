@@ -3,11 +3,12 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, getRestrictedReactionFeedbackTools, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
+import { SettleFinalizationCallbackError } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
@@ -26,7 +27,11 @@ import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
 import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
-import type { OrientationFrame } from "./orientation-frame";
+import {
+  buildOrientationFrame,
+  renderOrientationFrame,
+  type OrientationFrame,
+} from "./orientation-frame";
 import type { DelegationDecision } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
 import { getAgentName, getAgentRoot } from "./identity";
@@ -66,6 +71,8 @@ export interface CompletionMetadata {
   answer: string;
   intent: "complete" | "blocked" | "direct_reply";
 }
+
+export type SettleOutputMode = "retractable_buffer" | "final_only";
 
 export interface ProviderRuntime {
   id: ProviderId;
@@ -273,6 +280,9 @@ export interface ChannelCallbacks {
   /** Called after each tool result is pushed to messages. Use for incremental session persistence. */
   onToolResult?(messages: OpenAI.ChatCompletionMessageParam[]): void;
   onError(error: Error, severity: "transient" | "terminal"): void;
+  /** Controls whether a streamed settle answer may enter a callback-owned,
+   * retractable buffer before its completed JSON arguments are validated. */
+  settleOutputMode?: SettleOutputMode;
   onKick?(): void;
   // Clear any buffered text accumulated during streaming. Called before emitting
   // the settle answer so streamed noise (e.g. refusal text) is discarded.
@@ -303,17 +313,23 @@ export interface HabitCallbackBuffer {
   discard(): void;
 }
 
-export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+function createCallbackBuffer(
+  callbacks: ChannelCallbacks,
+  mode: "all" | "text-only",
+): HabitCallbackBuffer {
   const events: HabitBufferedCallbackEvent[] = [];
+  const bufferedCallbacks: ChannelCallbacks = {
+    ...callbacks,
+    onTextChunk: (text) => { events.push({ kind: "text", text }) },
+    onClearText: () => { events.push({ kind: "clear" }) },
+    flushNow: () => { events.push({ kind: "flush" }) },
+  };
+  if (mode === "all") {
+    bufferedCallbacks.onModelStreamStart = () => { events.push({ kind: "stream-start" }) };
+    bufferedCallbacks.onReasoningChunk = (text) => { events.push({ kind: "reasoning", text }) };
+  }
   return {
-    callbacks: {
-      ...callbacks,
-      onModelStreamStart: () => { events.push({ kind: "stream-start" }) },
-      onTextChunk: (text) => { events.push({ kind: "text", text }) },
-      onReasoningChunk: (text) => { events.push({ kind: "reasoning", text }) },
-      onClearText: () => { events.push({ kind: "clear" }) },
-      flushNow: () => { events.push({ kind: "flush" }) },
-    },
+    callbacks: bufferedCallbacks,
     async flush(): Promise<void> {
       for (const event of events.splice(0)) {
         switch (event.kind) {
@@ -341,6 +357,14 @@ export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCal
   };
 }
 
+export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+  return createCallbackBuffer(callbacks, "all");
+}
+
+function createFinalOnlyTextBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+  return createCallbackBuffer(callbacks, "text-only");
+}
+
 export interface RunAgentOptions {
   toolChoiceRequired?: boolean;
   toolContext?: ToolContext;
@@ -360,6 +384,8 @@ export interface RunAgentOptions {
   /** When true, the observe tool is available in 1:1 chats (normally group-only).
    *  Used for reaction/feedback signals where silence is natural even in DMs. */
   isReactionSignal?: boolean;
+  /** One-inference, read-only terminal mode for trusted feedback reactions. */
+  restrictedReactionFeedback?: boolean;
   /** Pending messages from other sessions/private runtime, rendered in system prompt. */
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
@@ -370,6 +396,8 @@ export interface RunAgentOptions {
   providerVisibility?: AgentProviderVisibility;
   /** Structured orientation frame for the current inbound turn. */
   orientationFrame?: OrientationFrame;
+  /** Structured continuity control; user text never sets this flag. */
+  resumePriorWork?: boolean;
   /** Habit-session policy envelope for private habit turns. */
   habitSession?: HabitSessionToolContext;
   /** Content-free same-turn context packet ids linked to this provider run. */
@@ -469,7 +497,11 @@ async function habitToolBatchBlockReason(
   toolCalls: Array<{ name: string; arguments: string }>,
   delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
   activeToolNames: ReadonlySet<string>,
+  noSend: boolean,
 ): Promise<string | null> {
+  if (noSend && toolCalls.some((call) => call.name === "ponder")) {
+    return "habit tool 'ponder' cannot create continuations under immutable no-send authority"
+  }
   if (!habitSession) return null
   const granted = new Set(habitSession.toolPolicy.grantedTools)
   const denied = new Set(habitSession.toolPolicy.deniedTools)
@@ -517,6 +549,40 @@ export function isChatStyleChannel(channel: string): boolean {
   return channel === "cli" || channel === "teams" || channel === "bluebubbles" || channel === "voice";
 }
 
+function bindCurrentIngressEvidenceLocator(
+  toolList: OpenAI.ChatCompletionFunctionTool[],
+  evidence: ToolContext["currentIngressEvidence"],
+): OpenAI.ChatCompletionFunctionTool[] {
+  if (
+    !evidence
+    || evidence.schemaVersion !== 1
+    || evidence.provider !== "bluebubbles"
+    || !/^[a-f0-9]{64}$/.test(evidence.captureKeyHash)
+  ) return toolList
+  const locator = `capture:${evidence.captureKeyHash}`
+  return toolList.map((tool) => {
+    if (tool.function.name !== "habit_cancel") return tool
+    const parameters = tool.function.parameters as Record<string, unknown>
+    const properties = parameters.properties as Record<string, Record<string, unknown>>
+    return {
+      ...tool,
+      function: {
+        ...tool.function,
+        parameters: {
+          ...parameters,
+          properties: {
+            ...properties,
+            evidence: {
+              ...properties.evidence,
+              enum: [locator],
+            },
+          },
+        },
+      },
+    }
+  })
+}
+
 // Sole-call tools must be the only tool call in a turn. When they appear
 // alongside other tools, the sole-call tool is rejected with this message.
 const SOLE_CALL_REJECTION: Record<string, string> = {
@@ -544,16 +610,9 @@ interface ParsedPonderArgs {
 
 function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
   try {
-    const parsed = JSON.parse(argumentsText);
-    if (typeof parsed === "string") {
-      return { answer: parsed };
-    }
-    if (!parsed || typeof parsed !== "object") {
-      return {};
-    }
-
-    const answer = typeof parsed.answer === "string" ? parsed.answer : undefined;
-    const rawIntent = parsed.intent;
+    const parsed = JSON.parse(argumentsText) as Record<string, unknown> | null;
+    const answer = typeof parsed?.answer === "string" ? parsed.answer : undefined;
+    const rawIntent = parsed?.intent;
     const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
       ? rawIntent
       : undefined;
@@ -561,6 +620,26 @@ function parseSettlePayload(argumentsText: string): { answer?: string; intent?: 
   } catch {
     return {};
   }
+}
+
+function matchesRegisteredToolArgumentSchema(
+  tool: OpenAI.ChatCompletionFunctionTool,
+  args: Record<string, unknown>,
+): boolean {
+  const parameters = tool.function.parameters as {
+    required?: string[]
+    properties: Record<string, { type?: string; enum?: unknown[] }>
+  }
+  for (const requiredKey of parameters.required ?? []) {
+    if (!(requiredKey in args)) return false
+  }
+  for (const [key, property] of Object.entries(parameters.properties)) {
+    const value = args[key]
+    if (value === undefined) continue
+    if (property.type === "string" && typeof value !== "string") return false
+    if (property.enum && !property.enum.includes(value)) return false
+  }
+  return true
 }
 
 function parsePonderPayload(argumentsText: string): ParsedPonderArgs {
@@ -802,6 +881,18 @@ function upsertSystemPrompt(
   }
 }
 
+/**
+ * A prompt refresh failure must not revive any generated text from an older
+ * turn or release. Even the nominally stable region contains actor-scoped trust,
+ * tool, and channel context, so it is not safe to reconstruct. Fail closed to a
+ * neutral base and put the freshly derived trigger first.
+ */
+function repairFallbackSystemPrompt(
+  orientationFrame: OrientationFrame,
+): string {
+  return `${renderOrientationFrame(orientationFrame)}\n\nYou are a helpful assistant.`;
+}
+
 // Remove orphan tool_calls from the last assistant message and any
 // trailing tool-result messages that lack a matching tool_call.
 // This keeps the conversation valid after an abort or tool-loop limit.
@@ -990,7 +1081,8 @@ export async function runAgent(
   const facing = channelToFacing(channel);
   let providerRuntime = await getProviderRuntime(facing);
   const provider = providerRuntime.id;
-  const toolChoiceRequired = options?.toolChoiceRequired ?? true;
+  const restrictedReactionFeedback = options?.restrictedReactionFeedback === true;
+  const toolChoiceRequired = restrictedReactionFeedback ? true : options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
   emitNervesEvent({
     event: "engine.turn_start",
@@ -1012,14 +1104,19 @@ export async function runAgent(
     }
   }
 
+  const turnOrientationFrame = options?.orientationFrame
+    ?? (channel ? buildOrientationFrame({ channel, messages }) : undefined);
+
   // Refresh system prompt at start of each turn when channel is provided.
-  // If refresh fails, keep existing system prompt (or inject a minimal safe fallback)
-  // so turn execution remains consistent and non-fatal.
+  // If refresh fails, retain only a recognised stable prefix (or inject a
+  // minimal safe fallback) so stale dynamic state cannot regain authority.
   let structuredSystemPrompt: SystemPrompt | undefined;
   if (channel) {
     try {
       const buildSystemOptions = {
         ...options,
+        orientationFrame: turnOrientationFrame,
+        resumePriorWork: options?.resumePriorWork === true,
         providerCapabilities: providerRuntime.capabilities,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
       };
@@ -1028,8 +1125,9 @@ export async function runAgent(
       upsertSystemPrompt(messages, flattenSystemPrompt(refreshed));
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
-      const existingSystemText = hadExistingSystemPrompt ? (messages[0].content as string) : undefined;
-      const fallback = existingSystemText ?? "You are a helpful assistant.";
+      const fallback = repairFallbackSystemPrompt(
+        turnOrientationFrame!,
+      );
       upsertSystemPrompt(messages, fallback);
       emitNervesEvent({
         level: "warn",
@@ -1132,22 +1230,37 @@ export async function runAgent(
     outcome = "errored";
     done = true;
   };
+  const finishRestrictedReactionFeedbackViolation = (reason: string): void => {
+    callbacks.onClearText?.();
+    finishTerminalProviderError(
+      new Error(`restricted reaction feedback failed closed: ${reason}`),
+      "unknown",
+    );
+  };
 
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
 
   const toolPreferences = currentContext?.friend?.toolPreferences;
-  const baseTools = options?.tools ?? getToolsForChannel(
-    channel ? getChannelCapabilities(channel) : undefined,
-    toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
-    currentContext,
-    providerRuntime.capabilities,
-    options?.mcpManager,
-    providerRuntime.model,
-  );
+  const unboundBaseTools = restrictedReactionFeedback
+    ? getRestrictedReactionFeedbackTools()
+    : options?.tools ?? getToolsForChannel(
+      channel ? getChannelCapabilities(channel) : undefined,
+      toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
+      currentContext,
+      providerRuntime.capabilities,
+      options?.mcpManager,
+      providerRuntime.model,
+    );
+  const baseTools = restrictedReactionFeedback
+    ? unboundBaseTools
+    : bindCurrentIngressEvidenceLocator(
+      unboundBaseTools,
+      options?.toolContext?.currentIngressEvidence,
+    )
   // Augment tool context with reasoning effort controls from provider
   const baseToolContext: ToolContext | undefined = options?.toolContext
-    ?? (options?.orientationFrame ? { signin: async () => undefined, orientationFrame: options.orientationFrame } : undefined)
+    ?? (turnOrientationFrame ? { signin: async () => undefined, orientationFrame: turnOrientationFrame } : undefined)
   const habitSession = options?.habitSession ?? baseToolContext?.habitSession
   const augmentedToolContext: ToolContext | undefined = baseToolContext
       ? {
@@ -1155,7 +1268,7 @@ export async function runAgent(
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
         activeWorkFrame: options?.activeWorkFrame,
-        orientationFrame: options?.orientationFrame ?? baseToolContext.orientationFrame,
+        orientationFrame: turnOrientationFrame ?? baseToolContext.orientationFrame,
         ...(habitSession ? { habitSession } : {}),
       }
     : habitSession
@@ -1190,17 +1303,21 @@ export async function runAgent(
     const filteredBaseTools = isPrivateRuntimeChannel
       ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
-    const activeTools = [
-      ...filteredBaseTools,
-      ponderTool,
-      ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
-      ...(isPrivateRuntimeChannel ? [restTool] : []),
-      ...(!isPrivateRuntimeChannel ? [observeTool] : []),
-      ...(!isPrivateRuntimeChannel ? [settleTool] : []),
-      ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
-    ];
+    const activeTools = restrictedReactionFeedback
+      ? filteredBaseTools
+      : [
+        ...filteredBaseTools,
+        ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
+        ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
+        ...(isPrivateRuntimeChannel ? [restTool] : []),
+        ...(!isPrivateRuntimeChannel ? [observeTool] : []),
+        ...(!isPrivateRuntimeChannel ? [settleTool] : []),
+        ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
+      ];
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
-    const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
+    const steeringFollowUps = restrictedReactionFeedback
+      ? []
+      : options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
       if (hasSupersedingFollowUp) {
@@ -1226,10 +1343,14 @@ export async function runAgent(
       break;
     }
     try {
-      const habitCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
+      const turnCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
         callbacks.onModelStart();
-        habitCallbackBufferRef.current = habitSession ? createHabitCallbackBuffer(callbacks) : null;
+        turnCallbackBufferRef.current = habitSession
+          ? createHabitCallbackBuffer(callbacks)
+          : callbacks.settleOutputMode === "final_only"
+            ? createFinalOnlyTextBuffer(callbacks)
+            : null;
         try {
           const promptBudget = applyPromptBudget({
             messages,
@@ -1244,17 +1365,17 @@ export async function runAgent(
           return await providerRuntime.streamTurn({
             messages,
             activeTools,
-            callbacks: habitCallbackBufferRef.current?.callbacks ?? callbacks,
+            callbacks: turnCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
             traceId,
             toolChoiceRequired,
             reasoningEffort: currentReasoningEffort,
-            eagerSettleStreaming: true,
+            eagerSettleStreaming: !restrictedReactionFeedback,
             systemPrompt: structuredSystemPrompt,
           });
         } catch (error) {
-          habitCallbackBufferRef.current?.discard();
-          habitCallbackBufferRef.current = null;
+          turnCallbackBufferRef.current?.discard();
+          turnCallbackBufferRef.current = null;
           if (signal?.aborted) throw new ProviderAttemptAbortError()
           throw error
         }
@@ -1283,8 +1404,9 @@ export async function runAgent(
         operation: "turn",
         provider: providerRuntime.id,
         model: providerRuntime.model,
-        run: callProviderTurnWithOverflowRecovery,
+        run: restrictedReactionFeedback ? callProviderTurn : callProviderTurnWithOverflowRecovery,
         classifyError: (error) => providerRuntime.classifyError(error),
+        ...(restrictedReactionFeedback ? { policy: { maxAttempts: 1 } } : {}),
         onRetry: async (record, maxAttempts) => {
           const delayMs = record.delayMs as number
           const seconds = delayMs / 1000
@@ -1326,8 +1448,21 @@ export async function runAgent(
       }
 
       const result = attempt.value;
-      const streamCallbackBuffer = habitCallbackBufferRef.current;
-      habitCallbackBufferRef.current = null;
+      const streamCallbackBuffer = turnCallbackBufferRef.current;
+      turnCallbackBufferRef.current = null;
+
+      if (result.settleFinalization && !result.settleFinalization.ok) {
+        // A completed settle payload is terminal provider output, not a prompt
+        // for another model turn. Retractable callbacks have already cleared;
+        // core-owned callback buffers must be discarded before surfacing the exact
+        // parser failure through the ordinary terminal-error path.
+        streamCallbackBuffer?.discard();
+        finishTerminalProviderError(
+          new Error(result.settleFinalization.errorCode),
+          "unknown",
+        );
+        continue;
+      }
 
       // Track usage from the latest API call
       if (result.usage) lastUsage = result.usage;
@@ -1391,6 +1526,122 @@ export async function runAgent(
         (msg as AssistantMessageWithReasoning).phase = isSoleSettle ? "settle" : "commentary";
       }
 
+      if (restrictedReactionFeedback) {
+        if (result.toolCalls.length !== 1) {
+          streamCallbackBuffer?.discard();
+          finishRestrictedReactionFeedbackViolation(
+            result.toolCalls.length === 0
+              ? "the provider returned no terminal tool"
+              : "the provider returned a mixed or multiple-tool batch",
+          );
+          continue;
+        }
+
+        const restrictedCall = result.toolCalls[0];
+        if (!activeToolNames.has(restrictedCall.name)) {
+          streamCallbackBuffer?.discard();
+          finishRestrictedReactionFeedbackViolation(
+            `the provider returned unregistered tool ${JSON.stringify(restrictedCall.name)}`,
+          );
+          continue;
+        }
+
+        let restrictedArgs: Record<string, unknown> | null = null;
+        try {
+          const parsed = JSON.parse(restrictedCall.arguments);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            restrictedArgs = parsed as Record<string, unknown>;
+          }
+        } catch {
+          restrictedArgs = null;
+        }
+        const registeredTool = activeTools.find(
+          (tool) => tool.function.name === restrictedCall.name,
+        )!;
+        const argumentsMatchSchema = restrictedArgs !== null
+          && matchesRegisteredToolArgumentSchema(registeredTool, restrictedArgs);
+        const callbackArgs = (restrictedArgs ?? {}) as Record<string, string>;
+
+        if (restrictedCall.name === "settle") {
+          const { answer, intent } = parseSettlePayload(restrictedCall.arguments);
+          callbacks.onToolStart("settle", callbackArgs);
+          if (!argumentsMatchSchema || answer === undefined || intent === "direct_reply") {
+            callbacks.onToolEnd("settle", summarizeArgs("settle", callbackArgs), false);
+            streamCallbackBuffer?.discard();
+            finishRestrictedReactionFeedbackViolation("settle arguments were malformed or requested continuation");
+            continue;
+          }
+
+          streamCallbackBuffer?.discard();
+          callbacks.onToolEnd("settle", summarizeArgs("settle", callbackArgs), true);
+          const completionIntent = intent === "blocked" ? "blocked" : "complete";
+          completion = { answer, intent: completionIntent };
+          callbacks.onClearText?.();
+          callbacks.onTextChunk(answer);
+          messages.push(msg);
+          const delivered = "(delivered)";
+          messages.push({ role: "tool", tool_call_id: restrictedCall.id, content: delivered });
+          providerRuntime.appendToolOutput(restrictedCall.id, delivered);
+          outcome = completionIntent === "blocked" ? "blocked" : "settled";
+          done = true;
+          continue;
+        }
+
+        if (!argumentsMatchSchema) {
+          streamCallbackBuffer?.discard();
+          finishRestrictedReactionFeedbackViolation(`${restrictedCall.name} arguments were malformed`);
+          continue;
+        }
+
+        if (restrictedCall.name === "observe") {
+          streamCallbackBuffer?.discard();
+          callbacks.onClearText?.();
+          callbacks.onToolStart("observe", callbackArgs);
+          const reason = typeof callbackArgs.reason === "string" ? callbackArgs.reason : undefined;
+          emitNervesEvent({
+            component: "engine",
+            event: "engine.observe",
+            message: "agent observed without responding",
+            meta: { ...(reason ? { reason } : {}) },
+          });
+          callbacks.onToolEnd("observe", summarizeArgs("observe", callbackArgs), true);
+          messages.push(msg);
+          const silenced = "(silenced)";
+          messages.push({ role: "tool", tool_call_id: restrictedCall.id, content: silenced });
+          providerRuntime.appendToolOutput(restrictedCall.id, silenced);
+          outcome = "observed";
+          done = true;
+          continue;
+        }
+
+        callbacks.onClearText?.();
+        callbacks.onToolStart("orientation_get", callbackArgs);
+        let orientationReadSucceeded = false;
+        try {
+          const execToolFn = options?.execTool ?? execTool;
+          await execToolFn(
+            "orientation_get",
+            callbackArgs,
+            augmentedToolContext,
+          );
+          orientationReadSucceeded = true;
+        } catch {
+          orientationReadSucceeded = false;
+        }
+        callbacks.onToolEnd(
+          "orientation_get",
+          summarizeArgs("orientation_get", callbackArgs),
+          orientationReadSucceeded,
+        );
+        streamCallbackBuffer?.discard();
+        finishRestrictedReactionFeedbackViolation(
+          orientationReadSucceeded
+            ? "orientation_get completed but no terminal response can follow the single invocation"
+            : "orientation_get failed",
+        );
+        continue;
+      }
+
       // Detect the MiniMax "only-thinking, no tool call" violation: no tool
       // calls returned, and the content is empty after stripping
       // <think>...</think> blocks. This is a narrow check — legitimate
@@ -1410,8 +1661,8 @@ export async function runAgent(
         : null;
 
       if (!result.toolCalls.length) {
-        await streamCallbackBuffer?.flush();
         if (privateReturnTextAckRetryError) {
+          streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
           if (noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
             noToolCallRetries++;
@@ -1459,6 +1710,7 @@ export async function runAgent(
           continue;
         }
         if (onlyThinkContent && toolChoiceRequired && noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
+          streamCallbackBuffer?.discard();
           // Provider-level violation: tool_choice was required, model emitted
           // only a <think>...</think> block (or empty content) with no tool
           // call. Retry with a corrective nudge up to NO_TOOL_CALL_MAX_RETRIES
@@ -1482,18 +1734,27 @@ export async function runAgent(
           messages.push({
             role: "user",
             content: isPrivateRuntimeChannel
-              ? "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
+              ? augmentedToolContext?.noSend === true
+                ? "no tool was called this turn. this is an immutable no-send turn; call rest now without creating a continuation."
+                : "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
               : "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now.",
           });
           continue;
         }
         // Legitimate text-only response, or cap reached — accept as-is.
+        await streamCallbackBuffer?.flush();
         messages.push(msg);
         done = true;
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
-        const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins, activeToolNames)
+        const habitBlockReason = await habitToolBatchBlockReason(
+          habitSession,
+          result.toolCalls,
+          augmentedToolContext?.delegatedOrigins,
+          activeToolNames,
+          augmentedToolContext?.noSend === true,
+        )
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
           recordBlockedHabitSurfaceAttempts(habitSession, result.toolCalls, habitBlockReason)
@@ -1512,15 +1773,79 @@ export async function runAgent(
           })
           continue
         }
-        await streamCallbackBuffer?.flush();
+        const soleTerminalCall = result.toolCalls.length === 1
+          ? result.toolCalls[0]
+          : null
+        const soleTerminalProjection = soleTerminalCall
+          ? resolveToolDefinition(soleTerminalCall.name)?.terminalProjection
+          : undefined
+        if (soleTerminalCall && soleTerminalProjection?.mode === "verbatim") {
+          let terminalArgs: Record<string, string> = {}
+          try {
+            const parsed = JSON.parse(soleTerminalCall.arguments)
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              terminalArgs = parsed as Record<string, string>
+            }
+          } catch {
+            // The registered handler owns exact argument validation.
+          }
+          if (
+            soleTerminalProjection.clearBufferedText
+            || callbacks.settleOutputMode === "final_only"
+          ) {
+            streamCallbackBuffer?.discard()
+          } else {
+            await streamCallbackBuffer?.flush()
+          }
+          if (soleTerminalProjection.clearBufferedText) callbacks.onClearText?.()
+          callbacks.onToolStart(soleTerminalCall.name, terminalArgs)
+          let terminalResult: string
+          try {
+            const execToolFn = options?.execTool ?? execTool
+            terminalResult = await execToolFn(
+              soleTerminalCall.name,
+              terminalArgs,
+              augmentedToolContext,
+            )
+          } catch (error) {
+            callbacks.onToolEnd(
+              soleTerminalCall.name,
+              summarizeArgs(soleTerminalCall.name, terminalArgs),
+              false,
+            )
+            messages.push(msg)
+            const failure = error instanceof Error ? `error: ${error.message}` : `error: ${String(error)}`
+            messages.push({ role: "tool", tool_call_id: soleTerminalCall.id, content: failure })
+            providerRuntime.appendToolOutput(soleTerminalCall.id, failure)
+            callbacks.onTextChunk(failure)
+            completion = { answer: failure, intent: "blocked" }
+            outcome = "blocked"
+            done = true
+            continue
+          }
+          callbacks.onToolEnd(
+            soleTerminalCall.name,
+            summarizeArgs(soleTerminalCall.name, terminalArgs),
+            true,
+          )
+          messages.push(msg)
+          messages.push({ role: "tool", tool_call_id: soleTerminalCall.id, content: terminalResult })
+          providerRuntime.appendToolOutput(soleTerminalCall.id, terminalResult)
+          callbacks.onTextChunk(terminalResult)
+          completion = { answer: terminalResult, intent: "complete" }
+          outcome = "settled"
+          done = true
+          continue
+        }
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
           const settleArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           callbacks.onToolStart("settle", settleArgs);
           // Private-runtime attention queue gate: reject settle if items remain
-          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (isPrivateRuntimeChannel && attentionQueue && attentionQueue.length > 0) {
+            streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
@@ -1536,6 +1861,7 @@ export async function runAgent(
 
           // Private-runtime settle: no CompletionMetadata, "(settled)" ack
           if (isPrivateRuntimeChannel) {
+            streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
             messages.push(msg);
             const settled = "(settled)";
@@ -1546,7 +1872,9 @@ export async function runAgent(
             continue;
           }
 
-          const deliveredAnswer = answer
+          // The provider finalizer has already established a top-level string
+          // answer before ordinary settle handling reaches this point.
+          const deliveredAnswer = answer as string
           const retryError = privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
             ?? privateReturnMissingPonderError({
               latestUserRequest: latestUserMessageText(messages),
@@ -1566,28 +1894,30 @@ export async function runAgent(
               sawExternalStateQuery,
             )
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
-          const validTerminalIntent = intent === "complete" || intent === "blocked";
-          const validClosure = deliveredAnswer != null
-            && !retryError
-            && (!mustResolveBeforeHandoffActive || validDirectReply || validTerminalIntent);
 
-          if (validClosure) {
+          if (retryError === null) {
+            try {
+              if (!result.settleStreamed) {
+                const acceptedOutputCallbacks = streamCallbackBuffer?.callbacks ?? callbacks
+                acceptedOutputCallbacks.onTextChunk(deliveredAnswer)
+              }
+              await streamCallbackBuffer?.flush()
+            } catch (error) {
+              callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)
+              streamCallbackBuffer?.discard()
+              finishTerminalProviderError(
+                new SettleFinalizationCallbackError(error),
+                "unknown",
+              )
+              continue
+            }
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
             completion = {
               answer: deliveredAnswer,
               intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
             };
-            if (result.settleStreamed) {
-              // The streaming layer already parsed and emitted the answer
-              // progressively via SettleParser. Skip clearing and
-              // re-emitting to avoid double-delivery.
-            } else {
-              // Clear any streamed noise (e.g. refusal text) before emitting.
-              callbacks.onClearText?.();
-              // Emit the answer through the callback pipeline so channels receive it.
-              // Never truncate -- channel adapters handle splitting long messages.
-              callbacks.onTextChunk(deliveredAnswer);
-            }
+            // Retractable owners already hold the validated answer. Final-only
+            // owners receive it here, after every semantic continuation gate.
             messages.push(msg);
             if (validDirectReply) {
               const resumeWork = "direct reply delivered. resume the unresolved obligation now and keep working until you can finish or clearly report that you are blocked.";
@@ -1601,14 +1931,13 @@ export async function runAgent(
               done = true;
             }
           } else {
-            // Answer is undefined -- the model's settle was incomplete or
-            // malformed. Clear any partial streamed text or noise, then push the
-            // assistant msg + error tool result and let the model try again.
+            // The payload is structurally final, but a semantic continuation
+            // gate rejected it. Return that exact gate reason to the model.
+            streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
             const toolRetryMessage = retryError
-              ?? "your settle was incomplete or malformed. call settle again with your complete response."
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, toolRetryMessage);
           }
@@ -1618,6 +1947,7 @@ export async function runAgent(
         // Check for observe sole call: intercept before tool execution
         const isSoleObserve = result.toolCalls.length === 1 && result.toolCalls[0].name === "observe";
         if (isSoleObserve) {
+          streamCallbackBuffer?.discard();
           /* v8 ignore next -- defensive: JSON.parse catch for malformed observe args @preserve */
           const observeArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           let reason: string | undefined;
@@ -1642,11 +1972,12 @@ export async function runAgent(
         // Check for rest sole call: intercept before tool execution
         const isSoleRest = result.toolCalls.length === 1 && result.toolCalls[0].name === "rest";
         if (isSoleRest) {
+          streamCallbackBuffer?.discard();
           const restArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
           callbacks.onToolStart("rest", restArgs);
 
           // Attention queue gate: reject rest if items remain
-          const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins;
+          const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
             messages.push(msg);
@@ -1691,12 +2022,27 @@ export async function runAgent(
           continue;
         }
 
+        const containsSoleCallOnlyViolation = result.toolCalls.length > 1
+          && result.toolCalls.some((call) => {
+            const terminalProjection = resolveToolDefinition(call.name)?.terminalProjection
+            return SOLE_CALL_REJECTION[call.name] !== undefined
+              || terminalProjection?.requiresSoleCall === true
+          })
+        if (callbacks.settleOutputMode === "final_only" && containsSoleCallOnlyViolation) {
+          streamCallbackBuffer?.discard()
+        } else {
+          await streamCallbackBuffer?.flush()
+        }
         messages.push(msg);
         // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
           // Reject sole-call tools when mixed with other tool calls
-          const soleCallRejection = SOLE_CALL_REJECTION[tc.name];
+          const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
+          const soleCallRejection = SOLE_CALL_REJECTION[tc.name]
+            ?? (terminalProjection?.requiresSoleCall
+              ? `rejected: ${tc.name} must be the only tool call.`
+              : undefined);
           if (soleCallRejection) {
             messages.push({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
             providerRuntime.appendToolOutput(tc.id, soleCallRejection);
@@ -1783,13 +2129,13 @@ export async function runAgent(
 
             try {
               const action = parsedArgs.action ?? "create";
-              const currentSession = (augmentedToolContext ?? options?.toolContext)?.currentSession;
+              const currentSession = augmentedToolContext?.currentSession;
               const currentOrigin = currentSession
                 ? { friendId: currentSession.friendId, channel: currentSession.channel, key: currentSession.key }
                 : undefined;
               const isInnerChannel = currentOrigin?.friendId === "self" && currentOrigin?.channel === "inner";
               const shouldCreateReturnObligation = !!currentOrigin && !isInnerChannel;
-              const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins ?? [];
+              const attentionQueue = augmentedToolContext?.delegatedOrigins ?? [];
               const successCriteria = parseSuccessCriteria(parsedArgs.success_criteria);
               const payload = parsePacketPayload(parsedArgs.payload_json);
 
@@ -1964,7 +2310,7 @@ export async function runAgent(
           let success: boolean;
           try {
             const execToolFn = options?.execTool ?? execTool;
-            toolResult = await execToolFn(tc.name, args, augmentedToolContext ?? options?.toolContext);
+            toolResult = await execToolFn(tc.name, args, augmentedToolContext);
             success = true;
           } catch (e) {
             toolResult = `error: ${e}`;

@@ -21,7 +21,7 @@ afterEach(() => {
 })
 
 const eventLine = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
-  time: "2026-04-25T12:00:00.000Z",
+  ts: "2026-04-25T12:00:00.000Z",
   level: "info",
   component: "senses",
   event: "senses.bluebubbles_from_me_ignored",
@@ -48,9 +48,9 @@ describe("parseDuration", () => {
 describe("reviewNerveEvents", () => {
   it("returns the most recent N events when no filter is set", () => {
     const file = tempFile([
-      eventLine({ event: "a", time: "2026-04-25T11:00:00.000Z" }),
-      eventLine({ event: "b", time: "2026-04-25T11:05:00.000Z" }),
-      eventLine({ event: "c", time: "2026-04-25T11:10:00.000Z" }),
+      eventLine({ event: "a", ts: "2026-04-25T11:00:00.000Z" }),
+      eventLine({ event: "b", ts: "2026-04-25T11:05:00.000Z" }),
+      eventLine({ event: "c", ts: "2026-04-25T11:10:00.000Z" }),
     ])
     const result = reviewNerveEvents(file, { limit: 10 })
     expect(result.map((entry) => entry.parsed?.event)).toEqual(["a", "b", "c"])
@@ -88,18 +88,34 @@ describe("reviewNerveEvents", () => {
 
   it("filters by sinceMs window", () => {
     const file = tempFile([
-      eventLine({ time: "2026-04-25T10:00:00.000Z" }),
-      eventLine({ time: "2026-04-25T11:55:00.000Z" }),
-      eventLine({ time: "2026-04-25T11:59:00.000Z" }),
+      eventLine({ ts: "2026-04-25T10:00:00.000Z" }),
+      eventLine({ ts: "2026-04-25T11:55:00.000Z" }),
+      eventLine({ ts: "2026-04-25T11:59:00.000Z" }),
     ])
     const nowMs = Date.parse("2026-04-25T12:00:00.000Z")
     const result = reviewNerveEvents(file, { sinceMs: 10 * 60_000, nowMs })
     expect(result).toHaveLength(2)
   })
 
+  it("falls back to legacy time only when canonical ts is absent", () => {
+    const file = tempFile([
+      eventLine({ event: "canonical-old", ts: "2026-04-25T10:00:00.000Z", time: "2026-04-25T11:59:00.000Z" }),
+      eventLine({ event: "canonical-recent", ts: "2026-04-25T11:59:00.000Z", time: "2026-04-25T10:00:00.000Z" }),
+      eventLine({ event: "malformed-canonical", ts: "not-a-time", time: "2026-04-25T11:59:00.000Z" }),
+      eventLine({ event: "non-string-canonical", ts: 123, time: "2026-04-25T11:59:00.000Z" }),
+      eventLine({ event: "legacy-recent", ts: undefined, time: "2026-04-25T11:58:00.000Z" }),
+      eventLine({ event: "missing-timestamp", ts: undefined, time: undefined }),
+    ])
+    const nowMs = Date.parse("2026-04-25T12:00:00.000Z")
+
+    const result = reviewNerveEvents(file, { sinceMs: 10 * 60_000, nowMs })
+
+    expect(result.map((entry) => entry.parsed?.event)).toEqual(["canonical-recent", "legacy-recent"])
+  })
+
   it("respects the limit and returns the most recent matches", () => {
     const lines = Array.from({ length: 100 }, (_, i) =>
-      eventLine({ event: `evt-${i}`, time: `2026-04-25T${String(10 + Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}:00.000Z` }),
+      eventLine({ event: `evt-${i}`, ts: `2026-04-25T${String(10 + Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}:00.000Z` }),
     )
     const file = tempFile(lines)
     const result = reviewNerveEvents(file, { limit: 5 })
@@ -120,9 +136,36 @@ describe("reviewNerveEvents", () => {
     expect(reviewNerveEvents("/path/that/does/not/exist.ndjson")).toEqual([])
   })
 
-  it("formats a parsed entry with time, level, component/event, and message", () => {
+  it("formats a parsed legacy entry with time, level, component/event, and message", () => {
     const entry = { raw: "{}", parsed: { time: "T", level: "warn", component: "senses", event: "x.y", message: "m" } }
     expect(formatNerveEntry(entry as any)).toBe("T [warn ] senses/x.y — m")
+  })
+
+  it("formats canonical ts with precedence over legacy time", () => {
+    const entry = {
+      raw: "{}",
+      parsed: {
+        ts: "2026-04-25T12:00:00.000Z",
+        time: "legacy-must-not-win",
+        level: "info",
+        component: "daemon",
+        event: "daemon.ready",
+        message: "ready",
+      },
+    }
+    expect(formatNerveEntry(entry)).toBe("2026-04-25T12:00:00.000Z [info ] daemon/daemon.ready — ready")
+  })
+
+  it("does not format legacy time when a malformed canonical ts is present", () => {
+    const entry = {
+      raw: "{}",
+      parsed: { ts: "not-a-time", time: "legacy-must-not-win", component: "daemon", event: "daemon.bad_ts" },
+    }
+    expect(formatNerveEntry(entry)).toBe("not-a-time [info ] daemon/daemon.bad_ts — ")
+    expect(formatNerveEntry({
+      raw: "{}",
+      parsed: { ts: 123, time: "legacy-must-not-win", component: "daemon", event: "daemon.non_string_ts" },
+    })).toBe(" [info ] daemon/daemon.non_string_ts — ")
   })
 })
 
@@ -135,6 +178,7 @@ describe("runNervesReviewCli", () => {
       const code = runNervesReviewCli(["--help"])
       expect(code).toBe(0)
       expect(logs.join("\n")).toContain("usage: ouro nerves-review")
+      expect(logs.join("\n")).toContain("default: ouro")
     } finally {
       console.log = original
     }

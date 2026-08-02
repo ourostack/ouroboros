@@ -390,6 +390,7 @@ export function createTeamsCallbacks(
   }
 
   return {
+    settleOutputMode: "final_only",
     onModelStart: () => {
       if (hadRealOutput) return // real output already shown; don't overwrite with phrases
       const phrases = getPhrases()

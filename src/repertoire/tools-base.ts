@@ -31,6 +31,7 @@ import { evolutionToolDefinitions } from "./tools-evolution"
 import { runtimeToolDefinitions } from "./tools-runtime"
 import { orientationToolDefinitions } from "./tools-orientation"
 import { rsvpToolDefinitions } from "./tools-rsvp"
+import { habitToolDefinitions } from "./tools-habits"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
@@ -82,6 +83,7 @@ export interface HabitSessionToolContext {
   recordProducedRef?: (ref: FlightRecorderProducedRef) => void;
   recordSurfaceAttempt?: (attempt: HabitSurfaceAttempt) => void;
   recordError?: (error: string) => void;
+  readonly noSend?: true;
 }
 
 export interface ToolContext {
@@ -110,6 +112,14 @@ export interface ToolContext {
   delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
   voiceCall?: VoiceCallControl;
   orientationFrame?: OrientationFrame;
+  /** Immutable locator for the durable v1 capture that started this turn. */
+  readonly currentIngressEvidence?: Readonly<{
+    schemaVersion: 1;
+    provider: "bluebubbles";
+    captureKeyHash: string;
+  }>;
+  /** Irrevocable per-turn capability reduction used by transport-safe probes. */
+  readonly noSend?: true;
   habitSession?: HabitSessionToolContext;
   daemonSocketPath?: string;
   agentRoot?: string;
@@ -137,6 +147,11 @@ export interface ToolDefinition {
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
   riskProfile?: ToolRiskProfile | ToolRiskProfileResolver;
+  terminalProjection?: {
+    mode: "verbatim";
+    requiresSoleCall: true;
+    clearBufferedText: true;
+  };
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;
 }
@@ -174,6 +189,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...orientationToolDefinitions,
   ...runtimeToolDefinitions,
   ...rsvpToolDefinitions,
+  ...habitToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).

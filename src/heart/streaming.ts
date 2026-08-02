@@ -50,61 +50,308 @@ export interface TurnResult {
   outputItems: ResponseItem[];
   usage?: UsageData;
   settleStreamed?: boolean;
+  settleFinalization?: SettleParserFinishResult;
 }
 
-// Character-level state machine that extracts the answer value from
-// `settle` tool call JSON arguments as they stream in.
-// Scans for prefix `"answer":"` or `"answer": "` in the character stream,
-// then emits text handling JSON escapes, stopping at unescaped closing `"`.
+export type SettleParserErrorCode = "incomplete_settle_arguments" | "invalid_settle_arguments";
+
+export type SettleParserFinishResult =
+  | { ok: true; answer: string }
+  | { ok: false; errorCode: SettleParserErrorCode };
+
+export class SettleFinalizationCallbackError extends Error {
+  readonly retryable = false;
+  readonly cause: Error;
+
+  constructor(cause: unknown) {
+    const normalized = cause instanceof Error ? cause : new Error(String(cause));
+    super(`settle finalization callback failed: ${normalized.message}`);
+    this.name = "SettleFinalizationCallbackError";
+    this.cause = normalized;
+  }
+}
+
+type JsonContainer = "array" | "object";
+type AnswerKeyState = "none" | "after_key" | "after_colon";
+type AnswerDecodeState = "normal" | "escape" | "unicode";
+
+function isJsonWhitespace(character: string): boolean {
+  return character === " " || character === "\t" || character === "\n" || character === "\r";
+}
+
+function isHighSurrogate(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return code >= 0xD800 && code <= 0xDBFF;
+}
+
+function isLowSurrogate(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return code >= 0xDC00 && code <= 0xDFFF;
+}
+
+// Incremental JSON string decoder for the top-level `answer` property in
+// streamed settle arguments. JSON.parse remains the terminal authority; this
+// state machine exists only to emit validated string units before EOF.
 export class SettleParser {
-  // Possible prefixes to match (with and without space after colon)
-  private static readonly PREFIXES = ['"answer":"', '"answer": "'];
-  // Buffer of characters seen so far (pre-activation only)
-  private buf = "";
+  private rawArguments = "";
   private _active = false;
   private _complete = false;
-  private inEscape = false;
+  private invalid = false;
+  private terminalResult: SettleParserFinishResult | undefined;
+
+  private containers: JsonContainer[] = [];
+  private rootLastSignificant = "";
+  private scanInString = false;
+  private scanEscape = false;
+  private scanStringRaw = "";
+  private scanStringIsRootKey = false;
+  private answerKeyState: AnswerKeyState = "none";
+
+  private decodeState: AnswerDecodeState = "normal";
+  private unicodeDigits = "";
+  private pendingHighSurrogate = "";
+  private decodedAnswer = "";
 
   get active(): boolean { return this._active; }
   get complete(): boolean { return this._complete; }
 
   process(delta: string): string {
-    if (this._complete) return "";
+    if (this.terminalResult) return "";
+    this.rawArguments += delta;
+    if (this._complete || this.invalid) return "";
+
     let out = "";
     for (let i = 0; i < delta.length; i++) {
       const ch = delta[i];
-      if (!this._active) {
-        this.buf += ch;
-        // Check if any prefix has been fully matched in the buffer
-        for (const prefix of SettleParser.PREFIXES) {
-          if (this.buf.endsWith(prefix)) {
-            this._active = true;
-            break;
-          }
-        }
+      if (this._active) {
+        out += this.processAnswerCharacter(ch);
       } else {
-        // Active: emit characters, handling JSON escapes
-        if (this.inEscape) {
-          this.inEscape = false;
-          switch (ch) {
-            case '"': out += '"'; break;
-            case '\\': out += '\\'; break;
-            case 'n': out += '\n'; break;
-            case 't': out += '\t'; break;
-            case '/': out += '/'; break;
-            default: out += ch; break; // unknown escape: pass through character
-          }
-        } else if (ch === '\\') {
-          this.inEscape = true;
-        } else if (ch === '"') {
-          this._complete = true;
-          return out; // stop processing, closing quote found
-        } else {
-          out += ch;
-        }
+        this.scanForTopLevelAnswer(ch);
       }
+      if (this._complete || this.invalid) break;
     }
     return out;
+  }
+
+  finish(): SettleParserFinishResult {
+    if (this.terminalResult) return this.terminalResult;
+
+    if (this.invalid) {
+      return this.setTerminalFailure("invalid_settle_arguments");
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(this.rawArguments);
+    } catch (error) {
+      const errorCode = this.isIncompleteAtEof(error)
+        ? "incomplete_settle_arguments"
+        : "invalid_settle_arguments";
+      return this.setTerminalFailure(errorCode);
+    }
+
+    if (
+      typeof parsed !== "object"
+      || parsed === null
+      || Array.isArray(parsed)
+      || typeof (parsed as Record<string, unknown>).answer !== "string"
+      || !this._active
+      || !this._complete
+    ) {
+      return this.setTerminalFailure("invalid_settle_arguments");
+    }
+
+    const answer = (parsed as { answer: string }).answer;
+    if (answer !== this.decodedAnswer) {
+      return this.setTerminalFailure("invalid_settle_arguments");
+    }
+
+    this.terminalResult = { ok: true, answer };
+    return this.terminalResult;
+  }
+
+  private scanForTopLevelAnswer(character: string): void {
+    if (this.scanInString) {
+      if (this.scanEscape) {
+        this.scanStringRaw += character;
+        this.scanEscape = false;
+        return;
+      }
+      if (character === "\\") {
+        this.scanStringRaw += character;
+        this.scanEscape = true;
+        return;
+      }
+      if (character !== '"') {
+        this.scanStringRaw += character;
+        return;
+      }
+
+      this.scanInString = false;
+      this.rootLastSignificant = '"';
+      if (this.scanStringIsRootKey) {
+        try {
+          if (JSON.parse(`"${this.scanStringRaw}"`) === "answer") {
+            this.answerKeyState = "after_key";
+          }
+        } catch {
+          this.invalid = true;
+        }
+      }
+      this.scanStringRaw = "";
+      this.scanStringIsRootKey = false;
+      return;
+    }
+
+    if (this.answerKeyState === "after_key") {
+      if (isJsonWhitespace(character)) return;
+      if (character === ":") {
+        this.answerKeyState = "after_colon";
+        this.rootLastSignificant = character;
+        return;
+      }
+      this.invalid = true;
+      return;
+    }
+
+    if (this.answerKeyState === "after_colon") {
+      if (isJsonWhitespace(character)) return;
+      this.answerKeyState = "none";
+      if (character === '"') {
+        this._active = true;
+        this.rootLastSignificant = "value";
+        return;
+      }
+    }
+
+    if (isJsonWhitespace(character)) return;
+
+    const atRootObject = this.containers.length === 1 && this.containers[0] === "object";
+    if (character === '"') {
+      this.scanInString = true;
+      this.scanEscape = false;
+      this.scanStringRaw = "";
+      this.scanStringIsRootKey = atRootObject
+        && (this.rootLastSignificant === "{" || this.rootLastSignificant === ",");
+      return;
+    }
+
+    if (character === "{" || character === "[") {
+      if (atRootObject) this.rootLastSignificant = "value";
+      this.containers.push(character === "{" ? "object" : "array");
+      if (this.containers.length === 1 && character === "{") {
+        this.rootLastSignificant = character;
+      }
+      return;
+    }
+
+    if (character === "}" || character === "]") {
+      const expected = character === "}" ? "object" : "array";
+      if (this.containers.at(-1) !== expected) {
+        this.invalid = true;
+        return;
+      }
+      this.containers.pop();
+      if (this.containers.length === 1 && this.containers[0] === "object") {
+        this.rootLastSignificant = "value";
+      }
+      return;
+    }
+
+    if (atRootObject) this.rootLastSignificant = character;
+  }
+
+  private processAnswerCharacter(character: string): string {
+    if (this.decodeState === "unicode") {
+      if (!/^[0-9A-Fa-f]$/.test(character)) {
+        this.invalid = true;
+        return "";
+      }
+      this.unicodeDigits += character;
+      if (this.unicodeDigits.length < 4) return "";
+      const decoded = String.fromCharCode(Number.parseInt(this.unicodeDigits, 16));
+      this.unicodeDigits = "";
+      this.decodeState = "normal";
+      return this.appendDecodedUnit(decoded);
+    }
+
+    if (this.decodeState === "escape") {
+      this.decodeState = "normal";
+      switch (character) {
+        case '"': return this.appendDecodedUnit('"');
+        case "\\": return this.appendDecodedUnit("\\");
+        case "/": return this.appendDecodedUnit("/");
+        case "b": return this.appendDecodedUnit("\b");
+        case "f": return this.appendDecodedUnit("\f");
+        case "n": return this.appendDecodedUnit("\n");
+        case "r": return this.appendDecodedUnit("\r");
+        case "t": return this.appendDecodedUnit("\t");
+        case "u":
+          this.decodeState = "unicode";
+          return "";
+        default:
+          this.invalid = true;
+          return "";
+      }
+    }
+
+    if (character === "\\") {
+      this.decodeState = "escape";
+      return "";
+    }
+    if (character === '"') {
+      const trailing = this.flushPendingHighSurrogate();
+      this._complete = true;
+      return trailing;
+    }
+    if (character.charCodeAt(0) <= 0x1F) {
+      this.invalid = true;
+      return "";
+    }
+    return this.appendDecodedUnit(character);
+  }
+
+  private appendDecodedUnit(character: string): string {
+    let out = "";
+    if (this.pendingHighSurrogate) {
+      if (isLowSurrogate(character)) {
+        const pair = this.pendingHighSurrogate + character;
+        this.pendingHighSurrogate = "";
+        this.decodedAnswer += pair;
+        return pair;
+      }
+      out = this.flushPendingHighSurrogate();
+    }
+
+    if (isHighSurrogate(character)) {
+      this.pendingHighSurrogate = character;
+      return out;
+    }
+
+    this.decodedAnswer += character;
+    return out + character;
+  }
+
+  private flushPendingHighSurrogate(): string {
+    if (!this.pendingHighSurrogate) return "";
+    const pending = this.pendingHighSurrogate;
+    this.pendingHighSurrogate = "";
+    this.decodedAnswer += pending;
+    return pending;
+  }
+
+  private isIncompleteAtEof(error: unknown): boolean {
+    if (this._active && !this._complete) return true;
+    if (this.rawArguments.length === 0) return true;
+    if (!(error instanceof SyntaxError)) return false;
+    if (/Unexpected end|Unterminated string/i.test(error.message)) return true;
+    const position = /position (\d+)/i.exec(error.message);
+    return position ? Number(position[1]) >= this.rawArguments.length : false;
+  }
+
+  private setTerminalFailure(errorCode: SettleParserErrorCode): SettleParserFinishResult {
+    this.terminalResult = { ok: false, errorCode };
+    return this.terminalResult;
   }
 }
 
@@ -114,31 +361,146 @@ export class SettleParser {
 export class SettleStreamer {
   private parser = new SettleParser();
   private _detected = false;
+  private _streamed = false;
   private callbacks: ChannelCallbacks;
   private enabled: boolean;
+  private mode: "retractable_buffer" | "final_only";
+  private observedArguments = "";
+  private eagerAnswer = "";
+  private terminalResult: SettleParserFinishResult | undefined;
+  private cancelled = false;
 
   constructor(callbacks: ChannelCallbacks, enabled = true) {
     this.callbacks = callbacks;
     this.enabled = enabled;
+    // Production callback owners declare their mode explicitly. Retain the
+    // historical retractable default for third-party/in-test callback objects.
+    this.mode = callbacks.settleOutputMode ?? "retractable_buffer";
   }
 
   get detected(): boolean { return this._detected; }
-  get streamed(): boolean { return this.parser.active; }
+  get streamed(): boolean { return this._streamed; }
 
   /** Mark settle as detected. Calls onClearText on the callbacks. */
   activate(): void {
     if (!this.enabled) return;
     if (this._detected) return;
     this._detected = true;
-    this.callbacks.onClearText?.();
+    if (this.mode === "retractable_buffer") this.callbacks.onClearText?.();
   }
 
   /** Feed an argument delta through the parser. Emits text via onTextChunk. */
   processDelta(delta: string): void {
     if (!this.enabled) return;
     if (!this._detected) return;
+    if (this.cancelled || this.terminalResult) return;
+    this.observedArguments += delta;
     const text = this.parser.process(delta);
-    if (text) this.callbacks.onTextChunk(text);
+    if (text && this.mode === "retractable_buffer") {
+      this.callbacks.onTextChunk(text);
+      this.eagerAnswer += text;
+    }
+  }
+
+  /** Validate the completed provider arguments exactly once, then commit or
+   * retract callback-visible output according to the callback owner's mode. */
+  finish(completedArguments: string): SettleParserFinishResult | undefined {
+    if (!this.enabled || !this._detected || this.cancelled) return undefined;
+    if (this.terminalResult) return this.terminalResult;
+
+    let finalSuffix = "";
+    let replacedObservedArguments = false;
+    if (completedArguments.startsWith(this.observedArguments)) {
+      const suffix = completedArguments.slice(this.observedArguments.length);
+      this.observedArguments = completedArguments;
+      finalSuffix = this.parser.process(suffix);
+    } else {
+      // A provider may normalize or replace its streamed argument fragments in
+      // the completed tool call. Re-parse that one authoritative final value;
+      // any eager output from the divergent fragment is retracted below.
+      replacedObservedArguments = true;
+      this.parser = new SettleParser();
+      this.observedArguments = completedArguments;
+      finalSuffix = this.parser.process(completedArguments);
+    }
+
+    const result = this.parser.finish();
+    // Cache before invoking callbacks: a callback failure must never make a
+    // repeated finish parse or commit the answer again.
+    this.terminalResult = result;
+
+    if (!result.ok) {
+      if (this.mode === "retractable_buffer") this.callbacks.onClearText?.();
+      return result;
+    }
+
+    if (this.mode === "retractable_buffer") {
+      if (replacedObservedArguments) {
+        this.callbacks.onClearText?.();
+        this.callbacks.onTextChunk(result.answer);
+      } else if (finalSuffix) {
+        this.callbacks.onTextChunk(finalSuffix);
+      }
+      this._streamed = true;
+    }
+    return result;
+  }
+
+  /** Cancel a partial provider stream without terminal parsing or commit. */
+  cancel(): void {
+    if (!this.enabled || !this._detected || this.cancelled || this.terminalResult) return;
+    this.cancelled = true;
+    if (this.mode === "retractable_buffer" && this.eagerAnswer) {
+      this.callbacks.onClearText?.();
+    }
+  }
+}
+
+export function finalizeSettleStream(
+  streamer: SettleStreamer,
+  completedArguments: string,
+): SettleParserFinishResult | undefined {
+  try {
+    return streamer.finish(completedArguments);
+  } catch (error) {
+    throw new SettleFinalizationCallbackError(error);
+  }
+}
+
+/** Holds ordinary provider text until a final-only response is known not to be
+ * an invalid settle. Retractable callback owners continue receiving deltas. */
+export class ProviderTextOutput {
+  private bufferedText = "";
+  private readonly deferred: boolean;
+  private suppressed = false;
+
+  constructor(private readonly callbacks: ChannelCallbacks) {
+    this.deferred = callbacks.settleOutputMode === "final_only";
+  }
+
+  emit(text: string): void {
+    if (this.suppressed) return;
+    if (this.deferred) {
+      this.bufferedText += text;
+    } else {
+      this.callbacks.onTextChunk(text);
+    }
+  }
+
+  suppress(): void {
+    this.bufferedText = "";
+    this.suppressed = true;
+  }
+
+  discard(): void {
+    this.bufferedText = "";
+  }
+
+  flush(): void {
+    if (!this.bufferedText) return;
+    const text = this.bufferedText;
+    this.bufferedText = "";
+    this.callbacks.onTextChunk(text);
   }
 }
 
@@ -324,6 +686,7 @@ export async function streamChatCompletion(
   let streamStarted = false;
   let usage: UsageData | undefined;
   const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
+  const textOutput = new ProviderTextOutput(callbacks);
 
   // State machine for parsing inline <think> tags (MiniMax pattern)
   let contentBuf = "";
@@ -362,7 +725,7 @@ export async function streamChatCompletion(
         const start = contentBuf.indexOf(OPEN_TAG);
         if (start !== -1) {
           const text = contentBuf.slice(0, start);
-          if (text) callbacks.onTextChunk(text);
+          if (text) textOutput.emit(text);
           contentBuf = contentBuf.slice(start + OPEN_TAG.length);
           inThinkTag = true;
         } else {
@@ -374,21 +737,22 @@ export async function streamChatCompletion(
             }
             if (retain > 0) {
               const text = contentBuf.slice(0, -retain);
-              if (text) callbacks.onTextChunk(text);
+              if (text) textOutput.emit(text);
               contentBuf = contentBuf.slice(-retain);
               return;
             }
           }
           // All content, flush it
-          callbacks.onTextChunk(contentBuf);
+          textOutput.emit(contentBuf);
           contentBuf = "";
         }
       }
     }
   }
 
-  for await (const chunk of response) {
-    if (signal?.aborted) break;
+  try {
+    for await (const chunk of response) {
+      if (signal?.aborted) break;
     // Capture usage from final chunk (sent when stream_options.include_usage is true)
     if (chunk.usage) {
       const u = chunk.usage;
@@ -399,67 +763,91 @@ export async function streamChatCompletion(
         total_tokens: u.total_tokens,
       };
     }
-    const d = chunk.choices[0]?.delta as StreamDelta | undefined;
-    if (!d) continue;
+      const d = chunk.choices[0]?.delta as StreamDelta | undefined;
+      if (!d) continue;
 
     // Handle reasoning_content (Azure AI models like DeepSeek-R1)
-    if (d.reasoning_content) {
-      if (!streamStarted) {
-        callbacks.onModelStreamStart();
-        streamStarted = true;
+      if (d.reasoning_content) {
+        if (!streamStarted) {
+          callbacks.onModelStreamStart();
+          streamStarted = true;
+        }
+        callbacks.onReasoningChunk(d.reasoning_content);
       }
-      callbacks.onReasoningChunk(d.reasoning_content);
-    }
 
-    if (d.content) {
-      if (!streamStarted) {
-        callbacks.onModelStreamStart();
-        streamStarted = true;
+      if (d.content) {
+        if (!streamStarted) {
+          callbacks.onModelStreamStart();
+          streamStarted = true;
+        }
+        content += d.content;
+        contentBuf += d.content;
+        processContentBuf(false);
       }
-      content += d.content;
-      contentBuf += d.content;
-      processContentBuf(false);
-    }
-    if (d.tool_calls) {
-      for (const tc of d.tool_calls) {
-        if (!toolCalls[tc.index])
-          toolCalls[tc.index] = {
-            id: tc.id ?? "",
-            name: tc.function?.name ?? "",
-            arguments: "",
-          };
-        if (tc.id) toolCalls[tc.index].id = tc.id;
-        if (tc.function?.name) {
-          toolCalls[tc.index].name = tc.function.name;
-          // Detect settle tool call on first name delta.
-          // Only activate streaming if this is the sole tool call (index 0
-          // and no other indices seen). Mixed calls are rejected by core.ts.
-          if (tc.function.name === "settle" && !answerStreamer.detected
-              && tc.index === 0 && Object.keys(toolCalls).length === 1) {
-            answerStreamer.activate();
+      if (d.tool_calls) {
+        for (const tc of d.tool_calls) {
+          if (!toolCalls[tc.index])
+            toolCalls[tc.index] = {
+              id: tc.id ?? "",
+              name: tc.function?.name ?? "",
+              arguments: "",
+            };
+          if (tc.id) toolCalls[tc.index].id = tc.id;
+          if (tc.function?.name) {
+            toolCalls[tc.index].name = tc.function.name;
+            // Detect settle tool call on first name delta.
+            // Only activate streaming if this is the sole tool call (index 0
+            // and no other indices seen). Mixed calls are rejected by core.ts.
+            if (tc.function.name === "settle" && !answerStreamer.detected
+                && tc.index === 0 && Object.keys(toolCalls).length === 1) {
+              answerStreamer.activate();
+              textOutput.suppress();
+            }
+          }
+          if (tc.function?.arguments) {
+            toolCalls[tc.index].arguments += tc.function.arguments;
+            // Feed settle argument deltas to the parser for progressive
+            // streaming, but only when it appears to be the sole tool call.
+            if (answerStreamer.detected && toolCalls[tc.index].name === "settle"
+                && Object.keys(toolCalls).length === 1) {
+              answerStreamer.processDelta(tc.function.arguments);
+            }
           }
         }
-        if (tc.function?.arguments) {
-          toolCalls[tc.index].arguments += tc.function.arguments;
-          // Feed settle argument deltas to the parser for progressive
-          // streaming, but only when it appears to be the sole tool call.
-          if (answerStreamer.detected && toolCalls[tc.index].name === "settle"
-              && Object.keys(toolCalls).length === 1) {
-            answerStreamer.processDelta(tc.function.arguments);
-          }
-        }
       }
     }
+  } catch (error) {
+    textOutput.discard();
+    answerStreamer.cancel();
+    throw error;
   }
   // Flush any remaining buffer at end of stream
   if (contentBuf) processContentBuf(true);
 
+  const completedToolCalls = Object.values(toolCalls);
+  let settleFinalization: SettleParserFinishResult | undefined;
+  if (signal?.aborted) {
+    textOutput.discard();
+    answerStreamer.cancel();
+  } else if (
+    completedToolCalls.length === 1
+    && completedToolCalls[0].name === "settle"
+    && answerStreamer.detected
+  ) {
+    textOutput.discard();
+    settleFinalization = finalizeSettleStream(answerStreamer, completedToolCalls[0].arguments);
+  } else {
+    answerStreamer.cancel();
+    textOutput.flush();
+  }
+
   return {
     content,
-    toolCalls: Object.values(toolCalls),
+    toolCalls: completedToolCalls,
     outputItems: [],
     usage,
     settleStreamed: answerStreamer.streamed,
+    ...(settleFinalization ? { settleFinalization } : {}),
   };
 }
 
@@ -489,12 +877,14 @@ export async function streamResponsesApi(
   let currentToolCall: { call_id: string; name: string; arguments: string } | null = null;
   let usage: UsageData | undefined;
   const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
+  const textOutput = new ProviderTextOutput(callbacks);
   let functionCallCount = 0;
 
-  for await (const event of response) {
-    if (signal?.aborted) break;
+  try {
+    for await (const event of response) {
+      if (signal?.aborted) break;
 
-    switch (event.type) {
+      switch (event.type) {
       case "response.output_text.delta":
       case "response.reasoning_summary_text.delta": {
         if (!streamStarted) {
@@ -503,7 +893,7 @@ export async function streamResponsesApi(
         }
         const delta = String(event.delta);
         if (event.type === "response.output_text.delta") {
-          callbacks.onTextChunk(delta);
+          textOutput.emit(delta);
           content += delta;
         } else {
           callbacks.onReasoningChunk(delta);
@@ -523,6 +913,7 @@ export async function streamResponsesApi(
           // Mixed calls are rejected by core.ts; no need to stream their args.
           if (String(event.item.name) === "settle" && functionCallCount === 1) {
             answerStreamer.activate();
+            textOutput.suppress();
           }
         }
         break;
@@ -564,9 +955,39 @@ export async function streamResponsesApi(
         }
         break;
       }
-      default:
-        // Unknown/unhandled events silently ignored
-        break;
+        default:
+          // Unknown/unhandled events silently ignored
+          break;
+      }
+    }
+  } catch (error) {
+    textOutput.discard();
+    answerStreamer.cancel();
+    throw error;
+  }
+
+  let settleFinalization: SettleParserFinishResult | undefined;
+  if (signal?.aborted) {
+    textOutput.discard();
+    answerStreamer.cancel();
+  } else {
+    if (toolCalls.length === 0 && functionCallCount === 1 && currentToolCall?.name === "settle") {
+      toolCalls.push({
+        id: currentToolCall.call_id,
+        name: currentToolCall.name,
+        arguments: currentToolCall.arguments,
+      });
+      currentToolCall = null;
+    }
+    const completedSettle = toolCalls.length === 1 && toolCalls[0].name === "settle"
+      ? toolCalls[0]
+      : undefined;
+    if (completedSettle && answerStreamer.detected) {
+      textOutput.discard();
+      settleFinalization = finalizeSettleStream(answerStreamer, completedSettle.arguments);
+    } else {
+      answerStreamer.cancel();
+      textOutput.flush();
     }
   }
 
@@ -576,5 +997,6 @@ export async function streamResponsesApi(
     outputItems,
     usage,
     settleStreamed: answerStreamer.streamed,
+    ...(settleFinalization ? { settleFinalization } : {}),
   };
 }

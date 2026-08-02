@@ -288,6 +288,7 @@ const WAKE_ROWS: MatrixRow[] = [
   },
   {
     name: "manual habit poke",
+    setup: (harness) => writeHabitFile(harness.bundlesRoot, "heartbeat"),
     command: () => ({ kind: "habit.poke", agent: AGENT, habitName: "heartbeat", trigger: "manual" }),
     expectedWorkerType: "habit",
   },

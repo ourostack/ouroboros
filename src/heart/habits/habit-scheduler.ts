@@ -51,7 +51,24 @@ export interface HabitParseError {
   error: string
 }
 
+interface HabitSnapshot {
+  content: string
+  definition: HabitFile
+}
+
+interface SchedulerState {
+  habits: HabitFile[]
+  jobs: ScheduledTaskJob[]
+}
+
+interface TimerFallback {
+  handle: ReturnType<typeof setTimeout>
+  cadence: string
+  generation: number
+}
+
 const WATCH_DEBOUNCE_MS = 200
+const MAX_CRON_VERIFICATION_ATTEMPTS = 3
 
 export class HabitScheduler {
   private readonly agent: string
@@ -64,9 +81,11 @@ export class HabitScheduler {
   private watcher: FsWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
   private parseErrors: HabitParseError[] = []
-  private timerFallbacks: Map<string, ReturnType<typeof setTimeout>> = new Map()
+  private timerFallbacks: Map<string, TimerFallback> = new Map()
+  private timerFallbackGenerations: Map<string, number> = new Map()
   private degradedHabitNames: Map<string, string> = new Map()
   private periodicTimer: ReturnType<typeof setTimeout> | null = null
+  private habitSnapshots: Map<string, HabitSnapshot> = new Map()
 
   constructor(options: HabitSchedulerOptions) {
     this.agent = options.agent
@@ -86,11 +105,7 @@ export class HabitScheduler {
       meta: { agent: this.agent, habitsDir: this.habitsDir },
     })
 
-    const habits = this.scanHabits()
-    const jobs = this.buildJobs(habits)
-    this.osCronManager.sync(jobs)
-    this.verifyCronAndCreateFallbacks(jobs)
-    this.fireOverdueHabits(habits)
+    this.runSchedulingCycle()
   }
 
   reconcile(): void {
@@ -104,22 +119,40 @@ export class HabitScheduler {
     // Clear ALL existing timers FIRST to prevent overlap window
     this.clearAllTimerFallbacks()
 
-    const habits = this.scanHabits()
-    const jobs = this.buildJobs(habits)
-    this.osCronManager.sync(jobs)
-    this.verifyCronAndCreateFallbacks(jobs)
-    this.fireOverdueHabits(habits)
+    this.runSchedulingCycle()
   }
 
-  private fireOverdueHabits(habits: HabitFile[]): void {
-    for (const habit of habits) {
-      if (habit.status !== "active") continue
-      if (!habit.cadence) continue
-      if (this.rejectInvalidRsvpHabit(habit)) continue
-      if (this.rejectReservedCronNamespaceHabit(habit)) continue
+  private runSchedulingCycle(): void {
+    const scannedHabits = this.scanHabits()
+    let state = this.revalidateState({
+      habits: scannedHabits,
+      jobs: this.buildJobs(scannedHabits),
+    })
+
+    if (!this.syncJobsFailClosed(state.jobs)) return
+
+    const afterSync = this.revalidateAndCorrectJobs(state)
+    if (afterSync === null) return
+    state = afterSync
+
+    const afterVerification = this.verifyCronAndCreateFallbacks(state)
+    if (afterVerification === null) return
+    state = afterVerification
+
+    const beforeDispatch = this.revalidateAndCorrectJobs(state)
+    if (beforeDispatch === null) return
+    this.fireOverdueHabits(beforeDispatch)
+  }
+
+  private fireOverdueHabits(state: SchedulerState): void {
+    for (const expectedJob of state.jobs) {
+      const habit = this.revalidateHabit(expectedJob.taskId)
+      if (habit === null) continue
+      const currentJob = this.buildJobs([habit]).find((job) => job.id === expectedJob.id)
+      if (!currentJob || !this.jobEqual(expectedJob, currentJob)) continue
 
       const nowMs = this.deps.now()
-      const dueState = evaluateCadenceDue(habit.cadence, habit.lastRun, nowMs)
+      const dueState = evaluateCadenceDue(habit.cadence!, habit.lastRun, nowMs)
       if (dueState === null) continue
 
       if (dueState.due) {
@@ -194,14 +227,23 @@ export class HabitScheduler {
     if (!job) {
       return { ok: false, message: `unknown habit job: ${jobId}` }
     }
-    this.onHabitFire(job.taskId, trigger, {
-      occurrenceId: this.jobOccurrenceId(job, trigger),
+
+    const currentHabit = this.revalidateHabit(job.taskId)
+    const currentJob = currentHabit === null
+      ? undefined
+      : this.buildJobs([currentHabit]).find((candidate) => candidate.id === jobId)
+    if (!currentJob) {
+      return { ok: false, message: `unknown habit job: ${jobId}` }
+    }
+
+    this.onHabitFire(currentJob.taskId, trigger, {
+      occurrenceId: this.jobOccurrenceId(currentJob, trigger),
     })
     emitNervesEvent({
       component: "daemon",
       event: "daemon.habit_job_triggered",
       message: "habit scheduler job triggered",
-      meta: { agent: job.agent, habitName: job.taskId, jobId, trigger },
+      meta: { agent: currentJob.agent, habitName: currentJob.taskId, jobId, trigger },
     })
     return { ok: true, message: `triggered habit ${jobId}` }
   }
@@ -274,35 +316,70 @@ export class HabitScheduler {
     }, intervalMs)
   }
 
-  private verifyCronAndCreateFallbacks(jobs: ScheduledTaskJob[]): void {
-    if (!this.execForVerify) return
+  private verifyCronAndCreateFallbacks(state: SchedulerState): SchedulerState | null {
+    if (!this.execForVerify || state.jobs.length === 0) return state
 
-    const verifiedLabels = this.verifyCronEntries()
-
-    for (const job of jobs) {
-      const label = `bot.ouro.${job.agent}.${job.taskId}`
-      const isVerified = this.platform === "darwin"
-        ? verifiedLabels.has(label)
-        : verifiedLabels.has(job.taskId)
-
-      if (!isVerified) {
-        emitNervesEvent({
-          component: "daemon",
-          event: "daemon.habit_cron_verification_failed",
-          message: `cron verification failed for habit: ${job.taskId}`,
-          meta: { habitName: job.taskId, agent: job.agent, label },
-        })
-
-        // Parse cadence from the original habit file for timer interval
-        const habitFile = this.getHabitFile(job.taskId)
-        const ms = habitFile?.cadence ? cadenceFallbackDelayMs(habitFile.cadence, this.deps.now()) : null
-        if (ms !== null) {
-          this.createTimerFallback(job.taskId, habitFile!.cadence!, ms)
-        }
-
-        this.degradedHabitNames.set(job.taskId, "cron registration failed — using timer fallback")
+    let currentState = state
+    for (let attempt = 1; attempt <= MAX_CRON_VERIFICATION_ATTEMPTS; attempt += 1) {
+      const verifiedLabels = this.verifyCronEntries()
+      const revalidatedState = this.revalidateAndCorrectJobs(currentState)
+      if (revalidatedState === null) return null
+      if (!this.jobsEqual(currentState.jobs, revalidatedState.jobs)) {
+        currentState = revalidatedState
+        if (currentState.jobs.length === 0) return currentState
+        continue
       }
+      currentState = revalidatedState
+
+      for (const job of currentState.jobs) {
+        const label = `bot.ouro.${job.agent}.${job.taskId}`
+        const isVerified = this.platform === "darwin"
+          ? verifiedLabels.has(label)
+          : verifiedLabels.has(job.taskId)
+
+        if (!isVerified) {
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.habit_cron_verification_failed",
+            message: `cron verification failed for habit: ${job.taskId}`,
+            meta: { habitName: job.taskId, agent: job.agent, label },
+          })
+
+          const habitFile = currentState.habits.find((habit) => habit.name === job.taskId)!
+          const cadence = habitFile.cadence!
+          const ms = cadenceFallbackDelayMs(cadence, this.deps.now())
+          if (ms !== null) {
+            this.createTimerFallback(job.taskId, cadence, ms)
+            this.degradedHabitNames.set(job.taskId, "cron registration failed — using timer fallback")
+          } else {
+            this.degradedHabitNames.set(job.taskId, "cron registration failed — no timer fallback available")
+          }
+        }
+      }
+
+      return currentState
     }
+
+    this.clearAllTimerFallbacks()
+    let cleanupError: string | null = null
+    try {
+      this.osCronManager.removeAll()
+    } catch (error) {
+      cleanupError = this.errorMessage(error)
+    }
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.habit_cron_verification_unstable",
+      message: "habit scheduler cron verification did not stabilize; fail-closed cleanup attempted",
+      meta: {
+        agent: this.agent,
+        attempts: MAX_CRON_VERIFICATION_ATTEMPTS,
+        jobCount: currentState.jobs.length,
+        cleanupError,
+      },
+    })
+    return null
   }
 
   private verifyCronEntries(): Set<string> {
@@ -336,25 +413,163 @@ export class HabitScheduler {
   }
 
   private createTimerFallback(habitName: string, cadence: string, firstDelayMs: number): void {
+    if (this.timerFallbacks.has(habitName)) this.clearTimerFallback(habitName)
+    const generation = this.nextTimerFallbackGeneration(habitName)
+
     const schedule = (): void => {
       const delayMs = cadenceFallbackDelayMs(cadence, this.deps.now()) ?? firstDelayMs
       const timer = setTimeout(() => {
+        const owner = this.timerFallbacks.get(habitName)
+        if (!owner || owner.handle !== timer || owner.generation !== generation) return
+        const currentHabit = this.revalidateHabit(habitName)
+        const currentJob = currentHabit === null
+          ? undefined
+          : this.buildJobs([currentHabit]).find((job) => job.taskId === habitName)
+        if (!currentJob || currentHabit?.cadence !== cadence) {
+          this.clearTimerFallback(habitName)
+          return
+        }
+
         this.onHabitFire(habitName, "overdue", {
           occurrenceId: this.timerOccurrenceId(habitName, cadence),
         })
+        const currentOwner = this.timerFallbacks.get(habitName)
+        if (!currentOwner || currentOwner.handle !== timer || currentOwner.generation !== generation) return
         schedule()
       }, delayMs)
-      this.timerFallbacks.set(habitName, timer)
+      this.timerFallbacks.set(habitName, { handle: timer, cadence, generation })
     }
     schedule()
   }
 
   private clearAllTimerFallbacks(): void {
-    for (const timer of this.timerFallbacks.values()) {
-      clearTimeout(timer)
-    }
-    this.timerFallbacks.clear()
+    for (const name of [...this.timerFallbacks.keys()]) this.clearTimerFallback(name)
     this.degradedHabitNames.clear()
+  }
+
+  private clearTimerFallback(name: string): void {
+    const owner = this.timerFallbacks.get(name)!
+    clearTimeout(owner.handle)
+    this.timerFallbacks.delete(name)
+    this.degradedHabitNames.delete(name)
+    this.nextTimerFallbackGeneration(name)
+  }
+
+  private nextTimerFallbackGeneration(name: string): number {
+    const generation = (this.timerFallbackGenerations.get(name) ?? 0) + 1
+    this.timerFallbackGenerations.set(name, generation)
+    return generation
+  }
+
+  private revalidateState(state: SchedulerState): SchedulerState {
+    const habits: HabitFile[] = []
+    for (const habit of state.habits) {
+      const currentHabit = this.revalidateHabit(habit.name)
+      if (currentHabit !== null) habits.push(currentHabit)
+    }
+    return { habits, jobs: this.buildJobs(habits) }
+  }
+
+  private revalidateAndCorrectJobs(state: SchedulerState): SchedulerState | null {
+    const currentState = this.revalidateState(state)
+    this.pruneTimerFallbacks(state, currentState)
+    if (this.jobsEqual(state.jobs, currentState.jobs)) return currentState
+    return this.syncJobsFailClosed(currentState.jobs) ? currentState : null
+  }
+
+  private revalidateHabit(name: string): HabitFile | null {
+    const file = `${name}.md`
+    const filePath = path.join(this.habitsDir, file)
+    let content: string
+
+    try {
+      content = this.deps.readFile(filePath, "utf-8")
+    } catch (error) {
+      this.habitSnapshots.delete(name)
+      this.recordHabitParseError(
+        file,
+        `habit definition unreadable during scheduler revalidation: ${this.errorMessage(error)}`,
+      )
+      return null
+    }
+
+    try {
+      const cached = this.habitSnapshots.get(name)
+      const definition = cached?.content === content
+        ? cached.definition
+        : parseHabitFile(content, filePath)
+      this.habitSnapshots.set(name, { content, definition })
+      const habit = applyHabitRuntimeState(path.dirname(this.habitsDir), definition)
+      this.recordDegradedHabitError(file, habit)
+      return habit
+    } catch (error) {
+      this.habitSnapshots.delete(name)
+      this.recordHabitParseError(file, this.errorMessage(error))
+      return null
+    }
+  }
+
+  private syncJobsFailClosed(jobs: ScheduledTaskJob[]): boolean {
+    try {
+      this.osCronManager.sync(jobs)
+      return true
+    } catch (error) {
+      this.clearAllTimerFallbacks()
+      let cleanupError: string | null = null
+      try {
+        this.osCronManager.removeAll()
+      } catch (cleanupFailure) {
+        cleanupError = this.errorMessage(cleanupFailure)
+      }
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.habit_scheduler_sync_error",
+        message: "habit scheduler cron synchronization failed; fail-closed cleanup attempted",
+        meta: {
+          agent: this.agent,
+          error: this.errorMessage(error),
+          cleanupError,
+          jobCount: jobs.length,
+        },
+      })
+      return false
+    }
+  }
+
+  private pruneTimerFallbacks(previousState: SchedulerState, currentState: SchedulerState): void {
+    for (const [name, owner] of this.timerFallbacks) {
+      const previousJob = previousState.jobs.find((job) => job.taskId === name)
+      const currentJob = currentState.jobs.find((job) => job.taskId === name)
+      const currentHabit = currentState.habits.find((habit) => habit.name === name)
+      if (
+        previousJob
+        && currentJob
+        && currentHabit?.cadence === owner.cadence
+        && this.jobEqual(previousJob, currentJob)
+      ) continue
+      this.clearTimerFallback(name)
+    }
+  }
+
+  private jobsEqual(left: ScheduledTaskJob[], right: ScheduledTaskJob[]): boolean {
+    if (left.length !== right.length) return false
+    return left.every((job, index) => this.jobEqual(job, right[index]))
+  }
+
+  private jobEqual(left: ScheduledTaskJob, right: ScheduledTaskJob | undefined): boolean {
+    return right !== undefined
+      && left.id === right.id
+      && left.agent === right.agent
+      && left.taskId === right.taskId
+      && left.schedule === right.schedule
+      && left.lastRun === right.lastRun
+      && left.command === right.command
+      && left.taskPath === right.taskPath
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
   }
 
   private scanHabits(): HabitFile[] {
@@ -363,21 +578,36 @@ export class HabitScheduler {
       files = this.deps.readdir(this.habitsDir)
     } catch {
       this.parseErrors = []
+      this.habitSnapshots.clear()
       return []
     }
 
     const habits: HabitFile[] = []
     const errors: HabitParseError[] = []
+    const snapshots: Map<string, HabitSnapshot> = new Map()
     for (const file of files) {
       if (!file.endsWith(".md")) continue
 
       const filePath = path.join(this.habitsDir, file)
       try {
         const content = this.deps.readFile(filePath, "utf-8")
-        const habit = applyHabitRuntimeState(path.dirname(this.habitsDir), parseHabitFile(content, filePath))
+        const definition = parseHabitFile(content, filePath)
+        const habit = applyHabitRuntimeState(path.dirname(this.habitsDir), definition)
+        snapshots.set(habit.name, { content, definition })
         habits.push(habit)
+        if (habit.status === "degraded") {
+          const error = `habit definition degraded: ${habit.degradedReason}`
+          errors.push({ file, error })
+          emitNervesEvent({
+            level: "error",
+            component: "daemon",
+            event: "daemon.habit_parse_error",
+            message: "failed to parse habit file",
+            meta: { file, error, agent: this.agent },
+          })
+        }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
+        const errorMessage = this.errorMessage(error)
         errors.push({ file, error: errorMessage })
         emitNervesEvent({
           level: "error",
@@ -393,6 +623,7 @@ export class HabitScheduler {
       }
     }
     this.parseErrors = errors
+    this.habitSnapshots = snapshots
 
     return habits
   }
@@ -441,6 +672,19 @@ export class HabitScheduler {
       "habit names cannot start with reserved cron namespace 'await.'",
     )
     return true
+  }
+
+  private recordDegradedHabitError(file: string, habit: HabitFile): void {
+    const prefix = "habit definition degraded: "
+    if (habit.status !== "degraded") {
+      this.parseErrors = this.parseErrors.filter((entry) => entry.file !== file || !entry.error.startsWith(prefix))
+      return
+    }
+
+    const error = `${prefix}${habit.degradedReason}`
+    if (this.parseErrors.some((entry) => entry.file === file && entry.error === error)) return
+    this.parseErrors = this.parseErrors.filter((entry) => entry.file !== file || !entry.error.startsWith(prefix))
+    this.recordHabitParseError(file, error)
   }
 
   private recordHabitParseError(file: string, error: string): void {

@@ -14,6 +14,7 @@ type BlueBubblesInboundLogEntry = {
   chatIdentifier: string | null
   sessionKey: string
   textForAgent: string
+  fromMe: boolean | null
   source: BlueBubblesInboundSource
 }
 
@@ -90,6 +91,7 @@ export function recordBlueBubblesInbound(
         chatIdentifier: event.chat.chatIdentifier ?? null,
         sessionKey: event.chat.sessionKey,
         textForAgent: event.textForAgent,
+        fromMe: event.fromMe,
         source,
       } satisfies BlueBubblesInboundLogEntry) + "\n",
       "utf-8",

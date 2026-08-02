@@ -25,13 +25,18 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
   requestInnerWake: vi.fn().mockResolvedValue(null),
 }))
 
-import { TuiStore } from "../../../senses/cli/tui-store"
+import { TuiStore, createTuiCallbacks } from "../../../senses/cli/tui-store"
 
 describe("TuiStore edge cases", () => {
   let store: TuiStore
 
   beforeEach(() => {
     store = new TuiStore()
+  })
+
+  it("declares TUI settle output as retractable in the in-memory store", () => {
+    const callbacks = createTuiCallbacks(store)
+    expect((callbacks as any).settleOutputMode).toBe("retractable_buffer")
   })
 
   // ─── Long streaming text followed by tool start ─────────────────

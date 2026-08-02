@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
+import { baseToolDefinitions, editFileReadTracker, observeTool, settleTool } from "./tools-base";
 import type { ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
@@ -140,11 +140,28 @@ export function getToolsForChannel(
   return filterByCapability(result, providerCapabilities);
 }
 
-// Look up a tool definition from the combined registry (native + MCP).
-function findDefinition(toolName: string): ToolDefinition | undefined {
-  return allDefinitions.find((d) => d.tool.function.name === toolName)
+/**
+ * The complete provider-facing tool surface for trusted reaction feedback.
+ * Keep these schemas sourced from the normal registry so restricted turns
+ * cannot drift onto lookalike definitions or inherit channel/MCP tools.
+ */
+export function getRestrictedReactionFeedbackTools(): OpenAI.ChatCompletionFunctionTool[] {
+  const orientationGetTool = baseToolDefinitions.find(
+    (definition) => definition.tool.function.name === "orientation_get",
+  )!.tool
+  return [settleTool, observeTool, orientationGetTool]
+}
+
+// Look up a tool definition from the live combined registry (native + MCP).
+// The base registry is intentionally consulted at call time so tests and
+// runtime extensions cannot leave execution metadata behind a stale snapshot.
+export function resolveToolDefinition(toolName: string): ToolDefinition | undefined {
+  return baseToolDefinitions.find((d) => d.tool.function.name === toolName)
+    ?? allDefinitions.find((d) => d.tool.function.name === toolName)
     ?? mcpDefinitions.find((d) => d.tool.function.name === toolName)
 }
+
+const findDefinition = resolveToolDefinition
 
 function normalizeGuardArgs(_name: string, args: Record<string, string>): Record<string, string> {
   return args

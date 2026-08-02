@@ -113,10 +113,67 @@ describe("BlueBubbles inbound log", () => {
     expect(JSON.parse(lines[0] ?? "{}")).toEqual(
       expect.objectContaining({
         messageGuid: "msg-1",
+        fromMe: false,
         source: "webhook",
       }),
     )
     expect(hasRecordedBlueBubblesInbound("slugger", messageEvent.chat.sessionKey, "msg-1")).toBe(true)
+  })
+
+  it("retains unobserved direction as null in the audit sidecar", async () => {
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    const logPath = recordBlueBubblesInbound("slugger", {
+      ...messageEvent,
+      messageGuid: "unknown-direction",
+      fromMe: null,
+    } as unknown as typeof messageEvent, "upstream-catchup")
+
+    expect(JSON.parse(fs.readFileSync(logPath, "utf-8").trim())).toEqual(expect.objectContaining({
+      messageGuid: "unknown-direction",
+      fromMe: null,
+      source: "upstream-catchup",
+    }))
+  })
+
+  it("keeps pre-v1 rows readable as raw audit without inventing an actor field", async () => {
+    const {
+      listRecordedBlueBubblesInbound,
+      recordBlueBubblesInbound,
+    } = await import("../../../senses/bluebubbles/inbound-log")
+
+    recordBlueBubblesInbound("slugger", {
+      ...messageEvent,
+      sender: {
+        ...messageEvent.sender,
+        externalId: "observed-sender@example.com",
+        rawId: "observed-sender@example.com",
+        displayName: "Observed Sender",
+      },
+      chat: {
+        ...messageEvent.chat,
+        chatGuid: "any;+;synthetic-group",
+        chatIdentifier: "synthetic-group",
+        sessionKey: "chat:any;+;synthetic-group",
+        isGroup: true,
+      },
+    }, "webhook")
+
+    const rows = listRecordedBlueBubblesInbound("slugger")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toEqual(expect.objectContaining({
+      messageGuid: "msg-1",
+      chatIdentifier: "synthetic-group",
+      sessionKey: "chat:any;+;synthetic-group",
+    }))
+    expect(rows[0]).not.toHaveProperty("actor")
+    expect(rows[0]).not.toHaveProperty("sender")
+    expect(rows[0]).not.toHaveProperty("schemaVersion")
+  })
+
+  it("returns an empty raw audit view when the inbound directory does not exist", async () => {
+    const { listRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+
+    expect(listRecordedBlueBubblesInbound("slugger")).toEqual([])
   })
 
   it("treats malformed logs as empty and returns the target path when writes fail", async () => {

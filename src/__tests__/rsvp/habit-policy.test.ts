@@ -4,6 +4,7 @@ import {
   RSVP_HABIT_POLICY_VERSION,
   isRsvpHabitName,
   parseRsvpHabitMetadata,
+  rsvpHabitMetadataErrorDetail,
   rsvpHabitRuntimePolicy,
 } from "../../rsvp/habit-policy"
 
@@ -57,6 +58,18 @@ describe("RSVP habit policy", () => {
     expect(() => parseRsvpHabitMetadata({ ...baseMetadata, source: "spreadsheet" })).toThrow(/source/i)
     expect(() => parseRsvpHabitMetadata({ ...baseMetadata, snapshotRef: " " })).toThrow(/snapshotRef/i)
     expect(() => parseRsvpHabitMetadata({ ...baseMetadata, liveSendEligible: "maybe" })).toThrow(/boolean liveSendEligible/i)
+  })
+
+  it("preserves only internal RSVP validation errors as degraded diagnostic detail", () => {
+    expect(rsvpHabitMetadataErrorDetail(new Error("RSVP habit metadata requires sense, not channel"))).toBe(
+      "RSVP habit metadata requires sense, not channel",
+    )
+    expect(rsvpHabitMetadataErrorDetail(new Error("untrusted parser failure"))).toBe(
+      "RSVP habit metadata is invalid",
+    )
+    expect(rsvpHabitMetadataErrorDetail("untrusted parser failure")).toBe(
+      "RSVP habit metadata is invalid",
+    )
   })
 
   it("derives send permission only for live eligible habits", () => {

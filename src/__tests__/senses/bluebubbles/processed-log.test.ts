@@ -48,6 +48,13 @@ describe("BlueBubbles processed log", () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   })
 
+  it("treats a missing processed directory and blank global ids as unprocessed", async () => {
+    const { hasProcessedBlueBubblesMessageGuid } = await import("../../../senses/bluebubbles/processed-log")
+
+    expect(hasProcessedBlueBubblesMessageGuid("slugger", "   ")).toBe(false)
+    expect(hasProcessedBlueBubblesMessageGuid("slugger", "not-recorded")).toBe(false)
+  })
+
   it("records handled messages to bundle state and skips blank message ids during dedupe checks", async () => {
     const {
       getBlueBubblesProcessedLogPath,
@@ -175,5 +182,69 @@ describe("BlueBubbles processed log", () => {
         }),
       }),
     )
+  })
+
+  it("keeps legacy NDJSON readable without recording new v1 semantic outcomes there", async () => {
+    const {
+      getBlueBubblesProcessedLogPath,
+      hasProcessedBlueBubblesMessage,
+      recordProcessedBlueBubblesMessage,
+    } = await import("../../../senses/bluebubbles/processed-log")
+    const semanticModule = await import("../../../senses/bluebubbles/semantic-receipts")
+    const semantic = semanticModule as typeof semanticModule & {
+      writeBlueBubblesSemanticCapture: (
+        agentName: string,
+        capture: NonNullable<ReturnType<typeof semanticModule.buildBlueBubblesSemanticCapture>>,
+      ) => string
+      writeBlueBubblesSemanticHandled: (
+        agentName: string,
+        record: {
+          schemaVersion: 1
+          canonicalKey: string
+          keyHash: string
+          handledAt: string
+          outcome: "message_completed"
+          detailCode: null
+        },
+      ) => string
+    }
+    const semanticEvent = {
+      ...messageEvent,
+      sender: { ...messageEvent.sender, observed: true },
+    }
+    const capture = semantic.buildBlueBubblesSemanticCapture({
+      cutover: {
+        schemaVersion: 1,
+        providerNamespace: "11111111-1111-4111-8111-111111111111",
+        effectiveAt: "2026-03-11T18:13:59.000Z",
+      },
+      capturedAt: "2026-03-11T18:14:00.000Z",
+      event: semanticEvent,
+      targetAuthorship: null,
+    })
+    expect(capture).not.toBeNull()
+    const legacyPath = recordProcessedBlueBubblesMessage(
+      "slugger",
+      messageEvent,
+      "webhook",
+      "turn-complete",
+    )
+    const legacyBytes = fs.readFileSync(legacyPath, "utf8")
+
+    expect(semantic.writeBlueBubblesSemanticCapture("slugger", capture!))
+      .toBe("semantic_capture_published")
+    expect(semantic.writeBlueBubblesSemanticHandled("slugger", {
+      schemaVersion: 1,
+      canonicalKey: capture!.canonicalKey,
+      keyHash: capture!.keyHash,
+      handledAt: "2026-03-11T18:14:01.000Z",
+      outcome: "message_completed",
+      detailCode: null,
+    })).toBe("semantic_handled_published")
+
+    expect(fs.readFileSync(getBlueBubblesProcessedLogPath("slugger", messageEvent.chat.sessionKey), "utf8"))
+      .toBe(legacyBytes)
+    expect(hasProcessedBlueBubblesMessage("slugger", messageEvent.chat.sessionKey, "msg-1"))
+      .toBe(true)
   })
 })

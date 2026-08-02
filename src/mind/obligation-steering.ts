@@ -2,8 +2,19 @@ import { sanitizeKey } from "../heart/config";
 import { formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { Obligation } from "../arc/obligations";
 import { emitNervesEvent } from "../nerves/runtime";
+import { labelPriorWorkSurface } from "../heart/orientation-frame";
 
 type SessionOrigin = { friendId: string; channel: string; key: string }
+
+export interface PriorWorkSteeringOptions {
+  resumePriorWork?: boolean
+}
+
+function labelSteeringSurface(surface: string, options?: PriorWorkSteeringOptions): string {
+  return typeof options?.resumePriorWork === "boolean"
+    ? labelPriorWorkSurface(surface, options.resumePriorWork)
+    : surface
+}
 
 export function findActivePersistentObligation(frame: ActiveWorkFrame | undefined): Obligation | null {
   if (!frame) return null;
@@ -48,7 +59,10 @@ function findCurrentSessionStatusObligation(frame: ActiveWorkFrame): Obligation 
   return openObligations.find((obligation) => matchesCurrentSession(frame, obligation)) ?? null
 }
 
-export function renderActiveObligationSteering(obligation: Obligation | null): string {
+export function renderActiveObligationSteering(
+  obligation: Obligation | null,
+  options?: PriorWorkSteeringOptions,
+): string {
   emitNervesEvent({
     component: "mind",
     event: "mind.obligation_steering_rendered",
@@ -63,10 +77,10 @@ export function renderActiveObligationSteering(obligation: Obligation | null): s
   const surfaceLine = obligation.currentSurface?.label
     ? `\nright now that work is happening in ${obligation.currentSurface.label}.`
     : "";
-  return `## where my attention is
+  return labelSteeringSurface(`## where my attention is
 i'm already working on something i owe ${name}.${surfaceLine}
 
-i should close that loop before i act like this is a fresh blank turn.`;
+i should close that loop before i act like this is a fresh blank turn.`, options);
 }
 
 function mergeArtifactFallback(obligation: Obligation): string {
@@ -140,7 +154,11 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
   return obligation ? "continue the active loop and bring the result back here" : ""
 }
 
-export function renderConcreteStatusGuidance(frame: ActiveWorkFrame, obligation: Obligation | null): string {
+export function renderConcreteStatusGuidance(
+  frame: ActiveWorkFrame,
+  obligation: Obligation | null,
+  options?: PriorWorkSteeringOptions,
+): string {
   const activeLane = obligation ? formatActiveLane(frame, obligation) : ""
   const currentArtifact = formatCurrentArtifact(frame, obligation)
   const nextAction = formatNextAction(frame, obligation)
@@ -150,19 +168,22 @@ export function renderConcreteStatusGuidance(frame: ActiveWorkFrame, obligation:
 
   if (!activeLane && !currentArtifact && !nextAction) return ""
 
-  return `if someone asks what i'm doing or for status mid-task, i answer from these live facts instead of copying a canned block.
+  return labelSteeringSurface(`if someone asks what i'm doing or for status mid-task, i answer from these live facts instead of copying a canned block.
 the live conversation is ${liveConversation || "not in a live conversation"}.
 the active lane is ${activeLane}.
 the current artifact is ${currentArtifact}.
 if i just finished or verified something concrete in this live lane, i name that as the latest checkpoint.
 the next action is ${nextAction}.
 
-i answer naturally from those facts instead of forcing a canned status block.`
+i answer naturally from those facts instead of forcing a canned status block.`, options)
 }
 
-export function renderLiveThreadStatusShape(frame: ActiveWorkFrame): string {
+export function renderLiveThreadStatusShape(
+  frame: ActiveWorkFrame,
+  options?: PriorWorkSteeringOptions,
+): string {
   if (!frame.currentSession) return ""
-  return `if someone asks what i'm doing or for status mid-task in this live thread, i answer in these exact lines, in order, with no intro paragraph:
+  return labelSteeringSurface(`if someone asks what i'm doing or for status mid-task in this live thread, i answer in these exact lines, in order, with no intro paragraph:
 live conversation: ${frame.currentSession.channel}/${frame.currentSession.key}
 active lane: this same thread
 current artifact: <actual artifact or "no artifact yet">
@@ -172,7 +193,7 @@ next action: <smallest concrete next step i'm taking now>
 no recap paragraph before those lines.
 no option list.
 present tense only.
-if a finished step matters, i label it "just finished" instead of presenting it as current work.`
+if a finished step matters, i label it "just finished" instead of presenting it as current work.`, options)
 }
 
 export function buildExactStatusReply(

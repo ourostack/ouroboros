@@ -27,6 +27,7 @@ describe("nerves/coverage cli", () => {
 
   it("writes report output and returns success/failure codes from audit results", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "ouro-observability-cli-"))
+    const latestRunDir = mkdtempSync(join(tmpdir(), "ouro-observability-cli-latest-"))
     const outputPath = join(runDir, "custom-nerves-coverage.json")
     const eventsPath = join(runDir, "custom-events.ndjson")
     const perTestPath = join(runDir, "custom-per-test.json")
@@ -37,8 +38,9 @@ describe("nerves/coverage cli", () => {
     vi.doMock("../../nerves/coverage/run-artifacts", () => ({
       readLatestRun: () => ({
         repo_slug: "ouroboros-agent-harness",
+        run_owner: "cwd-current",
         run_id: "run-id",
-        run_dir: runDir,
+        run_dir: latestRunDir,
         created_at: "2026-03-02T18:00:00.000Z",
       }),
     }))
@@ -78,6 +80,11 @@ describe("nerves/coverage cli", () => {
     })
     const passCode = runAuditCli(["--output", outputPath])
     expect(passCode).toBe(0)
+    expect(auditSpy).toHaveBeenNthCalledWith(2, {
+      eventsPath: join(latestRunDir, "vitest-events.ndjson"),
+      perTestPath: join(latestRunDir, "vitest-events-per-test.ndjson"),
+      sourceRoot: resolve("src"),
+    })
     expect(JSON.parse(readFileSync(outputPath, "utf8"))).toEqual(
       expect.objectContaining({ overall_status: "pass" }),
     )

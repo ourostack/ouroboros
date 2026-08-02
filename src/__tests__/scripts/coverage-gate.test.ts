@@ -4,6 +4,7 @@ import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import * as runArtifacts from "../../nerves/coverage/run-artifacts"
 
 const {
   coverageRunOwner,
@@ -41,6 +42,11 @@ describe("coverage gate helpers", () => {
     expect(coverageRunOwner("/tmp/ouro/worktree-a")).toMatch(/^cwd-[0-9a-f]{12}$/)
     expect(coverageRunOwner("/tmp/ouro/worktree-a")).toBe(coverageRunOwner("/tmp/ouro/worktree-a"))
     expect(coverageRunOwner("/tmp/ouro/worktree-a")).not.toBe(coverageRunOwner("/tmp/ouro/worktree-b"))
+    const typescriptOwner = (runArtifacts as typeof runArtifacts & {
+      coverageRunOwner?: (cwd: string) => string
+    }).coverageRunOwner
+    expect(typescriptOwner).toBeTypeOf("function")
+    expect(typescriptOwner?.("/tmp/ouro/worktree-a")).toBe(coverageRunOwner("/tmp/ouro/worktree-a"))
   })
 
   it("reports missing capture artifacts with concrete paths", () => {

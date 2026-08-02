@@ -47,6 +47,11 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     expect(typeof (callbacks as any).flushNow).toBe("function")
   })
 
+  it("declares settle output as retractable before transport flush", async () => {
+    const { callbacks } = await setup()
+    expect((callbacks as any).settleOutputMode).toBe("retractable_buffer")
+  })
+
   it("flushNow after onTextChunk sends accumulated buffer via client.sendText with replyToMessageGuid", async () => {
     const { callbacks, sendText } = await setup()
     callbacks.onTextChunk("hello")

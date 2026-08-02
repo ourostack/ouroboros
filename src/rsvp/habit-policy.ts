@@ -61,6 +61,13 @@ export function isRsvpHabitName(name: string): boolean {
   return name.startsWith("rsvp-")
 }
 
+export function rsvpHabitMetadataErrorDetail(error: unknown): string {
+  if (error instanceof Error && error.message.startsWith("RSVP habit metadata ")) {
+    return error.message
+  }
+  return "RSVP habit metadata is invalid"
+}
+
 export function parseRsvpHabitMetadata(raw: unknown): RsvpHabitMetadata | null {
   if (raw === undefined || raw === null) return null
   if (!isRecord(raw)) throw new Error("RSVP habit metadata must be an object")

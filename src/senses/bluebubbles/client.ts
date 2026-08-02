@@ -16,10 +16,34 @@ export interface BlueBubblesSendTextParams {
   text: string
   replyToMessageGuid?: string
   tempGuid?: string
+  signal?: AbortSignal
+  onTransportInvocation?: () => void
 }
 
 export interface BlueBubblesSendTextResult {
   messageGuid?: string
+}
+
+export class BlueBubblesSendError extends Error {
+  readonly httpStatus: number | null
+  readonly status: number | null
+  readonly errorCode: string
+  readonly transportInvoked: boolean
+
+  constructor(input: {
+    message: string
+    httpStatus: number | null
+    errorCode: string
+    transportInvoked: boolean
+    cause?: unknown
+  }) {
+    super(input.message, input.cause === undefined ? undefined : { cause: input.cause })
+    this.name = "BlueBubblesSendError"
+    this.httpStatus = input.httpStatus
+    this.status = input.httpStatus
+    this.errorCode = input.errorCode
+    this.transportInvoked = input.transportInvoked
+  }
 }
 
 export interface BlueBubblesEditMessageParams {
@@ -118,6 +142,31 @@ async function parseJsonBody(response: Response): Promise<unknown> {
 
 function describeCaughtValue(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function sendTransportErrorCode(error: unknown): string {
+  if (error instanceof Error && error.name === "TimeoutError") return "timeout"
+  if (error instanceof Error && error.name === "AbortError") return "abort"
+  if (error instanceof TypeError) return "socket"
+  return "transport_error"
+}
+
+function emitBlueBubblesSendError(input: {
+  status: number | null
+  errorCode: string
+  reason: string
+}): void {
+  emitNervesEvent({
+    level: "error",
+    component: "senses",
+    event: "senses.bluebubbles_send_error",
+    message: "bluebubbles send failed",
+    meta: {
+      status: input.status,
+      errorCode: input.errorCode,
+      reason: input.reason,
+    },
+  })
 }
 
 function buildRepairUrl(baseUrl: string, messageGuid: string, password: string): string {
@@ -349,29 +398,62 @@ export function createBlueBubblesClient(
         },
       })
 
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
-      })
+      const requestTimeoutSignal = AbortSignal.timeout(channelConfig.requestTimeoutMs)
+      params.onTransportInvocation?.()
+      let response: Response
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          redirect: "manual",
+          signal: params.signal
+            ? AbortSignal.any([params.signal, requestTimeoutSignal])
+            : requestTimeoutSignal,
+        })
+      } catch (error) {
+        const errorCode = sendTransportErrorCode(error)
+        const reason = describeCaughtValue(error)
+        emitBlueBubblesSendError({ status: null, errorCode, reason })
+        throw new BlueBubblesSendError({
+          message: `BlueBubbles send failed (${errorCode}): ${reason}`,
+          httpStatus: null,
+          errorCode,
+          transportInvoked: true,
+          cause: error,
+        })
+      }
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "")
-        emitNervesEvent({
-          level: "error",
-          component: "senses",
-          event: "senses.bluebubbles_send_error",
-          message: "bluebubbles send failed",
-          meta: {
-            status: response.status,
-            reason: errorText || "unknown",
-          },
+        const reason = errorText || "unknown"
+        const errorCode = `http_${response.status}`
+        emitBlueBubblesSendError({ status: response.status, errorCode, reason })
+        throw new BlueBubblesSendError({
+          message: `BlueBubbles send failed (${response.status}): ${reason}`,
+          httpStatus: response.status,
+          errorCode,
+          transportInvoked: true,
         })
-        throw new Error(`BlueBubbles send failed (${response.status}): ${errorText || "unknown"}`)
       }
 
-      const payload = await parseJsonBody(response)
+      const rawPayload = await response.text()
+      let payload: unknown = null
+      if (rawPayload.trim()) {
+        try {
+          payload = JSON.parse(rawPayload) as unknown
+        } catch (error) {
+          const errorCode = "malformed_response"
+          emitBlueBubblesSendError({ status: response.status, errorCode, reason: errorCode })
+          throw new BlueBubblesSendError({
+            message: `BlueBubbles send failed (${response.status}): malformed response`,
+            httpStatus: response.status,
+            errorCode,
+            transportInvoked: true,
+            cause: error,
+          })
+        }
+      }
       const messageGuid = extractMessageGuid(payload)
 
       emitNervesEvent({

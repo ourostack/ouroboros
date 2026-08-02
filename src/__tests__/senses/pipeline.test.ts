@@ -3,7 +3,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import type { ChannelCallbacks, RunAgentOptions } from "../../heart/core"
+import type { ChannelCallbacks, RunAgentOptions, RunAgentOutcome } from "../../heart/core"
 import type { FriendRecord, ResolvedContext, ChannelCapabilities, SenseType, Channel, FriendStore } from "@ouro.bot/friends"
 import type { TrustGateInput, TrustGateResult } from "../../senses/trust-gate"
 import type { UsageData } from "../../mind/context"
@@ -16,7 +16,8 @@ import * as startOfTurnPacketModule from "../../heart/start-of-turn-packet"
 import * as tempoModule from "../../heart/tempo"
 import * as temporalViewModule from "../../heart/temporal-view"
 import * as presenceModule from "../../arc/presence"
-import { handleInboundTurn } from "../../senses/pipeline"
+import * as flightRecorderModule from "../../arc/flight-recorder"
+import { handleInboundTurn, selectCheckpointCurrentAsk } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 import { readAgentProviderSelectionFixture, writeAgentProviderSelectionFixture, type AgentProviderSelectionFixture } from "../helpers/agent-provider-selection"
 
@@ -372,6 +373,49 @@ function makeInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput 
 }
 
 // ── Tests ────────────────────────────────────────────────────────
+
+describe("selectCheckpointCurrentAsk", () => {
+  const frame = (speechKind: "utterance" | "reaction", speech: string[]): NonNullable<RunAgentOptions["orientationFrame"]> => ({
+    schemaVersion: 1,
+    channel: "bluebubbles",
+    ...(speechKind === "reaction" ? { speechKind } : {}),
+    currentUserSpeech: speech,
+    priorAssistantReferents: [],
+    signals: [],
+    actionPolicy: { mode: "normal" },
+  })
+
+  it("chooses a non-empty current utterance before the frame fallback", () => {
+    expect(selectCheckpointCurrentAsk({
+      currentUserMessage: "  current utterance  ",
+      orientationFrame: frame("utterance", ["frame utterance"]),
+    })).toBe("current utterance")
+  })
+
+  it("uses frame speech when an utterance frame has no separate current message", () => {
+    expect(selectCheckpointCurrentAsk({
+      orientationFrame: frame("utterance", ["", "  frame utterance  "]),
+    })).toBe("frame utterance")
+  })
+
+  it("uses the canonical reaction frame instead of its transport wrapper", () => {
+    expect(selectCheckpointCurrentAsk({
+      currentUserMessage: "transport wrapper around reaction",
+      orientationFrame: frame("reaction", ["", "  canonical reaction description  "]),
+    })).toBe("canonical reaction description")
+  })
+
+  it("returns null for a reaction without a canonical description", () => {
+    expect(selectCheckpointCurrentAsk({
+      currentUserMessage: "non-canonical transport wrapper",
+      orientationFrame: frame("reaction", ["", "   "]),
+    })).toBeNull()
+  })
+
+  it("returns null without a current utterance or reaction", () => {
+    expect(selectCheckpointCurrentAsk({ currentUserMessage: "   " })).toBeNull()
+  })
+})
 
 describe("handleInboundTurn", () => {
   beforeEach(() => {
@@ -880,6 +924,106 @@ describe("handleInboundTurn", () => {
 
   // Step 6: postTurn
   describe("postTurn", () => {
+    async function recordCheckpointWithStaleObligation(options: {
+      outcome?: RunAgentOutcome
+      throwError?: Error
+      messages: ChatCompletionMessageParam[]
+      continuityIngressTexts?: string[]
+      orientationFrame?: RunAgentOptions["orientationFrame"]
+      includeSecondObligation?: boolean
+    }) {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-current-ask-authority-"))
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      try {
+        const {
+          advanceObligation,
+          createObligation,
+          readObligation,
+        } = await import("../../arc/obligations")
+        const { recordFlightRecorderEvent, readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        const created = createObligation(agentRoot, {
+          origin: { friendId: "friend-1", channel: "cli", key: "checkpoint-authority" },
+          content: "continue the stale deployment obligation",
+        })
+        advanceObligation(agentRoot, created.id, {
+          currentArtifact: "stale-deployment.md",
+          nextAction: "resume the stale deployment",
+        })
+        const staleObligations = [readObligation(agentRoot, created.id)!]
+        if (options.includeSecondObligation) {
+          const second = createObligation(agentRoot, {
+            origin: { friendId: "friend-2", channel: "teams", key: "second-obligation" },
+            content: "preserve the second stale obligation",
+          })
+          advanceObligation(agentRoot, second.id, {
+            status: "investigating",
+            currentArtifact: "second-obligation.md",
+            nextAction: "resume the second stale obligation",
+          })
+          staleObligations.push(readObligation(agentRoot, second.id)!)
+        }
+        recordFlightRecorderEvent(agentRoot, {
+          kind: "claim_recorded",
+          summary: "preserve a synthetic recovery reference",
+          recentClaimIds: ["claim-current-ask-authority"],
+          unverifiedClaimIds: ["claim-current-ask-authority"],
+        })
+        mockBuildTurnContext.mockResolvedValue({
+          ...defaultTurnContext(),
+          pendingObligations: staleObligations,
+        })
+        const postTurn = vi.fn()
+        const thrown = options.throwError
+        const input = makeInput({
+          messages: options.messages,
+          continuityIngressTexts: options.continuityIngressTexts,
+          sessionKey: "checkpoint-authority",
+          sessionLoader: {
+            loadOrCreate: vi.fn().mockResolvedValue({
+              messages: [{ role: "system", content: "You are helpful." }],
+              sessionPath: path.join(agentRoot, "state", "sessions", "friend-1", "cli", "checkpoint-authority.json"),
+              state: { mustResolveBeforeHandoff: true },
+            }),
+          },
+          runAgentOptions: options.orientationFrame
+            ? { orientationFrame: options.orientationFrame }
+            : undefined,
+          runAgent: thrown
+            ? vi.fn().mockRejectedValue(thrown)
+            : vi.fn().mockResolvedValue({ usage: usageData, outcome: options.outcome! }),
+          postTurn,
+        })
+
+        let caught: unknown
+        try {
+          await handleInboundTurn(input)
+        } catch (error) {
+          caught = error
+        }
+
+        return {
+          caught,
+          latestEvent: fs.readdirSync(path.join(agentRoot, "arc", "flight-recorder", "events"))
+            .sort()
+            .flatMap((fileName) => fs.readFileSync(path.join(agentRoot, "arc", "flight-recorder", "events", fileName), "utf-8")
+              .trim()
+              .split("\n")
+              .filter(Boolean)
+              .map((line) => JSON.parse(line)))
+            .at(-1),
+          obligationId: created.id,
+          obligationIds: staleObligations.map((obligation) => obligation.id),
+          postTurn,
+          resume: readFlightRecorderResume(agentRoot),
+        }
+      } finally {
+        agentRootSpy.mockRestore()
+        agentNameSpy.mockRestore()
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    }
+
     it("calls postTurn after runAgent with messages and session path and usage", async () => {
       const input = makeInput()
 
@@ -977,6 +1121,151 @@ describe("handleInboundTurn", () => {
         expect(resume.lastSafeCheckpoint.sessionRef).toBe("friend-1/cli/arc-test")
         expect(resume.activeReturnObligationIds).toEqual(["return-1"])
       } finally {
+        agentRootSpy.mockRestore()
+        agentNameSpy.mockRestore()
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
+    it.each([
+      ["settled" as const, null],
+      ["blocked" as const, "agent reported a blocker in this turn"],
+      ["superseded" as const, null],
+      ["aborted" as const, "turn aborted before a safe continuation was reached"],
+      ["errored" as const, "turn errored before a safe continuation was reached"],
+      ["observed" as const, null],
+      ["rested" as const, null],
+    ])("records current utterance instead of stale obligation for %s", async (outcome, expectedBlocker) => {
+      const checkpoint = await recordCheckpointWithStaleObligation({
+        outcome,
+        messages: [{ role: "user", content: "handle the current synthetic request" }],
+        continuityIngressTexts: undefined,
+      })
+
+      expect(checkpoint.caught).toBeUndefined()
+      expect(checkpoint.resume.currentAsk.value).toBe("handle the current synthetic request")
+      expect(checkpoint.resume.activeObligationIds).toContain(checkpoint.obligationId)
+      expect(checkpoint.resume.nextSafeAction.value).toBe("resume the stale deployment")
+      expect(checkpoint.resume.recentClaimIds).toContain("claim-current-ask-authority")
+      expect(checkpoint.resume.unverifiedClaimIds).toContain("claim-current-ask-authority")
+      expect(checkpoint.resume.lastSafeCheckpoint.sessionRef).toBe("friend-1/cli/checkpoint-authority")
+      if (expectedBlocker) {
+        expect(checkpoint.resume.blockedBecause).toContain(expectedBlocker)
+      } else {
+        expect(checkpoint.resume.blockedBecause).toEqual([])
+      }
+      const savedState = checkpoint.postTurn.mock.calls[0]?.[4]
+      const clearsContinuation = outcome === "settled"
+        || outcome === "blocked"
+        || outcome === "superseded"
+        || outcome === "observed"
+      expect(savedState?.mustResolveBeforeHandoff).toBe(clearsContinuation ? undefined : true)
+    })
+
+    it("uses the canonical current reaction description instead of stale obligation text", async () => {
+      const reactionDescription = 'questioned your message: "synthetic status"'
+      const checkpoint = await recordCheckpointWithStaleObligation({
+        outcome: "observed",
+        messages: [{ role: "user", content: reactionDescription }],
+        continuityIngressTexts: [],
+        orientationFrame: {
+          schemaVersion: 1,
+          channel: "bluebubbles",
+          speechKind: "reaction",
+          currentUserSpeech: [reactionDescription],
+          priorAssistantReferents: [],
+          signals: [],
+          actionPolicy: { mode: "normal" },
+        },
+      })
+
+      expect(checkpoint.caught).toBeUndefined()
+      expect(checkpoint.resume.currentAsk.value).toBe(reactionDescription)
+      expect(checkpoint.resume.activeObligationIds).toContain(checkpoint.obligationId)
+      expect(checkpoint.resume.nextSafeAction.value).toBe("resume the stale deployment")
+    })
+
+    it("records null currentAsk when there is no current utterance or reaction", async () => {
+      const checkpoint = await recordCheckpointWithStaleObligation({
+        outcome: "rested",
+        messages: [],
+        continuityIngressTexts: [],
+      })
+
+      expect(checkpoint.caught).toBeUndefined()
+      expect(checkpoint.resume.currentAsk.value).toBeNull()
+      expect(checkpoint.resume.activeObligationIds).toContain(checkpoint.obligationId)
+      expect(checkpoint.resume.nextSafeAction.value).toBe("resume the stale deployment")
+    })
+
+    it("keeps multiple obligation IDs separate from the current utterance", async () => {
+      const checkpoint = await recordCheckpointWithStaleObligation({
+        outcome: "settled",
+        messages: [{ role: "user", content: "handle this new request without losing older work" }],
+        continuityIngressTexts: undefined,
+        includeSecondObligation: true,
+      })
+
+      expect(checkpoint.caught).toBeUndefined()
+      expect(checkpoint.resume.currentAsk.value).toBe("handle this new request without losing older work")
+      expect(checkpoint.resume.activeObligationIds).toEqual(expect.arrayContaining(checkpoint.obligationIds))
+      expect(checkpoint.resume.activeObligationIds).toHaveLength(2)
+      expect(checkpoint.resume.nextSafeAction.value).toBe("resume the second stale obligation")
+    })
+
+    it("records the current utterance and recovery state when runAgent throws before an outcome", async () => {
+      const thrown = new Error("provider threw before returning an outcome")
+      const checkpoint = await recordCheckpointWithStaleObligation({
+        throwError: thrown,
+        messages: [{ role: "user", content: "preserve this current request through the throw" }],
+        continuityIngressTexts: undefined,
+      })
+
+      expect(checkpoint.caught).toBe(thrown)
+      expect(checkpoint.postTurn).not.toHaveBeenCalled()
+      expect(checkpoint.resume.currentAsk.value).toBe("preserve this current request through the throw")
+      expect(checkpoint.resume.activeObligationIds).toContain(checkpoint.obligationId)
+      expect(checkpoint.resume.nextSafeAction.value).toBe("resume the stale deployment")
+      expect(checkpoint.resume.blockedBecause).toContain("turn errored before a safe continuation was reached")
+      expect(checkpoint.resume.recentClaimIds).toContain("claim-current-ask-authority")
+      expect(checkpoint.latestEvent).toMatchObject({
+        kind: "blocker_detected",
+        summary: "runAgent threw before session persistence for cli/checkpoint-authority",
+        meta: expect.objectContaining({
+          outcome: "errored",
+          sessionPersisted: false,
+        }),
+      })
+    })
+
+    it.each([
+      [new Error("checkpoint write unavailable"), "checkpoint write unavailable"],
+      ["checkpoint write unavailable as a string", "checkpoint write unavailable as a string"],
+    ])("preserves the original thrown turn when checkpointing also fails", async (checkpointFailure, expectedReason) => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-thrown-checkpoint-error-"))
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const recordSpy = vi.spyOn(flightRecorderModule, "recordFlightRecorderEvent")
+        .mockImplementationOnce(() => { throw checkpointFailure })
+      const turnFailure = new Error("original provider throw")
+      const input = makeInput({
+        messages: [{ role: "user", content: "retain the current request" }],
+        continuityIngressTexts: undefined,
+        runAgent: vi.fn().mockRejectedValue(turnFailure),
+      })
+
+      try {
+        await expect(handleInboundTurn(input)).rejects.toBe(turnFailure)
+        expect(input.postTurn).not.toHaveBeenCalled()
+        expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+          level: "warn",
+          component: "senses",
+          event: "senses.flight_recorder_checkpoint_error",
+          message: "failed to record thrown-turn flight recorder checkpoint",
+          meta: { error: expectedReason },
+        }))
+      } finally {
+        recordSpy.mockRestore()
         agentRootSpy.mockRestore()
         agentNameSpy.mockRestore()
         fs.rmSync(agentRoot, { recursive: true, force: true })
@@ -2173,6 +2462,13 @@ describe("handleInboundTurn", () => {
       })
       const input = makeInput({
         failoverState,
+        sessionLoader: {
+          loadOrCreate: vi.fn().mockResolvedValue({
+            messages: [{ role: "system", content: "You are helpful." }],
+            sessionPath: path.join(agentRoot, "state", "sessions", "friend-1", "cli", "session.json"),
+            state: { mustResolveBeforeHandoff: true },
+          }),
+        },
         runAgent: vi.fn().mockResolvedValue({
           usage: usageData,
           outcome: "errored",
@@ -2189,6 +2485,9 @@ describe("handleInboundTurn", () => {
         expect(result.failoverMessage).toContain("switch to anthropic")
         expect(mockRunMachineProviderFailoverInventory).toHaveBeenCalledWith("slugger", "openai-codex")
         expect(failoverState.pending).not.toBeNull()
+        expect((input.postTurn as ReturnType<typeof vi.fn>).mock.calls[0]?.[4]).toEqual(expect.objectContaining({
+          mustResolveBeforeHandoff: true,
+        }))
         const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
         const resume = readFlightRecorderResume(agentRoot)
         expect(resume.canContinue).toBe(false)
@@ -2346,7 +2645,7 @@ describe("handleInboundTurn", () => {
 
     it.each([
       {
-        label: "primary obligation when no ingress text exists",
+        label: "null when only a primary obligation exists",
         messages: [] as ChatCompletionMessageParam[],
         turnContext: {
           pendingObligations: [{
@@ -2358,7 +2657,22 @@ describe("handleInboundTurn", () => {
             createdAt: "2026-06-08T12:00:00.000Z",
           }],
         },
-        expectedCurrentAsk: "recover the autonomous run",
+        expectedCurrentAsk: null,
+      },
+      {
+        label: "current utterance before a primary obligation",
+        messages: [{ role: "user", content: "handle the current provider failure" }] as ChatCompletionMessageParam[],
+        turnContext: {
+          pendingObligations: [{
+            id: "ob-primary-with-current-failover",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "recover the older autonomous run",
+            status: "pending",
+            currentArtifact: "arc-flight-recorder.md",
+            createdAt: "2026-06-08T12:00:00.000Z",
+          }],
+        },
+        expectedCurrentAsk: "handle the current provider failure",
       },
       {
         label: "latest user message when no obligation exists",

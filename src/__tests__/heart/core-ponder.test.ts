@@ -358,6 +358,64 @@ describe("ponder packets in runAgent", () => {
     })
   })
 
+  it("does not advertise or execute ponder continuations under immutable no-send authority", async () => {
+    mockCreate
+      .mockReturnValueOnce(makeStream(ponderCreateChunks({
+        action: "create",
+        kind: "reflection",
+        objective: "Escape the probe through a continuation",
+        summary: "must remain blocked",
+        success_criteria: "- no continuation",
+        payload_json: "{}",
+      })))
+      .mockReturnValueOnce(makeStream(restChunks({ status: "HEARTBEAT_OK" })))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{ role: "user", content: "probe only" }],
+      callbacks,
+      "inner",
+      undefined,
+      {
+        toolContext: {
+          noSend: true,
+          currentSession: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+        },
+      },
+    )
+
+    const advertisedNames = mockCreate.mock.calls[0][0].tools.map((tool: any) => tool.function.name)
+    expect(advertisedNames).not.toContain("ponder")
+    expect(result.outcome).toBe("rested")
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(mockRevisePonderPacket).not.toHaveBeenCalled()
+    expectNoPonderWake()
+    expect(callbacks.onToolStart).not.toHaveBeenCalledWith("ponder", expect.anything())
+    expect(callbacks.onToolEnd).not.toHaveBeenCalledWith("ponder", expect.any(String), expect.any(Boolean))
+  })
+
+  it("retries a text-only immutable no-send turn with rest-only guidance", async () => {
+    mockCreate
+      .mockReturnValueOnce(makeStream([makeChunk("<think>trying to continue</think>")]))
+      .mockReturnValueOnce(makeStream(restChunks({ status: "HEARTBEAT_OK" })))
+
+    const result = await runAgent(
+      [{ role: "user", content: "probe only" }],
+      makeCallbacks(),
+      "inner",
+      undefined,
+      { toolContext: { noSend: true } },
+    )
+
+    expect(result.outcome).toBe("rested")
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    expect(mockCreate.mock.calls[1][0].messages).toContainEqual({
+      role: "user",
+      content: "no tool was called this turn. this is an immutable no-send turn; call rest now without creating a continuation.",
+    })
+    expectNoPonderWake()
+  })
+
   it("extracts source request text from structured user content", async () => {
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       action: "create",
@@ -986,7 +1044,7 @@ describe("ponder packets in runAgent", () => {
     expect(result.completion?.answer).toBe("Which MCP session should receive the private return?")
   })
 
-  it("keeps malformed private-return settle payloads on the ordinary retry path", async () => {
+  it("fails malformed private-return settle payloads without a provider retry", async () => {
     mockCreate.mockReturnValueOnce(makeStream(settleRawChunks("{}")))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("Which MCP session should receive the private return?")))
 
@@ -1003,10 +1061,18 @@ describe("ponder packets in runAgent", () => {
       },
     )
 
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(callbacks.onToolEnd).not.toHaveBeenCalled()
+    expect(callbacks.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "invalid_settle_arguments" }),
+      "terminal",
+    )
     expect(mockCreatePonderPacket).not.toHaveBeenCalled()
-    expect(result.outcome).toBe("settled")
-    expect(result.completion?.answer).toBe("Which MCP session should receive the private return?")
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "invalid_settle_arguments" },
+    })
+    expect(result.completion).toBeUndefined()
   })
 
   it("does not create a self-return obligation for private-runtime ponder packets", async () => {

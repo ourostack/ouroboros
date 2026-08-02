@@ -2450,6 +2450,72 @@ describe("mailbox deep readers", () => {
       expect(steady.isOverdue).toBe(false)
     })
 
+    it("serializes cancelled, degraded, unreadable, and legacy body-only definitions truthfully", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      const habitsDir = path.join(agentRoot, "habits")
+      fs.mkdirSync(habitsDir, { recursive: true })
+
+      fs.writeFileSync(path.join(habitsDir, "legacy-body.md"), "Legacy body-only habit.\n", "utf-8")
+      fs.writeFileSync(path.join(habitsDir, "cancelled.md"), [
+        "---",
+        "title: Cancelled",
+        "status: cancelled",
+        "cadence: 1h",
+        "---",
+        "",
+        "Do not run.",
+      ].join("\n"), "utf-8")
+      fs.writeFileSync(path.join(habitsDir, "invalid-status.md"), [
+        "---",
+        "title: Invalid status",
+        "status: running",
+        "---",
+        "",
+        "Inspect only.",
+      ].join("\n"), "utf-8")
+      fs.writeFileSync(path.join(habitsDir, "unterminated.md"), "---\ntitle: Unterminated\nstatus: active\n", "utf-8")
+      fs.symlinkSync("missing-definition-target.md", path.join(habitsDir, "unreadable.md"))
+
+      const habits = readHabitView(agentRoot, {
+        now: () => new Date("2026-03-30T10:00:00.000Z"),
+      })
+
+      expect(habits).toMatchObject({
+        totalCount: 5,
+        activeCount: 1,
+        pausedCount: 0,
+        degradedCount: 3,
+        overdueCount: 0,
+      })
+      expect(habits.items.find((habit) => habit.name === "legacy-body")).toMatchObject({
+        status: "active",
+        isDegraded: false,
+        degradedReason: null,
+      })
+      expect(habits.items.find((habit) => habit.name === "cancelled")).toMatchObject({
+        status: "cancelled",
+        isDegraded: false,
+        degradedReason: null,
+        isOverdue: false,
+      })
+      expect(habits.items.find((habit) => habit.name === "invalid-status")).toMatchObject({
+        status: "degraded",
+        isDegraded: true,
+        degradedReason: "invalid_status",
+      })
+      expect(habits.items.find((habit) => habit.name === "unterminated")).toMatchObject({
+        status: "degraded",
+        isDegraded: true,
+        degradedReason: "unterminated_frontmatter",
+      })
+      expect(habits.items.find((habit) => habit.name === "unreadable")).toMatchObject({
+        status: "degraded",
+        isDegraded: true,
+        degradedReason: "read_error",
+      })
+    })
+
     it("handles missing habits directory", async () => {
       const habits = readHabitView("/tmp/nonexistent-agent.ouro")
       expect(habits.totalCount).toBe(0)
@@ -2570,7 +2636,7 @@ describe("mailbox deep readers", () => {
       expect(checkup.isOverdue).toBe(false)
     })
 
-    it("skips habit markdown files without frontmatter", async () => {
+    it("keeps legacy body-only markdown habits active while skipping non-markdown files", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
       fs.mkdirSync(path.join(agentRoot, "habits"), { recursive: true })
@@ -2579,7 +2645,14 @@ describe("mailbox deep readers", () => {
 
       const habits = readHabitView(agentRoot)
 
-      expect(habits.totalCount).toBe(0)
+      expect(habits.totalCount).toBe(1)
+      expect(habits.activeCount).toBe(1)
+      expect(habits.items[0]).toMatchObject({
+        name: "notes",
+        status: "active",
+        bodyExcerpt: "Just some notes.",
+        isDegraded: false,
+      })
     })
 
     it("falls back to the filename when title is missing and keeps empty bodies null", async () => {

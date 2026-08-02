@@ -7,6 +7,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { storeProviderCredentials } from "../auth/auth-flow"
 import { getDefaultModelForProvider } from "../provider-models"
 import { renderHabitFile } from "../habits/habit-parser"
+import { publishNewHabitDefinition } from "../habits/habit-lifecycle"
 import { createBundleMeta } from "../../mind/bundle-manifest"
 import { resolveDeskRecordPaths } from "../../mind/record-paths"
 import {
@@ -88,9 +89,6 @@ function writeReadme(dir: string, purpose: string): void {
 }
 
 function writeHeartbeatHabit(bundleRoot: string, now: Date): void {
-  const habitsDir = path.join(bundleRoot, "habits")
-  fs.mkdirSync(habitsDir, { recursive: true })
-  const filePath = path.join(habitsDir, "heartbeat.md")
   const content = renderHabitFile(
     {
       title: "Heartbeat check-in",
@@ -100,7 +98,11 @@ function writeHeartbeatHabit(bundleRoot: string, now: Date): void {
     },
     "Run a lightweight heartbeat cycle. Review task board and inbox.\nCheck on pending obligations. Write important durable outputs to Arc or Desk record.",
   )
-  fs.writeFileSync(filePath, content, "utf-8")
+  publishNewHabitDefinition({
+    agentRoot: bundleRoot,
+    habitId: "heartbeat",
+    bytes: content,
+  })
 }
 
 function writeFriendImprint(bundleRoot: string, humanName: string, now: Date): void {

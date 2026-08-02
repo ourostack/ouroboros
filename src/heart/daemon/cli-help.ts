@@ -4,6 +4,8 @@
  * Pure data + formatting: no side effects, no daemon communication.
  */
 
+import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
+
 // ── Types ──
 
 export interface CommandHelp {
@@ -158,7 +160,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     description: "Manage agent habits",
     usage: "ouro habit <subcommand> [--agent <name>]",
     example: "ouro habit list",
-    subcommands: ["list", "create", "runs", "inspect", "summary", "poke"],
+    subcommands: ["list", "create", "runs", "inspect", "summary", "poke", "cancel", "probe"],
   },
   rsvp: {
     category: "Habits",
@@ -202,7 +204,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   "nerves-review": {
     category: "Internal",
-    description: "Read-only review of recent nerves events from an agent log stream",
+    description: `Read-only review of recent nerves events from one agent log stream (default: ${DEFAULT_NERVES_PROCESS})`,
     usage: "ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
     example: "ouro nerves-review --agent slugger --component daemon --event habit --since 30m --json",
   },
@@ -385,6 +387,16 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
 }
 
 const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
+  "habit probe": {
+    description: "Probe one habit through its real dispatch path with an irrevocable no-send boundary; it cannot send and reports zero transport invocations",
+    usage: "ouro habit probe --agent <name> --habit <name> --no-send [--json]",
+    example: "ouro habit probe --agent slugger --habit report-name --no-send --json",
+  },
+  "habit cancel": {
+    description: "Cancel a habit offline from a previously verified evidence bridge",
+    usage: "ouro habit cancel --agent <name> --habit <name> --evidence <bridge-id>",
+    example: "ouro habit cancel --agent slugger --habit report-name --evidence pre-v1-bluebubbles-event-id",
+  },
   "private decisions": {
     description: "Read recent private-runtime allow/deny decisions from the policy ledger",
     usage: "ouro private decisions [--agent <name>] [--limit <n>] [--json]",

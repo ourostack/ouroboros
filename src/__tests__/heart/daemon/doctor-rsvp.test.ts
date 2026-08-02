@@ -29,7 +29,7 @@ vi.mock("../../../heart/machine-identity", () => ({
 }))
 
 import type { DoctorDeps } from "../../../heart/daemon/doctor-types"
-import { checkRsvp, runDoctorChecks } from "../../../heart/daemon/doctor"
+import { checkHabits, checkRsvp, runDoctorChecks } from "../../../heart/daemon/doctor"
 import { RSVP_CONFIG_POLICY_VERSION, rsvpConfigPath } from "../../../rsvp/config"
 
 const tempRoots: string[] = []
@@ -484,6 +484,73 @@ describe("RSVP doctor checks", () => {
         detail: expect.stringMatching(/typed RSVP habit metadata/i),
       }),
     ]))
+  })
+
+  it("reports cancelled and degraded habit lifecycle states by name and reason", () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const habitsDir = path.join(agentRoot, "habits")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(habitsDir, "cancelled-report.md"),
+      "---\nstatus: cancelled\ncadence: 24h\n---\n\nDo not run.",
+      "utf8",
+    )
+    fs.writeFileSync(
+      path.join(habitsDir, "invalid-report.md"),
+      "---\nstatus: retired\ncadence: 24h\n---\n\nInvalid definition.",
+      "utf8",
+    )
+    fs.writeFileSync(path.join(habitsDir, "README.md"), "# Habit definitions\n", "utf8")
+    fs.mkdirSync(path.join(habitsDir, "unreadable-report.md"))
+
+    const category = checkHabits(depsFor(bundlesRoot))
+
+    expect(category.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "habits.lifecycle",
+        label: "slugger.ouro habit lifecycle",
+        status: "fail",
+        detail: expect.stringMatching(/cancelled-report=cancelled/),
+      }),
+      expect.objectContaining({
+        id: "habits.lifecycle",
+        detail: expect.stringMatching(/invalid-report=degraded\(invalid_status\)/),
+      }),
+      expect.objectContaining({
+        id: "habits.lifecycle",
+        detail: expect.stringMatching(/unreadable-report=degraded\(read_error\)/),
+      }),
+      expect.objectContaining({
+        label: "slugger.ouro launchd plists",
+        status: "pass",
+        detail: "no active scheduled habits require launchd",
+      }),
+    ]))
+    expect(category.checks.find((check) => check.id === "habits.lifecycle")?.detail).not.toContain("README")
+  })
+
+  it("normalizes non-Error habit read failures into typed degraded diagnostics", () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const habitsDir = path.join(agentRoot, "habits")
+    const habitPath = path.join(habitsDir, "raw-read-failure.md")
+    fs.mkdirSync(habitsDir, { recursive: true })
+    fs.writeFileSync(habitPath, "not read", "utf8")
+    const deps = depsFor(bundlesRoot)
+    const readFileSync = deps.readFileSync
+    deps.readFileSync = (filePath) => {
+      if (filePath === habitPath) throw "raw read failure"
+      return readFileSync(filePath)
+    }
+
+    const category = checkHabits(deps)
+
+    expect(category.checks).toContainEqual(expect.objectContaining({
+      id: "habits.lifecycle",
+      status: "fail",
+      detail: "raw-read-failure=degraded(read_error)",
+    }))
   })
 
   it("surfaces missing runtime credentials and route coordinates as actionable checks", async () => {

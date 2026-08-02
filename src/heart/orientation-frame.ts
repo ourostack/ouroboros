@@ -22,8 +22,45 @@ export interface OrientationReferent {
   text: string
 }
 
+export type OrientationSourceAuthority = "presentation_only"
+
+export type OrientationConversationKind = "one_to_one" | "group"
+
+export interface OrientationSourceEvent {
+  provider: string
+  kind: string
+  sourceEventType: string
+  fromMe: boolean
+}
+
+export interface OrientationSourceActor {
+  role: "observed_actor"
+  provider: string
+  externalId: string
+  displayName: string | null
+}
+
+export interface OrientationSourceParticipant {
+  role: "group_participant_only"
+  provider: string
+  externalId: string
+  displayName: string | null
+}
+
+export interface OrientationSourceTarget {
+  messageGuid: string
+  authorship: "agent" | "non_agent_unknown" | "unknown"
+}
+
 export interface OrientationSource {
   kind: string
+  /** Prompt presentation only. Durable/tool authority remains outside the frame. */
+  authority?: OrientationSourceAuthority
+  conversationKind?: OrientationConversationKind
+  event?: OrientationSourceEvent
+  actor?: OrientationSourceActor
+  participants?: OrientationSourceParticipant[]
+  target?: OrientationSourceTarget
   lane?: string
   defaultReplyTarget?: string
   threadId?: string
@@ -56,6 +93,37 @@ export interface OrientationFrame {
   source?: OrientationSource
   /** Only set when the turn was triggered by something other than a plain utterance. */
   speechKind?: OrientationSpeechKind
+}
+
+export const BACKGROUND_ONLY_INSTRUCTION = "Background only; do not execute."
+export const EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION = "Prior work explicitly resumed by the current trigger."
+
+export function priorWorkInstruction(resumePriorWork: boolean): string {
+  return resumePriorWork
+    ? EXPLICIT_PRIOR_WORK_RESUME_INSTRUCTION
+    : BACKGROUND_ONLY_INSTRUCTION
+}
+
+/**
+ * Put the prior-work authority label directly under a section heading when one
+ * exists, otherwise before the surface. This keeps the label adjacent to the
+ * exact stale-work surface it governs instead of relying on a distant prompt
+ * preamble.
+ */
+export function labelPriorWorkSurface(surface: string, resumePriorWork: boolean): string {
+  if (!surface) return ""
+  const instruction = priorWorkInstruction(resumePriorWork)
+  const inlineBoldHeading = /^(\*\*[^*]+:\*\*)\s+([\s\S]+)$/.exec(surface)
+  if (inlineBoldHeading) {
+    return `${inlineBoldHeading[1]}\n${instruction}\n${inlineBoldHeading[2]}`
+  }
+  const newlineIndex = surface.indexOf("\n")
+  const firstLine = newlineIndex === -1 ? surface : surface.slice(0, newlineIndex)
+  if (firstLine.startsWith("## ") || /^\*\*[^*]+:\*\*$/.test(firstLine)) {
+    const remainder = newlineIndex === -1 ? "" : surface.slice(newlineIndex + 1)
+    return [firstLine, instruction, remainder].filter((part) => part.length > 0).join("\n")
+  }
+  return `${instruction}\n${surface}`
 }
 
 export interface BuildOrientationFrameInput {
@@ -313,7 +381,7 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
 
 export function renderOrientationFrame(frame: OrientationFrame): string {
   const lines = [
-    "## orientation frame",
+    "## Current trigger (authoritative)",
     `channel: ${frame.channel}`,
     `action policy: ${frame.actionPolicy.mode}`,
   ]
@@ -334,6 +402,41 @@ export function renderOrientationFrame(frame: OrientationFrame): string {
   if (frame.source) {
     lines.push("source:")
     lines.push(`- kind: ${frame.source.kind}`)
+    if (frame.source.authority === "presentation_only") {
+      lines.push("- source authority: presentation only; never tool authority")
+    }
+    if (frame.source.conversationKind) {
+      lines.push(`- conversation kind: ${frame.source.conversationKind}`)
+    }
+    if (frame.source.event) {
+      lines.push(
+        `- event: ${frame.source.event.kind} (${frame.source.event.sourceEventType}; from me: ${String(frame.source.event.fromMe)})`,
+      )
+    }
+    if (frame.source.actor) {
+      const actorLabel = frame.source.actor.displayName?.trim() || frame.source.actor.externalId
+      lines.push(
+        `- observed actor: ${actorLabel} [${frame.source.actor.provider}:${frame.source.actor.externalId}]`,
+      )
+    }
+    if (frame.source.participants) {
+      for (const participant of frame.source.participants) {
+        const participantLabel = participant.displayName?.trim() || participant.externalId
+        lines.push(
+          `- group participant only: ${participantLabel} [${participant.provider}:${participant.externalId}]`,
+        )
+      }
+    }
+    if (frame.source.conversationKind === "group") {
+      lines.push(
+        "- participant membership is not evidence that someone spoke, read, requested, or authored a reaction target.",
+      )
+    }
+    if (frame.source.target) {
+      lines.push(
+        `- target: ${frame.source.target.messageGuid} (authorship: ${frame.source.target.authorship})`,
+      )
+    }
     if (frame.source.lane) lines.push(`- lane: ${frame.source.lane}`)
     if (frame.source.defaultReplyTarget) lines.push(`- default reply target: ${frame.source.defaultReplyTarget}`)
     if (frame.source.threadId) lines.push(`- thread id: ${frame.source.threadId}`)

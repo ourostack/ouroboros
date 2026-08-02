@@ -22,6 +22,7 @@ import type {
   HabitToolPolicy,
 } from "../../arc/flight-recorder"
 import type { HabitSessionSummary, HabitSessionSummarySelector } from "../habits/habit-session-summary"
+import type { HabitDegradedReason, HabitFileStatus } from "../habits/habit-parser"
 import type { SenseContextPacketSummaryList, SenseContextPacketView } from "../../senses/context-packet-ledger"
 
 // Re-export domain types through the observation layer
@@ -791,11 +792,11 @@ export interface MailboxHabitItem {
   name: string
   title: string
   cadence: string | null
-  status: "active" | "paused"
+  status: HabitFileStatus
   lastRun: string | null
   bodyExcerpt: string | null
   isDegraded: boolean
-  degradedReason: string | null
+  degradedReason: HabitDegradedReason | null
   isOverdue: boolean
   overdueMs: number | null
 }

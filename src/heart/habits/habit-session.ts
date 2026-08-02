@@ -349,6 +349,22 @@ export async function normalizeHabitPermissionEnvelope(
   habit: HabitFile,
   options: NormalizeHabitPermissionOptions,
 ): Promise<HabitPermissionEnvelope> {
+  if (habit.status !== "active") {
+    const envelope: HabitPermissionEnvelope = {
+      schemaVersion: 1,
+      canMessageOutward: false,
+      returnRoutes: [],
+      deniedTools: ["send_message", "surface"],
+      warnings: [`habit status ${habit.status} is non-executable`],
+    }
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.habit_permission_envelope_normalized",
+      message: "habit permission envelope normalized",
+      meta: { agentRoot: options.agentRoot, habitName: habit.name, routes: 0, canMessageOutward: false },
+    })
+    return envelope
+  }
   const returnRoutes: HabitReturnRoute[] = []
   const warnings: string[] = []
 

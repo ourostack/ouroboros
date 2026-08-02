@@ -74,39 +74,15 @@ import {
   autonomyReceiptsDir,
   reserveAutonomyBudget,
 } from "../../../heart/autonomy-budget"
-import { recordBlueBubblesMutation } from "../../../senses/bluebubbles/mutation-log"
-import { recoverMissedBlueBubblesMessages } from "../../../senses/bluebubbles"
+import {
+  buildBlueBubblesSemanticCapture,
+  initializeBlueBubblesSemanticCutover,
+  writeBlueBubblesSemanticCapture,
+} from "../../../senses/bluebubbles/semantic-receipts"
+import { recoverCapturedBlueBubblesInboundMessages } from "../../../senses/bluebubbles"
 
 function tempAgentRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ouro-bb-recovery-budget-"))
-}
-
-function mutation(messageGuid: string) {
-  return {
-    kind: "mutation" as const,
-    eventType: "updated-message",
-    mutationType: "delivery" as const,
-    messageGuid,
-    timestamp: Date.parse("2026-07-09T17:00:00.000Z"),
-    fromMe: false,
-    sender: {
-      provider: "imessage-handle" as const,
-      externalId: "ari@mendelow.me",
-      rawId: "ari@mendelow.me",
-      displayName: "ari@mendelow.me",
-    },
-    chat: {
-      chatGuid: "any;-;ari@mendelow.me",
-      chatIdentifier: "ari@mendelow.me",
-      isGroup: false,
-      sessionKey: "chat:any;-;ari@mendelow.me",
-      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
-      participantHandles: [],
-    },
-    shouldNotifyAgent: false,
-    textForAgent: "message marked as delivered",
-    requiresRepair: false,
-  }
 }
 
 function repairedMessage(messageGuid: string) {
@@ -121,6 +97,7 @@ function repairedMessage(messageGuid: string) {
       externalId: "ari@mendelow.me",
       rawId: "ari@mendelow.me",
       displayName: "ari@mendelow.me",
+      observed: true,
     },
     chat: {
       chatGuid: "any;-;ari@mendelow.me",
@@ -136,6 +113,21 @@ function repairedMessage(messageGuid: string) {
     hasPayloadData: false,
     requiresRepair: false,
   }
+}
+
+function recordSemanticMessage(messageGuid: string): void {
+  const cutover = initializeBlueBubblesSemanticCutover("testagent", {
+    now: () => new Date("2026-07-09T16:59:00.000Z"),
+    randomUUID: () => "11111111-1111-4111-8111-111111111111",
+  })
+  const capture = buildBlueBubblesSemanticCapture({
+    cutover,
+    capturedAt: "2026-07-09T17:00:00.000Z",
+    event: repairedMessage(messageGuid),
+    targetAuthorship: null,
+  })
+  if (!capture) throw new Error("failed to build semantic recovery fixture")
+  writeBlueBubblesSemanticCapture("testagent", capture)
 }
 
 function repairedMessageWithoutRoute(messageGuid: string) {
@@ -171,10 +163,10 @@ describe("BlueBubbles recovery autonomy budget", () => {
         now: "2026-07-09T17:00:00.000Z",
       })
     }
-    recordBlueBubblesMutation("testagent", mutation("blocked-message-guid"))
+    recordSemanticMessage("blocked-message-guid")
     const runAgent = vi.fn()
 
-    const result = await recoverMissedBlueBubblesMessages({
+    const result = await recoverCapturedBlueBubblesInboundMessages({
       getAgentName: () => "testagent",
       createClient: () => ({
         repairEvent: vi.fn(async () => repairedMessage("blocked-message-guid")),
@@ -202,23 +194,23 @@ describe("BlueBubbles recovery autonomy budget", () => {
         now: "2026-07-09T17:00:00.000Z",
       })
     }
-    recordBlueBubblesMutation("testagent", mutation("blocked-release-guid"))
+    recordSemanticMessage("blocked-release-guid")
     const repairEvent = vi.fn(async () => repairedMessage("blocked-release-guid"))
 
-    const first = await recoverMissedBlueBubblesMessages({
+    const first = await recoverCapturedBlueBubblesInboundMessages({
       getAgentName: () => "testagent",
       createClient: () => ({ repairEvent } as any),
       runAgent: vi.fn() as any,
     })
-    const second = await recoverMissedBlueBubblesMessages({
+    const second = await recoverCapturedBlueBubblesInboundMessages({
       getAgentName: () => "testagent",
       createClient: () => ({ repairEvent } as any),
       runAgent: vi.fn() as any,
     })
 
     expect(first).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
-    expect(second).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
-    expect(repairEvent).toHaveBeenCalledTimes(2)
+    expect(second).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, failed: 0 }))
+    expect(repairEvent).toHaveBeenCalledTimes(1)
   })
 
   it("skips over-budget recovery safely even when repaired route coordinates are missing", async () => {
@@ -235,10 +227,10 @@ describe("BlueBubbles recovery autonomy budget", () => {
         now: "2026-07-09T17:00:00.000Z",
       })
     }
-    recordBlueBubblesMutation("testagent", mutation("route-missing-guid"))
+    recordSemanticMessage("route-missing-guid")
     const runAgent = vi.fn()
 
-    const result = await recoverMissedBlueBubblesMessages({
+    const result = await recoverCapturedBlueBubblesInboundMessages({
       getAgentName: () => "testagent",
       createClient: () => ({
         repairEvent: vi.fn(async () => repairedMessageWithoutRoute("route-missing-guid")),
