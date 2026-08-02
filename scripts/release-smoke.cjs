@@ -67,6 +67,11 @@ function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
         {
           cwd: prefixDir,
           encoding: "utf-8",
+          env: {
+            ...deps.env,
+            HOME: prefixDir,
+            USERPROFILE: prefixDir,
+          },
           stdio: ["ignore", "pipe", "pipe"],
         },
       )
@@ -199,6 +204,7 @@ function runReleaseSmokeSuite(version, deps = defaultDeps()) {
 
 function defaultDeps() {
   return {
+    env: process.env,
     execFileSync: childProcess.execFileSync,
     mkdtempSync: fs.mkdtempSync,
     rmSync: fs.rmSync,

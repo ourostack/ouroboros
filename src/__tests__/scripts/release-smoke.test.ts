@@ -15,11 +15,22 @@ const {
   REQUIRED_PACKAGE_ASSET_PATHS,
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
+type ExecCall = {
+  command: string
+  args: string[]
+  cwd: string
+  env: NodeJS.ProcessEnv | undefined
+}
+
 function makeDeps(outputs: Array<string | Error>) {
-  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const calls: ExecCall[] = []
   const deps = {
-    execFileSync: vi.fn((command: string, args: string[], options: { cwd: string }) => {
-      calls.push({ command, args, cwd: options.cwd })
+    env: { RELEASE_SMOKE_SENTINEL: "preserved" },
+    execFileSync: vi.fn((command: string, args: string[], options: {
+      cwd: string
+      env?: NodeJS.ProcessEnv
+    }) => {
+      calls.push({ command, args, cwd: options.cwd, env: options.env })
       const next = outputs.shift()
       if (next instanceof Error) throw next
       return next
@@ -32,7 +43,10 @@ function makeDeps(outputs: Array<string | Error>) {
   return { deps, calls }
 }
 
-function makePublishedPackageDeps(outputs: Array<string | Error>, options: { withAssets: boolean }) {
+function makePublishedPackageDeps(
+  outputs: Array<string | Error>,
+  options: { withAssets: boolean; env?: NodeJS.ProcessEnv },
+) {
   const prefixDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-smoke-test-"))
   const packageRoot = path.join(prefixDir, "node_modules", "@ouro.bot", "cli")
   const binDir = path.join(prefixDir, "node_modules", ".bin")
@@ -49,10 +63,14 @@ function makePublishedPackageDeps(outputs: Array<string | Error>, options: { wit
     }
   }
 
-  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const calls: ExecCall[] = []
   const deps = {
-    execFileSync: vi.fn((command: string, args: string[], options: { cwd: string }) => {
-      calls.push({ command, args, cwd: options.cwd })
+    env: options.env ?? { RELEASE_SMOKE_SENTINEL: "preserved" },
+    execFileSync: vi.fn((command: string, args: string[], execOptions: {
+      cwd: string
+      env?: NodeJS.ProcessEnv
+    }) => {
+      calls.push({ command, args, cwd: execOptions.cwd, env: execOptions.env })
       const next = outputs.shift()
       if (next instanceof Error) throw next
       if (next === "__BIN__\n") return `${binPath}\n`
@@ -63,7 +81,7 @@ function makePublishedPackageDeps(outputs: Array<string | Error>, options: { wit
     sleepSync: vi.fn(),
     tmpdir: vi.fn(() => os.tmpdir()),
   }
-  return { deps, calls, binPath }
+  return { deps, calls, binPath, prefixDir }
 }
 
 function makeNpmNetworkError(code: string): Error {
@@ -195,6 +213,47 @@ describe("release-smoke", () => {
     expect(result.message).toContain("verified at 0.1.0-alpha.327")
     expect(deps.execFileSync).toHaveBeenCalledTimes(3)
     expect(deps.sleepSync).toHaveBeenCalledWith(5000)
+  })
+
+  it("isolates every asset, resolution, version, and retry child from the operator home", () => {
+    const childEnv = {
+      HOME: "/real/operator/home",
+      USERPROFILE: "C:\\real\\operator\\home",
+      PATH: "/sentinel/bin",
+      RELEASE_SMOKE_SENTINEL: "preserved",
+    }
+    const processEnvBefore = { ...process.env }
+    const { deps, calls, prefixDir } = makePublishedPackageDeps([
+      makeNpmNetworkError("ECONNRESET"),
+      "__BIN__\n",
+      "__BIN__\n",
+      "0.1.0-alpha.327\n",
+      "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro.bot\n",
+      "installing @ouro.bot/cli@0.1.0-alpha.327...\n\n0.1.0-alpha.327\n",
+    ], { withAssets: true, env: childEnv })
+
+    const results = runReleaseSmokeSuite("0.1.0-alpha.327", deps)
+
+    expect(results.map((result: { ok: boolean }) => result.ok)).toEqual([true, true, true])
+    expect(calls).toHaveLength(6)
+    expect(calls.map((call) => call.args.slice(call.args.indexOf("--") + 1))).toEqual([
+      ["which", "ouro"],
+      ["which", "ouro"],
+      ["which", "ouro"],
+      ["ouro", "--version"],
+      ["which", "ouro.bot"],
+      ["ouro.bot", "--version"],
+    ])
+    for (const call of calls) {
+      expect(call.env).toEqual({
+        ...childEnv,
+        HOME: prefixDir,
+        USERPROFILE: prefixDir,
+      })
+    }
+    expect(new Set(calls.map((call) => call.env)).size).toBe(calls.length)
+    expect(deps.env).toEqual(childEnv)
+    expect(process.env).toEqual(processEnvBefore)
   })
 
   it("smokes both supported published binaries", () => {
