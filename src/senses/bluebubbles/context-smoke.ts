@@ -30,7 +30,7 @@ export interface BlueBubblesContextSmokeResult {
 }
 
 interface BlueBubblesContextSmokeDeps {
-  createClient?: () => Pick<BlueBubblesClient, "repairEvent" | "listRecentMessages">
+  createClient?: () => Pick<BlueBubblesClient, "repairEvent" | "queryRecentMessagesWithMetadata">
   createDefaultClient?: typeof createBlueBubblesClient
   normalizeEvent?: typeof normalizeBlueBubblesEvent
   setAgentName?: typeof setAgentName

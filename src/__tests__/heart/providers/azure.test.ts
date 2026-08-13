@@ -37,10 +37,11 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 
 // Mock openai
 const mockAzureOpenAICtor = vi.fn()
+const mockAzureResponsesCreate = vi.fn()
 vi.mock("openai", () => {
   class MockOpenAI {
     chat = { completions: { create: vi.fn() } }
-    responses = { create: vi.fn() }
+    responses = { create: (...args: any[]) => mockAzureResponsesCreate(...args) }
     constructor(opts?: any) { mockAzureOpenAICtor(opts) }
   }
   return { default: MockOpenAI, AzureOpenAI: MockOpenAI }
@@ -171,6 +172,7 @@ describe("createAzureProviderRuntime", () => {
   beforeEach(() => {
     vi.resetModules()
     mockAzureOpenAICtor.mockReset()
+    mockAzureResponsesCreate.mockReset()
     mockGetToken.mockReset()
     mockDefaultAzureCredentialCtor.mockReset()
   })
@@ -203,6 +205,51 @@ describe("createAzureProviderRuntime", () => {
     // Should NOT have azureADTokenProvider
     const ctorArgs = mockAzureOpenAICtor.mock.calls[0][0]
     expect(ctorArgs.azureADTokenProvider).toBeUndefined()
+  })
+
+  it("sends current and verified predecessor evidence once in the actual Responses payload", async () => {
+    emitTestEvent("azure required evidence payload")
+    const config = await import("../../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: {
+        azure: {
+          apiKey: "test-api-key",
+          endpoint: "https://test.openai.azure.com",
+          deployment: "gpt-4",
+        },
+      },
+    })
+    mockAzureResponsesCreate.mockResolvedValue({
+      [Symbol.asyncIterator]: async function* () {},
+    })
+
+    const { createAzureProviderRuntime } = await import("../../../heart/providers/azure")
+    const runtime = createAzureProviderRuntime("gpt-4")
+    const messages = [
+      { role: "system" as const, content: "core system" },
+      { role: "system" as const, content: "verified predecessor evidence" },
+      { role: "user" as const, content: "current request" },
+    ]
+    runtime.resetTurnState(messages)
+    await runtime.streamTurn({
+      messages,
+      activeTools: [],
+      callbacks: {
+        onModelStart: vi.fn(),
+        onModelStreamStart: vi.fn(),
+        onTextChunk: vi.fn(),
+        onReasoningChunk: vi.fn(),
+        onToolStart: vi.fn(),
+        onToolEnd: vi.fn(),
+        onError: vi.fn(),
+      },
+    })
+
+    const payload = mockAzureResponsesCreate.mock.calls[0]?.[0]
+    expect(payload.instructions).toBe("core system\n\nverified predecessor evidence")
+    expect(payload.instructions.match(/verified predecessor evidence/g)).toHaveLength(1)
+    expect(payload.input).toEqual([{ role: "user", content: "current request" }])
   })
 
   it("uses azureADTokenProvider when apiKey is empty and managedIdentityClientId is set", async () => {

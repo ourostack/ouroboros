@@ -13,7 +13,11 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 import { trimMessages } from "../mind/context";
-import { applyPromptBudget } from "../mind/prompt-budget";
+import {
+  applyPromptBudget,
+  assessRequiredPromptEvidenceBudget,
+  type RequiredPromptEvidence,
+} from "../mind/prompt-budget";
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt";
 import type { SystemPrompt } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
@@ -402,6 +406,10 @@ export interface RunAgentOptions {
   habitSession?: HabitSessionToolContext;
   /** Content-free same-turn context packet ids linked to this provider run. */
   contextPacketIds?: string[];
+  /** Identity-bearing current-turn objects that prompt budgeting may never clone or drop. */
+  requiredPromptEvidence?: RequiredPromptEvidence;
+  /** Prompt-only evidence system objects that system refresh must preserve, but budgeting may drop. */
+  promptOnlyEvidenceMessages?: readonly OpenAI.ChatCompletionMessageParam[];
   /**
    * Receives the exact generated assistant/tool tail after core has finished
    * all prompt-only rewrites and trimming. The callback is deliberately
@@ -879,9 +887,11 @@ export function getSettleRetryError(
 function upsertSystemPrompt(
   messages: OpenAI.ChatCompletionMessageParam[],
   systemText: string,
+  protectedSystemMessages: readonly OpenAI.ChatCompletionMessageParam[] = [],
 ): void {
   const systemMessage: OpenAI.ChatCompletionSystemMessageParam = { role: "system", content: systemText };
-  if (messages[0]?.role === "system") {
+  const protectedMessages = new Set(protectedSystemMessages.filter((message) => message.role === "system"));
+  if (messages[0]?.role === "system" && !protectedMessages.has(messages[0])) {
     messages[0] = systemMessage;
   } else {
     messages.unshift(systemMessage);
@@ -1119,6 +1129,54 @@ export async function runAgent(
   const turnOrientationFrame = options?.orientationFrame
     ?? (channel ? buildOrientationFrame({ channel, messages }) : undefined);
 
+  if (options?.requiredPromptEvidence) {
+    let structuralFloor
+    try {
+      structuralFloor = assessRequiredPromptEvidenceBudget({
+        messages,
+        requiredPromptEvidence: options.requiredPromptEvidence,
+        provider: providerRuntime.id,
+        model: providerRuntime.model,
+        contextWindowTokens: getContextConfig().maxTokens,
+      });
+    } catch (error) {
+      const invalidEvidenceError = error instanceof Error ? error : new Error(String(error));
+      callbacks.onError(invalidEvidenceError, "terminal");
+      options.captureGeneratedMessages?.([]);
+      emitNervesEvent({
+        event: "engine.turn_end",
+        trace_id: traceId,
+        component: "engine",
+        message: "runAgent turn completed",
+        meta: { done: true, sawPonder: false, sawQuerySession: false, sawBridgeManage: false },
+      });
+      return {
+        outcome: "errored",
+        error: invalidEvidenceError,
+        errorClassification: "unknown",
+      };
+    }
+    if (structuralFloor.status === "required_evidence_over_budget") {
+      const budgetError = new Error(
+        `required_evidence_over_budget: required current-turn evidence needs ${structuralFloor.estimatedTokens} tokens but the provider input limit is ${structuralFloor.budget.inputTokenLimit}`,
+      );
+      callbacks.onError(budgetError, "terminal");
+      options.captureGeneratedMessages?.([]);
+      emitNervesEvent({
+        event: "engine.turn_end",
+        trace_id: traceId,
+        component: "engine",
+        message: "runAgent turn completed",
+        meta: { done: true, sawPonder: false, sawQuerySession: false, sawBridgeManage: false },
+      });
+      return {
+        outcome: "errored",
+        error: budgetError,
+        errorClassification: "unknown",
+      };
+    }
+  }
+
   // Refresh system prompt at start of each turn when channel is provided.
   // If refresh fails, retain only a recognised stable prefix (or inject a
   // minimal safe fallback) so stale dynamic state cannot regain authority.
@@ -1134,13 +1192,31 @@ export async function runAgent(
       };
       const refreshed = await buildSystem(channel, buildSystemOptions, currentContext);
       structuredSystemPrompt = refreshed;
-      upsertSystemPrompt(messages, flattenSystemPrompt(refreshed));
+      upsertSystemPrompt(
+        messages,
+        flattenSystemPrompt(refreshed),
+        [
+          ...(options?.promptOnlyEvidenceMessages ?? []),
+          ...(options?.requiredPromptEvidence?.verifiedPredecessorMessage
+            ? [options.requiredPromptEvidence.verifiedPredecessorMessage]
+            : []),
+        ],
+      );
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
       const fallback = repairFallbackSystemPrompt(
         turnOrientationFrame!,
       );
-      upsertSystemPrompt(messages, fallback);
+      upsertSystemPrompt(
+        messages,
+        fallback,
+        [
+          ...(options?.promptOnlyEvidenceMessages ?? []),
+          ...(options?.requiredPromptEvidence?.verifiedPredecessorMessage
+            ? [options.requiredPromptEvidence.verifiedPredecessorMessage]
+            : []),
+        ],
+      );
       emitNervesEvent({
         level: "warn",
         event: "mind.step_error",
@@ -1367,6 +1443,7 @@ export async function runAgent(
         try {
           const promptBudget = applyPromptBudget({
             messages,
+            requiredPromptEvidence: options?.requiredPromptEvidence,
             provider: providerRuntime.id,
             model: providerRuntime.model,
             contextWindowTokens: getContextConfig().maxTokens,
@@ -1405,7 +1482,16 @@ export async function runAgent(
             stripLastToolCalls(generatedMessages);
             const { maxTokens, contextMargin } = getContextConfig();
             const trimmed = trimMessages(messages, maxTokens, contextMargin, maxTokens * 2);
-            messages.splice(0, messages.length, ...trimmed);
+            const requiredEvidence = options?.requiredPromptEvidence;
+            const requiredMessages = new Set<OpenAI.ChatCompletionMessageParam>([
+              ...(requiredEvidence?.verifiedPredecessorMessage ? [requiredEvidence.verifiedPredecessorMessage] : []),
+              ...(requiredEvidence?.currentUserMessage ? [requiredEvidence.currentUserMessage] : []),
+            ]);
+            const trimmedMessages = new Set(trimmed);
+            const overflowRetryMessages = requiredMessages.size === 0
+              ? trimmed
+              : messages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
+            messages.splice(0, messages.length, ...overflowRetryMessages);
             providerRuntime.resetTurnState(messages);
             callbacks.onError(new Error("context trimmed, retrying..."), "transient");
             return callProviderTurn()

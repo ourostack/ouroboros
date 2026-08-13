@@ -28,12 +28,15 @@ function message(overrides: Partial<any> = {}) {
     eventType: "new-message",
     messageGuid: overrides.messageGuid ?? "anchor-guid",
     timestamp,
-    fromMe: overrides.fromMe ?? false,
+    fromMe: Object.prototype.hasOwnProperty.call(overrides, "fromMe")
+      ? overrides.fromMe
+      : false,
     sender: {
       provider: "imessage-handle" as const,
       externalId: senderExternalId,
       rawId: senderRawId,
       displayName: senderDisplayName,
+      observed: overrides.senderObserved,
     },
     chat: {
       chatGuid,
@@ -51,6 +54,30 @@ function message(overrides: Partial<any> = {}) {
   }
 }
 
+function metadataResult(anchor: ReturnType<typeof message>, messages: any[], overrides: Record<string, unknown> = {}) {
+  return {
+    messages,
+    rawRowCount: messages.length,
+    normalizedRowCount: messages.length,
+    skippedRowCount: 0,
+    invalidCausalTimestampRowCount: 0,
+    request: {
+      limit: 41,
+      offset: 0,
+      sort: "DESC",
+      chatGuid: anchor.chat.chatGuid,
+      beforeTimestamp: anchor.timestamp,
+    },
+    ...overrides,
+  }
+}
+
+function metadataClient(anchor: ReturnType<typeof message>, messages: any[], overrides: Record<string, unknown> = {}) {
+  return {
+    queryRecentMessagesWithMetadata: vi.fn().mockResolvedValue(metadataResult(anchor, messages, overrides)),
+  }
+}
+
 describe("BlueBubbles context packet builder", () => {
   beforeEach(() => {
     emitNervesEvent.mockReset()
@@ -63,33 +90,18 @@ describe("BlueBubbles context packet builder", () => {
       timestamp: Date.parse("2026-07-09T19:23:00.000Z"),
       text: "previous same-thread body",
     })
-    const listRecentMessages = vi.fn().mockResolvedValue([
-      message({ messageGuid: "anchor-guid", text: "duplicate anchor" }),
-      message({
-        messageGuid: "future-guid",
-        timestamp: Date.parse("2026-07-09T19:26:00.000Z"),
-        text: "future body",
-      }),
-      message({
-        messageGuid: "other-thread-guid",
-        sessionKey: "chat:any;+;other",
-        chatGuid: "any;+;other",
-        chatIdentifier: "other",
-        text: "other thread",
-      }),
-      prior,
-    ])
+    const client = metadataClient(anchor, [anchor, prior])
 
     const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
     const result = await buildBlueBubblesContextPacket({
       agentName: "slugger",
-      client: { listRecentMessages },
+      client,
       event: anchor,
     })
 
-    expect(listRecentMessages).toHaveBeenCalledWith({
+    expect(client.queryRecentMessagesWithMetadata).toHaveBeenCalledWith({
       beforeTimestamp: anchor.timestamp,
-      limit: 40,
+      limit: 41,
       offset: 0,
       chatGuid: "any;+;thread-guid",
     })
@@ -103,6 +115,8 @@ describe("BlueBubbles context packet builder", () => {
     })
     expect(result?.packet.messages.map((entry) => entry.sourceRef.messageGuid)).toEqual(["prior-guid"])
     expect(result?.rendered.text).toContain("previous same-thread body")
+    expect(result?.verifiedPredecessorMessage.content).toContain("bluebubbles_verified_predecessor")
+    expect(result?.verifiedPredecessorMessage.content).toContain("previous same-thread body")
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_context_packet_built",
       meta: expect.objectContaining({
@@ -116,7 +130,7 @@ describe("BlueBubbles context packet builder", () => {
     const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
     const result = await buildBlueBubblesContextPacket({
       agentName: "slugger",
-      client: { listRecentMessages: vi.fn().mockResolvedValue([]) },
+      client: metadataClient(message(), [message()]),
       event: message(),
     })
 
@@ -155,7 +169,7 @@ describe("BlueBubbles context packet builder", () => {
     const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
     const result = await buildBlueBubblesContextPacket({
       agentName: "slugger",
-      client: { listRecentMessages: vi.fn().mockResolvedValue([exactKnown, normalizedKnown, containedKnown, blankBody, fresh]) },
+      client: metadataClient(anchor, [anchor, fresh, blankBody, containedKnown, normalizedKnown, exactKnown]),
       event: anchor,
       knownMessageTexts: [
         "RSVP Update -- Wedding\n149 attending / 123 declined / 1 pending",
@@ -171,14 +185,14 @@ describe("BlueBubbles context packet builder", () => {
 
   it("returns null before querying when the anchor timestamp or client query is unavailable", async () => {
     const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
-    const listRecentMessages = vi.fn()
+    const queryRecentMessagesWithMetadata = vi.fn()
 
     await expect(buildBlueBubblesContextPacket({
       agentName: "slugger",
-      client: { listRecentMessages },
+      client: { queryRecentMessagesWithMetadata },
       event: message({ timestamp: Number.NaN }),
     })).resolves.toBeNull()
-    expect(listRecentMessages).not.toHaveBeenCalled()
+    expect(queryRecentMessagesWithMetadata).not.toHaveBeenCalled()
 
     await expect(buildBlueBubblesContextPacket({
       agentName: "slugger",
@@ -187,27 +201,17 @@ describe("BlueBubbles context packet builder", () => {
     })).resolves.toBeNull()
   })
 
-  it("uses chat and author fallbacks while keeping query filters scoped", async () => {
-    const anchor = message({
-      chatGuid: undefined,
-      chatIdentifier: "thread-id",
-      sessionKey: "chat:thread-id",
-    })
+  it("labels shared-account outbound rows without claiming Slugger authorship", async () => {
+    const anchor = message()
     const fromMe = message({
       messageGuid: "from-me-guid",
       fromMe: true,
-      chatGuid: undefined,
-      chatIdentifier: "thread-id",
-      sessionKey: "chat:thread-id",
       timestamp: Date.parse("2026-07-09T19:20:00.000Z"),
       textForAgent: "",
       text: "sent by slugger",
     })
     const externalOnly = message({
       messageGuid: "external-only-guid",
-      chatGuid: undefined,
-      chatIdentifier: "thread-id",
-      sessionKey: "chat:thread-id",
       timestamp: Date.parse("2026-07-09T19:21:00.000Z"),
       senderDisplayName: "",
       senderExternalId: "external-only",
@@ -215,9 +219,6 @@ describe("BlueBubbles context packet builder", () => {
     })
     const unknownWithRaw = message({
       messageGuid: "raw-only-guid",
-      chatGuid: undefined,
-      chatIdentifier: "thread-id",
-      sessionKey: "chat:thread-id",
       timestamp: Date.parse("2026-07-09T19:22:00.000Z"),
       senderDisplayName: "",
       senderExternalId: "",
@@ -226,16 +227,13 @@ describe("BlueBubbles context packet builder", () => {
     })
     const unknownWithoutIds = message({
       messageGuid: "unknown-id-guid",
-      chatGuid: undefined,
-      chatIdentifier: "thread-id",
-      sessionKey: "chat:thread-id",
       timestamp: Date.parse("2026-07-09T19:23:00.000Z"),
       senderDisplayName: "",
       senderExternalId: "",
       senderRawId: "",
       text: "unknown id body",
     })
-    const listRecentMessages = vi.fn().mockResolvedValue([unknownWithoutIds, unknownWithRaw, externalOnly, fromMe])
+    const client = metadataClient(anchor, [anchor, unknownWithoutIds, unknownWithRaw, externalOnly, fromMe])
 
     const {
       blueBubblesContextChatKey,
@@ -243,24 +241,24 @@ describe("BlueBubbles context packet builder", () => {
     } = await import("../../../senses/bluebubbles/context-packet")
     const result = await buildBlueBubblesContextPacket({
       agentName: "slugger",
-      client: { listRecentMessages },
+      client,
       event: anchor,
     })
 
-    expect(blueBubblesContextChatKey(anchor)).toBe("thread-id")
+    expect(blueBubblesContextChatKey(anchor)).toBe("any;+;thread-guid")
     expect(blueBubblesContextChatKey(message({
       chatGuid: undefined,
       chatIdentifier: undefined,
       sessionKey: "chat:fallback",
     }))).toBe("chat:fallback")
-    expect(listRecentMessages).toHaveBeenCalledWith({
+    expect(client.queryRecentMessagesWithMetadata).toHaveBeenCalledWith({
       beforeTimestamp: anchor.timestamp,
-      limit: 40,
+      limit: 41,
       offset: 0,
-      chatIdentifier: "thread-id",
+      chatGuid: "any;+;thread-guid",
     })
     expect(result?.packet.messages.map((entry) => entry.authorLabel)).toEqual([
-      "Slugger",
+      "shared-account outbound",
       "external-only",
       "Unknown",
       "Unknown",
@@ -271,5 +269,118 @@ describe("BlueBubbles context packet builder", () => {
       "unknown label body",
       "unknown id body",
     ])
+    expect(result?.rendered.text).not.toContain("Slugger:")
+  })
+
+  it("renders only observed inbound sender evidence and preserves unknown direction", async () => {
+    const anchor = message()
+    const { renderVerifiedBlueBubblesPredecessor } = await import("../../../senses/bluebubbles/context-packet")
+    const rendered = [
+      message({
+        messageGuid: "observed-display",
+        timestamp: anchor.timestamp - 1,
+        senderObserved: true,
+        senderDisplayName: "Observed Name",
+        senderExternalId: "observed@example.test",
+      }),
+      message({
+        messageGuid: "observed-external",
+        timestamp: anchor.timestamp - 2,
+        senderObserved: true,
+        senderDisplayName: "",
+        senderExternalId: "external@example.test",
+      }),
+      message({
+        messageGuid: "observed-unknown",
+        timestamp: anchor.timestamp - 3,
+        senderObserved: true,
+        senderDisplayName: "",
+        senderExternalId: "",
+      }),
+      message({
+        messageGuid: "unknown-direction",
+        timestamp: anchor.timestamp - 4,
+        fromMe: null,
+      }),
+    ].map((predecessor) => renderVerifiedBlueBubblesPredecessor(anchor, predecessor, "chat-hash").content)
+
+    expect(rendered[0]).toContain('"sender":"Observed Name"')
+    expect(rendered[1]).toContain('"sender":"external@example.test"')
+    expect(rendered[2]).toContain('"sender":"unknown inbound sender"')
+    expect(rendered[3]).toContain('"direction":"direction unknown"')
+    expect(rendered[3]).not.toContain('"sender"')
+  })
+
+  it.each([
+    ["too many rows", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, ...Array.from({ length: 40 }, (_, index) => message({
+        messageGuid: `prior-${index}`,
+        timestamp: anchor.timestamp - index - 1,
+      }))],
+      rawRowCount: 41,
+      normalizedRowCount: 41,
+      skippedRowCount: 0,
+      invalidCausalTimestampRowCount: 0,
+    })],
+    ["a skipped malformed row", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, message({ messageGuid: "prior", timestamp: anchor.timestamp - 1 })],
+      rawRowCount: 3,
+      normalizedRowCount: 2,
+      skippedRowCount: 1,
+      invalidCausalTimestampRowCount: 0,
+    })],
+    ["a normalized non-message row", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, { kind: "typing", timestamp: anchor.timestamp - 1 }],
+    })],
+    ["a duplicate guid", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, message({ messageGuid: "duplicate", timestamp: anchor.timestamp - 1 }), message({ messageGuid: "duplicate", timestamp: anchor.timestamp - 2 })],
+    })],
+    ["a wrong-chat row", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, message({ messageGuid: "wrong-chat", timestamp: anchor.timestamp - 1, chatGuid: "any;+;other" })],
+    })],
+    ["an equal-time ambiguity", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, message({ messageGuid: "equal-time", timestamp: anchor.timestamp })],
+    })],
+    ["ascending rows", (anchor: ReturnType<typeof message>) => ({
+      messages: [message({ messageGuid: "old", timestamp: anchor.timestamp - 2 }), message({ messageGuid: "new", timestamp: anchor.timestamp - 1 }), anchor],
+    })],
+    ["a missing anchor", (anchor: ReturnType<typeof message>) => ({
+      messages: [message({ messageGuid: "prior", timestamp: anchor.timestamp - 1 })],
+    })],
+    ["a mismatched anchor identity", (anchor: ReturnType<typeof message>) => ({
+      messages: [{ ...anchor, timestamp: anchor.timestamp - 1 }, message({ messageGuid: "prior", timestamp: anchor.timestamp - 2 })],
+    })],
+    ["an out-of-window predecessor", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, message({ messageGuid: "too-old", timestamp: anchor.timestamp - (48 * 60 * 60 * 1000) - 1 })],
+    })],
+  ])("fails closed when the anchor-inclusive query contains %s", async (_label, build) => {
+    const anchor = message()
+    const shape = build(anchor) as Record<string, any>
+    const client = metadataClient(anchor, shape.messages, shape)
+    const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
+
+    await expect(buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client,
+      event: anchor,
+    })).resolves.toBeNull()
+  })
+
+  it("requires an exact chat guid and metadata-capable query", async () => {
+    const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
+    const identifierOnly = message({ chatGuid: undefined, chatIdentifier: "thread-id" })
+    const queryRecentMessagesWithMetadata = vi.fn()
+
+    await expect(buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client: { queryRecentMessagesWithMetadata },
+      event: identifierOnly,
+    })).resolves.toBeNull()
+    await expect(buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client: {},
+      event: message(),
+    })).resolves.toBeNull()
+    expect(queryRecentMessagesWithMetadata).not.toHaveBeenCalled()
   })
 })

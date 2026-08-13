@@ -91,17 +91,8 @@ import {
 } from "./active-turns"
 import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
-import {
-  renderSenseContextPacketForPrompt,
-} from "../context-packets"
-import {
-  readLatestVisibleSenseContextPacket,
-  writeSenseContextPacket,
-} from "../context-packet-ledger"
-import {
-  blueBubblesContextChatKeyHash,
-  buildBlueBubblesContextPacket,
-} from "./context-packet"
+import { writeSenseContextPacket } from "../context-packet-ledger"
+import { buildBlueBubblesContextPacket } from "./context-packet"
 import {
   recordAutonomyFailure,
   reserveAutonomyBudget,
@@ -840,9 +831,11 @@ function recordBlueBubblesRecoveryFailureForBudget(
 function insertEphemeralContextMessages(
   messages: OpenAI.ChatCompletionMessageParam[],
   contextMessages: OpenAI.ChatCompletionMessageParam[],
+  currentUserMessage?: OpenAI.ChatCompletionMessageParam,
 ): OpenAI.ChatCompletionMessageParam[] {
   if (contextMessages.length === 0) return messages
-  const insertionIndex = Math.max(0, messages.length - 1)
+  const requiredCurrentIndex = currentUserMessage ? messages.indexOf(currentUserMessage) : -1
+  const insertionIndex = requiredCurrentIndex >= 0 ? requiredCurrentIndex : Math.max(0, messages.length - 1)
   return [
     ...messages.slice(0, insertionIndex),
     ...contextMessages,
@@ -853,6 +846,7 @@ function insertEphemeralContextMessages(
 interface PreparedBlueBubblesContextMessages {
   messages: OpenAI.ChatCompletionMessageParam[]
   contextPacketIds: string[]
+  verifiedPredecessorMessage?: OpenAI.ChatCompletionMessageParam
 }
 
 function knownProviderMessageTexts(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
@@ -867,21 +861,40 @@ async function buildBlueBubblesContextMessages(input: {
   agentRoot: string
   client: BlueBubblesClient
   event: CanonicalBlueBubblesDirectionObservedMessage
-  knownMessages?: OpenAI.ChatCompletionMessageParam[]
+  knownMessages: OpenAI.ChatCompletionMessageParam[]
 }): Promise<PreparedBlueBubblesContextMessages> {
   const event = input.event
   if (!Number.isFinite(event.timestamp)) return { messages: [], contextPacketIds: [] }
-  const chatGuidHash = blueBubblesContextChatKeyHash(event)
-  const anchorTimestamp = new Date(event.timestamp).toISOString()
+  let result: Awaited<ReturnType<typeof buildBlueBubblesContextPacket>>
   try {
-    const result = await buildBlueBubblesContextPacket({
+    result = await buildBlueBubblesContextPacket({
       agentName: input.agentName,
       client: input.client,
       event,
-      knownMessageTexts: knownProviderMessageTexts(input.knownMessages ?? []),
+      knownMessageTexts: knownProviderMessageTexts(input.knownMessages),
     })
-    if (!result) return { messages: [], contextPacketIds: [] }
-    const { packet, rendered, historyCount } = result
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_context_packet_error",
+      message: "failed to build live bluebubbles context packet",
+      meta: {
+        messageGuid: event.messageGuid,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return { messages: [], contextPacketIds: [] }
+  }
+  if (!result) return { messages: [], contextPacketIds: [] }
+  const { packet, optionalRendered, verifiedPredecessorMessage, historyCount } = result
+  const prepared = {
+    messages: optionalRendered
+      ? [{ role: "system" as const, content: optionalRendered.text }]
+      : [],
+    verifiedPredecessorMessage,
+  }
+  try {
     writeSenseContextPacket(input.agentRoot, packet)
     emitNervesEvent({
       component: "senses",
@@ -894,7 +907,7 @@ async function buildBlueBubblesContextMessages(input: {
       },
     })
     return {
-      messages: [{ role: "system", content: rendered.text }],
+      ...prepared,
       contextPacketIds: [packet.packetId],
     }
   } catch (error) {
@@ -908,18 +921,7 @@ async function buildBlueBubblesContextMessages(input: {
         reason: error instanceof Error ? error.message : String(error),
       },
     })
-    const fallback = readLatestVisibleSenseContextPacket(input.agentRoot, {
-      sense: "bluebubbles",
-      chatKeyHash: chatGuidHash,
-      beforeAnchorTimestamp: anchorTimestamp,
-      maxAgeMs: 24 * 60 * 60 * 1000,
-    })
-    if (!fallback) return { messages: [], contextPacketIds: [] }
-    const rendered = renderSenseContextPacketForPrompt(fallback)
-    return {
-      messages: [{ role: "system", content: rendered.text }],
-      contextPacketIds: [fallback.packetId],
-    }
+    return { ...prepared, contextPacketIds: [] }
   }
 }
 
@@ -1969,7 +1971,7 @@ async function handleBlueBubblesNormalizedEvent(
         enforceTrustGate,
         drainPending,
         drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(resolvedDeps.getAgentName(), deferredFriendId),
-        prepareRunAgentOptions: async ({ messages, runAgentOptions }) => {
+        prepareRunAgentOptions: async ({ messages = [], currentUserMessages = [], runAgentOptions }) => {
           preparedBlueBubblesContext = await buildBlueBubblesContextMessages({
             agentName,
             agentRoot: getAgentRoot(),
@@ -1977,19 +1979,39 @@ async function handleBlueBubblesNormalizedEvent(
             event,
             knownMessages: messages,
           })
-          if (preparedBlueBubblesContext.contextPacketIds.length === 0) return undefined
+          const currentUserMessage = currentUserMessages.findLast((message) => message.role === "user")
+            ?? messages.findLast((message) => message.role === "user")
+          if (!currentUserMessage) return undefined
+          Object.freeze(currentUserMessage)
+          const { verifiedPredecessorMessage } = preparedBlueBubblesContext
           return {
-            contextPacketIds: [
-              ...(runAgentOptions.contextPacketIds ?? []),
-              ...preparedBlueBubblesContext.contextPacketIds,
-            ],
+            ...(preparedBlueBubblesContext.contextPacketIds.length > 0 ? {
+              contextPacketIds: [
+                ...(runAgentOptions.contextPacketIds ?? []),
+                ...preparedBlueBubblesContext.contextPacketIds,
+              ],
+            } : {}),
+            ...(preparedBlueBubblesContext.messages.length > 0 ? {
+              promptOnlyEvidenceMessages: preparedBlueBubblesContext.messages,
+            } : {}),
+            requiredPromptEvidence: {
+              currentUserMessage,
+              ...(verifiedPredecessorMessage ? { verifiedPredecessorMessage } : {}),
+            },
           }
         },
         runAgent: async (msgs, cb, channel, sig, opts) => {
           const { codingFeedback: _omittedCodingFeedback, ...safeToolContext } = opts?.toolContext ?? {}
+          const requiredCurrent = opts?.requiredPromptEvidence?.currentUserMessage
           const providerMessages = insertEphemeralContextMessages(
-            structuredClone(msgs),
-            preparedBlueBubblesContext.messages,
+            msgs.map((message) => message === requiredCurrent ? message : structuredClone(message)),
+            [
+              ...preparedBlueBubblesContext.messages,
+              ...(preparedBlueBubblesContext.verifiedPredecessorMessage
+                ? [preparedBlueBubblesContext.verifiedPredecessorMessage]
+                : []),
+            ],
+            requiredCurrent,
           )
           let generatedMessages: OpenAI.ChatCompletionMessageParam[] = []
           const agentResult = await resolvedDeps.runAgent(providerMessages, cb, channel, sig, {

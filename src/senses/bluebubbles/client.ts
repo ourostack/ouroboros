@@ -60,6 +60,7 @@ export interface BlueBubblesClient {
   markChatRead(chat: BlueBubblesChatRef): Promise<void>
   checkHealth(): Promise<void>
   listRecentMessages?(params?: BlueBubblesListRecentMessagesParams): Promise<BlueBubblesNormalizedEvent[]>
+  queryRecentMessagesWithMetadata?(params?: BlueBubblesListRecentMessagesParams): Promise<BlueBubblesMessageQueryResult>
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
   /** Fetch the text content of a message by its GUID. Returns null if not found or on error. */
   getMessageText(messageGuid: string): Promise<string | null>
@@ -82,6 +83,22 @@ export interface BlueBubblesListRecentMessagesParams {
   chatGuid?: string
   chatIdentifier?: string
   beforeTimestamp?: number
+}
+
+export interface BlueBubblesMessageQueryResult {
+  messages: BlueBubblesNormalizedEvent[]
+  rawRowCount: number
+  normalizedRowCount: number
+  skippedRowCount: number
+  invalidCausalTimestampRowCount: number
+  request: {
+    limit: number
+    offset: number
+    sort: "DESC"
+    chatGuid?: string
+    chatIdentifier?: string
+    beforeTimestamp?: number
+  }
 }
 
 type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
@@ -219,7 +236,7 @@ function extractChatQueryRows(payload: unknown): BlueBubblesChatQueryRecord[] {
   return data.map((entry) => asRecord(entry)).filter((entry): entry is BlueBubblesChatQueryRecord => entry !== null)
 }
 
-function extractMessageQueryRows(payload: unknown): JsonRecord[] {
+function extractMessageQueryRows(payload: unknown): unknown[] {
   const record = asRecord(payload)
   const data = asRecord(record?.data)
   const rows =
@@ -230,7 +247,14 @@ function extractMessageQueryRows(payload: unknown): JsonRecord[] {
             : Array.isArray(payload) ? payload
               : []
 
-  return rows.map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => entry !== null)
+  return rows
+}
+
+function hasValidRawMessageCausalTimestamp(row: unknown): boolean {
+  const record = asRecord(row)
+  return typeof record?.dateCreated === "number"
+    && Number.isFinite(record.dateCreated)
+    && record.dateCreated > 0
 }
 
 async function resolveChatGuidForIdentifier(
@@ -578,7 +602,9 @@ export function createBlueBubblesClient(
       })
     },
 
-    async listRecentMessages(params: BlueBubblesListRecentMessagesParams = {}): Promise<BlueBubblesNormalizedEvent[]> {
+    async queryRecentMessagesWithMetadata(
+      params: BlueBubblesListRecentMessagesParams = {},
+    ): Promise<BlueBubblesMessageQueryResult> {
       const limit = Math.max(1, Math.min(100, Math.floor(params.limit ?? 50)))
       const offset = Math.max(0, Math.floor(params.offset ?? 0))
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/query", config.password)
@@ -590,7 +616,7 @@ export function createBlueBubblesClient(
         meta: { limit, offset },
       })
 
-      const body = {
+      const request: BlueBubblesMessageQueryResult["request"] = {
         limit,
         offset,
         sort: "DESC",
@@ -599,6 +625,12 @@ export function createBlueBubblesClient(
         ...(typeof params.beforeTimestamp === "number" && Number.isFinite(params.beforeTimestamp)
           ? { beforeTimestamp: params.beforeTimestamp }
           : {}),
+      }
+      const { beforeTimestamp, ...wireRequest } = request
+      const body = {
+        ...wireRequest,
+        // BlueBubbles names its inclusive message-date upper bound `before`.
+        ...(beforeTimestamp !== undefined ? { before: beforeTimestamp } : {}),
         with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
       }
 
@@ -626,6 +658,7 @@ export function createBlueBubblesClient(
 
       const payload = await parseJsonBody(response)
       const rows = extractMessageQueryRows(payload)
+      const invalidCausalTimestampRowCount = rows.filter((row) => !hasValidRawMessageCausalTimestamp(row)).length
       const messages: BlueBubblesNormalizedEvent[] = []
       for (const row of rows) {
         try {
@@ -650,10 +683,23 @@ export function createBlueBubblesClient(
         meta: {
           rows: rows.length,
           normalized: messages.length,
+          skipped: rows.length - messages.length,
         },
       })
 
-      return messages
+      return {
+        messages,
+        rawRowCount: rows.length,
+        normalizedRowCount: messages.length,
+        skippedRowCount: rows.length - messages.length,
+        invalidCausalTimestampRowCount,
+        request,
+      }
+    },
+
+    async listRecentMessages(params: BlueBubblesListRecentMessagesParams = {}): Promise<BlueBubblesNormalizedEvent[]> {
+      const result = await this.queryRecentMessagesWithMetadata!(params)
+      return result.messages
     },
 
     async repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent> {

@@ -8,8 +8,8 @@ const loadOrCreateMachineIdentity = vi.fn(() => ({ machineId: "machine-test" }))
 const refreshMachineRuntimeCredentialConfig = vi.fn().mockResolvedValue(undefined)
 const normalizeBlueBubblesEvent = vi.fn()
 const repairEvent = vi.fn()
-const listRecentMessages = vi.fn()
-const createBlueBubblesClient = vi.fn(() => ({ repairEvent, listRecentMessages }))
+const queryRecentMessagesWithMetadata = vi.fn()
+const createBlueBubblesClient = vi.fn(() => ({ repairEvent, queryRecentMessagesWithMetadata }))
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: any[]) => emitNervesEvent(...args),
@@ -68,6 +68,24 @@ function message(overrides: Partial<any> = {}) {
   }
 }
 
+function queryResult(anchor: ReturnType<typeof message>, history: ReturnType<typeof message>[]) {
+  const messages = [anchor, ...history]
+  return {
+    messages,
+    rawRowCount: messages.length,
+    normalizedRowCount: messages.length,
+    skippedRowCount: 0,
+    invalidCausalTimestampRowCount: 0,
+    request: {
+      limit: 41,
+      offset: 0,
+      sort: "DESC" as const,
+      chatGuid: anchor.chat.chatGuid,
+      beforeTimestamp: anchor.timestamp,
+    },
+  }
+}
+
 describe("BlueBubbles context smoke default wiring", () => {
   beforeEach(() => {
     emitNervesEvent.mockReset()
@@ -78,7 +96,7 @@ describe("BlueBubbles context smoke default wiring", () => {
     refreshMachineRuntimeCredentialConfig.mockClear()
     normalizeBlueBubblesEvent.mockReset()
     repairEvent.mockReset()
-    listRecentMessages.mockReset()
+    queryRecentMessagesWithMetadata.mockReset()
     createBlueBubblesClient.mockClear()
   })
 
@@ -91,7 +109,7 @@ describe("BlueBubbles context smoke default wiring", () => {
     })
     normalizeBlueBubblesEvent.mockReturnValue(message({ messageGuid: "anchor-guid", requiresRepair: true }))
     repairEvent.mockResolvedValue(anchor)
-    listRecentMessages.mockResolvedValue([prior])
+    queryRecentMessagesWithMetadata.mockResolvedValue(queryResult(anchor, [prior]))
 
     const { smokeBlueBubblesContext } = await import("../../../senses/bluebubbles/context-smoke")
     const result = await smokeBlueBubblesContext({

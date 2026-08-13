@@ -34,6 +34,8 @@ vi.mock("../../repertoire/skills", () => ({
 }))
 
 const mockLoadAgentConfig = vi.hoisted(() => vi.fn())
+const mockInjectKeptNotes = vi.hoisted(() => vi.fn())
+const mockBuildSystem = vi.hoisted(() => vi.fn(async () => ({ stable: "core system prompt", volatile: "current turn state" })))
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: (...args: any[]) => mockLoadAgentConfig(...args),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 120, contextMargin: 20 },
@@ -76,13 +78,13 @@ vi.mock("../../mind/first-impressions", () => ({
 }))
 
 vi.mock("../../mind/prompt", () => ({
-  buildSystem: vi.fn(async () => ({ stable: "core system prompt", volatile: "current turn state" })),
+  buildSystem: (...args: any[]) => mockBuildSystem(...args),
   flattenSystemPrompt: (prompt: { stable: string; volatile: string }) => `${prompt.stable}\n\n${prompt.volatile}`,
 }))
 
 vi.mock("../../heart/kept-notes", () => ({
   createKeptNotesJudge: vi.fn(() => vi.fn()),
-  injectKeptNotes: vi.fn().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] }),
+  injectKeptNotes: (...args: any[]) => mockInjectKeptNotes(...args),
 }))
 
 vi.mock("../../nerves/runtime", () => ({
@@ -142,10 +144,21 @@ function callbacks() {
   }
 }
 
+function contextWindowForInputLimit(inputTokenLimit: number): number {
+  for (let contextWindow = 1; contextWindow <= Math.max(100, inputTokenLimit * 3); contextWindow += 1) {
+    const outputReserve = Math.floor(contextWindow * 0.2)
+    const protocolReserve = Math.floor(contextWindow * 0.1)
+    if (contextWindow - outputReserve - protocolReserve === inputTokenLimit) return contextWindow
+  }
+  throw new Error(`no context window found for input limit ${inputTokenLimit}`)
+}
+
 describe("runAgent prompt budget integration", () => {
   beforeEach(async () => {
     vi.resetModules()
     mockCreate.mockReset()
+    mockInjectKeptNotes.mockReset().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
+    mockBuildSystem.mockReset().mockResolvedValue({ stable: "core system prompt", volatile: "current turn state" })
     mockLoadAgentConfig.mockReturnValue({
       name: "testagent",
       humanFacing: { provider: "minimax", model: "MiniMax-M2.7" },
@@ -178,5 +191,261 @@ describe("runAgent prompt budget integration", () => {
     expect(rendered).not.toContain("old history")
     expect(rendered).not.toContain("old answer")
     expect(rendered.length).toBeLessThan(originalLength)
+  })
+
+  it("rejects an oversized required floor before kept-note judging or the main provider", async () => {
+    const predecessor = { role: "system" as const, content: "verified predecessor " + "p".repeat(260) }
+    const current = { role: "user" as const, content: "current request " + "c".repeat(260) }
+    const { estimatePromptBudgetTokens } = await import("../../mind/prompt-budget")
+    const requiredTokens = estimatePromptBudgetTokens([predecessor, current])
+    mockLoadAgentConfig.mockReturnValue({
+      name: "testagent",
+      humanFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      context: {
+        maxTokens: contextWindowForInputLimit(requiredTokens - 1),
+        contextMargin: 20,
+      },
+    })
+    const { runAgent } = await import("../../heart/core")
+    const cb = callbacks()
+
+    const result = await runAgent(
+      [{ role: "system", content: "optional prompt" }, predecessor, current],
+      cb,
+      "bluebubbles",
+      undefined,
+      {
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+      },
+    )
+
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: expect.stringContaining("required_evidence_over_budget") },
+    })
+    expect(result.error?.message).toContain(`needs ${requiredTokens} tokens`)
+    expect(mockInjectKeptNotes).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(cb.onModelStart).not.toHaveBeenCalled()
+    expect(cb.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("required_evidence_over_budget") }),
+      "terminal",
+    )
+  })
+
+  it("fails closed before provider work when typed evidence is structurally invalid", async () => {
+    const invalidCurrent = { role: "assistant" as const, content: "not a current user message" }
+    const captureGeneratedMessages = vi.fn()
+    const { runAgent } = await import("../../heart/core")
+    const cb = callbacks()
+
+    const result = await runAgent(
+      [invalidCurrent],
+      cb,
+      undefined,
+      undefined,
+      {
+        captureGeneratedMessages,
+        requiredPromptEvidence: { currentUserMessage: invalidCurrent as any },
+      },
+    )
+
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "required current user message must have role=user" },
+    })
+    expect(cb.onError).toHaveBeenCalledWith(expect.any(Error), "terminal")
+    expect(captureGeneratedMessages).toHaveBeenCalledWith([])
+    expect(mockInjectKeptNotes).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("normalizes a non-Error evidence validation failure before provider work", async () => {
+    const current = Object.defineProperty({}, "role", {
+      enumerable: true,
+      get: () => {
+        throw "non-error evidence failure"
+      },
+    })
+    const { runAgent } = await import("../../heart/core")
+    const cb = callbacks()
+
+    const result = await runAgent(
+      [current as any],
+      cb,
+      undefined,
+      undefined,
+      { requiredPromptEvidence: { currentUserMessage: current as any } },
+    )
+
+    expect(result).toMatchObject({
+      outcome: "errored",
+      error: { message: "non-error evidence failure" },
+    })
+    expect(cb.onError).toHaveBeenCalledWith(expect.any(Error), "terminal")
+    expect(mockInjectKeptNotes).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("keeps typed evidence as the same objects in the actual chat-completions payload", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      name: "testagent",
+      humanFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      context: { maxTokens: 300, contextMargin: 20 },
+    })
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    const predecessor = { role: "system" as const, content: "verified predecessor evidence" }
+    const current = { role: "user" as const, content: "current request" }
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(
+      [
+        { role: "system", content: "old system" },
+        { role: "assistant", content: "optional old history " + "x".repeat(500) },
+        predecessor,
+        current,
+      ],
+      callbacks(),
+      "bluebubbles",
+      undefined,
+      {
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+      },
+    )
+
+    const providerMessages = mockCreate.mock.calls[0]?.[0]?.messages ?? []
+    expect(providerMessages).toContain(predecessor)
+    expect(providerMessages).toContain(current)
+    expect(providerMessages.filter((message: unknown) => message === predecessor)).toHaveLength(1)
+    expect(providerMessages.filter((message: unknown) => message === current)).toHaveLength(1)
+  })
+
+  it("keeps fresh-session optional evidence through system refresh into the actual provider payload", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      name: "testagent",
+      humanFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      context: { maxTokens: 500, contextMargin: 20 },
+    })
+    let providerMessages: unknown[] = []
+    mockCreate.mockImplementationOnce((request: { messages: unknown[] }) => {
+      providerMessages = [...request.messages]
+      return makeStream(settleChunks("done"))
+    })
+    const optional = Object.freeze({ role: "system" as const, content: "older optional same-chat evidence" })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor evidence" })
+    const current = Object.freeze({ role: "user" as const, content: "current request" })
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(
+      [optional, predecessor, current],
+      callbacks(),
+      "bluebubbles",
+      undefined,
+      {
+        skipKeptNotes: true,
+        promptOnlyEvidenceMessages: [optional],
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+      } as any,
+    )
+
+    expect(JSON.stringify(providerMessages).match(/older optional same-chat evidence/g)).toHaveLength(1)
+    expect(JSON.stringify(providerMessages).match(/verified predecessor evidence/g)).toHaveLength(1)
+    expect(JSON.stringify(providerMessages).match(/current request/g)).toHaveLength(1)
+    expect(providerMessages.findIndex((message: any) => message.content === "older optional same-chat evidence"))
+      .toBeLessThan(providerMessages.findIndex((message) => message === predecessor))
+  })
+
+  it("preserves required evidence exactly once when system-prompt construction fails", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      name: "testagent",
+      humanFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      context: { maxTokens: 300, contextMargin: 20 },
+    })
+    mockBuildSystem.mockRejectedValueOnce(new Error("prompt assembly failed"))
+    let providerMessages: unknown[] = []
+    mockCreate.mockImplementationOnce((request: { messages: unknown[] }) => {
+      providerMessages = [...request.messages]
+      return makeStream(settleChunks("done"))
+    })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor evidence" })
+    const current = Object.freeze({ role: "user" as const, content: "current request" })
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(
+      [predecessor, current],
+      callbacks(),
+      "bluebubbles",
+      undefined,
+      {
+        skipKeptNotes: true,
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+      },
+    )
+
+    expect(providerMessages.filter((message: unknown) => message === predecessor)).toHaveLength(1)
+    expect(providerMessages.filter((message: unknown) => message === current)).toHaveLength(1)
+    expect(providerMessages[0]).not.toBe(predecessor)
+    expect(providerMessages.at(-2)).toBe(predecessor)
+    expect(providerMessages.at(-1)).toBe(current)
+  })
+
+  it("preserves required evidence by identity across context-overflow recovery", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      name: "testagent",
+      humanFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      context: { maxTokens: 300, contextMargin: 20 },
+    })
+    const payloads: unknown[][] = []
+    mockCreate
+      .mockImplementationOnce((request: { messages: unknown[] }) => {
+        payloads.push([...request.messages])
+        const error = new Error("context_length_exceeded") as Error & { code: string }
+        error.code = "context_length_exceeded"
+        throw error
+      })
+      .mockImplementationOnce((request: { messages: unknown[] }) => {
+        payloads.push([...request.messages])
+        return makeStream(settleChunks("done"))
+      })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor evidence" })
+    const current = Object.freeze({ role: "user" as const, content: "current request" })
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(
+      [{ role: "system", content: "optional core" }, { role: "user", content: "old history" }, predecessor, current],
+      callbacks(),
+      "bluebubbles",
+      undefined,
+      {
+        skipKeptNotes: true,
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+      },
+    )
+
+    expect(payloads).toHaveLength(2)
+    for (const payload of payloads) {
+      expect(payload.filter((message) => message === predecessor)).toHaveLength(1)
+      expect(payload.filter((message) => message === current)).toHaveLength(1)
+    }
   })
 })

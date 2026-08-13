@@ -5668,7 +5668,7 @@ describe("anthropic setup-token provider contract", () => {
 
     const messages: any[] = [
       { role: "system", content: [{ type: "text", text: "system from array" }] },
-      { role: "system", content: "ignored second system" },
+      { role: "system", content: "secondary system evidence" },
       { role: "user", content: "hello user" },
       {
         role: "assistant",
@@ -5757,7 +5757,7 @@ describe("anthropic setup-token provider contract", () => {
       max_tokens: 128000,
       system: [
         { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
-        { type: "text", text: "system from array" },
+        { type: "text", text: "system from array\n\nsecondary system evidence" },
       ],
       tool_choice: { type: "auto" },
       thinking: { type: "adaptive" },

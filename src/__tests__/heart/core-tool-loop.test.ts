@@ -272,6 +272,101 @@ describe("runAgent tool loop guard", () => {
     expect(JSON.stringify(captureGeneratedMessages.mock.calls[0]?.[0])).not.toContain("current request")
   })
 
+  it("retains the same required evidence through tool-loop and no-tool retry payloads", async () => {
+    const providerPayloads: any[][] = []
+    mockCreate
+      .mockImplementationOnce((request: any) => {
+        providerPayloads.push(request.messages)
+        return makeStream([makeChunk("<think>thinking without a required tool</think>")])
+      })
+      .mockImplementationOnce((request: any) => {
+        providerPayloads.push(request.messages)
+        return makeStream([
+          makeChunk(undefined, [{
+            index: 0,
+            id: "call_required_probe",
+            function: { name: "query_session", arguments: "{}" },
+          }]),
+        ])
+      })
+      .mockImplementationOnce((request: any) => {
+        providerPayloads.push(request.messages)
+        return makeStream([
+          makeChunk(undefined, [{
+            index: 0,
+            id: "call_required_settle",
+            function: { name: "settle", arguments: '{"answer":"oriented","intent":"complete"}' },
+          }]),
+        ])
+      })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor marker" })
+    const current = Object.freeze({ role: "user" as const, content: "current request marker" })
+
+    const { runAgent } = await import("../../heart/core")
+    await runAgent(
+      [{ role: "system", content: "old prompt" }, predecessor, current],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+        execTool: vi.fn().mockResolvedValue("session evidence"),
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(providerPayloads).toHaveLength(3)
+    for (const payload of providerPayloads) {
+      expect(payload.filter((message) => message === predecessor)).toHaveLength(1)
+      expect(payload.filter((message) => message === current)).toHaveLength(1)
+      expect(JSON.stringify(payload).match(/verified predecessor marker/g)).toHaveLength(1)
+    }
+  })
+
+  it("retains the same required evidence when a steering follow-up is appended", async () => {
+    let providerPayload: unknown[] = []
+    mockCreate.mockImplementationOnce((request: { messages: unknown[] }) => {
+      providerPayload = [...request.messages]
+      return makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_steered_settle",
+          function: { name: "settle", arguments: '{"answer":"oriented","intent":"complete"}' },
+        }]),
+      ])
+    })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor steering marker" })
+    const current = Object.freeze({ role: "user" as const, content: "current steering request" })
+    const drainSteeringFollowUps = vi.fn()
+      .mockReturnValueOnce([{ text: "one newer clarification" }])
+      .mockReturnValue([])
+
+    const { runAgent } = await import("../../heart/core")
+    await runAgent(
+      [{ role: "system", content: "old prompt" }, predecessor, current],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+        drainSteeringFollowUps,
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(providerPayload.filter((message) => message === predecessor)).toHaveLength(1)
+    expect(providerPayload.filter((message) => message === current)).toHaveLength(1)
+    expect(JSON.stringify(providerPayload)).toContain("one newer clarification")
+  })
+
   it("blocks repeated no-progress polling and lets the model recover with settle", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {

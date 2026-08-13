@@ -160,6 +160,18 @@ describe("toResponsesInput", () => {
     expect(result.input.find((i: any) => i.role === "system")).toBeUndefined()
   })
 
+  it("preserves every system evidence message exactly once in Responses instructions", () => {
+    const result = toResponsesInput([
+      { role: "system", content: "core system" },
+      { role: "system", content: "verified predecessor evidence" },
+      { role: "user", content: "current request" },
+    ])
+
+    expect(result.instructions).toBe("core system\n\nverified predecessor evidence")
+    expect(result.instructions.match(/verified predecessor evidence/g)).toHaveLength(1)
+    expect(result.input).toEqual([{ role: "user", content: "current request" }])
+  })
+
   it("converts user message to input item", () => {
     const messages = [{ role: "user", content: "hi" }]
     const result = toResponsesInput(messages)
@@ -306,14 +318,14 @@ describe("toResponsesInput", () => {
     ])
   })
 
-  it("only extracts first system message as instructions", () => {
+  it("combines all system messages into instructions", () => {
     const messages = [
       { role: "system", content: "first system" },
       { role: "system", content: "second system" },
       { role: "user", content: "hi" },
     ]
     const result = toResponsesInput(messages)
-    expect(result.instructions).toBe("first system")
+    expect(result.instructions).toBe("first system\n\nsecond system")
     // Neither system message should appear in input
     expect(result.input).toEqual([{ role: "user", content: "hi" }])
   })

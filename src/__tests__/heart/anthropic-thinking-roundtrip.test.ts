@@ -143,6 +143,19 @@ describe("Anthropic thinking block round-trip", () => {
     expect(assistantMsg.content[0].type).toBe("text")
   })
 
+  it("toAnthropicMessages preserves every system evidence message exactly once", async () => {
+    emitTestEvent("toAnthropicMessages preserves secondary system evidence")
+    const { toAnthropicMessages } = await import("../../heart/providers/anthropic")
+    const result = toAnthropicMessages([
+      { role: "system", content: "core system" },
+      { role: "system", content: "verified predecessor evidence" },
+      { role: "user", content: "current request" },
+    ] as any)
+
+    expect(result.system).toBe("core system\n\nverified predecessor evidence")
+    expect(result.system?.match(/verified predecessor evidence/g)).toHaveLength(1)
+  })
+
   it("non-Anthropic providers ignore _thinking_blocks (toResponsesInput)", async () => {
     emitTestEvent("toResponsesInput ignores thinking blocks")
     const { toResponsesInput } = await import("../../heart/streaming")

@@ -585,15 +585,14 @@ function toResponsesUserContent(
 export function toResponsesInput(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): { instructions: string; input: ResponseItem[] } {
-  let instructions = "";
+  const instructionParts: string[] = [];
   const input: ResponseItem[] = [];
 
   for (const msg of messages) {
     if (msg.role === "system") {
-      if (!instructions) {
-        const sys = msg as OpenAI.ChatCompletionSystemMessageParam;
-        instructions = (typeof sys.content === "string" ? sys.content : "") || "";
-      }
+      const sys = msg as OpenAI.ChatCompletionSystemMessageParam;
+      const content = (typeof sys.content === "string" ? sys.content : "").trim();
+      if (content) instructionParts.push(content);
       continue;
     }
 
@@ -643,7 +642,7 @@ export function toResponsesInput(
     }
   }
 
-  return { instructions, input };
+  return { instructions: instructionParts.join("\n\n"), input };
 }
 
 export function toResponsesTools(

@@ -1241,7 +1241,7 @@ describe("BlueBubbles client", () => {
       offset: 0,
       sort: "DESC",
       chatGuid: "any;-;ari@mendelow.me",
-      beforeTimestamp: 1772949200000,
+      before: 1772949200000,
       with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
     })
     expect(result).toEqual([
@@ -1251,6 +1251,136 @@ describe("BlueBubbles client", () => {
         textForAgent: "context from this exact chat",
       }),
     ])
+  })
+
+  it("returns anchor-query verification metadata without issuing a second request", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          {
+            guid: "anchor-guid",
+            text: "current request",
+            dateCreated: 1772949200000,
+            isFromMe: false,
+            handle: { address: "ari@mendelow.me" },
+            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+          },
+          { text: "malformed row without guid" },
+          {
+            guid: "prior-guid",
+            text: "visible predecessor",
+            dateCreated: 1772949155000,
+            isFromMe: true,
+            handle: { address: "shared-account@example.com" },
+            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+          },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.queryRecentMessagesWithMetadata?.({
+      chatGuid: "any;-;ari@mendelow.me",
+      beforeTimestamp: 1772949200000,
+      limit: 41,
+      offset: 0,
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toMatchObject({
+      chatGuid: "any;-;ari@mendelow.me",
+      before: 1772949200000,
+    })
+    expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).not.toHaveProperty("beforeTimestamp")
+    expect(result).toMatchObject({
+      rawRowCount: 3,
+      normalizedRowCount: 2,
+      skippedRowCount: 1,
+      request: {
+        limit: 41,
+        offset: 0,
+        sort: "DESC",
+        chatGuid: "any;-;ari@mendelow.me",
+        beforeTimestamp: 1772949200000,
+      },
+    })
+    expect(result?.messages.map((event) => event.messageGuid)).toEqual(["anchor-guid", "prior-guid"])
+  })
+
+  it("marks raw rows without numeric causal timestamps as unverifiable before normalization", async () => {
+    const futureAnchorTimestamp = Date.now() + 60_000
+    const anchorRow = {
+      guid: "future-anchor-guid",
+      text: "current future-dated request",
+      dateCreated: futureAnchorTimestamp,
+      isFromMe: false,
+      handle: { address: "ari@mendelow.me" },
+      chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+    }
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          anchorRow,
+          {
+            guid: "missing-timestamp-row",
+            text: "must not become a predecessor via Date.now",
+            isFromMe: true,
+            chats: anchorRow.chats,
+          },
+          {
+            guid: "string-timestamp-row",
+            text: "must not become a predecessor via a numeric-looking string",
+            dateCreated: String(futureAnchorTimestamp - 2_000),
+            isFromMe: true,
+            chats: anchorRow.chats,
+          },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+    const query = await client.queryRecentMessagesWithMetadata?.({
+      chatGuid: "any;-;ari@mendelow.me",
+      beforeTimestamp: futureAnchorTimestamp,
+      limit: 41,
+      offset: 0,
+    })
+    const anchor = normalizeBlueBubblesEvent({ type: "new-message", data: anchorRow })
+    if (anchor.kind !== "message" || !query) throw new Error("test fixture did not produce a message query")
+
+    expect(query.invalidCausalTimestampRowCount).toBe(2)
+    await expect(buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client: { queryRecentMessagesWithMetadata: vi.fn().mockResolvedValue(query) },
+      event: anchor,
+    })).resolves.toBeNull()
   })
 
   it("queries recent messages by chat identifier when a chat guid is not available", async () => {
