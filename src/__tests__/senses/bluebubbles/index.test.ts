@@ -3216,6 +3216,65 @@ describe("BlueBubbles sense runtime", () => {
     latestTurns.finish(promotion.capability)
   })
 
+  it("reuses one durable reservation when a pre-invocation client retry follows admission", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const outbound = await import("../../../senses/bluebubbles/outbound-state")
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const agentRoot = makeTempDir()
+    const idempotencyKey = "bluebubbles-inbound-reply:admitted-client-retry"
+    let attempt = 0
+    const client = {
+      sendText: vi.fn(async (params: any) => {
+        attempt += 1
+        expect(params.beforeTransportInvocation?.()).toBe(true)
+        if (attempt === 1) {
+          expect(outbound.readBlueBubblesOutboundRecordByIdempotencyKey(
+            agentRoot,
+            idempotencyKey,
+          )).toEqual(expect.objectContaining({ status: "reserved" }))
+          throw new BlueBubblesSendError({
+            message: "synthetic pre-invocation retry",
+            httpStatus: null,
+            errorCode: "admission_denied",
+            transportInvoked: false,
+          })
+        }
+        params.onTransportInvocation?.()
+        return { messageGuid: "accepted-after-client-retry" }
+      }),
+    }
+    const callbacks = bluebubbles.createBlueBubblesCallbacks(
+      client as any,
+      {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      { getReplyToMessageGuid: () => undefined } as any,
+      false,
+      undefined,
+      {
+        durableOutbound: {
+          agentRoot,
+          idempotencyKey,
+          attachment: { serverUrl: "http://bluebubbles.local", accountId: "default" },
+        },
+      },
+    )
+
+    callbacks.onTextChunk("retry one admitted durable send")
+    await expect(callbacks.flush()).resolves.toEqual({ status: "accepted" })
+    expect(client.sendText).toHaveBeenCalledTimes(2)
+    expect(outbound.readBlueBubblesOutboundRecordByIdempotencyKey(agentRoot, idempotencyKey))
+      .toEqual(expect.objectContaining({
+        status: "accepted",
+        messageGuid: "accepted-after-client-retry",
+      }))
+  })
+
   it("reports mark-read failures against identifier-only callback coordinates", async () => {
     mocks.markChatRead.mockRejectedValueOnce(new Error("read unavailable"))
     const bluebubbles = await import("../../../senses/bluebubbles")
@@ -5566,6 +5625,23 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
+  it("propagates runtime shutdown when it lands inside a catch-up query", async () => {
+    const controller = new AbortController()
+    const shutdown = new Error("catch-up query shutdown")
+    mocks.listRecentMessages.mockImplementationOnce(async () => {
+      controller.abort(shutdown)
+      throw shutdown
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, undefined, {
+      lifecycleSignal: controller.signal,
+    })).rejects.toBe(shutdown)
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_catchup_error",
+    }))
+  })
+
   it("skips catch-up cleanly for older injected clients without recent-message query support", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.catchUpMissedBlueBubblesMessages({
@@ -5674,6 +5750,26 @@ describe("BlueBubbles sense runtime", () => {
         messageGuid: "catchup-message-error-fails",
         reason: "repair error exploded",
       }),
+    }))
+  })
+
+  it("propagates runtime shutdown from an active catch-up candidate", async () => {
+    const controller = new AbortController()
+    const shutdown = new Error("catch-up candidate shutdown")
+    const candidate = makeCatchUpMessage({ messageGuid: "catchup-shutdown-active" })
+    mocks.listRecentMessages.mockResolvedValueOnce([candidate])
+    mocks.repairEvent.mockImplementationOnce(async () => {
+      controller.abort(shutdown)
+      throw shutdown
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.catchUpMissedBlueBubblesMessages({}, undefined, {
+      lifecycleSignal: controller.signal,
+    })).rejects.toBe(shutdown)
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_catchup_error",
+      meta: expect.objectContaining({ messageGuid: "catchup-shutdown-active" }),
     }))
   })
 
@@ -5949,6 +6045,86 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
   })
 
+  it("suppresses an active webhook's lifecycle rejection after shutdown", async () => {
+    vi.useFakeTimers()
+    const lifecycle = new AbortController()
+    const releaseAgent = createDeferred<void>()
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      await releaseAgent.promise
+      callbacks.onTextChunk("late webhook answer")
+      return {
+        outcome: "settled",
+        completion: { answer: "late webhook answer", intent: "complete" },
+        usage: { input_tokens: 10, output_tokens: 5, reasoning_tokens: 0, total_tokens: 15 },
+      }
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler({}, {
+      lifecycleSignal: lifecycle.signal,
+    })
+    const response = createMockResponse()
+
+    await handler(
+      createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", {
+        ...dmTopLevelPayload,
+        data: {
+          ...dmTopLevelPayload.data,
+          guid: "WEBHOOK-ACTIVE-AT-SHUTDOWN",
+          text: "abort this active webhook turn",
+        },
+      }),
+      response.res,
+    )
+    await response.done
+    for (let attempt = 0; attempt < 10 && mocks.runAgent.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+
+    lifecycle.abort(new Error("webhook runtime shutdown"))
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+    releaseAgent.resolve()
+    await flushAsyncWork()
+
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_webhook_async_error",
+    }))
+  })
+
+  it("stops setup when shutdown lands during reply-context lookup", async () => {
+    vi.useFakeTimers()
+    const lifecycle = new AbortController()
+    const shutdown = new Error("reply-context shutdown")
+    mocks.getMessageText.mockImplementationOnce(async () => {
+      lifecycle.abort(shutdown)
+      return null
+    })
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler({}, {
+      lifecycleSignal: lifecycle.signal,
+    })
+    const response = createMockResponse()
+
+    await handler(
+      createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload),
+      response.res,
+    )
+    await response.done
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+
+    expect(mocks.getMessageText).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_webhook_async_error",
+    }))
+  })
+
   it("aborts an active pre-transport recovery when runtime shutdown begins", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
@@ -5987,6 +6163,44 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(mocks.semanticHandled.has(capture.keyHash)).toBe(false)
+  })
+
+  it("lets an already-invoked final transport settle during runtime shutdown", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "RECOVERY-SEND-INVOKED-AT-SHUTDOWN",
+        text: "finish only the transport already in flight",
+      },
+    })
+    const finalSend = createDeferred<{ messageGuid: string }>()
+    mocks.sendText.mockReturnValueOnce(finalSend.promise)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    await vi.advanceTimersByTimeAsync(1_000)
+    for (let attempt = 0; attempt < 10 && mocks.sendText.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+
+    closableServer.close()
+    finalSend.resolve({ messageGuid: "settled-after-shutdown" })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.semanticHandled.get(capture.keyHash)).toEqual(expect.objectContaining({
+      outcome: "message_completed",
+    }))
   })
 
   it("surfaces stalled live turns in runtime state detail", async () => {
@@ -8659,6 +8873,33 @@ describe("BlueBubbles sense runtime", () => {
       pendingRecoveryCount: 0,
       failedRecoveryCount: 0,
     }))
+  })
+
+  it("propagates runtime shutdown from the final queued-recovery health check", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "queued-health-shutdown-guid",
+        text: "self-authored recovery needs no reply",
+        isFromMe: true,
+      },
+    })
+    const controller = new AbortController()
+    const shutdown = new Error("queued recovery shutdown")
+    mocks.checkHealth.mockImplementationOnce(async () => {
+      controller.abort(shutdown)
+      throw shutdown
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.recoverQueuedBlueBubblesMessages({}, {
+      lifecycleSignal: controller.signal,
+    })).rejects.toBe(shutdown)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
   })
 
   it("preserves the previous recovery timestamp when final health fails before recovery succeeds", async () => {

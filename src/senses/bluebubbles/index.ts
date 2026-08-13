@@ -1940,6 +1940,9 @@ async function handleBlueBubblesNormalizedEvent(
           meta: { threadGuid, hasText: !!repliedToText },
         })
       }
+      // Shutdown can land during MCP/group/reply-context awaits above. Recheck
+      // before the remaining synchronous setup installs its lifecycle listener.
+      options.lifecycleSignal?.throwIfAborted()
 
       const orientationFrame = buildOrientationFrame({
         channel: "bluebubbles",
@@ -2002,6 +2005,7 @@ async function handleBlueBubblesNormalizedEvent(
       },
     )
     const controller = new AbortController()
+    const lifecycleSignal = options.lifecycleSignal
     let rejectLifecycle!: (reason: unknown) => void
     const lifecyclePromise = new Promise<never>((_resolve, reject) => {
       rejectLifecycle = reject
@@ -2026,13 +2030,12 @@ async function handleBlueBubblesNormalizedEvent(
     const cancelForShutdown = (): void => {
       callbacks.cancelOutbound("shutdown")
       if (!finalTransportInvoked) {
-        const reason = options.lifecycleSignal?.reason ?? new Error("bluebubbles_runtime_shutdown")
+        const reason = lifecycleSignal!.reason
         controller.abort(reason)
         rejectLifecycle(reason)
       }
     }
-    options.lifecycleSignal?.addEventListener("abort", cancelForShutdown, { once: true })
-    if (options.lifecycleSignal?.aborted) cancelForShutdown()
+    lifecycleSignal?.addEventListener("abort", cancelForShutdown, { once: true })
     let timeoutTimer!: ReturnType<typeof setTimeout>
     let timeoutPromise!: Promise<BlueBubblesHandleResult>
     let resolveTimeout: ((result: BlueBubblesHandleResult) => void) | undefined
@@ -2412,7 +2415,7 @@ async function handleBlueBubblesNormalizedEvent(
       /* v8 ignore stop */
       clearTimeout(timeoutTimer)
       options.latestTurnCapability.signal.removeEventListener("abort", cancelForSupersession)
-      options.lifecycleSignal?.removeEventListener("abort", cancelForShutdown)
+      lifecycleSignal?.removeEventListener("abort", cancelForShutdown)
       finishBlueBubblesActiveTurn(agentName, liveTurnId)
       activeTurnId = null
       await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
@@ -4369,7 +4372,8 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   let closed = false
 
   function triggerRecoveryPass(): void {
-    if (closed || lifecycleController.signal.aborted) return
+    /* v8 ignore next -- close clears both recovery timers; guard covers an already-queued host callback @preserve */
+    if (closed) return
     /* v8 ignore next -- re-entrant timer guard; difficult to force deterministically without timing the turn lock @preserve */
     if (recoveryPassRunning) return
     recoveryPassRunning = true
@@ -4404,7 +4408,8 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   }
 
   const runtimeTimer = setInterval(() => {
-    if (closed || lifecycleController.signal.aborted) return
+    /* v8 ignore next -- close clears this interval; guard covers an already-queued host callback @preserve */
+    if (closed) return
     void syncBlueBubblesRuntime(resolvedDeps, {
       lifecycleSignal: lifecycleController.signal,
     }).then(scheduleRecoveryPass)

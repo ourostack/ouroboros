@@ -3586,6 +3586,137 @@ describe("BlueBubbles semantic store exhaustive boundaries", () => {
     )).toEqual([intervening.keyHash, winner.keyHash])
   })
 
+  it("breaks equal-time duplicate order by epoch and treats an identical clock as stable", async () => {
+    const store = await loadSemanticStore()
+    const earlierEpoch = "2026-08-13T09:59:58.000Z/11111111-1111-4111-8111-111111111111"
+    const laterEpoch = "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222"
+    const capturedAt = "2026-08-13T10:00:00.500Z"
+    const later = makeSemanticCapture(
+      "equal-time-duplicate-order",
+      capturedAt,
+      { observationEpoch: laterEpoch, observationOrdinal: 2 },
+    )
+    const earlier = makeSemanticCapture(
+      "equal-time-duplicate-order",
+      capturedAt,
+      { observationEpoch: earlierEpoch, observationOrdinal: 7 },
+    )
+    const exactDuplicate = makeSemanticCapture(
+      "equal-time-duplicate-order",
+      capturedAt,
+      { observationEpoch: earlierEpoch, observationOrdinal: 7 },
+    )
+
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", later, semanticStoreDeps()))
+      .toBe("semantic_capture_published")
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", earlier, semanticStoreDeps()))
+      .toBe("semantic_capture_duplicate")
+    expect(store.writeBlueBubblesSemanticCapture(
+      "synthetic-agent",
+      exactDuplicate,
+      semanticStoreDeps(),
+    )).toBe("semantic_capture_duplicate")
+    expect(store.readBlueBubblesSemanticCapture("synthetic-agent", later.keyHash))
+      .toMatchObject({ observationEpoch: earlierEpoch, observationOrdinal: 7 })
+  })
+
+  it("quarantines a corrupt fingerprinted order sidecar before publishing its capture", async () => {
+    const store = await loadSemanticStore()
+    const capture = makeSemanticCapture(
+      "corrupt-observation-order",
+      "2026-08-13T10:00:00.500Z",
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 4,
+      },
+    )
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", capture, semanticStoreDeps()))
+      .toBe("semantic_capture_published")
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const [orderName] = fs.readdirSync(paths.observationOrders)
+    fs.unlinkSync(path.join(paths.captures, `${capture.keyHash}.json`))
+    fs.writeFileSync(path.join(paths.observationOrders, orderName), "{torn", "utf8")
+
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", capture, semanticStoreDeps()))
+      .toBe("semantic_capture_published")
+    expect(fs.readdirSync(path.join(paths.quarantine, "observation-order")).some((name) => (
+      name.startsWith(`${orderName}.`)
+    ))).toBe(true)
+    expect(store.readBlueBubblesSemanticCapture("synthetic-agent", capture.keyHash))
+      .toMatchObject({ observationOrdinal: 4 })
+  })
+
+  it("polls fingerprinted-order SQLite contention and fails closed at its exact deadline", async () => {
+    const store = await loadSemanticStore()
+    const seed = makeSemanticCapture(
+      "observation-order-busy-seed",
+      CAPTURED_AT,
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 1,
+      },
+    )
+    store.writeBlueBubblesSemanticCapture("synthetic-agent", seed, semanticStoreDeps())
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+
+    const retryBlocker = new Database(paths.ownership)
+    retryBlocker.pragma("busy_timeout = 0")
+    retryBlocker.exec("BEGIN IMMEDIATE")
+    const retried = makeSemanticCapture(
+      "observation-order-busy-retry",
+      CAPTURED_AT,
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 2,
+      },
+    )
+    const sleeps: number[] = []
+    try {
+      expect(store.writeBlueBubblesSemanticCapture(
+        "synthetic-agent",
+        retried,
+        semanticStoreDeps({
+          sleepSync: (milliseconds) => {
+            sleeps.push(milliseconds)
+            retryBlocker.exec("COMMIT")
+          },
+        }),
+      )).toBe("semantic_capture_published")
+      expect(sleeps).toEqual([50])
+    } finally {
+      if (retryBlocker.inTransaction) retryBlocker.exec("ROLLBACK")
+      retryBlocker.close()
+    }
+
+    const timeoutBlocker = new Database(paths.ownership)
+    timeoutBlocker.pragma("busy_timeout = 0")
+    timeoutBlocker.exec("BEGIN IMMEDIATE")
+    const timedOut = makeSemanticCapture(
+      "observation-order-busy-timeout",
+      CAPTURED_AT,
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 3,
+      },
+    )
+    let clockCalls = 0
+    const sleepSync = vi.fn()
+    try {
+      expect(() => store.writeBlueBubblesSemanticCapture(
+        "synthetic-agent",
+        timedOut,
+        semanticStoreDeps({
+          now: () => new Date(Date.parse(CAPTURED_AT) + (clockCalls++ === 0 ? 0 : 5_000)),
+          sleepSync,
+        }),
+      )).toThrow("semantic_capture_failed")
+      expect(sleepSync).not.toHaveBeenCalled()
+    } finally {
+      timeoutBlocker.exec("ROLLBACK")
+      timeoutBlocker.close()
+    }
+  })
+
   it("keeps .727 capture and handled bytes readable by the strict .726 contracts", async () => {
     const store = await loadSemanticStore()
     const capture = makeSemanticCapture(
