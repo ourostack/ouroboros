@@ -2406,7 +2406,7 @@ async function captureBlueBubblesSemanticEvent(
   normalized: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
-  observationReservation?: BlueBubblesObservationReservation,
+  observationReservation: BlueBubblesObservationReservation,
 ): Promise<BlueBubblesSemanticCaptureResult> {
   const agentName = resolvedDeps.getAgentName()
   const capturedAt = new Date().toISOString()
@@ -2460,12 +2460,8 @@ async function captureBlueBubblesSemanticEvent(
   const capture = buildBlueBubblesSemanticCapture({
     cutover,
     capturedAt,
-    ...(observationReservation
-      ? {
-          observationEpoch: observationReservation.observationEpoch,
-          observationOrdinal: observationReservation.ordinal,
-        }
-      : {}),
+    observationEpoch: observationReservation.observationEpoch,
+    observationOrdinal: observationReservation.ordinal,
     event: observed,
     targetAuthorship: null,
     coordinateGeneration,
