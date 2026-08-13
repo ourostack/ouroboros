@@ -102,6 +102,13 @@ describe("BlueBubbles latest-turn registry", () => {
     expect(lowerPromotion.status).toBe("promoted")
     if (lowerPromotion.status !== "promoted") throw new Error("expected lowercase email promotion")
     expect(lowerPromotion.capability.canonicalChat.chatGuid).toBe("email-chat-guid")
+
+    const opaqueIdentifier = reserveObservation({ chatIdentifier: "group-chat-123" })
+    expect(opaqueIdentifier.hints).toEqual(["identifier:group-chat-123"])
+    clearPending(opaqueIdentifier)
+    const punctuationIdentifier = reserveObservation({ chatIdentifier: "()" })
+    expect(punctuationIdentifier.hints).toEqual(["identifier:()"])
+    clearPending(punctuationIdentifier)
   })
 
   it("keeps distinct chats independent and retains high-water protection after finish", () => {

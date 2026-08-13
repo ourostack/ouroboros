@@ -66,6 +66,7 @@ import {
 } from "./reaction-policy"
 import {
   awaitDeliveryAdmission,
+  cancel as cancelLatestTurn,
   clearPending,
   finish as finishLatestTurn,
   isCurrent as isLatestTurnCurrent,
@@ -914,6 +915,8 @@ export function createBlueBubblesCallbacks(
   let lastVisibleActivityMs = Date.now()
   let silenceWatchdog: ReturnType<typeof setInterval> | null = null
   let outboundClosed = false
+  let nextCleanupToken = 0
+  const activeCleanupTokens = new Set<number>()
   // Per-turn outward-send dedupe. A single createBlueBubblesCallbacks lifetime
   // serves one inbound turn, so collapsing identical outward bodies inside
   // this closure is scoped tightly: each fresh inbound turn starts with an
@@ -933,13 +936,24 @@ export function createBlueBubblesCallbacks(
   const sentOutwardTextNorms = new Set<string>()
   const sentOutwardTokenSets: Array<Set<string>> = []
 
-  function enqueue(operation: string, task: () => Promise<void>, enqueueOptions: { allowAfterClose?: boolean } = {}): void {
-    /* v8 ignore next -- defensive guard: public callback entrypoints already drop after outbound close @preserve */
-    if (outboundClosed && !enqueueOptions.allowAfterClose) return
+  async function canRunOutbound(): Promise<boolean> {
+    if (outboundClosed) return false
+    if (options.isOutboundCurrent && !options.isOutboundCurrent()) return false
+    if (options.admitOutbound && !await options.admitOutbound()) return false
+    if (outboundClosed) return false
+    if (options.isOutboundCurrent && !options.isOutboundCurrent()) return false
+    return true
+  }
+
+  function enqueue(operation: string, task: () => Promise<void>, enqueueOptions: { cleanupToken?: number } = {}): void {
+    const cleanupToken = enqueueOptions.cleanupToken
     queue = queue
       .then(async () => {
-        if (!enqueueOptions.allowAfterClose && options.admitOutbound && !await options.admitOutbound()) return
-        if (!enqueueOptions.allowAfterClose && options.isOutboundCurrent && !options.isOutboundCurrent()) return
+        if (cleanupToken === undefined) {
+          if (!await canRunOutbound()) return
+        } else if (!activeCleanupTokens.has(cleanupToken)) {
+          return
+        }
         await withBlueBubblesActivityTimeout(operation, BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS, task)
       })
       .catch((error) => {
@@ -951,6 +965,19 @@ export function createBlueBubblesCallbacks(
           meta: { operation, reason: error instanceof Error ? error.message : String(error) },
         })
       })
+  }
+
+  function enqueueTypingStop(): void {
+    typingActive = false
+    const cleanupToken = ++nextCleanupToken
+    activeCleanupTokens.add(cleanupToken)
+    enqueue("typing_stop", async () => {
+      try {
+        await client.setTyping(chat, false)
+      } finally {
+        activeCleanupTokens.delete(cleanupToken)
+      }
+    }, { cleanupToken })
   }
 
   function startTypingNow(): void {
@@ -1059,6 +1086,7 @@ export function createBlueBubblesCallbacks(
       })
       recordVisibleActivity()
       // Re-enable typing indicator — sending a message clears the typing bubble
+      if (!await canRunOutbound()) return
       await client.setTyping(chat, true)
     })
   }
@@ -1159,8 +1187,7 @@ export function createBlueBubblesCallbacks(
         emitDuplicateOutwardSuppressed("flushNow", trimmed.length)
         return
       }
-      if (options.admitOutbound && !await options.admitOutbound()) return
-      if (options.isOutboundCurrent && !options.isOutboundCurrent()) return
+      if (!await canRunOutbound()) return
       await client.sendText({
         chat,
         text: trimmed,
@@ -1190,8 +1217,7 @@ export function createBlueBubblesCallbacks(
       const trimmed = textBuffer.trim()
       if (!trimmed) {
         if (typingActive) {
-          typingActive = false
-          enqueue("typing_stop", async () => { await client.setTyping(chat, false) }, { allowAfterClose: true })
+          enqueueTypingStop()
           await queue
         }
         return
@@ -1199,8 +1225,7 @@ export function createBlueBubblesCallbacks(
       textBuffer = ""
       /* v8 ignore next 4 -- branch: typing may already be stopped before flush @preserve */
       if (typingActive) {
-        typingActive = false
-        enqueue("typing_stop", async () => { await client.setTyping(chat, false) }, { allowAfterClose: true })
+        enqueueTypingStop()
         await queue
       }
       if (containsInternalMetaMarkers(trimmed)) {
@@ -1218,8 +1243,7 @@ export function createBlueBubblesCallbacks(
         emitDuplicateOutwardSuppressed("flush", trimmed.length)
         return
       }
-      if (options.admitOutbound && !await options.admitOutbound()) return
-      if (options.isOutboundCurrent && !options.isOutboundCurrent()) return
+      if (!await canRunOutbound()) return
       await client.sendText({
         chat,
         text: trimmed,
@@ -1232,13 +1256,13 @@ export function createBlueBubblesCallbacks(
     async finish(options: { timeoutMs?: number } = {}): Promise<void> {
       stopSilenceWatchdog()
       if (typingActive) {
-        typingActive = false
-        enqueue("typing_stop", async () => { await client.setTyping(chat, false) }, { allowAfterClose: true })
+        enqueueTypingStop()
       }
       await waitForBlueBubblesCallbackCleanup(queue, options.timeoutMs ?? BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS, {
         operation: "finish",
         chatGuid: chat.chatGuid ?? null,
       })
+      activeCleanupTokens.clear()
     },
 
     cancelOutbound(reason: "turn_timeout" | "superseded"): void {
@@ -1630,6 +1654,7 @@ async function handleBlueBubblesNormalizedEvent(
         timeoutReason = reason
         recoveryTimedOut = true
         callbacks.cancelOutbound("turn_timeout")
+        cancelLatestTurn(options.latestTurnCapability, "turn_timeout")
         controller.abort(reason)
         timeoutReject?.(reason)
         emitNervesEvent({
@@ -2209,7 +2234,16 @@ async function handleCapturedBlueBubblesSemanticEvent(
     canonicalKey: captured.capture.canonicalKey,
     keyHash: captured.capture.keyHash,
   }
-  if (captured.writeResult === "semantic_capture_duplicate") {
+  // A duplicate delivery of the same live webhook cannot become a newer turn:
+  // keeping its pending fence while it waits on the first delivery's semantic
+  // claim would deadlock that first delivery at admission. Stored/recovery
+  // duplicates are different: they may be unhandled work, so their fence must
+  // stay up until claim status (and any required route repair) is known.
+  if (
+    captured.writeResult === "semantic_capture_duplicate"
+    && source === "webhook"
+    && !options.semanticRecovery
+  ) {
     clearPending(reservation)
   }
   let claim: Awaited<ReturnType<typeof acquireBlueBubblesSemanticClaim>>

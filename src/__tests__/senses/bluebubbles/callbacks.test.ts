@@ -160,6 +160,90 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     expect(setTyping).not.toHaveBeenCalledWith(expect.anything(), true)
   })
 
+  it("rechecks currentness after pending-observation admission settles", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const admission = createDeferred<boolean>()
+    let current = true
+    const markChatRead = vi.fn(async () => {})
+    const setTyping = vi.fn(async () => {})
+    const callbacks = indexModule.createBlueBubblesCallbacks(
+      {
+        sendText: vi.fn(async () => ({ messageGuid: "sent-guid" })),
+        editMessage: vi.fn(),
+        setTyping,
+        markChatRead,
+        checkHealth: vi.fn(),
+        repairEvent: vi.fn(),
+        getMessageText: vi.fn(),
+      } as any,
+      { chatGuid: "chat-1", participants: [] } as any,
+      { getReplyToMessageGuid: vi.fn(), setSelection: vi.fn() } as any,
+      false,
+      undefined,
+      {
+        enableSilenceWatchdog: false,
+        admitOutbound: () => admission.promise,
+        isOutboundCurrent: () => current,
+      },
+    )
+
+    callbacks.onModelStart()
+    await Promise.resolve()
+    current = false
+    admission.resolve(true)
+    await callbacks.finish()
+
+    expect(markChatRead).not.toHaveBeenCalled()
+    expect(setTyping).not.toHaveBeenCalledWith(expect.anything(), true)
+  })
+
+  it("does not re-enable typing when cancellation lands during a status transport", async () => {
+    vi.useFakeTimers()
+    try {
+      const indexModule = await import("../../../senses/bluebubbles")
+      const statusSend = createDeferred<{ messageGuid: string }>()
+      const setTyping = vi.fn(async () => {})
+      const sendText = vi.fn((request: { text: string }) => (
+        request.text === "still working on this..."
+          ? statusSend.promise
+          : Promise.resolve({ messageGuid: "sent-guid" })
+      ))
+      const chat = { chatGuid: "chat-1", participants: [] } as any
+      const callbacks = indexModule.createBlueBubblesCallbacks(
+        {
+          sendText,
+          editMessage: vi.fn(),
+          setTyping,
+          markChatRead: vi.fn(async () => {}),
+          checkHealth: vi.fn(),
+          repairEvent: vi.fn(),
+          getMessageText: vi.fn(),
+        } as any,
+        chat,
+        { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn() } as any,
+        false,
+      )
+
+      callbacks.onModelStart()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(setTyping).toHaveBeenCalledWith(chat, true)
+      await vi.advanceTimersByTimeAsync(75_000)
+      expect(sendText).toHaveBeenCalledWith({
+        chat,
+        text: "still working on this...",
+        replyToMessageGuid: "reply-guid",
+      })
+
+      callbacks.cancelOutbound("turn_timeout")
+      statusSend.resolve({ messageGuid: "status-guid" })
+      await callbacks.finish()
+
+      expect(setTyping.mock.calls.filter(([, active]) => active === true)).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("invalidates a queued typing stop when bounded cleanup releases the old turn", async () => {
     vi.useFakeTimers()
     try {

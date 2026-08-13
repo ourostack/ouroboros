@@ -53,7 +53,18 @@ let nextOrdinal = 0
 
 function clean(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
-  return trimmed && trimmed !== "unknown" ? trimmed : null
+  return trimmed && trimmed.toLowerCase() !== "unknown" ? trimmed : null
+}
+
+function canonicalIdentifier(value: string | null | undefined): string | null {
+  const trimmed = clean(value)
+  if (!trimmed) return null
+  if (trimmed.includes("@")) return trimmed.toLowerCase()
+  if (/^[+\d\s().-]+$/.test(trimmed)) {
+    const compact = trimmed.replace(/[^\d+]/g, "")
+    if (compact) return compact
+  }
+  return trimmed
 }
 
 function guidAlias(guid: string): string {
@@ -66,7 +77,7 @@ function identifierAlias(identifier: string): string {
 
 function observationHints(input: BlueBubblesObservationHints): string[] {
   const guid = clean(input.chatGuid)
-  const identifier = clean(input.chatIdentifier)
+  const identifier = canonicalIdentifier(input.chatIdentifier)
   return [
     ...(guid ? [guidAlias(guid)] : []),
     ...(identifier ? [identifierAlias(identifier)] : []),
@@ -114,7 +125,8 @@ function bindIdentifier(identifier: string, guid: string): boolean {
 
 function resolveCanonicalChat(input: BlueBubblesObservationHints): CanonicalBlueBubblesChat | null {
   const inputGuid = clean(input.chatGuid)
-  const identifier = clean(input.chatIdentifier)
+  const observedIdentifier = clean(input.chatIdentifier)
+  const identifier = canonicalIdentifier(input.chatIdentifier)
   let guid = inputGuid
   if (guid && identifier) bindIdentifier(identifier, guid)
   if (!guid && identifier) {
@@ -124,7 +136,9 @@ function resolveCanonicalChat(input: BlueBubblesObservationHints): CanonicalBlue
   if (!guid) return null
   return {
     chatGuid: guid,
-    ...(identifier && identifierBindings.get(identifier) === guid ? { chatIdentifier: identifier } : {}),
+    ...(observedIdentifier && identifier && identifierBindings.get(identifier) === guid
+      ? { chatIdentifier: observedIdentifier }
+      : {}),
     sessionKey: `chat:${guid}`,
   }
 }
