@@ -2911,6 +2911,52 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
   })
 
+  it("records accepted durable transport when BlueBubbles omits its message GUID", async () => {
+    const agentRoot = makeTempDir()
+    const idempotencyKey = "bluebubbles-inbound-reply:accepted-without-guid"
+    const chat = {
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+      isGroup: false,
+      sessionKey: "chat:any;-;ari@mendelow.me",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      participantHandles: [],
+    }
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const outbound = await import("../../../senses/bluebubbles/outbound-state")
+    mocks.sendText.mockResolvedValueOnce({ messageGuid: undefined })
+    const callbacks = bluebubbles.createBlueBubblesCallbacks(
+      {
+        markChatRead: mocks.markChatRead,
+        setTyping: mocks.setTyping,
+        sendText: mocks.sendText,
+      } as any,
+      chat,
+      { getReplyToMessageGuid: () => undefined } as any,
+      false,
+      undefined,
+      {
+        durableOutbound: {
+          agentRoot,
+          idempotencyKey,
+          attachment: {
+            serverUrl: "http://bluebubbles.local",
+            accountId: "default",
+          },
+        },
+      },
+    )
+
+    callbacks.onTextChunk("accepted without a returned GUID")
+    await expect(callbacks.flush()).resolves.toEqual({ status: "accepted" })
+    const record = outbound.readBlueBubblesOutboundRecordByIdempotencyKey(
+      agentRoot,
+      idempotencyKey,
+    )
+    expect(record).toEqual(expect.objectContaining({ status: "accepted" }))
+    expect(record).not.toHaveProperty("messageGuid")
+  })
+
   it("reports mark-read failures against identifier-only callback coordinates", async () => {
     mocks.markChatRead.mockRejectedValueOnce(new Error("read unavailable"))
     const bluebubbles = await import("../../../senses/bluebubbles")

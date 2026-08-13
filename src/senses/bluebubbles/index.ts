@@ -2499,34 +2499,25 @@ function reserveBlueBubblesObservation(event: BlueBubblesNormalizedEvent): BlueB
 function groupBlueBubblesObservationsByLane<T extends {
   observationReservation: BlueBubblesObservationReservation
 }>(candidates: readonly T[]): T[][] {
-  const groups: Array<{ keys: Set<string>; candidates: T[] }> = []
+  let groups: Array<{ keys: Set<string>; candidates: T[] }> = []
   for (const candidate of candidates) {
     const keys = new Set(observationSchedulingKeys(candidate.observationReservation))
-    // Unknown routes cannot prove independence until repair completes. Keep
-    // them in one conservative lane so a slower repair cannot let an older
-    // observation answer ahead of a newer message from the same eventual chat.
-    if (keys.size === 0) keys.add("unresolved:*")
-    const matchingIndexes: number[] = []
-    for (let index = 0; index < groups.length; index++) {
-      if (
+    const destination = { keys: new Set(keys), candidates: [candidate] }
+    const independentGroups: typeof groups = []
+    for (const group of groups) {
+      const intersects = (
         keys.has("unresolved:*")
-        || groups[index].keys.has("unresolved:*")
-        || [...keys].some((key) => groups[index].keys.has(key))
-      ) matchingIndexes.push(index)
+        || group.keys.has("unresolved:*")
+        || [...keys].some((key) => group.keys.has(key))
+      )
+      if (!intersects) {
+        independentGroups.push(group)
+        continue
+      }
+      destination.candidates.push(...group.candidates)
+      for (const key of group.keys) destination.keys.add(key)
     }
-    if (matchingIndexes.length === 0) {
-      groups.push({ keys, candidates: [candidate] })
-      continue
-    }
-    const destination = groups[matchingIndexes[0]]
-    destination.candidates.push(candidate)
-    for (const key of keys) destination.keys.add(key)
-    for (const index of matchingIndexes.slice(1).reverse()) {
-      const merged = groups[index]
-      destination.candidates.push(...merged.candidates)
-      for (const key of merged.keys) destination.keys.add(key)
-      groups.splice(index, 1)
-    }
+    groups = [...independentGroups, destination]
   }
   return groups.map((group) => group.candidates.sort((left, right) => (
     right.observationReservation.ordinal - left.observationReservation.ordinal
