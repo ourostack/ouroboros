@@ -5978,7 +5978,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(invocationCount).toBe(1)
     expect(results.some((result) => result.reason === "already_processed")).toBe(true)
     expect(mocks.writeSemanticCapture).toHaveBeenCalledTimes(2)
-    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(2)
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
   })
 
@@ -6014,7 +6014,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
     expect(results.some((result) => result.reason === "already_processed")).toBe(true)
     expect(mocks.writeSemanticCapture).toHaveBeenCalledTimes(2)
-    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(2)
+    expect(mocks.acquireSemanticClaim).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
   })
 

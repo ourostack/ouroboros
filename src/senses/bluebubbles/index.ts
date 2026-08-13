@@ -103,53 +103,66 @@ import {
 const bbFailoverStates = new Map<string, FailoverState>()
 
 interface BlueBubblesSemanticHandlingSlot {
-  settled: Promise<void>
-  settle(): void
+  reservation: BlueBubblesObservationReservation
+  waiters: Array<(acquisition: BlueBubblesSemanticHandlingAcquisition) => void>
 }
+
+type BlueBubblesSemanticHandlingAcquisition =
+  | {
+      status: "owner"
+      slot: BlueBubblesSemanticHandlingSlot
+      reservation: BlueBubblesObservationReservation
+    }
+  | { status: "handled_by_owner" }
 
 const activeSemanticHandlingSlots = new Map<string, BlueBubblesSemanticHandlingSlot>()
-
-function clearBlueBubblesSemanticReservation(
-  reservation: BlueBubblesObservationReservation | null,
-): void {
-  if (reservation) clearPending(reservation)
-}
 
 async function acquireBlueBubblesSemanticHandlingSlot(
   keyHash: string,
   initialReservation: BlueBubblesObservationReservation,
-): Promise<{
-  slot: BlueBubblesSemanticHandlingSlot
-  reservation: BlueBubblesObservationReservation | null
-}> {
-  let reservation: BlueBubblesObservationReservation | null = initialReservation
-  while (true) {
-    const active = activeSemanticHandlingSlots.get(keyHash)
-    if (!active) {
-      let settle!: () => void
-      const slot: BlueBubblesSemanticHandlingSlot = {
-        settled: new Promise<void>((resolve) => {
-          settle = resolve
-        }),
-        settle: () => settle(),
-      }
-      activeSemanticHandlingSlots.set(keyHash, slot)
-      return { slot, reservation }
+): Promise<BlueBubblesSemanticHandlingAcquisition> {
+  const active = activeSemanticHandlingSlots.get(keyHash)
+  if (!active) {
+    const slot: BlueBubblesSemanticHandlingSlot = {
+      reservation: initialReservation,
+      waiters: [],
     }
-    if (reservation) {
-      clearPending(reservation)
-      reservation = null
-    }
-    await active.settled
+    activeSemanticHandlingSlots.set(keyHash, slot)
+    return { status: "owner", slot, reservation: initialReservation }
   }
+  clearPending(initialReservation)
+  return await new Promise<BlueBubblesSemanticHandlingAcquisition>((resolve) => {
+    active.waiters.push(resolve)
+  })
+}
+
+function prepareBlueBubblesSemanticHandlingRetry(
+  slot: BlueBubblesSemanticHandlingSlot,
+  event: BlueBubblesNormalizedEvent,
+): void {
+  if (slot.waiters.length === 0) return
+  const replacement = reserveBlueBubblesObservation(event)
+  clearPending(slot.reservation)
+  slot.reservation = replacement
 }
 
 function releaseBlueBubblesSemanticHandlingSlot(
   keyHash: string,
   slot: BlueBubblesSemanticHandlingSlot,
+  outcome: "terminal" | "retryable",
 ): void {
+  if (outcome === "retryable") {
+    const next = slot.waiters.shift()
+    if (next) {
+      next({ status: "owner", slot, reservation: slot.reservation })
+      return
+    }
+  }
+  clearPending(slot.reservation)
   activeSemanticHandlingSlots.delete(keyHash)
-  slot.settle()
+  for (const resolve of slot.waiters.splice(0)) {
+    resolve({ status: "handled_by_owner" })
+  }
 }
 
 /**
@@ -2288,18 +2301,26 @@ async function handleCapturedBlueBubblesSemanticEvent(
     identity.keyHash,
     initialReservation,
   )
-  let reservation = semanticHandling.reservation
+  if (semanticHandling.status === "handled_by_owner") {
+    return {
+      handled: true,
+      notifiedAgent: false,
+      kind: captured.normalized.kind,
+      reason: "already_processed",
+    }
+  }
+  const reservation = semanticHandling.reservation
   let claim: Awaited<ReturnType<typeof acquireBlueBubblesSemanticClaim>>
   try {
     claim = await acquireBlueBubblesSemanticClaim(agentName, identity)
   } catch (error) {
-    clearBlueBubblesSemanticReservation(reservation)
-    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
+    clearPending(reservation)
+    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot, captured.normalized)
+    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot, "retryable")
     throw error
   }
   if (claim.status === "already_handled") {
-    clearBlueBubblesSemanticReservation(reservation)
-    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
+    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot, "terminal")
     return {
       handled: true,
       notifiedAgent: false,
@@ -2308,8 +2329,8 @@ async function handleCapturedBlueBubblesSemanticEvent(
     }
   }
   if (claim.status === "timeout") {
-    clearBlueBubblesSemanticReservation(reservation)
-    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
+    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot, captured.normalized)
+    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot, "retryable")
     return {
       handled: false,
       notifiedAgent: false,
@@ -2319,11 +2340,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
   }
 
   let latestTurnCapability: BlueBubblesLatestTurnCapability | null = null
-  // A same-key follower clears its duplicate observation while joining the
-  // active local handler. If that handler failed and this follower acquired
-  // the durable claim, establish a fresh pending fence synchronously before
-  // any repair or promotion work.
-  const handlingReservation = reservation ?? reserveBlueBubblesObservation(captured.normalized)
+  let semanticHandlingCompleted = false
   try {
     const reactionClassification = await classifyCapturedBlueBubblesReaction(captured)
     const reactionDecision = reactionClassification?.decision ?? null
@@ -2347,6 +2364,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         reason: "from_me",
       }
       writeCapturedBlueBubblesHandled(agentName, captured.capture, "ignored_self")
+      semanticHandlingCompleted = true
       return result
     }
 
@@ -2376,7 +2394,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         fromMe: captured.normalized.fromMe,
         sender: captured.normalized.sender,
       }
-      const promotion = promoteLatestTurn(handlingReservation, {
+      const promotion = promoteLatestTurn(reservation, {
         chatGuid: identityGroundedRepaired.chat.chatGuid,
         chatIdentifier: identityGroundedRepaired.chat.chatIdentifier,
       })
@@ -2388,6 +2406,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
           ? captureOnlyHandledOutcome(captured.capture, reactionDecision)
           : "message_observed"
         writeCapturedBlueBubblesHandled(agentName, captured.capture, outcome)
+        semanticHandlingCompleted = true
         return {
           handled: true,
           notifiedAgent: false,
@@ -2399,6 +2418,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
       if (captureOnlyMutation) {
         const outcome = captureOnlyHandledOutcome(captured.capture, reactionDecision)
         writeCapturedBlueBubblesHandled(agentName, captured.capture, outcome)
+        semanticHandlingCompleted = true
         return {
           handled: true,
           notifiedAgent: false,
@@ -2409,6 +2429,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
       if (identityGroundedRepaired.kind === "mutation") {
         const outcome = auditOnlyHandledOutcome(identityGroundedRepaired.mutationType as "read" | "delivery")
         writeCapturedBlueBubblesHandled(agentName, captured.capture, outcome)
+        semanticHandlingCompleted = true
         return {
           handled: true,
           notifiedAgent: false,
@@ -2440,14 +2461,21 @@ async function handleCapturedBlueBubblesSemanticEvent(
       captured.capture,
       handledOutcome,
     )
+    semanticHandlingCompleted = true
     return result
   } finally {
-    clearPending(handlingReservation)
+    if (!semanticHandlingCompleted) {
+      prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot, captured.normalized)
+    }
     if (latestTurnCapability) finishLatestTurn(latestTurnCapability)
     try {
       releaseBlueBubblesSemanticClaim(agentName, claim)
     } finally {
-      releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
+      releaseBlueBubblesSemanticHandlingSlot(
+        identity.keyHash,
+        semanticHandling.slot,
+        semanticHandlingCompleted ? "terminal" : "retryable",
+      )
     }
   }
 }
