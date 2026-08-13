@@ -4224,6 +4224,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   const server = resolvedDeps.createServer(createBlueBubblesWebhookHandler(deps))
   let recoveryPassRunning = false
   let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
+  let closed = false
 
   function triggerRecoveryPass(): void {
     /* v8 ignore next -- re-entrant timer guard; difficult to force deterministically without timing the turn lock @preserve */
@@ -4247,6 +4248,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   }
 
   function scheduleRecoveryPass(): void {
+    if (closed) return
     /* v8 ignore next -- duplicate scheduling guard for overlapping health sync completions @preserve */
     if (recoveryDelayTimer !== null) return
     recoveryDelayTimer = setTimeout(() => {
@@ -4260,6 +4262,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   }, BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS)
   const recoveryTimer = setInterval(triggerRecoveryPass, BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS)
   server.on?.("close", () => {
+    closed = true
     clearInterval(runtimeTimer)
     clearInterval(recoveryTimer)
     if (recoveryDelayTimer !== null) {

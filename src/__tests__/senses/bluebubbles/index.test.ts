@@ -4360,11 +4360,15 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("starts an HTTP server on the configured BlueBubbles port", async () => {
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
     const bluebubbles = await import("../../../senses/bluebubbles")
     bluebubbles.startBlueBubblesApp()
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
-    expect(mocks.listen).toHaveBeenCalledWith(18790, expect.any(Function))
+    expect(closableServer.server.listen).toHaveBeenCalledWith(18790, expect.any(Function))
+    await flushAsyncWork()
+    closableServer.close()
   })
 
   it("repairs and handles a captured v1 message once during recovery", async () => {
@@ -5694,6 +5698,27 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
     await vi.advanceTimersByTimeAsync(30_000)
     expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not rearm recovery when startup sync completes after server close", async () => {
+    vi.useFakeTimers()
+    const startupHealth = createDeferred<void>()
+    mocks.checkHealth.mockReturnValueOnce(startupHealth.promise)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    expect(vi.getTimerCount()).toBe(2)
+
+    closableServer.close()
+    expect(vi.getTimerCount()).toBe(0)
+    startupHealth.resolve()
+    await flushAsyncWork()
+
+    expect(vi.getTimerCount()).toBe(0)
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
   it("surfaces stalled live turns in runtime state detail", async () => {
