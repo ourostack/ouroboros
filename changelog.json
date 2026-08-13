@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.727",
+      "changes": [
+        "Keep BlueBubbles replies on the latest turn, preserve verified adjacent context, isolate provider state, and remove automatic progress chatter."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.726",
       "changes": [
         "Isolate published release-smoke subprocesses from the operator home so bootstrap verification cannot mutate a live Ouro installation."
