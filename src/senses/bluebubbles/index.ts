@@ -2047,14 +2047,6 @@ async function handleBlueBubblesNormalizedEvent(
     const bbCapabilities = getChannelCapabilities("bluebubbles")
     const pendingDir = getPendingDir(resolvedDeps.getAgentName(), friendId, "bluebubbles", event.chat.sessionKey)
 
-    // ── Compute trust gate context for group/acquaintance rules ─────
-    const groupHasFamilyMember = await checkGroupHasFamilyMember(store, event)
-    const hasExistingGroupWithFamily = event.chat.isGroup
-      ? false
-      : await checkHasExistingGroupWithFamily(store, context.friend)
-
-    // ── Call shared pipeline ──────────────────────────────────────────
-
     // Buffer terminal errors so failover can suppress them.
     // If failover produces a message, the buffered error is skipped.
     // If failover doesn't fire, the buffered error is replayed.
@@ -2073,6 +2065,43 @@ async function handleBlueBubblesNormalizedEvent(
     /* v8 ignore stop */
 
     try {
+      // ── Compute trust gate context for group/acquaintance rules ─────
+      // These store reads can block on filesystem I/O. Race them against the
+      // runtime lifecycle before constructing the shared pipeline so a closed
+      // worker cannot begin new durable or outward work after the read settles.
+      const trustContext = await Promise.race([
+        Promise.all([
+          checkGroupHasFamilyMember(store, event),
+          event.chat.isGroup
+            ? Promise.resolve(false)
+            : checkHasExistingGroupWithFamily(store, context.friend),
+        ]),
+        lifecyclePromise,
+        supersessionPromise.then(() => null),
+      ])
+      if (trustContext === null) {
+        return {
+          handled: true,
+          notifiedAgent: false,
+          kind: event.kind,
+          reason: "superseded",
+        }
+      }
+      const [groupHasFamilyMember, hasExistingGroupWithFamily] = trustContext
+      lifecycleSignal?.throwIfAborted()
+      if (
+        controller.signal.aborted
+        || !isLatestTurnCurrent(options.latestTurnCapability)
+      ) {
+        return {
+          handled: true,
+          notifiedAgent: false,
+          kind: event.kind,
+          reason: "superseded",
+        }
+      }
+
+      // ── Call shared pipeline ────────────────────────────────────────
       const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
       timeoutPromise = new Promise<BlueBubblesHandleResult>((resolve) => {
         resolveTimeout = resolve
@@ -4368,6 +4397,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     lifecycleSignal: lifecycleController.signal,
   }))
   let recoveryPassRunning = false
+  let runtimeSyncRunning = false
   let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
   let closed = false
 
@@ -4407,12 +4437,35 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     }, BLUEBUBBLES_RECOVERY_PASS_DELAY_MS)
   }
 
+  function triggerRuntimeSync(
+    catchUpObservationBatch?: BlueBubblesObservationBatch,
+  ): void {
+    if (closed || runtimeSyncRunning) return
+    runtimeSyncRunning = true
+    void syncBlueBubblesRuntime(resolvedDeps, {
+      ...(catchUpObservationBatch ? { catchUpObservationBatch } : {}),
+      lifecycleSignal: lifecycleController.signal,
+    })
+      .then(scheduleRecoveryPass)
+      .catch((error) => {
+        if (closed || lifecycleController.signal.aborted) return
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_recovery_error",
+          message: "bluebubbles runtime sync failed",
+          meta: { reason: error instanceof Error ? error.message : String(error) },
+        })
+      })
+      .finally(() => {
+        runtimeSyncRunning = false
+      })
+  }
+
   const runtimeTimer = setInterval(() => {
     /* v8 ignore next -- close clears this interval; guard covers an already-queued host callback @preserve */
     if (closed) return
-    void syncBlueBubblesRuntime(resolvedDeps, {
-      lifecycleSignal: lifecycleController.signal,
-    }).then(scheduleRecoveryPass)
+    triggerRuntimeSync()
   }, BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS)
   const recoveryTimer = setInterval(triggerRecoveryPass, BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS)
   server.on?.("close", () => {
@@ -4433,9 +4486,6 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       meta: { port: channelConfig.port, webhookPath: channelConfig.webhookPath },
     })
   })
-  void syncBlueBubblesRuntime(resolvedDeps, {
-    catchUpObservationBatch: startupCatchUpObservationBatch,
-    lifecycleSignal: lifecycleController.signal,
-  }).then(scheduleRecoveryPass)
+  triggerRuntimeSync(startupCatchUpObservationBatch)
   return server
 }

@@ -5945,6 +5945,27 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
   })
 
+  it("keeps runtime sync single-flight when the periodic interval fires during startup sync", async () => {
+    vi.useFakeTimers()
+    const startupHealth = createDeferred<void>()
+    mocks.checkHealth.mockReturnValueOnce(startupHealth.promise)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+
+    startupHealth.resolve()
+    await flushAsyncWork()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    closableServer.close()
+  })
+
   it("does not rearm recovery when startup sync completes after server close", async () => {
     vi.useFakeTimers()
     const startupHealth = createDeferred<void>()
@@ -6093,6 +6114,108 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_webhook_async_error",
     }))
+  })
+
+  it("does not enter the shared pipeline when shutdown lands during trust-context lookup", async () => {
+    vi.useFakeTimers()
+    const lifecycle = new AbortController()
+    const shutdown = new Error("trust-context shutdown")
+    const releaseFriends = createDeferred<any[]>()
+    mocks.resolveContext.mockResolvedValueOnce({
+      ...defaultFriendContext,
+      friend: {
+        ...defaultFriendContext.friend,
+        trustLevel: "acquaintance",
+        externalIds: [{ provider: "imessage-handle", externalId: "group:shared-family" }],
+      },
+    })
+    mocks.listAll.mockReturnValueOnce(releaseFriends.promise)
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler({}, {
+      lifecycleSignal: lifecycle.signal,
+    })
+    const response = createMockResponse()
+
+    await handler(
+      createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", {
+        ...dmTopLevelPayload,
+        data: {
+          ...dmTopLevelPayload.data,
+          guid: "SHUTDOWN-DURING-TRUST-CONTEXT",
+          text: "do not start after shutdown",
+        },
+      }),
+      response.res,
+    )
+    await response.done
+    for (let attempt = 0; attempt < 10 && mocks.listAll.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.listAll).toHaveBeenCalledTimes(1)
+
+    lifecycle.abort(shutdown)
+    releaseFriends.resolve([])
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_webhook_async_error",
+    }))
+  })
+
+  it("does not enter the shared pipeline when a newer turn supersedes trust-context lookup", async () => {
+    vi.useFakeTimers()
+    const releaseFriends = createDeferred<any[]>()
+    mocks.resolveContext
+      .mockResolvedValueOnce({
+        ...defaultFriendContext,
+        friend: {
+          ...defaultFriendContext.friend,
+          trustLevel: "acquaintance",
+          externalIds: [{ provider: "imessage-handle", externalId: "group:shared-family" }],
+        },
+      })
+      .mockResolvedValueOnce(defaultFriendContext)
+    mocks.listAll.mockReturnValueOnce(releaseFriends.promise)
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const older = bluebubbles.handleBlueBubblesEvent({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "OLDER-TRUST-CONTEXT-TURN",
+        text: "older trust context turn",
+      },
+    })
+    for (let attempt = 0; attempt < 10 && mocks.listAll.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.listAll).toHaveBeenCalledTimes(1)
+
+    const newer = bluebubbles.handleBlueBubblesEvent({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "NEWER-TRUST-CONTEXT-TURN",
+        text: "newer trust context turn",
+      },
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+
+    await expect(older).resolves.toEqual(expect.objectContaining({
+      notifiedAgent: false,
+      reason: "superseded",
+    }))
+    await expect(newer).resolves.toEqual(expect.objectContaining({ notifiedAgent: true }))
+    releaseFriends.resolve([])
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
 
   it("stops setup when shutdown lands during reply-context lookup", async () => {
