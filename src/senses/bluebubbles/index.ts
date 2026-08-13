@@ -1372,7 +1372,7 @@ export function createBlueBubblesCallbacks(
               message: "failed to record bluebubbles outbound transport failure",
               meta: {
                 recordId: durableReservation.record.recordId,
-                reason: stateError instanceof Error ? stateError.message : String(stateError),
+                reason: String(stateError),
               },
             })
           }

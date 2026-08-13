@@ -2911,6 +2911,35 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
   })
 
+  it("propagates direct callback transport failure when no durable boundary was requested", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const transportFailure = new Error("direct callback transport unavailable")
+    mocks.sendText.mockRejectedValueOnce(transportFailure)
+    const callbacks = bluebubbles.createBlueBubblesCallbacks(
+      {
+        markChatRead: mocks.markChatRead,
+        setTyping: mocks.setTyping,
+        sendText: mocks.sendText,
+      } as any,
+      {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      { getReplyToMessageGuid: () => undefined } as any,
+      false,
+    )
+
+    callbacks.onTextChunk("direct final answer")
+    await expect(callbacks.flush()).rejects.toBe(transportFailure)
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_outbound_state_error",
+    }))
+  })
+
   it("records accepted durable transport when BlueBubbles omits its message GUID", async () => {
     const agentRoot = makeTempDir()
     const idempotencyKey = "bluebubbles-inbound-reply:accepted-without-guid"
