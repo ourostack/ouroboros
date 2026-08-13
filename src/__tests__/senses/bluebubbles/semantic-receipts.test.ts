@@ -3499,11 +3499,23 @@ describe("BlueBubbles semantic store exhaustive boundaries", () => {
     })
     const legacyLeft = makeSemanticCapture("legacy-left", CAPTURED_AT)
     const legacyRight = makeSemanticCapture("legacy-right", CAPTURED_AT)
+    const repeatedOrdinalLeft = makeSemanticCapture("repeated-ordinal-left", CAPTURED_AT, {
+      observationEpoch: earlierEpoch,
+      observationOrdinal: 7,
+    })
+    const repeatedOrdinalRight = makeSemanticCapture("repeated-ordinal-right", CAPTURED_AT, {
+      observationEpoch: earlierEpoch,
+      observationOrdinal: 7,
+    })
 
     expect(compareBlueBubblesSemanticCaptureOrder(earlyCapture, lateCapture)).toBeLessThan(0)
     expect(compareBlueBubblesSemanticCaptureOrder(sameTimeEarlierEpoch, sameTimeLaterEpoch))
       .toBeLessThan(0)
     expect(compareBlueBubblesSemanticCaptureOrder(legacyLeft, legacyRight)).toBe(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(legacyLeft, sameTimeEarlierEpoch)).toBeLessThan(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(sameTimeEarlierEpoch, legacyLeft)).toBeGreaterThan(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(repeatedOrdinalLeft, repeatedOrdinalRight))
+      .toBe(repeatedOrdinalLeft.keyHash.localeCompare(repeatedOrdinalRight.keyHash))
   })
 
   it("rejects invalid new capture and handled inputs before publication", async () => {

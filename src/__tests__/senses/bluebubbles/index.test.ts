@@ -234,6 +234,14 @@ vi.mock("../../../senses/bluebubbles/client", async () => {
     ...actual,
     createBlueBubblesClient: vi.fn(() => ({
       sendText: (...args: any[]) => {
+        if (args[0]?.beforeTransportInvocation?.() === false) {
+          return Promise.reject(new actual.BlueBubblesSendError({
+            message: "BlueBubbles send was not admitted at the transport boundary.",
+            httpStatus: null,
+            errorCode: "admission_denied",
+            transportInvoked: false,
+          }))
+        }
         args[0]?.onTransportInvocation?.()
         return mocks.sendText(...args)
       },
