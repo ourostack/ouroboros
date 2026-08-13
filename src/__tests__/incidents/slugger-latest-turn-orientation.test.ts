@@ -229,8 +229,6 @@ it("replays the RSVP request, grounded response, and later reaction without losi
     fromMe: false,
     action: "add",
     canonicalValue: "love",
-    targetAuthorship: "agent",
-    trustedActor: true,
   })
   const reactionPromotion = promote(reactionReservation, {
     chatGuid: CHAT_GUID,
