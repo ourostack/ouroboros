@@ -16,6 +16,7 @@ export interface BlueBubblesObservationReservation {
 export interface BlueBubblesObservationBatch {
   readonly highOrdinal: number
   readonly size: number
+  readonly beforeTimestamp: number
 }
 
 export interface CanonicalBlueBubblesChat {
@@ -137,7 +138,14 @@ export function reserveObservation(input: BlueBubblesObservationHints): BlueBubb
 
 export function beginObservationBatch(size: number): BlueBubblesObservationBatch {
   if (!Number.isSafeInteger(size) || size <= 0) throw new Error("bluebubbles_observation_batch_size_invalid")
-  const batch = Object.freeze({ highOrdinal: nextOrdinal + size, size })
+  // BlueBubbles' `before` filter is inclusive. Subtract one millisecond so a
+  // row created in the same clock tick after this reservation cannot be
+  // backdated into the already-reserved ordinal range.
+  const batch = Object.freeze({
+    highOrdinal: nextOrdinal + size,
+    size,
+    beforeTimestamp: Date.now() - 1,
+  })
   nextOrdinal = batch.highOrdinal
   batchReservations.set(batch, new Set())
   return batch

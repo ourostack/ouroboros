@@ -198,6 +198,10 @@ describe("release-preflight", () => {
       kind: "persisted-schema",
       message: "persisted schema changed: src/rsvp/snapshot.ts",
     })
+    expect(classifyOperationalContractChange("src/senses/bluebubbles/semantic-receipts.ts")).toEqual({
+      kind: "persisted-schema",
+      message: "persisted schema changed: src/senses/bluebubbles/semantic-receipts.ts",
+    })
     expect(classifyOperationalContractChange("src/__fixtures__/rsvp/july-9-context/manifest.json")).toEqual({
       kind: "replay-fixture",
       message: "replay fixture changed: src/__fixtures__/rsvp/july-9-context/manifest.json",

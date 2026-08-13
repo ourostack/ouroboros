@@ -56,13 +56,17 @@ describe("BlueBubbles latest-turn registry", () => {
   })
 
   it("freezes a bounded catch-up epoch before later live observations", () => {
+    const beforeReservation = Date.now()
     const batch = beginObservationBatch(3)
+    const afterReservation = Date.now()
     const newest = reserveObservationFromBatch(batch, 0, { chatGuid: "chat-guid" })
     const older = reserveObservationFromBatch(batch, 2, { chatGuid: "chat-guid" })
     const live = reserveObservation({ chatGuid: "chat-guid" })
 
     expect(newest.ordinal).toBeGreaterThan(older.ordinal)
     expect(live.ordinal).toBeGreaterThan(newest.ordinal)
+    expect(batch.beforeTimestamp).toBeGreaterThanOrEqual(beforeReservation - 1)
+    expect(batch.beforeTimestamp).toBeLessThan(afterReservation)
   })
 
   it("rejects invalid or reused bounded batch reservations", () => {
@@ -75,7 +79,7 @@ describe("BlueBubbles latest-turn registry", () => {
 
     const batch = beginObservationBatch(2)
     expect(() => reserveObservationFromBatch(
-      { highOrdinal: 2, size: 2 },
+      { highOrdinal: 2, size: 2, beforeTimestamp: Date.now() - 1 },
       0,
       { chatGuid: "chat-guid" },
     )).toThrow("bluebubbles_observation_batch_offset_invalid")
