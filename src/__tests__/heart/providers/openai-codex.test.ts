@@ -258,6 +258,31 @@ describe("createOpenAICodexProviderRuntime", () => {
     )
   })
 
+  it("sends current and verified predecessor evidence once through the actual Responses conversion", async () => {
+    await setupConfig()
+    const actualStreaming = await vi.importActual<typeof import("../../../heart/streaming")>("../../../heart/streaming")
+    mockToResponsesInput.mockImplementation(actualStreaming.toResponsesInput)
+    mockStreamResponsesApi.mockResolvedValue({ content: "", toolCalls: [], outputItems: [] })
+    const { createOpenAICodexProviderRuntime } = await import("../../../heart/providers/openai-codex")
+    const runtime = createOpenAICodexProviderRuntime("gpt-5.4")
+    const messages = [
+      { role: "system" as const, content: "core system" },
+      { role: "system" as const, content: "verified predecessor evidence" },
+      { role: "user" as const, content: "current request" },
+    ]
+    runtime.resetTurnState(messages)
+    await runtime.streamTurn({
+      messages,
+      activeTools: [],
+      callbacks: createCallbacks(),
+    })
+
+    const payload = mockStreamResponsesApi.mock.calls[0]?.[1]
+    expect(payload.instructions).toBe("core system\n\nverified predecessor evidence")
+    expect(payload.instructions.match(/verified predecessor evidence/g)).toHaveLength(1)
+    expect(payload.input).toEqual([{ role: "user", content: "current request" }])
+  })
+
   it("appendToolOutput truncates oversized function_call_output before storing turn state", async () => {
     await setupConfig()
     mockToResponsesInput.mockReturnValue({

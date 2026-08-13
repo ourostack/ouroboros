@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, getRestrictedReactionFeedbackTools, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
@@ -13,7 +13,11 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 import { trimMessages } from "../mind/context";
-import { applyPromptBudget } from "../mind/prompt-budget";
+import {
+  applyPromptBudget,
+  assessRequiredPromptEvidenceBudget,
+  type RequiredPromptEvidence,
+} from "../mind/prompt-budget";
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt";
 import type { SystemPrompt } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
@@ -105,7 +109,15 @@ interface ProviderRegistry {
   resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord): ProviderRuntime | null;
 }
 
-const _providerRuntimes: Record<Facing, { fingerprint: string; runtime: ProviderRuntime } | null> = {
+interface ProviderRuntimeFactoryCache {
+  fingerprint: string;
+  create: () => ProviderRuntime | null;
+}
+
+// Cache only immutable provider construction inputs. ProviderRuntime owns
+// mutable per-turn state (for example Responses nativeInput), so every caller
+// must receive a fresh instance even when its binding fingerprint is unchanged.
+const _providerRuntimeFactories: Record<Facing, ProviderRuntimeFactoryCache | null> = {
   human: null,
   agent: null,
 };
@@ -181,12 +193,16 @@ export function createProviderRegistry(): ProviderRegistry {
 }
 
 async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRuntime> {
+  let runtime: ProviderRuntime | null = null;
   try {
     const { binding, fingerprint, credential } = await getProviderRuntimeFingerprint(facing);
-    const cached = _providerRuntimes[facing];
+    const cached = _providerRuntimeFactories[facing];
     if (!cached || cached.fingerprint !== fingerprint) {
-      const runtime = createProviderRegistry().resolve(binding.provider, binding.model, credential);
-      _providerRuntimes[facing] = runtime ? { fingerprint, runtime } : null;
+      const create = () => createProviderRegistry().resolve(binding.provider, binding.model, credential);
+      runtime = create();
+      _providerRuntimeFactories[facing] = runtime ? { fingerprint, create } : null;
+    } else {
+      runtime = cached.create();
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -202,7 +218,7 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
     throw error instanceof Error ? error : new Error(msg);
   }
 
-  if (!_providerRuntimes[facing]) {
+  if (!runtime) {
     const msg = "provider runtime could not be initialized.";
     emitNervesEvent({
       level: "error",
@@ -215,17 +231,17 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
     console.error(`\n[fatal] ${msg}\n`);
     throw new Error(msg);
   }
-  return _providerRuntimes[facing]!.runtime;
+  return runtime;
 }
 
 /**
- * Clear the cached provider runtime so the next access re-creates it from
- * current config. Runtime access also auto-refreshes when the selected
- * provider fingerprint changes on disk.
+ * Clear cached provider construction inputs so the next access re-reads them
+ * from current config. Runtime instances are always per-caller and are never
+ * shared across turns.
  */
 export function resetProviderRuntime(): void {
-  _providerRuntimes.human = null;
-  _providerRuntimes.agent = null;
+  _providerRuntimeFactories.human = null;
+  _providerRuntimeFactories.agent = null;
 }
 
 export function getModel(facing: Facing = "human"): string {
@@ -384,8 +400,6 @@ export interface RunAgentOptions {
   /** When true, the observe tool is available in 1:1 chats (normally group-only).
    *  Used for reaction/feedback signals where silence is natural even in DMs. */
   isReactionSignal?: boolean;
-  /** One-inference, read-only terminal mode for trusted feedback reactions. */
-  restrictedReactionFeedback?: boolean;
   /** Pending messages from other sessions/private runtime, rendered in system prompt. */
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
@@ -402,6 +416,17 @@ export interface RunAgentOptions {
   habitSession?: HabitSessionToolContext;
   /** Content-free same-turn context packet ids linked to this provider run. */
   contextPacketIds?: string[];
+  /** Identity-bearing current-turn objects that prompt budgeting may never clone or drop. */
+  requiredPromptEvidence?: RequiredPromptEvidence;
+  /** Prompt-only evidence system objects that system refresh must preserve, but budgeting may drop. */
+  promptOnlyEvidenceMessages?: readonly OpenAI.ChatCompletionMessageParam[];
+  /**
+   * Receives the exact generated assistant/tool tail after core has finished
+   * all prompt-only rewrites and trimming. The callback is deliberately
+   * adapter-facing: callers can stage generated state without trying to infer
+   * it from a provider input array whose prefix core is allowed to replace.
+   */
+  captureGeneratedMessages?: (messages: OpenAI.ChatCompletionMessageParam[]) => void;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -542,11 +567,11 @@ export type RunAgentOutcome =
   | "observed"
   | "rested";
 
-/** Chat-style channels expose the `speak` tool — outer human-conversation channels
- *  where mid-turn delivery is meaningful. The private runtime has `ponder`. MCP returns
- *  synchronously. Mail is batch. Anything else (unknown channel) treats as non-chat. */
+/** Channels that deliberately support mid-turn delivery expose `speak`.
+ *  BlueBubbles is final-only: its adapter owns one accepted visibility boundary.
+ *  The private runtime has `ponder`; MCP returns synchronously; mail is batch. */
 export function isChatStyleChannel(channel: string): boolean {
-  return channel === "cli" || channel === "teams" || channel === "bluebubbles" || channel === "voice";
+  return channel === "cli" || channel === "teams" || channel === "voice";
 }
 
 function bindCurrentIngressEvidenceLocator(
@@ -608,38 +633,17 @@ interface ParsedPonderArgs {
   say?: string
 }
 
-function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
-  try {
-    const parsed = JSON.parse(argumentsText) as Record<string, unknown> | null;
-    const answer = typeof parsed?.answer === "string" ? parsed.answer : undefined;
-    const rawIntent = parsed?.intent;
-    const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
-      ? rawIntent
-      : undefined;
-    return { answer, intent };
-  } catch {
-    return {};
-  }
-}
-
-function matchesRegisteredToolArgumentSchema(
-  tool: OpenAI.ChatCompletionFunctionTool,
-  args: Record<string, unknown>,
-): boolean {
-  const parameters = tool.function.parameters as {
-    required?: string[]
-    properties: Record<string, { type?: string; enum?: unknown[] }>
-  }
-  for (const requiredKey of parameters.required ?? []) {
-    if (!(requiredKey in args)) return false
-  }
-  for (const [key, property] of Object.entries(parameters.properties)) {
-    const value = args[key]
-    if (value === undefined) continue
-    if (property.type === "string" && typeof value !== "string") return false
-    if (property.enum && !property.enum.includes(value)) return false
-  }
-  return true
+function parseSettlePayload(argumentsText: string): { answer: string; intent?: SettleIntent } {
+  const parsed = JSON.parse(argumentsText) as Record<string, unknown>;
+  // Provider finalization validates settle.answer as a string before this
+  // terminal handling path. Keep this parser focused on projection instead
+  // of carrying an unreachable second shape check.
+  const answer = parsed.answer as string;
+  const rawIntent = parsed.intent;
+  const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
+    ? rawIntent
+    : undefined;
+  return { answer, intent };
 }
 
 function parsePonderPayload(argumentsText: string): ParsedPonderArgs {
@@ -872,9 +876,11 @@ export function getSettleRetryError(
 function upsertSystemPrompt(
   messages: OpenAI.ChatCompletionMessageParam[],
   systemText: string,
+  protectedSystemMessages: readonly OpenAI.ChatCompletionMessageParam[] = [],
 ): void {
   const systemMessage: OpenAI.ChatCompletionSystemMessageParam = { role: "system", content: systemText };
-  if (messages[0]?.role === "system") {
+  const protectedMessages = new Set(protectedSystemMessages.filter((message) => message.role === "system"));
+  if (messages[0]?.role === "system" && !protectedMessages.has(messages[0])) {
     messages[0] = systemMessage;
   } else {
     messages.unshift(systemMessage);
@@ -1078,11 +1084,15 @@ export async function runAgent(
   signal?: AbortSignal,
   options?: RunAgentOptions,
 ): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }> {
+  const generatedMessages: OpenAI.ChatCompletionMessageParam[] = [];
+  const pushGenerated = (...next: OpenAI.ChatCompletionMessageParam[]): void => {
+    messages.push(...next);
+    generatedMessages.push(...structuredClone(next));
+  };
   const facing = channelToFacing(channel);
   let providerRuntime = await getProviderRuntime(facing);
   const provider = providerRuntime.id;
-  const restrictedReactionFeedback = options?.restrictedReactionFeedback === true;
-  const toolChoiceRequired = restrictedReactionFeedback ? true : options?.toolChoiceRequired ?? true;
+  const toolChoiceRequired = options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
   emitNervesEvent({
     event: "engine.turn_start",
@@ -1107,6 +1117,54 @@ export async function runAgent(
   const turnOrientationFrame = options?.orientationFrame
     ?? (channel ? buildOrientationFrame({ channel, messages }) : undefined);
 
+  if (options?.requiredPromptEvidence) {
+    let structuralFloor
+    try {
+      structuralFloor = assessRequiredPromptEvidenceBudget({
+        messages,
+        requiredPromptEvidence: options.requiredPromptEvidence,
+        provider: providerRuntime.id,
+        model: providerRuntime.model,
+        contextWindowTokens: getContextConfig().maxTokens,
+      });
+    } catch (error) {
+      const invalidEvidenceError = error instanceof Error ? error : new Error(String(error));
+      callbacks.onError(invalidEvidenceError, "terminal");
+      options.captureGeneratedMessages?.([]);
+      emitNervesEvent({
+        event: "engine.turn_end",
+        trace_id: traceId,
+        component: "engine",
+        message: "runAgent turn completed",
+        meta: { done: true, sawPonder: false, sawQuerySession: false, sawBridgeManage: false },
+      });
+      return {
+        outcome: "errored",
+        error: invalidEvidenceError,
+        errorClassification: "unknown",
+      };
+    }
+    if (structuralFloor.status === "required_evidence_over_budget") {
+      const budgetError = new Error(
+        `required_evidence_over_budget: required current-turn evidence needs ${structuralFloor.estimatedTokens} tokens but the provider input limit is ${structuralFloor.budget.inputTokenLimit}`,
+      );
+      callbacks.onError(budgetError, "terminal");
+      options.captureGeneratedMessages?.([]);
+      emitNervesEvent({
+        event: "engine.turn_end",
+        trace_id: traceId,
+        component: "engine",
+        message: "runAgent turn completed",
+        meta: { done: true, sawPonder: false, sawQuerySession: false, sawBridgeManage: false },
+      });
+      return {
+        outcome: "errored",
+        error: budgetError,
+        errorClassification: "unknown",
+      };
+    }
+  }
+
   // Refresh system prompt at start of each turn when channel is provided.
   // If refresh fails, retain only a recognised stable prefix (or inject a
   // minimal safe fallback) so stale dynamic state cannot regain authority.
@@ -1122,13 +1180,31 @@ export async function runAgent(
       };
       const refreshed = await buildSystem(channel, buildSystemOptions, currentContext);
       structuredSystemPrompt = refreshed;
-      upsertSystemPrompt(messages, flattenSystemPrompt(refreshed));
+      upsertSystemPrompt(
+        messages,
+        flattenSystemPrompt(refreshed),
+        [
+          ...(options?.promptOnlyEvidenceMessages ?? []),
+          ...(options?.requiredPromptEvidence?.verifiedPredecessorMessage
+            ? [options.requiredPromptEvidence.verifiedPredecessorMessage]
+            : []),
+        ],
+      );
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
       const fallback = repairFallbackSystemPrompt(
         turnOrientationFrame!,
       );
-      upsertSystemPrompt(messages, fallback);
+      upsertSystemPrompt(
+        messages,
+        fallback,
+        [
+          ...(options?.promptOnlyEvidenceMessages ?? []),
+          ...(options?.requiredPromptEvidence?.verifiedPredecessorMessage
+            ? [options.requiredPromptEvidence.verifiedPredecessorMessage]
+            : []),
+        ],
+      );
       emitNervesEvent({
         level: "warn",
         event: "mind.step_error",
@@ -1227,24 +1303,15 @@ export async function runAgent(
       },
     });
     stripLastToolCalls(messages);
+    stripLastToolCalls(generatedMessages);
     outcome = "errored";
     done = true;
   };
-  const finishRestrictedReactionFeedbackViolation = (reason: string): void => {
-    callbacks.onClearText?.();
-    finishTerminalProviderError(
-      new Error(`restricted reaction feedback failed closed: ${reason}`),
-      "unknown",
-    );
-  };
-
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
 
   const toolPreferences = currentContext?.friend?.toolPreferences;
-  const unboundBaseTools = restrictedReactionFeedback
-    ? getRestrictedReactionFeedbackTools()
-    : options?.tools ?? getToolsForChannel(
+  const unboundBaseTools = options?.tools ?? getToolsForChannel(
       channel ? getChannelCapabilities(channel) : undefined,
       toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
       currentContext,
@@ -1252,12 +1319,10 @@ export async function runAgent(
       options?.mcpManager,
       providerRuntime.model,
     );
-  const baseTools = restrictedReactionFeedback
-    ? unboundBaseTools
-    : bindCurrentIngressEvidenceLocator(
-      unboundBaseTools,
-      options?.toolContext?.currentIngressEvidence,
-    )
+  const baseTools = bindCurrentIngressEvidenceLocator(
+    unboundBaseTools,
+    options?.toolContext?.currentIngressEvidence,
+  )
   // Augment tool context with reasoning effort controls from provider
   const baseToolContext: ToolContext | undefined = options?.toolContext
     ?? (turnOrientationFrame ? { signin: async () => undefined, orientationFrame: turnOrientationFrame } : undefined)
@@ -1303,9 +1368,7 @@ export async function runAgent(
     const filteredBaseTools = isPrivateRuntimeChannel
       ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
-    const activeTools = restrictedReactionFeedback
-      ? filteredBaseTools
-      : [
+    const activeTools = [
         ...filteredBaseTools,
         ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
         ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
@@ -1315,9 +1378,7 @@ export async function runAgent(
         ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
       ];
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
-    const steeringFollowUps = restrictedReactionFeedback
-      ? []
-      : options?.drainSteeringFollowUps?.() ?? [];
+    const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
       if (hasSupersedingFollowUp) {
@@ -1354,6 +1415,7 @@ export async function runAgent(
         try {
           const promptBudget = applyPromptBudget({
             messages,
+            requiredPromptEvidence: options?.requiredPromptEvidence,
             provider: providerRuntime.id,
             model: providerRuntime.model,
             contextWindowTokens: getContextConfig().maxTokens,
@@ -1370,7 +1432,7 @@ export async function runAgent(
             traceId,
             toolChoiceRequired,
             reasoningEffort: currentReasoningEffort,
-            eagerSettleStreaming: !restrictedReactionFeedback,
+            eagerSettleStreaming: true,
             systemPrompt: structuredSystemPrompt,
           });
         } catch (error) {
@@ -1389,9 +1451,19 @@ export async function runAgent(
           if (isContextOverflow(error) && !overflowRetried) {
             overflowRetried = true;
             stripLastToolCalls(messages);
+            stripLastToolCalls(generatedMessages);
             const { maxTokens, contextMargin } = getContextConfig();
             const trimmed = trimMessages(messages, maxTokens, contextMargin, maxTokens * 2);
-            messages.splice(0, messages.length, ...trimmed);
+            const requiredEvidence = options?.requiredPromptEvidence;
+            const requiredMessages = new Set<OpenAI.ChatCompletionMessageParam>([
+              ...(requiredEvidence?.verifiedPredecessorMessage ? [requiredEvidence.verifiedPredecessorMessage] : []),
+              ...(requiredEvidence?.currentUserMessage ? [requiredEvidence.currentUserMessage] : []),
+            ]);
+            const trimmedMessages = new Set(trimmed);
+            const overflowRetryMessages = requiredMessages.size === 0
+              ? trimmed
+              : messages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
+            messages.splice(0, messages.length, ...overflowRetryMessages);
             providerRuntime.resetTurnState(messages);
             callbacks.onError(new Error("context trimmed, retrying..."), "transient");
             return callProviderTurn()
@@ -1404,9 +1476,8 @@ export async function runAgent(
         operation: "turn",
         provider: providerRuntime.id,
         model: providerRuntime.model,
-        run: restrictedReactionFeedback ? callProviderTurn : callProviderTurnWithOverflowRecovery,
+        run: callProviderTurnWithOverflowRecovery,
         classifyError: (error) => providerRuntime.classifyError(error),
-        ...(restrictedReactionFeedback ? { policy: { maxAttempts: 1 } } : {}),
         onRetry: async (record, maxAttempts) => {
           const delayMs = record.delayMs as number
           const seconds = delayMs / 1000
@@ -1422,7 +1493,7 @@ export async function runAgent(
               preserveCachedOnFailure: true,
               providers: [record.provider],
             })
-            _providerRuntimes[facing] = null
+            _providerRuntimeFactories[facing] = null
             providerRuntime = await getProviderRuntime(facing)
             providerRuntime.resetTurnState(messages)
           } catch (refreshError) {
@@ -1526,122 +1597,6 @@ export async function runAgent(
         (msg as AssistantMessageWithReasoning).phase = isSoleSettle ? "settle" : "commentary";
       }
 
-      if (restrictedReactionFeedback) {
-        if (result.toolCalls.length !== 1) {
-          streamCallbackBuffer?.discard();
-          finishRestrictedReactionFeedbackViolation(
-            result.toolCalls.length === 0
-              ? "the provider returned no terminal tool"
-              : "the provider returned a mixed or multiple-tool batch",
-          );
-          continue;
-        }
-
-        const restrictedCall = result.toolCalls[0];
-        if (!activeToolNames.has(restrictedCall.name)) {
-          streamCallbackBuffer?.discard();
-          finishRestrictedReactionFeedbackViolation(
-            `the provider returned unregistered tool ${JSON.stringify(restrictedCall.name)}`,
-          );
-          continue;
-        }
-
-        let restrictedArgs: Record<string, unknown> | null = null;
-        try {
-          const parsed = JSON.parse(restrictedCall.arguments);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            restrictedArgs = parsed as Record<string, unknown>;
-          }
-        } catch {
-          restrictedArgs = null;
-        }
-        const registeredTool = activeTools.find(
-          (tool) => tool.function.name === restrictedCall.name,
-        )!;
-        const argumentsMatchSchema = restrictedArgs !== null
-          && matchesRegisteredToolArgumentSchema(registeredTool, restrictedArgs);
-        const callbackArgs = (restrictedArgs ?? {}) as Record<string, string>;
-
-        if (restrictedCall.name === "settle") {
-          const { answer, intent } = parseSettlePayload(restrictedCall.arguments);
-          callbacks.onToolStart("settle", callbackArgs);
-          if (!argumentsMatchSchema || answer === undefined || intent === "direct_reply") {
-            callbacks.onToolEnd("settle", summarizeArgs("settle", callbackArgs), false);
-            streamCallbackBuffer?.discard();
-            finishRestrictedReactionFeedbackViolation("settle arguments were malformed or requested continuation");
-            continue;
-          }
-
-          streamCallbackBuffer?.discard();
-          callbacks.onToolEnd("settle", summarizeArgs("settle", callbackArgs), true);
-          const completionIntent = intent === "blocked" ? "blocked" : "complete";
-          completion = { answer, intent: completionIntent };
-          callbacks.onClearText?.();
-          callbacks.onTextChunk(answer);
-          messages.push(msg);
-          const delivered = "(delivered)";
-          messages.push({ role: "tool", tool_call_id: restrictedCall.id, content: delivered });
-          providerRuntime.appendToolOutput(restrictedCall.id, delivered);
-          outcome = completionIntent === "blocked" ? "blocked" : "settled";
-          done = true;
-          continue;
-        }
-
-        if (!argumentsMatchSchema) {
-          streamCallbackBuffer?.discard();
-          finishRestrictedReactionFeedbackViolation(`${restrictedCall.name} arguments were malformed`);
-          continue;
-        }
-
-        if (restrictedCall.name === "observe") {
-          streamCallbackBuffer?.discard();
-          callbacks.onClearText?.();
-          callbacks.onToolStart("observe", callbackArgs);
-          const reason = typeof callbackArgs.reason === "string" ? callbackArgs.reason : undefined;
-          emitNervesEvent({
-            component: "engine",
-            event: "engine.observe",
-            message: "agent observed without responding",
-            meta: { ...(reason ? { reason } : {}) },
-          });
-          callbacks.onToolEnd("observe", summarizeArgs("observe", callbackArgs), true);
-          messages.push(msg);
-          const silenced = "(silenced)";
-          messages.push({ role: "tool", tool_call_id: restrictedCall.id, content: silenced });
-          providerRuntime.appendToolOutput(restrictedCall.id, silenced);
-          outcome = "observed";
-          done = true;
-          continue;
-        }
-
-        callbacks.onClearText?.();
-        callbacks.onToolStart("orientation_get", callbackArgs);
-        let orientationReadSucceeded = false;
-        try {
-          const execToolFn = options?.execTool ?? execTool;
-          await execToolFn(
-            "orientation_get",
-            callbackArgs,
-            augmentedToolContext,
-          );
-          orientationReadSucceeded = true;
-        } catch {
-          orientationReadSucceeded = false;
-        }
-        callbacks.onToolEnd(
-          "orientation_get",
-          summarizeArgs("orientation_get", callbackArgs),
-          orientationReadSucceeded,
-        );
-        streamCallbackBuffer?.discard();
-        finishRestrictedReactionFeedbackViolation(
-          orientationReadSucceeded
-            ? "orientation_get completed but no terminal response can follow the single invocation"
-            : "orientation_get failed",
-        );
-        continue;
-      }
-
       // Detect the MiniMax "only-thinking, no tool call" violation: no tool
       // calls returned, and the content is empty after stripping
       // <think>...</think> blocks. This is a narrow check — legitimate
@@ -1680,7 +1635,7 @@ export async function runAgent(
                 contentLength: result.content.length,
               },
             });
-            messages.push(msg);
+            pushGenerated(msg);
             messages.push({
               role: "user",
               content: `${privateReturnTextAckRetryError} Emit the ponder(action=create, ...) tool call now, or ask a blocking clarification without saying the private work is queued.`,
@@ -1702,7 +1657,7 @@ export async function runAgent(
             },
           });
           msg.content = blockedAnswer;
-          messages.push(msg);
+          pushGenerated(msg);
           callbacks.onTextChunk(blockedAnswer);
           completion = { answer: blockedAnswer, intent: "blocked" };
           outcome = "blocked";
@@ -1730,7 +1685,7 @@ export async function runAgent(
               contentLength: result.content!.length,
             },
           });
-          messages.push(msg);
+          pushGenerated(msg);
           messages.push({
             role: "user",
             content: isPrivateRuntimeChannel
@@ -1743,7 +1698,7 @@ export async function runAgent(
         }
         // Legitimate text-only response, or cap reached — accept as-is.
         await streamCallbackBuffer?.flush();
-        messages.push(msg);
+        pushGenerated(msg);
         done = true;
       } else {
         // Reset the retry counter on any successful tool call.
@@ -1758,10 +1713,10 @@ export async function runAgent(
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
           recordBlockedHabitSurfaceAttempts(habitSession, result.toolCalls, habitBlockReason)
-          messages.push(msg)
+          pushGenerated(msg)
           const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
           for (const call of result.toolCalls) {
-            messages.push({ role: "tool", tool_call_id: call.id, content: blockedOutput })
+            pushGenerated({ role: "tool", tool_call_id: call.id, content: blockedOutput })
             providerRuntime.appendToolOutput(call.id, blockedOutput)
           }
           emitNervesEvent({
@@ -1813,9 +1768,9 @@ export async function runAgent(
               summarizeArgs(soleTerminalCall.name, terminalArgs),
               false,
             )
-            messages.push(msg)
+            pushGenerated(msg)
             const failure = error instanceof Error ? `error: ${error.message}` : `error: ${String(error)}`
-            messages.push({ role: "tool", tool_call_id: soleTerminalCall.id, content: failure })
+            pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: failure })
             providerRuntime.appendToolOutput(soleTerminalCall.id, failure)
             callbacks.onTextChunk(failure)
             completion = { answer: failure, intent: "blocked" }
@@ -1828,8 +1783,8 @@ export async function runAgent(
             summarizeArgs(soleTerminalCall.name, terminalArgs),
             true,
           )
-          messages.push(msg)
-          messages.push({ role: "tool", tool_call_id: soleTerminalCall.id, content: terminalResult })
+          pushGenerated(msg)
+          pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: terminalResult })
           providerRuntime.appendToolOutput(soleTerminalCall.id, terminalResult)
           callbacks.onTextChunk(terminalResult)
           completion = { answer: terminalResult, intent: "complete" }
@@ -1848,9 +1803,9 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
-            messages.push(msg);
+            pushGenerated(msg);
             const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.";
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
             continue;
           }
@@ -1863,9 +1818,9 @@ export async function runAgent(
           if (isPrivateRuntimeChannel) {
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
-            messages.push(msg);
+            pushGenerated(msg);
             const settled = "(settled)";
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: settled });
+            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: settled });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, settled);
             outcome = "settled";
             done = true;
@@ -1918,14 +1873,14 @@ export async function runAgent(
             };
             // Retractable owners already hold the validated answer. Final-only
             // owners receive it here, after every semantic continuation gate.
-            messages.push(msg);
+            pushGenerated(msg);
             if (validDirectReply) {
               const resumeWork = "direct reply delivered. resume the unresolved obligation now and keep working until you can finish or clearly report that you are blocked.";
-              messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: resumeWork });
+              pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: resumeWork });
               providerRuntime.appendToolOutput(result.toolCalls[0].id, resumeWork);
             } else {
               const delivered = "(delivered)";
-              messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: delivered });
+              pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: delivered });
               providerRuntime.appendToolOutput(result.toolCalls[0].id, delivered);
               outcome = intent === "blocked" ? "blocked" : "settled";
               done = true;
@@ -1936,9 +1891,9 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
-            messages.push(msg);
+            pushGenerated(msg);
             const toolRetryMessage = retryError
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
+            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, toolRetryMessage);
           }
           continue;
@@ -1960,9 +1915,9 @@ export async function runAgent(
             meta: { ...(reason ? { reason } : {}) },
           });
           callbacks.onToolEnd("observe", summarizeArgs("observe", observeArgs), true);
-          messages.push(msg);
+          pushGenerated(msg);
           const silenced = "(silenced)";
-          messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: silenced });
+          pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: silenced });
           providerRuntime.appendToolOutput(result.toolCalls[0].id, silenced);
           outcome = "observed";
           done = true;
@@ -1980,9 +1935,9 @@ export async function runAgent(
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
-            messages.push(msg);
+            pushGenerated(msg);
             const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.";
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
             continue;
           }
@@ -1990,9 +1945,9 @@ export async function runAgent(
           if (hasFreshPendingWork(options) && !freshWorkGateFired) {
             freshWorkGateFired = true;
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
-            messages.push(msg);
+            pushGenerated(msg);
             const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
-            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
             emitNervesEvent({
               level: "info",
@@ -2005,9 +1960,9 @@ export async function runAgent(
           }
 
           callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), true);
-          messages.push(msg);
+          pushGenerated(msg);
           const ack = "(resting)";
-          messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
+          pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
           providerRuntime.appendToolOutput(result.toolCalls[0].id, ack);
 
           emitNervesEvent({
@@ -2033,10 +1988,25 @@ export async function runAgent(
         } else {
           await streamCallbackBuffer?.flush()
         }
-        messages.push(msg);
+        pushGenerated(msg);
         // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
+          if (tc.name === "speak" && !activeToolNames.has("speak")) {
+            const rejection = "rejected: speak was not advertised for this channel; no outward message was sent."
+            callbacks.onToolStart(tc.name, {})
+            callbacks.onToolEnd(tc.name, "", false)
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection })
+            providerRuntime.appendToolOutput(tc.id, rejection)
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.unadvertised_speak_blocked",
+              message: "blocked an unadvertised speak tool call",
+              meta: { channel: String(channel) },
+            })
+            continue
+          }
           // Reject sole-call tools when mixed with other tool calls
           const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
           const soleCallRejection = SOLE_CALL_REJECTION[tc.name]
@@ -2044,7 +2014,7 @@ export async function runAgent(
               ? `rejected: ${tc.name} must be the only tool call.`
               : undefined);
           if (soleCallRejection) {
-            messages.push({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
             providerRuntime.appendToolOutput(tc.id, soleCallRejection);
             continue;
           }
@@ -2061,7 +2031,7 @@ export async function runAgent(
               const rejection = "private-return requests must use ponder, not send_message(friendId=self). Create a typed ponder packet with the marker/source request preserved, then only acknowledge that the private pass is queued.";
               callbacks.onToolStart(tc.name, args);
               callbacks.onToolEnd(tc.name, argSummary, false);
-              messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
+              pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection });
               providerRuntime.appendToolOutput(tc.id, rejection);
               continue;
             }
@@ -2076,7 +2046,7 @@ export async function runAgent(
             if (speakMessage.trim().length === 0) {
               const err = "speak requires a non-empty `message` string.";
               callbacks.onToolEnd("speak", argSummary, false);
-              messages.push({ role: "tool", tool_call_id: tc.id, content: err });
+              pushGenerated({ role: "tool", tool_call_id: tc.id, content: err });
               providerRuntime.appendToolOutput(tc.id, err);
               emitNervesEvent({
                 level: "warn",
@@ -2097,7 +2067,7 @@ export async function runAgent(
             if (speakDeliveryError) {
               callbacks.onToolEnd("speak", argSummary, false);
               const failMsg = `speak delivery failed: ${speakDeliveryError.message}. the message did not reach your friend; do not assume they saw it.`;
-              messages.push({ role: "tool", tool_call_id: tc.id, content: failMsg });
+              pushGenerated({ role: "tool", tool_call_id: tc.id, content: failMsg });
               providerRuntime.appendToolOutput(tc.id, failMsg);
               emitNervesEvent({
                 level: "error",
@@ -2110,7 +2080,7 @@ export async function runAgent(
             }
             callbacks.onToolEnd("speak", argSummary, true);
             const ack = "(spoken)";
-            messages.push({ role: "tool", tool_call_id: tc.id, content: ack });
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: ack });
             providerRuntime.appendToolOutput(tc.id, ack);
             emitNervesEvent({
               component: "engine",
@@ -2285,7 +2255,7 @@ export async function runAgent(
             }
 
             callbacks.onToolEnd(tc.name, argSummary, success);
-            messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: toolResult });
             providerRuntime.appendToolOutput(tc.id, toolResult);
             continue;
           }
@@ -2301,7 +2271,7 @@ export async function runAgent(
             const rejection = `loop guard: ${toolLoop.message}`;
             callbacks.onToolStart(tc.name, args);
             callbacks.onToolEnd(tc.name, argSummary, false);
-            messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection });
             providerRuntime.appendToolOutput(tc.id, rejection);
             continue;
           }
@@ -2320,7 +2290,7 @@ export async function runAgent(
           toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);
-          messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult });
+          pushGenerated({ role: "tool", tool_call_id: tc.id, content: toolResult });
           providerRuntime.appendToolOutput(tc.id, toolResult);
           callbacks.onToolResult?.(messages);
         }
@@ -2329,6 +2299,7 @@ export async function runAgent(
       // Abort is not an error — just stop cleanly
       if (e instanceof ProviderAttemptAbortError || signal?.aborted) {
         stripLastToolCalls(messages);
+        stripLastToolCalls(generatedMessages);
         outcome = "aborted";
         break;
       }
@@ -2343,6 +2314,7 @@ export async function runAgent(
       finishTerminalProviderError(errorForClassification, providerClassification);
     }
   }
+  options?.captureGeneratedMessages?.(structuredClone(generatedMessages));
   emitNervesEvent({
     event: "engine.turn_end",
     trace_id: traceId,

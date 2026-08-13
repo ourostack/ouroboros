@@ -41,6 +41,14 @@ const SEMANTIC_OWNERSHIP_SCHEMA_SQL = `CREATE TABLE owner_leases (
       owner_json TEXT NOT NULL
     ) STRICT, WITHOUT ROWID`
 const CAPTURE_KEYS = ["schemaVersion", "canonicalKey", "keyHash", "providerNamespace", "capturedAt", "event"]
+const OBSERVATION_ORDER_KEYS = [
+  "schemaVersion",
+  "keyHash",
+  "captureHash",
+  "observedAt",
+  "observationEpoch",
+  "observationOrdinal",
+]
 const CAPTURE_EVENT_KEYS = [
   "provider",
   "kind",
@@ -108,6 +116,7 @@ export interface BlueBubblesSemanticPaths {
   root: string
   cutover: string
   captures: string
+  observationOrders: string
   handled: string
   claims: string
   coordinates: string
@@ -149,9 +158,20 @@ export interface BlueBubblesSemanticIdentity {
 export interface BlueBubblesSemanticCaptureInput {
   cutover: BlueBubblesSemanticCutover
   capturedAt: string
+  observationEpoch?: string
+  observationOrdinal?: number
   event: BlueBubblesNormalizedEvent
   targetAuthorship: IngressTargetAuthorship
   coordinateGeneration?: number
+}
+
+export interface BlueBubblesSemanticObservationOrderRecord {
+  schemaVersion: 1
+  keyHash: string
+  captureHash: string
+  observedAt: string
+  observationEpoch: string
+  observationOrdinal: number
 }
 
 export interface BlueBubblesReactionCoordinateRecord {
@@ -260,6 +280,7 @@ export function getBlueBubblesSemanticPathsAtRoot(agentRoot: string): BlueBubble
     root,
     cutover: path.join(root, "cutover.json"),
     captures: path.join(root, "captures"),
+    observationOrders: path.join(root, "observation-orders"),
     handled: path.join(root, "handled"),
     claims: path.join(root, "claims"),
     coordinates: path.join(root, "coordinates"),
@@ -543,6 +564,21 @@ export function buildBlueBubblesSemanticCapture(
     ? requiredIdentifier(sender.externalId)
     : null
   if (!providerNamespace || !capturedAt || !actorExternalId) return null
+  const inputObservationEpoch = input.observationEpoch
+  const inputObservationOrdinal = input.observationOrdinal
+  const observationClock = inputObservationEpoch === undefined
+    && inputObservationOrdinal === undefined
+    ? null
+    : isBlueBubblesObservationEpoch(inputObservationEpoch)
+      && typeof inputObservationOrdinal === "number"
+      && Number.isSafeInteger(inputObservationOrdinal)
+      && inputObservationOrdinal > 0
+      ? {
+          observationEpoch: inputObservationEpoch,
+          observationOrdinal: inputObservationOrdinal,
+        }
+      : false
+  if (observationClock === false) return null
 
   const kind = input.event.kind === "message" ? "message" : input.event.mutationType
   const eventGuid = requiredIdentifier(input.event.messageGuid)
@@ -585,7 +621,7 @@ export function buildBlueBubblesSemanticCapture(
     })),
   )
 
-  return {
+  const capture: BlueBubblesSemanticCaptureV1 = {
     schemaVersion: 1,
     canonicalKey: identity.canonicalKey,
     keyHash: identity.keyHash,
@@ -618,6 +654,16 @@ export function buildBlueBubblesSemanticCapture(
       contentSha256: kind === "edit" ? textSha256 : null,
     },
   }
+  if (observationClock) {
+    attachBlueBubblesSemanticObservationOrder(capture, {
+      schemaVersion: 1,
+      keyHash: capture.keyHash,
+      captureHash: blueBubblesSemanticCaptureHash(capture),
+      observedAt: capturedAt,
+      ...observationClock,
+    })
+  }
+  return capture
 }
 
 export function buildBlueBubblesReactionCoordinateRecord(input: {
@@ -714,11 +760,16 @@ export function writeBlueBubblesSemanticCapture(
   try {
     const paths = getBlueBubblesSemanticPaths(agentName)
     const finalPath = semanticRecordPath(paths.captures, capture.keyHash)
+    const validCapture = isBlueBubblesSemanticCapture(capture, capture.keyHash)
     const existing = readExistingCaptureForWrite(agentName, capture.keyHash, deps)
-    if (existing) return finishCaptureComparison(agentName, existing, capture, deps)
-    if (!isBlueBubblesSemanticCapture(capture, capture.keyHash)) {
-      throw semanticStoreError("semantic_capture_invalid")
+    if (existing) {
+      if (validCapture && capturesAreEquivalent(existing, capture)) {
+        persistBlueBubblesSemanticObservationOrder(agentName, capture, deps)
+      }
+      return finishCaptureComparison(agentName, existing, capture, deps)
     }
+    if (!validCapture) throw semanticStoreError("semantic_capture_invalid")
+    persistBlueBubblesSemanticObservationOrder(agentName, capture, deps)
 
     const publication = publishImmutableSemanticRecord(
       paths.captures,
@@ -753,13 +804,14 @@ export function readBlueBubblesSemanticCapture(
 ): BlueBubblesSemanticCaptureV1 | null {
   const paths = getBlueBubblesSemanticPaths(agentName)
   const finalPath = semanticRecordPath(paths.captures, keyHash)
-  return readSemanticRecord(
+  const capture = readSemanticRecord(
     finalPath,
     "capture",
     keyHash,
     (value) => isBlueBubblesSemanticCapture(value, keyHash),
     deps,
   )
+  return capture ? attachStoredBlueBubblesSemanticObservationOrder(paths, capture, deps) : null
 }
 
 export function readBlueBubblesSemanticCaptureAtRoot(
@@ -769,13 +821,14 @@ export function readBlueBubblesSemanticCaptureAtRoot(
 ): BlueBubblesSemanticCaptureV1 | null {
   const paths = getBlueBubblesSemanticPathsAtRoot(agentRoot)
   const finalPath = semanticRecordPath(paths.captures, keyHash)
-  return readSemanticRecord(
+  const capture = readSemanticRecord(
     finalPath,
     "capture",
     keyHash,
     (value) => isBlueBubblesSemanticCapture(value, keyHash),
     deps,
   )
+  return capture ? attachStoredBlueBubblesSemanticObservationOrder(paths, capture, deps) : null
 }
 
 export function listPendingBlueBubblesSemanticCaptures(
@@ -797,8 +850,157 @@ export function listPendingBlueBubblesSemanticCaptures(
     captures.push(capture)
   }
   return captures.sort((left, right) => (
-    left.capturedAt.localeCompare(right.capturedAt) || left.keyHash.localeCompare(right.keyHash)
+    compareBlueBubblesSemanticCaptureOrder(left, right)
   ))
+}
+
+export function compareBlueBubblesSemanticCaptureOrder(
+  left: BlueBubblesSemanticCaptureV1,
+  right: BlueBubblesSemanticCaptureV1,
+): number {
+  if (
+    left.observationEpoch !== undefined
+    && left.observationEpoch === right.observationEpoch
+    && left.observationOrdinal !== undefined
+    && right.observationOrdinal !== undefined
+    && left.observationOrdinal !== right.observationOrdinal
+  ) {
+    return left.observationOrdinal - right.observationOrdinal
+  }
+  const capturedOrder = (left.observationObservedAt ?? left.capturedAt)
+    .localeCompare(right.observationObservedAt ?? right.capturedAt)
+  if (capturedOrder !== 0) return capturedOrder
+  if (left.observationEpoch === undefined && right.observationEpoch === undefined) return 0
+  const epochOrder = (left.observationEpoch ?? "").localeCompare(right.observationEpoch ?? "")
+  if (epochOrder !== 0) return epochOrder
+  return left.keyHash.localeCompare(right.keyHash)
+}
+
+function attachBlueBubblesSemanticObservationOrder(
+  capture: BlueBubblesSemanticCaptureV1,
+  order: BlueBubblesSemanticObservationOrderRecord,
+): BlueBubblesSemanticCaptureV1 {
+  Object.defineProperties(capture, {
+    observationObservedAt: {
+      configurable: true,
+      enumerable: false,
+      value: order.observedAt,
+    },
+    observationEpoch: {
+      configurable: true,
+      enumerable: false,
+      value: order.observationEpoch,
+    },
+    observationOrdinal: {
+      configurable: true,
+      enumerable: false,
+      value: order.observationOrdinal,
+    },
+  })
+  return capture
+}
+
+function blueBubblesSemanticObservationOrderFromCapture(
+  capture: BlueBubblesSemanticCaptureV1,
+): BlueBubblesSemanticObservationOrderRecord | null {
+  if (
+    !isBlueBubblesObservationEpoch(capture.observationEpoch)
+    || typeof capture.observationOrdinal !== "number"
+    || !Number.isSafeInteger(capture.observationOrdinal)
+    || capture.observationOrdinal <= 0
+  ) return null
+  return {
+    schemaVersion: 1,
+    keyHash: capture.keyHash,
+    captureHash: blueBubblesSemanticCaptureHash(capture),
+    observedAt: capture.capturedAt,
+    observationEpoch: capture.observationEpoch,
+    observationOrdinal: capture.observationOrdinal,
+  }
+}
+
+function compareBlueBubblesSemanticObservationOrders(
+  left: BlueBubblesSemanticObservationOrderRecord,
+  right: BlueBubblesSemanticObservationOrderRecord,
+): number {
+  if (
+    left.observationEpoch === right.observationEpoch
+    && left.observationOrdinal !== right.observationOrdinal
+  ) {
+    return left.observationOrdinal - right.observationOrdinal
+  }
+  const observedOrder = left.observedAt.localeCompare(right.observedAt)
+  if (observedOrder !== 0) return observedOrder
+  const epochOrder = left.observationEpoch.localeCompare(right.observationEpoch)
+  if (epochOrder !== 0) return epochOrder
+  return left.observationOrdinal - right.observationOrdinal
+}
+
+function persistBlueBubblesSemanticObservationOrder(
+  agentName: string,
+  capture: BlueBubblesSemanticCaptureV1,
+  deps: BlueBubblesSemanticStoreDeps,
+): void {
+  const candidate = blueBubblesSemanticObservationOrderFromCapture(capture)
+  if (!candidate) return
+  const paths = getBlueBubblesSemanticPaths(agentName)
+  const finalPath = semanticRecordPath(paths.observationOrders, candidate.captureHash)
+  const startedAt = semanticNow(deps).getTime()
+  while (true) {
+    const result = withExclusiveSemanticOwnership(paths.ownership, deps, () => {
+      const inspected = inspectSemanticRecord(
+        finalPath,
+        capture.keyHash,
+        (value): value is BlueBubblesSemanticObservationOrderRecord => (
+          isBlueBubblesSemanticObservationOrderRecord(
+            value,
+            capture.keyHash,
+            candidate.captureHash,
+          )
+        ),
+        deps,
+      )
+      if (inspected.status === "valid") {
+        if (compareBlueBubblesSemanticObservationOrders(inspected.value, candidate) <= 0) {
+          fsyncSemanticDirectory(paths.observationOrders, semanticFs(deps))
+          return
+        }
+      } else if (inspected.status === "invalid") {
+        quarantineSemanticRecord(
+          finalPath,
+          "observation-order",
+          capture.keyHash,
+          deps,
+          inspected.reason,
+        )
+      }
+      writeMutableSemanticRecord(paths.observationOrders, finalPath, candidate, deps)
+    })
+    if (result.status === "completed") return
+    if (semanticNow(deps).getTime() - startedAt >= SEMANTIC_CLAIM_TIMEOUT_MS) {
+      throw semanticStoreError("semantic_ownership_busy")
+    }
+    semanticSleepSync(SEMANTIC_CLAIM_POLL_MS, deps)
+  }
+}
+
+function attachStoredBlueBubblesSemanticObservationOrder(
+  paths: BlueBubblesSemanticPaths,
+  capture: BlueBubblesSemanticCaptureV1,
+  deps: BlueBubblesSemanticStoreDeps,
+): BlueBubblesSemanticCaptureV1 {
+  const captureHash = blueBubblesSemanticCaptureHash(capture)
+  const finalPath = semanticRecordPath(paths.observationOrders, captureHash)
+  const order = readSemanticRecord(
+    finalPath,
+    "observation-order",
+    capture.keyHash,
+    (value): value is BlueBubblesSemanticObservationOrderRecord => (
+      isBlueBubblesSemanticObservationOrderRecord(value, capture.keyHash, captureHash)
+    ),
+    deps,
+  )
+  return order ? attachBlueBubblesSemanticObservationOrder(capture, order) : capture
 }
 
 export function writeBlueBubblesSemanticHandled(
@@ -1003,7 +1205,13 @@ export async function allocateBlueBubblesReactionCoordinate(
   }
 }
 
-type SemanticRecordKind = "capture" | "handled" | "claim" | "coordinate" | "coordinate-owner"
+type SemanticRecordKind =
+  | "capture"
+  | "observation-order"
+  | "handled"
+  | "claim"
+  | "coordinate"
+  | "coordinate-owner"
 
 type ExclusiveOwnerResult =
   | { status: "acquired"; record: BlueBubblesSemanticClaimRecord; leaseId: string }
@@ -1117,7 +1325,11 @@ function capturesAreEquivalent(
   left: BlueBubblesSemanticCaptureV1,
   right: BlueBubblesSemanticCaptureV1,
 ): boolean {
-  const project = (capture: BlueBubblesSemanticCaptureV1) => ({
+  return blueBubblesSemanticCaptureHash(left) === blueBubblesSemanticCaptureHash(right)
+}
+
+function blueBubblesSemanticCaptureHash(capture: BlueBubblesSemanticCaptureV1): string {
+  const projection = {
     schemaVersion: capture.schemaVersion,
     canonicalKey: capture.canonicalKey,
     keyHash: capture.keyHash,
@@ -1139,8 +1351,8 @@ function capturesAreEquivalent(
       revision: capture.event.revision,
       contentSha256: capture.event.contentSha256,
     },
-  })
-  return JSON.stringify(project(left)) === JSON.stringify(project(right))
+  }
+  return sha256Utf8(JSON.stringify(projection))
 }
 
 function handledRecordsAreEquivalent(
@@ -1832,6 +2044,31 @@ function isBlueBubblesSemanticCapture(
     return false
   }
   return captureIdentityMatchesEvent(value as unknown as BlueBubblesSemanticCaptureV1)
+}
+
+function isBlueBubblesSemanticObservationOrderRecord(
+  value: unknown,
+  expectedKeyHash: string,
+  expectedCaptureHash: string,
+): value is BlueBubblesSemanticObservationOrderRecord {
+  return isRecord(value)
+    && hasExactKeys(value, OBSERVATION_ORDER_KEYS)
+    && value.schemaVersion === 1
+    && value.keyHash === expectedKeyHash
+    && value.captureHash === expectedCaptureHash
+    && exactIsoMilliseconds(value.observedAt) !== null
+    && isBlueBubblesObservationEpoch(value.observationEpoch)
+    && typeof value.observationOrdinal === "number"
+    && Number.isSafeInteger(value.observationOrdinal)
+    && value.observationOrdinal > 0
+}
+
+function isBlueBubblesObservationEpoch(value: unknown): value is string {
+  if (typeof value !== "string") return false
+  const parts = value.split("/")
+  return parts.length === 2
+    && exactIsoMilliseconds(parts[0]) !== null
+    && UUID_V4_PATTERN.test(parts[1])
 }
 
 function captureIdentityMatchesEvent(value: BlueBubblesSemanticCaptureV1): boolean {

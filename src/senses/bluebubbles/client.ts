@@ -17,6 +17,7 @@ export interface BlueBubblesSendTextParams {
   replyToMessageGuid?: string
   tempGuid?: string
   signal?: AbortSignal
+  beforeTransportInvocation?: () => boolean
   onTransportInvocation?: () => void
 }
 
@@ -56,24 +57,14 @@ export interface BlueBubblesEditMessageParams {
 export interface BlueBubblesClient {
   sendText(params: BlueBubblesSendTextParams): Promise<BlueBubblesSendTextResult>
   editMessage(params: BlueBubblesEditMessageParams): Promise<void>
-  setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void>
-  markChatRead(chat: BlueBubblesChatRef): Promise<void>
+  setTyping(chat: BlueBubblesChatRef, typing: boolean, signal?: AbortSignal): Promise<void>
+  markChatRead(chat: BlueBubblesChatRef, signal?: AbortSignal): Promise<void>
   checkHealth(): Promise<void>
   listRecentMessages?(params?: BlueBubblesListRecentMessagesParams): Promise<BlueBubblesNormalizedEvent[]>
+  queryRecentMessagesWithMetadata?(params?: BlueBubblesListRecentMessagesParams): Promise<BlueBubblesMessageQueryResult>
   repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent>
   /** Fetch the text content of a message by its GUID. Returns null if not found or on error. */
   getMessageText(messageGuid: string): Promise<string | null>
-  /**
-   * Fetch a message's text *and* authorship by GUID. Optional so existing fakes stay
-   * valid; callers fall back to `getMessageText` when it is absent.
-   */
-  getMessageDetails?(messageGuid: string): Promise<BlueBubblesMessageDetails | null>
-}
-
-export interface BlueBubblesMessageDetails {
-  text: string | null
-  /** true when the message was sent by this account (the agent), false when received. */
-  fromMe: boolean | null
 }
 
 export interface BlueBubblesListRecentMessagesParams {
@@ -82,6 +73,22 @@ export interface BlueBubblesListRecentMessagesParams {
   chatGuid?: string
   chatIdentifier?: string
   beforeTimestamp?: number
+}
+
+export interface BlueBubblesMessageQueryResult {
+  messages: BlueBubblesNormalizedEvent[]
+  rawRowCount: number
+  normalizedRowCount: number
+  skippedRowCount: number
+  invalidCausalTimestampRowCount: number
+  request: {
+    limit: number
+    offset: number
+    sort: "DESC"
+    chatGuid?: string
+    chatIdentifier?: string
+    beforeTimestamp?: number
+  }
 }
 
 type ClientConfig = ReturnType<typeof getBlueBubblesConfig>
@@ -219,7 +226,7 @@ function extractChatQueryRows(payload: unknown): BlueBubblesChatQueryRecord[] {
   return data.map((entry) => asRecord(entry)).filter((entry): entry is BlueBubblesChatQueryRecord => entry !== null)
 }
 
-function extractMessageQueryRows(payload: unknown): JsonRecord[] {
+function extractMessageQueryRows(payload: unknown): unknown[] {
   const record = asRecord(payload)
   const data = asRecord(record?.data)
   const rows =
@@ -230,7 +237,14 @@ function extractMessageQueryRows(payload: unknown): JsonRecord[] {
             : Array.isArray(payload) ? payload
               : []
 
-  return rows.map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => entry !== null)
+  return rows
+}
+
+function hasValidRawMessageCausalTimestamp(row: unknown): boolean {
+  const record = asRecord(row)
+  return typeof record?.dateCreated === "number"
+    && Number.isFinite(record.dateCreated)
+    && record.dateCreated > 0
 }
 
 async function resolveChatGuidForIdentifier(
@@ -399,6 +413,14 @@ export function createBlueBubblesClient(
       })
 
       const requestTimeoutSignal = AbortSignal.timeout(channelConfig.requestTimeoutMs)
+      if (params.beforeTransportInvocation && !params.beforeTransportInvocation()) {
+        throw new BlueBubblesSendError({
+          message: "BlueBubbles send was not admitted at the transport boundary.",
+          httpStatus: null,
+          errorCode: "admission_denied",
+          transportInvoked: false,
+        })
+      }
       params.onTransportInvocation?.()
       let response: Response
       try {
@@ -501,7 +523,7 @@ export function createBlueBubblesClient(
       }
     },
 
-    async setTyping(chat: BlueBubblesChatRef, typing: boolean): Promise<void> {
+    async setTyping(chat: BlueBubblesChatRef, typing: boolean, signal?: AbortSignal): Promise<void> {
       const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
       if (!resolvedChatGuid) {
         return
@@ -511,9 +533,10 @@ export function createBlueBubblesClient(
         `/api/v1/chat/${encodeURIComponent(resolvedChatGuid)}/typing`,
         config.password,
       )
+      const requestTimeoutSignal = AbortSignal.timeout(channelConfig.requestTimeoutMs)
       const response = await fetch(url, {
         method: typing ? "POST" : "DELETE",
-        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+        signal: signal ? AbortSignal.any([signal, requestTimeoutSignal]) : requestTimeoutSignal,
       })
       if (!response.ok) {
         const errorText = await response.text().catch(() => "")
@@ -521,7 +544,7 @@ export function createBlueBubblesClient(
       }
     },
 
-    async markChatRead(chat: BlueBubblesChatRef): Promise<void> {
+    async markChatRead(chat: BlueBubblesChatRef, signal?: AbortSignal): Promise<void> {
       const resolvedChatGuid = await resolveChatGuid(chat, config, channelConfig)
       if (!resolvedChatGuid) {
         return
@@ -531,9 +554,10 @@ export function createBlueBubblesClient(
         `/api/v1/chat/${encodeURIComponent(resolvedChatGuid)}/read`,
         config.password,
       )
+      const requestTimeoutSignal = AbortSignal.timeout(channelConfig.requestTimeoutMs)
       const response = await fetch(url, {
         method: "POST",
-        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+        signal: signal ? AbortSignal.any([signal, requestTimeoutSignal]) : requestTimeoutSignal,
       })
       if (!response.ok) {
         const errorText = await response.text().catch(() => "")
@@ -578,7 +602,9 @@ export function createBlueBubblesClient(
       })
     },
 
-    async listRecentMessages(params: BlueBubblesListRecentMessagesParams = {}): Promise<BlueBubblesNormalizedEvent[]> {
+    async queryRecentMessagesWithMetadata(
+      params: BlueBubblesListRecentMessagesParams = {},
+    ): Promise<BlueBubblesMessageQueryResult> {
       const limit = Math.max(1, Math.min(100, Math.floor(params.limit ?? 50)))
       const offset = Math.max(0, Math.floor(params.offset ?? 0))
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/query", config.password)
@@ -590,7 +616,7 @@ export function createBlueBubblesClient(
         meta: { limit, offset },
       })
 
-      const body = {
+      const request: BlueBubblesMessageQueryResult["request"] = {
         limit,
         offset,
         sort: "DESC",
@@ -599,6 +625,12 @@ export function createBlueBubblesClient(
         ...(typeof params.beforeTimestamp === "number" && Number.isFinite(params.beforeTimestamp)
           ? { beforeTimestamp: params.beforeTimestamp }
           : {}),
+      }
+      const { beforeTimestamp, ...wireRequest } = request
+      const body = {
+        ...wireRequest,
+        // BlueBubbles names its inclusive message-date upper bound `before`.
+        ...(beforeTimestamp !== undefined ? { before: beforeTimestamp } : {}),
         with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
       }
 
@@ -626,6 +658,7 @@ export function createBlueBubblesClient(
 
       const payload = await parseJsonBody(response)
       const rows = extractMessageQueryRows(payload)
+      const invalidCausalTimestampRowCount = rows.filter((row) => !hasValidRawMessageCausalTimestamp(row)).length
       const messages: BlueBubblesNormalizedEvent[] = []
       for (const row of rows) {
         try {
@@ -650,10 +683,23 @@ export function createBlueBubblesClient(
         meta: {
           rows: rows.length,
           normalized: messages.length,
+          skipped: rows.length - messages.length,
         },
       })
 
-      return messages
+      return {
+        messages,
+        rawRowCount: rows.length,
+        normalizedRowCount: messages.length,
+        skippedRowCount: rows.length - messages.length,
+        invalidCausalTimestampRowCount,
+        request,
+      }
+    },
+
+    async listRecentMessages(params: BlueBubblesListRecentMessagesParams = {}): Promise<BlueBubblesNormalizedEvent[]> {
+      const result = await this.queryRecentMessagesWithMetadata!(params)
+      return result.messages
     },
 
     async repairEvent(event: BlueBubblesNormalizedEvent): Promise<BlueBubblesNormalizedEvent> {
@@ -879,53 +925,5 @@ export function createBlueBubblesClient(
       }
     },
 
-    async getMessageDetails(messageGuid: string): Promise<BlueBubblesMessageDetails | null> {
-      const url = buildRepairUrl(config.serverUrl, messageGuid, config.password)
-      try {
-        const response = await fetch(url, {
-          method: "GET",
-          signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
-        })
-        if (!response.ok) {
-          emitNervesEvent({
-            level: "warn",
-            component: "senses",
-            event: "senses.bluebubbles_get_message_details_error",
-            message: "failed to fetch message details",
-            meta: { messageGuid, status: response.status },
-          })
-          return null
-        }
-        const data = extractRepairData(await parseJsonBody(response))
-        if (!data) {
-          emitNervesEvent({
-            level: "warn",
-            component: "senses",
-            event: "senses.bluebubbles_get_message_details_error",
-            message: "message payload was not a record",
-            meta: { messageGuid },
-          })
-          return null
-        }
-        const text = typeof data.text === "string" ? data.text.trim() || null : null
-        const fromMe = typeof data.isFromMe === "boolean" ? data.isFromMe : null
-        emitNervesEvent({
-          component: "senses",
-          event: "senses.bluebubbles_get_message_details",
-          message: "fetched message details by guid",
-          meta: { messageGuid, hasText: text !== null, hasAuthorship: fromMe !== null },
-        })
-        return { text, fromMe }
-      } catch (error) {
-        emitNervesEvent({
-          level: "warn",
-          component: "senses",
-          event: "senses.bluebubbles_get_message_details_error",
-          message: "exception fetching message details",
-          meta: { messageGuid, reason: error instanceof Error ? error.message : String(error) },
-        })
-        return null
-      }
-    },
   }
 }

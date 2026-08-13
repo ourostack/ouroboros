@@ -16,6 +16,17 @@ function mockRuntimeCredentials(overrides: Record<string, unknown> = {}): void {
   }))
 }
 
+function createAlreadyClosedServer(): { close: ReturnType<typeof vi.fn>; once: ReturnType<typeof vi.fn> } {
+  const server = {
+    close: vi.fn(),
+    once: vi.fn((event: string, listener: () => void) => {
+      if (event === "close") listener()
+      return server
+    }),
+  }
+  return server
+}
+
 describe("bluebubbles entrypoint", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -24,7 +35,7 @@ describe("bluebubbles entrypoint", () => {
   it("starts the BlueBubbles sense when --agent is present", async () => {
     vi.resetModules()
 
-    const startBlueBubblesApp = vi.fn()
+    const startBlueBubblesApp = vi.fn(() => createAlreadyClosedServer())
     const configureDaemonRuntimeLogger = vi.fn()
     vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
@@ -50,7 +61,7 @@ describe("bluebubbles entrypoint", () => {
   it("continues startup when runtime config refresh is unavailable", async () => {
     vi.resetModules()
 
-    const startBlueBubblesApp = vi.fn()
+    const startBlueBubblesApp = vi.fn(() => createAlreadyClosedServer())
     const configureDaemonRuntimeLogger = vi.fn()
     const refreshRuntimeCredentialConfig = vi.fn(async () => {
       throw new Error("vault locked")
@@ -83,7 +94,7 @@ describe("bluebubbles entrypoint", () => {
   it("continues startup when machine runtime config refresh is unavailable", async () => {
     vi.resetModules()
 
-    const startBlueBubblesApp = vi.fn()
+    const startBlueBubblesApp = vi.fn(() => createAlreadyClosedServer())
     const configureDaemonRuntimeLogger = vi.fn()
     const refreshMachineRuntimeCredentialConfig = vi.fn(async () => {
       throw new Error("machine vault locked")
@@ -115,7 +126,7 @@ describe("bluebubbles entrypoint", () => {
     vi.resetModules()
 
     let resolveMachineRefresh: (value: { ok: false; reason: "missing" }) => void = () => undefined
-    const startBlueBubblesApp = vi.fn()
+    const startBlueBubblesApp = vi.fn(() => createAlreadyClosedServer())
     const configureDaemonRuntimeLogger = vi.fn()
     const refreshMachineRuntimeCredentialConfig = vi.fn(() => new Promise<{ ok: false; reason: "missing" }>((resolve) => {
       resolveMachineRefresh = resolve
@@ -152,7 +163,7 @@ describe("bluebubbles entrypoint", () => {
   it("uses daemon-bootstrap machine config without blocking on vault refresh", async () => {
     vi.resetModules()
 
-    const startBlueBubblesApp = vi.fn()
+    const startBlueBubblesApp = vi.fn(() => createAlreadyClosedServer())
     const configureDaemonRuntimeLogger = vi.fn()
     const waitForRuntimeCredentialBootstrap = vi.fn(async () => true)
     const refreshMachineRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
@@ -179,6 +190,59 @@ describe("bluebubbles entrypoint", () => {
       expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
     })
     expect(refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
+    argvSpy.mockRestore()
+  })
+
+  it("closes the BlueBubbles server on managed SIGTERM and removes both signal handlers", async () => {
+    vi.resetModules()
+
+    const signalHandlers: Partial<Record<NodeJS.Signals, () => void>> = {}
+    const originalOnce = process.once.bind(process)
+    const processOnce = vi.spyOn(process, "once").mockImplementation(((event: string, listener: (...args: any[]) => void) => {
+      if (event === "SIGTERM" || event === "SIGINT") {
+        signalHandlers[event] = listener
+        return process
+      }
+      return originalOnce(event as any, listener as any)
+    }) as typeof process.once)
+    const removeListener = vi.spyOn(process, "removeListener")
+    let closeHandler: (() => void) | undefined
+    const server = {
+      close: vi.fn(() => {
+        closeHandler?.()
+        return server
+      }),
+      once: vi.fn((event: string, listener: () => void) => {
+        if (event === "close") closeHandler = listener
+        return server
+      }),
+    }
+    const startBlueBubblesApp = vi.fn(async () => server)
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+    mockMachineIdentity()
+    mockRuntimeCredentials()
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "bluebubbles-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../../senses/bluebubbles/entry")
+    await vi.waitFor(() => {
+      expect(signalHandlers.SIGTERM).toEqual(expect.any(Function))
+      expect(signalHandlers.SIGINT).toEqual(expect.any(Function))
+    })
+
+    signalHandlers.SIGTERM?.()
+    signalHandlers.SIGINT?.()
+
+    expect(server.close).toHaveBeenCalledTimes(1)
+    expect(removeListener).toHaveBeenCalledWith("SIGTERM", signalHandlers.SIGTERM)
+    expect(removeListener).toHaveBeenCalledWith("SIGINT", signalHandlers.SIGTERM)
+    expect(processOnce).toHaveBeenCalledWith("SIGTERM", expect.any(Function))
+    expect(processOnce).toHaveBeenCalledWith("SIGINT", expect.any(Function))
     argvSpy.mockRestore()
   })
 

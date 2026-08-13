@@ -3918,7 +3918,8 @@ describe("runAgent", () => {
       { role: "system", content: "sys" },
       { role: "user", content: "do something" },
     ]
-    await runAgent(messages, callbacks)
+    const captureGeneratedMessages = vi.fn()
+    await runAgent(messages, callbacks, undefined, undefined, { captureGeneratedMessages })
 
     // Should have recovered after trim
     expect(callCount).toBe(3)
@@ -3927,6 +3928,10 @@ describe("runAgent", () => {
     const hasToolMsg = messages.some((m: any) => m.role === "tool")
     // After trim+stripLastToolCalls, tool messages should be cleaned
     expect(errors.some(e => e.message.includes("trimm"))).toBe(true)
+    expect(captureGeneratedMessages).toHaveBeenCalledWith([
+      expect.objectContaining({ role: "assistant", content: "recovered after tool overflow" }),
+    ])
+    expect(captureGeneratedMessages.mock.calls[0]?.[0]).not.toContainEqual({ role: "assistant" })
   })
 
   it("handles overflow error with empty message property", async () => {
@@ -5663,7 +5668,7 @@ describe("anthropic setup-token provider contract", () => {
 
     const messages: any[] = [
       { role: "system", content: [{ type: "text", text: "system from array" }] },
-      { role: "system", content: "ignored second system" },
+      { role: "system", content: "secondary system evidence" },
       { role: "user", content: "hello user" },
       {
         role: "assistant",
@@ -5752,7 +5757,7 @@ describe("anthropic setup-token provider contract", () => {
       max_tokens: 128000,
       system: [
         { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
-        { type: "text", text: "system from array" },
+        { type: "text", text: "system from array\n\nsecondary system evidence" },
       ],
       tool_choice: { type: "auto" },
       thinking: { type: "adaptive" },
@@ -8103,14 +8108,14 @@ describe("tool_choice required and settle", () => {
     })
   })
 
-  it("settle with valid JSON but no answer field: clears noise and fails without retry", async () => {
+  it("settle with valid JSON null: clears noise and fails without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk("fallback content", [
-            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"text":"hello"}' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: "null" } },
           ]),
         ])
       }
@@ -9901,6 +9906,296 @@ describe("createSummarize", () => {
     const result = await summarize("original transcript", "summarize")
 
     expect(result).toBe("original transcript")
+  })
+})
+
+describe("provider runtime turn isolation", () => {
+  function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    const promise = new Promise<T>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+
+  function turnLabel(messages: any[]): "A" | "B" | "outer" | "inner" | "judge" | "unknown" {
+    if (messages.some((message) => (
+      typeof message.content === "string"
+      && message.content.includes("Decide whether these intentionally kept notes matter")
+    ))) return "judge"
+    const userText = messages.findLast((message) => message.role === "user")?.content
+    if (typeof userText !== "string") return "unknown"
+    if (userText.includes("outward A")) return "A"
+    if (userText.includes("outward B")) return "B"
+    if (userText.includes("outer request")) return "outer"
+    if (userText.includes("inner request")) return "inner"
+    return "unknown"
+  }
+
+  function toolResult(name: string, label: string) {
+    return {
+      content: "",
+      toolCalls: [{
+        id: `${label}-${name}`,
+        name,
+        arguments: name === "probe"
+          ? JSON.stringify({ label })
+          : name === "rest"
+            ? JSON.stringify({ status: "HEARTBEAT_OK" })
+            : JSON.stringify({ answer: `${label} complete`, intent: "complete" }),
+      }],
+      outputItems: [],
+      usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+    }
+  }
+
+  beforeEach(() => {
+    vi.resetModules()
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    mockOpenAICtor.mockReset()
+    mockInjectNoteSearchContext.mockReset().mockResolvedValue(undefined)
+    mockKeptNotesJudge.mockReset()
+    mockCreateKeptNotesJudge.mockReset().mockReturnValue(mockKeptNotesJudge)
+    mockInjectKeptNotes.mockReset().mockResolvedValue({ status: "none", elapsedMs: 0, pressure: [] })
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+  })
+
+  afterEach(() => {
+    vi.doUnmock("../../heart/providers/minimax")
+    vi.useRealTimers()
+  })
+
+  it("isolates reset, wire, tool-output, and result state between concurrent outward runs", async () => {
+    const aEnteredWire = deferred()
+    const releaseA = deferred()
+    const records: Array<{ phase: string; runtimeId: number; label: string; owner: string }> = []
+    let nextRuntimeId = 0
+
+    vi.doMock("../../heart/providers/minimax", () => ({
+      createMinimaxProviderRuntime: (model: string) => {
+        const runtimeId = ++nextRuntimeId
+        const callsByLabel = new Map<string, number>()
+        let owner = "unset"
+        return {
+          id: "minimax",
+          model,
+          client: {},
+          capabilities: new Set(),
+          supportedReasoningEfforts: [],
+          resetTurnState(messages: any[]) {
+            owner = turnLabel(messages)
+            records.push({ phase: "reset", runtimeId, label: owner, owner })
+          },
+          appendToolOutput(callId: string) {
+            const label = callId.startsWith("A-") ? "A" : callId.startsWith("B-") ? "B" : "unknown"
+            records.push({ phase: "append", runtimeId, label, owner })
+          },
+          async streamTurn(request: any) {
+            const label = turnLabel(request.messages)
+            const count = (callsByLabel.get(label) ?? 0) + 1
+            callsByLabel.set(label, count)
+            records.push({ phase: "wire-enter", runtimeId, label, owner })
+            if (label === "A" && count === 1) {
+              aEnteredWire.resolve()
+              await releaseA.promise
+            }
+            if (label === "B" && count === 1) releaseA.resolve()
+            records.push({ phase: "wire-return", runtimeId, label, owner })
+            return count === 1 ? toolResult("probe", label) : toolResult("settle", label)
+          },
+          async ping() {},
+          classifyError: () => "unknown",
+        }
+      },
+    }))
+    await setupMinimax("isolation-key", "isolation-model")
+    const core = await import("../../heart/core")
+    const probeTool = {
+      type: "function" as const,
+      function: {
+        name: "probe",
+        description: "probe runtime ownership",
+        parameters: { type: "object", properties: { label: { type: "string" } } },
+      },
+    }
+    const options = {
+      skipKeptNotes: true,
+      toolChoiceRequired: false,
+      tools: [probeTool],
+      execTool: async (_name: string, args: Record<string, string>) => `tool output for ${args.label}`,
+    }
+
+    const runA = core.runAgent([{ role: "user", content: "outward A" }], noopCallbacks, "cli", undefined, options)
+    await aEnteredWire.promise
+    const runB = core.runAgent([{ role: "user", content: "outward B" }], noopCallbacks, "cli", undefined, options)
+    const [resultA, resultB] = await Promise.all([runA, runB])
+
+    expect(resultA.outcome).toBe("settled")
+    expect(resultB.outcome).toBe("settled")
+    const aRuntimeIds = new Set(records.filter((record) => record.label === "A").map((record) => record.runtimeId))
+    const bRuntimeIds = new Set(records.filter((record) => record.label === "B").map((record) => record.runtimeId))
+    expect([...aRuntimeIds].every((runtimeId) => !bRuntimeIds.has(runtimeId))).toBe(true)
+    expect(records.filter((record) => record.phase === "append")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "A", owner: "A" }),
+      expect.objectContaining({ label: "B", owner: "B" }),
+    ]))
+    expect(records.filter((record) => record.phase === "wire-return").every((record) => record.label === record.owner)).toBe(true)
+  })
+
+  it("keeps an outward kept-notes judge runtime distinct from an interleaved inner run", async () => {
+    const judgeEntered = deferred()
+    const releaseJudge = deferred()
+    let nextRuntimeId = 0
+    let judgeRuntimeId = 0
+    let innerRuntimeId = 0
+    let judgeOwnerAfterInterleave = "unset"
+
+    vi.doMock("../../heart/providers/minimax", () => ({
+      createMinimaxProviderRuntime: (model: string) => {
+        const runtimeId = ++nextRuntimeId
+        let owner = "unset"
+        return {
+          id: "minimax",
+          model,
+          client: {},
+          capabilities: new Set(),
+          supportedReasoningEfforts: [],
+          resetTurnState(messages: any[]) {
+            owner = turnLabel(messages)
+          },
+          appendToolOutput() {},
+          async streamTurn(request: any) {
+            const label = turnLabel(request.messages)
+            if (label === "judge") {
+              judgeRuntimeId = runtimeId
+              judgeEntered.resolve()
+              await releaseJudge.promise
+              judgeOwnerAfterInterleave = owner
+              return { content: JSON.stringify({ status: "none", pressure: [] }), toolCalls: [], outputItems: [] }
+            }
+            if (label === "inner") {
+              innerRuntimeId = runtimeId
+              releaseJudge.resolve()
+              return toolResult("rest", label)
+            }
+            return toolResult("settle", label)
+          },
+          async ping() {},
+          classifyError: () => "unknown",
+        }
+      },
+    }))
+    await setupMinimax("judge-isolation-key", "judge-isolation-model")
+    mockCreateKeptNotesJudge.mockImplementationOnce((runtime: any) => async (input: any) => {
+      const messages = [
+        { role: "system", content: "Decide whether these intentionally kept notes matter" },
+        { role: "user", content: input.query },
+      ]
+      runtime.resetTurnState(messages)
+      const result = await runtime.streamTurn({
+        messages,
+        activeTools: [],
+        callbacks: noopCallbacks,
+        toolChoiceRequired: false,
+        reasoningEffort: "low",
+      })
+      return JSON.parse(result.content)
+    })
+    mockInjectKeptNotes.mockImplementationOnce(async (_messages: any[], options: any) => {
+      await options.judge({
+        query: "outer request",
+        candidates: [{ text: "kept note", source: { kind: "diary", label: "diary" } }],
+      })
+      return { status: "none", elapsedMs: 0, pressure: [] }
+    })
+    const core = await import("../../heart/core")
+
+    const outer = core.runAgent(
+      [{ role: "system", content: "system" }, { role: "user", content: "outer request" }],
+      noopCallbacks,
+      "cli",
+    )
+    await judgeEntered.promise
+    const inner = core.runAgent(
+      [{ role: "system", content: "system" }, { role: "user", content: "inner request" }],
+      noopCallbacks,
+      "inner",
+      undefined,
+      { skipKeptNotes: true },
+    )
+    const [outerResult, innerResult] = await Promise.all([outer, inner])
+
+    expect(outerResult.outcome).toBe("settled")
+    expect(innerResult.outcome).toBe("rested")
+    expect(judgeRuntimeId).not.toBe(innerRuntimeId)
+    expect(judgeOwnerAfterInterleave).toBe("judge")
+  })
+
+  it("does not lend an outward retry runtime to another run during backoff", async () => {
+    vi.useFakeTimers()
+    const retryWaiting = deferred()
+    const records: Array<{ runtimeId: number; label: string; attempt: number }> = []
+    let nextRuntimeId = 0
+    let aAttempt = 0
+
+    vi.doMock("../../heart/providers/minimax", () => ({
+      createMinimaxProviderRuntime: (model: string) => {
+        const runtimeId = ++nextRuntimeId
+        let owner = "unset"
+        return {
+          id: "minimax",
+          model,
+          client: {},
+          capabilities: new Set(),
+          supportedReasoningEfforts: [],
+          resetTurnState(messages: any[]) {
+            owner = turnLabel(messages)
+          },
+          appendToolOutput() {},
+          async streamTurn(request: any) {
+            const label = turnLabel(request.messages)
+            if (label === "A") {
+              aAttempt += 1
+              records.push({ runtimeId, label, attempt: aAttempt })
+              if (aAttempt === 1) throw new Error("transient A network failure")
+              expect(owner).toBe("A")
+              return toolResult("settle", label)
+            }
+            records.push({ runtimeId, label, attempt: 1 })
+            expect(owner).toBe("B")
+            return toolResult("settle", label)
+          },
+          async ping() {},
+          classifyError: () => "network-error",
+        }
+      },
+    }))
+    await setupMinimax("retry-isolation-key", "retry-isolation-model")
+    const core = await import("../../heart/core")
+    const callbacksA: ChannelCallbacks = {
+      ...noopCallbacks,
+      onError(error, severity) {
+        if (severity === "transient" && error.message.includes("retrying")) retryWaiting.resolve()
+      },
+    }
+
+    const runA = core.runAgent([{ role: "user", content: "outward A" }], callbacksA, undefined, undefined, { skipKeptNotes: true })
+    await vi.advanceTimersByTimeAsync(0)
+    await retryWaiting.promise
+    const runB = core.runAgent([{ role: "user", content: "outward B" }], noopCallbacks, undefined, undefined, { skipKeptNotes: true })
+    await vi.advanceTimersByTimeAsync(0)
+    const resultB = await runB
+    await vi.advanceTimersByTimeAsync(2_100)
+    const resultA = await runA
+
+    expect(resultA.outcome).toBe("settled")
+    expect(resultB.outcome).toBe("settled")
+    const retryRuntimeId = records.find((record) => record.label === "A" && record.attempt === 2)?.runtimeId
+    const bRuntimeId = records.find((record) => record.label === "B")?.runtimeId
+    expect(retryRuntimeId).toBeDefined()
+    expect(bRuntimeId).toBeDefined()
+    expect(retryRuntimeId).not.toBe(bRuntimeId)
   })
 })
 

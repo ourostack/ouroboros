@@ -96,15 +96,13 @@ function parseToolCallInput(argumentsJson: string): Record<string, unknown> {
 export function toAnthropicMessages(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): { system?: string; messages: Array<Record<string, unknown>> } {
-  let system: string | undefined;
+  const systemParts: string[] = [];
   const converted: Array<Record<string, unknown>> = [];
 
   for (const msg of messages) {
     if (msg.role === "system") {
-      if (!system) {
-        const text = toAnthropicTextContent((msg as OpenAI.ChatCompletionSystemMessageParam).content);
-        system = text || undefined;
-      }
+      const text = toAnthropicTextContent((msg as OpenAI.ChatCompletionSystemMessageParam).content).trim();
+      if (text) systemParts.push(text);
       continue;
     }
 
@@ -168,7 +166,7 @@ export function toAnthropicMessages(
     }
   }
 
-  return { system, messages: converted };
+  return { system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined, messages: converted };
 }
 
 function toAnthropicTools(tools: OpenAI.ChatCompletionFunctionTool[]): Array<Record<string, unknown>> {
@@ -242,6 +240,11 @@ async function streamAnthropicMessages(
   request: ProviderTurnRequest,
 ): Promise<TurnResult> {
   const { system, messages } = toAnthropicMessages(request.messages);
+  const additionalSystemParts = request.messages
+    .filter((message) => message.role === "system")
+    .slice(1)
+    .map((message) => toAnthropicTextContent((message as OpenAI.ChatCompletionSystemMessageParam).content).trim())
+    .filter((text) => text.length > 0);
   const anthropicTools = toAnthropicTools(request.activeTools);
 
   const modelCaps = getModelCapabilities(model);
@@ -267,11 +270,13 @@ async function streamAnthropicMessages(
       text: preambleText + "\n\n" + request.systemPrompt.stable,
       cache_control: { type: "ephemeral" as const },
     }
-    if (request.systemPrompt.volatile) {
-      params.system = [stableBlock, { type: "text" as const, text: request.systemPrompt.volatile }]
-    } else {
-      params.system = [stableBlock]
-    }
+    params.system = [
+      stableBlock,
+      ...(request.systemPrompt.volatile
+        ? [{ type: "text" as const, text: request.systemPrompt.volatile }]
+        : []),
+      ...additionalSystemParts.map((text) => ({ type: "text" as const, text })),
+    ]
   } else if (system) {
     // Fallback: no structured prompt, extract from messages (legacy path)
     params.system = [{ type: "text" as const, text: preambleText }, { type: "text" as const, text: system }]

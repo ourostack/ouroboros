@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.727",
+      "changes": [
+        "Keep BlueBubbles replies on the latest turn with pre-listen recovery epochs, conservative unresolved-route fences, retained retry generations, and durable inbound-reply send boundaries that suppress crash retries.",
+        "Preserve full anchor-inclusive context pages and the exact verified predecessor; block unadvertised mid-turn speak calls; isolate provider state; validate terminal payloads; cancel stale activity transports; and keep reactions and progress mutations capture-only with complete causal-race and transport-failure coverage.",
+        "Recheck latest-turn authority at the final synchronous transport boundary, retry temporary observation fences without pre-reserving a send, retain canonical projection after accepted-send bookkeeping failures, and persist causal order in a rollback-safe fingerprinted sidecar while keeping .726 capture and handled records readable.",
+        "Bind startup and periodic catch-up ranges to one upstream timestamp snapshot; keep runtime sync single-flight; recheck shutdown and supersession after asynchronous turn setup; close the managed SIGTERM/SIGINT lifecycle gate; terminally fence starts during whole-daemon shutdown; drain every worker before replacement; and refuse startup while any verified old Ouro process, including Voice, survives cleanup."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.726",
       "changes": [
         "Isolate published release-smoke subprocesses from the operator home so bootstrap verification cannot mutate a live Ouro installation."

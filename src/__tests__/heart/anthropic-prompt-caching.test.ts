@@ -143,6 +143,42 @@ describe("Anthropic prompt caching", () => {
     expect(systemBlocks[1].cache_control).toBeUndefined()
   })
 
+  it("appends typed secondary system evidence after the structured cached prompt", async () => {
+    emitTestEvent("anthropic structured prompt keeps required predecessor")
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "anthropic",
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+    })
+    const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({
+      providers: { anthropic: { setupToken: makeAnthropicSetupToken() } },
+    })
+
+    const { createAnthropicProviderRuntime } = await import("../../heart/providers/anthropic")
+    const runtime = createAnthropicProviderRuntime("claude-opus-4-6")
+    await runtime.streamTurn({
+      messages: [
+        { role: "system", content: "stable prefix\n\nvolatile suffix" },
+        { role: "system", content: "verified predecessor evidence" },
+        { role: "user", content: "current request" },
+      ],
+      activeTools: [],
+      callbacks: minimalCallbacks,
+      systemPrompt: { stable: "stable prefix", volatile: "volatile suffix" },
+    })
+
+    expect(capturedAnthropicParams.system).toHaveLength(3)
+    expect(capturedAnthropicParams.system[2]).toEqual({
+      type: "text",
+      text: "verified predecessor evidence",
+    })
+    expect(JSON.stringify(capturedAnthropicParams.system).match(/verified predecessor evidence/g)).toHaveLength(1)
+    expect(capturedAnthropicParams.messages).toEqual([{ role: "user", content: "current request" }])
+  })
+
   it("falls back to existing behavior when systemPrompt is absent", async () => {
     emitTestEvent("anthropic fallback no systemPrompt")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({

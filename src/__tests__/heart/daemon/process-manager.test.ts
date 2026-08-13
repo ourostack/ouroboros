@@ -862,6 +862,47 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
   })
 
+  it("does not spawn a replacement until the old worker has exited", async () => {
+    const first = new MockChild()
+    first.pid = 111
+    first.kill.mockImplementation(() => {
+      first.connected = false
+      return true
+    })
+    const second = new MockChild()
+    second.pid = 222
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(second)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+    const restart = manager.restartAgent("slugger")
+    await Promise.resolve()
+
+    expect(first.kill).toHaveBeenCalledWith("SIGTERM")
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 111,
+    }))
+
+    first.emit("exit", 0, "SIGTERM")
+    await restart
+
+    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 222,
+    }))
+  })
+
   it("does not respawn a non-autostart worker after an unexpected crash exit", async () => {
     const child = new MockChild()
     spawn.mockReturnValue(child)
@@ -918,7 +959,7 @@ describe("daemon process manager", () => {
     }))
   })
 
-  it("ignores stale exits from a child that was replaced during restart", async () => {
+  it("ignores repeated stale exits after a drained child was replaced", async () => {
     const first = new MockChild()
     first.pid = 111
     first.kill.mockImplementation(() => {
@@ -939,7 +980,16 @@ describe("daemon process manager", () => {
     })
 
     await manager.startAgent("slugger")
-    await manager.restartAgent("slugger")
+    const restart = manager.restartAgent("slugger")
+    await Promise.resolve()
+
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 111,
+    }))
+
+    first.emit("exit", null, "SIGTERM")
+    await restart
 
     expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
       status: "running",
@@ -948,11 +998,15 @@ describe("daemon process manager", () => {
 
     first.emit("exit", null, "SIGTERM")
 
+    timers[0]?.cb()
+
     expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
       status: "running",
       pid: 222,
+      errorReason: null,
     }))
-    expect(timers).toHaveLength(0)
+    expect(timers).toHaveLength(1)
+    expect(clearTimeoutFn).toHaveBeenCalledWith(1)
   })
 
   it("lists snapshots and stops all managed agents", async () => {
@@ -978,6 +1032,112 @@ describe("daemon process manager", () => {
     await manager.stopAll()
     expect(child.kill).toHaveBeenCalledWith("SIGTERM")
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+  })
+
+  it("signals every managed worker before reporting a timed-out stopAll drain", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation(() => {
+      hung.connected = false
+      return true
+    })
+    const drained = new MockChild()
+    drained.pid = 222
+    spawn.mockReturnValueOnce(hung).mockReturnValueOnce(drained)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      stopTimeoutMs: 25,
+    })
+
+    await manager.startAgent("slugger")
+    await manager.startAgent("ouroboros")
+    const stopping = manager.stopAll()
+    const stopError = stopping.catch((error: unknown) => error)
+    await Promise.resolve()
+
+    expect(hung.kill).toHaveBeenCalledWith("SIGTERM")
+    expect(drained.kill).toHaveBeenCalledWith("SIGTERM")
+    expect(manager.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
+
+    expect(timers).toHaveLength(1)
+    timers[0]?.cb()
+    await expect(stopError).resolves.toEqual(expect.objectContaining({
+      message: expect.stringContaining("failed to stop 1 managed worker(s)"),
+    }))
+
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 111,
+      errorReason: expect.stringContaining("replacement was not started"),
+    }))
+  })
+
+  it("does not let an in-flight restart install a replacement after stopAll begins", async () => {
+    const first = new MockChild()
+    first.pid = 111
+    first.kill.mockImplementation(() => {
+      first.connected = false
+      return true
+    })
+    const replacement = new MockChild()
+    replacement.pid = 222
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(replacement)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+    const restarting = manager.restartAgent("slugger")
+    await Promise.resolve()
+    const stopping = manager.stopAll()
+    await Promise.resolve()
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    first.emit("exit", 0, "SIGTERM")
+    await Promise.all([restarting, stopping])
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "stopped",
+      pid: null,
+    }))
+  })
+
+  it("keeps direct starts and restarts fenced after terminal stopAll", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+    await manager.stopAll()
+    await manager.startAgent("slugger")
+    await manager.restartAgent("slugger")
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "stopped",
+      pid: null,
+    }))
   })
 
   it("resets backoff after a stable graceful run", async () => {
@@ -1010,7 +1170,7 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("slugger")?.backoffMs).toBe(100)
   })
 
-  it("warns and continues when stopAgent kill throws", async () => {
+  it("keeps the worker tracked when stopAgent cannot send SIGTERM", async () => {
     const child = new MockChild()
     child.kill.mockImplementation(() => {
       throw new Error("kill-failed")
@@ -1027,9 +1187,87 @@ describe("daemon process manager", () => {
     })
 
     await manager.startAgent("slugger")
-    await manager.stopAgent("slugger")
+    await expect(manager.stopAgent("slugger")).rejects.toThrow("failed to send SIGTERM")
 
-    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: child.pid,
+      errorReason: expect.stringContaining("worker remains tracked"),
+    }))
+    expect(timers).toHaveLength(0)
+  })
+
+  it("does not replace a worker when SIGTERM is rejected", async () => {
+    const child = new MockChild()
+    child.pid = undefined as unknown as number
+    child.kill.mockReturnValue(false)
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+    await expect(manager.restartAgent("slugger")).rejects.toThrow("rejected SIGTERM")
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: null,
+      fixHint: expect.stringContaining("PID unknown"),
+    }))
+    expect(timers).toHaveLength(0)
+  })
+
+  it("times out a stop without overlapping workers and clears the failure after a late exit", async () => {
+    const child = new MockChild()
+    child.pid = 111
+    child.kill.mockImplementation(() => {
+      child.connected = false
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      stopTimeoutMs: 25,
+    })
+
+    await manager.startAgent("slugger")
+    const restart = manager.restartAgent("slugger")
+    const rejection = expect(restart).rejects.toThrow("did not exit within 25ms")
+    await Promise.resolve()
+
+    expect(timers).toHaveLength(1)
+    expect(timers[0]?.delay).toBe(25)
+    timers[0]?.cb()
+    await rejection
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 111,
+      errorReason: expect.stringContaining("replacement was not started"),
+      fixHint: expect.stringContaining("retry only after"),
+    }))
+
+    child.emit("exit", 0, "SIGTERM")
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "stopped",
+      pid: null,
+      errorReason: null,
+      fixHint: null,
+    }))
   })
 
   it("clears scheduled restart timers before manual restarts", async () => {
@@ -1722,6 +1960,11 @@ describe("daemon process manager", () => {
 
   it("stores lastExitCode as null on graceful exit with null code", async () => {
     const child = new MockChild()
+    child.kill.mockImplementation(() => {
+      child.connected = false
+      child.emit("exit", null, null)
+      return true
+    })
     spawn.mockReturnValue(child)
     now.mockReturnValue(1_000)
 

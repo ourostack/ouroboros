@@ -19,6 +19,7 @@ import {
   buildBlueBubblesSemanticClaimRecord,
   buildBlueBubblesSemanticIdentity,
   classifyBlueBubblesRecoveryRecord,
+  compareBlueBubblesSemanticCaptureOrder,
   getBlueBubblesSemanticPaths,
   hashIngressActorIdentity,
   initializeBlueBubblesSemanticCutover,
@@ -129,6 +130,7 @@ describe("BlueBubbles semantic identity and cutover", () => {
       root: expectedRoot,
       cutover: path.join(expectedRoot, "cutover.json"),
       captures: path.join(expectedRoot, "captures"),
+      observationOrders: path.join(expectedRoot, "observation-orders"),
       handled: path.join(expectedRoot, "handled"),
       claims: path.join(expectedRoot, "claims"),
       coordinates: path.join(expectedRoot, "coordinates"),
@@ -1068,6 +1070,26 @@ describe("BlueBubbles semantic identity and cutover", () => {
       ...base,
       event: { ...message, fromMe: null } as unknown as typeof message,
     })).toBeNull()
+    const validObservationEpoch =
+      "2026-08-13T09:59:59.000Z/33333333-3333-4333-8333-333333333333"
+    expect(buildBlueBubblesSemanticCapture({
+      ...base,
+      observationEpoch: validObservationEpoch,
+    })).toBeNull()
+    expect(buildBlueBubblesSemanticCapture({
+      ...base,
+      observationOrdinal: 1,
+    })).toBeNull()
+    expect(buildBlueBubblesSemanticCapture({
+      ...base,
+      observationEpoch: "not-an-observation-epoch",
+      observationOrdinal: 1,
+    })).toBeNull()
+    expect(buildBlueBubblesSemanticCapture({
+      ...base,
+      observationEpoch: validObservationEpoch,
+      observationOrdinal: 0,
+    })).toBeNull()
 
     expect(buildBlueBubblesSemanticCapture({
       ...base,
@@ -1301,6 +1323,7 @@ async function loadSemanticStore(): Promise<SemanticStoreApiForTest> {
 function makeSemanticCapture(
   messageGuid = "message-store-a",
   capturedAt = CAPTURED_AT,
+  observationClock?: { observationEpoch: string; observationOrdinal: number },
 ): SemanticCapture {
   const event = makeMessageEvent()
   event.messageGuid = messageGuid
@@ -1311,6 +1334,7 @@ function makeSemanticCapture(
       effectiveAt: CUTOVER_AT,
     },
     capturedAt,
+    ...observationClock,
     event,
     targetAuthorship: null,
   })
@@ -3426,6 +3450,376 @@ describe("BlueBubbles semantic store exhaustive boundaries", () => {
 
     expect(store.listPendingBlueBubblesSemanticCaptures("synthetic-agent"))
       .toEqual([right])
+  })
+
+  it("persists and orders one process epoch by its pre-await observation ordinal", async () => {
+    const store = await loadSemanticStore()
+    const observationEpoch = "2026-08-13T09:59:59.000Z/33333333-3333-4333-8333-333333333333"
+    const older = makeSemanticCapture(
+      "same-process-older",
+      "2026-08-13T10:00:00.900Z",
+      {
+        observationEpoch,
+        observationOrdinal: 41,
+      },
+    )
+    const newer = makeSemanticCapture(
+      "same-process-newer",
+      "2026-08-13T10:00:00.100Z",
+      {
+        observationEpoch,
+        observationOrdinal: 42,
+      },
+    )
+
+    store.writeBlueBubblesSemanticCapture("synthetic-agent", newer, semanticStoreDeps())
+    store.writeBlueBubblesSemanticCapture("synthetic-agent", older, semanticStoreDeps())
+
+    expect(store.listPendingBlueBubblesSemanticCaptures("synthetic-agent"))
+      .toEqual([older, newer])
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const persistedCapture = JSON.parse(fs.readFileSync(
+      path.join(paths.captures, `${older.keyHash}.json`),
+      "utf8",
+    ))
+    expect(Object.keys(persistedCapture)).toEqual([
+      "schemaVersion",
+      "canonicalKey",
+      "keyHash",
+      "providerNamespace",
+      "capturedAt",
+      "event",
+    ])
+    expect(persistedCapture).not.toHaveProperty("observationEpoch")
+    expect(persistedCapture).not.toHaveProperty("observationOrdinal")
+    const observationOrder = fs.readdirSync(paths.observationOrders)
+      .map((name) => JSON.parse(fs.readFileSync(path.join(paths.observationOrders, name), "utf8")))
+      .find((record) => record.keyHash === older.keyHash)
+    expect(observationOrder).toEqual({
+      schemaVersion: 1,
+      keyHash: older.keyHash,
+      captureHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      observedAt: older.capturedAt,
+      observationEpoch,
+      observationOrdinal: 41,
+    })
+  })
+
+  it("converges a same-key duplicate to its earliest durable observation", async () => {
+    const store = await loadSemanticStore()
+    const earlierEpoch = "2026-08-13T09:59:58.000Z/11111111-1111-4111-8111-111111111111"
+    const laterEpoch = "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222"
+    const lateDuplicate = makeSemanticCapture(
+      "duplicate-earliest-observation",
+      "2026-08-13T10:00:00.900Z",
+      { observationEpoch: laterEpoch, observationOrdinal: 9 },
+    )
+    const earlyDuplicate = makeSemanticCapture(
+      "duplicate-earliest-observation",
+      "2026-08-13T10:00:00.100Z",
+      { observationEpoch: earlierEpoch, observationOrdinal: 3 },
+    )
+    const intervening = makeSemanticCapture(
+      "duplicate-intervening-observation",
+      "2026-08-13T10:00:00.500Z",
+      { observationEpoch: laterEpoch, observationOrdinal: 5 },
+    )
+
+    expect(store.writeBlueBubblesSemanticCapture(
+      "synthetic-agent",
+      lateDuplicate,
+      semanticStoreDeps(),
+    )).toBe("semantic_capture_published")
+    expect(store.writeBlueBubblesSemanticCapture(
+      "synthetic-agent",
+      earlyDuplicate,
+      semanticStoreDeps(),
+    )).toBe("semantic_capture_duplicate")
+    store.writeBlueBubblesSemanticCapture("synthetic-agent", intervening, semanticStoreDeps())
+
+    const pending = store.listPendingBlueBubblesSemanticCaptures("synthetic-agent")
+    expect(pending.map((capture) => capture.keyHash)).toEqual([
+      earlyDuplicate.keyHash,
+      intervening.keyHash,
+    ])
+    expect(pending[0]).toMatchObject({
+      observationEpoch: earlierEpoch,
+      observationOrdinal: 3,
+    })
+  })
+
+  it("does not let a same-key content collision alter the winner's durable order", async () => {
+    const store = await loadSemanticStore()
+    const observationEpoch = "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222"
+    const winner = makeSemanticCapture(
+      "collision-order-winner",
+      "2026-08-13T10:00:00.900Z",
+      { observationEpoch, observationOrdinal: 9 },
+    )
+    const collision = makeSemanticCapture(
+      "collision-order-winner",
+      "2026-08-13T10:00:00.100Z",
+      { observationEpoch, observationOrdinal: 1 },
+    )
+    collision.event.text = "different authoritative text"
+    collision.event.textSha256 = sha256(collision.event.text)
+    const intervening = makeSemanticCapture(
+      "collision-order-intervening",
+      "2026-08-13T10:00:00.500Z",
+      { observationEpoch, observationOrdinal: 5 },
+    )
+
+    expect(store.writeBlueBubblesSemanticCapture(
+      "synthetic-agent",
+      winner,
+      semanticStoreDeps(),
+    )).toBe("semantic_capture_published")
+    expect(store.writeBlueBubblesSemanticCapture(
+      "synthetic-agent",
+      collision,
+      semanticStoreDeps(),
+    )).toBe("semantic_identity_collision")
+    store.writeBlueBubblesSemanticCapture("synthetic-agent", intervening, semanticStoreDeps())
+
+    expect(store.listPendingBlueBubblesSemanticCaptures("synthetic-agent").map(
+      (capture) => capture.keyHash,
+    )).toEqual([intervening.keyHash, winner.keyHash])
+  })
+
+  it("breaks equal-time duplicate order by epoch and treats an identical clock as stable", async () => {
+    const store = await loadSemanticStore()
+    const earlierEpoch = "2026-08-13T09:59:58.000Z/11111111-1111-4111-8111-111111111111"
+    const laterEpoch = "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222"
+    const capturedAt = "2026-08-13T10:00:00.500Z"
+    const later = makeSemanticCapture(
+      "equal-time-duplicate-order",
+      capturedAt,
+      { observationEpoch: laterEpoch, observationOrdinal: 2 },
+    )
+    const earlier = makeSemanticCapture(
+      "equal-time-duplicate-order",
+      capturedAt,
+      { observationEpoch: earlierEpoch, observationOrdinal: 7 },
+    )
+    const exactDuplicate = makeSemanticCapture(
+      "equal-time-duplicate-order",
+      capturedAt,
+      { observationEpoch: earlierEpoch, observationOrdinal: 7 },
+    )
+
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", later, semanticStoreDeps()))
+      .toBe("semantic_capture_published")
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", earlier, semanticStoreDeps()))
+      .toBe("semantic_capture_duplicate")
+    expect(store.writeBlueBubblesSemanticCapture(
+      "synthetic-agent",
+      exactDuplicate,
+      semanticStoreDeps(),
+    )).toBe("semantic_capture_duplicate")
+    expect(store.readBlueBubblesSemanticCapture("synthetic-agent", later.keyHash))
+      .toMatchObject({ observationEpoch: earlierEpoch, observationOrdinal: 7 })
+  })
+
+  it("quarantines a corrupt fingerprinted order sidecar before publishing its capture", async () => {
+    const store = await loadSemanticStore()
+    const capture = makeSemanticCapture(
+      "corrupt-observation-order",
+      "2026-08-13T10:00:00.500Z",
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 4,
+      },
+    )
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", capture, semanticStoreDeps()))
+      .toBe("semantic_capture_published")
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const [orderName] = fs.readdirSync(paths.observationOrders)
+    fs.unlinkSync(path.join(paths.captures, `${capture.keyHash}.json`))
+    fs.writeFileSync(path.join(paths.observationOrders, orderName), "{torn", "utf8")
+
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", capture, semanticStoreDeps()))
+      .toBe("semantic_capture_published")
+    expect(fs.readdirSync(path.join(paths.quarantine, "observation-order")).some((name) => (
+      name.startsWith(`${orderName}.`)
+    ))).toBe(true)
+    expect(store.readBlueBubblesSemanticCapture("synthetic-agent", capture.keyHash))
+      .toMatchObject({ observationOrdinal: 4 })
+  })
+
+  it("polls fingerprinted-order SQLite contention and fails closed at its exact deadline", async () => {
+    const store = await loadSemanticStore()
+    const seed = makeSemanticCapture(
+      "observation-order-busy-seed",
+      CAPTURED_AT,
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 1,
+      },
+    )
+    store.writeBlueBubblesSemanticCapture("synthetic-agent", seed, semanticStoreDeps())
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+
+    const retryBlocker = new Database(paths.ownership)
+    retryBlocker.pragma("busy_timeout = 0")
+    retryBlocker.exec("BEGIN IMMEDIATE")
+    const retried = makeSemanticCapture(
+      "observation-order-busy-retry",
+      CAPTURED_AT,
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 2,
+      },
+    )
+    const sleeps: number[] = []
+    try {
+      expect(store.writeBlueBubblesSemanticCapture(
+        "synthetic-agent",
+        retried,
+        semanticStoreDeps({
+          sleepSync: (milliseconds) => {
+            sleeps.push(milliseconds)
+            retryBlocker.exec("COMMIT")
+          },
+        }),
+      )).toBe("semantic_capture_published")
+      expect(sleeps).toEqual([50])
+    } finally {
+      if (retryBlocker.inTransaction) retryBlocker.exec("ROLLBACK")
+      retryBlocker.close()
+    }
+
+    const timeoutBlocker = new Database(paths.ownership)
+    timeoutBlocker.pragma("busy_timeout = 0")
+    timeoutBlocker.exec("BEGIN IMMEDIATE")
+    const timedOut = makeSemanticCapture(
+      "observation-order-busy-timeout",
+      CAPTURED_AT,
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222",
+        observationOrdinal: 3,
+      },
+    )
+    let clockCalls = 0
+    const sleepSync = vi.fn()
+    try {
+      expect(() => store.writeBlueBubblesSemanticCapture(
+        "synthetic-agent",
+        timedOut,
+        semanticStoreDeps({
+          now: () => new Date(Date.parse(CAPTURED_AT) + (clockCalls++ === 0 ? 0 : 5_000)),
+          sleepSync,
+        }),
+      )).toThrow("semantic_capture_failed")
+      expect(sleepSync).not.toHaveBeenCalled()
+    } finally {
+      timeoutBlocker.exec("ROLLBACK")
+      timeoutBlocker.close()
+    }
+  })
+
+  it("keeps .727 capture and handled bytes readable by the strict .726 contracts", async () => {
+    const store = await loadSemanticStore()
+    const capture = makeSemanticCapture(
+      "rollback-readable-capture",
+      CAPTURED_AT,
+      {
+        observationEpoch: "2026-08-13T09:59:59.000Z/33333333-3333-4333-8333-333333333333",
+        observationOrdinal: 41,
+      },
+    )
+    store.writeBlueBubblesSemanticCapture("synthetic-agent", capture, semanticStoreDeps())
+    const handled = makeHandled(capture, {
+      outcome: "capture_only_unknown",
+      detailCode: "capture_only_question",
+    })
+    store.writeBlueBubblesSemanticHandled("synthetic-agent", handled, semanticStoreDeps())
+    const paths = getBlueBubblesSemanticPaths("synthetic-agent")
+    const captureBytes = JSON.parse(fs.readFileSync(
+      path.join(paths.captures, `${capture.keyHash}.json`),
+      "utf8",
+    )) as Record<string, unknown>
+    const handledBytes = JSON.parse(fs.readFileSync(
+      path.join(paths.handled, `${capture.keyHash}.json`),
+      "utf8",
+    )) as Record<string, unknown>
+    const legacyCaptureKeys = [
+      "schemaVersion",
+      "canonicalKey",
+      "keyHash",
+      "providerNamespace",
+      "capturedAt",
+      "event",
+    ]
+    const legacyHandledOutcomes = new Set([
+      "ignored_self",
+      "capture_only_removal",
+      "capture_only_positive",
+      "capture_only_custom",
+      "capture_only_unknown",
+      "capture_only_target_not_agent",
+      "capture_only_untrusted_actor",
+      "restricted_feedback_settled",
+      "restricted_feedback_observed",
+      "restricted_feedback_failed",
+      "message_completed",
+      "message_observed",
+      "message_failed",
+      "edit_capture_only",
+      "unsend_capture_only",
+      "read_audit_only",
+      "delivery_audit_only",
+    ])
+
+    expect(Object.keys(captureBytes)).toEqual(legacyCaptureKeys)
+    expect(Object.keys(handledBytes)).toEqual([
+      "schemaVersion",
+      "canonicalKey",
+      "keyHash",
+      "handledAt",
+      "outcome",
+      "detailCode",
+    ])
+    expect(legacyHandledOutcomes.has(String(handledBytes.outcome))).toBe(true)
+  })
+
+  it("orders different observation epochs by pre-await capture time with deterministic ties", () => {
+    const earlierEpoch = "2026-08-13T09:59:58.000Z/11111111-1111-4111-8111-111111111111"
+    const laterEpoch = "2026-08-13T09:59:59.000Z/22222222-2222-4222-8222-222222222222"
+    const earlyCapture = makeSemanticCapture("cross-process-earlier", "2026-08-13T10:00:00.100Z", {
+      observationEpoch: laterEpoch,
+      observationOrdinal: 99,
+    })
+    const lateCapture = makeSemanticCapture("cross-process-later", "2026-08-13T10:00:00.900Z", {
+      observationEpoch: earlierEpoch,
+      observationOrdinal: 41,
+    })
+    const sameTimeEarlierEpoch = makeSemanticCapture("same-time-earlier-epoch", CAPTURED_AT, {
+      observationEpoch: earlierEpoch,
+      observationOrdinal: 99,
+    })
+    const sameTimeLaterEpoch = makeSemanticCapture("same-time-later-epoch", CAPTURED_AT, {
+      observationEpoch: laterEpoch,
+      observationOrdinal: 1,
+    })
+    const legacyLeft = makeSemanticCapture("legacy-left", CAPTURED_AT)
+    const legacyRight = makeSemanticCapture("legacy-right", CAPTURED_AT)
+    const repeatedOrdinalLeft = makeSemanticCapture("repeated-ordinal-left", CAPTURED_AT, {
+      observationEpoch: earlierEpoch,
+      observationOrdinal: 7,
+    })
+    const repeatedOrdinalRight = makeSemanticCapture("repeated-ordinal-right", CAPTURED_AT, {
+      observationEpoch: earlierEpoch,
+      observationOrdinal: 7,
+    })
+
+    expect(compareBlueBubblesSemanticCaptureOrder(earlyCapture, lateCapture)).toBeLessThan(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(sameTimeEarlierEpoch, sameTimeLaterEpoch))
+      .toBeLessThan(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(legacyLeft, legacyRight)).toBe(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(legacyLeft, sameTimeEarlierEpoch)).toBeLessThan(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(sameTimeEarlierEpoch, legacyLeft)).toBeGreaterThan(0)
+    expect(compareBlueBubblesSemanticCaptureOrder(repeatedOrdinalLeft, repeatedOrdinalRight))
+      .toBe(repeatedOrdinalLeft.keyHash.localeCompare(repeatedOrdinalRight.keyHash))
   })
 
   it("rejects invalid new capture and handled inputs before publication", async () => {

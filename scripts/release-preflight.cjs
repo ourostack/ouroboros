@@ -61,6 +61,7 @@ function classifyOperationalContractChange(file) {
     "src/rsvp/outbound-state.ts",
     "src/senses/context-packets.ts",
     "src/senses/bluebubbles/outbound-state.ts",
+    "src/senses/bluebubbles/semantic-receipts.ts",
     "src/heart/run-ledger.ts",
     "src/heart/autonomy-budget.ts",
   ]

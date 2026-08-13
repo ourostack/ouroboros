@@ -73,6 +73,28 @@ describe("BlueBubbles active turn markers", () => {
     })
   })
 
+  it("records null coordinates when a legacy caller has neither optional chat field", async () => {
+    const {
+      beginBlueBubblesActiveTurn,
+      finishBlueBubblesActiveTurn,
+      listBlueBubblesActiveTurns,
+    } = await import("../../../senses/bluebubbles/active-turns")
+    const legacyEvent = event("msg-without-coordinates")
+    delete legacyEvent.chat.chatGuid
+    delete legacyEvent.chat.chatIdentifier
+
+    const turnId = beginBlueBubblesActiveTurn("slugger", legacyEvent)
+
+    expect(listBlueBubblesActiveTurns("slugger")).toEqual([
+      expect.objectContaining({
+        turnId,
+        chatGuid: null,
+        chatIdentifier: null,
+      }),
+    ])
+    finishBlueBubblesActiveTurn("slugger", turnId)
+  })
+
   it("logs and keeps going when visible-activity timestamp writes fail", async () => {
     const {
       beginBlueBubblesActiveTurn,
@@ -99,6 +121,7 @@ describe("BlueBubbles active turn markers", () => {
     } = await import("../../../senses/bluebubbles/active-turns")
 
     const turnId = beginBlueBubblesActiveTurn("slugger", event("msg-1"))
+    expect(() => noteBlueBubblesActiveTurnVisibleActivity("slugger", "missing-turn")).not.toThrow()
     const markerPath = path.join(markerDir(), fs.readdirSync(markerDir())[0])
     fs.writeFileSync(markerPath, "{}\n", "utf-8")
 

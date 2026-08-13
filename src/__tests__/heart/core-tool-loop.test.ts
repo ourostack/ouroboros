@@ -146,7 +146,7 @@ describe("runAgent tool loop guard", () => {
     const { isChatStyleChannel } = await import("../../heart/core")
     expect(isChatStyleChannel("cli")).toBe(true)
     expect(isChatStyleChannel("teams")).toBe(true)
-    expect(isChatStyleChannel("bluebubbles")).toBe(true)
+    expect(isChatStyleChannel("bluebubbles")).toBe(false)
     expect(isChatStyleChannel("voice")).toBe(true)
     expect(isChatStyleChannel("inner")).toBe(false)
     expect(isChatStyleChannel("mcp")).toBe(false)
@@ -154,7 +154,7 @@ describe("runAgent tool loop guard", () => {
     expect(isChatStyleChannel("anything-else")).toBe(false)
   })
 
-  it("activeTools includes speakTool for channel='cli' and excludes for channel='inner'", async () => {
+  it("activeTools includes speakTool for CLI and excludes it from BlueBubbles and inner", async () => {
     // Capture the tools passed to the provider in two runs
     let capturedToolsByCall: Array<Array<{ function: { name: string } }>> = []
     mockCreate.mockImplementation((req: any) => {
@@ -183,6 +183,29 @@ describe("runAgent tool loop guard", () => {
     expect(cliToolNames).toContain("speak")
     expect(cliToolNames).toContain("settle")
 
+    capturedToolsByCall = []
+    mockCreate.mockImplementation((req: any) => {
+      capturedToolsByCall.push(req.tools as any)
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_settle_bb",
+            function: { name: "settle", arguments: '{"answer":"done"}' },
+          },
+        ]),
+      ])
+    })
+
+    await runAgent([{ role: "system", content: "test" }], makeCallbacks(), "bluebubbles", undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+    const blueBubblesToolNames = capturedToolsByCall[0]?.map((t) => t.function.name) ?? []
+    expect(blueBubblesToolNames).not.toContain("speak")
+    expect(blueBubblesToolNames).toContain("settle")
+
     // Reset capture; mock now needs another stream for the inner run
     capturedToolsByCall = []
     mockCreate.mockImplementation((req: any) => {
@@ -207,6 +230,141 @@ describe("runAgent tool loop guard", () => {
     expect(innerToolNames).not.toContain("speak")
     expect(innerToolNames).not.toContain("settle")
     expect(innerToolNames).toContain("rest")
+  })
+
+  it("reports the generated assistant/tool tail independently of prompt-budget prefix replacement", async () => {
+    mockCreate.mockImplementation(() => makeStream([
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_generated_tail",
+        function: { name: "settle", arguments: '{"answer":"visible answer","intent":"complete"}' },
+      }]),
+    ]))
+    const captureGeneratedMessages = vi.fn()
+    const messages: any[] = [
+      { role: "system", content: "old system" },
+      { role: "user", content: "x".repeat(400_000) },
+      { role: "assistant", content: "old assistant history" },
+      { role: "user", content: "current request" },
+    ]
+
+    const { runAgent } = await import("../../heart/core")
+    await runAgent(messages, makeCallbacks(), "bluebubbles", undefined, {
+      toolChoiceRequired: true,
+      execTool: vi.fn().mockResolvedValue("ok"),
+      toolContext: { signin: async () => undefined },
+      captureGeneratedMessages,
+    })
+
+    expect(captureGeneratedMessages).toHaveBeenCalledTimes(1)
+    expect(captureGeneratedMessages).toHaveBeenCalledWith([
+      expect.objectContaining({
+        role: "assistant",
+        tool_calls: [expect.objectContaining({ id: "call_generated_tail" })],
+      }),
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_generated_tail",
+        content: "(delivered)",
+      }),
+    ])
+    expect(JSON.stringify(captureGeneratedMessages.mock.calls[0]?.[0])).not.toContain("old assistant history")
+    expect(JSON.stringify(captureGeneratedMessages.mock.calls[0]?.[0])).not.toContain("current request")
+  })
+
+  it("retains the same required evidence through tool-loop and no-tool retry payloads", async () => {
+    const providerPayloads: any[][] = []
+    mockCreate
+      .mockImplementationOnce((request: any) => {
+        providerPayloads.push(request.messages)
+        return makeStream([makeChunk("<think>thinking without a required tool</think>")])
+      })
+      .mockImplementationOnce((request: any) => {
+        providerPayloads.push(request.messages)
+        return makeStream([
+          makeChunk(undefined, [{
+            index: 0,
+            id: "call_required_probe",
+            function: { name: "query_session", arguments: "{}" },
+          }]),
+        ])
+      })
+      .mockImplementationOnce((request: any) => {
+        providerPayloads.push(request.messages)
+        return makeStream([
+          makeChunk(undefined, [{
+            index: 0,
+            id: "call_required_settle",
+            function: { name: "settle", arguments: '{"answer":"oriented","intent":"complete"}' },
+          }]),
+        ])
+      })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor marker" })
+    const current = Object.freeze({ role: "user" as const, content: "current request marker" })
+
+    const { runAgent } = await import("../../heart/core")
+    await runAgent(
+      [{ role: "system", content: "old prompt" }, predecessor, current],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+        execTool: vi.fn().mockResolvedValue("session evidence"),
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(providerPayloads).toHaveLength(3)
+    for (const payload of providerPayloads) {
+      expect(payload.filter((message) => message === predecessor)).toHaveLength(1)
+      expect(payload.filter((message) => message === current)).toHaveLength(1)
+      expect(JSON.stringify(payload).match(/verified predecessor marker/g)).toHaveLength(1)
+    }
+  })
+
+  it("retains the same required evidence when a steering follow-up is appended", async () => {
+    let providerPayload: unknown[] = []
+    mockCreate.mockImplementationOnce((request: { messages: unknown[] }) => {
+      providerPayload = [...request.messages]
+      return makeStream([
+        makeChunk(undefined, [{
+          index: 0,
+          id: "call_steered_settle",
+          function: { name: "settle", arguments: '{"answer":"oriented","intent":"complete"}' },
+        }]),
+      ])
+    })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor steering marker" })
+    const current = Object.freeze({ role: "user" as const, content: "current steering request" })
+    const drainSteeringFollowUps = vi.fn()
+      .mockReturnValueOnce([{ text: "one newer clarification" }])
+      .mockReturnValue([])
+
+    const { runAgent } = await import("../../heart/core")
+    await runAgent(
+      [{ role: "system", content: "old prompt" }, predecessor, current],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        requiredPromptEvidence: {
+          currentUserMessage: current,
+          verifiedPredecessorMessage: predecessor,
+        },
+        drainSteeringFollowUps,
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(providerPayload.filter((message) => message === predecessor)).toHaveLength(1)
+    expect(providerPayload.filter((message) => message === current)).toHaveLength(1)
+    expect(JSON.stringify(providerPayload)).toContain("one newer clarification")
   })
 
   it("blocks repeated no-progress polling and lets the model recover with settle", async () => {
@@ -485,322 +643,6 @@ describe("runAgent tool loop guard", () => {
     }
   })
 
-  it("restricts reaction feedback to one provider invocation and the exact registered read-only tool IDs", async () => {
-    let providerTools: Array<{ function: { name: string } }> = []
-    mockCreate.mockImplementation((request: any) => {
-      providerTools = request.tools
-      return makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_reaction_settle",
-            function: {
-              name: "settle",
-              arguments: '{"answer":"thanks for the feedback","intent":"complete"}',
-            },
-          },
-        ]),
-      ])
-    })
-
-    const { runAgent } = await import("../../heart/core")
-    const execTool = vi.fn().mockResolvedValue("unexpected")
-    const drainSteeringFollowUps = vi.fn(() => [{
-      text: "resume the old RSVP task",
-      effect: "set_no_handoff" as const,
-    }])
-    const callbacks = makeCallbacks()
-
-    const result = await runAgent(
-      [{ role: "user", content: "Ari disliked an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      {
-        restrictedReactionFeedback: true,
-        toolChoiceRequired: true,
-        tools: [{
-          type: "function",
-          function: {
-            name: "send_message",
-            description: "must never leak into restricted feedback",
-            parameters: { type: "object", properties: {} },
-          },
-        }],
-        execTool,
-        drainSteeringFollowUps,
-        toolContext: { signin: async () => undefined },
-      } as any,
-    )
-
-    const { settleTool, observeTool } = await import("../../repertoire/tools")
-    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const orientationGetTool = baseToolDefinitions.find(
-      (definition) => definition.tool.function.name === "orientation_get",
-    )?.tool
-    expect(orientationGetTool).toBeDefined()
-    expect(providerTools).toHaveLength(3)
-    expect(new Set(providerTools.map((tool) => tool.function.name))).toEqual(new Set([
-      "settle",
-      "observe",
-      "orientation_get",
-    ]))
-    const providerToolsById = new Map(providerTools.map((tool) => [tool.function.name, tool]))
-    expect(providerToolsById.get("settle")).toEqual(settleTool)
-    expect(providerToolsById.get("observe")).toEqual(observeTool)
-    expect(providerToolsById.get("orientation_get")).toEqual(orientationGetTool)
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(drainSteeringFollowUps).not.toHaveBeenCalled()
-    expect(execTool).not.toHaveBeenCalled()
-    expect(result).toMatchObject({
-      outcome: "settled",
-      completion: { answer: "thanks for the feedback", intent: "complete" },
-    })
-  })
-
-  it("accepts observe as the other successful restricted-feedback terminal", async () => {
-    mockCreate.mockReturnValue(makeStream([
-      makeChunk(undefined, [
-        {
-          index: 0,
-          id: "call_reaction_observe",
-          function: {
-            name: "observe",
-            arguments: '{"reason":"feedback acknowledged silently"}',
-          },
-        },
-      ]),
-    ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const execTool = vi.fn().mockResolvedValue("unexpected")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari questioned an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      {
-        restrictedReactionFeedback: true,
-        toolChoiceRequired: true,
-        execTool,
-      } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(execTool).not.toHaveBeenCalled()
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith(
-      "observe",
-      "reason=feedback acknowledged silently",
-      true,
-    )
-    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ outcome: "observed" })
-  })
-
-  it("accepts a blocked settle as a delivered restricted terminal without continuing", async () => {
-    mockCreate.mockReturnValue(makeStream([
-      makeChunk(undefined, [
-        {
-          index: 0,
-          id: "call_reaction_blocked",
-          function: {
-            name: "settle",
-            arguments: '{"answer":"I cannot resolve that safely.","intent":"blocked"}',
-          },
-        },
-      ]),
-    ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari disliked an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      { restrictedReactionFeedback: true } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onTextChunk).toHaveBeenCalledWith("I cannot resolve that safely.")
-    expect(result).toMatchObject({
-      outcome: "blocked",
-      completion: { answer: "I cannot resolve that safely.", intent: "blocked" },
-    })
-  })
-
-  it("accepts restricted observe without an optional reason", async () => {
-    mockCreate.mockReturnValue(makeStream([
-      makeChunk(undefined, [
-        {
-          index: 0,
-          id: "call_reaction_observe_no_reason",
-          function: { name: "observe", arguments: "{}" },
-        },
-      ]),
-    ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const result = await runAgent(
-      [{ role: "user", content: "Ari questioned an agent-authored message." }],
-      makeCallbacks(),
-      "bluebubbles",
-      undefined,
-      { restrictedReactionFeedback: true } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(result).toMatchObject({ outcome: "observed" })
-  })
-
-  it("executes an allowlisted orientation read but never starts a second restricted-feedback inference", async () => {
-    mockCreate
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_reaction_orientation",
-            function: { name: "orientation_get", arguments: "{}" },
-          },
-        ]),
-      ]))
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_forbidden_second_turn",
-            function: {
-              name: "settle",
-              arguments: '{"answer":"second inference must not run","intent":"complete"}',
-            },
-          },
-        ]),
-      ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const orientationFrame = {
-      schemaVersion: 1 as const,
-      channel: "bluebubbles",
-      currentUserSpeech: [],
-      priorAssistantReferents: [],
-      signals: ["reaction_signal" as const],
-      actionPolicy: { mode: "normal" as const },
-    }
-    const execTool = vi.fn().mockResolvedValue(JSON.stringify(orientationFrame))
-    const callbacks = makeCallbacks()
-
-    const result = await runAgent(
-      [{ role: "user", content: "Ari questioned an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      {
-        restrictedReactionFeedback: true,
-        toolChoiceRequired: true,
-        execTool,
-        orientationFrame,
-      } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(execTool).toHaveBeenCalledTimes(1)
-    expect(execTool).toHaveBeenCalledWith("orientation_get", {}, expect.objectContaining({ orientationFrame }))
-    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
-  it("fails a restricted reaction closed when the provider emits an unregistered tool", async () => {
-    mockCreate
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_forbidden_send",
-            function: {
-              name: "send_message",
-              arguments: '{"friendId":"self","content":"resume RSVP"}',
-            },
-          },
-        ]),
-      ]))
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_forbidden_recovery",
-            function: {
-              name: "settle",
-              arguments: '{"answer":"recovered","intent":"complete"}',
-            },
-          },
-        ]),
-      ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const execTool = vi.fn().mockResolvedValue("sent")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari disliked an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      {
-        restrictedReactionFeedback: true,
-        toolChoiceRequired: true,
-        execTool,
-      } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(execTool).not.toHaveBeenCalled()
-    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
-  it("fails malformed settle arguments closed without a corrective provider turn", async () => {
-    mockCreate
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_malformed_settle",
-            function: { name: "settle", arguments: '{"answer":' },
-          },
-        ]),
-      ]))
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_forbidden_settle_retry",
-            function: {
-              name: "settle",
-              arguments: '{"answer":"retry must not run","intent":"complete"}',
-            },
-          },
-        ]),
-      ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari disliked an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      {
-        restrictedReactionFeedback: true,
-        toolChoiceRequired: true,
-      } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
-    expect(callbacks.onClearText).toHaveBeenCalled()
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
   it.each([
     ["incomplete", '{"answer":"partial', "incomplete_settle_arguments"],
     ["invalid", String.raw`{"answer":"partial\x"}`, "invalid_settle_arguments"],
@@ -884,233 +726,6 @@ describe("runAgent tool loop guard", () => {
     } finally {
       vi.useRealTimers()
     }
-  })
-
-  it.each([
-    ["missing answer", '{"intent":"complete"}'],
-    ["continuation intent", '{"answer":"keep going","intent":"direct_reply"}'],
-    ["unknown intent", '{"answer":"must not leak","intent":"resume_work"}'],
-    ["non-string intent", '{"answer":"must not leak","intent":7}'],
-  ])("fails restricted settle closed for %s", async (_label, argumentsText) => {
-    mockCreate.mockReturnValue(makeStream([
-      makeChunk(undefined, [
-        {
-          index: 0,
-          id: "call_invalid_settle_shape",
-          function: { name: "settle", arguments: argumentsText },
-        },
-      ]),
-    ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari disliked an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      { restrictedReactionFeedback: true } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
-  it.each([
-    ["array", "[]"],
-    ["null", "null"],
-    ["string", '"not an argument object"'],
-    ["object with numeric reason", '{"reason":7}'],
-    ["object with null reason", '{"reason":null}'],
-  ])("fails restricted observe closed for a JSON %s argument payload", async (_label, argumentsText) => {
-    mockCreate.mockReturnValue(makeStream([
-      makeChunk(undefined, [
-        {
-          index: 0,
-          id: "call_invalid_observe_shape",
-          function: { name: "observe", arguments: argumentsText },
-        },
-      ]),
-    ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari questioned an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      { restrictedReactionFeedback: true } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onToolStart).not.toHaveBeenCalled()
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
-  it("rejects a mixed restricted tool batch atomically before any tool executes", async () => {
-    mockCreate
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_mixed_settle",
-            function: {
-              name: "settle",
-              arguments: '{"answer":"must be retracted","intent":"complete"}',
-            },
-          },
-          {
-            index: 1,
-            id: "call_mixed_send",
-            function: {
-              name: "send_message",
-              arguments: '{"friendId":"self","content":"resume RSVP"}',
-            },
-          },
-        ]),
-      ]))
-      .mockReturnValueOnce(makeStream([
-        makeChunk(undefined, [
-          {
-            index: 0,
-            id: "call_forbidden_mixed_recovery",
-            function: {
-              name: "observe",
-              arguments: '{"reason":"recovery must not run"}',
-            },
-          },
-        ]),
-      ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const execTool = vi.fn().mockResolvedValue("sent")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari disliked an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      {
-        restrictedReactionFeedback: true,
-        toolChoiceRequired: true,
-        execTool,
-      } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(execTool).not.toHaveBeenCalled()
-    expect(callbacks.onClearText).toHaveBeenCalled()
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
-  it("fails closed when the allowlisted orientation read itself rejects", async () => {
-    mockCreate.mockReturnValue(makeStream([
-      makeChunk(undefined, [
-        {
-          index: 0,
-          id: "call_reaction_orientation_error",
-          function: { name: "orientation_get", arguments: "{}" },
-        },
-      ]),
-    ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const execTool = vi.fn().mockRejectedValue(new Error("orientation unavailable"))
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari questioned an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      { restrictedReactionFeedback: true, execTool } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(execTool).toHaveBeenCalledTimes(1)
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith("orientation_get", "", false)
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
-  it("uses the registered orientation handler when no execution override exists", async () => {
-    mockCreate.mockReturnValue(makeStream([
-      makeChunk(undefined, [
-        {
-          index: 0,
-          id: "call_reaction_orientation_registered",
-          function: { name: "orientation_get", arguments: "{}" },
-        },
-      ]),
-    ]))
-
-    const { runAgent } = await import("../../heart/core")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari questioned an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      { restrictedReactionFeedback: true } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith("orientation_get", "", true)
-    expect(result).toMatchObject({ outcome: "errored" })
-  })
-
-  it("does not retry a failed restricted-feedback provider invocation", async () => {
-    vi.useFakeTimers()
-    try {
-      const providerError = Object.assign(new Error("rate limited"), { status: 429 })
-      mockCreate.mockRejectedValue(providerError)
-
-      const { runAgent } = await import("../../heart/core")
-      const callbacks = makeCallbacks()
-      const pending = runAgent(
-        [{ role: "user", content: "Ari questioned an agent-authored message." }],
-        callbacks,
-        "bluebubbles",
-        undefined,
-        {
-          restrictedReactionFeedback: true,
-          toolChoiceRequired: true,
-        } as any,
-      )
-
-      await vi.runAllTimersAsync()
-      const result = await pending
-
-      expect(mockCreate).toHaveBeenCalledTimes(1)
-      expect(result).toMatchObject({
-        outcome: "errored",
-        error: providerError,
-        errorClassification: "rate-limit",
-      })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it("retracts text-only restricted feedback and terminates without a corrective second call", async () => {
-    mockCreate.mockReturnValue(makeStream([makeChunk("unsettled provider prose")]))
-
-    const { runAgent } = await import("../../heart/core")
-    const callbacks = makeCallbacks()
-    const result = await runAgent(
-      [{ role: "user", content: "Ari disliked an agent-authored message." }],
-      callbacks,
-      "bluebubbles",
-      undefined,
-      {
-        restrictedReactionFeedback: true,
-        toolChoiceRequired: true,
-      } as any,
-    )
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onClearText).toHaveBeenCalledTimes(1)
-    expect(result).toMatchObject({ outcome: "errored" })
   })
 
   it("binds the exact current capture locator into the provider-facing habit cancellation schema", async () => {

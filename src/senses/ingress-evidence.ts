@@ -58,5 +58,9 @@ export interface BlueBubblesSemanticCaptureV1 {
   keyHash: string
   providerNamespace: string
   capturedAt: string
+  /** Runtime-only, non-enumerable metadata loaded from the rollback-safe order sidecar. */
+  observationObservedAt?: string
+  observationEpoch?: string
+  observationOrdinal?: number
   event: BlueBubblesSemanticCaptureEvent
 }

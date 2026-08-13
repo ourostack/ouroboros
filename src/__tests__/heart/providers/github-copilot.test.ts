@@ -301,6 +301,35 @@ describe("createGithubCopilotProviderRuntime", () => {
     expect(result).toBe(turnResult)
   })
 
+  it("GPT model: sends current and verified predecessor evidence once through the actual Responses conversion", async () => {
+    await setupConfig({
+      providers: {
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+      },
+    })
+    const actualStreaming = await vi.importActual<typeof import("../../../heart/streaming")>("../../../heart/streaming")
+    mockToResponsesInput.mockImplementation(actualStreaming.toResponsesInput)
+    mockStreamResponsesApi.mockResolvedValue({ content: "", toolCalls: [], outputItems: [] })
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const runtime = createGithubCopilotProviderRuntime("gpt-5.4")
+    const messages = [
+      { role: "system" as const, content: "core system" },
+      { role: "system" as const, content: "verified predecessor evidence" },
+      { role: "user" as const, content: "current request" },
+    ]
+    runtime.resetTurnState(messages)
+    await runtime.streamTurn({
+      messages,
+      activeTools: [],
+      callbacks: { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() },
+    })
+
+    const payload = mockStreamResponsesApi.mock.calls[0]?.[1]
+    expect(payload.instructions).toBe("core system\n\nverified predecessor evidence")
+    expect(payload.instructions.match(/verified predecessor evidence/g)).toHaveLength(1)
+    expect(payload.input).toEqual([{ role: "user", content: "current request" }])
+  })
+
   it("Claude model: resetTurnState and appendToolOutput are no-ops", async () => {
     await setupConfig({
       providers: {

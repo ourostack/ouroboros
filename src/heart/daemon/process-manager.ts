@@ -64,6 +64,9 @@ export interface DaemonProcessManagerOptions {
   cooldownRecoveryMs?: number
   maxCooldownRetries?: number
   startupStaleAfterMs?: number
+  /** Maximum time a managed worker may take to exit after SIGTERM. A
+   *  replacement is never spawned unless the old worker emits `exit`. */
+  stopTimeoutMs?: number
   spawn?: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
   now?: () => number
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
@@ -113,6 +116,7 @@ interface AgentRuntimeState {
   cooldownTimer: unknown | null
   cooldownRetryCount: number
   fastCrashCount: number
+  stopFailureActive: boolean
 }
 
 function startOfHour(ms: number): number {
@@ -135,6 +139,9 @@ const MAX_PENDING_IPC_MESSAGES = 20
 
 export class DaemonProcessManager {
   private readonly agents = new Map<string, AgentRuntimeState>()
+  /** `stopAll()` is terminal for a manager instance. Once set, it fences
+   *  detached restart/start continuations until the owning daemon exits. */
+  private shutdownRequested = false
   private readonly maxRestartsPerHour: number
   private readonly stabilityThresholdMs: number
   private readonly initialBackoffMs: number
@@ -146,6 +153,7 @@ export class DaemonProcessManager {
   private readonly cooldownRecoveryMs: number
   private readonly maxCooldownRetries: number
   private readonly startupStaleAfterMs: number
+  private readonly stopTimeoutMs: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
   private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string; skip?: boolean } | Promise<{ ok: boolean; error?: string; fix?: string; skip?: boolean }>) | null
   private readonly statusWriterFn: (text: string) => void
@@ -231,6 +239,7 @@ export class DaemonProcessManager {
     this.cooldownRecoveryMs = options.cooldownRecoveryMs ?? 5 * 60 * 1_000
     this.maxCooldownRetries = options.maxCooldownRetries ?? 3
     this.startupStaleAfterMs = options.startupStaleAfterMs ?? 45_000
+    this.stopTimeoutMs = options.stopTimeoutMs ?? 4_000
     this.spawnFn = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions))
     this.now = options.now ?? (() => Date.now())
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
@@ -258,6 +267,7 @@ export class DaemonProcessManager {
         cooldownTimer: null,
         cooldownRetryCount: 0,
         fastCrashCount: 0,
+        stopFailureActive: false,
         snapshot: {
           name: agent.name,
           channel: agent.channel,
@@ -301,6 +311,7 @@ export class DaemonProcessManager {
 
   async startAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {
     const state = this.requireAgent(agent)
+    if (this.shutdownRequested) return
     if (state.process || state.startInFlight) return
 
     const attemptId = state.startAttemptId + 1
@@ -531,26 +542,83 @@ export class DaemonProcessManager {
     }
 
     const child = state.process
-    state.process = null
-    state.snapshot.status = "stopped"
-    state.snapshot.pid = null
+    const childPid = child.pid ?? null
+    const childPidLabel = childPid === null ? "unknown" : String(childPid)
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      let timeout: unknown | null = null
+      const finish = (error?: Error): void => {
+        /* v8 ignore next -- defensive idempotence if an injected timer fires after cancellation @preserve */
+        if (settled) return
+        settled = true
+        child.removeListener("exit", onExit)
+        if (timeout !== null) this.clearTimeoutFn(timeout)
+        if (error) reject(error)
+        else resolve()
+      }
+      const onExit = (): void => finish()
+      child.once("exit", onExit)
 
-    try {
-      child.kill("SIGTERM")
-    } catch {
-      emitNervesEvent({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.agent_stop_error",
-        message: "failed to send SIGTERM to managed agent",
-        meta: { agent },
-      })
-    }
-    this.notifySnapshotChange(state.snapshot)
+      let signalAccepted = false
+      try {
+        signalAccepted = child.kill("SIGTERM")
+      } catch {
+        const errorReason = "failed to send SIGTERM to managed agent; worker remains tracked"
+        state.stopFailureActive = true
+        state.snapshot.errorReason = errorReason
+        state.snapshot.fixHint = `Inspect managed worker PID ${childPidLabel} before retrying the stop or restart.`
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.agent_stop_error",
+          message: errorReason,
+          meta: { agent, pid: childPid },
+        })
+        this.notifySnapshotChange(state.snapshot)
+        finish(new Error(errorReason))
+        return
+      }
+
+      if (!signalAccepted) {
+        const errorReason = "managed agent rejected SIGTERM; worker remains tracked"
+        state.stopFailureActive = true
+        state.snapshot.errorReason = errorReason
+        state.snapshot.fixHint = `Inspect managed worker PID ${childPidLabel} before retrying the stop or restart.`
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.agent_stop_error",
+          message: errorReason,
+          meta: { agent, pid: childPid },
+        })
+        this.notifySnapshotChange(state.snapshot)
+        finish(new Error(errorReason))
+        return
+      }
+
+      if (settled) return
+      timeout = this.setTimeoutFn(() => {
+        if (settled) return
+        const errorReason = `managed agent did not exit within ${this.stopTimeoutMs}ms; replacement was not started`
+        state.stopFailureActive = true
+        state.snapshot.errorReason = errorReason
+        state.snapshot.fixHint = `Inspect managed worker PID ${childPidLabel}; retry only after that worker has exited.`
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.agent_stop_timeout",
+          message: errorReason,
+          meta: { agent, pid: childPid, timeoutMs: this.stopTimeoutMs },
+        })
+        this.notifySnapshotChange(state.snapshot)
+        finish(new Error(errorReason))
+      }, this.stopTimeoutMs)
+    })
   }
 
   async restartAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {
     const state = this.requireAgent(agent)
+    if (this.shutdownRequested) return
 
     // Respawn-loop guard: prune timestamps outside the window, then check
     // whether we've already restarted this agent too many times in it.
@@ -643,8 +711,21 @@ export class DaemonProcessManager {
   }
 
   async stopAll(): Promise<void> {
-    for (const state of this.agents.values()) {
-      await this.stopAgent(state.config.name)
+    this.shutdownRequested = true
+    const states = [...this.agents.values()]
+    const results = await Promise.allSettled(
+      states.map((state) => this.stopAgent(state.config.name)),
+    )
+    const failures = results.flatMap((result, index) =>
+      result.status === "rejected"
+        ? [{ agent: states[index]!.config.name, reason: result.reason }]
+        : [],
+    )
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        `failed to stop ${failures.length} managed worker(s): ${failures.map((failure) => failure.agent).join(", ")}`,
+      )
     }
   }
 
@@ -701,6 +782,7 @@ export class DaemonProcessManager {
   }
 
   private onExit(state: AgentRuntimeState, child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
+    /* v8 ignore next -- defensive: replacement cannot start before this child's one-shot exit listener drains @preserve */
     if (state.process !== child) return
     state.process = null
     state.startInFlight = false
@@ -708,6 +790,11 @@ export class DaemonProcessManager {
     state.snapshot.pid = null
     state.snapshot.lastExitCode = code
     state.snapshot.lastSignal = signal
+    if (state.stopFailureActive) {
+      state.stopFailureActive = false
+      state.snapshot.errorReason = null
+      state.snapshot.fixHint = null
+    }
 
     const crashed = !state.stopRequested && code !== 0
     const now = this.currentTimeMs()

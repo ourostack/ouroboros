@@ -165,11 +165,46 @@ describe("BlueBubbles client", () => {
     const result = await (client.sendText as any)({
       chat: dmChat,
       text: "boundary marker",
+      beforeTransportInvocation: () => {
+        order.push("admission")
+        return true
+      },
       onTransportInvocation: () => order.push("boundary"),
     })
 
     expect(result).toEqual({ messageGuid: "sent-guid" })
-    expect(order).toEqual(["boundary", "fetch"])
+    expect(order).toEqual(["admission", "boundary", "fetch"])
+  })
+
+  it("rechecks delivery admission after route resolution and before transport invocation", async () => {
+    const order: string[] = []
+    global.fetch = vi.fn(async () => {
+      order.push("fetch")
+      return new Response(JSON.stringify({ data: { guid: "stale-guid" } }), { status: 200 })
+    }) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+
+    const error = await (client.sendText as any)({
+      chat: dmChat,
+      text: "must stay behind the final fence",
+      beforeTransportInvocation: () => {
+        order.push("admission")
+        return false
+      },
+      onTransportInvocation: () => order.push("boundary"),
+    }).catch((caught: unknown) => caught)
+
+    expect(error).toMatchObject({
+      name: "BlueBubblesSendError",
+      httpStatus: null,
+      errorCode: "admission_denied",
+      transportInvoked: false,
+    })
+    expect(order).toEqual(["admission"])
   })
 
   it.each([300, 399, 400, 408, 409, 425, 429, 499, 500, 503])(
@@ -487,6 +522,37 @@ describe("BlueBubbles client", () => {
       "http://bluebubbles.local/api/v1/chat/any%3B-%3Bari%40mendelow.me/typing?password=secret-token",
       expect.objectContaining({ method: "DELETE", signal: expect.any(AbortSignal) }),
     )
+  })
+
+  it("combines caller cancellation with typing and read request timeouts", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+    const readController = new AbortController()
+    const typingController = new AbortController()
+
+    await client.markChatRead(dmChat, readController.signal)
+    await client.setTyping(dmChat, true, typingController.signal)
+    const readSignal = vi.mocked(global.fetch).mock.calls[0]?.[1]?.signal
+    const typingSignal = vi.mocked(global.fetch).mock.calls[1]?.[1]?.signal
+    readController.abort(new Error("read superseded"))
+    typingController.abort(new Error("typing superseded"))
+
+    expect(readSignal?.aborted).toBe(true)
+    expect(typingSignal?.aborted).toBe(true)
   })
 
   it("surfaces edit, typing, and read transport errors with response details", async () => {
@@ -1241,7 +1307,7 @@ describe("BlueBubbles client", () => {
       offset: 0,
       sort: "DESC",
       chatGuid: "any;-;ari@mendelow.me",
-      beforeTimestamp: 1772949200000,
+      before: 1772949200000,
       with: ["chats", "attachments", "payloadData", "messageSummaryInfo"],
     })
     expect(result).toEqual([
@@ -1251,6 +1317,136 @@ describe("BlueBubbles client", () => {
         textForAgent: "context from this exact chat",
       }),
     ])
+  })
+
+  it("returns anchor-query verification metadata without issuing a second request", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          {
+            guid: "anchor-guid",
+            text: "current request",
+            dateCreated: 1772949200000,
+            isFromMe: false,
+            handle: { address: "ari@mendelow.me" },
+            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+          },
+          { text: "malformed row without guid" },
+          {
+            guid: "prior-guid",
+            text: "visible predecessor",
+            dateCreated: 1772949155000,
+            isFromMe: true,
+            handle: { address: "shared-account@example.com" },
+            chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+          },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+
+    const result = await client.queryRecentMessagesWithMetadata?.({
+      chatGuid: "any;-;ari@mendelow.me",
+      beforeTimestamp: 1772949200000,
+      limit: 41,
+      offset: 0,
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).toMatchObject({
+      chatGuid: "any;-;ari@mendelow.me",
+      before: 1772949200000,
+    })
+    expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).not.toHaveProperty("beforeTimestamp")
+    expect(result).toMatchObject({
+      rawRowCount: 3,
+      normalizedRowCount: 2,
+      skippedRowCount: 1,
+      request: {
+        limit: 41,
+        offset: 0,
+        sort: "DESC",
+        chatGuid: "any;-;ari@mendelow.me",
+        beforeTimestamp: 1772949200000,
+      },
+    })
+    expect(result?.messages.map((event) => event.messageGuid)).toEqual(["anchor-guid", "prior-guid"])
+  })
+
+  it("marks raw rows without numeric causal timestamps as unverifiable before normalization", async () => {
+    const futureAnchorTimestamp = Date.now() + 60_000
+    const anchorRow = {
+      guid: "future-anchor-guid",
+      text: "current future-dated request",
+      dateCreated: futureAnchorTimestamp,
+      isFromMe: false,
+      handle: { address: "ari@mendelow.me" },
+      chats: [{ guid: "any;-;ari@mendelow.me", chatIdentifier: "ari@mendelow.me" }],
+    }
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        data: [
+          anchorRow,
+          {
+            guid: "missing-timestamp-row",
+            text: "must not become a predecessor via Date.now",
+            isFromMe: true,
+            chats: anchorRow.chats,
+          },
+          {
+            guid: "string-timestamp-row",
+            text: "must not become a predecessor via a numeric-looking string",
+            dateCreated: String(futureAnchorTimestamp - 2_000),
+            isFromMe: true,
+            chats: anchorRow.chats,
+          },
+        ],
+      }), { status: 200 }),
+    ) as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+    const query = await client.queryRecentMessagesWithMetadata?.({
+      chatGuid: "any;-;ari@mendelow.me",
+      beforeTimestamp: futureAnchorTimestamp,
+      limit: 41,
+      offset: 0,
+    })
+    const anchor = normalizeBlueBubblesEvent({ type: "new-message", data: anchorRow })
+    if (anchor.kind !== "message" || !query) throw new Error("test fixture did not produce a message query")
+
+    expect(query.invalidCausalTimestampRowCount).toBe(2)
+    await expect(buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client: { queryRecentMessagesWithMetadata: vi.fn().mockResolvedValue(query) },
+      event: anchor,
+    })).resolves.toBeNull()
   })
 
   it("queries recent messages by chat identifier when a chat guid is not available", async () => {
@@ -3020,99 +3216,6 @@ describe("BlueBubbles client", () => {
 
       const text = await client.getMessageText("msg-guid-nonstring")
       expect(text).toBeNull()
-    })
-  })
-
-  describe("getMessageDetails", () => {
-    function makeClient() {
-      return import("../../../senses/bluebubbles/client").then(({ createBlueBubblesClient }) =>
-        createBlueBubblesClient(
-          { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
-          { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
-        ))
-    }
-
-    it("returns text and authorship when the API responds with a valid payload", async () => {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ data: { text: "  hotel AC rundown  ", isFromMe: true } }), { status: 200 }),
-      ) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-1")).toEqual({
-        text: "hotel AC rundown",
-        fromMe: true,
-      })
-    })
-
-    it("reports unknown text and authorship rather than guessing", async () => {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ data: { text: "   ", isFromMe: "yes" } }), { status: 200 }),
-      ) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-2")).toEqual({ text: null, fromMe: null })
-    })
-
-    it("reports unknown text when the payload carries no text field", async () => {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ data: { isFromMe: false } }), { status: 200 }),
-      ) as typeof fetch
-
-      const client = await makeClient()
-
-      // An attachment-only or system message still resolves authorship; text stays
-      // unknown rather than being rendered as an empty quote in the reaction excerpt.
-      expect(await client.getMessageDetails?.("msg-details-3")).toEqual({ text: null, fromMe: false })
-    })
-
-    it("returns null when the API returns a non-ok status", async () => {
-      global.fetch = vi.fn().mockResolvedValue(new Response("Not Found", { status: 404 })) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-404")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        meta: expect.objectContaining({ status: 404 }),
-      }))
-    })
-
-    it("returns null when the payload is not a record", async () => {
-      global.fetch = vi.fn().mockResolvedValue(new Response("null", { status: 200 })) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-null")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        message: "message payload was not a record",
-      }))
-    })
-
-    it("returns null when fetch throws", async () => {
-      global.fetch = vi.fn().mockRejectedValue(new Error("network down")) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-err")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        meta: expect.objectContaining({ reason: "network down" }),
-      }))
-    })
-
-    it("returns null when fetch throws a non-Error value", async () => {
-      global.fetch = vi.fn().mockRejectedValue("string rejection") as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-string-err")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        meta: expect.objectContaining({ reason: "string rejection" }),
-      }))
     })
   })
 

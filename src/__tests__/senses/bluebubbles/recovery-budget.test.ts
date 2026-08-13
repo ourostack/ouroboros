@@ -55,7 +55,9 @@ vi.mock("../../../mind/prompt", () => ({
 
 vi.mock("../../../mind/context", () => ({
   loadSession: () => null,
+  saveSession: vi.fn(),
   postTurnTrim: vi.fn(),
+  postTurnPersist: vi.fn(),
   deferPostTurnPersist: vi.fn(),
 }))
 
@@ -213,7 +215,7 @@ describe("BlueBubbles recovery autonomy budget", () => {
     expect(repairEvent).toHaveBeenCalledTimes(1)
   })
 
-  it("skips over-budget recovery safely even when repaired route coordinates are missing", async () => {
+  it("fails an unresolved repaired route before starting over-budget recovery work", async () => {
     const agentRoot = tempAgentRoot()
     mockGetAgentRoot.mockReturnValue(agentRoot)
     for (let index = 0; index < AUTONOMY_BUDGET_DEFAULT_POLICY.senseRecoveryPaidTurnsPer15m; index++) {
@@ -238,7 +240,7 @@ describe("BlueBubbles recovery autonomy budget", () => {
       runAgent: runAgent as any,
     })
 
-    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 1, failed: 0 }))
+    expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, failed: 1 }))
     expect(runAgent).not.toHaveBeenCalled()
   })
 })

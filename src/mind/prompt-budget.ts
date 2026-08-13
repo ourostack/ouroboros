@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 export const PROMPT_BUDGET_POLICY_VERSION = "prompt-budget/v1" as const
 export const PROMPT_BUDGET_FALLBACK_CONTEXT_WINDOW_TOKENS = 24_000
 
-export type PromptBudgetStatus = "within_budget" | "trimmed" | "over_budget"
+export type PromptBudgetStatus = "within_budget" | "trimmed" | "over_budget" | "required_evidence_over_budget"
 
 export type PromptBudgetSource =
   | "system-prompt"
@@ -28,11 +28,17 @@ export interface PromptBudgetTruncation {
 
 export interface PromptBudgetInput {
   messages: OpenAI.ChatCompletionMessageParam[]
+  requiredPromptEvidence?: RequiredPromptEvidence
   provider: string
   model: string
   contextWindowTokens?: number | null
   outputReserveRatio?: number
   protocolReserveRatio?: number
+}
+
+export interface RequiredPromptEvidence {
+  readonly currentUserMessage: OpenAI.ChatCompletionMessageParam
+  readonly verifiedPredecessorMessage?: OpenAI.ChatCompletionMessageParam
 }
 
 export interface PromptBudgetResult {
@@ -57,6 +63,13 @@ export interface PromptBudgetResult {
   }
 }
 
+export interface RequiredPromptEvidenceBudgetAssessment {
+  status: "within_budget" | "required_evidence_over_budget"
+  messages: OpenAI.ChatCompletionMessageParam[]
+  estimatedTokens: number
+  budget: PromptBudgetResult["budget"]
+}
+
 interface PromptBudgetItem {
   id: string
   priority: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
@@ -64,6 +77,7 @@ interface PromptBudgetItem {
   messages: OpenAI.ChatCompletionMessageParam[]
   originalMessageCount: number
   compacted?: boolean
+  required?: "current-user" | "verified-predecessor"
 }
 
 function contentCharacters(content: unknown): number {
@@ -134,6 +148,45 @@ function itemTokens(item: PromptBudgetItem): number {
 
 function cloneMessage(message: OpenAI.ChatCompletionMessageParam): OpenAI.ChatCompletionMessageParam {
   return { ...(message as unknown as Record<string, unknown>) } as unknown as OpenAI.ChatCompletionMessageParam
+}
+
+function requiredMessagesByIdentity(input: PromptBudgetInput): OpenAI.ChatCompletionMessageParam[] {
+  const evidence = input.requiredPromptEvidence
+  if (!evidence) return []
+  const current = evidence.currentUserMessage
+  if (current.role !== "user") {
+    throw new Error("required current user message must have role=user")
+  }
+  const currentMatches = input.messages.filter((message) => message === current)
+  if (currentMatches.length !== 1) {
+    throw new Error(currentMatches.length === 0
+      ? "required current user message is not present by identity"
+      : "required current user message must appear exactly once by identity")
+  }
+  const predecessor = evidence.verifiedPredecessorMessage
+  if (predecessor) {
+    if (predecessor === current) throw new Error("required predecessor and current user message must be distinct objects")
+    if (predecessor.role !== "system") {
+      throw new Error("required verified predecessor message must have role=system")
+    }
+    const predecessorMatches = input.messages.filter((message) => message === predecessor)
+    if (predecessorMatches.length !== 1) {
+      throw new Error(predecessorMatches.length === 0
+        ? "required verified predecessor message is not present by identity"
+        : "required verified predecessor message must appear exactly once by identity")
+    }
+    if (input.messages.indexOf(predecessor) !== input.messages.indexOf(current) - 1) {
+      throw new Error("required verified predecessor message must be immediately before the current user message")
+    }
+  }
+  return input.messages.filter((message) => message === current || message === predecessor)
+}
+
+function cloneUnlessRequired(
+  message: OpenAI.ChatCompletionMessageParam,
+  requiredMessages: ReadonlySet<OpenAI.ChatCompletionMessageParam>,
+): OpenAI.ChatCompletionMessageParam {
+  return requiredMessages.has(message) ? message : cloneMessage(message)
 }
 
 function messageText(message: OpenAI.ChatCompletionMessageParam): string {
@@ -260,11 +313,38 @@ function nonSystemSourceFor(messages: OpenAI.ChatCompletionMessageParam[]): Prom
   return "recent-session-tail"
 }
 
-function buildPromptBudgetItems(messages: OpenAI.ChatCompletionMessageParam[]): PromptBudgetItem[] {
+function buildPromptBudgetItems(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  requiredPromptEvidence?: RequiredPromptEvidence,
+): PromptBudgetItem[] {
   const rawItems: PromptBudgetItem[] = []
   let index = 0
   while (index < messages.length) {
     const message = messages[index]
+    if (message === requiredPromptEvidence?.currentUserMessage) {
+      rawItems.push({
+        id: `required:${index}:current`,
+        priority: 1,
+        source: "current-user-message",
+        messages: [message],
+        originalMessageCount: 1,
+        required: "current-user",
+      })
+      index += 1
+      continue
+    }
+    if (message === requiredPromptEvidence?.verifiedPredecessorMessage) {
+      rawItems.push({
+        id: `required:${index}:predecessor`,
+        priority: 1,
+        source: "required-current-turn-state",
+        messages: [message],
+        originalMessageCount: 1,
+        required: "verified-predecessor",
+      })
+      index += 1
+      continue
+    }
     if (message.role === "system") {
       rawItems.push(...systemItems(message, index))
       index += 1
@@ -302,6 +382,7 @@ function buildPromptBudgetItems(messages: OpenAI.ChatCompletionMessageParam[]): 
     item.messages.some((message) => message.role === "tool" || assistantHasToolCalls(message)),
   )
   return rawItems.map((item, itemIndex) => {
+    if (item.required) return item
     if (itemIndex === lastUserItemIndex) {
       return { ...item, priority: 1, source: "current-user-message" }
     }
@@ -317,7 +398,7 @@ function buildPromptBudgetItems(messages: OpenAI.ChatCompletionMessageParam[]): 
 }
 
 function flattenItems(items: PromptBudgetItem[]): OpenAI.ChatCompletionMessageParam[] {
-  return items.flatMap((item) => item.messages.map(cloneMessage))
+  return items.flatMap((item) => item.messages.map((message) => item.required ? message : cloneMessage(message)))
 }
 
 function budgetFor(input: PromptBudgetInput): PromptBudgetResult["budget"] {
@@ -335,6 +416,22 @@ function budgetFor(input: PromptBudgetInput): PromptBudgetResult["budget"] {
     outputReserveTokens,
     protocolReserveTokens,
     inputTokenLimit: Math.max(0, contextWindowTokens - outputReserveTokens - protocolReserveTokens),
+  }
+}
+
+export function assessRequiredPromptEvidenceBudget(
+  input: PromptBudgetInput,
+): RequiredPromptEvidenceBudgetAssessment {
+  const budget = budgetFor(input)
+  const messages = requiredMessagesByIdentity(input)
+  const estimatedTokens = estimatePromptBudgetTokens(messages)
+  return {
+    status: messages.length > 0 && estimatedTokens > budget.inputTokenLimit
+      ? "required_evidence_over_budget"
+      : "within_budget",
+    messages,
+    estimatedTokens,
+    budget,
   }
 }
 
@@ -377,16 +474,40 @@ function emitPromptBudgetEvent(result: PromptBudgetResult): void {
 }
 
 export function applyPromptBudget(input: PromptBudgetInput): PromptBudgetResult {
-  const budget = budgetFor(input)
+  const requiredAssessment = assessRequiredPromptEvidenceBudget(input)
+  const budget = requiredAssessment.budget
   const estimatedBeforeTokens = estimatePromptBudgetTokens(input.messages)
   const truncations: PromptBudgetTruncation[] = []
+  const requiredMessages = requiredAssessment.messages
+  const requiredMessageSet = new Set(requiredMessages)
   let droppedMessages = 0
+
+  const requiredTokens = requiredAssessment.estimatedTokens
+  if (requiredAssessment.status === "required_evidence_over_budget") {
+    droppedMessages = input.messages.length - requiredMessages.length
+    const result: PromptBudgetResult = {
+      policyVersion: PROMPT_BUDGET_POLICY_VERSION,
+      status: "required_evidence_over_budget",
+      messages: requiredMessages,
+      budget,
+      stats: {
+        estimatedBeforeTokens,
+        estimatedAfterTokens: requiredTokens,
+        originalMessages: input.messages.length,
+        finalMessages: requiredMessages.length,
+        droppedMessages,
+        truncations,
+      },
+    }
+    emitPromptBudgetEvent(result)
+    return result
+  }
 
   if (estimatedBeforeTokens <= budget.inputTokenLimit) {
     const result: PromptBudgetResult = {
       policyVersion: PROMPT_BUDGET_POLICY_VERSION,
       status: "within_budget",
-      messages: input.messages.map(cloneMessage),
+      messages: input.messages.map((message) => cloneUnlessRequired(message, requiredMessageSet)),
       budget,
       stats: {
         estimatedBeforeTokens,
@@ -401,7 +522,7 @@ export function applyPromptBudget(input: PromptBudgetInput): PromptBudgetResult 
     return result
   }
 
-  let items = buildPromptBudgetItems(input.messages)
+  let items = buildPromptBudgetItems(input.messages, input.requiredPromptEvidence)
 
   for (const priority of [8, 7, 6, 5, 4, 3] as const) {
     if (totalItemTokens(items) <= budget.inputTokenLimit) break

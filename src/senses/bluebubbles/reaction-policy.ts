@@ -1,5 +1,4 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { IngressTargetAuthorship } from "../ingress-evidence"
 import type {
   BlueBubblesReactionAction,
   BlueBubblesReactionDescriptor,
@@ -11,23 +10,19 @@ export type BlueBubblesReactionCaptureOnlyOutcome =
   | "capture_only_positive"
   | "capture_only_custom"
   | "capture_only_unknown"
-  | "capture_only_target_not_agent"
-  | "capture_only_untrusted_actor"
+  | "capture_only_negative"
+  | "capture_only_question"
 
 export type BlueBubblesReactionPolicyDecision =
-  | {
-      route: "capture_only"
-      outcome: BlueBubblesReactionCaptureOnlyOutcome
-    }
-  | { route: "trust_required" }
-  | { route: "restricted_feedback" }
+  {
+    route: "capture_only"
+    outcome: BlueBubblesReactionCaptureOnlyOutcome
+  }
 
 export interface BlueBubblesReactionPolicyInput {
   fromMe: boolean
   action: BlueBubblesReactionAction
   canonicalValue: BlueBubblesReactionDescriptor["canonicalValue"]
-  targetAuthorship: IngressTargetAuthorship
-  trustedActor?: boolean
 }
 
 const POSITIVE_REACTIONS = new Set<BlueBubblesReactionDescriptor["canonicalValue"]>([
@@ -51,14 +46,10 @@ export function classifyBlueBubblesReaction(
     decision = { route: "capture_only", outcome: "capture_only_custom" }
   } else if (input.canonicalValue === "unknown") {
     decision = { route: "capture_only", outcome: "capture_only_unknown" }
-  } else if (input.targetAuthorship !== "agent") {
-    decision = { route: "capture_only", outcome: "capture_only_target_not_agent" }
-  } else if (input.trustedActor === undefined) {
-    decision = { route: "trust_required" }
-  } else if (!input.trustedActor) {
-    decision = { route: "capture_only", outcome: "capture_only_untrusted_actor" }
+  } else if (input.canonicalValue === "question") {
+    decision = { route: "capture_only", outcome: "capture_only_question" }
   } else {
-    decision = { route: "restricted_feedback" }
+    decision = { route: "capture_only", outcome: "capture_only_negative" }
   }
 
   emitNervesEvent({
@@ -69,10 +60,8 @@ export function classifyBlueBubblesReaction(
       action: input.action,
       canonicalValue: input.canonicalValue,
       fromMe: input.fromMe,
-      targetAuthorship: input.targetAuthorship,
-      trustEvaluated: input.trustedActor !== undefined,
       route: decision.route,
-      outcome: decision.route === "capture_only" ? decision.outcome : null,
+      outcome: decision.outcome,
     },
   })
   return decision

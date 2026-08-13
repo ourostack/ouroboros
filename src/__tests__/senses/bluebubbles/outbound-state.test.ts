@@ -48,6 +48,7 @@ describe("BlueBubbles durable outbound state", () => {
   it("atomically reserves an idempotency key before transport send and blocks a crash retry from sending twice", async () => {
     const {
       blueBubblesOutboundRecordPath,
+      readBlueBubblesOutboundRecordByIdempotencyKey,
       reserveBlueBubblesOutbound,
     } = await import("../../../senses/bluebubbles/outbound-state")
 
@@ -85,6 +86,10 @@ describe("BlueBubbles durable outbound state", () => {
       }),
     })
     expect(fs.existsSync(blueBubblesOutboundRecordPath(agentRoot, first.record.recordId))).toBe(true)
+    expect(readBlueBubblesOutboundRecordByIdempotencyKey(
+      agentRoot,
+      "habit:slugger:rsvp:2026-07-09T17:00:00.000Z",
+    )).toEqual(first.record)
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_outbound_reserved",
     }))

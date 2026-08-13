@@ -36,6 +36,24 @@ function message(overrides: Partial<any> = {}) {
   }
 }
 
+function queryResult(anchor: ReturnType<typeof message>, history: ReturnType<typeof message>[]) {
+  const messages = [anchor, ...history]
+  return {
+    messages,
+    rawRowCount: messages.length,
+    normalizedRowCount: messages.length,
+    skippedRowCount: 0,
+    invalidCausalTimestampRowCount: 0,
+    request: {
+      limit: 41,
+      offset: 0,
+      sort: "DESC" as const,
+      chatGuid: anchor.chat.chatGuid,
+      beforeTimestamp: anchor.timestamp,
+    },
+  }
+}
+
 describe("BlueBubbles context smoke", () => {
   beforeEach(() => {
     emitNervesEvent.mockReset()
@@ -50,7 +68,7 @@ describe("BlueBubbles context smoke", () => {
     })
     const normalizeEvent = vi.fn(() => message({ messageGuid: "anchor-guid", requiresRepair: true }))
     const repairEvent = vi.fn().mockResolvedValue(anchor)
-    const listRecentMessages = vi.fn().mockResolvedValue([prior])
+    const queryRecentMessagesWithMetadata = vi.fn().mockResolvedValue(queryResult(anchor, [prior]))
     const setAgentName = vi.fn()
     const resetIdentity = vi.fn()
     const writePacket = vi.fn()
@@ -60,7 +78,7 @@ describe("BlueBubbles context smoke", () => {
       agentName: "slugger",
       messageGuid: "anchor-guid",
     }, {
-      createClient: () => ({ repairEvent, listRecentMessages }) as any,
+      createClient: () => ({ repairEvent, queryRecentMessagesWithMetadata }) as any,
       normalizeEvent,
       setAgentName,
       resetIdentity,
@@ -133,7 +151,7 @@ describe("BlueBubbles context smoke", () => {
     }, {
       createClient: () => ({
         repairEvent: vi.fn().mockResolvedValue(anchor),
-        listRecentMessages: vi.fn().mockResolvedValue([prior]),
+        queryRecentMessagesWithMetadata: vi.fn().mockResolvedValue(queryResult(anchor, [prior])),
       }) as any,
       normalizeEvent: vi.fn(() => message({ messageGuid: "anchor-guid", requiresRepair: true })),
       setAgentName: vi.fn(),
@@ -189,7 +207,7 @@ describe("BlueBubbles context smoke", () => {
     }, {
       createClient: () => ({
         repairEvent: vi.fn().mockResolvedValue(message()),
-        listRecentMessages: vi.fn().mockResolvedValue([]),
+        queryRecentMessagesWithMetadata: vi.fn().mockResolvedValue(queryResult(message(), [])),
       }) as any,
       normalizeEvent: vi.fn(() => message({ messageGuid: "anchor-guid", requiresRepair: true })),
       setAgentName: vi.fn(),
@@ -214,7 +232,7 @@ describe("BlueBubbles context smoke", () => {
     }, {
       createClient: () => ({
         repairEvent: vi.fn().mockRejectedValue("repair boom"),
-        listRecentMessages: vi.fn(),
+        queryRecentMessagesWithMetadata: vi.fn(),
       }) as any,
       normalizeEvent: vi.fn(() => message({ messageGuid: "anchor-guid", requiresRepair: true })),
       setAgentName: vi.fn(),
@@ -231,7 +249,7 @@ describe("BlueBubbles context smoke", () => {
 
   it("rejects repaired non-message events before querying context", async () => {
     const resetIdentity = vi.fn()
-    const listRecentMessages = vi.fn()
+    const queryRecentMessagesWithMetadata = vi.fn()
     const { smokeBlueBubblesContext } = await import("../../../senses/bluebubbles/context-smoke")
 
     await expect(smokeBlueBubblesContext({
@@ -264,14 +282,14 @@ describe("BlueBubbles context smoke", () => {
           textForAgent: "message marked as read",
           requiresRepair: false,
         }),
-        listRecentMessages,
+        queryRecentMessagesWithMetadata,
       }) as any,
       normalizeEvent: vi.fn(() => message({ messageGuid: "anchor-guid", requiresRepair: true })),
       setAgentName: vi.fn(),
       resetIdentity,
     })).rejects.toThrow("requires a message event")
 
-    expect(listRecentMessages).not.toHaveBeenCalled()
+    expect(queryRecentMessagesWithMetadata).not.toHaveBeenCalled()
     expect(resetIdentity).toHaveBeenCalledTimes(1)
   })
 
@@ -283,8 +301,8 @@ describe("BlueBubbles context smoke", () => {
       text: "prior context body",
     })
     const repairEvent = vi.fn().mockResolvedValue(anchor)
-    const listRecentMessages = vi.fn().mockResolvedValue([prior])
-    const createDefaultClient = vi.fn(() => ({ repairEvent, listRecentMessages }) as any)
+    const queryRecentMessagesWithMetadata = vi.fn().mockResolvedValue(queryResult(anchor, [prior]))
+    const createDefaultClient = vi.fn(() => ({ repairEvent, queryRecentMessagesWithMetadata }) as any)
     const refreshMachineRuntimeConfig = vi.fn().mockResolvedValue(undefined)
 
     const { smokeBlueBubblesContext } = await import("../../../senses/bluebubbles/context-smoke")

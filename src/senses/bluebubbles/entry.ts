@@ -34,7 +34,19 @@ import("../../heart/runtime-credentials")
       await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
     const { startBlueBubblesApp } = await import("./index")
-    await startBlueBubblesApp()
+    const server = await startBlueBubblesApp()
+    let shutdownStarted = false
+    const closeOnSignal = (): void => {
+      if (shutdownStarted) return
+      shutdownStarted = true
+      server.close()
+    }
+    process.once("SIGTERM", closeOnSignal)
+    process.once("SIGINT", closeOnSignal)
+    server.once("close", () => {
+      process.removeListener("SIGTERM", closeOnSignal)
+      process.removeListener("SIGINT", closeOnSignal)
+    })
     void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
   })
   .catch((error) => {

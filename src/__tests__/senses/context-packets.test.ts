@@ -70,6 +70,7 @@ describe("sense context packets", () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
@@ -231,6 +232,8 @@ describe("sense context packets", () => {
       "receipts",
       "README.txt",
     ), "not a receipt", "utf-8")
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-07-09T20:00:00.000Z"))
     const defaultNowCompaction = compactSenseContextPacketReceipts(agentRoot, { sense: "bluebubbles" })
 
     expect(latest?.packetId).toBe(newer.packetId)
