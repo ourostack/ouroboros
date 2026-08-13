@@ -634,17 +634,13 @@ interface ParsedPonderArgs {
 }
 
 function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
-  try {
-    const parsed = JSON.parse(argumentsText) as Record<string, unknown>;
-    const answer = typeof parsed.answer === "string" ? parsed.answer : undefined;
-    const rawIntent = parsed.intent;
-    const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
-      ? rawIntent
-      : undefined;
-    return { answer, intent };
-  } catch {
-    return {};
-  }
+  const parsed = JSON.parse(argumentsText) as Record<string, unknown>;
+  const answer = typeof parsed.answer === "string" ? parsed.answer : undefined;
+  const rawIntent = parsed.intent;
+  const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
+    ? rawIntent
+    : undefined;
+  return { answer, intent };
 }
 
 function parsePonderPayload(argumentsText: string): ParsedPonderArgs {

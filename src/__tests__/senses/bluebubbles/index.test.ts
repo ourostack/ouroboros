@@ -4916,6 +4916,49 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
+  it("revokes an older live turn when runtime sync queues a new same-chat capture", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    const candidate = makeCatchUpMessage({
+      messageGuid: "runtime-sync-revocation-guid",
+      timestamp: now - 1_000,
+      textForAgent: "queue this without letting the older reply escape",
+    })
+    mocks.listRecentMessages.mockResolvedValueOnce([candidate])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const activeReservation = latestTurns.reserveObservation({
+      chatGuid: candidate.chat.chatGuid,
+      chatIdentifier: candidate.chat.chatIdentifier,
+    })
+    const activePromotion = latestTurns.promote(activeReservation, {
+      chatGuid: candidate.chat.chatGuid,
+      chatIdentifier: candidate.chat.chatIdentifier,
+    })
+    if (activePromotion.status !== "promoted") throw new Error("expected active promotion")
+
+    const result = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now).toISOString(),
+      pendingRecoveryCount: 0,
+    }, { processTurns: false })
+
+    expect(result).toEqual({
+      inspected: 1,
+      recovered: 0,
+      skipped: 0,
+      queued: 1,
+      failed: 0,
+    })
+    expect(activePromotion.capability.signal.aborted).toBe(true)
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
   it("keeps catch-up candidates skipped when repair cannot produce an inbound message", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
