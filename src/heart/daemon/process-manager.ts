@@ -139,6 +139,9 @@ const MAX_PENDING_IPC_MESSAGES = 20
 
 export class DaemonProcessManager {
   private readonly agents = new Map<string, AgentRuntimeState>()
+  /** `stopAll()` is terminal for a manager instance. Once set, it fences
+   *  detached restart/start continuations until the owning daemon exits. */
+  private shutdownRequested = false
   private readonly maxRestartsPerHour: number
   private readonly stabilityThresholdMs: number
   private readonly initialBackoffMs: number
@@ -308,6 +311,7 @@ export class DaemonProcessManager {
 
   async startAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {
     const state = this.requireAgent(agent)
+    if (this.shutdownRequested) return
     if (state.process || state.startInFlight) return
 
     const attemptId = state.startAttemptId + 1
@@ -614,6 +618,7 @@ export class DaemonProcessManager {
 
   async restartAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {
     const state = this.requireAgent(agent)
+    if (this.shutdownRequested) return
 
     // Respawn-loop guard: prune timestamps outside the window, then check
     // whether we've already restarted this agent too many times in it.
@@ -706,6 +711,7 @@ export class DaemonProcessManager {
   }
 
   async stopAll(): Promise<void> {
+    this.shutdownRequested = true
     const states = [...this.agents.values()]
     const results = await Promise.allSettled(
       states.map((state) => this.stopAgent(state.config.name)),

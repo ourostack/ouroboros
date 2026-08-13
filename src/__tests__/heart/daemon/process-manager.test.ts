@@ -1078,6 +1078,68 @@ describe("daemon process manager", () => {
     }))
   })
 
+  it("does not let an in-flight restart install a replacement after stopAll begins", async () => {
+    const first = new MockChild()
+    first.pid = 111
+    first.kill.mockImplementation(() => {
+      first.connected = false
+      return true
+    })
+    const replacement = new MockChild()
+    replacement.pid = 222
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(replacement)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+    const restarting = manager.restartAgent("slugger")
+    await Promise.resolve()
+    const stopping = manager.stopAll()
+    await Promise.resolve()
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    first.emit("exit", 0, "SIGTERM")
+    await Promise.all([restarting, stopping])
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "stopped",
+      pid: null,
+    }))
+  })
+
+  it("keeps direct starts and restarts fenced after terminal stopAll", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+    await manager.stopAll()
+    await manager.startAgent("slugger")
+    await manager.restartAgent("slugger")
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "stopped",
+      pid: null,
+    }))
+  })
+
   it("resets backoff after a stable graceful run", async () => {
     const first = new MockChild()
     const second = new MockChild()
