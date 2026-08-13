@@ -298,12 +298,7 @@ it("replays the minimized reaction/orientation incident without duplicate work o
     const sendText = vi.fn()
     const setTyping = vi.fn()
     const markChatRead = vi.fn()
-    const getMessageDetails = vi.fn(async () => ({
-      text: fixture.rsvpTarget.messageText,
-      fromMe: false,
-    }))
     const client = {
-      getMessageDetails,
       getMessageText: vi.fn(async () => fixture.rsvpTarget.messageText),
       repairEvent,
       sendText,

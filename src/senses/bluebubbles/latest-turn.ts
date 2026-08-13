@@ -112,6 +112,20 @@ export function clearPending(reservation: BlueBubblesObservationReservation): vo
   settlePending(reservation.ordinal)
 }
 
+export function reactivateObservation(reservation: BlueBubblesObservationReservation): void {
+  if (pending.has(reservation.ordinal)) return
+  let settle!: () => void
+  const settled = new Promise<void>((resolve) => {
+    settle = resolve
+  })
+  pending.set(reservation.ordinal, {
+    reservation,
+    hints: new Set(reservation.hints),
+    settled,
+    settle,
+  })
+}
+
 function bindIdentifier(identifier: string, guid: string): boolean {
   const existing = identifierBindings.get(identifier)
   if (existing === undefined) {

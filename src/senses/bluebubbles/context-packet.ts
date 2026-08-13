@@ -193,7 +193,6 @@ export async function buildBlueBubblesContextPacket(
   const verifiedRows = validateAnchorInclusiveQuery(query, event, exactChatGuid)
   if (!verifiedRows || verifiedRows.length < 2) return null
   const predecessor = verifiedRows[1]
-  if (event.timestamp - predecessor.timestamp > BLUEBUBBLES_CONTEXT_PACKET_MAX_AGE_MS) return null
   const history = [
     predecessor,
     ...verifiedRows.slice(2)

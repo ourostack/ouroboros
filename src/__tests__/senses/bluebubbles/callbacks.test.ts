@@ -100,9 +100,9 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
       await vi.advanceTimersByTimeAsync(10 * 60_000)
 
       expect(sendText).not.toHaveBeenCalled()
-      expect(setTyping).toHaveBeenCalledWith(expect.anything(), true)
+      expect(setTyping).toHaveBeenCalledWith(expect.anything(), true, expect.any(AbortSignal))
       await (callbacks as any).finish()
-      expect(setTyping).toHaveBeenCalledWith(expect.anything(), false)
+      expect(setTyping).toHaveBeenCalledWith(expect.anything(), false, expect.any(AbortSignal))
     } finally {
       vi.useRealTimers()
     }
@@ -249,7 +249,7 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
 
       callbacks.onModelStart()
       await vi.advanceTimersByTimeAsync(0)
-      expect(setTyping).toHaveBeenCalledWith(chat, true)
+      expect(setTyping).toHaveBeenCalledWith(chat, true, expect.any(AbortSignal))
       await vi.advanceTimersByTimeAsync(10 * 60_000)
       expect(sendText).not.toHaveBeenCalled()
 
@@ -289,15 +289,15 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
 
       callbacks.onModelStart()
       await vi.advanceTimersByTimeAsync(0)
-      expect(setTyping).toHaveBeenCalledWith(chat, true)
+      expect(setTyping).toHaveBeenCalledWith(chat, true, expect.any(AbortSignal))
       callbacks.cancelOutbound("superseded")
       const cleanup = callbacks.finish({ timeoutMs: 1 })
       await vi.advanceTimersByTimeAsync(1)
       await cleanup
 
       expect(setTyping.mock.calls).toEqual([
-        [chat, true],
-        [chat, false],
+        [chat, true, expect.any(AbortSignal)],
+        [chat, false, expect.any(AbortSignal)],
       ])
 
       // Simulate the next canonical turn starting only after the old turn's
@@ -308,6 +308,104 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
 
       expect(setTyping.mock.calls.at(-1)).toEqual([chat, true])
       expect(setTyping.mock.calls.filter(([, active]) => active === false)).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("aborts and replaces an already-queued stop before a newer turn can start", async () => {
+    vi.useFakeTimers()
+    try {
+      const indexModule = await import("../../../senses/bluebubbles")
+      const effects: string[] = []
+      let staleStopSignal: AbortSignal | undefined
+      let releaseStaleStop = (): void => undefined
+      let typingCall = 0
+      const setTyping = vi.fn((_chat: unknown, active: boolean, signal?: AbortSignal) => {
+        typingCall += 1
+        if (typingCall === 1) {
+          effects.push("A:true")
+          return Promise.resolve()
+        }
+        if (typingCall === 2) {
+          staleStopSignal = signal
+          return new Promise<void>((resolve, reject) => {
+            releaseStaleStop = () => {
+              if (!signal?.aborted) effects.push("A:false:late")
+              resolve()
+            }
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+          })
+        }
+        effects.push("A:false:fallback")
+        return Promise.resolve()
+      })
+      const chat = { chatGuid: "chat-1", participants: [] } as any
+      const callbacks = indexModule.createBlueBubblesCallbacks(
+        {
+          sendText: vi.fn(async () => ({ messageGuid: "sent-guid" })),
+          editMessage: vi.fn(),
+          setTyping,
+          markChatRead: vi.fn(async () => {}),
+          checkHealth: vi.fn(),
+          repairEvent: vi.fn(),
+          getMessageText: vi.fn(),
+        } as any,
+        chat,
+        { getReplyToMessageGuid: vi.fn(), setSelection: vi.fn() } as any,
+        false,
+      )
+
+      callbacks.onModelStart()
+      await vi.advanceTimersByTimeAsync(0)
+      const flush = callbacks.flush()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(staleStopSignal).toBeInstanceOf(AbortSignal)
+
+      const cleanup = callbacks.finish({ timeoutMs: 1 })
+      await vi.advanceTimersByTimeAsync(1)
+      await cleanup
+      releaseStaleStop()
+      await flush
+
+      expect(staleStopSignal?.aborted).toBe(true)
+      expect(effects).toEqual(["A:true", "A:false:fallback"])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("invalidates a stop still queued behind a timed-out typing start", async () => {
+    vi.useFakeTimers()
+    try {
+      const indexModule = await import("../../../senses/bluebubbles")
+      const chat = { chatGuid: "chat-1", participants: [] } as any
+      const setTyping = vi.fn((_chat: unknown, active: boolean) => (
+        active ? new Promise<void>(() => undefined) : Promise.resolve()
+      ))
+      const callbacks = indexModule.createBlueBubblesCallbacks(
+        {
+          sendText: vi.fn(async () => ({ messageGuid: "sent-guid" })),
+          editMessage: vi.fn(),
+          setTyping,
+          markChatRead: vi.fn(() => new Promise<void>(() => undefined)),
+          checkHealth: vi.fn(),
+          repairEvent: vi.fn(),
+          getMessageText: vi.fn(),
+        } as any,
+        chat,
+        { getReplyToMessageGuid: vi.fn(), setSelection: vi.fn() } as any,
+        false,
+      )
+
+      callbacks.onModelStart()
+      await vi.advanceTimersByTimeAsync(0)
+      const cleanup = callbacks.finish({ timeoutMs: 1 })
+      await vi.advanceTimersByTimeAsync(1)
+      await cleanup
+
+      expect(setTyping.mock.calls.map(([, active]) => active)).toEqual([true, false])
+      expect(setTyping.mock.calls[1]?.[2]).toBeInstanceOf(AbortSignal)
     } finally {
       vi.useRealTimers()
     }

@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest"
 import type OpenAI from "openai"
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 import { applyPromptBudget } from "../../mind/prompt-budget"
 import {
@@ -66,6 +68,29 @@ function message(input: {
 afterEach(() => {
   __resetBlueBubblesLatestTurnsForTests()
   vi.useRealTimers()
+})
+
+it("keeps capture-only reactions free of orphaned inference, target lookup, and progress timers", () => {
+  const sourceByPath = new Map([
+    ["src/heart/core.ts", fs.readFileSync(path.join(process.cwd(), "src/heart/core.ts"), "utf8")],
+    ["src/repertoire/tools.ts", fs.readFileSync(path.join(process.cwd(), "src/repertoire/tools.ts"), "utf8")],
+    ["src/senses/bluebubbles/index.ts", fs.readFileSync(path.join(process.cwd(), "src/senses/bluebubbles/index.ts"), "utf8")],
+    ["src/senses/bluebubbles/client.ts", fs.readFileSync(path.join(process.cwd(), "src/senses/bluebubbles/client.ts"), "utf8")],
+  ])
+  const forbidden = [
+    "restrictedReactionFeedback",
+    "getRestrictedReactionFeedbackTools",
+    "resolveReactionTarget",
+    "getMessageDetails",
+    "createStatusBatcher",
+    "restricted_feedback_",
+  ]
+
+  for (const [sourcePath, source] of sourceByPath) {
+    for (const token of forbidden) {
+      expect(source, `${sourcePath} must not retain ${token}`).not.toContain(token)
+    }
+  }
 })
 
 it("replays the RSVP request, grounded response, and later reaction without losing causal orientation", async () => {

@@ -350,9 +350,6 @@ describe("BlueBubbles context packet builder", () => {
     ["a mismatched anchor identity", (anchor: ReturnType<typeof message>) => ({
       messages: [{ ...anchor, timestamp: anchor.timestamp - 1 }, message({ messageGuid: "prior", timestamp: anchor.timestamp - 2 })],
     })],
-    ["an out-of-window predecessor", (anchor: ReturnType<typeof message>) => ({
-      messages: [anchor, message({ messageGuid: "too-old", timestamp: anchor.timestamp - (48 * 60 * 60 * 1000) - 1 })],
-    })],
   ])("fails closed when the anchor-inclusive query contains %s", async (_label, build) => {
     const anchor = message()
     const shape = build(anchor) as Record<string, any>
@@ -364,6 +361,26 @@ describe("BlueBubbles context packet builder", () => {
       client,
       event: anchor,
     })).resolves.toBeNull()
+  })
+
+  it("keeps the exact verified predecessor even when it is older than the optional history window", async () => {
+    const anchor = message()
+    const predecessor = message({
+      messageGuid: "older-required-predecessor",
+      timestamp: anchor.timestamp - (48 * 60 * 60 * 1000) - 1,
+      text: "the exact prior turn still orients this reply",
+    })
+    const client = metadataClient(anchor, [anchor, predecessor])
+    const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
+
+    const result = await buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client,
+      event: anchor,
+    })
+
+    expect(result?.verifiedPredecessorMessage.content).toContain("the exact prior turn still orients this reply")
+    expect(result?.historyCount).toBe(1)
   })
 
   it("requires an exact chat guid and metadata-capable query", async () => {

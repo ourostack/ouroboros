@@ -38,7 +38,6 @@ import {
   type BlueBubblesChatRef,
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
-  type BlueBubblesReactionTarget,
 } from "./model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
 import {
@@ -79,6 +78,7 @@ import {
   finish as finishLatestTurn,
   isCurrent as isLatestTurnCurrent,
   promote as promoteLatestTurn,
+  reactivateObservation,
   reserveObservation,
   type BlueBubblesLatestTurnCapability,
   type BlueBubblesObservationReservation,
@@ -103,7 +103,10 @@ const bbFailoverStates = new Map<string, FailoverState>()
 
 interface BlueBubblesSemanticHandlingSlot {
   reservation: BlueBubblesObservationReservation
-  waiters: Array<(acquisition: BlueBubblesSemanticHandlingAcquisition) => void>
+  waiters: Array<{
+    reservation: BlueBubblesObservationReservation
+    resolve: (acquisition: BlueBubblesSemanticHandlingAcquisition) => void
+  }>
 }
 
 type BlueBubblesSemanticHandlingAcquisition =
@@ -131,18 +134,21 @@ async function acquireBlueBubblesSemanticHandlingSlot(
   }
   clearPending(initialReservation)
   return await new Promise<BlueBubblesSemanticHandlingAcquisition>((resolve) => {
-    active.waiters.push(resolve)
+    active.waiters.push({ reservation: initialReservation, resolve })
   })
 }
 
 function prepareBlueBubblesSemanticHandlingRetry(
   slot: BlueBubblesSemanticHandlingSlot,
-  event: BlueBubblesNormalizedEvent,
 ): void {
-  if (slot.waiters.length === 0) return
-  const replacement = reserveBlueBubblesObservation(event)
+  const next = slot.waiters[0]
+  if (!next || slot.reservation === next.reservation) return
+  // Duplicate observations keep the ordinal assigned at ingress. Suspend them
+  // while another same-key owner is active, then restore that exact reservation
+  // before retiring the failed owner so no delivery-admission gap is opened.
+  reactivateObservation(next.reservation)
   clearPending(slot.reservation)
-  slot.reservation = replacement
+  slot.reservation = next.reservation
 }
 
 function releaseBlueBubblesSemanticHandlingSlot(
@@ -151,16 +157,18 @@ function releaseBlueBubblesSemanticHandlingSlot(
   outcome: "terminal" | "retryable",
 ): void {
   if (outcome === "retryable") {
+    prepareBlueBubblesSemanticHandlingRetry(slot)
     const next = slot.waiters.shift()
     if (next) {
-      next({ status: "owner", slot, reservation: slot.reservation })
+      next.resolve({ status: "owner", slot, reservation: slot.reservation })
       return
     }
   }
   clearPending(slot.reservation)
   activeSemanticHandlingSlots.delete(keyHash)
-  for (const resolve of slot.waiters.splice(0)) {
-    resolve({ status: "handled_by_owner" })
+  for (const waiter of slot.waiters.splice(0)) {
+    clearPending(waiter.reservation)
+    waiter.resolve({ status: "handled_by_owner" })
   }
 }
 
@@ -203,24 +211,6 @@ type BlueBubblesCallbacks = ChannelCallbacks & {
   cancelOutbound(reason: "turn_timeout" | "superseded"): void
 }
 
-// Resolve the message a reaction points at, so the agent is told *what* was
-// reacted to and *whose* message it was rather than a bare "reacted with love".
-// Prefers the authorship-carrying lookup; falls back to text-only when the client
-// does not provide one. Every failure path returns an explicit "unknown" rather
-// than a value the caller could mistake for a resolved target.
-export async function resolveReactionTarget(
-  client: Pick<BlueBubblesClient, "getMessageText" | "getMessageDetails">,
-  targetMessageGuid: string,
-): Promise<BlueBubblesReactionTarget> {
-  const base: BlueBubblesReactionTarget = { guid: targetMessageGuid }
-  if (client.getMessageDetails) {
-    const details = await client.getMessageDetails(targetMessageGuid).catch(() => null)
-    return { ...base, text: details?.text ?? null, fromMe: details?.fromMe ?? null }
-  }
-  const text = await client.getMessageText(targetMessageGuid).catch(() => null)
-  return { ...base, text, fromMe: null }
-}
-
 // ── Near-duplicate outward-text detection ────────────────────────
 // Used by createBlueBubblesCallbacks to collapse mid-turn rephrasings of the
 // same answer/status into a single delivery. Exposed for direct unit testing
@@ -245,57 +235,12 @@ export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   return intersection / union
 }
 
-export interface StatusBatcher {
-  add(text: string): void
-  flush(): void
-}
-
-/**
- * Accumulates status descriptions and debounces them.
- * If multiple descriptions arrive within `delayMs`, they are joined with ` · `
- * and sent as a single message. Flush sends immediately and clears the timer.
- */
-export function createStatusBatcher(send: (text: string) => void, delayMs: number): StatusBatcher {
-  emitNervesEvent({
-    component: "senses",
-    event: "senses.bluebubbles_status_batcher_created",
-    message: "status batcher initialized",
-    meta: { delayMs },
-  })
-
-  let pending: string[] = []
-  let timer: ReturnType<typeof setTimeout> | null = null
-
-  function fire(): void {
-    if (pending.length === 0) return
-    const combined = pending.join(" \u00b7 ")
-    pending = []
-    timer = null
-    send(combined)
-  }
-
-  return {
-    add(text: string): void {
-      pending.push(text)
-      if (timer !== null) clearTimeout(timer)
-      timer = setTimeout(fire, delayMs)
-    },
-    flush(): void {
-      if (timer !== null) {
-        clearTimeout(timer)
-        timer = null
-      }
-      fire()
-    },
-  }
-}
-
 export interface BlueBubblesHandleResult {
   handled: boolean
   /** Legacy field name: true only when this inbound reached an accepted terminal transport. */
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_failed" | "no_visible_reply" | "restricted_feedback_settled" | "restricted_feedback_observed" | "restricted_feedback_failed"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_failed" | "no_visible_reply"
 }
 
 function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string {
@@ -434,7 +379,6 @@ interface BlueBubblesHandleOptions {
   timeoutMs?: number
   autonomyBudgetTrigger?: "recovery"
   semanticRecovery?: boolean
-  resolvedReactionTarget?: BlueBubblesReactionTarget
   observationReservation?: BlueBubblesObservationReservation
 }
 
@@ -465,14 +409,33 @@ class BlueBubblesActivityTimeoutError extends Error {
 function withBlueBubblesActivityTimeout<T>(
   operation: string,
   timeoutMs: number,
-  task: () => Promise<T>,
+  controller: AbortController,
+  task: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null
+  /* v8 ignore next -- queue gates prevent a pre-aborted controller from entering the activity helper @preserve */
+  let removeAbortListener = (): void => undefined
+  const aborted = new Promise<never>((_, reject) => {
+    const rejectFromAbort = (): void => {
+      reject(controller.signal.reason ?? /* v8 ignore next -- AbortController supplies a reason in supported runtimes @preserve */ new Error(`bluebubbles ${operation} activity aborted`))
+    }
+    /* v8 ignore start -- queue gates prevent a pre-aborted controller from entering the activity helper @preserve */
+    if (controller.signal.aborted) {
+      rejectFromAbort()
+      return
+    }
+    /* v8 ignore stop */
+    controller.signal.addEventListener("abort", rejectFromAbort, { once: true })
+    removeAbortListener = () => controller.signal.removeEventListener("abort", rejectFromAbort)
+  })
   return Promise.race([
-    task(),
+    Promise.resolve().then(() => task(controller.signal)),
+    aborted,
     new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new BlueBubblesActivityTimeoutError(operation, timeoutMs))
+        const error = new BlueBubblesActivityTimeoutError(operation, timeoutMs)
+        controller.abort(error)
+        reject(error)
       }, timeoutMs)
       /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
       if (typeof (timer as { unref?: () => void }).unref === "function") {
@@ -480,6 +443,7 @@ function withBlueBubblesActivityTimeout<T>(
       }
     }),
   ]).finally(() => {
+    removeAbortListener()
     /* v8 ignore next -- timer is assigned unless a callback task throws synchronously; callback tasks are async @preserve */
     if (timer !== null) clearTimeout(timer)
   })
@@ -979,10 +943,12 @@ export function createBlueBubblesCallbacks(
 ): BlueBubblesCallbacks {
   let textBuffer = ""
   let typingActive = false
+  let typingCouldBeActive = false
   let queue = Promise.resolve()
   let outboundClosed = false
   let nextCleanupToken = 0
   const activeCleanupTokens = new Set<number>()
+  const activeActivityControllers = new Set<AbortController>()
   // Per-turn outward-send dedupe. A single createBlueBubblesCallbacks lifetime
   // serves one inbound turn, so collapsing identical outward bodies inside
   // this closure is scoped tightly: each fresh inbound turn starts with an
@@ -1011,8 +977,14 @@ export function createBlueBubblesCallbacks(
     return true
   }
 
-  function enqueue(operation: string, task: () => Promise<void>, enqueueOptions: { cleanupToken?: number } = {}): void {
+  function enqueue(
+    operation: string,
+    task: (signal: AbortSignal) => Promise<void>,
+    enqueueOptions: { cleanupToken?: number } = {},
+  ): void {
     const cleanupToken = enqueueOptions.cleanupToken
+    const controller = new AbortController()
+    activeActivityControllers.add(controller)
     queue = queue
       .then(async () => {
         if (cleanupToken === undefined) {
@@ -1020,9 +992,15 @@ export function createBlueBubblesCallbacks(
         } else if (!activeCleanupTokens.has(cleanupToken)) {
           return
         }
-        await withBlueBubblesActivityTimeout(operation, BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS, task)
+        await withBlueBubblesActivityTimeout(
+          operation,
+          BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS,
+          controller,
+          task,
+        )
       })
       .catch((error) => {
+        if (controller.signal.aborted && !(error instanceof BlueBubblesActivityTimeoutError)) return
         emitNervesEvent({
           level: "warn",
           component: "senses",
@@ -1031,15 +1009,25 @@ export function createBlueBubblesCallbacks(
           meta: { operation, reason: error instanceof Error ? error.message : String(error) },
         })
       })
+      .finally(() => {
+        activeActivityControllers.delete(controller)
+      })
+  }
+
+  function abortActiveActivity(reason: string): void {
+    for (const controller of activeActivityControllers) {
+      controller.abort(new Error(reason))
+    }
   }
 
   function enqueueTypingStop(): void {
     typingActive = false
     const cleanupToken = ++nextCleanupToken
     activeCleanupTokens.add(cleanupToken)
-    enqueue("typing_stop", async () => {
+    enqueue("typing_stop", async (signal) => {
       try {
-        await client.setTyping(chat, false)
+        await client.setTyping(chat, false, signal)
+        typingCouldBeActive = false
       } finally {
         activeCleanupTokens.delete(cleanupToken)
       }
@@ -1052,10 +1040,11 @@ export function createBlueBubblesCallbacks(
     /* v8 ignore next -- defensive guard: public callback entrypoints already drop after outbound close @preserve */
     if (outboundClosed) return
     typingActive = true
-    enqueue("typing_start", async () => {
+    typingCouldBeActive = true
+    enqueue("typing_start", async (signal) => {
       const [markReadResult, typingResult] = await Promise.allSettled([
-        client.markChatRead(chat),
-        client.setTyping(chat, true),
+        client.markChatRead(chat, signal),
+        client.setTyping(chat, true, signal),
       ])
       if (markReadResult.status === "rejected") {
         emitBlueBubblesMarkReadWarning(chat, markReadResult.reason)
@@ -1282,17 +1271,27 @@ export function createBlueBubblesCallbacks(
         operation: "finish",
         chatGuid: chat.chatGuid ?? null,
       })
-      if (!drained && needsTypingStop) {
+      if (!drained) {
         // The queued start/read request may outlive this turn's bounded lane.
         // Invalidate its deferred stop, then issue one stop request now while A
         // still owns the canonical lock so B cannot start typing ahead of it.
         activeCleanupTokens.clear()
+        abortActiveActivity("bluebubbles activity superseded by bounded cleanup")
+        await waitForBlueBubblesCallbackCleanup(queue, cleanupTimeoutMs, {
+          operation: "finish_after_activity_abort",
+          chatGuid: chat.chatGuid ?? null,
+        })
+      }
+      if (typingCouldBeActive) {
+        const fallbackController = new AbortController()
         try {
           await withBlueBubblesActivityTimeout(
             "typing_stop_fallback",
             cleanupTimeoutMs,
-            () => client.setTyping(chat, false),
+            fallbackController,
+            (signal) => client.setTyping(chat, false, signal),
           )
+          typingCouldBeActive = false
         } catch (error) {
           emitNervesEvent({
             level: "warn",
@@ -1305,7 +1304,6 @@ export function createBlueBubblesCallbacks(
             },
           })
         }
-        return
       }
       activeCleanupTokens.clear()
     },
@@ -1313,6 +1311,7 @@ export function createBlueBubblesCallbacks(
     cancelOutbound(reason: "turn_timeout" | "superseded"): void {
       outboundClosed = true
       textBuffer = ""
+      abortActiveActivity(`bluebubbles outbound ${reason}`)
       emitNervesEvent({
         level: "warn",
         component: "senses",
@@ -2542,8 +2541,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
   try {
     claim = await acquireBlueBubblesSemanticClaim(agentName, identity)
   } catch (error) {
-    clearPending(reservation)
-    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot, captured.normalized)
+    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot)
     releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot, "retryable")
     throw error
   }
@@ -2557,7 +2555,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
     }
   }
   if (claim.status === "timeout") {
-    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot, captured.normalized)
+    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot)
     releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot, "retryable")
     return {
       handled: false,
@@ -2729,7 +2727,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
     return result
   } finally {
     if (!semanticHandlingCompleted) {
-      prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot, captured.normalized)
+      prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot)
     }
     if (latestTurnCapability) finishLatestTurn(latestTurnCapability)
     try {
@@ -3061,7 +3059,26 @@ export async function catchUpMissedBlueBubblesMessages(
     })
     .sort((left, right) => left.timestamp - right.timestamp)
 
-  for (const event of candidates) {
+  // Observation order is assigned when the upstream batch is in hand, not
+  // lazily after earlier rows finish. Otherwise a live B observed while R1 is
+  // awaiting could be assigned before an already-enumerated R2, allowing R2
+  // to supersede B even though the provider had already shown us R2 first.
+  let hasActivePreparedObservation = false
+  const preparedCandidates = candidates.map((event) => {
+    const observationReservation = !event.fromMe && !(event.timestamp < catchUpSince)
+      ? reserveBlueBubblesObservation(event)
+      : null
+    if (observationReservation) {
+      if (hasActivePreparedObservation) {
+        clearPending(observationReservation)
+      } else {
+        hasActivePreparedObservation = true
+      }
+    }
+    return { event, observationReservation }
+  })
+
+  for (const { event, observationReservation } of preparedCandidates) {
     result.inspected++
     if (
       event.fromMe
@@ -3072,7 +3089,9 @@ export async function catchUpMissedBlueBubblesMessages(
     }
 
     try {
-      const observationReservation = reserveBlueBubblesObservation(event)
+      /* v8 ignore next -- eligible candidates are reserved synchronously above @preserve */
+      if (!observationReservation) throw new Error("bluebubbles_observation_reservation_missing")
+      reactivateObservation(observationReservation)
       let captured: BlueBubblesSemanticCaptureResult
       try {
         captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
@@ -3155,21 +3174,57 @@ export async function recoverCapturedBlueBubblesInboundMessages(
   const candidates = listPendingBlueBubblesSemanticCaptures(agentName)
     .sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))
 
+  let hasActivePreparedObservation = false
+  const preparedCandidates: Array<{
+    capture: BlueBubblesSemanticCaptureV1
+    normalized: BlueBubblesDirectionObservedEvent | null
+    observationReservation: BlueBubblesObservationReservation | null
+    skip: boolean
+  }> = []
   for (const capture of candidates) {
     if (seenKeyHashes.has(capture.keyHash)) {
-      result.skipped++
+      preparedCandidates.push({ capture, normalized: null, observationReservation: null, skip: true })
       continue
     }
     seenKeyHashes.add(capture.keyHash)
 
     const disposition = classifyBlueBubblesRecoveryRecord(capture, cutover)
     if (disposition.disposition === "audit_only" && disposition.reason !== "audit_event") {
-      result.skipped++
+      preparedCandidates.push({ capture, normalized: null, observationReservation: null, skip: true })
       continue
     }
     const normalized = semanticCaptureToNormalizedEvent(capture)
+    const observationReservation = normalized ? reserveBlueBubblesObservation(normalized) : null
+    if (observationReservation) {
+      if (hasActivePreparedObservation) {
+        clearPending(observationReservation)
+      } else {
+        hasActivePreparedObservation = true
+      }
+    }
+    preparedCandidates.push({
+      capture,
+      normalized,
+      observationReservation,
+      skip: false,
+    })
+  }
+
+  for (const {
+    capture,
+    normalized,
+    observationReservation,
+    skip,
+  } of preparedCandidates) {
+    if (skip) {
+      result.skipped++
+      continue
+    }
     try {
       if (!normalized) throw new Error("semantic_capture_routing_invalid")
+      /* v8 ignore next -- normalized prepared candidates always carry their reservation @preserve */
+      if (!observationReservation) throw new Error("bluebubbles_observation_reservation_missing")
+      reactivateObservation(observationReservation)
       const handled = await handleCapturedBlueBubblesSemanticEvent({
         status: "captured",
         capture,
@@ -3179,6 +3234,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
         autonomyBudgetTrigger: "recovery",
         semanticRecovery: true,
+        ...(observationReservation ? { observationReservation } : {}),
       })
       if (handled.reason === "semantic_claim_timeout") {
         continue
@@ -3189,6 +3245,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
         result.recovered++
       }
     } catch (error) {
+      if (observationReservation) clearPending(observationReservation)
       if (normalized) recordBlueBubblesRecoveryFailureForBudget(agentName, normalized, "webhook")
       result.failed++
       emitNervesEvent({

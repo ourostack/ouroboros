@@ -489,6 +489,37 @@ describe("BlueBubbles client", () => {
     )
   })
 
+  it("combines caller cancellation with typing and read request timeouts", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response("", { status: 200 })) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      {
+        serverUrl: "http://bluebubbles.local",
+        password: "secret-token",
+        accountId: "default",
+      },
+      {
+        port: 18790,
+        webhookPath: "/bluebubbles-webhook",
+        requestTimeoutMs: 30000,
+      },
+    )
+    const readController = new AbortController()
+    const typingController = new AbortController()
+
+    await client.markChatRead(dmChat, readController.signal)
+    await client.setTyping(dmChat, true, typingController.signal)
+    const readSignal = vi.mocked(global.fetch).mock.calls[0]?.[1]?.signal
+    const typingSignal = vi.mocked(global.fetch).mock.calls[1]?.[1]?.signal
+    readController.abort(new Error("read superseded"))
+    typingController.abort(new Error("typing superseded"))
+
+    expect(readSignal?.aborted).toBe(true)
+    expect(typingSignal?.aborted).toBe(true)
+  })
+
   it("surfaces edit, typing, and read transport errors with response details", async () => {
     global.fetch = vi
       .fn()
@@ -3150,99 +3181,6 @@ describe("BlueBubbles client", () => {
 
       const text = await client.getMessageText("msg-guid-nonstring")
       expect(text).toBeNull()
-    })
-  })
-
-  describe("getMessageDetails", () => {
-    function makeClient() {
-      return import("../../../senses/bluebubbles/client").then(({ createBlueBubblesClient }) =>
-        createBlueBubblesClient(
-          { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
-          { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
-        ))
-    }
-
-    it("returns text and authorship when the API responds with a valid payload", async () => {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ data: { text: "  hotel AC rundown  ", isFromMe: true } }), { status: 200 }),
-      ) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-1")).toEqual({
-        text: "hotel AC rundown",
-        fromMe: true,
-      })
-    })
-
-    it("reports unknown text and authorship rather than guessing", async () => {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ data: { text: "   ", isFromMe: "yes" } }), { status: 200 }),
-      ) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-2")).toEqual({ text: null, fromMe: null })
-    })
-
-    it("reports unknown text when the payload carries no text field", async () => {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ data: { isFromMe: false } }), { status: 200 }),
-      ) as typeof fetch
-
-      const client = await makeClient()
-
-      // An attachment-only or system message still resolves authorship; text stays
-      // unknown rather than being rendered as an empty quote in the reaction excerpt.
-      expect(await client.getMessageDetails?.("msg-details-3")).toEqual({ text: null, fromMe: false })
-    })
-
-    it("returns null when the API returns a non-ok status", async () => {
-      global.fetch = vi.fn().mockResolvedValue(new Response("Not Found", { status: 404 })) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-404")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        meta: expect.objectContaining({ status: 404 }),
-      }))
-    })
-
-    it("returns null when the payload is not a record", async () => {
-      global.fetch = vi.fn().mockResolvedValue(new Response("null", { status: 200 })) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-null")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        message: "message payload was not a record",
-      }))
-    })
-
-    it("returns null when fetch throws", async () => {
-      global.fetch = vi.fn().mockRejectedValue(new Error("network down")) as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-err")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        meta: expect.objectContaining({ reason: "network down" }),
-      }))
-    })
-
-    it("returns null when fetch throws a non-Error value", async () => {
-      global.fetch = vi.fn().mockRejectedValue("string rejection") as typeof fetch
-
-      const client = await makeClient()
-
-      expect(await client.getMessageDetails?.("msg-details-string-err")).toBeNull()
-      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "senses.bluebubbles_get_message_details_error",
-        meta: expect.objectContaining({ reason: "string rejection" }),
-      }))
     })
   })
 

@@ -12,6 +12,7 @@ import {
   finish,
   isCurrent,
   promote,
+  reactivateObservation,
   reserveObservation,
 } from "../../../senses/bluebubbles/latest-turn"
 
@@ -139,6 +140,19 @@ describe("BlueBubbles latest-turn registry", () => {
 
     clearPending(older)
     clearPending(unrelated)
+  })
+
+  it("reactivates a suspended observation without changing its original ordinal", () => {
+    const suspended = reserveObservation({ chatGuid: "chat-guid" })
+    clearPending(suspended)
+    const newer = reserveObservation({ chatGuid: "chat-guid" })
+    const newerPromotion = promote(newer, { chatGuid: "chat-guid" })
+    if (newerPromotion.status !== "promoted") throw new Error("expected newer promotion")
+
+    reactivateObservation(suspended)
+
+    expect(promote(suspended, { chatGuid: "chat-guid" })).toEqual({ status: "stale" })
+    expect(isCurrent(newerPromotion.capability)).toBe(true)
   })
 
   it("does not create an unknown lane and makes conflicting identifier aliases unresolved", () => {
