@@ -6632,8 +6632,19 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const olderReservation = latestTurns.reserveObservation({
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+    })
+    const olderPromotion = latestTurns.promote(olderReservation, {
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+    })
+    if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
     const live = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
     await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
+    const olderAdmission = latestTurns.awaitDeliveryAdmission(olderPromotion.capability)
     const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
     await waitFor(() => mocks.listPendingSemanticCaptures.mock.calls.length === 1)
 
@@ -6641,6 +6652,7 @@ describe("BlueBubbles sense runtime", () => {
 
     await expect(live).rejects.toThrow("live repair failed")
     await expect(recovery).resolves.toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    await expect(olderAdmission).resolves.toBe(false)
     expect(mocks.repairEvent).toHaveBeenCalledTimes(2)
     expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "got it" }))
   })
