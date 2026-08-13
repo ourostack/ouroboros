@@ -39,7 +39,7 @@ import {
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
 } from "./model"
-import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
+import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient } from "./client"
 import {
   listRecordedBlueBubblesInbound,
   recordBlueBubblesInbound,
@@ -57,6 +57,7 @@ import {
   buildBlueBubblesSemanticCapture,
   buildBlueBubblesSemanticIdentity,
   classifyBlueBubblesRecoveryRecord,
+  compareBlueBubblesSemanticCaptureOrder,
   initializeBlueBubblesSemanticCutover,
   listPendingBlueBubblesSemanticCaptures,
   releaseBlueBubblesSemanticClaim,
@@ -77,6 +78,7 @@ import {
   cancel as cancelLatestTurn,
   clearPending,
   finish as finishLatestTurn,
+  isDeliveryAdmittedNow,
   isCurrent as isLatestTurnCurrent,
   mergeObservationReservations,
   observationSchedulingKeys,
@@ -1008,6 +1010,7 @@ export function createBlueBubblesCallbacks(
     enableActivitySignals?: boolean
     admitOutbound?: () => Promise<boolean>
     isOutboundCurrent?: () => boolean
+    isOutboundAdmittedNow?: () => boolean
     onFinalTransportInvoked?: () => void
     onFinalTransportAccepted?: () => void
     durableOutbound?: {
@@ -1353,6 +1356,11 @@ export function createBlueBubblesCallbacks(
           replyToMessageGuid,
           ...(durableReservation ? { tempGuid: durableReservation.record.tempGuid } : {}),
           ...(flushOptions.signal ? { signal: flushOptions.signal } : {}),
+          beforeTransportInvocation: () => (
+            !outboundClosed
+            && (!options.isOutboundCurrent || options.isOutboundCurrent())
+            && (!options.isOutboundAdmittedNow || options.isOutboundAdmittedNow())
+          ),
           onTransportInvocation: options.onFinalTransportInvoked,
         })
       } catch (error) {
@@ -1377,15 +1385,35 @@ export function createBlueBubblesCallbacks(
             })
           }
         }
+        if (
+          error instanceof BlueBubblesSendError
+          && error.transportInvoked === false
+          && error.errorCode === "admission_denied"
+        ) {
+          return { status: "not_invoked", reason: "not_current" }
+        }
         throw error
       }
       if (durableReservation && durableOutbound) {
-        markBlueBubblesOutboundAccepted({
-          agentRoot: durableOutbound.agentRoot,
-          recordId: durableReservation.record.recordId,
-          acceptedAt: new Date().toISOString(),
-          ...(response.messageGuid ? { messageGuid: response.messageGuid } : {}),
-        })
+        try {
+          markBlueBubblesOutboundAccepted({
+            agentRoot: durableOutbound.agentRoot,
+            recordId: durableReservation.record.recordId,
+            acceptedAt: new Date().toISOString(),
+            ...(response.messageGuid ? { messageGuid: response.messageGuid } : {}),
+          })
+        } catch (stateError) {
+          emitNervesEvent({
+            level: "error",
+            component: "senses",
+            event: "senses.bluebubbles_outbound_state_error",
+            message: "failed to record accepted bluebubbles outbound transport",
+            meta: {
+              recordId: durableReservation.record.recordId,
+              reason: String(stateError),
+            },
+          })
+        }
       }
       options.onFinalTransportAccepted?.()
       recordVisibleActivity()
@@ -1905,6 +1933,7 @@ async function handleBlueBubblesNormalizedEvent(
       {
         admitOutbound: () => awaitDeliveryAdmission(options.latestTurnCapability),
         isOutboundCurrent: () => isLatestTurnCurrent(options.latestTurnCapability),
+        isOutboundAdmittedNow: () => isDeliveryAdmittedNow(options.latestTurnCapability),
         onFinalTransportInvoked: () => {
           finalTransportInvoked = true
         },
@@ -2377,8 +2406,10 @@ async function captureBlueBubblesSemanticEvent(
   normalized: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
+  observationReservation?: BlueBubblesObservationReservation,
 ): Promise<BlueBubblesSemanticCaptureResult> {
   const agentName = resolvedDeps.getAgentName()
+  const capturedAt = new Date().toISOString()
   if (!hasObservedBlueBubblesDirection(normalized)) {
     emitNervesEvent({
       level: "warn",
@@ -2428,7 +2459,13 @@ async function captureBlueBubblesSemanticEvent(
 
   const capture = buildBlueBubblesSemanticCapture({
     cutover,
-    capturedAt: new Date().toISOString(),
+    capturedAt,
+    ...(observationReservation
+      ? {
+          observationEpoch: observationReservation.observationEpoch,
+          observationOrdinal: observationReservation.ordinal,
+        }
+      : {}),
     event: observed,
     targetAuthorship: null,
     coordinateGeneration,
@@ -2640,7 +2677,7 @@ export function seedBlueBubblesStartupSemanticObservations(
   let seeded = 0
 
   for (const capture of listPendingBlueBubblesSemanticCaptures(agentName)
-    .sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))) {
+    .sort(compareBlueBubblesSemanticCaptureOrder)) {
     const disposition = classifyBlueBubblesRecoveryRecord(capture, cutover)
     if (disposition.disposition === "audit_only") continue
     const normalized = semanticCaptureToNormalizedEvent(capture)
@@ -3018,7 +3055,12 @@ export async function handleBlueBubblesEvent(
   const observationReservation = reserveBlueBubblesObservation(normalized)
   let captured: BlueBubblesSemanticCaptureResult
   try {
-    captured = await captureBlueBubblesSemanticEvent(normalized, resolvedDeps, "webhook")
+    captured = await captureBlueBubblesSemanticEvent(
+      normalized,
+      resolvedDeps,
+      "webhook",
+      observationReservation,
+    )
   } catch (error) {
     clearPending(observationReservation)
     throw error
@@ -3355,7 +3397,12 @@ export async function catchUpMissedBlueBubblesMessages(
       let semanticGenerationOwned = false
 
       try {
-        const captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
+        const captured = await captureBlueBubblesSemanticEvent(
+          event,
+          resolvedDeps,
+          "upstream-catchup",
+          observationReservation,
+        )
         if (captured.status === "audit_only") {
           clearPending(observationReservation)
           result.skipped++
@@ -3452,7 +3499,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
   const result: BlueBubblesCapturedRecoveryResult = { recovered: 0, skipped: 0, failed: 0 }
   const seenKeyHashes = new Set<string>()
   const candidates = listPendingBlueBubblesSemanticCaptures(agentName)
-    .sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))
+    .sort(compareBlueBubblesSemanticCaptureOrder)
 
   type PreparedCapturedRecoveryCandidate =
     | { status: "skip"; capture: BlueBubblesSemanticCaptureV1 }
@@ -3687,7 +3734,12 @@ export function createBlueBubblesWebhookHandler(
     const observationReservation = reserveBlueBubblesObservation(normalized)
     let captured: BlueBubblesSemanticCaptureResult
     try {
-      captured = await captureBlueBubblesSemanticEvent(normalized, resolvedDeps, "webhook")
+      captured = await captureBlueBubblesSemanticEvent(
+        normalized,
+        resolvedDeps,
+        "webhook",
+        observationReservation,
+      )
     } catch (error) {
       clearPending(observationReservation)
       emitNervesEvent({

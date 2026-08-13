@@ -165,11 +165,46 @@ describe("BlueBubbles client", () => {
     const result = await (client.sendText as any)({
       chat: dmChat,
       text: "boundary marker",
+      beforeTransportInvocation: () => {
+        order.push("admission")
+        return true
+      },
       onTransportInvocation: () => order.push("boundary"),
     })
 
     expect(result).toEqual({ messageGuid: "sent-guid" })
-    expect(order).toEqual(["boundary", "fetch"])
+    expect(order).toEqual(["admission", "boundary", "fetch"])
+  })
+
+  it("rechecks delivery admission after route resolution and before transport invocation", async () => {
+    const order: string[] = []
+    global.fetch = vi.fn(async () => {
+      order.push("fetch")
+      return new Response(JSON.stringify({ data: { guid: "stale-guid" } }), { status: 200 })
+    }) as typeof fetch
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+
+    const error = await (client.sendText as any)({
+      chat: dmChat,
+      text: "must stay behind the final fence",
+      beforeTransportInvocation: () => {
+        order.push("admission")
+        return false
+      },
+      onTransportInvocation: () => order.push("boundary"),
+    }).catch((caught: unknown) => caught)
+
+    expect(error).toMatchObject({
+      name: "BlueBubblesSendError",
+      httpStatus: null,
+      errorCode: "admission_denied",
+      transportInvoked: false,
+    })
+    expect(order).toEqual(["admission"])
   })
 
   it.each([300, 399, 400, 408, 409, 425, 429, 499, 500, 503])(

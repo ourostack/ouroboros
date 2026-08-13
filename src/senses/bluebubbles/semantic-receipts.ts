@@ -41,6 +41,16 @@ const SEMANTIC_OWNERSHIP_SCHEMA_SQL = `CREATE TABLE owner_leases (
       owner_json TEXT NOT NULL
     ) STRICT, WITHOUT ROWID`
 const CAPTURE_KEYS = ["schemaVersion", "canonicalKey", "keyHash", "providerNamespace", "capturedAt", "event"]
+const CAPTURE_KEYS_WITH_OBSERVATION_CLOCK = [
+  "schemaVersion",
+  "canonicalKey",
+  "keyHash",
+  "providerNamespace",
+  "capturedAt",
+  "observationEpoch",
+  "observationOrdinal",
+  "event",
+]
 const CAPTURE_EVENT_KEYS = [
   "provider",
   "kind",
@@ -151,6 +161,8 @@ export interface BlueBubblesSemanticIdentity {
 export interface BlueBubblesSemanticCaptureInput {
   cutover: BlueBubblesSemanticCutover
   capturedAt: string
+  observationEpoch?: string
+  observationOrdinal?: number
   event: BlueBubblesNormalizedEvent
   targetAuthorship: IngressTargetAuthorship
   coordinateGeneration?: number
@@ -547,6 +559,21 @@ export function buildBlueBubblesSemanticCapture(
     ? requiredIdentifier(sender.externalId)
     : null
   if (!providerNamespace || !capturedAt || !actorExternalId) return null
+  const inputObservationEpoch = input.observationEpoch
+  const inputObservationOrdinal = input.observationOrdinal
+  const observationClock = inputObservationEpoch === undefined
+    && inputObservationOrdinal === undefined
+    ? null
+    : isBlueBubblesObservationEpoch(inputObservationEpoch)
+      && typeof inputObservationOrdinal === "number"
+      && Number.isSafeInteger(inputObservationOrdinal)
+      && inputObservationOrdinal > 0
+      ? {
+          observationEpoch: inputObservationEpoch,
+          observationOrdinal: inputObservationOrdinal,
+        }
+      : false
+  if (observationClock === false) return null
 
   const kind = input.event.kind === "message" ? "message" : input.event.mutationType
   const eventGuid = requiredIdentifier(input.event.messageGuid)
@@ -595,6 +622,7 @@ export function buildBlueBubblesSemanticCapture(
     keyHash: identity.keyHash,
     providerNamespace,
     capturedAt,
+    ...(observationClock ?? {}),
     event: {
       provider: "bluebubbles",
       kind,
@@ -801,8 +829,29 @@ export function listPendingBlueBubblesSemanticCaptures(
     captures.push(capture)
   }
   return captures.sort((left, right) => (
-    left.capturedAt.localeCompare(right.capturedAt) || left.keyHash.localeCompare(right.keyHash)
+    compareBlueBubblesSemanticCaptureOrder(left, right)
   ))
+}
+
+export function compareBlueBubblesSemanticCaptureOrder(
+  left: BlueBubblesSemanticCaptureV1,
+  right: BlueBubblesSemanticCaptureV1,
+): number {
+  if (
+    left.observationEpoch !== undefined
+    && left.observationEpoch === right.observationEpoch
+    && left.observationOrdinal !== undefined
+    && right.observationOrdinal !== undefined
+    && left.observationOrdinal !== right.observationOrdinal
+  ) {
+    return left.observationOrdinal - right.observationOrdinal
+  }
+  const capturedOrder = left.capturedAt.localeCompare(right.capturedAt)
+  if (capturedOrder !== 0) return capturedOrder
+  if (left.observationEpoch === undefined && right.observationEpoch === undefined) return 0
+  const epochOrder = (left.observationEpoch ?? "").localeCompare(right.observationEpoch ?? "")
+  if (epochOrder !== 0) return epochOrder
+  return left.keyHash.localeCompare(right.keyHash)
 }
 
 export function writeBlueBubblesSemanticHandled(
@@ -1793,7 +1842,10 @@ function isBlueBubblesSemanticCapture(
   value: unknown,
   expectedKeyHash: string,
 ): value is BlueBubblesSemanticCaptureV1 {
-  if (!isRecord(value) || !hasExactKeys(value, CAPTURE_KEYS)) return false
+  if (
+    !isRecord(value)
+    || !(hasExactKeys(value, CAPTURE_KEYS) || hasExactKeys(value, CAPTURE_KEYS_WITH_OBSERVATION_CLOCK))
+  ) return false
   if (
     value.schemaVersion !== 1
     || typeof value.canonicalKey !== "string"
@@ -1801,6 +1853,11 @@ function isBlueBubblesSemanticCapture(
     || sha256Utf8(value.canonicalKey) !== value.keyHash
     || normalizeProviderNamespace(value.providerNamespace) !== value.providerNamespace
     || exactIsoMilliseconds(value.capturedAt) === null
+    || !(value.observationEpoch === undefined
+      || (isBlueBubblesObservationEpoch(value.observationEpoch)
+        && typeof value.observationOrdinal === "number"
+        && Number.isSafeInteger(value.observationOrdinal)
+        && value.observationOrdinal > 0))
     || !isRecord(value.event)
     || !hasExactKeys(value.event, CAPTURE_EVENT_KEYS)
   ) return false
@@ -1836,6 +1893,14 @@ function isBlueBubblesSemanticCapture(
     return false
   }
   return captureIdentityMatchesEvent(value as unknown as BlueBubblesSemanticCaptureV1)
+}
+
+function isBlueBubblesObservationEpoch(value: unknown): value is string {
+  if (typeof value !== "string") return false
+  const parts = value.split("/")
+  return parts.length === 2
+    && exactIsoMilliseconds(parts[0]) !== null
+    && UUID_V4_PATTERN.test(parts[1])
 }
 
 function captureIdentityMatchesEvent(value: BlueBubblesSemanticCaptureV1): boolean {

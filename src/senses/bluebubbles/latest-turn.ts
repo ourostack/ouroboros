@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface BlueBubblesObservationHints {
@@ -6,6 +8,7 @@ export interface BlueBubblesObservationHints {
 }
 
 export interface BlueBubblesObservationReservation {
+  readonly observationEpoch: string
   readonly ordinal: number
   readonly hints: readonly string[]
 }
@@ -59,6 +62,7 @@ const lanes = new Map<string, ChatLane>()
 const identifierBindings = new Map<string, string | typeof AMBIGUOUS_IDENTIFIER>()
 const reservationHints = new WeakMap<BlueBubblesObservationReservation, Set<string>>()
 const batchReservations = new WeakMap<BlueBubblesObservationBatch, Set<number>>()
+const observationEpoch = `${new Date().toISOString()}/${randomUUID()}`
 let nextOrdinal = 0
 
 function clean(value: string | null | undefined): string | null {
@@ -107,6 +111,7 @@ function createReservation(
 ): BlueBubblesObservationReservation {
   const knownHints = new Set(observationHints(input))
   const reservation = Object.freeze({
+    observationEpoch,
     ordinal,
     get hints(): readonly string[] {
       return Object.freeze([...knownHints])
@@ -327,6 +332,14 @@ export async function awaitDeliveryAdmission(
     await Promise.all(blockers.map((entry) => entry.settled))
   }
   return false
+}
+
+export function isDeliveryAdmittedNow(
+  capability: BlueBubblesLatestTurnCapability,
+): boolean {
+  const value = internal(capability)
+  return isCurrent(value)
+    && ![...pending.values()].some((entry) => pendingIntersects(value, entry))
 }
 
 export function cancel(capability: BlueBubblesLatestTurnCapability, reason = "cancelled"): void {

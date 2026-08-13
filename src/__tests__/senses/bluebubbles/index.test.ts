@@ -226,22 +226,28 @@ vi.mock("../../../nerves/runtime", async () => {
   }
 })
 
-vi.mock("../../../senses/bluebubbles/client", () => ({
-  createBlueBubblesClient: vi.fn(() => ({
-    sendText: (...args: any[]) => {
-      args[0]?.onTransportInvocation?.()
-      return mocks.sendText(...args)
-    },
-    editMessage: (...args: any[]) => mocks.editMessage(...args),
-    setTyping: (...args: any[]) => mocks.setTyping(...args),
-    markChatRead: (...args: any[]) => mocks.markChatRead(...args),
-    checkHealth: (...args: any[]) => mocks.checkHealth(...args),
-    listRecentMessages: (...args: any[]) => mocks.listRecentMessages(...args),
-    queryRecentMessagesWithMetadata: (...args: any[]) => mocks.queryRecentMessagesWithMetadata(...args),
-    repairEvent: (...args: any[]) => mocks.repairEvent(...args),
-    getMessageText: (...args: any[]) => mocks.getMessageText(...args),
-  })),
-}))
+vi.mock("../../../senses/bluebubbles/client", async () => {
+  const actual = await vi.importActual<typeof import("../../../senses/bluebubbles/client")>(
+    "../../../senses/bluebubbles/client",
+  )
+  return {
+    ...actual,
+    createBlueBubblesClient: vi.fn(() => ({
+      sendText: (...args: any[]) => {
+        args[0]?.onTransportInvocation?.()
+        return mocks.sendText(...args)
+      },
+      editMessage: (...args: any[]) => mocks.editMessage(...args),
+      setTyping: (...args: any[]) => mocks.setTyping(...args),
+      markChatRead: (...args: any[]) => mocks.markChatRead(...args),
+      checkHealth: (...args: any[]) => mocks.checkHealth(...args),
+      listRecentMessages: (...args: any[]) => mocks.listRecentMessages(...args),
+      queryRecentMessagesWithMetadata: (...args: any[]) => mocks.queryRecentMessagesWithMetadata(...args),
+      repairEvent: (...args: any[]) => mocks.repairEvent(...args),
+      getMessageText: (...args: any[]) => mocks.getMessageText(...args),
+    })),
+  }
+})
 
 vi.mock("../../../senses/bluebubbles/semantic-receipts", async () => {
   const actual = await vi.importActual<typeof import("../../../senses/bluebubbles/semantic-receipts")>(
@@ -2984,6 +2990,114 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(record).toEqual(expect.objectContaining({ status: "accepted" }))
     expect(record).not.toHaveProperty("messageGuid")
+  })
+
+  it("preserves accepted delivery and canonical projection when its state update fails", async () => {
+    const agentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(agentRoot)
+    const capture = await makeStoredSemanticCapture(dmTopLevelPayload)
+    const outbound = await import("../../../senses/bluebubbles/outbound-state")
+    const idempotencyKey = `bluebubbles-inbound-reply:${capture.keyHash}`
+    vi.spyOn(Date, "now").mockReturnValue(1772946889999)
+    mocks.sendText.mockImplementationOnce(async () => {
+      const record = outbound.readBlueBubblesOutboundRecordByIdempotencyKey(
+        agentRoot,
+        idempotencyKey,
+      )
+      if (!record) throw new Error("expected durable outbound reservation")
+      const finalPath = outbound.blueBubblesOutboundRecordPath(agentRoot, record.recordId)
+      fs.mkdirSync(`${finalPath}.tmp-${process.pid}-${Date.now()}`)
+      return { messageGuid: "accepted-before-state-failure" }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
+    expect(mocks.postTurnPersist).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ outcome: "message_completed" }),
+    )
+    expect(outbound.readBlueBubblesOutboundRecordByIdempotencyKey(agentRoot, idempotencyKey))
+      .toEqual(expect.objectContaining({ status: "reserved" }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.bluebubbles_outbound_state_error",
+      meta: expect.objectContaining({
+        recordId: expect.any(String),
+        reason: expect.stringContaining("EISDIR"),
+      }),
+    }))
+  })
+
+  it("closes a post-admission race at the synchronous transport boundary", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const chat = {
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+      isGroup: false,
+      sessionKey: "chat:any;-;ari@mendelow.me",
+      sendTarget: { kind: "chat_guid" as const, value: "any;-;ari@mendelow.me" },
+      participantHandles: [],
+    }
+    const olderReservation = latestTurns.reserveObservation({
+      chatGuid: chat.chatGuid,
+      chatIdentifier: chat.chatIdentifier,
+    })
+    const promotion = latestTurns.promote(olderReservation, {
+      chatGuid: chat.chatGuid,
+      chatIdentifier: chat.chatIdentifier,
+    })
+    if (promotion.status !== "promoted") throw new Error("expected older turn promotion")
+    let newerReservation: ReturnType<typeof latestTurns.reserveObservation> | undefined
+    let transportInvoked = false
+    const client = {
+      sendText: vi.fn(async (params: any) => {
+        // Models the route-resolution await inside the real client: B is
+        // observed after A's initial async admission, but before fetch.
+        newerReservation = latestTurns.reserveObservation({
+          chatGuid: chat.chatGuid,
+          chatIdentifier: chat.chatIdentifier,
+        })
+        if (params.beforeTransportInvocation && !params.beforeTransportInvocation()) {
+          throw new BlueBubblesSendError({
+            message: "BlueBubbles send was not admitted at the transport boundary.",
+            httpStatus: null,
+            errorCode: "admission_denied",
+            transportInvoked: false,
+          })
+        }
+        transportInvoked = true
+        params.onTransportInvocation?.()
+        return { messageGuid: "stale-send-guid" }
+      }),
+    }
+    const callbacks = bluebubbles.createBlueBubblesCallbacks(
+      client as any,
+      chat,
+      { getReplyToMessageGuid: () => undefined } as any,
+      false,
+      undefined,
+      {
+        admitOutbound: () => latestTurns.awaitDeliveryAdmission(promotion.capability),
+        isOutboundCurrent: () => latestTurns.isCurrent(promotion.capability),
+        isOutboundAdmittedNow: () => latestTurns.isDeliveryAdmittedNow(promotion.capability),
+      },
+    )
+
+    callbacks.onTextChunk("stale answer that must not cross the boundary")
+    await expect(callbacks.flush()).resolves.toEqual({
+      status: "not_invoked",
+      reason: "not_current",
+    })
+    expect(client.sendText).toHaveBeenCalledTimes(1)
+    expect(transportInvoked).toBe(false)
+
+    if (newerReservation) latestTurns.clearPending(newerReservation)
+    latestTurns.finish(promotion.capability)
   })
 
   it("reports mark-read failures against identifier-only callback coordinates", async () => {
@@ -6909,6 +7023,52 @@ describe("BlueBubbles sense runtime", () => {
       messageGuid: "captured-older-guid",
     }))
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
+  })
+
+  it("restores same-millisecond message then reaction order from durable observation ordinals", async () => {
+    const capturedAt = "2026-08-13T10:00:00.000Z"
+    const observationEpoch = "2026-08-13T09:59:59.000Z/33333333-3333-4333-8333-333333333333"
+    const message = {
+      ...await makeStoredSemanticCapture({
+        ...dmTopLevelPayload,
+        data: {
+          ...dmTopLevelPayload.data,
+          guid: "SAME-MS-MESSAGE-BEFORE-REACTION",
+          text: "please stop the RSVP report",
+        },
+      }, { capturedAt }),
+      observationEpoch,
+      observationOrdinal: 41,
+    }
+    const reaction = {
+      ...await makeStoredSemanticCapture({
+        ...reactionPayload,
+        data: {
+          ...reactionPayload.data,
+          guid: "SAME-MS-REACTION-AFTER-MESSAGE",
+        },
+      }, { capturedAt }),
+      observationEpoch,
+      observationOrdinal: 42,
+    }
+    // This is the arbitrary filename/hash order that used to become causal
+    // authority when capturedAt tied.
+    mocks.listPendingSemanticCaptures.mockReturnValue([reaction, message])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    expect(bluebubbles.seedBlueBubblesStartupSemanticObservations()).toBe(2)
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 0, skipped: 2, failed: 0 })
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        keyHash: reaction.keyHash,
+        outcome: expect.stringMatching(/^capture_only_/),
+      }),
+    )
   })
 
   it("reserves every eligible captured observation before awaiting the first recovered turn", async () => {
@@ -12843,6 +13003,43 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
           targetAuthorship: null,
           effectiveAt: null,
         }),
+      }),
+    )
+  })
+
+  it("timestamps reaction capture before asynchronous coordinate allocation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-08-13T10:00:00.100Z"))
+    const allocationRelease = createDeferred<void>()
+    const defaultAllocate = mocks.allocateSemanticCoordinate.getMockImplementation()!
+    mocks.allocateSemanticCoordinate.mockImplementationOnce(async (...args: any[]) => {
+      await allocationRelease.promise
+      return defaultAllocate(...args)
+    })
+    const payload = {
+      ...reactionPayload,
+      data: {
+        ...reactionPayload.data,
+        guid: "REACTION-CAPTURED-BEFORE-COORDINATE-AWAIT",
+        dateCreated: undefined,
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(payload)
+    expect(mocks.allocateSemanticCoordinate).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(new Date("2026-08-13T10:00:00.900Z"))
+    allocationRelease.resolve()
+    await handling
+
+    expect(mocks.writeSemanticCapture).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        capturedAt: "2026-08-13T10:00:00.100Z",
+        observationEpoch: expect.stringMatching(
+          /^2026-08-13T10:00:00\.100Z\/[0-9a-f-]{36}$/,
+        ),
+        observationOrdinal: expect.any(Number),
       }),
     )
   })

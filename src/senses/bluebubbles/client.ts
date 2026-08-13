@@ -17,6 +17,7 @@ export interface BlueBubblesSendTextParams {
   replyToMessageGuid?: string
   tempGuid?: string
   signal?: AbortSignal
+  beforeTransportInvocation?: () => boolean
   onTransportInvocation?: () => void
 }
 
@@ -412,6 +413,14 @@ export function createBlueBubblesClient(
       })
 
       const requestTimeoutSignal = AbortSignal.timeout(channelConfig.requestTimeoutMs)
+      if (params.beforeTransportInvocation && !params.beforeTransportInvocation()) {
+        throw new BlueBubblesSendError({
+          message: "BlueBubbles send was not admitted at the transport boundary.",
+          httpStatus: null,
+          errorCode: "admission_denied",
+          transportInvoked: false,
+        })
+      }
       params.onTransportInvocation?.()
       let response: Response
       try {

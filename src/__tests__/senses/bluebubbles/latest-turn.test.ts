@@ -12,6 +12,7 @@ import {
   clearPending,
   finish,
   isCurrent,
+  isDeliveryAdmittedNow,
   mergeObservationReservations,
   observationSchedulingKeys,
   promote,
@@ -33,7 +34,12 @@ describe("BlueBubbles latest-turn registry", () => {
     if (firstPromotion.status !== "promoted") throw new Error("expected promotion")
 
     const later = reserveObservation({ chatIdentifier: "ari@example.com" })
+    expect(later.observationEpoch).toBe(first.observationEpoch)
+    expect(later.observationEpoch).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\/[0-9a-f-]{36}$/,
+    )
     expect(later.ordinal).toBe(first.ordinal + 1)
+    expect(isDeliveryAdmittedNow(firstPromotion.capability)).toBe(false)
     let settled = false
     const admission = awaitDeliveryAdmission(firstPromotion.capability).then((value) => {
       settled = true
@@ -44,6 +50,9 @@ describe("BlueBubbles latest-turn registry", () => {
 
     clearPending(later)
     await expect(admission).resolves.toBe(true)
+    expect(isDeliveryAdmittedNow(firstPromotion.capability)).toBe(true)
+    finish(firstPromotion.capability)
+    expect(isDeliveryAdmittedNow(firstPromotion.capability)).toBe(false)
   })
 
   it("freezes a bounded catch-up epoch before later live observations", () => {
@@ -219,7 +228,11 @@ describe("BlueBubbles latest-turn registry", () => {
 
   it("rejects foreign reservations and treats self-merge as an identity operation", () => {
     const known = reserveObservation({ chatGuid: "chat-guid" })
-    const foreign = Object.freeze({ ordinal: 99, hints: Object.freeze(["guid:foreign"]) })
+    const foreign = Object.freeze({
+      observationEpoch: "2026-08-13T10:00:00.000Z/99999999-9999-4999-8999-999999999999",
+      ordinal: 99,
+      hints: Object.freeze(["guid:foreign"]),
+    })
 
     expect(mergeObservationReservations(known, known)).toBe(known)
     expect(() => reactivateObservation(foreign)).toThrow(

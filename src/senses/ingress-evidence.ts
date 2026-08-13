@@ -58,5 +58,7 @@ export interface BlueBubblesSemanticCaptureV1 {
   keyHash: string
   providerNamespace: string
   capturedAt: string
+  observationEpoch?: string
+  observationOrdinal?: number
   event: BlueBubblesSemanticCaptureEvent
 }
