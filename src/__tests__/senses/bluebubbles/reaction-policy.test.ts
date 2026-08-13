@@ -59,7 +59,7 @@ describe("classifyBlueBubblesReaction", () => {
       expected: { route: "capture_only", outcome: "capture_only_unknown" },
     },
     {
-      name: "non-agent target before trust",
+      name: "negative addition regardless of target and trust",
       input: {
         fromMe: false,
         action: "add",
@@ -67,10 +67,10 @@ describe("classifyBlueBubblesReaction", () => {
         targetAuthorship: "non_agent_unknown",
         trustedActor: true,
       },
-      expected: { route: "capture_only", outcome: "capture_only_target_not_agent" },
+      expected: { route: "capture_only", outcome: "capture_only_negative" },
     },
     {
-      name: "missing target authorship before trust",
+      name: "question addition regardless of missing target authorship",
       input: {
         fromMe: false,
         action: "add",
@@ -78,10 +78,10 @@ describe("classifyBlueBubblesReaction", () => {
         targetAuthorship: null,
         trustedActor: true,
       },
-      expected: { route: "capture_only", outcome: "capture_only_target_not_agent" },
+      expected: { route: "capture_only", outcome: "capture_only_question" },
     },
     {
-      name: "untrusted direct actor",
+      name: "untrusted negative direct actor",
       input: {
         fromMe: false,
         action: "add",
@@ -89,20 +89,20 @@ describe("classifyBlueBubblesReaction", () => {
         targetAuthorship: "agent",
         trustedActor: false,
       },
-      expected: { route: "capture_only", outcome: "capture_only_untrusted_actor" },
+      expected: { route: "capture_only", outcome: "capture_only_negative" },
     },
     {
-      name: "trust required only after all capture-only predicates",
+      name: "question without trust lookup",
       input: {
         fromMe: false,
         action: "add",
         canonicalValue: "question",
         targetAuthorship: "agent",
       },
-      expected: { route: "trust_required" },
+      expected: { route: "capture_only", outcome: "capture_only_question" },
     },
     {
-      name: "trusted feedback classification",
+      name: "trusted negative feedback remains quiet",
       input: {
         fromMe: false,
         action: "add",
@@ -110,7 +110,7 @@ describe("classifyBlueBubblesReaction", () => {
         targetAuthorship: "agent",
         trustedActor: true,
       },
-      expected: { route: "restricted_feedback" },
+      expected: { route: "capture_only", outcome: "capture_only_negative" },
     },
   ] as const)("routes $name in fixed precedence", ({ input, expected }) => {
     expect(classifyBlueBubblesReaction(input)).toEqual(expected)

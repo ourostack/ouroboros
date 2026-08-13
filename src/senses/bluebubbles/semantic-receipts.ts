@@ -82,6 +82,8 @@ const SEMANTIC_HANDLED_OUTCOMES = new Set<BlueBubblesSemanticHandledOutcome>([
   "capture_only_positive",
   "capture_only_custom",
   "capture_only_unknown",
+  "capture_only_negative",
+  "capture_only_question",
   "capture_only_target_not_agent",
   "capture_only_untrusted_actor",
   "restricted_feedback_settled",
@@ -182,6 +184,8 @@ export type BlueBubblesSemanticHandledOutcome =
   | "capture_only_positive"
   | "capture_only_custom"
   | "capture_only_unknown"
+  | "capture_only_negative"
+  | "capture_only_question"
   | "capture_only_target_not_agent"
   | "capture_only_untrusted_actor"
   | "restricted_feedback_settled"

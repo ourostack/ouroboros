@@ -30,7 +30,6 @@ import {
   type BlueBubblesChatRef,
   type BlueBubblesNormalizedEvent,
   type BlueBubblesNormalizedMessage,
-  type BlueBubblesNormalizedMutation,
   type BlueBubblesReactionTarget,
 } from "./model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
@@ -44,7 +43,6 @@ import { recordProcessedBlueBubblesMessage } from "./processed-log"
 import type {
   BlueBubblesSemanticCaptureEvent,
   BlueBubblesSemanticCaptureV1,
-  IngressTargetAuthorship,
 } from "../ingress-evidence"
 import {
   acquireBlueBubblesSemanticClaim,
@@ -66,6 +64,16 @@ import {
   classifyBlueBubblesReaction,
   type BlueBubblesReactionPolicyDecision,
 } from "./reaction-policy"
+import {
+  awaitDeliveryAdmission,
+  clearPending,
+  finish as finishLatestTurn,
+  isCurrent as isLatestTurnCurrent,
+  promote as promoteLatestTurn,
+  reserveObservation,
+  type BlueBubblesLatestTurnCapability,
+  type BlueBubblesObservationReservation,
+} from "./latest-turn"
 import {
   beginBlueBubblesActiveTurn,
   finishBlueBubblesActiveTurn,
@@ -125,7 +133,7 @@ export const BB_IN_FLIGHT_MAX_AGE_MS = 15 * 60_000
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(options?: { signal?: AbortSignal }): Promise<void>
   finish(options?: { timeoutMs?: number }): Promise<void>
-  cancelOutbound(reason: "turn_timeout"): void
+  cancelOutbound(reason: "turn_timeout" | "superseded"): void
 }
 
 // Resolve the message a reaction points at, so the agent is told *what* was
@@ -219,7 +227,7 @@ export interface BlueBubblesHandleResult {
   handled: boolean
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "restricted_feedback_settled" | "restricted_feedback_observed" | "restricted_feedback_failed"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "restricted_feedback_settled" | "restricted_feedback_observed" | "restricted_feedback_failed"
 }
 
 function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string {
@@ -352,6 +360,7 @@ interface BlueBubblesHandleOptions {
   autonomyBudgetTrigger?: "recovery"
   semanticRecovery?: boolean
   resolvedReactionTarget?: BlueBubblesReactionTarget
+  observationReservation?: BlueBubblesObservationReservation
 }
 
 type CurrentBlueBubblesIngressEvidence = NonNullable<ToolContext["currentIngressEvidence"]>
@@ -360,6 +369,7 @@ interface CapturedBlueBubblesHandleOptions extends BlueBubblesHandleOptions {
   currentIngressEvidence: CurrentBlueBubblesIngressEvidence
   orientationEvidence: BlueBubblesSemanticCaptureEvent
   orientationConversationKind: OrientationConversationKind
+  latestTurnCapability: BlueBubblesLatestTurnCapability
 }
 
 class BlueBubblesRecoveryTurnTimeoutError extends Error {
@@ -452,12 +462,11 @@ async function waitForBlueBubblesCallbackCleanup(
   })
 }
 
-function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverParams {
+function resolveFriendParams(event: CanonicalBlueBubblesDirectionObservedMessage): FriendResolverParams {
   if (event.chat.isGroup) {
-    const groupKey = event.chat.chatGuid ?? event.chat.chatIdentifier ?? event.sender.externalId
     return {
       provider: "imessage-handle",
-      externalId: `group:${groupKey}`,
+      externalId: `group:${event.chat.chatGuid}`,
       displayName: event.chat.displayName ?? "Unknown Group",
       channel: "bluebubbles",
     }
@@ -471,9 +480,8 @@ function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverP
   }
 }
 
-function resolveGroupExternalId(event: BlueBubblesNormalizedEvent): string {
-  const groupKey = event.chat.chatGuid ?? event.chat.chatIdentifier ?? event.sender.externalId
-  return `group:${groupKey}`
+function resolveGroupExternalId(event: CanonicalBlueBubblesDirectionObservedMessage): string {
+  return `group:${event.chat.chatGuid}`
 }
 
 /**
@@ -482,10 +490,10 @@ function resolveGroupExternalId(event: BlueBubblesNormalizedEvent): string {
  */
 async function checkGroupHasFamilyMember(
   store: FileFriendStore,
-  event: BlueBubblesNormalizedEvent,
+  event: CanonicalBlueBubblesDirectionObservedMessage,
 ): Promise<boolean> {
   if (!event.chat.isGroup) return false
-  for (const handle of event.chat.participantHandles ?? []) {
+  for (const handle of event.chat.participantHandles) {
     const friend = await store.findByExternalId("imessage-handle", handle)
     if (friend?.trustLevel === "family") return true
   }
@@ -584,7 +592,7 @@ function extractHistoricalLaneSummary(
 }
 
 function buildBlueBubblesOrientationSource(
-  event: BlueBubblesNormalizedEvent,
+  event: BlueBubblesNormalizedMessage,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
   evidence: BlueBubblesSemanticCaptureEvent,
   conversationKind: OrientationConversationKind,
@@ -603,8 +611,6 @@ function buildBlueBubblesOrientationSource(
       externalId: participant.externalId,
       displayName: participant.displayName,
     }))
-  const targetGuid = evidence.targetGuid
-  const targetAuthorship = evidence.targetAuthorship
   const presentation = {
     authority: "presentation_only" as const,
     conversationKind,
@@ -621,23 +627,6 @@ function buildBlueBubblesOrientationSource(
       displayName: actor.displayName,
     },
     participants,
-    ...(targetGuid
-      ? {
-          target: {
-            messageGuid: targetGuid,
-            authorship: targetAuthorship ?? "unknown" as const,
-          },
-        }
-      : {}),
-  }
-
-  if (event.kind !== "message") {
-    return {
-      kind: "bluebubbles",
-      ...presentation,
-      lane: "mutation",
-      ...(repairNotice ? { repairNotice } : {}),
-    }
   }
 
   const summaries = extractHistoricalLaneSummary(existingMessages)
@@ -659,23 +648,20 @@ function buildBlueBubblesOrientationSource(
 }
 
 function buildInboundText(
-  event: BlueBubblesNormalizedEvent,
+  event: BlueBubblesNormalizedMessage,
 ): string {
   const baseText = event.textForAgent
   if (!event.chat.isGroup) {
     return baseText
   }
-  if (event.kind === "mutation") {
-    return `${event.sender.displayName} ${baseText}`
-  }
   return `${event.sender.displayName}: ${baseText}`
 }
 
 function buildInboundContent(
-  event: BlueBubblesNormalizedEvent,
+  event: BlueBubblesNormalizedMessage,
 ): OpenAI.ChatCompletionUserMessageParam["content"] {
   const text = buildInboundText(event)
-  if (event.kind !== "message" || !event.inputPartsForAgent || event.inputPartsForAgent.length === 0) {
+  if (!event.inputPartsForAgent || event.inputPartsForAgent.length === 0) {
     return text
   }
 
@@ -697,9 +683,7 @@ function sessionLikelyContainsMessage(
   })
 }
 
-function getBlueBubblesContinuityIngressTexts(event: BlueBubblesNormalizedEvent): string[] {
-  if (event.kind !== "message") return []
-
+function getBlueBubblesContinuityIngressTexts(event: CanonicalBlueBubblesDirectionObservedMessage): string[] {
   const text = event.textForAgent.trim()
   if (text.length > 0) return [text]
 
@@ -815,10 +799,9 @@ async function buildBlueBubblesContextMessages(input: {
   agentName: string
   agentRoot: string
   client: BlueBubblesClient
-  event: BlueBubblesNormalizedEvent
+  event: CanonicalBlueBubblesDirectionObservedMessage
   knownMessages?: OpenAI.ChatCompletionMessageParam[]
 }): Promise<PreparedBlueBubblesContextMessages> {
-  if (input.event.kind !== "message") return { messages: [], contextPacketIds: [] }
   const event = input.event
   if (!Number.isFinite(event.timestamp)) return { messages: [], contextPacketIds: [] }
   const chatGuidHash = blueBubblesContextChatKeyHash(event)
@@ -873,16 +856,15 @@ async function buildBlueBubblesContextMessages(input: {
   }
 }
 
-function createReplyTargetController(event: BlueBubblesNormalizedEvent): BlueBubblesReplyTargetController {
-  const defaultTargetLabel = event.kind === "message" && event.threadOriginatorGuid?.trim() ? "current_lane" : "top_level"
+function createReplyTargetController(event: CanonicalBlueBubblesDirectionObservedMessage): BlueBubblesReplyTargetController {
+  const defaultTargetLabel = event.threadOriginatorGuid?.trim() ? "current_lane" : "top_level"
   let selection: BlueBubblesReplyTargetSelection =
-    event.kind === "message" && event.threadOriginatorGuid?.trim()
+    event.threadOriginatorGuid?.trim()
       ? { target: "current_lane" }
       : { target: "top_level" }
 
   return {
     getReplyToMessageGuid(): string | undefined {
-      if (event.kind !== "message") return undefined
       if (selection.target === "top_level") return undefined
       if (selection.target === "thread") return selection.threadOriginatorGuid.trim()
       return event.threadOriginatorGuid?.trim() ? event.messageGuid : undefined
@@ -919,7 +901,12 @@ export function createBlueBubblesCallbacks(
   replyTarget: BlueBubblesReplyTargetController,
   isGroupChat: boolean,
   onVisibleActivity?: () => void,
-  options: { enableSilenceWatchdog?: boolean; enableActivitySignals?: boolean } = {},
+  options: {
+    enableSilenceWatchdog?: boolean
+    enableActivitySignals?: boolean
+    admitOutbound?: () => Promise<boolean>
+    isOutboundCurrent?: () => boolean
+  } = {},
 ): BlueBubblesCallbacks {
   let textBuffer = ""
   let typingActive = false
@@ -946,11 +933,15 @@ export function createBlueBubblesCallbacks(
   const sentOutwardTextNorms = new Set<string>()
   const sentOutwardTokenSets: Array<Set<string>> = []
 
-  function enqueue(operation: string, task: () => Promise<void>, options: { allowAfterClose?: boolean } = {}): void {
+  function enqueue(operation: string, task: () => Promise<void>, enqueueOptions: { allowAfterClose?: boolean } = {}): void {
     /* v8 ignore next -- defensive guard: public callback entrypoints already drop after outbound close @preserve */
-    if (outboundClosed && !options.allowAfterClose) return
+    if (outboundClosed && !enqueueOptions.allowAfterClose) return
     queue = queue
-      .then(() => withBlueBubblesActivityTimeout(operation, BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS, task))
+      .then(async () => {
+        if (!enqueueOptions.allowAfterClose && options.admitOutbound && !await options.admitOutbound()) return
+        if (!enqueueOptions.allowAfterClose && options.isOutboundCurrent && !options.isOutboundCurrent()) return
+        await withBlueBubblesActivityTimeout(operation, BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS, task)
+      })
       .catch((error) => {
         emitNervesEvent({
           level: "warn",
@@ -1168,6 +1159,8 @@ export function createBlueBubblesCallbacks(
         emitDuplicateOutwardSuppressed("flushNow", trimmed.length)
         return
       }
+      if (options.admitOutbound && !await options.admitOutbound()) return
+      if (options.isOutboundCurrent && !options.isOutboundCurrent()) return
       await client.sendText({
         chat,
         text: trimmed,
@@ -1225,6 +1218,8 @@ export function createBlueBubblesCallbacks(
         emitDuplicateOutwardSuppressed("flush", trimmed.length)
         return
       }
+      if (options.admitOutbound && !await options.admitOutbound()) return
+      if (options.isOutboundCurrent && !options.isOutboundCurrent()) return
       await client.sendText({
         chat,
         text: trimmed,
@@ -1246,7 +1241,7 @@ export function createBlueBubblesCallbacks(
       })
     },
 
-    cancelOutbound(reason: "turn_timeout"): void {
+    cancelOutbound(reason: "turn_timeout" | "superseded"): void {
       outboundClosed = true
       textBuffer = ""
       stopSilenceWatchdog()
@@ -1391,6 +1386,13 @@ async function shouldFilterAgentSelfHandle(
 }
 
 type BlueBubblesDirectionObservedEvent = BlueBubblesNormalizedEvent & { fromMe: boolean }
+type BlueBubblesDirectionObservedMessage = BlueBubblesNormalizedMessage & { fromMe: boolean }
+type CanonicalBlueBubblesDirectionObservedMessage = BlueBubblesDirectionObservedMessage & {
+  chat: BlueBubblesChatRef & {
+    chatGuid: string
+    sendTarget: { kind: "chat_guid"; value: string }
+  }
+}
 
 function hasObservedBlueBubblesDirection(
   event: BlueBubblesNormalizedEvent,
@@ -1399,7 +1401,7 @@ function hasObservedBlueBubblesDirection(
 }
 
 async function handleBlueBubblesNormalizedEvent(
-  event: BlueBubblesDirectionObservedEvent,
+  event: CanonicalBlueBubblesDirectionObservedMessage,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
   options: CapturedBlueBubblesHandleOptions,
@@ -1407,18 +1409,11 @@ async function handleBlueBubblesNormalizedEvent(
   const client = resolvedDeps.createClient()
   const agentName = resolvedDeps.getAgentName()
   recoverRuntimeCwd()
-  if (event.fromMe) {
-    emitNervesEvent({
-      component: "senses",
-      event: "senses.bluebubbles_from_me_ignored",
-      message: "ignored from-me bluebubbles event",
-      meta: {
-        messageGuid: event.messageGuid,
-        kind: event.kind,
-      },
-    })
-    if (event.chat.isGroup) recordDiscoveredOwnHandle(event.sender.externalId)
-    return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
+  if (
+    !await awaitDeliveryAdmission(options.latestTurnCapability)
+    || !isLatestTurnCurrent(options.latestTurnCapability)
+  ) {
+    return { handled: true, notifiedAgent: false, kind: event.kind, reason: "superseded" }
   }
   // Fallback self-detection: BlueBubbles sometimes broadcasts a group-chat
   // outbound message back through the webhook with `isFromMe` missing/false.
@@ -1442,22 +1437,9 @@ async function handleBlueBubblesNormalizedEvent(
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
   }
 
-  if (event.kind === "mutation" && !event.shouldNotifyAgent) {
-    emitNervesEvent({
-      component: "senses",
-      event: "senses.bluebubbles_state_mutation_recorded",
-      message: "recorded non-notify bluebubbles mutation",
-      meta: {
-        messageGuid: event.messageGuid,
-        mutationType: event.mutationType,
-      },
-    })
-    return { handled: true, notifiedAgent: false, kind: event.kind, reason: "mutation_state_only" }
-  }
-
   let activeTurnId: string | null = null
 
-  if (event.kind === "message" && shouldUseBlueBubblesRecoveryBudget(source, options)) {
+  if (shouldUseBlueBubblesRecoveryBudget(source, options)) {
     const decision = reserveAutonomyBudget(getAgentRoot(agentName), {
       agent: agentName,
       triggerType: "recovery",
@@ -1500,9 +1482,11 @@ async function handleBlueBubblesNormalizedEvent(
     }
 
     return await withSharedTurnLock("bluebubbles", sessPath, async () => {
-      if (event.kind === "message" && activeTurnId === null) {
-        activeTurnId = beginBlueBubblesActiveTurn(agentName, event)
+      if (!isLatestTurnCurrent(options.latestTurnCapability)) {
+        return { handled: true, notifiedAgent: false, kind: event.kind, reason: "superseded" }
       }
+      const liveTurnId = beginBlueBubblesActiveTurn(agentName, event)
+      activeTurnId = liveTurnId
       // Pre-load session inside the turn lock so same-chat deliveries cannot race on stale trunk state.
     const existing = resolvedDeps.loadSession(sessPath)
     const mcpManager = await getSharedMcpManager() ?? undefined
@@ -1511,36 +1495,34 @@ async function handleBlueBubblesNormalizedEvent(
         ? existing.messages
         : [{ role: "system", content: flattenSystemPrompt(await resolvedDeps.buildSystem("bluebubbles", {}, context)) }]
 
-    if (event.kind === "message") {
-      // Record EARLY for audit and crash recovery. This is capture truth, not
-      // a claim that the agent turn completed successfully.
-      const inboundSource: BlueBubblesInboundSource =
-        (options.semanticRecovery || source !== "webhook")
-          && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)
-          ? "recovery-bootstrap"
-          : source
-      recordBlueBubblesInbound(agentName, event, inboundSource)
+    // Record EARLY for audit and crash recovery. This is capture truth, not
+    // a claim that the agent turn completed successfully.
+    const inboundSource: BlueBubblesInboundSource =
+      (options.semanticRecovery || source !== "webhook")
+        && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)
+        ? "recovery-bootstrap"
+        : source
+    recordBlueBubblesInbound(agentName, event, inboundSource)
 
-      if (inboundSource === "recovery-bootstrap") {
-        emitNervesEvent({
-          component: "senses",
-          event: "senses.bluebubbles_recovery_skip",
-          message: "skipped bluebubbles recovery because the session already contains the message text",
-          meta: {
-            messageGuid: event.messageGuid,
-            sessionKey: event.chat.sessionKey,
-            source,
-          },
-        })
-        recordProcessedBlueBubblesMessage(agentName, event, inboundSource, "session-bootstrap")
-        return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
-      }
+    if (inboundSource === "recovery-bootstrap") {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_recovery_skip",
+        message: "skipped bluebubbles recovery because the session already contains the message text",
+        meta: {
+          messageGuid: event.messageGuid,
+          sessionKey: event.chat.sessionKey,
+          source,
+        },
+      })
+      recordProcessedBlueBubblesMessage(agentName, event, inboundSource, "session-bootstrap")
+      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
     }
 
-    if (event.kind === "message" && event.chat.isGroup) {
+    if (event.chat.isGroup) {
       await upsertGroupContextParticipants({
         store,
-        participants: (event.chat.participantHandles ?? []).map((externalId) => ({
+        participants: event.chat.participantHandles.map((externalId) => ({
           provider: "imessage-handle" as const,
           externalId,
         })),
@@ -1549,7 +1531,7 @@ async function handleBlueBubblesNormalizedEvent(
     }
 
     // Fetch the text of the message being replied to (if this is a threaded reply)
-    const threadGuid = event.kind === "message" ? event.threadOriginatorGuid?.trim() : undefined
+    const threadGuid = event.threadOriginatorGuid?.trim()
     let repliedToText: string | null = null
     if (threadGuid) {
       repliedToText = await client.getMessageText(threadGuid).catch(/* v8 ignore next */ () => null)
@@ -1580,18 +1562,27 @@ async function handleBlueBubblesNormalizedEvent(
         repliedToText,
       ),
     })
+    if (!isLatestTurnCurrent(options.latestTurnCapability)) {
+      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "superseded" }
+    }
 
-    const visibleActivityTurnId = activeTurnId
     const callbacks = createBlueBubblesCallbacks(
       client,
       event.chat,
       replyTarget,
       event.chat.isGroup,
-      visibleActivityTurnId
-        ? () => noteBlueBubblesActiveTurnVisibleActivity(agentName, visibleActivityTurnId)
-        : undefined,
+      () => noteBlueBubblesActiveTurnVisibleActivity(agentName, liveTurnId),
+      {
+        admitOutbound: () => awaitDeliveryAdmission(options.latestTurnCapability),
+        isOutboundCurrent: () => isLatestTurnCurrent(options.latestTurnCapability),
+      },
     )
     const controller = new AbortController()
+    const cancelForSupersession = (): void => {
+      callbacks.cancelOutbound("superseded")
+      controller.abort(options.latestTurnCapability.signal.reason)
+    }
+    options.latestTurnCapability.signal.addEventListener("abort", cancelForSupersession, { once: true })
     let timeoutTimer!: ReturnType<typeof setTimeout>
     let timeoutPromise!: Promise<never>
     let timeoutReject: ((error: Error) => void) | undefined
@@ -1792,9 +1783,7 @@ async function handleBlueBubblesNormalizedEvent(
               text: result.gateResult.autoReply,
             })
           }
-          if (event.kind === "message") {
-            recordProcessedBlueBubblesMessage(agentName, event, source, "trust-gated")
-          }
+          recordProcessedBlueBubblesMessage(agentName, event, source, "trust-gated")
 
           return {
             handled: true,
@@ -1806,9 +1795,7 @@ async function handleBlueBubblesNormalizedEvent(
         // Gate allowed — flush the agent's reply
         await callbacks.flush()
         if (recoveryTimedOut) throw getBlueBubblesTimeoutReason(timeoutReason, timeoutMs)
-        if (event.kind === "message") {
-          recordProcessedBlueBubblesMessage(agentName, event, source, "turn-complete")
-        }
+        recordProcessedBlueBubblesMessage(agentName, event, source, "turn-complete")
 
         emitNervesEvent({
           component: "senses",
@@ -1875,10 +1862,9 @@ async function handleBlueBubblesNormalizedEvent(
       }
       /* v8 ignore stop */
       clearTimeout(timeoutTimer)
-      if (activeTurnId) {
-        finishBlueBubblesActiveTurn(agentName, activeTurnId)
-        activeTurnId = null
-      }
+      options.latestTurnCapability.signal.removeEventListener("abort", cancelForSupersession)
+      finishBlueBubblesActiveTurn(agentName, liveTurnId)
+      activeTurnId = null
       await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
     }
     })
@@ -1892,7 +1878,6 @@ interface CapturedBlueBubblesSemanticEvent {
   capture: BlueBubblesSemanticCaptureV1
   normalized: BlueBubblesDirectionObservedEvent
   writeResult: BlueBubblesSemanticCaptureWriteResult
-  resolvedReactionTarget?: BlueBubblesReactionTarget
 }
 
 interface AuditOnlyBlueBubblesSemanticEvent {
@@ -1931,10 +1916,6 @@ function recordBlueBubblesAuditSidecar(
   }
 }
 
-function reactionTargetAuthorship(target: BlueBubblesReactionTarget): IngressTargetAuthorship {
-  return target.fromMe === true ? "agent" : "non_agent_unknown"
-}
-
 async function captureBlueBubblesSemanticEvent(
   normalized: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
@@ -1958,19 +1939,6 @@ async function captureBlueBubblesSemanticEvent(
   }
   const observed = normalized
   const cutover = initializeBlueBubblesSemanticCutover(agentName)
-  let resolvedReactionTarget: BlueBubblesReactionTarget | undefined
-  let targetAuthorship: IngressTargetAuthorship = null
-  if (
-    observed.kind === "mutation"
-    && observed.mutationType === "reaction"
-    && observed.targetMessageGuid
-  ) {
-    resolvedReactionTarget = await resolveReactionTarget(
-      resolvedDeps.createClient(),
-      observed.targetMessageGuid,
-    )
-    targetAuthorship = reactionTargetAuthorship(resolvedReactionTarget)
-  }
 
   let coordinateGeneration: number | undefined
   if (
@@ -2005,7 +1973,7 @@ async function captureBlueBubblesSemanticEvent(
     cutover,
     capturedAt: new Date().toISOString(),
     event: observed,
-    targetAuthorship,
+    targetAuthorship: null,
     coordinateGeneration,
   })
   if (!capture) {
@@ -2024,7 +1992,6 @@ async function captureBlueBubblesSemanticEvent(
     capture,
     normalized: observed,
     writeResult,
-    ...(resolvedReactionTarget ? { resolvedReactionTarget } : {}),
   }
 }
 
@@ -2063,6 +2030,39 @@ function semanticCaptureRequiresRoutingRepair(capture: BlueBubblesSemanticCaptur
 
 function hasResolvedBlueBubblesRouting(event: BlueBubblesNormalizedEvent): boolean {
   return Boolean(event.chat.chatGuid?.trim() || event.chat.chatIdentifier?.trim())
+}
+
+function reserveBlueBubblesObservation(event: BlueBubblesNormalizedEvent): BlueBubblesObservationReservation {
+  return reserveObservation({
+    chatGuid: event.chat.chatGuid,
+    chatIdentifier: event.chat.chatIdentifier,
+  })
+}
+
+function canonicalizeBlueBubblesEvent(
+  event: BlueBubblesDirectionObservedMessage,
+  capability: BlueBubblesLatestTurnCapability,
+): CanonicalBlueBubblesDirectionObservedMessage {
+  const canonical = capability.canonicalChat
+  const { chatIdentifier: _observedIdentifier, ...observedChat } = event.chat
+  return {
+    ...event,
+    chat: {
+      ...observedChat,
+      chatGuid: canonical.chatGuid,
+      ...(canonical.chatIdentifier ? { chatIdentifier: canonical.chatIdentifier } : {}),
+      sessionKey: canonical.sessionKey,
+      sendTarget: { kind: "chat_guid", value: canonical.chatGuid },
+    },
+  }
+}
+
+function isCaptureOnlyBlueBubblesMutation(
+  capture: BlueBubblesSemanticCaptureV1,
+): boolean {
+  return capture.event.kind === "reaction"
+    || capture.event.kind === "edit"
+    || capture.event.kind === "unsend"
 }
 
 function isAuditOnlySemanticCapture(capture: BlueBubblesSemanticCaptureV1): boolean {
@@ -2146,62 +2146,12 @@ function semanticCaptureToNormalizedEvent(
   }
 }
 
-function semanticHandledOutcome(
-  event: BlueBubblesNormalizedEvent,
-  result: BlueBubblesHandleResult,
-): BlueBubblesSemanticHandledOutcome {
-  if (result.reason === "from_me") return "ignored_self"
-  if (event.kind === "message") {
-    return result.notifiedAgent ? "message_completed" : "message_observed"
-  }
-  switch (event.mutationType) {
-    case "edit": return "edit_capture_only"
-    case "unsend": return "unsend_capture_only"
-    case "read": return "read_audit_only"
-    case "delivery": return "delivery_audit_only"
-    case "reaction":
-      if (result.reason === "restricted_feedback_settled") return "restricted_feedback_settled"
-      if (result.reason === "restricted_feedback_observed") return "restricted_feedback_observed"
-      return "restricted_feedback_failed"
-  }
-}
-
 interface CapturedReactionClassification {
   decision: BlueBubblesReactionPolicyDecision
-  trustedFriend: FriendRecord | null
-}
-
-type RestrictedBlueBubblesReactionEvent = BlueBubblesNormalizedMutation & {
-  fromMe: boolean
-  mutationType: "reaction"
-  reaction: NonNullable<BlueBubblesNormalizedMutation["reaction"]>
-  targetMessageGuid: string
-}
-
-function materializeRestrictedBlueBubblesReactionEvent(
-  captured: CapturedBlueBubblesSemanticEvent,
-  repaired: BlueBubblesNormalizedEvent,
-): RestrictedBlueBubblesReactionEvent {
-  // Classification reached `restricted_feedback` from the validated v1
-  // capture's reaction tuple. Direct capture and recovery both construct the
-  // paired normalized event from that same tuple, so it is the authoritative
-  // reaction object; repair contributes routing only and may legitimately
-  // promote its own transport-shaped result to `message`.
-  const event = captured.normalized as RestrictedBlueBubblesReactionEvent
-  return {
-    ...event,
-    mutationType: "reaction",
-    reaction: event.reaction,
-    targetMessageGuid: event.targetMessageGuid,
-    chat: repaired.chat,
-    requiresRepair: repaired.requiresRepair,
-    repairNotice: repaired.repairNotice,
-  }
 }
 
 async function classifyCapturedBlueBubblesReaction(
   captured: CapturedBlueBubblesSemanticEvent,
-  resolvedDeps: RuntimeDeps,
 ): Promise<CapturedReactionClassification | null> {
   const event = captured.capture.event
   if (event.kind !== "reaction" || !event.canonicalAction || !event.canonicalValue) return null
@@ -2212,156 +2162,21 @@ async function classifyCapturedBlueBubblesReaction(
     canonicalValue: event.canonicalValue,
     targetAuthorship: event.targetAuthorship,
   }
-  const initial = classifyBlueBubblesReaction(input)
-  if (initial.route !== "trust_required") {
-    return { decision: initial, trustedFriend: null }
-  }
-
-  let trustedActor = false
-  let trustedFriend: FriendRecord | null = null
-  try {
-    const friend = await resolvedDeps.createFriendStore().findByExternalId(
-      "imessage-handle",
-      event.actor.externalId,
-    )
-    trustedActor = TRUSTED_LEVELS.has(friend?.trustLevel ?? "stranger")
-    if (trustedActor && friend) trustedFriend = friend
-  } catch (error) {
-    emitNervesEvent({
-      level: "warn",
-      component: "senses",
-      event: "senses.bluebubbles_reaction_trust_lookup_error",
-      message: "failed direct actor trust lookup for bluebubbles reaction",
-      meta: {
-        keyHash: captured.capture.keyHash,
-        provider: event.actor.provider,
-        reason: error instanceof Error ? error.message : String(error),
-      },
-    })
-  }
-  return {
-    decision: classifyBlueBubblesReaction({ ...input, trustedActor }),
-    trustedFriend,
-  }
+  return { decision: classifyBlueBubblesReaction(input) }
 }
 
-async function handleRestrictedBlueBubblesReactionFeedback(input: {
-  event: RestrictedBlueBubblesReactionEvent
-  trustedFriend: FriendRecord
-  client: BlueBubblesClient
-  resolvedDeps: RuntimeDeps
-  options: CapturedBlueBubblesHandleOptions
-  resolvedReactionTarget?: BlueBubblesReactionTarget
-}): Promise<BlueBubblesHandleResult> {
-  const { event, trustedFriend, client, resolvedDeps, options } = input
-  const target = input.resolvedReactionTarget
-    ?? await resolveReactionTarget(client, event.targetMessageGuid)
-  event.textForAgent = renderBlueBubblesReactionText(event.reaction, target)
+function captureOnlyHandledOutcome(
+  capture: BlueBubblesSemanticCaptureV1,
+  reactionDecision: BlueBubblesReactionPolicyDecision | null,
+): BlueBubblesSemanticHandledOutcome {
+  if (capture.event.kind === "reaction") return reactionDecision!.outcome
+  return capture.event.kind === "edit" ? "edit_capture_only" : "unsend_capture_only"
+}
 
-  const channel = getChannelCapabilities("bluebubbles")
-  const context = { friend: trustedFriend, channel, isGroupChat: event.chat.isGroup }
-  const userMessage: OpenAI.ChatCompletionMessageParam = {
-    role: "user",
-    content: buildInboundContent(event),
-  }
-  const orientationFrame = buildOrientationFrame({
-    channel: "bluebubbles",
-    messages: [userMessage],
-    currentUserMessages: [userMessage],
-    source: buildBlueBubblesOrientationSource(
-      event,
-      [],
-      options.orientationEvidence,
-      options.orientationConversationKind,
-    ),
-    speechKind: "reaction",
-  })
-  const callbacks = createBlueBubblesCallbacks(
-    client,
-    event.chat,
-    createReplyTargetController(event),
-    event.chat.isGroup,
-    undefined,
-    { enableSilenceWatchdog: false, enableActivitySignals: false },
-  )
-  const controller = new AbortController()
-  const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
-  let timeoutTimer!: ReturnType<typeof setTimeout>
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutTimer = setTimeout(() => {
-      const error = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
-      callbacks.cancelOutbound("turn_timeout")
-      controller.abort(error)
-      reject(error)
-    }, timeoutMs)
-    if (typeof (timeoutTimer as { unref?: () => void }).unref === "function") {
-      (timeoutTimer as { unref: () => void }).unref()
-    }
-  })
-
-  try {
-    const restrictedTurnAndDelivery = async () => {
-      const result = await resolvedDeps.runAgent(
-        [userMessage],
-        callbacks,
-        "bluebubbles",
-        controller.signal,
-        {
-          isReactionSignal: true,
-          restrictedReactionFeedback: true,
-          skipKeptNotes: true,
-          orientationFrame,
-          toolContext: {
-            signin: async () => undefined,
-            context,
-            currentIngressEvidence: options.currentIngressEvidence,
-          },
-        },
-      )
-      if (result.outcome === "settled" || result.outcome === "blocked") {
-        await callbacks.flush({ signal: controller.signal })
-      }
-      return result
-    }
-    const result = await Promise.race([
-      restrictedTurnAndDelivery(),
-      timeoutPromise,
-    ])
-
-    if (result.outcome === "settled" || result.outcome === "blocked") {
-      return {
-        handled: true,
-        notifiedAgent: true,
-        kind: event.kind,
-        reason: "restricted_feedback_settled",
-      }
-    }
-    if (result.outcome === "observed") {
-      return {
-        handled: true,
-        notifiedAgent: false,
-        kind: event.kind,
-        reason: "restricted_feedback_observed",
-      }
-    }
-    return {
-      handled: true,
-      notifiedAgent: false,
-      kind: event.kind,
-      reason: "restricted_feedback_failed",
-    }
-  } catch (error) {
-    callbacks.onError(error instanceof Error ? error : new Error(String(error)), "terminal")
-    return {
-      handled: true,
-      notifiedAgent: false,
-      kind: event.kind,
-      reason: "restricted_feedback_failed",
-    }
-  } finally {
-    clearTimeout(timeoutTimer)
-    await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
-  }
+function auditOnlyHandledOutcome(
+  kind: "read" | "delivery",
+): BlueBubblesSemanticHandledOutcome {
+  return kind === "read" ? "read_audit_only" : "delivery_audit_only"
 }
 
 function writeCapturedBlueBubblesHandled(
@@ -2389,12 +2204,23 @@ async function handleCapturedBlueBubblesSemanticEvent(
   options: BlueBubblesHandleOptions = {},
 ): Promise<BlueBubblesHandleResult> {
   const agentName = resolvedDeps.getAgentName()
+  const reservation = options.observationReservation ?? reserveBlueBubblesObservation(captured.normalized)
   const identity = {
     canonicalKey: captured.capture.canonicalKey,
     keyHash: captured.capture.keyHash,
   }
-  const claim = await acquireBlueBubblesSemanticClaim(agentName, identity)
+  if (captured.writeResult === "semantic_capture_duplicate") {
+    clearPending(reservation)
+  }
+  let claim: Awaited<ReturnType<typeof acquireBlueBubblesSemanticClaim>>
+  try {
+    claim = await acquireBlueBubblesSemanticClaim(agentName, identity)
+  } catch (error) {
+    clearPending(reservation)
+    throw error
+  }
   if (claim.status === "already_handled") {
+    clearPending(reservation)
     return {
       handled: true,
       notifiedAgent: false,
@@ -2403,6 +2229,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
     }
   }
   if (claim.status === "timeout") {
+    clearPending(reservation)
     return {
       handled: false,
       notifiedAgent: false,
@@ -2411,33 +2238,37 @@ async function handleCapturedBlueBubblesSemanticEvent(
     }
   }
 
+  let latestTurnCapability: BlueBubblesLatestTurnCapability | null = null
   try {
-    const capturedOptions: CapturedBlueBubblesHandleOptions = {
-      ...options,
-      currentIngressEvidence: Object.freeze({
-        schemaVersion: 1,
-        provider: "bluebubbles",
-        captureKeyHash: captured.capture.keyHash,
-      }),
-      orientationEvidence: captured.capture.event,
-      orientationConversationKind: captured.normalized.chat.isGroup ? "group" : "one_to_one",
-    }
-    const reactionClassification = await classifyCapturedBlueBubblesReaction(captured, resolvedDeps)
+    const reactionClassification = await classifyCapturedBlueBubblesReaction(captured)
     const reactionDecision = reactionClassification?.decision ?? null
-    if (reactionDecision?.route === "capture_only") {
+    if (captured.capture.event.fromMe) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_from_me_ignored",
+        message: "ignored from-me bluebubbles event",
+        meta: {
+          messageGuid: captured.normalized.messageGuid,
+          kind: captured.normalized.kind,
+        },
+      })
+      if (captured.normalized.chat.isGroup) {
+        recordDiscoveredOwnHandle(captured.normalized.sender.externalId)
+      }
       const result: BlueBubblesHandleResult = {
         handled: true,
         notifiedAgent: false,
         kind: captured.normalized.kind,
-        reason: reactionDecision.outcome === "ignored_self" ? "from_me" : "mutation_state_only",
+        reason: "from_me",
       }
-      writeCapturedBlueBubblesHandled(agentName, captured.capture, reactionDecision.outcome)
+      writeCapturedBlueBubblesHandled(agentName, captured.capture, "ignored_self")
       return result
     }
 
-    let handledEvent: BlueBubblesNormalizedEvent = captured.normalized
+    let handledOutcome: BlueBubblesSemanticHandledOutcome = "message_observed"
     let result: BlueBubblesHandleResult
     if (isAuditOnlySemanticCapture(captured.capture)) {
+      handledOutcome = auditOnlyHandledOutcome(captured.capture.event.kind as "read" | "delivery")
       result = {
         handled: true,
         notifiedAgent: false,
@@ -2445,8 +2276,10 @@ async function handleCapturedBlueBubblesSemanticEvent(
         reason: "mutation_state_only",
       }
     } else {
-      const client = resolvedDeps.createClient()
-      const repaired = await client.repairEvent(captured.normalized)
+      const captureOnlyMutation = isCaptureOnlyBlueBubblesMutation(captured.capture)
+      const repaired = captureOnlyMutation && captured.normalized.chat.chatGuid?.trim()
+        ? captured.normalized
+        : await resolvedDeps.createClient().repairEvent(captured.normalized)
       if (
         semanticCaptureRequiresRoutingRepair(captured.capture)
         && !hasResolvedBlueBubblesRouting(repaired)
@@ -2458,32 +2291,74 @@ async function handleCapturedBlueBubblesSemanticEvent(
         fromMe: captured.normalized.fromMe,
         sender: captured.normalized.sender,
       }
-      handledEvent = identityGroundedRepaired
-      if (reactionDecision?.route === "restricted_feedback") {
-        const restrictedEvent = materializeRestrictedBlueBubblesReactionEvent(captured, repaired)
-        handledEvent = restrictedEvent
-        result = await handleRestrictedBlueBubblesReactionFeedback({
-          event: restrictedEvent,
-          trustedFriend: reactionClassification!.trustedFriend!,
-          client,
-          resolvedDeps,
-          options: capturedOptions,
-          resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
-        })
-      } else {
-        result = await handleBlueBubblesNormalizedEvent(identityGroundedRepaired, resolvedDeps, source, {
-          ...capturedOptions,
-          resolvedReactionTarget: captured.resolvedReactionTarget ?? options.resolvedReactionTarget,
-        })
+      const promotion = promoteLatestTurn(reservation, {
+        chatGuid: identityGroundedRepaired.chat.chatGuid,
+        chatIdentifier: identityGroundedRepaired.chat.chatIdentifier,
+      })
+      if (promotion.status !== "promoted") {
+        if (!captureOnlyMutation && promotion.status === "unresolved") {
+          throw new Error("semantic_capture_routing_invalid")
+        }
+        const outcome = captureOnlyMutation
+          ? captureOnlyHandledOutcome(captured.capture, reactionDecision)
+          : "message_observed"
+        writeCapturedBlueBubblesHandled(agentName, captured.capture, outcome)
+        return {
+          handled: true,
+          notifiedAgent: false,
+          kind: captured.normalized.kind,
+          reason: captureOnlyMutation ? "mutation_state_only" : "superseded",
+        }
       }
+      latestTurnCapability = promotion.capability
+      if (captureOnlyMutation) {
+        const outcome = captureOnlyHandledOutcome(captured.capture, reactionDecision)
+        writeCapturedBlueBubblesHandled(agentName, captured.capture, outcome)
+        return {
+          handled: true,
+          notifiedAgent: false,
+          kind: captured.normalized.kind,
+          reason: "mutation_state_only",
+        }
+      }
+      if (identityGroundedRepaired.kind === "mutation") {
+        const outcome = auditOnlyHandledOutcome(identityGroundedRepaired.mutationType as "read" | "delivery")
+        writeCapturedBlueBubblesHandled(agentName, captured.capture, outcome)
+        return {
+          handled: true,
+          notifiedAgent: false,
+          kind: captured.normalized.kind,
+          reason: "mutation_state_only",
+        }
+      }
+      const canonicalEvent = canonicalizeBlueBubblesEvent(
+        identityGroundedRepaired,
+        latestTurnCapability,
+      )
+
+      const capturedOptions: CapturedBlueBubblesHandleOptions = {
+        ...options,
+        latestTurnCapability,
+        currentIngressEvidence: Object.freeze({
+          schemaVersion: 1,
+          provider: "bluebubbles",
+          captureKeyHash: captured.capture.keyHash,
+        }),
+        orientationEvidence: captured.capture.event,
+        orientationConversationKind: canonicalEvent.chat.isGroup ? "group" : "one_to_one",
+      }
+      result = await handleBlueBubblesNormalizedEvent(canonicalEvent, resolvedDeps, source, capturedOptions)
+      handledOutcome = result.notifiedAgent ? "message_completed" : "message_observed"
     }
     writeCapturedBlueBubblesHandled(
       agentName,
       captured.capture,
-      semanticHandledOutcome(handledEvent, result),
+      handledOutcome,
     )
     return result
   } finally {
+    clearPending(reservation)
+    if (latestTurnCapability) finishLatestTurn(latestTurnCapability)
     releaseBlueBubblesSemanticClaim(agentName, claim)
   }
 }
@@ -2515,11 +2390,21 @@ export async function handleBlueBubblesEvent(
     throw error
   }
 
-  const captured = await captureBlueBubblesSemanticEvent(normalized, resolvedDeps, "webhook")
+  const observationReservation = reserveBlueBubblesObservation(normalized)
+  let captured: BlueBubblesSemanticCaptureResult
+  try {
+    captured = await captureBlueBubblesSemanticEvent(normalized, resolvedDeps, "webhook")
+  } catch (error) {
+    clearPending(observationReservation)
+    throw error
+  }
   if (captured.status === "audit_only") {
+    clearPending(observationReservation)
     return { handled: true, notifiedAgent: false, kind: normalized.kind, reason: "ignored" }
   }
-  return handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook")
+  return handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook", {
+    observationReservation,
+  })
 }
 
 export interface BlueBubblesRecoveryResult {
@@ -2804,13 +2689,22 @@ export async function catchUpMissedBlueBubblesMessages(
     }
 
     try {
-      const captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
+      const observationReservation = reserveBlueBubblesObservation(event)
+      let captured: BlueBubblesSemanticCaptureResult
+      try {
+        captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
+      } catch (error) {
+        clearPending(observationReservation)
+        throw error
+      }
       if (captured.status === "audit_only") {
+        clearPending(observationReservation)
         result.skipped++
         continue
       }
 
       if (!processTurns) {
+        clearPending(observationReservation)
         if (captured.writeResult === "semantic_capture_duplicate") {
           result.skipped++
         } else {
@@ -2822,6 +2716,7 @@ export async function catchUpMissedBlueBubblesMessages(
       const handled = await handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "upstream-catchup", {
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
         autonomyBudgetTrigger: "recovery",
+        observationReservation,
       })
       if (handled.reason === "semantic_claim_timeout") {
         continue
@@ -3055,10 +2950,12 @@ export function createBlueBubblesWebhookHandler(
     }
 
     const resolvedDeps = { ...defaultDeps, ...deps }
+    const observationReservation = reserveBlueBubblesObservation(normalized)
     let captured: BlueBubblesSemanticCaptureResult
     try {
       captured = await captureBlueBubblesSemanticEvent(normalized, resolvedDeps, "webhook")
     } catch (error) {
+      clearPending(observationReservation)
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -3074,6 +2971,7 @@ export function createBlueBubblesWebhookHandler(
     }
 
     if (captured.status === "audit_only") {
+      clearPending(observationReservation)
       writeJson(res, 200, {
         handled: true,
         notifiedAgent: false,
@@ -3093,7 +2991,9 @@ export function createBlueBubblesWebhookHandler(
     })
 
     setTimeout(() => {
-      void handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook").catch((error) => {
+      void handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook", {
+        observationReservation,
+      }).catch((error) => {
         emitNervesEvent({
           level: "error",
           component: "senses",
