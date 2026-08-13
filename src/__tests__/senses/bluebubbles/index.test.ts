@@ -6594,11 +6594,12 @@ describe("BlueBubbles sense runtime", () => {
     const live = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
     await waitFor(() => mocks.handleInboundTurn.mock.calls.length === 1)
     const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
-    await waitFor(() => mocks.listPendingSemanticCaptures.mock.calls.length === 1)
+    const duplicateRecovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    await waitFor(() => mocks.listPendingSemanticCaptures.mock.calls.length === 2)
 
     releaseTurn.resolve()
     let exceededBound = false
-    const terminal = Promise.all([live, recovery])
+    const terminal = Promise.all([live, recovery, duplicateRecovery])
     await Promise.race([
       terminal,
       new Promise<void>((resolve) => setTimeout(() => {
@@ -6616,10 +6617,14 @@ describe("BlueBubbles sense runtime", () => {
     await expect(terminal).resolves.toEqual([
       expect.objectContaining({ notifiedAgent: true }),
       { recovered: 0, skipped: 1, failed: 0 },
+      { recovered: 0, skipped: 1, failed: 0 },
     ])
   })
 
   it("lets a same-key recovery take over after the active semantic handler fails", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
     const releaseRepairFailure = createDeferred<void>()
     mocks.repairEvent.mockImplementationOnce(async () => {
       await releaseRepairFailure.promise

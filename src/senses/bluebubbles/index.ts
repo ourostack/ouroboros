@@ -102,6 +102,56 @@ import {
 
 const bbFailoverStates = new Map<string, FailoverState>()
 
+interface BlueBubblesSemanticHandlingSlot {
+  settled: Promise<void>
+  settle(): void
+}
+
+const activeSemanticHandlingSlots = new Map<string, BlueBubblesSemanticHandlingSlot>()
+
+function clearBlueBubblesSemanticReservation(
+  reservation: BlueBubblesObservationReservation | null,
+): void {
+  if (reservation) clearPending(reservation)
+}
+
+async function acquireBlueBubblesSemanticHandlingSlot(
+  keyHash: string,
+  initialReservation: BlueBubblesObservationReservation,
+): Promise<{
+  slot: BlueBubblesSemanticHandlingSlot
+  reservation: BlueBubblesObservationReservation | null
+}> {
+  let reservation: BlueBubblesObservationReservation | null = initialReservation
+  while (true) {
+    const active = activeSemanticHandlingSlots.get(keyHash)
+    if (!active) {
+      let settle!: () => void
+      const slot: BlueBubblesSemanticHandlingSlot = {
+        settled: new Promise<void>((resolve) => {
+          settle = resolve
+        }),
+        settle: () => settle(),
+      }
+      activeSemanticHandlingSlots.set(keyHash, slot)
+      return { slot, reservation }
+    }
+    if (reservation) {
+      clearPending(reservation)
+      reservation = null
+    }
+    await active.settled
+  }
+}
+
+function releaseBlueBubblesSemanticHandlingSlot(
+  keyHash: string,
+  slot: BlueBubblesSemanticHandlingSlot,
+): void {
+  activeSemanticHandlingSlots.delete(keyHash)
+  slot.settle()
+}
+
 /**
  * In-flight message tracker.
  *
@@ -2229,32 +2279,27 @@ async function handleCapturedBlueBubblesSemanticEvent(
   options: BlueBubblesHandleOptions = {},
 ): Promise<BlueBubblesHandleResult> {
   const agentName = resolvedDeps.getAgentName()
-  const reservation = options.observationReservation ?? reserveBlueBubblesObservation(captured.normalized)
+  const initialReservation = options.observationReservation ?? reserveBlueBubblesObservation(captured.normalized)
   const identity = {
     canonicalKey: captured.capture.canonicalKey,
     keyHash: captured.capture.keyHash,
   }
-  // A duplicate delivery of the same live webhook cannot become a newer turn:
-  // keeping its pending fence while it waits on the first delivery's semantic
-  // claim would deadlock that first delivery at admission. Stored/recovery
-  // duplicates are different: they may be unhandled work, so their fence must
-  // stay up until claim status (and any required route repair) is known.
-  if (
-    captured.writeResult === "semantic_capture_duplicate"
-    && source === "webhook"
-    && !options.semanticRecovery
-  ) {
-    clearPending(reservation)
-  }
+  const semanticHandling = await acquireBlueBubblesSemanticHandlingSlot(
+    identity.keyHash,
+    initialReservation,
+  )
+  let reservation = semanticHandling.reservation
   let claim: Awaited<ReturnType<typeof acquireBlueBubblesSemanticClaim>>
   try {
     claim = await acquireBlueBubblesSemanticClaim(agentName, identity)
   } catch (error) {
-    clearPending(reservation)
+    clearBlueBubblesSemanticReservation(reservation)
+    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
     throw error
   }
   if (claim.status === "already_handled") {
-    clearPending(reservation)
+    clearBlueBubblesSemanticReservation(reservation)
+    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
     return {
       handled: true,
       notifiedAgent: false,
@@ -2263,7 +2308,8 @@ async function handleCapturedBlueBubblesSemanticEvent(
     }
   }
   if (claim.status === "timeout") {
-    clearPending(reservation)
+    clearBlueBubblesSemanticReservation(reservation)
+    releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
     return {
       handled: false,
       notifiedAgent: false,
@@ -2273,6 +2319,11 @@ async function handleCapturedBlueBubblesSemanticEvent(
   }
 
   let latestTurnCapability: BlueBubblesLatestTurnCapability | null = null
+  // A same-key follower clears its duplicate observation while joining the
+  // active local handler. If that handler failed and this follower acquired
+  // the durable claim, establish a fresh pending fence synchronously before
+  // any repair or promotion work.
+  const handlingReservation = reservation ?? reserveBlueBubblesObservation(captured.normalized)
   try {
     const reactionClassification = await classifyCapturedBlueBubblesReaction(captured)
     const reactionDecision = reactionClassification?.decision ?? null
@@ -2325,7 +2376,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         fromMe: captured.normalized.fromMe,
         sender: captured.normalized.sender,
       }
-      const promotion = promoteLatestTurn(reservation, {
+      const promotion = promoteLatestTurn(handlingReservation, {
         chatGuid: identityGroundedRepaired.chat.chatGuid,
         chatIdentifier: identityGroundedRepaired.chat.chatIdentifier,
       })
@@ -2391,9 +2442,13 @@ async function handleCapturedBlueBubblesSemanticEvent(
     )
     return result
   } finally {
-    clearPending(reservation)
+    clearPending(handlingReservation)
     if (latestTurnCapability) finishLatestTurn(latestTurnCapability)
-    releaseBlueBubblesSemanticClaim(agentName, claim)
+    try {
+      releaseBlueBubblesSemanticClaim(agentName, claim)
+    } finally {
+      releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot)
+    }
   }
 }
 
