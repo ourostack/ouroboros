@@ -68,8 +68,9 @@ describe("parseOrphanPidsFromPs", () => {
         " 103     1 node /x/dist/senses/teams-entry.js --agent Alpha",
         " 104     1 node /x/dist/senses/mail-entry.js --agent Alpha",
         " 105     1 node /x/dist/senses/a2a-entry.js --agent Alpha",
+        " 106     1 node /x/dist/senses/voice-entry.js --agent Alpha",
       ].join("\n")
-      expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103, 104, 105])
+      expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103, 104, 105, 106])
     })
 
   it("excludes mcp-serve processes even when they would otherwise match", () => {
