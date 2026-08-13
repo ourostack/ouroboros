@@ -285,6 +285,46 @@ describe("BlueBubbles latest-turn registry", () => {
     clearPending(identifierOnly)
   })
 
+  it("conservatively fences active lanes behind a newer identifier-only route until repair proves it", async () => {
+    const activeReservation = reserveObservation({ chatGuid: "chat-a" })
+    const active = promote(activeReservation, { chatGuid: "chat-a" })
+    if (active.status !== "promoted") throw new Error("expected active promotion")
+
+    const unresolvedIdentifier = reserveObservation({ chatIdentifier: "unproved@example.test" })
+    expect(observationSchedulingKeys(unresolvedIdentifier)).toEqual(["unresolved:*"])
+
+    let admitted = false
+    const admission = awaitDeliveryAdmission(active.capability).then((value) => {
+      admitted = true
+      return value
+    })
+    await Promise.resolve()
+    expect(admitted).toBe(false)
+
+    clearPending(unresolvedIdentifier)
+    await expect(admission).resolves.toBe(true)
+  })
+
+  it("conservatively fences active lanes behind a newer route with no usable hints", async () => {
+    const activeReservation = reserveObservation({ chatGuid: "chat-a" })
+    const active = promote(activeReservation, { chatGuid: "chat-a" })
+    if (active.status !== "promoted") throw new Error("expected active promotion")
+
+    const unresolved = reserveObservation({ chatIdentifier: "unknown" })
+    expect(observationSchedulingKeys(unresolved)).toEqual(["unresolved:*"])
+
+    let admitted = false
+    const admission = awaitDeliveryAdmission(active.capability).then((value) => {
+      admitted = true
+      return value
+    })
+    await Promise.resolve()
+    expect(admitted).toBe(false)
+
+    clearPending(unresolved)
+    await expect(admission).resolves.toBe(true)
+  })
+
   it("retries the same observation generation only after its failed lane is released", () => {
     const reservation = reserveObservation({ chatGuid: "chat-guid" })
     const first = promote(reservation, { chatGuid: "chat-guid" })

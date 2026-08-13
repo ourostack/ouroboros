@@ -105,7 +105,7 @@ function validateAnchorInclusiveQuery(
     || query.request.chatGuid !== chatGuid
     || query.request.chatIdentifier !== undefined
     || query.request.beforeTimestamp !== anchor.timestamp
-    || query.rawRowCount > BLUEBUBBLES_CONTEXT_PACKET_LIMIT
+    || query.rawRowCount > BLUEBUBBLES_CONTEXT_PACKET_LIMIT + 1
     || query.rawRowCount !== query.normalizedRowCount
     || query.normalizedRowCount !== query.messages.length
     || query.skippedRowCount !== 0

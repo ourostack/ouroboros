@@ -221,6 +221,13 @@ export function readBlueBubblesOutboundRecord(agentRoot: string, recordId: strin
   }
 }
 
+export function readBlueBubblesOutboundRecordByIdempotencyKey(
+  agentRoot: string,
+  idempotencyKey: string,
+): BlueBubblesOutboundRecord | null {
+  return readBlueBubblesOutboundRecord(agentRoot, recordIdFor(idempotencyKey.trim()))
+}
+
 function writeBlueBubblesOutboundRecord(agentRoot: string, record: BlueBubblesOutboundRecord): BlueBubblesOutboundRecord {
   writeJsonAtomic(blueBubblesOutboundRecordPath(agentRoot, record.recordId), record)
   return record

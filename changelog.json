@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.727",
       "changes": [
-      "Keep BlueBubbles replies on the latest turn with pre-pagination catch-up epochs, per-chat recovery lanes, preserved semantic generations across duplicate retries, dynamically grounded routing aliases, and fenced newest-first delivery; preserve the exact verified predecessor, isolate provider state, validate terminal payloads before handling, cancel stale activity transports, and keep reactions and progress mutations capture-only."
+        "Keep BlueBubbles replies on the latest turn with pre-listen recovery epochs, conservative unresolved-route fences, retained retry generations, and durable inbound-reply send boundaries that suppress crash retries.",
+        "Preserve full anchor-inclusive context pages and the exact verified predecessor; block unadvertised mid-turn speak calls; isolate provider state; validate terminal payloads; cancel stale activity transports; and keep reactions and progress mutations capture-only."
       ]
     },
     {

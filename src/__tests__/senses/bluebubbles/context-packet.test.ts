@@ -311,14 +311,33 @@ describe("BlueBubbles context packet builder", () => {
     expect(rendered[3]).not.toContain('"sender"')
   })
 
+  it("accepts a full anchor-inclusive page and preserves its exact predecessor", async () => {
+    const anchor = message()
+    const messages = [anchor, ...Array.from({ length: 40 }, (_, index) => message({
+      messageGuid: `full-page-prior-${index}`,
+      timestamp: anchor.timestamp - index - 1,
+    }))]
+    const client = metadataClient(anchor, messages)
+    const { buildBlueBubblesContextPacket } = await import("../../../senses/bluebubbles/context-packet")
+
+    const result = await buildBlueBubblesContextPacket({
+      agentName: "slugger",
+      client,
+      event: anchor,
+    })
+
+    expect(result?.verifiedPredecessorMessage.content).toContain("full-page-prior-0")
+    expect(result?.historyCount).toBe(40)
+  })
+
   it.each([
-    ["too many rows", (anchor: ReturnType<typeof message>) => ({
-      messages: [anchor, ...Array.from({ length: 40 }, (_, index) => message({
+    ["more rows than requested", (anchor: ReturnType<typeof message>) => ({
+      messages: [anchor, ...Array.from({ length: 41 }, (_, index) => message({
         messageGuid: `prior-${index}`,
         timestamp: anchor.timestamp - index - 1,
       }))],
-      rawRowCount: 41,
-      normalizedRowCount: 41,
+      rawRowCount: 42,
+      normalizedRowCount: 42,
       skippedRowCount: 0,
       invalidCausalTimestampRowCount: 0,
     })],

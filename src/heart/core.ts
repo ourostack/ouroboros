@@ -1989,6 +1989,21 @@ export async function runAgent(
         // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
+          if (tc.name === "speak" && !activeToolNames.has("speak")) {
+            const rejection = "rejected: speak was not advertised for this channel; no outward message was sent."
+            callbacks.onToolStart(tc.name, {})
+            callbacks.onToolEnd(tc.name, "", false)
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection })
+            providerRuntime.appendToolOutput(tc.id, rejection)
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.unadvertised_speak_blocked",
+              message: "blocked an unadvertised speak tool call",
+              meta: { channel: channel ?? "unknown" },
+            })
+            continue
+          }
           // Reject sole-call tools when mixed with other tool calls
           const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
           const soleCallRejection = SOLE_CALL_REJECTION[tc.name]

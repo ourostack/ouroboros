@@ -53,6 +53,7 @@ interface InternalCapability extends BlueBubblesLatestTurnCapability {
 }
 
 const AMBIGUOUS_IDENTIFIER = Symbol("ambiguous-bluebubbles-identifier")
+const UNRESOLVED_SCHEDULING_KEY = "unresolved:*"
 const pending = new Map<number, PendingObservation>()
 const lanes = new Map<string, ChatLane>()
 const identifierBindings = new Map<string, string | typeof AMBIGUOUS_IDENTIFIER>()
@@ -274,11 +275,19 @@ export function isCurrent(capability: BlueBubblesLatestTurnCapability): boolean 
 
 function pendingIntersects(capability: InternalCapability, entry: PendingObservation): boolean {
   if (entry.reservation.ordinal <= capability.ordinal) return false
+  const hasGuidHint = [...entry.hints].some((hint) => hint.startsWith("guid:"))
+  if (entry.hints.size === 0) return true
   for (const hint of entry.hints) {
     if (hint === capability.chatKey) return true
     if (hint.startsWith("identifier:")) {
       const identifier = hint.slice("identifier:".length)
-      if (identifierBindings.get(identifier) === capability.canonicalChat.chatGuid) return true
+      const binding = identifierBindings.get(identifier)
+      if (binding === capability.canonicalChat.chatGuid) return true
+      // An identifier-only observation can repair into any GUID lane. Until
+      // that relation is proved, it is a temporary global delivery fence—not
+      // an active shared chat lane. A direct GUID hint keeps paired events
+      // independently schedulable through that exact coordinate.
+      if (!hasGuidHint && typeof binding !== "string") return true
     }
   }
   return false
@@ -290,11 +299,17 @@ export function observationSchedulingKeys(
   const hints = reservationHints.get(reservation)
   if (!hints) throw new Error("bluebubbles_observation_reservation_unknown")
   const keys = new Set<string>()
+  const hasGuidHint = [...hints].some((hint) => hint.startsWith("guid:"))
+  if (hints.size === 0) keys.add(UNRESOLVED_SCHEDULING_KEY)
   for (const hint of hints) {
     if (hint.startsWith("identifier:")) {
       const identifier = hint.slice("identifier:".length)
       const binding = identifierBindings.get(identifier)
-      keys.add(typeof binding === "string" ? guidAlias(binding) : hint)
+      keys.add(
+        typeof binding === "string"
+          ? guidAlias(binding)
+          : hasGuidHint ? hint : UNRESOLVED_SCHEDULING_KEY,
+      )
     } else {
       keys.add(hint)
     }

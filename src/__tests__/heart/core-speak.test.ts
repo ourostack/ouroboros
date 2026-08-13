@@ -206,6 +206,34 @@ describe("speak interception in runAgent", () => {
     expect(assistantSettle).toBeDefined()
   })
 
+  it("rejects an unadvertised speak call on BlueBubbles without invoking its send callback", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(speakChunk("stale mid-turn reply")))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("current final reply")))
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "user", content: "latest message" }]
+    const result = await runAgent(messages, callbacks, "bluebubbles", undefined, {
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(callbacks.flushNow).not.toHaveBeenCalled()
+    expect(callbacks.onTextChunk).not.toHaveBeenCalledWith("stale mid-turn reply")
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith("current final reply")
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_speak_1",
+        content: expect.stringContaining("was not advertised"),
+      }),
+    ]))
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "engine.unadvertised_speak_blocked",
+      component: "engine",
+      level: "warn",
+    }))
+  })
+
   it("interleave: speak + read_file in same response — both run, turn continues", async () => {
     // Iter 1: speak + read_file
     mockCreate.mockReturnValueOnce(makeStream([
