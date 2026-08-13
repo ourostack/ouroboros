@@ -633,9 +633,12 @@ interface ParsedPonderArgs {
   say?: string
 }
 
-function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
+function parseSettlePayload(argumentsText: string): { answer: string; intent?: SettleIntent } {
   const parsed = JSON.parse(argumentsText) as Record<string, unknown>;
-  const answer = typeof parsed.answer === "string" ? parsed.answer : undefined;
+  // Provider finalization validates settle.answer as a string before this
+  // terminal handling path. Keep this parser focused on projection instead
+  // of carrying an unreachable second shape check.
+  const answer = parsed.answer as string;
   const rawIntent = parsed.intent;
   const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
     ? rawIntent
@@ -2000,7 +2003,7 @@ export async function runAgent(
               component: "engine",
               event: "engine.unadvertised_speak_blocked",
               message: "blocked an unadvertised speak tool call",
-              meta: { channel: channel ?? "unknown" },
+              meta: { channel: String(channel) },
             })
             continue
           }

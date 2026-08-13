@@ -6303,6 +6303,20 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
   })
 
+  it("continues with explicitly unknown reply context when the lookup fails", async () => {
+    mocks.getMessageText.mockRejectedValueOnce(new Error("reply lookup unavailable"))
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    const result = await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(result).toEqual(expect.objectContaining({ notifiedAgent: true }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_reply_context",
+      message: "could not fetch replied-to message text",
+      meta: expect.objectContaining({ hasText: false }),
+    }))
+  })
+
   it("settles an older capture-only mutation when a newer same-chat turn already owns the lane", async () => {
     const firstClaim = createDeferred<void>()
     const defaultAcquire = mocks.acquireSemanticClaim.getMockImplementation()!
@@ -7842,6 +7856,17 @@ describe("BlueBubbles sense runtime", () => {
         sendTarget: { kind: "chat_guid" as const, value: "any;-;eventual-shared-chat" },
       },
     } as any, { capturedAt: "2026-08-01T00:00:01.000Z" })
+    const unrelatedGuid = await makeStoredSemanticCaptureFromEvent({
+      ...base,
+      messageGuid: "UNRELATED-GUID-BETWEEN",
+      chat: {
+        ...base.chat,
+        chatGuid: "any;-;proved-unrelated-chat",
+        chatIdentifier: undefined,
+        sessionKey: "chat:any;-;proved-unrelated-chat",
+        sendTarget: { kind: "chat_guid" as const, value: "any;-;proved-unrelated-chat" },
+      },
+    } as any, { capturedAt: "2026-08-01T00:00:01.500Z" })
     const newerIdentifier = await makeStoredSemanticCaptureFromEvent({
       ...base,
       messageGuid: "UNBOUND-IDENTIFIER-NEWER",
@@ -7854,10 +7879,12 @@ describe("BlueBubbles sense runtime", () => {
       },
     } as any, { capturedAt: "2026-08-01T00:00:02.000Z" })
     mocks.semanticCaptures.set(olderGuid.keyHash, olderGuid)
+    mocks.semanticCaptures.set(unrelatedGuid.keyHash, unrelatedGuid)
     mocks.semanticCaptures.set(newerIdentifier.keyHash, newerIdentifier)
     const releaseNewerRepair = createDeferred<void>()
     mocks.repairEvent.mockImplementation(async (event: any) => {
-      if (event.messageGuid === "unbound-identifier-newer") await releaseNewerRepair.promise
+      if (event.messageGuid !== "unbound-identifier-newer") return event
+      await releaseNewerRepair.promise
       return {
         ...event,
         chat: {
@@ -7881,12 +7908,13 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
 
     releaseNewerRepair.resolve()
-    await expect(recovery).resolves.toEqual({ recovered: 1, skipped: 1, failed: 0 })
+    await expect(recovery).resolves.toEqual({ recovered: 2, skipped: 1, failed: 0 })
     expect(mocks.repairEvent.mock.calls.map((call: unknown[]) => call[0].messageGuid)).toEqual([
       "unbound-identifier-newer",
+      "unrelated-guid-between",
       "unbound-guid-older",
     ])
-    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
   })
 
   it("records captured inbound recovery failures instead of silently dropping them", async () => {

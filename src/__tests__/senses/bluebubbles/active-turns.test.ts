@@ -121,6 +121,7 @@ describe("BlueBubbles active turn markers", () => {
     } = await import("../../../senses/bluebubbles/active-turns")
 
     const turnId = beginBlueBubblesActiveTurn("slugger", event("msg-1"))
+    expect(() => noteBlueBubblesActiveTurnVisibleActivity("slugger", "missing-turn")).not.toThrow()
     const markerPath = path.join(markerDir(), fs.readdirSync(markerDir())[0])
     fs.writeFileSync(markerPath, "{}\n", "utf-8")
 
