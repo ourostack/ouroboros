@@ -146,7 +146,7 @@ describe("runAgent tool loop guard", () => {
     const { isChatStyleChannel } = await import("../../heart/core")
     expect(isChatStyleChannel("cli")).toBe(true)
     expect(isChatStyleChannel("teams")).toBe(true)
-    expect(isChatStyleChannel("bluebubbles")).toBe(true)
+    expect(isChatStyleChannel("bluebubbles")).toBe(false)
     expect(isChatStyleChannel("voice")).toBe(true)
     expect(isChatStyleChannel("inner")).toBe(false)
     expect(isChatStyleChannel("mcp")).toBe(false)
@@ -154,7 +154,7 @@ describe("runAgent tool loop guard", () => {
     expect(isChatStyleChannel("anything-else")).toBe(false)
   })
 
-  it("activeTools includes speakTool for channel='cli' and excludes for channel='inner'", async () => {
+  it("activeTools includes speakTool for CLI and excludes it from BlueBubbles and inner", async () => {
     // Capture the tools passed to the provider in two runs
     let capturedToolsByCall: Array<Array<{ function: { name: string } }>> = []
     mockCreate.mockImplementation((req: any) => {
@@ -183,6 +183,29 @@ describe("runAgent tool loop guard", () => {
     expect(cliToolNames).toContain("speak")
     expect(cliToolNames).toContain("settle")
 
+    capturedToolsByCall = []
+    mockCreate.mockImplementation((req: any) => {
+      capturedToolsByCall.push(req.tools as any)
+      return makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_settle_bb",
+            function: { name: "settle", arguments: '{"answer":"done"}' },
+          },
+        ]),
+      ])
+    })
+
+    await runAgent([{ role: "system", content: "test" }], makeCallbacks(), "bluebubbles", undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+    const blueBubblesToolNames = capturedToolsByCall[0]?.map((t) => t.function.name) ?? []
+    expect(blueBubblesToolNames).not.toContain("speak")
+    expect(blueBubblesToolNames).toContain("settle")
+
     // Reset capture; mock now needs another stream for the inner run
     capturedToolsByCall = []
     mockCreate.mockImplementation((req: any) => {
@@ -207,6 +230,46 @@ describe("runAgent tool loop guard", () => {
     expect(innerToolNames).not.toContain("speak")
     expect(innerToolNames).not.toContain("settle")
     expect(innerToolNames).toContain("rest")
+  })
+
+  it("reports the generated assistant/tool tail independently of prompt-budget prefix replacement", async () => {
+    mockCreate.mockImplementation(() => makeStream([
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_generated_tail",
+        function: { name: "settle", arguments: '{"answer":"visible answer","intent":"complete"}' },
+      }]),
+    ]))
+    const captureGeneratedMessages = vi.fn()
+    const messages: any[] = [
+      { role: "system", content: "old system" },
+      { role: "user", content: "x".repeat(400_000) },
+      { role: "assistant", content: "old assistant history" },
+      { role: "user", content: "current request" },
+    ]
+
+    const { runAgent } = await import("../../heart/core")
+    await runAgent(messages, makeCallbacks(), "bluebubbles", undefined, {
+      toolChoiceRequired: true,
+      execTool: vi.fn().mockResolvedValue("ok"),
+      toolContext: { signin: async () => undefined },
+      captureGeneratedMessages,
+    })
+
+    expect(captureGeneratedMessages).toHaveBeenCalledTimes(1)
+    expect(captureGeneratedMessages).toHaveBeenCalledWith([
+      expect.objectContaining({
+        role: "assistant",
+        tool_calls: [expect.objectContaining({ id: "call_generated_tail" })],
+      }),
+      expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_generated_tail",
+        content: "(delivered)",
+      }),
+    ])
+    expect(JSON.stringify(captureGeneratedMessages.mock.calls[0]?.[0])).not.toContain("old assistant history")
+    expect(JSON.stringify(captureGeneratedMessages.mock.calls[0]?.[0])).not.toContain("current request")
   })
 
   it("blocks repeated no-progress polling and lets the model recover with settle", async () => {

@@ -55,7 +55,9 @@ vi.mock("../../../mind/prompt", () => ({
 
 vi.mock("../../../mind/context", () => ({
   loadSession: () => null,
+  saveSession: vi.fn(),
   postTurnTrim: vi.fn(),
+  postTurnPersist: vi.fn(),
   deferPostTurnPersist: vi.fn(),
 }))
 

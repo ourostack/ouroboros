@@ -3918,7 +3918,8 @@ describe("runAgent", () => {
       { role: "system", content: "sys" },
       { role: "user", content: "do something" },
     ]
-    await runAgent(messages, callbacks)
+    const captureGeneratedMessages = vi.fn()
+    await runAgent(messages, callbacks, undefined, undefined, { captureGeneratedMessages })
 
     // Should have recovered after trim
     expect(callCount).toBe(3)
@@ -3927,6 +3928,10 @@ describe("runAgent", () => {
     const hasToolMsg = messages.some((m: any) => m.role === "tool")
     // After trim+stripLastToolCalls, tool messages should be cleaned
     expect(errors.some(e => e.message.includes("trimm"))).toBe(true)
+    expect(captureGeneratedMessages).toHaveBeenCalledWith([
+      expect.objectContaining({ role: "assistant", content: "recovered after tool overflow" }),
+    ])
+    expect(captureGeneratedMessages.mock.calls[0]?.[0]).not.toContainEqual({ role: "assistant" })
   })
 
   it("handles overflow error with empty message property", async () => {

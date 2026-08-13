@@ -244,7 +244,7 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     }
   })
 
-  it("invalidates a queued typing stop when bounded cleanup releases the old turn", async () => {
+  it("issues a bounded emergency typing stop before releasing an old turn and invalidates its queued stop", async () => {
     vi.useFakeTimers()
     try {
       const indexModule = await import("../../../senses/bluebubbles")
@@ -276,12 +276,19 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
       await vi.advanceTimersByTimeAsync(1)
       await cleanup
 
+      expect(setTyping.mock.calls).toEqual([
+        [chat, true],
+        [chat, false],
+      ])
+
+      // Simulate the next canonical turn starting only after the old turn's
+      // bounded cleanup has returned.
       await setTyping(chat, true)
       read.resolve()
       await vi.advanceTimersByTimeAsync(0)
 
       expect(setTyping.mock.calls.at(-1)).toEqual([chat, true])
-      expect(setTyping).not.toHaveBeenCalledWith(chat, false)
+      expect(setTyping.mock.calls.filter(([, active]) => active === false)).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }
