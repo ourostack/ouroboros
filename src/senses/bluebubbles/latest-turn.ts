@@ -28,6 +28,10 @@ export type BlueBubblesPromotionResult =
   | { status: "promoted"; capability: BlueBubblesLatestTurnCapability }
   | { status: "unresolved" | "stale" }
 
+export interface BlueBubblesPromotionOptions {
+  allowSameGenerationRetry?: boolean
+}
+
 interface PendingObservation {
   reservation: BlueBubblesObservationReservation
   hints: Set<string>
@@ -168,6 +172,7 @@ function aliasesFor(chat: CanonicalBlueBubblesChat): Set<string> {
 export function promote(
   reservation: BlueBubblesObservationReservation,
   input: BlueBubblesObservationHints,
+  options: BlueBubblesPromotionOptions = {},
 ): BlueBubblesPromotionResult {
   const canonicalChat = resolveCanonicalChat(input)
   settlePending(reservation.ordinal)
@@ -175,7 +180,12 @@ export function promote(
 
   const chatKey = guidAlias(canonicalChat.chatGuid)
   const lane = lanes.get(chatKey) ?? { highWater: 0, current: null }
-  if (reservation.ordinal <= lane.highWater) return { status: "stale" }
+  const sameGenerationRetry = reservation.ordinal === lane.highWater
+    && options.allowSameGenerationRetry === true
+    && lane.current === null
+  if (reservation.ordinal < lane.highWater || (reservation.ordinal === lane.highWater && !sameGenerationRetry)) {
+    return { status: "stale" }
+  }
 
   lane.current?.controller.abort(new Error("superseded"))
   const controller = new AbortController()

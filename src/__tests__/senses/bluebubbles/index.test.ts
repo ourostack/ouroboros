@@ -4538,6 +4538,81 @@ describe("BlueBubbles sense runtime", () => {
     latestTurns.finish(newerPromotion.capability)
   })
 
+  it("keeps a later same-chat batch fence while an unrelated recovery row is stalled", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    const sameChat = makeCatchUpMessage({
+      messageGuid: "catchup-same-chat-fence",
+      timestamp: now - 2_000,
+      textForAgent: "same-chat recovery observation",
+    })
+    const unrelatedBase = makeCatchUpMessage({
+      messageGuid: "catchup-unrelated-stall",
+      timestamp: now - 1_000,
+      textForAgent: "unrelated recovery observation",
+    })
+    const unrelated = {
+      ...unrelatedBase,
+      chat: {
+        ...unrelatedBase.chat,
+        chatGuid: "any;-;other@example.test",
+        chatIdentifier: "other@example.test",
+        sessionKey: "chat:any;-;other@example.test",
+        sendTarget: { kind: "chat_guid" as const, value: "any;-;other@example.test" },
+      },
+    }
+    mocks.listRecentMessages.mockResolvedValueOnce([unrelated, sameChat])
+    const releaseUnrelatedRepair = createDeferred<void>()
+    mocks.repairEvent.mockImplementationOnce(async (event: unknown) => {
+      await releaseUnrelatedRepair.promise
+      return event
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const activeReservation = latestTurns.reserveObservation({
+      chatGuid: sameChat.chat.chatGuid,
+      chatIdentifier: sameChat.chat.chatIdentifier,
+    })
+    const activePromotion = latestTurns.promote(activeReservation, {
+      chatGuid: sameChat.chat.chatGuid,
+      chatIdentifier: sameChat.chat.chatIdentifier,
+    })
+    if (activePromotion.status !== "promoted") throw new Error("expected active promotion")
+
+    const recovery = bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "error",
+      detail: "previous outage",
+      lastCheckedAt: new Date(now - 10_000).toISOString(),
+      pendingRecoveryCount: 0,
+    })
+    await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
+
+    let admissionSettled = false
+    const admission = latestTurns.awaitDeliveryAdmission(activePromotion.capability).then((value) => {
+      admissionSettled = true
+      return value
+    })
+    await flushAsyncWork()
+    expect(admissionSettled).toBe(false)
+
+    releaseUnrelatedRepair.resolve()
+
+    const recoveryResult = await recovery
+    expect(recoveryResult).toEqual({
+      inspected: 2,
+      recovered: 2,
+      skipped: 0,
+      failed: 0,
+      lastRecoveredMessageGuid: "catchup-unrelated-stall",
+    })
+    await expect(admission).resolves.toBe(false)
+    expect(activePromotion.capability.signal.aborted).toBe(true)
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+  })
+
   it("clears the observation fence when catch-up semantic capture throws", async () => {
     mocks.listRecentMessages.mockResolvedValueOnce([
       makeCatchUpMessage({
@@ -6304,7 +6379,7 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("replays multiple v1 semantic captures in captured timestamp order", async () => {
+  it("processes the newest captured observation first and settles older same-chat work", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -6330,13 +6405,14 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 2, skipped: 0, failed: 0 })
+    expect(result).toEqual({ recovered: 1, skipped: 1, failed: 0 })
     expect(mocks.repairEvent.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      messageGuid: "captured-older-guid",
-    }))
-    expect(mocks.repairEvent.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
       messageGuid: "captured-newer-guid",
     }))
+    expect(mocks.repairEvent.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      messageGuid: "captured-older-guid",
+    }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
 
   it("reserves every eligible captured observation before awaiting the first recovered turn", async () => {
@@ -6390,6 +6466,72 @@ describe("BlueBubbles sense runtime", () => {
     latestTurns.finish(newerPromotion.capability)
   })
 
+  it("keeps a later same-chat captured fence while an unrelated recovery row is stalled", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const sameChatEvent = makeCatchUpMessage({
+      messageGuid: "captured-same-chat-fence",
+      textForAgent: "same-chat captured observation",
+    })
+    const unrelatedBase = makeCatchUpMessage({
+      messageGuid: "captured-unrelated-stall",
+      textForAgent: "unrelated captured observation",
+    })
+    const unrelatedEvent = {
+      ...unrelatedBase,
+      chat: {
+        ...unrelatedBase.chat,
+        chatGuid: "any;-;other@example.test",
+        chatIdentifier: "other@example.test",
+        sessionKey: "chat:any;-;other@example.test",
+        sendTarget: { kind: "chat_guid" as const, value: "any;-;other@example.test" },
+      },
+    }
+    const sameChat = await makeStoredSemanticCaptureFromEvent(sameChatEvent, {
+      capturedAt: "2026-07-30T18:00:00.000Z",
+    })
+    const unrelated = await makeStoredSemanticCaptureFromEvent(unrelatedEvent, {
+      capturedAt: "2026-07-30T18:01:00.000Z",
+    })
+    mocks.listPendingSemanticCaptures.mockReturnValue([sameChat, unrelated])
+    const releaseUnrelatedRepair = createDeferred<void>()
+    mocks.repairEvent.mockImplementationOnce(async (event: unknown) => {
+      await releaseUnrelatedRepair.promise
+      return event
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const activeReservation = latestTurns.reserveObservation({
+      chatGuid: sameChatEvent.chat.chatGuid,
+      chatIdentifier: sameChatEvent.chat.chatIdentifier,
+    })
+    const activePromotion = latestTurns.promote(activeReservation, {
+      chatGuid: sameChatEvent.chat.chatGuid,
+      chatIdentifier: sameChatEvent.chat.chatIdentifier,
+    })
+    if (activePromotion.status !== "promoted") throw new Error("expected active promotion")
+
+    const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
+
+    let admissionSettled = false
+    const admission = latestTurns.awaitDeliveryAdmission(activePromotion.capability).then((value) => {
+      admissionSettled = true
+      return value
+    })
+    await flushAsyncWork()
+    expect(admissionSettled).toBe(false)
+
+    releaseUnrelatedRepair.resolve()
+
+    await expect(recovery).resolves.toEqual({ recovered: 2, skipped: 0, failed: 0 })
+    await expect(admission).resolves.toBe(false)
+    expect(activePromotion.capability.signal.aborted).toBe(true)
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+  })
+
   it("settles duplicate v1 capture rows by semantic identity before repairing the remaining unique entry", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -6408,11 +6550,11 @@ describe("BlueBubbles sense runtime", () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 2, skipped: 1, failed: 0 })
+    expect(result).toEqual({ recovered: 1, skipped: 2, failed: 0 })
     expect(mocks.repairEvent).toHaveBeenCalledTimes(2)
     expect(mocks.repairEvent.mock.calls.map((call) => call[0]?.messageGuid)).toEqual([
-      "captured-duplicate-guid",
       "captured-unique-guid",
+      "captured-duplicate-guid",
     ])
   })
 
@@ -6895,6 +7037,67 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).toHaveBeenCalledTimes(2)
     expect(mocks.sendText).not.toHaveBeenCalled()
     latestTurns.finish(newerPromotion.capability)
+  })
+
+  it("does not let a late same-key duplicate supersede an intervening newer turn", async () => {
+    const releaseFirstRepairFailure = createDeferred<void>()
+    let repairCount = 0
+    mocks.repairEvent.mockImplementation(async (event: unknown) => {
+      repairCount += 1
+      if (repairCount === 1) {
+        await releaseFirstRepairFailure.promise
+        throw new Error("first duplicate owner failed")
+      }
+      return event
+    })
+    const releaseNewerTurn = createDeferred<void>()
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("newer distinct answer")
+      await releaseNewerTurn.promise
+      return { gateResult: { allowed: true } }
+    })
+    const oldPayload = {
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "DUPLICATE-OLD-OBSERVATION",
+        text: "old observation",
+      },
+    }
+    const newerPayload = {
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "DISTINCT-NEWER-OBSERVATION",
+        text: "newer observation",
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const firstOwner = bluebubbles.handleBlueBubblesEvent(oldPayload)
+    await waitFor(() => repairCount === 1)
+    const newerTurn = bluebubbles.handleBlueBubblesEvent(newerPayload)
+    await waitFor(() => mocks.handleInboundTurn.mock.calls.length === 1)
+    const lateDuplicate = bluebubbles.handleBlueBubblesEvent(oldPayload)
+    await waitFor(() => mocks.writeSemanticCapture.mock.calls.length === 3)
+
+    releaseFirstRepairFailure.resolve()
+
+    await expect(firstOwner).rejects.toThrow("first duplicate owner failed")
+    await expect(lateDuplicate).resolves.toEqual(expect.objectContaining({
+      handled: true,
+      notifiedAgent: false,
+      reason: "superseded",
+    }))
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+
+    releaseNewerTurn.resolve()
+    await expect(newerTurn).resolves.toEqual(expect.objectContaining({ notifiedAgent: true }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      text: "newer distinct answer",
+    }))
   })
 
   it("records captured inbound recovery failures instead of silently dropping them", async () => {
@@ -11919,8 +12122,8 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.writeSemanticHandled.mock.calls.map((call: unknown[]) => call[1].outcome)).toEqual([
-      "read_audit_only",
       "delivery_audit_only",
+      "read_audit_only",
     ])
   })
 
@@ -12097,16 +12300,16 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
 
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 1, skipped: 7, failed: 0 })
+    expect(result).toEqual({ recovered: 0, skipped: 8, failed: 0 })
     expect(mocks.writeSemanticHandled.mock.calls.map((call: unknown[]) => call[1].outcome)).toEqual([
-      "message_completed",
-      "capture_only_positive",
-      "capture_only_positive",
-      "edit_capture_only",
-      "edit_capture_only",
-      "unsend_capture_only",
-      "read_audit_only",
       "delivery_audit_only",
+      "read_audit_only",
+      "unsend_capture_only",
+      "edit_capture_only",
+      "edit_capture_only",
+      "capture_only_positive",
+      "capture_only_positive",
+      "message_observed",
     ])
     expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
       messageGuid: "recovered-identifier-edit",

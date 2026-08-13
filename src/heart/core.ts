@@ -643,7 +643,6 @@ function parseSettlePayload(argumentsText: string): { answer?: string; intent?: 
       : undefined;
     return { answer, intent };
   } catch {
-    /* v8 ignore next -- provider adapters reject malformed settle JSON before tool-loop parsing @preserve */
     return {};
   }
 }

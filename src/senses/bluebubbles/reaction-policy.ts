@@ -1,5 +1,4 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { IngressTargetAuthorship } from "../ingress-evidence"
 import type {
   BlueBubblesReactionAction,
   BlueBubblesReactionDescriptor,
@@ -24,8 +23,6 @@ export interface BlueBubblesReactionPolicyInput {
   fromMe: boolean
   action: BlueBubblesReactionAction
   canonicalValue: BlueBubblesReactionDescriptor["canonicalValue"]
-  targetAuthorship: IngressTargetAuthorship
-  trustedActor?: boolean
 }
 
 const POSITIVE_REACTIONS = new Set<BlueBubblesReactionDescriptor["canonicalValue"]>([
@@ -63,8 +60,6 @@ export function classifyBlueBubblesReaction(
       action: input.action,
       canonicalValue: input.canonicalValue,
       fromMe: input.fromMe,
-      targetAuthorship: input.targetAuthorship,
-      trustEvaluated: input.trustedActor !== undefined,
       route: decision.route,
       outcome: decision.outcome,
     },

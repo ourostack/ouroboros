@@ -114,6 +114,7 @@ type BlueBubblesSemanticHandlingAcquisition =
       status: "owner"
       slot: BlueBubblesSemanticHandlingSlot
       reservation: BlueBubblesObservationReservation
+      allowSameGenerationRetry: boolean
     }
   | { status: "handled_by_owner" }
 
@@ -130,7 +131,12 @@ async function acquireBlueBubblesSemanticHandlingSlot(
       waiters: [],
     }
     activeSemanticHandlingSlots.set(keyHash, slot)
-    return { status: "owner", slot, reservation: initialReservation }
+    return {
+      status: "owner",
+      slot,
+      reservation: initialReservation,
+      allowSameGenerationRetry: false,
+    }
   }
   clearPending(initialReservation)
   return await new Promise<BlueBubblesSemanticHandlingAcquisition>((resolve) => {
@@ -142,13 +148,13 @@ function prepareBlueBubblesSemanticHandlingRetry(
   slot: BlueBubblesSemanticHandlingSlot,
 ): void {
   const next = slot.waiters[0]
-  if (!next || slot.reservation === next.reservation) return
-  // Duplicate observations keep the ordinal assigned at ingress. Suspend them
-  // while another same-key owner is active, then restore that exact reservation
-  // before retiring the failed owner so no delivery-admission gap is opened.
-  reactivateObservation(next.reservation)
-  clearPending(slot.reservation)
-  slot.reservation = next.reservation
+  if (!next) return
+  // A semantic duplicate is the same conversation observation, not a newer
+  // turn. Retry with the slot's immutable first-observation generation; the
+  // waiter's later arrival ordinal must never supersede distinct intervening
+  // work. Reactivation preserves the fence when the failed owner had already
+  // promoted (and therefore settled) the original reservation.
+  reactivateObservation(slot.reservation)
 }
 
 function releaseBlueBubblesSemanticHandlingSlot(
@@ -160,7 +166,12 @@ function releaseBlueBubblesSemanticHandlingSlot(
     prepareBlueBubblesSemanticHandlingRetry(slot)
     const next = slot.waiters.shift()
     if (next) {
-      next.resolve({ status: "owner", slot, reservation: slot.reservation })
+      next.resolve({
+        status: "owner",
+        slot,
+        reservation: slot.reservation,
+        allowSameGenerationRetry: true,
+      })
       return
     }
   }
@@ -413,19 +424,12 @@ function withBlueBubblesActivityTimeout<T>(
   task: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null
-  /* v8 ignore next -- queue gates prevent a pre-aborted controller from entering the activity helper @preserve */
-  let removeAbortListener = (): void => undefined
+  controller.signal.throwIfAborted()
+  let removeAbortListener!: () => void
   const aborted = new Promise<never>((_, reject) => {
     const rejectFromAbort = (): void => {
-      /* v8 ignore next -- AbortController supplies a reason in supported runtimes @preserve */
-      reject(controller.signal.reason ?? new Error(`bluebubbles ${operation} activity aborted`))
+      reject(controller.signal.reason)
     }
-    /* v8 ignore start -- queue gates prevent a pre-aborted controller from entering the activity helper @preserve */
-    if (controller.signal.aborted) {
-      rejectFromAbort()
-      return
-    }
-    /* v8 ignore stop */
     controller.signal.addEventListener("abort", rejectFromAbort, { once: true })
     removeAbortListener = () => controller.signal.removeEventListener("abort", rejectFromAbort)
   })
@@ -1735,7 +1739,7 @@ async function handleBlueBubblesNormalizedEvent(
       const threadGuid = event.threadOriginatorGuid?.trim()
       let repliedToText: string | null = null
       if (threadGuid) {
-        repliedToText = await client.getMessageText(threadGuid).catch(/* v8 ignore next */ () => null)
+        repliedToText = await client.getMessageText(threadGuid).catch(() => null)
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_reply_context",
@@ -2476,7 +2480,6 @@ async function classifyCapturedBlueBubblesReaction(
     fromMe: event.fromMe,
     action: event.canonicalAction,
     canonicalValue: event.canonicalValue,
-    targetAuthorship: event.targetAuthorship,
   }
   return { decision: classifyBlueBubblesReaction(input) }
 }
@@ -2661,6 +2664,8 @@ async function handleCapturedBlueBubblesSemanticEvent(
       const promotion = promoteLatestTurn(reservation, {
         chatGuid: identityGroundedRepaired.chat.chatGuid,
         chatIdentifier: identityGroundedRepaired.chat.chatIdentifier,
+      }, {
+        allowSameGenerationRetry: semanticHandling.allowSameGenerationRetry,
       })
       if (promotion.status !== "promoted") {
         if (!captureOnlyMutation && promotion.status === "unresolved") {
@@ -3063,45 +3068,46 @@ export async function catchUpMissedBlueBubblesMessages(
     .sort((left, right) => left.timestamp - right.timestamp)
 
   // Observation order is assigned when the upstream batch is in hand, not
-  // lazily after earlier rows finish. Otherwise a live B observed while R1 is
-  // awaiting could be assigned before an already-enumerated R2, allowing R2
-  // to supersede B even though the provider had already shown us R2 first.
-  let hasActivePreparedObservation = false
-  const preparedCandidates = candidates.map((event) => {
-    const observationReservation = !event.fromMe && !(event.timestamp < catchUpSince)
-      ? reserveBlueBubblesObservation(event)
-      : null
-    if (observationReservation) {
-      if (hasActivePreparedObservation) {
-        clearPending(observationReservation)
-      } else {
-        hasActivePreparedObservation = true
+  // lazily after earlier rows finish. Keep every eligible reservation active:
+  // a row in another chat must not open a delivery-admission gap for an
+  // already-enumerated newer row. When turns are processed inline, start at
+  // the newest observation so older same-chat rows become stale instead of
+  // deadlocking behind a newer pending reservation.
+  type PreparedCatchUpCandidate =
+    | { status: "skip"; event: BlueBubblesNormalizedMessage; batchIndex: number }
+    | {
+        status: "ready"
+        event: BlueBubblesNormalizedMessage
+        batchIndex: number
+        observationReservation: BlueBubblesObservationReservation
       }
+  const preparedCandidates: PreparedCatchUpCandidate[] = candidates.map((event, batchIndex) => {
+    if (event.fromMe || event.timestamp < catchUpSince) {
+      return { status: "skip", event, batchIndex }
     }
-    return { event, observationReservation }
+    return {
+      status: "ready",
+      event,
+      batchIndex,
+      observationReservation: reserveBlueBubblesObservation(event),
+    }
   })
+  const processingCandidates = processTurns
+    ? [...preparedCandidates].reverse()
+    : preparedCandidates
+  let lastRecoveredBatchIndex = -1
 
-  for (const { event, observationReservation } of preparedCandidates) {
+  for (const prepared of processingCandidates) {
+    const { event } = prepared
     result.inspected++
-    if (
-      event.fromMe
-      || event.timestamp < catchUpSince
-    ) {
+    if (prepared.status === "skip") {
       result.skipped++
       continue
     }
+    const { observationReservation } = prepared
 
     try {
-      /* v8 ignore next -- eligible candidates are reserved synchronously above @preserve */
-      if (!observationReservation) throw new Error("bluebubbles_observation_reservation_missing")
-      reactivateObservation(observationReservation)
-      let captured: BlueBubblesSemanticCaptureResult
-      try {
-        captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
-      } catch (error) {
-        clearPending(observationReservation)
-        throw error
-      }
+      const captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
       if (captured.status === "audit_only") {
         clearPending(observationReservation)
         result.skipped++
@@ -3109,10 +3115,17 @@ export async function catchUpMissedBlueBubblesMessages(
       }
 
       if (!processTurns) {
-        clearPending(observationReservation)
         if (captured.writeResult === "semantic_capture_duplicate") {
+          clearPending(observationReservation)
           result.skipped++
         } else {
+          // Runtime sync only captures work for the delayed recovery pass, but
+          // a newly observed message must still revoke an older live turn now.
+          const promotion = promoteLatestTurn(observationReservation, {
+            chatGuid: event.chat.chatGuid,
+            chatIdentifier: event.chat.chatIdentifier,
+          })
+          if (promotion.status === "promoted") finishLatestTurn(promotion.capability)
           result.queued = (result.queued ?? 0) + 1
         }
         continue
@@ -3130,9 +3143,13 @@ export async function catchUpMissedBlueBubblesMessages(
         result.skipped++
       } else {
         result.recovered++
-        result.lastRecoveredMessageGuid = event.messageGuid
+        if (prepared.batchIndex > lastRecoveredBatchIndex) {
+          lastRecoveredBatchIndex = prepared.batchIndex
+          result.lastRecoveredMessageGuid = event.messageGuid
+        }
       }
     } catch (error) {
+      clearPending(observationReservation)
       recordBlueBubblesRecoveryFailureForBudget(agentName, event, "upstream-catchup")
       result.failed++
       emitNervesEvent({
@@ -3177,57 +3194,67 @@ export async function recoverCapturedBlueBubblesInboundMessages(
   const candidates = listPendingBlueBubblesSemanticCaptures(agentName)
     .sort((left, right) => left.capturedAt.localeCompare(right.capturedAt))
 
-  let hasActivePreparedObservation = false
-  const preparedCandidates: Array<{
-    capture: BlueBubblesSemanticCaptureV1
-    normalized: BlueBubblesDirectionObservedEvent | null
-    observationReservation: BlueBubblesObservationReservation | null
-    skip: boolean
-  }> = []
+  type PreparedCapturedRecoveryCandidate =
+    | { status: "skip"; capture: BlueBubblesSemanticCaptureV1 }
+    | { status: "invalid"; capture: BlueBubblesSemanticCaptureV1 }
+    | {
+        status: "ready"
+        capture: BlueBubblesSemanticCaptureV1
+        normalized: BlueBubblesDirectionObservedEvent
+        observationReservation: BlueBubblesObservationReservation
+      }
+  const preparedCandidates: PreparedCapturedRecoveryCandidate[] = []
   for (const capture of candidates) {
     if (seenKeyHashes.has(capture.keyHash)) {
-      preparedCandidates.push({ capture, normalized: null, observationReservation: null, skip: true })
+      preparedCandidates.push({ status: "skip", capture })
       continue
     }
     seenKeyHashes.add(capture.keyHash)
 
     const disposition = classifyBlueBubblesRecoveryRecord(capture, cutover)
     if (disposition.disposition === "audit_only" && disposition.reason !== "audit_event") {
-      preparedCandidates.push({ capture, normalized: null, observationReservation: null, skip: true })
+      preparedCandidates.push({ status: "skip", capture })
       continue
     }
     const normalized = semanticCaptureToNormalizedEvent(capture)
-    const observationReservation = normalized ? reserveBlueBubblesObservation(normalized) : null
-    if (observationReservation) {
-      if (hasActivePreparedObservation) {
-        clearPending(observationReservation)
-      } else {
-        hasActivePreparedObservation = true
-      }
+    if (!normalized) {
+      preparedCandidates.push({ status: "invalid", capture })
+      continue
     }
     preparedCandidates.push({
+      status: "ready",
       capture,
       normalized,
-      observationReservation,
-      skip: false,
+      observationReservation: reserveBlueBubblesObservation(normalized),
     })
   }
 
-  for (const {
-    capture,
-    normalized,
-    observationReservation,
-    skip,
-  } of preparedCandidates) {
-    if (skip) {
+  // The newest prepared observation runs first. Its ordinal then makes every
+  // older same-chat record terminally superseded, while reservations in other
+  // chats continue fencing their own active turns until their iteration.
+  for (const prepared of [...preparedCandidates].reverse()) {
+    const { capture } = prepared
+    if (prepared.status === "skip") {
       result.skipped++
       continue
     }
+    if (prepared.status === "invalid") {
+      result.failed++
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_capture_recovery_error",
+        message: "captured bluebubbles message recovery failed",
+        meta: {
+          messageGuid: capture.event.eventGuid,
+          sessionKey: capture.event.sessionKey,
+          reason: "semantic_capture_routing_invalid",
+        },
+      })
+      continue
+    }
+    const { normalized, observationReservation } = prepared
     try {
-      if (!normalized) throw new Error("semantic_capture_routing_invalid")
-      /* v8 ignore next -- normalized prepared candidates always carry their reservation @preserve */
-      if (!observationReservation) throw new Error("bluebubbles_observation_reservation_missing")
-      reactivateObservation(observationReservation)
       const handled = await handleCapturedBlueBubblesSemanticEvent({
         status: "captured",
         capture,
@@ -3248,8 +3275,8 @@ export async function recoverCapturedBlueBubblesInboundMessages(
         result.recovered++
       }
     } catch (error) {
-      if (observationReservation) clearPending(observationReservation)
-      if (normalized) recordBlueBubblesRecoveryFailureForBudget(agentName, normalized, "webhook")
+      clearPending(observationReservation)
+      recordBlueBubblesRecoveryFailureForBudget(agentName, normalized, "webhook")
       result.failed++
       emitNervesEvent({
         level: "warn",

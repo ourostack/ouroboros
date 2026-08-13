@@ -155,6 +155,29 @@ describe("BlueBubbles latest-turn registry", () => {
     expect(isCurrent(newerPromotion.capability)).toBe(true)
   })
 
+  it("retries the same observation generation only after its failed lane is released", () => {
+    const reservation = reserveObservation({ chatGuid: "chat-guid" })
+    const first = promote(reservation, { chatGuid: "chat-guid" })
+    if (first.status !== "promoted") throw new Error("expected first promotion")
+
+    expect(promote(
+      reservation,
+      { chatGuid: "chat-guid" },
+      { allowSameGenerationRetry: true },
+    )).toEqual({ status: "stale" })
+    expect(isCurrent(first.capability)).toBe(true)
+
+    finish(first.capability)
+    const retry = promote(
+      reservation,
+      { chatGuid: "chat-guid" },
+      { allowSameGenerationRetry: true },
+    )
+    if (retry.status !== "promoted") throw new Error("expected retry promotion")
+    expect(retry.capability.ordinal).toBe(reservation.ordinal)
+    expect(isCurrent(retry.capability)).toBe(true)
+  })
+
   it("does not create an unknown lane and makes conflicting identifier aliases unresolved", () => {
     const unknown = reserveObservation({ chatIdentifier: "unknown" })
     expect(unknown.hints).toEqual([])
