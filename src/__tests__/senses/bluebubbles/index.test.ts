@@ -6523,6 +6523,123 @@ describe("BlueBubbles sense runtime", () => {
     await expect(admission).resolves.toBe(true)
   })
 
+  it("keeps an unowned duplicate webhook observation pending until its semantic claim settles", async () => {
+    const capture = await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "unowned-duplicate-webhook-guid",
+        text: "unowned duplicate webhook",
+      },
+    })
+    const claim = createDeferred<any>()
+    mocks.acquireSemanticClaim.mockImplementationOnce(() => claim.promise)
+
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const olderReservation = latestTurns.reserveObservation({
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+    })
+    const olderPromotion = latestTurns.promote(olderReservation, {
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+    })
+    if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const duplicate = bluebubbles.handleBlueBubblesEvent({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "unowned-duplicate-webhook-guid",
+        text: "unowned duplicate webhook",
+      },
+    })
+    await waitFor(() => mocks.acquireSemanticClaim.mock.calls.length === 1)
+
+    let admissionSettled = false
+    const admission = latestTurns.awaitDeliveryAdmission(olderPromotion.capability).then((value) => {
+      admissionSettled = true
+      return value
+    })
+    await flushAsyncWork()
+    expect(admissionSettled).toBe(false)
+
+    claim.resolve({
+      status: "already_handled",
+      record: {
+        schemaVersion: 1,
+        canonicalKey: capture.canonicalKey,
+        keyHash: capture.keyHash,
+        handledAt: "2026-07-30T18:01:00.000Z",
+        outcome: "message_completed",
+        detailCode: null,
+      },
+    })
+    await expect(duplicate).resolves.toEqual(expect.objectContaining({ reason: "already_processed" }))
+    await expect(admission).resolves.toBe(true)
+  })
+
+  it("joins same-key recovery to the live semantic handler without blocking its delivery", async () => {
+    const releaseTurn = createDeferred<void>()
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("one visible answer")
+      await releaseTurn.promise
+      return { gateResult: { allowed: true } }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const live = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await waitFor(() => mocks.handleInboundTurn.mock.calls.length === 1)
+    const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    await waitFor(() => mocks.listPendingSemanticCaptures.mock.calls.length === 1)
+
+    releaseTurn.resolve()
+    let exceededBound = false
+    const terminal = Promise.all([live, recovery])
+    await Promise.race([
+      terminal,
+      new Promise<void>((resolve) => setTimeout(() => {
+        exceededBound = true
+        resolve()
+      }, 50)),
+    ])
+    if (exceededBound) {
+      latestTurns.__resetBlueBubblesLatestTurnsForTests()
+      await terminal
+    }
+
+    expect(exceededBound).toBe(false)
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "one visible answer" }))
+    await expect(terminal).resolves.toEqual([
+      expect.objectContaining({ notifiedAgent: true }),
+      { recovered: 0, skipped: 1, failed: 0 },
+    ])
+  })
+
+  it("lets a same-key recovery take over after the active semantic handler fails", async () => {
+    const releaseRepairFailure = createDeferred<void>()
+    mocks.repairEvent.mockImplementationOnce(async () => {
+      await releaseRepairFailure.promise
+      throw new Error("live repair failed")
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const live = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
+    const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    await waitFor(() => mocks.listPendingSemanticCaptures.mock.calls.length === 1)
+
+    releaseRepairFailure.resolve()
+
+    await expect(live).rejects.toThrow("live repair failed")
+    await expect(recovery).resolves.toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.repairEvent).toHaveBeenCalledTimes(2)
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "got it" }))
+  })
+
   it("records captured inbound recovery failures instead of silently dropping them", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
