@@ -2089,17 +2089,6 @@ async function handleBlueBubblesNormalizedEvent(
       }
       const [groupHasFamilyMember, hasExistingGroupWithFamily] = trustContext
       lifecycleSignal?.throwIfAborted()
-      if (
-        controller.signal.aborted
-        || !isLatestTurnCurrent(options.latestTurnCapability)
-      ) {
-        return {
-          handled: true,
-          notifiedAgent: false,
-          kind: event.kind,
-          reason: "superseded",
-        }
-      }
 
       // ── Call shared pipeline ────────────────────────────────────────
       const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
@@ -4448,7 +4437,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     })
       .then(scheduleRecoveryPass)
       .catch((error) => {
-        if (closed || lifecycleController.signal.aborted) return
+        if (closed) return
         emitNervesEvent({
           level: "warn",
           component: "senses",

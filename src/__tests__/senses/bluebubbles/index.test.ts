@@ -5966,6 +5966,72 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
+  it("reports runtime sync setup failures and releases the single-flight slot", async () => {
+    vi.useFakeTimers()
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const createClient = vi.fn()
+      .mockReturnValueOnce({})
+      .mockImplementationOnce(() => { throw new Error("runtime sync setup failed") })
+      .mockReturnValue({
+        checkHealth: mocks.checkHealth,
+        listRecentMessages: mocks.listRecentMessages,
+      })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp({ createClient } as any)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_recovery_error",
+      meta: { reason: "runtime sync setup failed" },
+    }))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(createClient).toHaveBeenCalledTimes(4)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    closableServer.close()
+  })
+
+  it("reports non-Error runtime sync setup failures", async () => {
+    vi.useFakeTimers()
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const createClient = vi.fn()
+      .mockReturnValueOnce({})
+      .mockImplementationOnce(() => { throw "runtime sync string failure" })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp({ createClient } as any)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_recovery_error",
+      meta: { reason: "runtime sync string failure" },
+    }))
+    closableServer.close()
+  })
+
+  it("suppresses a non-Error runtime sync setup failure after server close", async () => {
+    vi.useFakeTimers()
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const createClient = vi.fn()
+      .mockReturnValueOnce({})
+      .mockImplementationOnce(() => { throw new Error("closed runtime sync setup failure") })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp({ createClient } as any)
+    closableServer.close()
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_error",
+      meta: { reason: "closed runtime sync setup failure" },
+    }))
+  })
+
   it("does not rearm recovery when startup sync completes after server close", async () => {
     vi.useFakeTimers()
     const startupHealth = createDeferred<void>()
