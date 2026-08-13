@@ -91,23 +91,18 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     expect(sendText).toHaveBeenCalledTimes(1)
   })
 
-  it("sends a visible still-working status only after a silent live turn stays quiet past the watchdog window", async () => {
+  it("keeps an arbitrarily long silent live turn transport-quiet while typing remains active", async () => {
     vi.useFakeTimers()
     try {
-      const { callbacks, sendText } = await setup()
+      const { callbacks, sendText, setTyping } = await setup()
       callbacks.onModelStart()
       callbacks.onModelStart()
-      await vi.advanceTimersByTimeAsync(10_000)
-      callbacks.onTextChunk("first visible reply")
-      await (callbacks as any).flushNow()
-      expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "first visible reply" }))
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
 
-      await vi.advanceTimersByTimeAsync(65_000)
-      expect(sendText).not.toHaveBeenCalledWith(expect.objectContaining({ text: "still working on this..." }))
-
-      await vi.advanceTimersByTimeAsync(75_000)
-      expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "still working on this..." }))
+      expect(sendText).not.toHaveBeenCalled()
+      expect(setTyping).toHaveBeenCalledWith(expect.anything(), true)
       await (callbacks as any).finish()
+      expect(setTyping).toHaveBeenCalledWith(expect.anything(), false)
     } finally {
       vi.useRealTimers()
     }
@@ -122,6 +117,41 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     // Verify setTyping was never called with `false` during flushNow
     const stopCalls = setTyping.mock.calls.filter(([_, on]) => on === false)
     expect(stopCalls).toHaveLength(0)
+  })
+
+  it("surfaces a raw string failure from queued read/typing activity", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const nerves = await import("../../../nerves/runtime")
+    const emitNervesEvent = vi.mocked(nerves.emitNervesEvent)
+    emitNervesEvent.mockClear()
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const callbacks = indexModule.createBlueBubblesCallbacks(
+      {
+        sendText: vi.fn(async () => ({ messageGuid: "sent-guid" })),
+        editMessage: vi.fn(),
+        setTyping: vi.fn(async () => {
+          throw "raw typing transport failure"
+        }),
+        markChatRead: vi.fn(async () => {}),
+        checkHealth: vi.fn(),
+        repairEvent: vi.fn(),
+        getMessageText: vi.fn(),
+      } as any,
+      chat,
+      { getReplyToMessageGuid: vi.fn(), setSelection: vi.fn() } as any,
+      false,
+    )
+
+    callbacks.onModelStart()
+    await callbacks.finish()
+
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_activity_error",
+      meta: expect.objectContaining({
+        operation: "typing_start",
+        reason: "raw typing transport failure",
+      }),
+    }))
   })
 
   it("rechecks cancellation after queued admission before starting read or typing transports", async () => {
@@ -144,7 +174,6 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
       false,
       undefined,
       {
-        enableSilenceWatchdog: false,
         admitOutbound: () => admission.promise,
         isOutboundCurrent: () => true,
       },
@@ -181,7 +210,6 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
       false,
       undefined,
       {
-        enableSilenceWatchdog: false,
         admitOutbound: () => admission.promise,
         isOutboundCurrent: () => current,
       },
@@ -197,17 +225,12 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     expect(setTyping).not.toHaveBeenCalledWith(expect.anything(), true)
   })
 
-  it("does not re-enable typing when cancellation lands during a status transport", async () => {
+  it("does not send or re-enable typing when cancellation lands during a long silent turn", async () => {
     vi.useFakeTimers()
     try {
       const indexModule = await import("../../../senses/bluebubbles")
-      const statusSend = createDeferred<{ messageGuid: string }>()
       const setTyping = vi.fn(async () => {})
-      const sendText = vi.fn((request: { text: string }) => (
-        request.text === "still working on this..."
-          ? statusSend.promise
-          : Promise.resolve({ messageGuid: "sent-guid" })
-      ))
+      const sendText = vi.fn(async () => ({ messageGuid: "sent-guid" }))
       const chat = { chatGuid: "chat-1", participants: [] } as any
       const callbacks = indexModule.createBlueBubblesCallbacks(
         {
@@ -227,18 +250,14 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
       callbacks.onModelStart()
       await vi.advanceTimersByTimeAsync(0)
       expect(setTyping).toHaveBeenCalledWith(chat, true)
-      await vi.advanceTimersByTimeAsync(75_000)
-      expect(sendText).toHaveBeenCalledWith({
-        chat,
-        text: "still working on this...",
-        replyToMessageGuid: "reply-guid",
-      })
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(sendText).not.toHaveBeenCalled()
 
       callbacks.cancelOutbound("turn_timeout")
-      statusSend.resolve({ messageGuid: "status-guid" })
       await callbacks.finish()
 
       expect(setTyping.mock.calls.filter(([, active]) => active === true)).toHaveLength(1)
+      expect(setTyping.mock.calls.filter(([, active]) => active === false)).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }
@@ -265,7 +284,7 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
         { getReplyToMessageGuid: vi.fn(), setSelection: vi.fn() } as any,
         false,
         undefined,
-        { enableSilenceWatchdog: false },
+        {},
       )
 
       callbacks.onModelStart()

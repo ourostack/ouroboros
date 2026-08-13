@@ -6,14 +6,13 @@
 // you mean AMC's The Audacity…") and then three overlapping inner/status
 // surface updates about the same duplicate issue (evt-001820, evt-001821,
 // evt-001823). PR #699 normalized only whitespace + case, so the LLM's
-// slight rephrasings on a settle/recovery loop bypassed it; sendStatus had
-// no dedupe at all, so status surface text was completely uncovered.
+// slight rephrasings on a settle/recovery loop bypassed it.
 //
 // The guard added by this fix:
 //   1. Token-set Jaccard similarity (>= 0.7) catches near-duplicates from
 //      the same turn even when the exact bytes differ.
-//   2. sendStatus consults the same per-turn dedupe state, so status-style
-//      outward messages can no longer slip past the speak/settle guard.
+//   2. Automatic status transport is absent; callback errors remain telemetry
+//      only, so status-style text cannot slip past the speak/settle guard.
 
 import { describe, it, expect, vi } from "vitest"
 
@@ -182,7 +181,7 @@ describe("BlueBubbles near-duplicate outward send guard (post-#699 evt-001814/00
 })
 
 describe("BlueBubbles status surfaces stay out of iMessage", () => {
-  it("suppresses duplicate silence-watchdog status sends", async () => {
+  it("never creates a silence-watchdog status send", async () => {
     vi.useFakeTimers()
     ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockClear()
 
@@ -191,21 +190,14 @@ describe("BlueBubbles status surfaces stay out of iMessage", () => {
       const callbacks = createBlueBubblesCallbacks(client as never, CHAT, TOP_LEVEL_REPLY_TARGET, false)
 
       callbacks.onModelStart()
-
-      await vi.advanceTimersByTimeAsync(75_000)
-      await callbacks.flush()
-
-      await vi.advanceTimersByTimeAsync(75_000)
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
       await callbacks.finish()
 
-      const statusSends = sendText.mock.calls.filter((call) => call[0]?.text === "still working on this...")
-      expect(statusSends).toHaveLength(1)
-      expect(emitNervesEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: "bluebubbles.duplicate_outward_suppressed",
-          meta: expect.objectContaining({ site: "status" }),
-        }),
-      )
+      expect(sendText).not.toHaveBeenCalled()
+      expect(emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+        event: "bluebubbles.duplicate_outward_suppressed",
+        meta: expect.objectContaining({ site: "status" }),
+      }))
     } finally {
       vi.useRealTimers()
     }

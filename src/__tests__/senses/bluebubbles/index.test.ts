@@ -1828,84 +1828,11 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).not.toHaveBeenCalled()
   })
 
-  it("surfaces string-thrown watchdog status transport failures explicitly", async () => {
+  it("keeps a long silent turn text-transport quiet until the final reply", async () => {
     vi.useFakeTimers()
-    mocks.sendText
-      .mockRejectedValueOnce("status send failure")
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
-      await vi.advanceTimersByTimeAsync(75_000)
-      await flushAsyncWork()
-      return {
-        content: "done",
-        toolCalls: [],
-        outputItems: [],
-        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
-      }
-    })
-
-    const bluebubbles = await import("../../../senses/bluebubbles")
-    try {
-      await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
-    } finally {
-      vi.useRealTimers()
-    }
-
-    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        event: "senses.bluebubbles_activity_error",
-        meta: expect.objectContaining({
-          operation: "send_status",
-          reason: "status send failure",
-        }),
-      }),
-    )
-  })
-
-  it("surfaces Error-thrown watchdog status transport failures explicitly too", async () => {
-    vi.useFakeTimers()
-    mocks.sendText
-      .mockRejectedValueOnce(new Error("status send error object"))
-    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
-      callbacks.onModelStart()
-      await vi.advanceTimersByTimeAsync(75_000)
-      await flushAsyncWork()
-      return {
-        content: "done",
-        toolCalls: [],
-        outputItems: [],
-        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
-      }
-    })
-
-    const bluebubbles = await import("../../../senses/bluebubbles")
-    try {
-      await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
-    } finally {
-      vi.useRealTimers()
-    }
-
-    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        event: "senses.bluebubbles_activity_error",
-        meta: expect.objectContaining({
-          operation: "send_status",
-          reason: "status send error object",
-        }),
-      }),
-    )
-  })
-
-  it("bounds stuck watchdog status transport before the live turn timeout", async () => {
-    vi.useFakeTimers()
-    mocks.sendText.mockImplementationOnce(() => new Promise(() => undefined))
-    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
-      callbacks.onModelStart()
-      await vi.advanceTimersByTimeAsync(75_000)
-      await flushAsyncWork()
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(90_000)
       await flushAsyncWork()
       callbacks.onTextChunk("done")
       return {
@@ -1923,17 +1850,11 @@ describe("BlueBubbles sense runtime", () => {
       vi.useRealTimers()
     }
 
-    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        event: "senses.bluebubbles_activity_error",
-        meta: expect.objectContaining({
-          operation: "send_status",
-          reason: "bluebubbles send_status activity timed out after 20000ms",
-        }),
-      }),
-    )
-    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "done" }))
+    expect(mocks.sendText.mock.calls.map((call: any[]) => call[0]?.text)).toEqual(["done"])
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_activity_error",
+      meta: expect.objectContaining({ operation: "send_status" }),
+    }))
   })
 
   it("still attempts mark-read when typing-start transport fails and surfaces the activity warning", async () => {
@@ -2782,7 +2703,7 @@ describe("BlueBubbles sense runtime", () => {
       { getReplyToMessageGuid: () => undefined } as any,
       false,
       undefined,
-      { enableSilenceWatchdog: false, admitOutbound },
+      { admitOutbound },
     )
 
     callbacks.onModelStart()
@@ -2807,7 +2728,6 @@ describe("BlueBubbles sense runtime", () => {
       false,
       undefined,
       {
-        enableSilenceWatchdog: false,
         admitOutbound: vi.fn().mockResolvedValue(true),
         isOutboundCurrent: () => false,
       },
@@ -2842,7 +2762,7 @@ describe("BlueBubbles sense runtime", () => {
       { getReplyToMessageGuid: () => undefined } as any,
       false,
       undefined,
-      { enableSilenceWatchdog: false, enableActivitySignals: false },
+      { enableActivitySignals: false },
     )
 
     callbacks.onModelStart()
@@ -2896,7 +2816,7 @@ describe("BlueBubbles sense runtime", () => {
       { getReplyToMessageGuid: () => undefined } as any,
       false,
       undefined,
-      { enableSilenceWatchdog: false },
+      {},
     )
 
     callbacks.onModelStart()

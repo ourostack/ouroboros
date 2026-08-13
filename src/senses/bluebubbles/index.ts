@@ -422,7 +422,6 @@ const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
 const BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS = 2 * 60_000
 const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 10 * 60_000
 const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
-const BLUEBUBBLES_SILENCE_WATCHDOG_MS = 75_000
 const BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS = 2_000
 const BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS = 20_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
@@ -971,7 +970,6 @@ export function createBlueBubblesCallbacks(
   isGroupChat: boolean,
   onVisibleActivity?: () => void,
   options: {
-    enableSilenceWatchdog?: boolean
     enableActivitySignals?: boolean
     admitOutbound?: () => Promise<boolean>
     isOutboundCurrent?: () => boolean
@@ -982,8 +980,6 @@ export function createBlueBubblesCallbacks(
   let textBuffer = ""
   let typingActive = false
   let queue = Promise.resolve()
-  let lastVisibleActivityMs = Date.now()
-  let silenceWatchdog: ReturnType<typeof setInterval> | null = null
   let outboundClosed = false
   let nextCleanupToken = 0
   const activeCleanupTokens = new Set<number>()
@@ -1071,7 +1067,6 @@ export function createBlueBubblesCallbacks(
   }
 
   function recordVisibleActivity(): void {
-    lastVisibleActivityMs = Date.now()
     onVisibleActivity?.()
   }
 
@@ -1099,7 +1094,7 @@ export function createBlueBubblesCallbacks(
     return false
   }
 
-  function emitDuplicateOutwardSuppressed(site: "flushNow" | "flush" | "status", messageLength: number): void {
+  function emitDuplicateOutwardSuppressed(site: "flushNow" | "flush", messageLength: number): void {
     emitNervesEvent({
       level: "warn",
       component: "senses",
@@ -1113,59 +1108,10 @@ export function createBlueBubblesCallbacks(
     })
   }
 
-  function stopSilenceWatchdog(): void {
-    if (silenceWatchdog === null) return
-    clearInterval(silenceWatchdog)
-    silenceWatchdog = null
-  }
-
-  function startSilenceWatchdog(): void {
-    if (silenceWatchdog !== null) return
-    silenceWatchdog = setInterval(() => {
-      if (Date.now() - lastVisibleActivityMs < BLUEBUBBLES_SILENCE_WATCHDOG_MS) return
-      sendStatus("still working on this...")
-    }, BLUEBUBBLES_SILENCE_WATCHDOG_MS)
-    /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
-    if (typeof (silenceWatchdog as { unref?: () => void }).unref === "function") {
-      (silenceWatchdog as { unref: () => void }).unref()
-    }
-  }
-
-  function sendStatus(text: string): void {
-    /* v8 ignore next -- defensive guard: cancelOutbound stops the only status caller before it can fire @preserve */
-    if (outboundClosed) return
-    const trimmed = text.trim()
-    /* v8 ignore next -- defensive guard; current status callers always provide non-empty text @preserve */
-    if (!trimmed) return
-    // Status surfaces share the per-turn dedupe set so a status-style
-    // outward message (tool description, error notice, watchdog ping)
-    // can't deliver a near-duplicate of an already-sent answer or status
-    // (post-#699 evidence: evt-001820 + evt-001821 + evt-001823 on
-    // 2026-05-09 — overlapping status surface updates about the same
-    // duplicate issue, which the flushNow/flush-only guard could not catch
-    // because sendStatus writes directly via client.sendText).
-    if (isDuplicateOutwardText(trimmed)) {
-      emitDuplicateOutwardSuppressed("status", trimmed.length)
-      return
-    }
-    enqueue("send_status", async () => {
-      await client.sendText({
-        chat,
-        text: trimmed,
-        replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
-      })
-      recordVisibleActivity()
-      // Re-enable typing indicator — sending a message clears the typing bubble
-      if (!await canRunOutbound()) return
-      await client.setTyping(chat, true)
-    })
-  }
-
   return {
     settleOutputMode: "retractable_buffer",
     onModelStart(): void {
       if (outboundClosed) return
-      if (options.enableSilenceWatchdog !== false) startSilenceWatchdog()
       if (options.enableActivitySignals !== false && !isGroupChat) startTypingNow()
       emitNervesEvent({
         component: "senses",
@@ -1196,8 +1142,8 @@ export function createBlueBubblesCallbacks(
       if (outboundClosed) return
       // Tool activity is a reply commitment, but iMessage is not a tool-progress
       // console. Keep the human-facing thread quiet until the agent has real
-      // text (or the generic silence watchdog fires), while preserving native
-      // read/typing signals and nerves telemetry for debugging.
+      // text, while preserving native read/typing signals and nerves telemetry
+      // for debugging.
       if (options.enableActivitySignals !== false && !typingActive && name !== "observe" && name !== "speak") startTypingNow()
       emitNervesEvent({
         component: "senses",
@@ -1327,7 +1273,6 @@ export function createBlueBubblesCallbacks(
     },
 
     async finish(options: { timeoutMs?: number } = {}): Promise<void> {
-      stopSilenceWatchdog()
       const cleanupTimeoutMs = options.timeoutMs ?? BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS
       const needsTypingStop = typingActive
       if (needsTypingStop) {
@@ -1368,7 +1313,6 @@ export function createBlueBubblesCallbacks(
     cancelOutbound(reason: "turn_timeout" | "superseded"): void {
       outboundClosed = true
       textBuffer = ""
-      stopSilenceWatchdog()
       emitNervesEvent({
         level: "warn",
         component: "senses",

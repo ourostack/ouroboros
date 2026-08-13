@@ -109,7 +109,15 @@ interface ProviderRegistry {
   resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord): ProviderRuntime | null;
 }
 
-const _providerRuntimes: Record<Facing, { fingerprint: string; runtime: ProviderRuntime } | null> = {
+interface ProviderRuntimeFactoryCache {
+  fingerprint: string;
+  create: () => ProviderRuntime | null;
+}
+
+// Cache only immutable provider construction inputs. ProviderRuntime owns
+// mutable per-turn state (for example Responses nativeInput), so every caller
+// must receive a fresh instance even when its binding fingerprint is unchanged.
+const _providerRuntimeFactories: Record<Facing, ProviderRuntimeFactoryCache | null> = {
   human: null,
   agent: null,
 };
@@ -185,12 +193,16 @@ export function createProviderRegistry(): ProviderRegistry {
 }
 
 async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRuntime> {
+  let runtime: ProviderRuntime | null = null;
   try {
     const { binding, fingerprint, credential } = await getProviderRuntimeFingerprint(facing);
-    const cached = _providerRuntimes[facing];
+    const cached = _providerRuntimeFactories[facing];
     if (!cached || cached.fingerprint !== fingerprint) {
-      const runtime = createProviderRegistry().resolve(binding.provider, binding.model, credential);
-      _providerRuntimes[facing] = runtime ? { fingerprint, runtime } : null;
+      const create = () => createProviderRegistry().resolve(binding.provider, binding.model, credential);
+      runtime = create();
+      _providerRuntimeFactories[facing] = runtime ? { fingerprint, create } : null;
+    } else {
+      runtime = cached.create();
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -206,7 +218,7 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
     throw error instanceof Error ? error : new Error(msg);
   }
 
-  if (!_providerRuntimes[facing]) {
+  if (!runtime) {
     const msg = "provider runtime could not be initialized.";
     emitNervesEvent({
       level: "error",
@@ -219,17 +231,17 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
     console.error(`\n[fatal] ${msg}\n`);
     throw new Error(msg);
   }
-  return _providerRuntimes[facing]!.runtime;
+  return runtime;
 }
 
 /**
- * Clear the cached provider runtime so the next access re-creates it from
- * current config. Runtime access also auto-refreshes when the selected
- * provider fingerprint changes on disk.
+ * Clear cached provider construction inputs so the next access re-reads them
+ * from current config. Runtime instances are always per-caller and are never
+ * shared across turns.
  */
 export function resetProviderRuntime(): void {
-  _providerRuntimes.human = null;
-  _providerRuntimes.agent = null;
+  _providerRuntimeFactories.human = null;
+  _providerRuntimeFactories.agent = null;
 }
 
 export function getModel(facing: Facing = "human"): string {
@@ -1522,7 +1534,7 @@ export async function runAgent(
               preserveCachedOnFailure: true,
               providers: [record.provider],
             })
-            _providerRuntimes[facing] = null
+            _providerRuntimeFactories[facing] = null
             providerRuntime = await getProviderRuntime(facing)
             providerRuntime.resetTurnState(messages)
           } catch (refreshError) {
