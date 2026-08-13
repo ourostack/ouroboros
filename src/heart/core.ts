@@ -635,9 +635,9 @@ interface ParsedPonderArgs {
 
 function parseSettlePayload(argumentsText: string): { answer?: string; intent?: SettleIntent } {
   try {
-    const parsed = JSON.parse(argumentsText) as Record<string, unknown> | null;
-    const answer = typeof parsed?.answer === "string" ? parsed.answer : undefined;
-    const rawIntent = parsed?.intent;
+    const parsed = JSON.parse(argumentsText) as Record<string, unknown>;
+    const answer = typeof parsed.answer === "string" ? parsed.answer : undefined;
+    const rawIntent = parsed.intent;
     const intent = rawIntent === "complete" || rawIntent === "blocked" || rawIntent === "direct_reply"
       ? rawIntent
       : undefined;
