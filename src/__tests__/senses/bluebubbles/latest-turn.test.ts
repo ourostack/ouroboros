@@ -67,6 +67,43 @@ describe("BlueBubbles latest-turn registry", () => {
     }).status).toBe("promoted")
   })
 
+  it("uses one alias lane for equivalent phone and email identifier spellings", async () => {
+    const phone = reserveObservation({
+      chatGuid: "phone-chat-guid",
+      chatIdentifier: "+1 (973) 508-0289",
+    })
+    const phonePromotion = promote(phone, {
+      chatGuid: "phone-chat-guid",
+      chatIdentifier: "+1 (973) 508-0289",
+    })
+    if (phonePromotion.status !== "promoted") throw new Error("expected phone promotion")
+
+    const compactPhone = reserveObservation({ chatIdentifier: "+19735080289" })
+    expect(compactPhone.hints).toEqual(["identifier:+19735080289"])
+    let phoneAdmissionSettled = false
+    const phoneAdmission = awaitDeliveryAdmission(phonePromotion.capability).then((value) => {
+      phoneAdmissionSettled = true
+      return value
+    })
+    await Promise.resolve()
+    expect(phoneAdmissionSettled).toBe(false)
+
+    const compactPromotion = promote(compactPhone, { chatIdentifier: "+19735080289" })
+    expect(compactPromotion.status).toBe("promoted")
+    await expect(phoneAdmission).resolves.toBe(false)
+
+    const email = reserveObservation({ chatGuid: "email-chat-guid", chatIdentifier: "Ari@Example.COM" })
+    expect(promote(email, {
+      chatGuid: "email-chat-guid",
+      chatIdentifier: "Ari@Example.COM",
+    }).status).toBe("promoted")
+    const lowerEmail = reserveObservation({ chatIdentifier: "ari@example.com" })
+    const lowerPromotion = promote(lowerEmail, { chatIdentifier: "ari@example.com" })
+    expect(lowerPromotion.status).toBe("promoted")
+    if (lowerPromotion.status !== "promoted") throw new Error("expected lowercase email promotion")
+    expect(lowerPromotion.capability.canonicalChat.chatGuid).toBe("email-chat-guid")
+  })
+
   it("keeps distinct chats independent and retains high-water protection after finish", () => {
     const a = reserveObservation({ chatGuid: "chat-a" })
     const b = reserveObservation({ chatGuid: "chat-b" })

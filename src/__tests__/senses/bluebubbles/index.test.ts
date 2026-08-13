@@ -6469,6 +6469,60 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
+  it("keeps a stored recovery observation pending until its semantic claim settles", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture({
+      ...dmTopLevelPayload,
+      data: {
+        ...dmTopLevelPayload.data,
+        guid: "captured-pending-fence-guid",
+        text: "newer stored recovery",
+      },
+    })
+    const claim = createDeferred<any>()
+    mocks.acquireSemanticClaim.mockImplementationOnce(() => claim.promise)
+
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const olderReservation = latestTurns.reserveObservation({
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+    })
+    const olderPromotion = latestTurns.promote(olderReservation, {
+      chatGuid: "any;-;ari@mendelow.me",
+      chatIdentifier: "ari@mendelow.me",
+    })
+    if (olderPromotion.status !== "promoted") throw new Error("expected older promotion")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    await waitFor(() => mocks.acquireSemanticClaim.mock.calls.length === 1)
+
+    let admissionSettled = false
+    const admission = latestTurns.awaitDeliveryAdmission(olderPromotion.capability).then((value) => {
+      admissionSettled = true
+      return value
+    })
+    await flushAsyncWork()
+    expect(admissionSettled).toBe(false)
+
+    claim.resolve({
+      status: "already_handled",
+      record: {
+        schemaVersion: 1,
+        canonicalKey: capture.canonicalKey,
+        keyHash: capture.keyHash,
+        handledAt: "2026-07-30T18:01:00.000Z",
+        outcome: "message_completed",
+        detailCode: null,
+      },
+    })
+
+    await expect(recovery).resolves.toEqual({ recovered: 0, skipped: 1, failed: 0 })
+    await expect(admission).resolves.toBe(true)
+  })
+
   it("records captured inbound recovery failures instead of silently dropping them", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
