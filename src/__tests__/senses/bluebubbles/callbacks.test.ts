@@ -379,7 +379,7 @@ describe("BlueBubbles createBlueBubblesCallbacks", () => {
     vi.useFakeTimers()
     try {
       const indexModule = await import("../../../senses/bluebubbles")
-      const chat = { chatGuid: "chat-1", participants: [] } as any
+      const chat = { chatIdentifier: "ari@example.test", participants: [] } as any
       const setTyping = vi.fn((_chat: unknown, active: boolean) => (
         active ? new Promise<void>(() => undefined) : Promise.resolve()
       ))

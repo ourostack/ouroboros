@@ -417,7 +417,8 @@ function withBlueBubblesActivityTimeout<T>(
   let removeAbortListener = (): void => undefined
   const aborted = new Promise<never>((_, reject) => {
     const rejectFromAbort = (): void => {
-      reject(controller.signal.reason ?? /* v8 ignore next -- AbortController supplies a reason in supported runtimes @preserve */ new Error(`bluebubbles ${operation} activity aborted`))
+      /* v8 ignore next -- AbortController supplies a reason in supported runtimes @preserve */
+      reject(controller.signal.reason ?? new Error(`bluebubbles ${operation} activity aborted`))
     }
     /* v8 ignore start -- queue gates prevent a pre-aborted controller from entering the activity helper @preserve */
     if (controller.signal.aborted) {
@@ -2516,10 +2517,12 @@ async function handleCapturedBlueBubblesSemanticEvent(
   captured: CapturedBlueBubblesSemanticEvent,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
-  options: BlueBubblesHandleOptions = {},
+  options: BlueBubblesHandleOptions & {
+    observationReservation: BlueBubblesObservationReservation
+  },
 ): Promise<BlueBubblesHandleResult> {
   const agentName = resolvedDeps.getAgentName()
-  const initialReservation = options.observationReservation ?? reserveBlueBubblesObservation(captured.normalized)
+  const initialReservation = options.observationReservation
   const identity = {
     canonicalKey: captured.capture.canonicalKey,
     keyHash: captured.capture.keyHash,
@@ -3234,7 +3237,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
         autonomyBudgetTrigger: "recovery",
         semanticRecovery: true,
-        ...(observationReservation ? { observationReservation } : {}),
+        observationReservation,
       })
       if (handled.reason === "semantic_claim_timeout") {
         continue

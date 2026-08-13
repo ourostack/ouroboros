@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.727",
       "changes": [
-        "Keep BlueBubbles replies on the latest turn, preserve verified adjacent context, isolate provider state, and remove automatic progress chatter."
+        "Keep BlueBubbles replies on the latest turn, preserve the exact verified predecessor, isolate provider state, cancel stale activity transports, and keep reactions and progress mutations capture-only."
       ]
     },
     {

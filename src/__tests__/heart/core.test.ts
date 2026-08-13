@@ -8108,14 +8108,14 @@ describe("tool_choice required and settle", () => {
     })
   })
 
-  it("settle with valid JSON but no answer field: clears noise and fails without retry", async () => {
+  it("settle with valid JSON null: clears noise and fails without retry", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk("fallback content", [
-            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"text":"hello"}' } },
+            { index: 0, id: "call_1", function: { name: "settle", arguments: "null" } },
           ]),
         ])
       }
