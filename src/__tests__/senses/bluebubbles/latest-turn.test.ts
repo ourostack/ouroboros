@@ -7,13 +7,17 @@ vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent }))
 import {
   __resetBlueBubblesLatestTurnsForTests,
   awaitDeliveryAdmission,
+  beginObservationBatch,
   cancel,
   clearPending,
   finish,
   isCurrent,
+  mergeObservationReservations,
+  observationSchedulingKeys,
   promote,
   reactivateObservation,
   reserveObservation,
+  reserveObservationFromBatch,
 } from "../../../senses/bluebubbles/latest-turn"
 
 describe("BlueBubbles latest-turn registry", () => {
@@ -40,6 +44,46 @@ describe("BlueBubbles latest-turn registry", () => {
 
     clearPending(later)
     await expect(admission).resolves.toBe(true)
+  })
+
+  it("freezes a bounded catch-up epoch before later live observations", () => {
+    const batch = beginObservationBatch(3)
+    const newest = reserveObservationFromBatch(batch, 0, { chatGuid: "chat-guid" })
+    const older = reserveObservationFromBatch(batch, 2, { chatGuid: "chat-guid" })
+    const live = reserveObservation({ chatGuid: "chat-guid" })
+
+    expect(newest.ordinal).toBeGreaterThan(older.ordinal)
+    expect(live.ordinal).toBeGreaterThan(newest.ordinal)
+  })
+
+  it("rejects invalid or reused bounded batch reservations", () => {
+    expect(() => beginObservationBatch(Number.NaN)).toThrow(
+      "bluebubbles_observation_batch_size_invalid",
+    )
+    expect(() => beginObservationBatch(0)).toThrow(
+      "bluebubbles_observation_batch_size_invalid",
+    )
+
+    const batch = beginObservationBatch(2)
+    expect(() => reserveObservationFromBatch(
+      { highOrdinal: 2, size: 2 },
+      0,
+      { chatGuid: "chat-guid" },
+    )).toThrow("bluebubbles_observation_batch_offset_invalid")
+    expect(() => reserveObservationFromBatch(batch, 0.5, { chatGuid: "chat-guid" })).toThrow(
+      "bluebubbles_observation_batch_offset_invalid",
+    )
+    expect(() => reserveObservationFromBatch(batch, -1, { chatGuid: "chat-guid" })).toThrow(
+      "bluebubbles_observation_batch_offset_invalid",
+    )
+    expect(() => reserveObservationFromBatch(batch, 2, { chatGuid: "chat-guid" })).toThrow(
+      "bluebubbles_observation_batch_offset_invalid",
+    )
+
+    reserveObservationFromBatch(batch, 0, { chatGuid: "chat-guid" })
+    expect(() => reserveObservationFromBatch(batch, 0, { chatGuid: "chat-guid" })).toThrow(
+      "bluebubbles_observation_batch_offset_reused",
+    )
   })
 
   it("promotes identifier-only observations through a proved GUID alias and aborts the older capability", async () => {
@@ -153,6 +197,92 @@ describe("BlueBubbles latest-turn registry", () => {
 
     expect(promote(suspended, { chatGuid: "chat-guid" })).toEqual({ status: "stale" })
     expect(isCurrent(newerPromotion.capability)).toBe(true)
+  })
+
+  it("merges stronger duplicate hints into the immutable first generation", () => {
+    const primary = reserveObservation({ chatIdentifier: "friend@example.test" })
+    const duplicate = reserveObservation({
+      chatGuid: "chat-guid",
+      chatIdentifier: "friend@example.test",
+    })
+
+    expect(mergeObservationReservations(primary, duplicate)).toBe(primary)
+    expect(primary.hints).toEqual(expect.arrayContaining([
+      "identifier:friend@example.test",
+      "guid:chat-guid",
+    ]))
+    expect(observationSchedulingKeys(primary)).toEqual(expect.arrayContaining([
+      "identifier:friend@example.test",
+      "guid:chat-guid",
+    ]))
+  })
+
+  it("rejects foreign reservations and treats self-merge as an identity operation", () => {
+    const known = reserveObservation({ chatGuid: "chat-guid" })
+    const foreign = Object.freeze({ ordinal: 99, hints: Object.freeze(["guid:foreign"]) })
+
+    expect(mergeObservationReservations(known, known)).toBe(known)
+    expect(() => reactivateObservation(foreign)).toThrow(
+      "bluebubbles_observation_reservation_unknown",
+    )
+    expect(() => mergeObservationReservations(foreign, known)).toThrow(
+      "bluebubbles_observation_reservation_unknown",
+    )
+    expect(() => mergeObservationReservations(known, foreign)).toThrow(
+      "bluebubbles_observation_reservation_unknown",
+    )
+    expect(() => observationSchedulingKeys(foreign)).toThrow(
+      "bluebubbles_observation_reservation_unknown",
+    )
+  })
+
+  it("uses current identifier bindings for delivery admission instead of stale aliases", async () => {
+    const activeReservation = reserveObservation({ chatGuid: "chat-guid" })
+    const active = promote(activeReservation, { chatGuid: "chat-guid" })
+    if (active.status !== "promoted") throw new Error("expected active promotion")
+
+    const olderBinding = reserveObservation({
+      chatGuid: "chat-guid",
+      chatIdentifier: "friend@example.test",
+    })
+    expect(promote(olderBinding, {
+      chatGuid: "chat-guid",
+      chatIdentifier: "friend@example.test",
+    })).toEqual({ status: "promoted", capability: expect.any(Object) })
+    const newerActive = promote(
+      reserveObservation({ chatGuid: "chat-guid" }),
+      { chatGuid: "chat-guid" },
+    )
+    if (newerActive.status !== "promoted") throw new Error("expected newer active promotion")
+    const identifierOnly = reserveObservation({ chatIdentifier: "friend@example.test" })
+
+    let admitted = false
+    const admission = awaitDeliveryAdmission(newerActive.capability).then((value) => {
+      admitted = true
+      return value
+    })
+    await Promise.resolve()
+    expect(admitted).toBe(false)
+
+    const identifierPromotion = promote(identifierOnly, { chatIdentifier: "friend@example.test" })
+    expect(identifierPromotion.status).toBe("promoted")
+    await expect(admission).resolves.toBe(false)
+  })
+
+  it("does not fence one GUID lane for an identifier currently bound elsewhere", async () => {
+    const activeReservation = reserveObservation({ chatGuid: "chat-a" })
+    const active = promote(activeReservation, { chatGuid: "chat-a" })
+    if (active.status !== "promoted") throw new Error("expected active promotion")
+
+    const binding = reserveObservation({ chatGuid: "chat-b", chatIdentifier: "friend@example.test" })
+    expect(promote(binding, {
+      chatGuid: "chat-b",
+      chatIdentifier: "friend@example.test",
+    }).status).toBe("promoted")
+    const identifierOnly = reserveObservation({ chatIdentifier: "friend@example.test" })
+
+    await expect(awaitDeliveryAdmission(active.capability)).resolves.toBe(true)
+    clearPending(identifierOnly)
   })
 
   it("retries the same observation generation only after its failed lane is released", () => {

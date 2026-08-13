@@ -73,13 +73,17 @@ import {
 } from "./reaction-policy"
 import {
   awaitDeliveryAdmission,
+  beginObservationBatch,
   cancel as cancelLatestTurn,
   clearPending,
   finish as finishLatestTurn,
   isCurrent as isLatestTurnCurrent,
+  mergeObservationReservations,
+  observationSchedulingKeys,
   promote as promoteLatestTurn,
   reactivateObservation,
   reserveObservation,
+  reserveObservationFromBatch,
   type BlueBubblesLatestTurnCapability,
   type BlueBubblesObservationReservation,
 } from "./latest-turn"
@@ -102,11 +106,14 @@ import {
 const bbFailoverStates = new Map<string, FailoverState>()
 
 interface BlueBubblesSemanticHandlingSlot {
+  generation: BlueBubblesSemanticObservationGeneration
   reservation: BlueBubblesObservationReservation
-  waiters: Array<{
-    reservation: BlueBubblesObservationReservation
-    resolve: (acquisition: BlueBubblesSemanticHandlingAcquisition) => void
-  }>
+  waiters: Array<(acquisition: BlueBubblesSemanticHandlingAcquisition) => void>
+}
+
+interface BlueBubblesSemanticObservationGeneration {
+  reservation: BlueBubblesObservationReservation
+  retry: boolean
 }
 
 type BlueBubblesSemanticHandlingAcquisition =
@@ -119,54 +126,74 @@ type BlueBubblesSemanticHandlingAcquisition =
   | { status: "handled_by_owner" }
 
 const activeSemanticHandlingSlots = new Map<string, BlueBubblesSemanticHandlingSlot>()
+const semanticObservationGenerations = new Map<string, BlueBubblesSemanticObservationGeneration>()
+
+function adoptBlueBubblesSemanticObservation(
+  keyHash: string,
+  observedReservation: BlueBubblesObservationReservation,
+  activate: boolean,
+): BlueBubblesSemanticObservationGeneration {
+  const existing = semanticObservationGenerations.get(keyHash)
+  if (!existing) {
+    const generation = { reservation: observedReservation, retry: false }
+    semanticObservationGenerations.set(keyHash, generation)
+    return generation
+  }
+  mergeObservationReservations(existing.reservation, observedReservation)
+  if (activate) reactivateObservation(existing.reservation)
+  return existing
+}
+
+function suspendBlueBubblesSemanticObservation(
+  generation: BlueBubblesSemanticObservationGeneration,
+): void {
+  generation.retry = true
+  clearPending(generation.reservation)
+}
+
+function completeBlueBubblesSemanticObservation(
+  keyHash: string,
+  generation: BlueBubblesSemanticObservationGeneration,
+): void {
+  clearPending(generation.reservation)
+  semanticObservationGenerations.delete(keyHash)
+}
 
 async function acquireBlueBubblesSemanticHandlingSlot(
   keyHash: string,
-  initialReservation: BlueBubblesObservationReservation,
+  generation: BlueBubblesSemanticObservationGeneration,
 ): Promise<BlueBubblesSemanticHandlingAcquisition> {
   const active = activeSemanticHandlingSlots.get(keyHash)
   if (!active) {
     const slot: BlueBubblesSemanticHandlingSlot = {
-      reservation: initialReservation,
+      generation,
+      reservation: generation.reservation,
       waiters: [],
     }
     activeSemanticHandlingSlots.set(keyHash, slot)
     return {
       status: "owner",
       slot,
-      reservation: initialReservation,
-      allowSameGenerationRetry: false,
+      reservation: generation.reservation,
+      allowSameGenerationRetry: generation.retry,
     }
   }
-  clearPending(initialReservation)
   return await new Promise<BlueBubblesSemanticHandlingAcquisition>((resolve) => {
-    active.waiters.push({ reservation: initialReservation, resolve })
+    active.waiters.push(resolve)
   })
-}
-
-function prepareBlueBubblesSemanticHandlingRetry(
-  slot: BlueBubblesSemanticHandlingSlot,
-): void {
-  const next = slot.waiters[0]
-  if (!next) return
-  // A semantic duplicate is the same conversation observation, not a newer
-  // turn. Retry with the slot's immutable first-observation generation; the
-  // waiter's later arrival ordinal must never supersede distinct intervening
-  // work. Reactivation preserves the fence when the failed owner had already
-  // promoted (and therefore settled) the original reservation.
-  reactivateObservation(slot.reservation)
 }
 
 function releaseBlueBubblesSemanticHandlingSlot(
   keyHash: string,
   slot: BlueBubblesSemanticHandlingSlot,
-  outcome: "terminal" | "retryable",
+  outcome: "terminal" | "retryable" | "retained",
 ): void {
   if (outcome === "retryable") {
-    prepareBlueBubblesSemanticHandlingRetry(slot)
+    slot.generation.retry = true
     const next = slot.waiters.shift()
     if (next) {
-      next.resolve({
+      reactivateObservation(slot.reservation)
+      next({
         status: "owner",
         slot,
         reservation: slot.reservation,
@@ -175,11 +202,14 @@ function releaseBlueBubblesSemanticHandlingSlot(
       return
     }
   }
-  clearPending(slot.reservation)
   activeSemanticHandlingSlots.delete(keyHash)
-  for (const waiter of slot.waiters.splice(0)) {
-    clearPending(waiter.reservation)
-    waiter.resolve({ status: "handled_by_owner" })
+  if (outcome === "terminal") {
+    completeBlueBubblesSemanticObservation(keyHash, slot.generation)
+  } else {
+    suspendBlueBubblesSemanticObservation(slot.generation)
+  }
+  for (const resolve of slot.waiters.splice(0)) {
+    resolve({ status: "handled_by_owner" })
   }
 }
 
@@ -2359,6 +2389,39 @@ function reserveBlueBubblesObservation(event: BlueBubblesNormalizedEvent): BlueB
   })
 }
 
+function groupBlueBubblesObservationsByLane<T extends {
+  observationReservation: BlueBubblesObservationReservation
+}>(candidates: readonly T[]): T[][] {
+  const groups: Array<{ keys: Set<string>; candidates: T[] }> = []
+  for (const candidate of candidates) {
+    const keys = new Set(observationSchedulingKeys(candidate.observationReservation))
+    // Unknown routes cannot prove independence until repair completes. Keep
+    // them in one conservative lane so a slower repair cannot let an older
+    // observation answer ahead of a newer message from the same eventual chat.
+    if (keys.size === 0) keys.add("unresolved:*")
+    const matchingIndexes: number[] = []
+    for (let index = 0; index < groups.length; index++) {
+      if ([...keys].some((key) => groups[index].keys.has(key))) matchingIndexes.push(index)
+    }
+    if (matchingIndexes.length === 0) {
+      groups.push({ keys, candidates: [candidate] })
+      continue
+    }
+    const destination = groups[matchingIndexes[0]]
+    destination.candidates.push(candidate)
+    for (const key of keys) destination.keys.add(key)
+    for (const index of matchingIndexes.slice(1).reverse()) {
+      const merged = groups[index]
+      destination.candidates.push(...merged.candidates)
+      for (const key of merged.keys) destination.keys.add(key)
+      groups.splice(index, 1)
+    }
+  }
+  return groups.map((group) => group.candidates.sort((left, right) => (
+    right.observationReservation.ordinal - left.observationReservation.ordinal
+  )))
+}
+
 function canonicalizeBlueBubblesEvent(
   event: BlueBubblesDirectionObservedMessage,
   capability: BlueBubblesLatestTurnCapability,
@@ -2525,14 +2588,18 @@ async function handleCapturedBlueBubblesSemanticEvent(
   },
 ): Promise<BlueBubblesHandleResult> {
   const agentName = resolvedDeps.getAgentName()
-  const initialReservation = options.observationReservation
   const identity = {
     canonicalKey: captured.capture.canonicalKey,
     keyHash: captured.capture.keyHash,
   }
+  const generation = adoptBlueBubblesSemanticObservation(
+    identity.keyHash,
+    options.observationReservation,
+    true,
+  )
   const semanticHandling = await acquireBlueBubblesSemanticHandlingSlot(
     identity.keyHash,
-    initialReservation,
+    generation,
   )
   if (semanticHandling.status === "handled_by_owner") {
     return {
@@ -2547,7 +2614,6 @@ async function handleCapturedBlueBubblesSemanticEvent(
   try {
     claim = await acquireBlueBubblesSemanticClaim(agentName, identity)
   } catch (error) {
-    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot)
     releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot, "retryable")
     throw error
   }
@@ -2561,7 +2627,6 @@ async function handleCapturedBlueBubblesSemanticEvent(
     }
   }
   if (claim.status === "timeout") {
-    prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot)
     releaseBlueBubblesSemanticHandlingSlot(identity.keyHash, semanticHandling.slot, "retryable")
     return {
       handled: false,
@@ -2734,9 +2799,6 @@ async function handleCapturedBlueBubblesSemanticEvent(
     semanticHandlingCompleted = true
     return result
   } finally {
-    if (!semanticHandlingCompleted) {
-      prepareBlueBubblesSemanticHandlingRetry(semanticHandling.slot)
-    }
     if (latestTurnCapability) finishLatestTurn(latestTurnCapability)
     try {
       if (!retainSemanticClaim) {
@@ -2746,7 +2808,9 @@ async function handleCapturedBlueBubblesSemanticEvent(
       releaseBlueBubblesSemanticHandlingSlot(
         identity.keyHash,
         semanticHandling.slot,
-        semanticHandlingCompleted ? "terminal" : "retryable",
+        retainSemanticClaim
+          ? "retained"
+          : semanticHandlingCompleted ? "terminal" : "retryable",
       )
     }
   }
@@ -3011,7 +3075,18 @@ export async function catchUpMissedBlueBubblesMessages(
     },
   })
 
-  const recentEvents: BlueBubblesNormalizedEvent[] = []
+  type PreparedCatchUpCandidate =
+    | { status: "skip"; event: BlueBubblesNormalizedMessage }
+    | {
+        status: "ready"
+        event: BlueBubblesNormalizedMessage
+        observationReservation: BlueBubblesObservationReservation
+      }
+  const preparedCandidates: PreparedCatchUpCandidate[] = []
+  const seenMessageGuids = new Set<string>()
+  const observationBatch = beginObservationBatch(
+    BLUEBUBBLES_CATCHUP_PAGE_SIZE * BLUEBUBBLES_CATCHUP_MAX_PAGES,
+  )
   for (let page = 0; page < BLUEBUBBLES_CATCHUP_MAX_PAGES; page++) {
     let pageEvents: BlueBubblesNormalizedEvent[]
     try {
@@ -3034,11 +3109,36 @@ export async function catchUpMissedBlueBubblesMessages(
       break
     }
 
-    recentEvents.push(...pageEvents)
+    const pageMessages = pageEvents
+      .filter((event): event is BlueBubblesNormalizedMessage => event.kind === "message")
+      .sort((left, right) => right.timestamp - left.timestamp)
+    for (let pageIndex = 0; pageIndex < pageMessages.length; pageIndex++) {
+      const event = pageMessages[pageIndex]
+      if (seenMessageGuids.has(event.messageGuid)) continue
+      seenMessageGuids.add(event.messageGuid)
+      if (event.fromMe || event.timestamp < catchUpSince) {
+        preparedCandidates.push({ status: "skip", event })
+        continue
+      }
+      // The bounded ordinal range was reserved before the first query. Each
+      // returned page can therefore publish its fences before the next await,
+      // while later live ingress remains causally newer than the entire pass.
+      preparedCandidates.push({
+        status: "ready",
+        event,
+        observationReservation: reserveObservationFromBatch(
+          observationBatch,
+          page * BLUEBUBBLES_CATCHUP_PAGE_SIZE + pageIndex,
+          {
+            chatGuid: event.chat.chatGuid,
+            chatIdentifier: event.chat.chatIdentifier,
+          },
+        ),
+      })
+    }
     if (pageEvents.length < BLUEBUBBLES_CATCHUP_PAGE_SIZE) break
 
-    const oldestMessageTimestamp = pageEvents
-      .filter((event): event is BlueBubblesNormalizedMessage => event.kind === "message")
+    const oldestMessageTimestamp = pageMessages
       .reduce((oldest, event) => Math.min(oldest, event.timestamp), Number.POSITIVE_INFINITY)
     if (oldestMessageTimestamp <= catchUpSince) break
 
@@ -3057,113 +3157,93 @@ export async function catchUpMissedBlueBubblesMessages(
     }
   }
 
-  const seenMessageGuids = new Set<string>()
-  const candidates = recentEvents
-    .filter((event): event is BlueBubblesNormalizedMessage => event.kind === "message")
-    .filter((event) => {
-      if (seenMessageGuids.has(event.messageGuid)) return false
-      seenMessageGuids.add(event.messageGuid)
-      return true
-    })
-    .sort((left, right) => left.timestamp - right.timestamp)
-
-  // Observation order is assigned when the upstream batch is in hand, not
-  // lazily after earlier rows finish. Keep every eligible reservation active:
-  // a row in another chat must not open a delivery-admission gap for an
-  // already-enumerated newer row. When turns are processed inline, start at
-  // the newest observation so older same-chat rows become stale instead of
-  // deadlocking behind a newer pending reservation.
-  type PreparedCatchUpCandidate =
-    | { status: "skip"; event: BlueBubblesNormalizedMessage; batchIndex: number }
-    | {
-        status: "ready"
-        event: BlueBubblesNormalizedMessage
-        batchIndex: number
-        observationReservation: BlueBubblesObservationReservation
-      }
-  const preparedCandidates: PreparedCatchUpCandidate[] = candidates.map((event, batchIndex) => {
-    if (event.fromMe || event.timestamp < catchUpSince) {
-      return { status: "skip", event, batchIndex }
-    }
-    return {
-      status: "ready",
-      event,
-      batchIndex,
-      observationReservation: reserveBlueBubblesObservation(event),
-    }
-  })
-  const processingCandidates = processTurns
-    ? [...preparedCandidates].reverse()
-    : preparedCandidates
-  let lastRecoveredBatchIndex = -1
-
-  for (const prepared of processingCandidates) {
-    const { event } = prepared
+  for (const prepared of preparedCandidates) {
     result.inspected++
     if (prepared.status === "skip") {
       result.skipped++
-      continue
-    }
-    const { observationReservation } = prepared
-
-    try {
-      const captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
-      if (captured.status === "audit_only") {
-        clearPending(observationReservation)
-        result.skipped++
-        continue
-      }
-
-      if (!processTurns) {
-        if (captured.writeResult === "semantic_capture_duplicate") {
-          clearPending(observationReservation)
-          result.skipped++
-        } else {
-          // Runtime sync only captures work for the delayed recovery pass, but
-          // a newly observed message must still revoke an older live turn now.
-          const promotion = promoteLatestTurn(observationReservation, {
-            chatGuid: event.chat.chatGuid,
-            chatIdentifier: event.chat.chatIdentifier,
-          })
-          if (promotion.status === "promoted") finishLatestTurn(promotion.capability)
-          result.queued = (result.queued ?? 0) + 1
-        }
-        continue
-      }
-
-      const handled = await handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "upstream-catchup", {
-        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
-        autonomyBudgetTrigger: "recovery",
-        observationReservation,
-      })
-      if (handled.reason === "semantic_claim_timeout") {
-        continue
-      }
-      if (shouldCountBlueBubblesRecoveryResultAsSkipped(handled.reason) || !handled.notifiedAgent) {
-        result.skipped++
-      } else {
-        result.recovered++
-        if (prepared.batchIndex > lastRecoveredBatchIndex) {
-          lastRecoveredBatchIndex = prepared.batchIndex
-          result.lastRecoveredMessageGuid = event.messageGuid
-        }
-      }
-    } catch (error) {
-      clearPending(observationReservation)
-      recordBlueBubblesRecoveryFailureForBudget(agentName, event, "upstream-catchup")
-      result.failed++
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "senses.bluebubbles_catchup_error",
-        message: "bluebubbles upstream catch-up message failed",
-        meta: {
-          messageGuid: event.messageGuid,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      })
     }
   }
+  const readyCandidates = preparedCandidates.filter((prepared): prepared is Extract<
+    PreparedCatchUpCandidate,
+    { status: "ready" }
+  > => prepared.status === "ready")
+  let lastRecoveredOrdinal = -1
+
+  await Promise.all(groupBlueBubblesObservationsByLane(readyCandidates).map(async (lane) => {
+    for (const prepared of lane) {
+      const { event, observationReservation } = prepared
+      let semanticGenerationOwned = false
+
+      try {
+        const captured = await captureBlueBubblesSemanticEvent(event, resolvedDeps, "upstream-catchup")
+        if (captured.status === "audit_only") {
+          clearPending(observationReservation)
+          result.skipped++
+          continue
+        }
+
+        if (!processTurns) {
+          const generation = adoptBlueBubblesSemanticObservation(
+            captured.capture.keyHash,
+            observationReservation,
+            false,
+          )
+          semanticGenerationOwned = true
+          if (captured.writeResult === "semantic_capture_duplicate") {
+            if (!activeSemanticHandlingSlots.has(captured.capture.keyHash)) {
+              suspendBlueBubblesSemanticObservation(generation)
+            }
+            result.skipped++
+          } else {
+            // Runtime sync only captures work for the delayed recovery pass,
+            // but its original generation must revoke older work now and be
+            // reused by the queued recovery pass after any intervening turn.
+            const promotion = promoteLatestTurn(generation.reservation, {
+              chatGuid: event.chat.chatGuid,
+              chatIdentifier: event.chat.chatIdentifier,
+            })
+            if (promotion.status === "promoted") finishLatestTurn(promotion.capability)
+            suspendBlueBubblesSemanticObservation(generation)
+            result.queued = (result.queued ?? 0) + 1
+          }
+          continue
+        }
+
+        semanticGenerationOwned = true
+        const handled = await handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "upstream-catchup", {
+          timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+          autonomyBudgetTrigger: "recovery",
+          observationReservation,
+        })
+        if (handled.reason === "semantic_claim_timeout") {
+          continue
+        }
+        if (shouldCountBlueBubblesRecoveryResultAsSkipped(handled.reason) || !handled.notifiedAgent) {
+          result.skipped++
+        } else {
+          result.recovered++
+          if (observationReservation.ordinal > lastRecoveredOrdinal) {
+            lastRecoveredOrdinal = observationReservation.ordinal
+            result.lastRecoveredMessageGuid = event.messageGuid
+          }
+        }
+      } catch (error) {
+        if (!semanticGenerationOwned) clearPending(observationReservation)
+        recordBlueBubblesRecoveryFailureForBudget(agentName, event, "upstream-catchup")
+        result.failed++
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_catchup_error",
+          message: "bluebubbles upstream catch-up message failed",
+          meta: {
+            messageGuid: event.messageGuid,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      }
+    }
+  }))
 
   if (result.inspected > 0 || result.recovered > 0 || result.skipped > 0 || result.failed > 0) {
     emitNervesEvent({
@@ -3229,10 +3309,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
     })
   }
 
-  // The newest prepared observation runs first. Its ordinal then makes every
-  // older same-chat record terminally superseded, while reservations in other
-  // chats continue fencing their own active turns until their iteration.
-  for (const prepared of [...preparedCandidates].reverse()) {
+  for (const prepared of preparedCandidates) {
     const { capture } = prepared
     if (prepared.status === "skip") {
       result.skipped++
@@ -3251,46 +3328,53 @@ export async function recoverCapturedBlueBubblesInboundMessages(
           reason: "semantic_capture_routing_invalid",
         },
       })
-      continue
-    }
-    const { normalized, observationReservation } = prepared
-    try {
-      const handled = await handleCapturedBlueBubblesSemanticEvent({
-        status: "captured",
-        capture,
-        normalized,
-        writeResult: "semantic_capture_duplicate",
-      }, resolvedDeps, "webhook", {
-        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
-        autonomyBudgetTrigger: "recovery",
-        semanticRecovery: true,
-        observationReservation,
-      })
-      if (handled.reason === "semantic_claim_timeout") {
-        continue
-      }
-      if (shouldCountBlueBubblesRecoveryResultAsSkipped(handled.reason) || !handled.notifiedAgent) {
-        result.skipped++
-      } else {
-        result.recovered++
-      }
-    } catch (error) {
-      clearPending(observationReservation)
-      recordBlueBubblesRecoveryFailureForBudget(agentName, normalized, "webhook")
-      result.failed++
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "senses.bluebubbles_capture_recovery_error",
-        message: "captured bluebubbles message recovery failed",
-        meta: {
-          messageGuid: capture.event.eventGuid,
-          sessionKey: capture.event.sessionKey,
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      })
     }
   }
+  const readyCandidates = preparedCandidates.filter((prepared): prepared is Extract<
+    PreparedCapturedRecoveryCandidate,
+    { status: "ready" }
+  > => prepared.status === "ready")
+
+  await Promise.all(groupBlueBubblesObservationsByLane(readyCandidates).map(async (lane) => {
+    for (const prepared of lane) {
+      const { capture, normalized, observationReservation } = prepared
+      try {
+        const handled = await handleCapturedBlueBubblesSemanticEvent({
+          status: "captured",
+          capture,
+          normalized,
+          writeResult: "semantic_capture_duplicate",
+        }, resolvedDeps, "webhook", {
+          timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+          autonomyBudgetTrigger: "recovery",
+          semanticRecovery: true,
+          observationReservation,
+        })
+        if (handled.reason === "semantic_claim_timeout") {
+          continue
+        }
+        if (shouldCountBlueBubblesRecoveryResultAsSkipped(handled.reason) || !handled.notifiedAgent) {
+          result.skipped++
+        } else {
+          result.recovered++
+        }
+      } catch (error) {
+        recordBlueBubblesRecoveryFailureForBudget(agentName, normalized, "webhook")
+        result.failed++
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_capture_recovery_error",
+          message: "captured bluebubbles message recovery failed",
+          meta: {
+            messageGuid: capture.event.eventGuid,
+            sessionKey: capture.event.sessionKey,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      }
+    }
+  }))
 
   const semanticEventGuids = new Set(
     candidates
