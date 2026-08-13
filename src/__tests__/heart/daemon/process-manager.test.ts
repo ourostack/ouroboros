@@ -998,9 +998,12 @@ describe("daemon process manager", () => {
 
     first.emit("exit", null, "SIGTERM")
 
+    timers[0]?.cb()
+
     expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
       status: "running",
       pid: 222,
+      errorReason: null,
     }))
     expect(timers).toHaveLength(1)
     expect(clearTimeoutFn).toHaveBeenCalledWith(1)
@@ -1029,6 +1032,50 @@ describe("daemon process manager", () => {
     await manager.stopAll()
     expect(child.kill).toHaveBeenCalledWith("SIGTERM")
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+  })
+
+  it("signals every managed worker before reporting a timed-out stopAll drain", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation(() => {
+      hung.connected = false
+      return true
+    })
+    const drained = new MockChild()
+    drained.pid = 222
+    spawn.mockReturnValueOnce(hung).mockReturnValueOnce(drained)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      stopTimeoutMs: 25,
+    })
+
+    await manager.startAgent("slugger")
+    await manager.startAgent("ouroboros")
+    const stopping = manager.stopAll()
+    const stopError = stopping.catch((error: unknown) => error)
+    await Promise.resolve()
+
+    expect(hung.kill).toHaveBeenCalledWith("SIGTERM")
+    expect(drained.kill).toHaveBeenCalledWith("SIGTERM")
+    expect(manager.getAgentSnapshot("ouroboros")?.status).toBe("stopped")
+
+    expect(timers).toHaveLength(1)
+    timers[0]?.cb()
+    await expect(stopError).resolves.toEqual(expect.objectContaining({
+      message: expect.stringContaining("failed to stop 1 managed worker(s)"),
+    }))
+
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 111,
+      errorReason: expect.stringContaining("replacement was not started"),
+    }))
   })
 
   it("resets backoff after a stable graceful run", async () => {

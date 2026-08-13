@@ -223,6 +223,53 @@ export async function waitForOrphanProcessesToSettle(
   return survivors
 }
 
+export function assertOrphanCleanupComplete(survivingPids: number[]): void {
+  if (survivingPids.length === 0) return
+  const errorReason = `refusing startup while ${survivingPids.length} orphaned Ouro processes remain: ${survivingPids.join(", ")}`
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.orphan_cleanup_incomplete",
+    message: errorReason,
+    meta: { survivingPids },
+  })
+  throw new Error(errorReason)
+}
+
+export interface OrphanStartupDrainDeps {
+  signalOrphans?: (socketPath: string) => number[]
+  settleOrphans?: (pids: number[]) => Promise<number[]>
+  maxSignalPasses?: number
+}
+
+const ORPHAN_CLEANUP_MAX_SIGNAL_PASSES = 8
+
+export async function drainOrphanProcessesBeforeStartup(
+  socketPath = DEFAULT_DAEMON_SOCKET_PATH,
+  deps: OrphanStartupDrainDeps = {},
+): Promise<void> {
+  const signalOrphans = deps.signalOrphans ?? killOrphanProcesses
+  const settleOrphans = deps.settleOrphans ?? waitForOrphanProcessesToSettle
+  const maxSignalPasses = deps.maxSignalPasses ?? ORPHAN_CLEANUP_MAX_SIGNAL_PASSES
+
+  for (let pass = 0; pass < maxSignalPasses; pass += 1) {
+    const signaledPids = signalOrphans(socketPath)
+    if (signaledPids.length === 0) return
+    const survivingPids = await settleOrphans(signaledPids)
+    assertOrphanCleanupComplete(survivingPids)
+  }
+
+  const errorReason = `orphan cleanup did not reach a fixed point after ${maxSignalPasses} signaling round(s)`
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.orphan_cleanup_not_converged",
+    message: errorReason,
+    meta: { maxSignalPasses },
+  })
+  throw new Error(errorReason)
+}
+
 /* v8 ignore start -- shells out to ps; covered by filterPidfilePidsToActualOrphans unit tests via injected runner @preserve */
 function runPsCheck(pids: number[]): string | null {
   try {
@@ -301,7 +348,10 @@ export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): nu
     try {
       const result = execSync("ps -eo pid,ppid,command", { encoding: "utf-8", timeout: 5000 })
       scanOrphans = parseOrphanPidsFromPs(result, process.pid)
-    } catch { /* ps failed — best effort */ }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`could not discover orphaned Ouro processes: ${detail}`)
+    }
 
     const pidsToKill = mergeUniqueOrphanPids(pidfileOrphans, scanOrphans)
 
@@ -319,13 +369,13 @@ export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): nu
     return pidsToKill
   } catch (error) {
     emitNervesEvent({
-      level: "warn",
+      level: "error",
       component: "daemon",
       event: "daemon.orphan_cleanup_error",
       message: "failed to clean up orphaned ouro processes",
       meta: { error: error instanceof Error ? error.message : String(error) },
     })
-    return []
+    throw error instanceof Error ? error : new Error(String(error))
   }
 }
 
@@ -522,6 +572,9 @@ export interface OuroDaemonOptions {
   externalEventRoot?: string
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  /** Startup barrier that proves no prior Ouro daemon/worker remains before
+   *  this daemon opens its socket or autostarts any replacement. */
+  orphanStartupDrain?: (socketPath: string) => Promise<void>
 }
 
 interface DaemonWorkerRow {
@@ -801,6 +854,7 @@ export class OuroDaemon {
   private readonly onStopCommandComplete: (() => void) | null
   private readonly externalEventRoot: string | null
   private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -816,6 +870,7 @@ export class OuroDaemon {
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
     this.rsvpHabitRunner = options.rsvpHabitRunner
+    this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
   }
 
   /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
@@ -976,10 +1031,7 @@ export class OuroDaemon {
     // MCP connections are lazily initialized per-agent during senseTurn
     // (daemon manages multiple agents; agent identity must be set before loading MCP config)
 
-    /* v8 ignore start -- orphan cleanup + pidfile: calls process management functions @preserve */
-    const killedOrphanPids = killOrphanProcesses(this.socketPath)
-    await waitForOrphanProcessesToSettle(killedOrphanPids)
-    /* v8 ignore stop */
+    await this.orphanStartupDrain(this.socketPath)
     await this.openCommandSocket()
     this.triggerAutoStartAgents()
     this.triggerAutoStartSensesWhenAgentsSettled()
@@ -1305,8 +1357,14 @@ export class OuroDaemon {
       clearTimeout(this.senseAutostartTimer)
       this.senseAutostartTimer = null
     }
-    await this.processManager.stopAll()
-    await this.senseManager?.stopAll()
+    const workerStopTasks = [Promise.resolve().then(() => this.processManager.stopAll())]
+    if (this.senseManager) {
+      workerStopTasks.push(Promise.resolve().then(() => this.senseManager!.stopAll()))
+    }
+    const workerStopResults = await Promise.allSettled(workerStopTasks)
+    const workerStopFailures = workerStopResults.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    )
 
     if (this.server) {
       // DO NOT `await` server.close() here. server.close() resolves only
@@ -1370,6 +1428,22 @@ export class OuroDaemon {
       })
     }
     this.socketIdentity = null
+
+    if (workerStopFailures.length > 0) {
+      const errorReason = `daemon shutdown could not drain ${workerStopFailures.length} managed worker group(s)`
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.worker_shutdown_error",
+        message: errorReason,
+        meta: {
+          failures: workerStopFailures.map((error) =>
+            error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error rejection @preserve */ String(error),
+          ),
+        },
+      })
+      throw new AggregateError(workerStopFailures, errorReason)
+    }
   }
 
   async handleRawPayload(raw: string): Promise<string> {
@@ -1809,8 +1883,11 @@ export class OuroDaemon {
         await this.start()
         return { ok: true, message: "daemon started" }
       case "daemon.stop":
-        await this.stop()
-        this.onStopCommandComplete?.()
+        try {
+          await this.stop()
+        } finally {
+          this.onStopCommandComplete?.()
+        }
         return { ok: true, message: "daemon stopped" }
       case "daemon.restart": {
         // Restart is "stop + let launchctl respawn." Under launchctl's KeepAlive
@@ -1826,8 +1903,11 @@ export class OuroDaemon {
             requestedBy: command.requestedBy ?? null,
           },
         })
-        await this.stop()
-        this.onStopCommandComplete?.()
+        try {
+          await this.stop()
+        } finally {
+          this.onStopCommandComplete?.()
+        }
         return {
           ok: true,
           message: "daemon restarting — launchctl will respawn",

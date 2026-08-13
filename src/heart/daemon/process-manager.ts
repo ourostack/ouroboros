@@ -594,6 +594,7 @@ export class DaemonProcessManager {
 
       if (settled) return
       timeout = this.setTimeoutFn(() => {
+        if (settled) return
         const errorReason = `managed agent did not exit within ${this.stopTimeoutMs}ms; replacement was not started`
         state.stopFailureActive = true
         state.snapshot.errorReason = errorReason
@@ -705,8 +706,20 @@ export class DaemonProcessManager {
   }
 
   async stopAll(): Promise<void> {
-    for (const state of this.agents.values()) {
-      await this.stopAgent(state.config.name)
+    const states = [...this.agents.values()]
+    const results = await Promise.allSettled(
+      states.map((state) => this.stopAgent(state.config.name)),
+    )
+    const failures = results.flatMap((result, index) =>
+      result.status === "rejected"
+        ? [{ agent: states[index]!.config.name, reason: result.reason }]
+        : [],
+    )
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        `failed to stop ${failures.length} managed worker(s): ${failures.map((failure) => failure.agent).join(", ")}`,
+      )
     }
   }
 

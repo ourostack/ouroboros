@@ -3,6 +3,8 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import {
+  assertOrphanCleanupComplete,
+  drainOrphanProcessesBeforeStartup,
   parseOrphanPidsFromPs,
   filterPidfilePidsToActualOrphans,
   mergeUniqueOrphanPids,
@@ -242,6 +244,64 @@ describe("waitForOrphanProcessesToSettle", () => {
     })).resolves.toEqual([5000])
 
     expect(sleep).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("assertOrphanCleanupComplete", () => {
+  it("allows startup only when every verified old Ouro process has exited", () => {
+    expect(() => assertOrphanCleanupComplete([])).not.toThrow()
+    expect(() => assertOrphanCleanupComplete([5000, 5001])).toThrow(
+      "refusing startup while 2 orphaned Ouro processes remain: 5000, 5001",
+    )
+  })
+})
+
+describe("drainOrphanProcessesBeforeStartup", () => {
+  it("rescans to a fixed point after an old daemon exits and reparents its workers", async () => {
+    const signalOrphans = vi.fn()
+      .mockReturnValueOnce([5000])
+      .mockReturnValueOnce([5001, 5002])
+      .mockReturnValueOnce([])
+    const settleOrphans = vi.fn(async () => [] as number[])
+
+    await expect(drainOrphanProcessesBeforeStartup("/production.sock", {
+      signalOrphans,
+      settleOrphans,
+    })).resolves.toBeUndefined()
+
+    expect(signalOrphans).toHaveBeenCalledTimes(3)
+    expect(settleOrphans).toHaveBeenNthCalledWith(1, [5000])
+    expect(settleOrphans).toHaveBeenNthCalledWith(2, [5001, 5002])
+  })
+
+  it("fails closed when a signaled orphan survives the settle timeout", async () => {
+    const signalOrphans = vi.fn(() => [5000])
+    const settleOrphans = vi.fn(async () => [5000])
+
+    await expect(drainOrphanProcessesBeforeStartup("/production.sock", {
+      signalOrphans,
+      settleOrphans,
+    })).rejects.toThrow("orphaned Ouro processes remain: 5000")
+
+    expect(signalOrphans).toHaveBeenCalledTimes(1)
+  })
+
+  it("fails closed when orphan discovery cannot prove a clean process table", async () => {
+    const signalOrphans = vi.fn(() => {
+      throw new Error("ps discovery failed")
+    })
+
+    await expect(drainOrphanProcessesBeforeStartup("/production.sock", {
+      signalOrphans,
+    })).rejects.toThrow("ps discovery failed")
+  })
+
+  it("fails closed instead of looping forever when cleanup never reaches a fixed point", async () => {
+    await expect(drainOrphanProcessesBeforeStartup("/production.sock", {
+      signalOrphans: () => [5000],
+      settleOrphans: async () => [],
+      maxSignalPasses: 1,
+    })).rejects.toThrow("did not reach a fixed point after 1 signaling round(s)")
   })
 })
 

@@ -17,6 +17,14 @@ function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
 }
 
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
 function sendRaw(socketPath: string, payload: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath)
@@ -42,6 +50,7 @@ describe("daemon command plane branches", () => {
       privateRuntimePolicyDeps?: unknown
       externalEventRoot?: string
       rsvpHabitRunner?: unknown
+      orphanStartupDrain?: (socketPath: string) => Promise<void>
     },
   ) => {
     const processManager = {
@@ -95,6 +104,7 @@ describe("daemon command plane branches", () => {
         stop: async () => undefined,
       })),
       onStopCommandComplete: options?.onStopCommandComplete,
+      orphanStartupDrain: options?.orphanStartupDrain,
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
@@ -255,6 +265,43 @@ describe("daemon command plane branches", () => {
     expect(JSON.parse(raw)).toEqual(expect.objectContaining({ ok: true }))
 
     await daemon.stop()
+  })
+
+  it("waits for orphan cleanup before opening the socket or autostarting workers", async () => {
+    const socketPath = tmpSocketPath("daemon-start-orphan-barrier")
+    const orphanDrain = createDeferred<void>()
+    const orphanStartupDrain = vi.fn(() => orphanDrain.promise)
+    const { daemon, processManager, senseManager } = make(socketPath, undefined, { orphanStartupDrain })
+
+    const starting = daemon.start()
+    await Promise.resolve()
+
+    expect(orphanStartupDrain).toHaveBeenCalledWith(socketPath)
+    expect(fs.existsSync(socketPath)).toBe(false)
+    expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
+    expect(senseManager.startAutoStartSenses).not.toHaveBeenCalled()
+
+    orphanDrain.resolve()
+    await starting
+
+    expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    expect(senseManager.startAutoStartSenses).toHaveBeenCalledTimes(1)
+    await expect(sendRaw(socketPath, JSON.stringify({ kind: "daemon.status" }))).resolves.toContain('"ok":true')
+    await daemon.stop()
+  })
+
+  it("does not open the socket or autostart when orphan cleanup cannot prove quiescence", async () => {
+    const socketPath = tmpSocketPath("daemon-start-orphan-survivor")
+    const orphanStartupDrain = vi.fn(async () => {
+      throw new Error("old Ouro PID 5000 survived")
+    })
+    const { daemon, processManager, senseManager } = make(socketPath, undefined, { orphanStartupDrain })
+
+    await expect(daemon.start()).rejects.toThrow("old Ouro PID 5000 survived")
+
+    expect(fs.existsSync(socketPath)).toBe(false)
+    expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
+    expect(senseManager.startAutoStartSenses).not.toHaveBeenCalled()
   })
 
   it("uses nonblocking autostart trigger hooks when managers provide them", async () => {
@@ -3539,6 +3586,64 @@ describe("daemon command plane branches", () => {
     expect(processManager.stopAll).toHaveBeenCalledTimes(1)
     expect(fs.existsSync(socketPath)).toBe(true)
   })
+
+  it("begins private-runtime and sense drains concurrently during shutdown", async () => {
+    const socketPath = tmpSocketPath("daemon-stop-concurrent-drain")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    const privateDrain = createDeferred<void>()
+    processManager.stopAll.mockImplementation(() => privateDrain.promise)
+
+    const stopping = daemon.stop()
+    await Promise.resolve()
+
+    expect(processManager.stopAll).toHaveBeenCalledTimes(1)
+    expect(senseManager.stopAll).toHaveBeenCalledTimes(1)
+
+    privateDrain.resolve()
+    await stopping
+  })
+
+  it("cleans up after both worker groups before surfacing a drain failure", async () => {
+    const socketPath = tmpSocketPath("daemon-stop-drain-failure")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    await daemon.start()
+    processManager.stopAll.mockRejectedValueOnce(new Error("private runtime stuck"))
+
+    await expect(daemon.stop()).rejects.toThrow(
+      "daemon shutdown could not drain 1 managed worker group(s)",
+    )
+
+    expect(senseManager.stopAll).toHaveBeenCalledTimes(1)
+    expect(fs.existsSync(socketPath)).toBe(false)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "daemon.worker_shutdown_error",
+      meta: { failures: ["private runtime stuck"] },
+    }))
+  })
+
+  it.each(["daemon.stop", "daemon.restart"] as const)(
+    "%s schedules process completion but reports an incomplete worker drain as an error",
+    async (kind) => {
+      const socketPath = tmpSocketPath(`daemon-command-drain-failure-${kind}`)
+      const onStopCommandComplete = vi.fn()
+      const { daemon, processManager, senseManager } = make(socketPath, undefined, { onStopCommandComplete })
+      await daemon.start()
+      processManager.stopAll.mockRejectedValueOnce(new Error("private runtime stuck"))
+
+      const response = JSON.parse(await daemon.handleRawPayload(JSON.stringify({ kind }))) as {
+        ok: boolean
+        error: string
+      }
+
+      expect(response).toEqual({
+        ok: false,
+        error: "daemon shutdown could not drain 1 managed worker group(s)",
+      })
+      expect(senseManager.stopAll).toHaveBeenCalledTimes(1)
+      expect(onStopCommandComplete).toHaveBeenCalledTimes(1)
+    },
+  )
 
   it("handles health, agent lifecycle, and cron commands", async () => {
     const socketPath = tmpSocketPath("daemon-admin-commands")
