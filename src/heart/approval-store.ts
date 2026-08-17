@@ -115,6 +115,12 @@ export interface ApprovalStore {
     state: "succeeded" | "failed" | "attempted_indeterminate"
     result: string
   }): ApprovalRecord
+  listPreparing(): ApprovalRecord[]
+  recoverPreparing(input: {
+    approvalId: string
+    state: "abandoned_before_attempt" | "drifted"
+    reason: string
+  }): ApprovalRecord
   read(approvalId: string): ApprovalRecord | null
   close(): void
 }
@@ -215,7 +221,13 @@ function validStateShape(record: ApprovalRecord): boolean {
   if (record.state === "claimed") return hasOwner && record.epoch > 0 && !hasAttempt && record.result === null
   if (record.state === "attempted") return hasOwner && record.epoch > 0 && hasAttempt && record.result === null
   if (ATTEMPT_TERMINALS.has(record.state)) return hasOwner && record.epoch > 0 && hasAttempt && isNonEmpty(record.result)
-  if (record.state === "abandoned_before_attempt") return hasOwner && record.epoch > 0 && !hasAttempt && isNonEmpty(record.reason)
+  if (record.state === "abandoned_before_attempt") {
+    const validOwnership = (hasOwner && record.epoch > 0) || (record.ownerId === null && record.epoch === 0)
+    return validOwnership && !hasAttempt && record.result === null && isNonEmpty(record.reason)
+  }
+  if (record.state === "drifted") {
+    return !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null && isNonEmpty(record.reason)
+  }
   return !hasOwner && !hasAttempt && record.result === null
 }
 
@@ -236,6 +248,13 @@ export function parseApprovalRecord(value: unknown): ApprovalRecord {
   assertJsonValue(record.frozenAssistantMessage)
   if (canonicalApprovalArguments(record.arguments).digest !== record.argumentDigest) fail("corrupt_record")
   if (!isTimestamp(record.expiresAt) || !isTimestamp(record.createdAt) || !isTimestamp(record.updatedAt)) fail("corrupt_record")
+  if (record.ownerId !== null && !isNonEmpty(record.ownerId)) fail("corrupt_record")
+  if (record.attemptedAt !== null && !isTimestamp(record.attemptedAt)) fail("corrupt_record")
+  if (record.reason !== null && !isNonEmpty(record.reason)) fail("corrupt_record")
+  if (record.result !== null && !isNonEmpty(record.result)) fail("corrupt_record")
+  if (record.transportMessageId !== null && !isNonEmpty(record.transportMessageId)) fail("corrupt_record")
+  if (record.suspendedSessionRevision !== null
+    && (typeof record.suspendedSessionRevision !== "string" || !HASH.test(record.suspendedSessionRevision))) fail("corrupt_record")
   if (!Number.isInteger(record.epoch) || record.epoch < 0 || !validStateShape(record)) fail("corrupt_record")
   return structuredClone(record)
 }
@@ -273,6 +292,146 @@ function sameDecisionBinding(record: ApprovalRecord, input: Parameters<ApprovalS
     && input.sessionKey === record.sessionKey
 }
 
+function operationErrorMeta(operation: string, error: unknown): Record<string, unknown> {
+  return {
+    operation,
+    outcome: "error",
+    code: error instanceof ApprovalStoreError ? error.code : "unexpected_error",
+  }
+}
+
+function observePrepare<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_prepare", message: "approval store prepare completed", meta: { operation: "prepare", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_prepare", message: "approval store prepare failed", meta: operationErrorMeta("prepare", error) })
+    throw error
+  }
+}
+
+function observeActivate<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_activate", message: "approval store activation completed", meta: { operation: "activate", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_activate", message: "approval store activation failed", meta: operationErrorMeta("activate", error) })
+    throw error
+  }
+}
+
+function observeBindPrompt<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_bind_prompt", message: "approval prompt binding completed", meta: { operation: "bind_prompt", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_bind_prompt", message: "approval prompt binding failed", meta: operationErrorMeta("bind_prompt", error) })
+    throw error
+  }
+}
+
+function observeDecide<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_decide", message: "approval decision completed", meta: { operation: "decide", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_decide", message: "approval decision failed", meta: operationErrorMeta("decide", error) })
+    throw error
+  }
+}
+
+function observeExpire<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_expire", message: "approval expiry completed", meta: { operation: "expire", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_expire", message: "approval expiry failed", meta: operationErrorMeta("expire", error) })
+    throw error
+  }
+}
+
+function observeMarkAttempted<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_mark_attempted", message: "approval attempt marker completed", meta: { operation: "mark_attempted", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_mark_attempted", message: "approval attempt marker failed", meta: operationErrorMeta("mark_attempted", error) })
+    throw error
+  }
+}
+
+function observeAbandonBeforeAttempt<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_abandon_before_attempt", message: "approval abandonment completed", meta: { operation: "abandon_before_attempt", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_abandon_before_attempt", message: "approval abandonment failed", meta: operationErrorMeta("abandon_before_attempt", error) })
+    throw error
+  }
+}
+
+function observeComplete<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_complete", message: "approval completion completed", meta: { operation: "complete", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_complete", message: "approval completion failed", meta: operationErrorMeta("complete", error) })
+    throw error
+  }
+}
+
+function observeRead<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_read", message: "approval store read completed", meta: { operation: "read", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_read", message: "approval store read failed", meta: operationErrorMeta("read", error) })
+    throw error
+  }
+}
+
+function observeListPreparing<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_list_preparing", message: "preparing approval listing completed", meta: { operation: "list_preparing", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_list_preparing", message: "preparing approval listing failed", meta: operationErrorMeta("list_preparing", error) })
+    throw error
+  }
+}
+
+function observeRecoverPreparing<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_recover_preparing", message: "preparing approval recovery completed", meta: { operation: "recover_preparing", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_recover_preparing", message: "preparing approval recovery failed", meta: operationErrorMeta("recover_preparing", error) })
+    throw error
+  }
+}
+
+function observeClose<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_close", message: "approval store close completed", meta: { operation: "close", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_close", message: "approval store close failed", meta: operationErrorMeta("close", error) })
+    throw error
+  }
+}
+
 export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore {
   fs.mkdirSync(path.dirname(options.databasePath), { recursive: true })
   const database = new Database(options.databasePath)
@@ -290,7 +449,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
   const randomUUID = options.randomUUID ?? createRandomUUID
   const randomBytes = options.randomBytes ?? createRandomBytes
 
-  const read = (approvalId: string): ApprovalRecord | null => {
+  const rawRead = (approvalId: string): ApprovalRecord | null => {
     const row = database.prepare("SELECT record_json FROM approval_actions WHERE approval_id = ?")
       .get(approvalId) as { record_json: string } | undefined
     if (!row) return null
@@ -305,12 +464,6 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
   const insert = (record: ApprovalRecord): void => {
     database.prepare("INSERT INTO approval_actions (approval_id, state, epoch, record_json) VALUES (?, ?, ?, ?)")
       .run(record.approvalId, record.state, record.epoch, JSON.stringify(record))
-    emitNervesEvent({
-      component: "heart",
-      event: "approval.store_transition",
-      message: "approval record transitioned",
-      meta: { approvalId: record.approvalId, state: record.state },
-    })
   }
 
   const cas = (previous: ApprovalRecord, next: ApprovalRecord): ApprovalRecord => {
@@ -319,130 +472,169 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
       WHERE approval_id = ? AND state = ? AND epoch = ? AND record_json = ?
     `).run(next.state, next.epoch, JSON.stringify(next), previous.approvalId, previous.state, previous.epoch, JSON.stringify(previous))
     if (changed.changes !== 1) fail("transition_conflict")
-    emitNervesEvent({
-      component: "heart",
-      event: "approval.store_transition",
-      message: "approval record transitioned",
-      meta: { approvalId: next.approvalId, state: next.state },
-    })
     return structuredClone(next)
   }
 
-  const requireRecord = (approvalId: string): ApprovalRecord => read(approvalId) ?? fail("approval_not_found")
+  const requireRecord = (approvalId: string): ApprovalRecord => rawRead(approvalId) ?? fail("approval_not_found")
   const timestamp = (): string => now().toISOString()
 
   return {
     prepare(input) {
-      assertPrepareInput(input)
-      const approvalId = randomUUID()
-      if (!UUID.test(approvalId)) fail("invalid_approval_id")
-      const tokenBytes = randomBytes(32)
-      if (tokenBytes.length !== 32) fail("invalid_token_entropy")
-      const decisionToken = tokenBytes.toString("base64url")
-      const createdAt = timestamp()
-      const record: ApprovalRecord = {
-        approvalId,
-        state: "preparing",
-        toolCallId: input.toolCallId,
-        toolName: input.toolName,
-        arguments: structuredClone(input.arguments),
-        argumentDigest: canonicalApprovalArguments(input.arguments).digest,
-        schemaDigest: input.schemaDigest,
-        toolDigest: input.toolDigest,
-        policyDigest: input.policyDigest,
-        policyId: input.policyId,
-        sessionKey: input.sessionKey,
-        sessionPath: input.sessionPath,
-        baseSessionRevision: input.baseSessionRevision,
-        suspendedSessionRevision: null,
-        checkpointDigest: input.checkpointDigest,
-        requesterId: input.requesterId,
-        transport: input.transport,
-        transportUserId: input.transportUserId,
-        transportChatId: input.transportChatId,
-        transportMessageId: null,
-        decisionTokenDigest: sha256(decisionToken),
-        expiresAt: input.expiresAt,
-        createdAt,
-        updatedAt: createdAt,
-        ownerId: null,
-        epoch: 0,
-        attemptedAt: null,
-        result: null,
-        reason: null,
-        frozenAssistantMessage: structuredClone(input.frozenAssistantMessage),
-      }
-      insert(parseApprovalRecord(record))
-      return { record: structuredClone(record), decisionToken }
+      return observePrepare(() => {
+        assertPrepareInput(input)
+        const approvalId = randomUUID()
+        if (!UUID.test(approvalId)) fail("invalid_approval_id")
+        const tokenBytes = randomBytes(32)
+        if (tokenBytes.length !== 32) fail("invalid_token_entropy")
+        const decisionToken = tokenBytes.toString("base64url")
+        const createdAt = timestamp()
+        const record: ApprovalRecord = {
+          approvalId,
+          state: "preparing",
+          toolCallId: input.toolCallId,
+          toolName: input.toolName,
+          arguments: structuredClone(input.arguments),
+          argumentDigest: canonicalApprovalArguments(input.arguments).digest,
+          schemaDigest: input.schemaDigest,
+          toolDigest: input.toolDigest,
+          policyDigest: input.policyDigest,
+          policyId: input.policyId,
+          sessionKey: input.sessionKey,
+          sessionPath: input.sessionPath,
+          baseSessionRevision: input.baseSessionRevision,
+          suspendedSessionRevision: null,
+          checkpointDigest: input.checkpointDigest,
+          requesterId: input.requesterId,
+          transport: input.transport,
+          transportUserId: input.transportUserId,
+          transportChatId: input.transportChatId,
+          transportMessageId: null,
+          decisionTokenDigest: sha256(decisionToken),
+          expiresAt: input.expiresAt,
+          createdAt,
+          updatedAt: createdAt,
+          ownerId: null,
+          epoch: 0,
+          attemptedAt: null,
+          result: null,
+          reason: null,
+          frozenAssistantMessage: structuredClone(input.frozenAssistantMessage),
+        }
+        insert(parseApprovalRecord(record))
+        return { record: structuredClone(record), decisionToken }
+      })
     },
 
     activate(input) {
-      const previous = requireRecord(input.approvalId)
-      if (previous.state !== "preparing" || input.checkpointDigest !== previous.checkpointDigest) fail("invalid_activation")
-      assertHash(input.suspendedSessionRevision, "invalid_activation")
-      return cas(previous, { ...previous, state: "awaiting_prompt_binding", suspendedSessionRevision: input.suspendedSessionRevision, updatedAt: timestamp() })
+      return observeActivate(() => {
+        const previous = requireRecord(input.approvalId)
+        if (previous.state !== "preparing" || input.checkpointDigest !== previous.checkpointDigest) fail("invalid_activation")
+        assertHash(input.suspendedSessionRevision, "invalid_activation")
+        return cas(previous, { ...previous, state: "awaiting_prompt_binding", suspendedSessionRevision: input.suspendedSessionRevision, updatedAt: timestamp() })
+      })
     },
 
     bindPrompt(input) {
-      const previous = requireRecord(input.approvalId)
-      if (previous.state !== "awaiting_prompt_binding" || input.transport !== previous.transport
-        || input.transportChatId !== previous.transportChatId || !isNonEmpty(input.transportMessageId)) fail("invalid_prompt_binding")
-      return cas(previous, { ...previous, state: "proposed", transportMessageId: input.transportMessageId, updatedAt: timestamp() })
+      return observeBindPrompt(() => {
+        const previous = requireRecord(input.approvalId)
+        if (previous.state !== "awaiting_prompt_binding" || input.transport !== previous.transport
+          || input.transportChatId !== previous.transportChatId || !isNonEmpty(input.transportMessageId)) fail("invalid_prompt_binding")
+        return cas(previous, { ...previous, state: "proposed", transportMessageId: input.transportMessageId, updatedAt: timestamp() })
+      })
     },
 
     decide(input) {
-      const previous = requireRecord(input.approvalId)
-      if (!sameDecisionBinding(previous, input)) fail("decision_binding_mismatch")
-      if (previous.state === "denied" && input.decision === "deny") return previous
-      if (previous.state !== "proposed") fail("decision_not_eligible")
-      if (now().getTime() >= Date.parse(previous.expiresAt)) {
-        return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
-      }
-      if (input.decision === "deny") {
-        return cas(previous, { ...previous, state: "denied", updatedAt: timestamp() })
-      }
-      if (!isNonEmpty(input.ownerId)) fail("invalid_owner")
-      options.hooks?.beforeClaimCas?.()
-      return cas(previous, { ...previous, state: "claimed", ownerId: input.ownerId, epoch: previous.epoch + 1, updatedAt: timestamp() })
+      return observeDecide(() => {
+        const previous = requireRecord(input.approvalId)
+        if (!sameDecisionBinding(previous, input)) fail("decision_binding_mismatch")
+        if (previous.state === "denied" && input.decision === "deny") return previous
+        if (previous.state !== "proposed") fail("decision_not_eligible")
+        if (now().getTime() >= Date.parse(previous.expiresAt)) {
+          return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
+        }
+        if (input.decision === "deny") {
+          return cas(previous, { ...previous, state: "denied", updatedAt: timestamp() })
+        }
+        if (!isNonEmpty(input.ownerId)) fail("invalid_owner")
+        options.hooks?.beforeClaimCas?.()
+        if (now().getTime() >= Date.parse(previous.expiresAt)) {
+          return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
+        }
+        return cas(previous, { ...previous, state: "claimed", ownerId: input.ownerId, epoch: previous.epoch + 1, updatedAt: timestamp() })
+      })
     },
 
     expire(input) {
-      const previous = requireRecord(input.approvalId)
-      if (previous.state === "expired") return previous
-      if ((previous.state !== "proposed" && previous.state !== "awaiting_prompt_binding")
-        || now().getTime() < Date.parse(previous.expiresAt)) fail("expiry_not_eligible")
-      return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
+      return observeExpire(() => {
+        const previous = requireRecord(input.approvalId)
+        if (previous.state === "expired") return previous
+        if ((previous.state !== "proposed" && previous.state !== "awaiting_prompt_binding")
+          || now().getTime() < Date.parse(previous.expiresAt)) fail("expiry_not_eligible")
+        return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
+      })
     },
 
     markAttempted(input) {
-      const previous = requireRecord(input.approvalId)
-      if (previous.state !== "claimed" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch) fail("attempt_not_eligible")
-      options.hooks?.beforeAttemptCas?.()
-      return cas(previous, { ...previous, state: "attempted", attemptedAt: timestamp(), updatedAt: timestamp() })
+      return observeMarkAttempted(() => {
+        const previous = requireRecord(input.approvalId)
+        if (previous.state !== "claimed" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch) fail("attempt_not_eligible")
+        options.hooks?.beforeAttemptCas?.()
+        return cas(previous, { ...previous, state: "attempted", attemptedAt: timestamp(), updatedAt: timestamp() })
+      })
     },
 
     abandonBeforeAttempt(input) {
-      const previous = requireRecord(input.approvalId)
-      if (previous.state === "abandoned_before_attempt" && previous.ownerId === input.ownerId
-        && previous.epoch === input.epoch && previous.reason === input.reason) return previous
-      if (previous.state !== "claimed" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch
-        || !isNonEmpty(input.reason)) fail("abandon_not_eligible")
-      return cas(previous, { ...previous, state: "abandoned_before_attempt", reason: input.reason, updatedAt: timestamp() })
+      return observeAbandonBeforeAttempt(() => {
+        const previous = requireRecord(input.approvalId)
+        if (previous.state === "abandoned_before_attempt" && previous.ownerId === input.ownerId
+          && previous.epoch === input.epoch && previous.reason === input.reason) return previous
+        if (previous.state !== "claimed" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch
+          || !isNonEmpty(input.reason)) fail("abandon_not_eligible")
+        return cas(previous, { ...previous, state: "abandoned_before_attempt", reason: input.reason, updatedAt: timestamp() })
+      })
     },
 
     complete(input) {
-      const previous = requireRecord(input.approvalId)
-      if (ATTEMPT_TERMINALS.has(previous.state)) {
-        if (previous.state === input.state && previous.ownerId === input.ownerId && previous.epoch === input.epoch
-          && previous.result === input.result) return previous
-        fail("completion_conflict")
-      }
-      if (previous.state !== "attempted" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch
-        || !ATTEMPT_TERMINALS.has(input.state) || !isNonEmpty(input.result)) fail("completion_not_eligible")
-      return cas(previous, { ...previous, state: input.state, result: input.result, updatedAt: timestamp() })
+      return observeComplete(() => {
+        const previous = requireRecord(input.approvalId)
+        if (ATTEMPT_TERMINALS.has(previous.state)) {
+          if (previous.state === input.state && previous.ownerId === input.ownerId && previous.epoch === input.epoch
+            && previous.result === input.result) return previous
+          fail("completion_conflict")
+        }
+        if (previous.state !== "attempted" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch
+          || !ATTEMPT_TERMINALS.has(input.state) || !isNonEmpty(input.result)) fail("completion_not_eligible")
+        return cas(previous, { ...previous, state: input.state, result: input.result, updatedAt: timestamp() })
+      })
     },
 
-    read,
-    close() { database.close() },
+    listPreparing() {
+      return observeListPreparing(() => {
+        const rows = database.prepare("SELECT record_json FROM approval_actions WHERE state = ? ORDER BY approval_id")
+          .all("preparing") as { record_json: string }[]
+        return rows.map((row) => {
+          try {
+            return parseApprovalRecord(JSON.parse(row.record_json))
+          } catch (error) {
+            if (error instanceof ApprovalStoreError) throw error
+            return fail("corrupt_record")
+          }
+        })
+      })
+    },
+
+    recoverPreparing(input) {
+      return observeRecoverPreparing(() => {
+        const previous = requireRecord(input.approvalId)
+        if (!isNonEmpty(input.reason)) fail("recovery_not_eligible")
+        if (previous.state === input.state && previous.ownerId === null && previous.epoch === 0
+          && previous.attemptedAt === null && previous.reason === input.reason) return previous
+        if (previous.state !== "preparing") fail("recovery_not_eligible")
+        return cas(previous, { ...previous, state: input.state, reason: input.reason, updatedAt: timestamp() })
+      })
+    },
+
+    read(approvalId) { return observeRead(() => rawRead(approvalId)) },
+    close() { return observeClose(() => database.close()) },
   }
 }
