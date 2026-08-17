@@ -15,6 +15,7 @@ import type {
 } from "./doctor-types"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
+import { inspectBlueBubblesWebhookRegistration } from "../../senses/bluebubbles/webhook-registration"
 import {
   evaluateFreshness,
   observeAppendPerEventStore,
@@ -37,6 +38,8 @@ import { checkRsvpCutover, type RsvpCutoverChecks } from "../../rsvp/cutover"
 import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/diagnostics"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
+const DEFAULT_BLUEBUBBLES_PORT = 18_790
+const DEFAULT_BLUEBUBBLES_WEBHOOK_PATH = "/bluebubbles-webhook"
 
 // ── Category checkers ──
 
@@ -477,10 +480,11 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
 
         let upstreamContext = "upstream probe not run in this pass"
         if (deps.fetchImpl) {
+          const requestTimeoutMs = numberField(bluebubblesChannel, "requestTimeoutMs", DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS)
           const probe = await probeBlueBubblesHealth({
             serverUrl,
             password,
-            requestTimeoutMs: numberField(bluebubblesChannel, "requestTimeoutMs", DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS),
+            requestTimeoutMs,
             fetchImpl: deps.fetchImpl,
           })
           checks.push({
@@ -491,6 +495,23 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           upstreamContext = probe.ok
             ? "upstream probe reachable — which does not prove inbound delivery"
             : "upstream probe failing"
+
+          const webhook = await inspectBlueBubblesWebhookRegistration({
+            serverUrl,
+            password,
+            callbackPort: numberField(bluebubblesChannel, "port", DEFAULT_BLUEBUBBLES_PORT),
+            callbackPath: textField(bluebubblesChannel, "webhookPath") || DEFAULT_BLUEBUBBLES_WEBHOOK_PATH,
+            agentName,
+            machineId,
+            requestTimeoutMs,
+            listenerReady: true,
+          }, { fetchImpl: deps.fetchImpl })
+          checks.push({
+            id: "senses.bluebubbles.webhook",
+            label: `${agentDir} bluebubbles webhook`,
+            status: webhook.ok ? "pass" : "fail",
+            detail: webhook.detail,
+          })
         }
 
         const bluebubblesStateRoot = `${deps.bundlesRoot}/${agentDir}/state/senses/bluebubbles`

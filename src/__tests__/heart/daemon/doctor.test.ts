@@ -21,6 +21,10 @@ vi.mock("../../../heart/runtime-credentials", () => ({
   }),
 }))
 
+vi.mock("../../../heart/machine-identity", () => ({
+  loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine_test" })),
+}))
+
 import type { DoctorDeps, DoctorResult } from "../../../heart/daemon/doctor-types"
 import {
   runDoctorChecks,
