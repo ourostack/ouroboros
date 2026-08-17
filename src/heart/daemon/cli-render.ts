@@ -794,6 +794,13 @@ export function isDaemonUnavailableError(error: unknown): boolean {
   return code === "ENOENT" || code === "ECONNREFUSED"
 }
 
+export function isDaemonTimeoutError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : ""
+  return code === "ETIMEDOUT"
+}
+
 export function formatMcpResponse(command: McpListCliCommand | McpCallCliCommand, response: DaemonResponse): string {
   if (command.kind === "mcp.list") {
     const allTools = response.data as Array<{ server: string; tools: Array<{ name: string; description: string }> }> | undefined

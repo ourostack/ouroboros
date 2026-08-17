@@ -142,6 +142,7 @@ import {
   formatVersionOutput,
   daemonUnavailableStatusOutput,
   isDaemonUnavailableError,
+  isDaemonTimeoutError,
   formatMcpResponse,
   type StatusPayload,
 } from "./cli-render"
@@ -870,6 +871,17 @@ function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: 
     error: "daemon unavailable",
     socketPath,
     ...(healthFilePath ? { healthFilePath } : {}),
+  }, null, 2)
+}
+
+function daemonTimeoutStatusJsonOutput(socketPath: string, error: unknown): string {
+  return JSON.stringify({
+    ok: false,
+    error: "daemon timeout",
+    classification: "timeout",
+    code: "ETIMEDOUT",
+    socketPath,
+    detail: error instanceof Error ? error.message : String(error),
   }, null, 2)
 }
 
@@ -9490,6 +9502,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (command.kind === "message.send") {
       const pendingPath = deps.fallbackPendingMessage(command)
       const message = `daemon unavailable; queued message fallback at ${pendingPath}`
+      deps.writeStdout(message)
+      return message
+    }
+    if (command.kind === "daemon.status" && isDaemonTimeoutError(error)) {
+      const detail = error instanceof Error ? error.message : String(error)
+      const message = command.json
+        ? daemonTimeoutStatusJsonOutput(deps.socketPath, error)
+        : `daemon status timed out: ${detail}`
       deps.writeStdout(message)
       return message
     }

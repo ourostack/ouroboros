@@ -5,6 +5,7 @@ import type { DaemonCommand, DaemonResponse } from "./daemon"
 
 export const DEFAULT_DAEMON_SOCKET_PATH = "/tmp/ouroboros-daemon.sock"
 export const DEFAULT_DAEMON_COMMAND_TIMEOUT_MS = 10 * 60 * 1000
+export const DEFAULT_DAEMON_STATUS_TIMEOUT_MS = 5_000
 
 /**
  * Defense-in-depth: detect if we're running under vitest. Tests that forget
@@ -116,7 +117,8 @@ export function sendDaemonCommand(
 
     if ("setTimeout" in client && typeof client.setTimeout === "function") {
       client.setTimeout(timeoutMs, () => {
-        const error = new Error(`Daemon command ${command.kind} timed out after ${timeoutMs}ms waiting for a response.`)
+        const error = new Error(`Daemon command ${command.kind} timed out after ${timeoutMs}ms waiting for a response.`) as NodeJS.ErrnoException
+        error.code = "ETIMEDOUT"
         emitNervesEvent({
           level: "error",
           component: "daemon",

@@ -36,7 +36,7 @@ import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
-import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
+import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
   runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
@@ -752,7 +752,11 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
 export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH): OuroCliDeps {
   return {
     socketPath,
-    sendCommand: sendDaemonCommand,
+    sendCommand: (commandSocketPath, command) => sendDaemonCommand(commandSocketPath, command, {
+      timeoutMs: command.kind === "daemon.status"
+        ? DEFAULT_DAEMON_STATUS_TIMEOUT_MS
+        : DEFAULT_DAEMON_COMMAND_TIMEOUT_MS,
+    }),
     startDaemonProcess: defaultStartDaemonProcess,
     writeStdout: defaultWriteStdout,
     setExitCode: (code: number) => {

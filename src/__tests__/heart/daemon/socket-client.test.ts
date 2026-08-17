@@ -1,4 +1,8 @@
 import { EventEmitter } from "events"
+import * as fs from "fs"
+import * as net from "net"
+import * as os from "os"
+import * as path from "path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 // This test exercises the REAL socket-client functions (not mocks). Disable
@@ -183,6 +187,42 @@ describe("daemon socket client", () => {
     const connection = createConnection.mock.results[0]?.value as MockConnection
     expect(connection.destroy).toHaveBeenCalled()
   })
+
+  it("bounds a connected silent status socket at the five-second production policy", async () => {
+    vi.resetModules()
+    vi.doUnmock("net")
+    vi.doUnmock("../../../nerves/runtime")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-silent-status-"))
+    const socketPath = path.join(root, "daemon.sock")
+    const clients = new Set<net.Socket>()
+    const server = net.createServer((socket) => {
+      clients.add(socket)
+      socket.on("close", () => clients.delete(socket))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(socketPath, resolve)
+    })
+
+    try {
+      const { DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+      const startedAt = Date.now()
+      const error = await sendDaemonCommand(
+        socketPath,
+        { kind: "daemon.status" },
+        { timeoutMs: DEFAULT_DAEMON_STATUS_TIMEOUT_MS },
+      ).catch((caught: unknown) => caught)
+      const durationMs = Date.now() - startedAt
+
+      expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
+      expect(durationMs).toBeGreaterThanOrEqual(4_900)
+      expect(durationMs).toBeLessThanOrEqual(6_000)
+    } finally {
+      for (const client of clients) client.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 7_000)
 
   it("stringifies non-Error JSON parse failures from daemon responses", async () => {
     class MockConnection extends EventEmitter {
