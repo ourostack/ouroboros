@@ -44,7 +44,8 @@ describe("package metadata", () => {
     expect(packageJob).toContain("npm run test:e2e:ouro-bot-package")
   })
 
-  it("pins mailparser to the last release before its vulnerable html conversion chain", () => {
-    expect(packageJson.dependencies.mailparser).toBe("3.9.8")
+  it("keeps current mail parsing fixes while overriding the vulnerable merge implementation", () => {
+    expect(packageJson.dependencies.mailparser).toBe("^3.9.15")
+    expect(packageJson.overrides["deepmerge-ts"]).toBe("^8.0.1")
   })
 })

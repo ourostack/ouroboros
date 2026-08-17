@@ -34,6 +34,7 @@
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",
+    "test:e2e:ouro-bot-package": "node scripts/ouro-bot-package-e2e.cjs",
     "test:e2e:real-smoke": "npm run build && node scripts/nightly-real-smoke.cjs",
     "typecheck:mailbox-ui": "tsc --noEmit -p packages/mailbox-ui/tsconfig.json",
     "test:mailbox-ui": "npm test --prefix packages/mailbox-ui",
@@ -67,7 +68,7 @@
     "better-sqlite3": "13.0.2",
     "fast-glob": "^3.3.3",
     "ink": "^3.2.0",
-    "mailparser": "^3.9.8",
+    "mailparser": "^3.9.15",
     "openai": "^6.27.0",
     "react": "^17.0.2",
     "semver": "^7.7.4",
@@ -93,6 +94,7 @@
     "vitest": "^4.1.8"
   },
   "overrides": {
+    "deepmerge-ts": "^8.0.1",
     "@microsoft/teams.apps": {
       "@azure/msal-node": "^5.2.2"
     },

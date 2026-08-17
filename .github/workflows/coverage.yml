@@ -95,7 +95,9 @@ jobs:
         run: npm ci
 
       - name: Run Local Package E2E Lane
-        run: npm run test:e2e:package
+        run: |
+          npm run test:e2e:package
+          npm run test:e2e:ouro-bot-package
 
   publish:
     needs:

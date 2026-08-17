@@ -2,6 +2,7 @@ const fs = require("fs")
 const path = require("path")
 
 const REQUIRED_PACKAGE_ASSET_PATHS = [
+  "assets/bluebubbles-host",
   "RepairGuide.ouro/agent.json",
   "RepairGuide.ouro/psyche/IDENTITY.md",
   "RepairGuide.ouro/psyche/SOUL.md",
