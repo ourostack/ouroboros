@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { openApprovalStore, type ApprovalStore, type JsonObject, type PrepareApprovalInput } from "../../heart/approval-store"
 import {
+  ApprovalExecutionIndeterminateError,
   commitApprovalProposal,
   digestApprovalSuspensionCheckpointPayload,
   executeApprovalDecision,
@@ -76,7 +77,7 @@ function liveDigests(argumentsValue: JsonObject = { command: "docker restart cal
 }
 
 function proposal(argumentsValue: JsonObject = { command: "docker restart calibre-web" }): PrepareApprovalInput {
-  const digests = liveDigests(argumentsValue)
+  const digests = liveDigests()
   return {
     toolCallId: "call_restart",
     toolName: "shell",
@@ -106,7 +107,7 @@ function proposal(argumentsValue: JsonObject = { command: "docker restart calibr
   }
 }
 
-function ready(options: { hooks?: Parameters<typeof openApprovalStore>[0]["hooks"] } = {}) {
+function ready(options: { hooks?: Parameters<typeof openApprovalStore>[0]["hooks"]; argumentsValue?: JsonObject } = {}) {
   const directory = makeRoot()
   const databasePath = path.join(directory, "approvals.sqlite")
   let now = "2026-08-17T17:30:00.000Z"
@@ -123,7 +124,7 @@ function ready(options: { hooks?: Parameters<typeof openApprovalStore>[0]["hooks
     approvalStore,
     checkpointStore: checkpoints,
     tokenStore: tokens,
-    proposal: proposal(),
+    proposal: proposal(options.argumentsValue),
     preCallMessages: [{ role: "user", content: "restart calibre-web" }],
   })
   approvalStore.bindPrompt({
@@ -159,6 +160,7 @@ function executionOptions(fixture: ReturnType<typeof ready>, execute = vi.fn().m
     currentSessionRevision: SUSPENDED_REVISION,
     resolveTool: () => shellToolDefinitions[0],
     liveGuard: () => ({ ok: true as const }),
+    liveRisk: () => ({ ok: true as const }),
     execute,
     ...overrides,
   }
@@ -180,6 +182,7 @@ describe("approval decision and crash-safe execution", () => {
 
     expect(record).toMatchObject({ state: "succeeded", result: "restarted", ownerId: "owner-a", epoch: 1 })
     expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute).toHaveBeenCalledWith("shell", { command: "docker restart calibre-web" })
     fixture.approvalStore.close()
   })
 
@@ -246,9 +249,58 @@ describe("approval decision and crash-safe execution", () => {
   })
 
   it.each([
+    ["approve/approve", "approve"],
+    ["approve/deny", "deny"],
+  ])("allows at most one attempted claimant under concurrent %s decisions", async (_label, competingDecision) => {
+    const fixture = ready()
+    const execute = vi.fn().mockResolvedValue("restarted")
+    const attemptedOwners: Array<{ ownerId: string | null; epoch: number }> = []
+    const first = executeApprovalDecision(executionOptions(fixture, execute, {
+      ownerId: "owner-a",
+      hooks: { afterAttempt: () => {
+        const record = fixture.approvalStore.read(UUID)!
+        attemptedOwners.push({ ownerId: record.ownerId, epoch: record.epoch })
+      } },
+    }) as any)
+    const second = executeApprovalDecision(executionOptions(fixture, execute, {
+      ownerId: "owner-b",
+      decision: decision(fixture.decisionToken, { decision: competingDecision }),
+      hooks: { afterAttempt: () => {
+        const record = fixture.approvalStore.read(UUID)!
+        attemptedOwners.push({ ownerId: record.ownerId, epoch: record.epoch })
+      } },
+    }) as any)
+
+    const outcomes = await Promise.allSettled([first, second])
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1)
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1)
+    expect(attemptedOwners).toEqual([{ ownerId: "owner-a", epoch: 1 }])
+    expect(execute).toHaveBeenCalledTimes(1)
+    fixture.approvalStore.close()
+  })
+
+  it.each([
     ["missing tool", { resolveTool: () => undefined }],
-    ["guardrail drift", { liveGuard: () => ({ ok: false, reason: "authority changed" }) }],
+    ["authority/guardrail drift", { liveGuard: () => ({ ok: false, reason: "authority changed" }) }],
+    ["risk-policy drift", { liveRisk: () => ({ ok: false, reason: "risk changed" }) }],
+    ["tool identity drift", { resolveTool: () => ({
+      ...shellToolDefinitions[0]!,
+      tool: { ...shellToolDefinitions[0]!.tool, function: { ...shellToolDefinitions[0]!.tool.function, name: "read_file" } },
+    }) }],
     ["approval-policy drift", { resolveTool: () => ({ ...shellToolDefinitions[0]!, approvalPolicy: () => ({ kind: "not_required" }) }) }],
+    ["approval policy id drift", { resolveTool: () => ({ ...shellToolDefinitions[0]!, approvalPolicy: () => ({
+      kind: "required",
+      policyId: "shell.docker-lifecycle.v2",
+      actionClass: "service-control",
+      requiresSoleCall: true,
+    }) }) }],
+    ["approval action-class drift", { resolveTool: () => ({ ...shellToolDefinitions[0]!, approvalPolicy: () => ({
+      kind: "required",
+      policyId: "shell.docker-lifecycle.v1",
+      actionClass: "different-class",
+      requiresSoleCall: true,
+    }) }) }],
     ["schema/tool drift", { resolveTool: () => ({
       ...shellToolDefinitions[0]!,
       tool: {
@@ -262,10 +314,27 @@ describe("approval decision and crash-safe execution", () => {
   ])("terminalizes %s before attempted", async (_label, overrides) => {
     const fixture = ready()
     const execute = vi.fn()
+    const markAttempted = vi.spyOn(fixture.approvalStore, "markAttempted")
+    const guardedOverrides = {
+      ...overrides,
+      ...(overrides.resolveTool ? { resolveTool: (...args: any[]) => {
+        expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+        return (overrides.resolveTool as any)(...args)
+      } } : {}),
+      ...(overrides.liveGuard ? { liveGuard: (...args: any[]) => {
+        expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+        return (overrides.liveGuard as any)(...args)
+      } } : {}),
+      ...(overrides.liveRisk ? { liveRisk: (...args: any[]) => {
+        expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+        return (overrides.liveRisk as any)(...args)
+      } } : {}),
+    }
 
-    const record = await executeApprovalDecision(executionOptions(fixture, execute, overrides) as any)
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, guardedOverrides) as any)
 
     expect(record.state).toBe("drifted")
+    expect(markAttempted).not.toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
     fixture.approvalStore.close()
   })
@@ -284,15 +353,34 @@ describe("approval decision and crash-safe execution", () => {
   })
 
   it.each([
+    ["missing checkpoint", (fixture: ReturnType<typeof ready>) => fixture.checkpoints.records.delete(UUID)],
+    ["tampered frozen call", (fixture: ReturnType<typeof ready>) => {
+      fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage = { role: "assistant", content: "tampered" }
+    }],
+    ["tampered checkpoint digest", (fixture: ReturnType<typeof ready>) => {
+      fixture.checkpoints.records.get(UUID)!.checkpointDigest = "0".repeat(64)
+    }],
+  ])("terminalizes %s evidence drift before attempted", async (_label, mutate) => {
+    const fixture = ready()
+    mutate(fixture)
+    const execute = vi.fn()
+    const markAttempted = vi.spyOn(fixture.approvalStore, "markAttempted")
+
+    const record = await executeApprovalDecision(executionOptions(fixture, execute) as any)
+
+    expect(record.state).toBe("drifted")
+    expect(markAttempted).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
+  it.each([
     ["null", null],
     ["array", []],
     ["string", "restart"],
     ["number", 42],
     ["boolean", true],
-    ["missing required", {}],
-    ["wrong type", { command: 42 }],
-    ["prohibited extra", { command: "docker restart calibre-web", surprise: true }],
-  ])("fails closed on corrupt or schema-invalid recovered arguments: %s", async (_label, argumentsValue) => {
+  ])("fails closed on structurally corrupt recovered arguments: %s", async (_label, argumentsValue) => {
     const fixture = ready()
     const database = new Database(fixture.databasePath)
     const row = database.prepare("SELECT record_json FROM approval_actions WHERE approval_id = ?").get(UUID) as { record_json: string }
@@ -303,6 +391,28 @@ describe("approval decision and crash-safe execution", () => {
     const execute = vi.fn()
 
     await expect(executeApprovalDecision(executionOptions(fixture, execute) as any)).rejects.toBeTruthy()
+    expect(execute).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
+  it.each([
+    ["missing required", {}],
+    ["wrong type", { command: 42 }],
+    ["prohibited extra", { command: "docker restart calibre-web", surprise: true }],
+  ])("claims then rejects schema-invalid recovered arguments before attempted: %s", async (_label, argumentsValue) => {
+    const fixture = ready({ argumentsValue: argumentsValue as JsonObject })
+    const execute = vi.fn()
+    const markAttempted = vi.spyOn(fixture.approvalStore, "markAttempted")
+    const resolveTool = vi.fn(() => {
+      expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+      return shellToolDefinitions[0]
+    })
+
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, { resolveTool }) as any)
+
+    expect(record.state).toBe("drifted")
+    expect(resolveTool).toHaveBeenCalledTimes(1)
+    expect(markAttempted).not.toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
     fixture.approvalStore.close()
   })
@@ -352,6 +462,21 @@ describe("approval decision and crash-safe execution", () => {
     const record = await executeApprovalDecision(executionOptions(fixture, execute) as any)
 
     expect(record).toMatchObject({ state: "failed", result: expect.stringContaining("handler failed") })
+    expect(execute).toHaveBeenCalledTimes(1)
+    fixture.approvalStore.close()
+  })
+
+  it("treats an unobservable crash during the handler as indeterminate and never retries", async () => {
+    const fixture = ready()
+    const execute = vi.fn().mockRejectedValue(new ApprovalExecutionIndeterminateError("process lost during external effect"))
+
+    await expect(executeApprovalDecision(executionOptions(fixture, execute) as any))
+      .rejects.toBeInstanceOf(ApprovalExecutionIndeterminateError)
+    expect(fixture.approvalStore.read(UUID)?.state).toBe("attempted")
+
+    const recovered = recoverAttemptedApproval({ approvalStore: fixture.approvalStore, approvalId: UUID })
+    expect(recovered.state).toBe("attempted_indeterminate")
+    await expect(executeApprovalDecision(executionOptions(fixture, execute) as any)).rejects.toBeTruthy()
     expect(execute).toHaveBeenCalledTimes(1)
     fixture.approvalStore.close()
   })
