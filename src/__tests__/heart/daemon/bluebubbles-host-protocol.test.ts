@@ -120,7 +120,15 @@ function writeTargetOwnedReceipt(
     now: () => NOW + 1_000,
     lstatSync: (filePath) => {
       const actual = lstatSync(filePath)
-      return filePath.endsWith(`${receipt.requestId}.json`) ? { ...actual, uid } : actual
+      return filePath.endsWith(`${receipt.requestId}.json`)
+        ? {
+            uid,
+            mode: actual.mode,
+            isSymbolicLink: () => actual.isSymbolicLink(),
+            isDirectory: () => actual.isDirectory(),
+            isFile: () => actual.isFile(),
+          }
+        : actual
     },
   }
 }
@@ -322,26 +330,56 @@ describe("cross-user BlueBubbles host protocol", () => {
   it("rejects drifted shared helper trust state before creating a handoff", () => {
     const f = fixture()
     const helperPath = join(f.sharedRoot, "bluebubbles-host")
-    chmodSync(helperPath, 0o777)
-    expect(() => requestCrossUserBlueBubblesHostAction({
+    const request = () => requestCrossUserBlueBubblesHostAction({
       action: "install",
       username: "clawdbot",
       uid: 502,
       targetHomeDir: f.targetHomeDir,
       originHomeDir: f.originHomeDir,
       sharedRoot: f.sharedRoot,
-    }, f.baseDeps)).toThrow("shared helper mode must be 0755")
+    }, f.baseDeps)
+
+    chmodSync(f.sharedRoot, 0o777)
+    expect(request).toThrow("shared root mode must be 0755")
+    chmodSync(f.sharedRoot, 0o755)
+    chmodSync(join(f.sharedRoot, "bluebubbles-host-requests"), 0o777)
+    expect(request).toThrow("shared request directory mode must be 0755")
+    chmodSync(join(f.sharedRoot, "bluebubbles-host-requests"), 0o755)
+    chmodSync(helperPath, 0o777)
+    expect(request).toThrow("shared helper mode must be 0755")
 
     chmodSync(helperPath, 0o755)
     writeFileSync(helperPath, "tampered", { mode: 0o755 })
-    expect(() => requestCrossUserBlueBubblesHostAction({
-      action: "install",
+    expect(request).toThrow("shared helper bytes do not match")
+  })
+
+  it("trusts byte-exact packaged helper state through the default asset verifier", () => {
+    const root = temporaryRoot()
+    const sharedRoot = join(root, "shared")
+    const originHomeDir = join(root, "origin")
+    const targetHomeDir = join(root, "target")
+    const assetPath = join(process.cwd(), "assets", "bluebubbles-host")
+    mkdirSync(originHomeDir)
+    mkdirSync(targetHomeDir)
+    installBlueBubblesHostSharedHelper({ assetPath, sharedRoot })
+
+    expect(requestCrossUserBlueBubblesHostAction({
+      action: "status",
       username: "clawdbot",
       uid: 502,
-      targetHomeDir: f.targetHomeDir,
-      originHomeDir: f.originHomeDir,
-      sharedRoot: f.sharedRoot,
-    }, f.baseDeps)).toThrow("shared helper bytes do not match")
+      targetHomeDir,
+      originHomeDir,
+      sharedRoot,
+    }, {
+      now: () => NOW,
+      randomBytes: () => Buffer.from(NONCE, "hex"),
+      lstatSync: (filePath) => {
+        const stat = lstatSync(filePath)
+        return filePath === targetHomeDir
+          ? { uid: 502, mode: stat.mode, isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false }
+          : stat
+      },
+    }).requestId).toBe(REQUEST_ID)
   })
 
   it("uses fixed shared paths when no test root is supplied", () => {
@@ -349,6 +387,7 @@ describe("cross-user BlueBubbles host protocol", () => {
     memory.files.set("/asset", Buffer.from("helper"))
     memory.modes.set("/asset", 0o644)
     memory.modes.set("/Users/clawdbot", 0o755)
+    memory.owners.set("/Users/clawdbot", 502)
 
     installBlueBubblesHostSharedHelper({ assetPath: "/asset" }, memory.deps)
     const handoff = requestCrossUserBlueBubblesHostAction({

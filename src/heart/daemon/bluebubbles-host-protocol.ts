@@ -57,6 +57,7 @@ interface ResolvedBlueBubblesHostProtocolDeps {
   now: () => number
   randomBytes: (size: number) => Buffer
   currentUid: () => number
+  expectedHelperBytes: () => Buffer
   existsSync: (filePath: string) => boolean
   readFileSync: (filePath: string) => Buffer
   mkdirSync: (directoryPath: string, options: { recursive: true; mode?: number }) => void
@@ -85,6 +86,7 @@ function protocolDeps(overrides: BlueBubblesHostProtocolDeps = {}): ResolvedBlue
     now: Date.now,
     randomBytes: cryptoRandomBytes,
     currentUid: () => process.getuid?.() ?? 0,
+    expectedHelperBytes: () => fs.readFileSync(path.resolve(__dirname, "../../../assets/bluebubbles-host")),
     existsSync: fs.existsSync,
     readFileSync: fs.readFileSync,
     mkdirSync: fs.mkdirSync,
@@ -298,7 +300,9 @@ export function requestCrossUserBlueBubblesHostAction(
   validateUsername(input.username)
   validateUid(input.uid)
   validateAction(input.action)
+  if (!path.isAbsolute(input.targetHomeDir)) throw new Error("target home must be absolute")
   if (!deps.existsSync(input.targetHomeDir)) throw new Error(`target home does not exist: ${input.targetHomeDir}`)
+  validateManagedPath(deps, input.targetHomeDir, "target home", "directory", input.uid)
   const nonceBytes = deps.randomBytes(32)
   if (nonceBytes.length !== 32) throw new Error("BlueBubbles host nonce source must return 32 bytes")
   const nonce = nonceBytes.toString("hex")
@@ -321,6 +325,12 @@ export function requestCrossUserBlueBubblesHostAction(
   validateManagedPath(deps, root, "shared root", "directory", expectedUid)
   validateManagedPath(deps, paths.requests, "shared request directory", "directory", expectedUid)
   validateManagedPath(deps, paths.helper, "shared helper", "file", expectedUid)
+  if (fileMode(deps, root) !== 0o755) throw new Error("shared root mode must be 0755")
+  if (fileMode(deps, paths.requests) !== 0o755) throw new Error("shared request directory mode must be 0755")
+  if (fileMode(deps, paths.helper) !== 0o755) throw new Error("shared helper mode must be 0755")
+  if (!deps.readFileSync(paths.helper).equals(deps.expectedHelperBytes())) {
+    throw new Error("shared helper bytes do not match the packaged helper")
+  }
   const requestPath = path.join(paths.requests, `${requestId}.json`)
   const attemptPath = blueBubblesHostAttemptPath(input.originHomeDir, requestId)
   const attempt: BlueBubblesHostAttempt = {
@@ -463,9 +473,9 @@ export function collectCrossUserBlueBubblesHostAction(
   if (!deps.existsSync(receiptPath)) throw new Error("BlueBubbles host receipt is missing")
   const receiptStat = deps.lstatSync(receiptPath)
   if (receiptStat.isSymbolicLink?.()) throw new Error("BlueBubbles host receipt must not be a symbolic link")
-  if (receiptStat.uid !== request.uid) {
-    throw new Error(`receipt owner uid ${receiptStat.uid} does not match target uid ${request.uid}`)
-  }
+  if (receiptStat.isFile?.() !== true) throw new Error("BlueBubbles host receipt must be a regular file")
+  if (receiptStat.uid !== request.uid) throw new Error(`receipt owner uid ${receiptStat.uid} does not match target uid ${request.uid}`)
+  if ((receiptStat.mode & 0o7777) !== 0o444) throw new Error("BlueBubbles host receipt mode must be 0444")
   const receipt = readJson<BlueBubblesHostReceipt>(deps, receiptPath, "BlueBubbles host receipt")
   requireReceiptMatch(request, attempt.targetHomeDir, receipt)
   const detail = receipt.result === "verified"
