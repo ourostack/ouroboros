@@ -402,13 +402,18 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       const line = buffer.slice(0, idx).trim()
       buffer = buffer.slice(idx + 1)
       if (!line) continue
-      let response: Record<string, unknown>
+      let parsedResponse: unknown
       try {
-        response = JSON.parse(line) as Record<string, unknown>
+        parsedResponse = JSON.parse(line)
       } catch {
         failAll(new Error(`MCP canary received malformed JSON: ${line}`))
         return
       }
+      if (!isRecord(parsedResponse)) {
+        failAll(new Error("MCP canary received malformed JSON-RPC response"))
+        return
+      }
+      const response = parsedResponse
       const id = typeof response.id === "number" ? response.id : null
       if (id === null) continue
       const request = pending.get(id)
