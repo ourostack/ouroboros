@@ -41,7 +41,11 @@ describe("mcp-serve CLI lifecycle", () => {
     expect(server.stop).toHaveBeenCalledOnce()
   })
 
-  it("uses the injected stdin, stdout, and server factory at the actual CLI boundary", async () => {
+  it.each([
+    ["end", ["end"]],
+    ["close", ["close"]],
+    ["end+close", ["end", "close"]],
+  ] as const)("uses injected ownership at the actual CLI boundary for %s", async (_label, events) => {
     const input = new EventEmitter()
     const output = new PassThrough()
     const server = fakeServer()
@@ -61,7 +65,7 @@ describe("mcp-serve CLI lifecycle", () => {
 
     const resultPromise = runOuroCli(["mcp-serve", "--agent", "slugger", "--friend", "friend-1"], deps)
     await Promise.resolve()
-    input.emit("close")
+    for (const event of events) input.emit(event)
 
     await expect(resultPromise).resolves.toBe("")
     expect(createMcpServer).toHaveBeenCalledWith(expect.objectContaining({

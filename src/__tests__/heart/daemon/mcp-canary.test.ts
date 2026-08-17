@@ -10,6 +10,8 @@ import {
   formatMcpStatusCanaryResult,
   parseMcpStatusText,
   runMcpStatusCanary,
+  sanitizeMcpCanaryArgs,
+  sanitizeMcpCanaryText,
 } from "../../../heart/daemon/mcp-canary"
 
 interface FakeChild extends EventEmitter {
@@ -179,8 +181,55 @@ describe("mcp canary", () => {
     })
 
     expect(result.ok).toBe(false)
+    expect(result.classification).toBe("ouro-bridge-healthy-at-capture")
     expect(result.summary).toContain("health=warn")
     expect(result.summary).toContain("sense=bluebubbles:error")
+  })
+
+  it("classifies an observed host stall as unexplained when the bridge is healthy", async () => {
+    const child = createFakeChild("daemon=running\thealth=ok")
+    const result = await runMcpStatusCanary({
+      agent: "slugger",
+      hostStallObserved: true,
+      spawnImpl: spawnFake(child),
+    })
+    expect(result).toMatchObject({ ok: true, classification: "host-stall-unexplained" })
+  })
+
+  it("uses one total timeout budget across initialize and status phases", async () => {
+    vi.useFakeTimers()
+    const child = createManualChild()
+    child.stdin.on("data", (chunk) => {
+      const request = JSON.parse(chunk.toString().trim()) as { id?: number; method?: string }
+      if (request.method === "initialize") {
+        setTimeout(() => child.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\n"), 20)
+      }
+    })
+    try {
+      const resultPromise = runMcpStatusCanary({ agent: "slugger", timeoutMs: 25, spawnImpl: spawnFake(child) })
+      await vi.advanceTimersByTimeAsync(50)
+      const result = await resultPromise
+      expect(result.summary).toContain("timed out waiting for tools/call")
+      expect(result.evidence?.durationMs).toBe(25)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("redacts JSON, bearer, CLI, query, and key-value credential shapes", () => {
+    const raw = 'https://host/path?password=query "token":"json-token" Bearer bearer-token --api-key cli-token secret=value'
+    const sanitized = sanitizeMcpCanaryText(raw)
+    expect(sanitized).toContain("https://host/path?[redacted]")
+    expect(sanitized).toContain('"token":"[redacted]"')
+    expect(sanitized).toContain("Bearer [redacted]")
+    expect(sanitized).toContain("--api-key [redacted]")
+    expect(sanitized).toContain("secret=[redacted]")
+    expect(sanitized).not.toContain("query")
+    expect(sanitized).not.toContain("json-token")
+    expect(sanitized).not.toContain("bearer-token")
+    expect(sanitized).not.toContain("cli-token")
+    expect(sanitizeMcpCanaryArgs(["mcp-serve", "--token", "arg-token", "--password=inline", "safe"]))
+      .toEqual(["mcp-serve", "--token", "[redacted]", "--password=[redacted]", "safe"])
   })
 
   it("can ignore aggregate health while preserving transport and required-sense checks", async () => {

@@ -112,12 +112,31 @@ describe("ouro mcp canary", () => {
       "--socket",
       "/tmp/custom.sock",
       "--json",
+      "--host-stall-observed",
     ])).toEqual({
       kind: "mcp.doctor",
       agent: "slugger",
       socketOverride: "/tmp/custom.sock",
       json: true,
+      hostStallObserved: true,
     })
+  })
+
+  it("passes observed-host-stall evidence into the doctor canary", async () => {
+    mockRunMcpStatusCanary.mockResolvedValue({
+      ok: true,
+      classification: "host-stall-unexplained",
+      summary: "bridge healthy; reported host stall remains unexplained",
+      details: [],
+    })
+    const cliDeps = deps()
+
+    const result = await runOuroCli([
+      "mcp", "doctor", "--agent", "slugger", "--host-stall-observed", "--json",
+    ], cliDeps)
+
+    expect(mockRunMcpStatusCanary).toHaveBeenCalledWith(expect.objectContaining({ hostStallObserved: true }))
+    expect(JSON.parse(result).classification).toBe("host-stall-unexplained")
   })
 
   it("parses mcp doctor with json only", () => {
