@@ -405,11 +405,21 @@ describe("mcp canary", () => {
     expect(result.summary).toContain("status exploded")
   })
 
+  it("uses a safe generic error for a status tool error without text content", async () => {
+    const child = createStatusResponseChild({ result: { isError: true } })
+
+    const result = await runMcpStatusCanary({ agent: "slugger", spawnImpl: spawnFake(child) })
+
+    expect(result.classification).toBe("ouro-bridge-failed")
+    expect(result.summary).toContain("MCP status tool returned an error")
+  })
+
   it.each([
     ["initialize", { jsonrpc: "2.0", error: { code: -32603, message: "init failed" } }, "init failed"],
     ["initialize", { result: {} }, "malformed JSON-RPC response"],
     ["initialize", { jsonrpc: "2.0", result: null }, "invalid initialize result"],
     ["tools/call", { jsonrpc: "2.0", error: { code: -32603, message: "status failed" } }, "status failed"],
+    ["tools/call", { jsonrpc: "2.0", result: null }, "invalid status result"],
     ["tools/call", { jsonrpc: "2.0", result: {} }, "invalid status result"],
   ])("does not classify an invalid %s envelope as a healthy bridge %#", async (targetMethod, payload, expected) => {
     const child = createManualChild()
@@ -457,17 +467,18 @@ describe("mcp canary", () => {
   })
 
   it.each([
-    [{}, "daemon=missing"],
-    [{ result: { content: { bad: true } } }, "daemon=missing"],
-    [{ result: { content: [] } }, "daemon=missing"],
-    [{ result: { content: [null] } }, "daemon=missing"],
-    [{ result: { content: [{ type: "text", text: 42 }] } }, "daemon=missing"],
-  ])("falls back to raw JSON for unusual status responses %#", async (response, expected) => {
+    [{}, "malformed JSON-RPC response"],
+    [{ result: { content: { bad: true } } }, "invalid status result"],
+    [{ result: { content: [] } }, "invalid status result"],
+    [{ result: { content: [null] } }, "invalid status result"],
+    [{ result: { content: [{ type: "text", text: 42 }] } }, "invalid status result"],
+  ])("rejects malformed status responses %#", async (response, expected) => {
     const child = createStatusResponseChild(response)
 
     const result = await runMcpStatusCanary({ agent: "slugger", spawnImpl: spawnFake(child) })
 
     expect(result.ok).toBe(false)
+    expect(result.classification).toBe("ouro-bridge-failed")
     expect(result.summary).toContain(expected)
   })
 

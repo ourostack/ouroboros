@@ -122,15 +122,34 @@ function defaultCommandArgs(agent: string, socketPath?: string): string[] {
   ]
 }
 
-function responseText(response: Record<string, unknown>): string {
-  const result = response.result
-  if (!result || typeof result !== "object" || Array.isArray(result)) return JSON.stringify(response)
-  const content = (result as Record<string, unknown>).content
-  if (!Array.isArray(content)) return JSON.stringify(response)
-  const first = content[0]
-  if (!first || typeof first !== "object" || Array.isArray(first)) return JSON.stringify(response)
-  const text = (first as Record<string, unknown>).text
-  return typeof text === "string" ? text : JSON.stringify(response)
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+function requireInitializeResult(response: Record<string, unknown>): void {
+  if (!isRecord(response.result)) {
+    throw new Error("MCP canary received invalid initialize result")
+  }
+}
+
+function requireStatusText(response: Record<string, unknown>): string {
+  if (!isRecord(response.result)) {
+    throw new Error("MCP canary received invalid status result")
+  }
+  if (response.result.isError === true) {
+    const errorContent = response.result.content
+    const errorFirst = Array.isArray(errorContent) ? errorContent[0] : undefined
+    const errorText = isRecord(errorFirst) && typeof errorFirst.text === "string"
+      ? errorFirst.text
+      : "MCP status tool returned an error"
+    throw new Error(errorText)
+  }
+  const content = response.result.content
+  const first = Array.isArray(content) ? content[0] : undefined
+  if (!isRecord(first) || typeof first.text !== "string") {
+    throw new Error("MCP canary received invalid status result")
+  }
+  return first.text
 }
 
 function parseFields(line: string): Record<string, string> {
@@ -396,6 +415,16 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       if (!request) continue
       pending.delete(id)
       clearTimeout(request.timer)
+      const hasResult = Object.prototype.hasOwnProperty.call(response, "result")
+      const hasError = Object.prototype.hasOwnProperty.call(response, "error")
+      if (response.jsonrpc !== "2.0" || (!hasResult && !hasError)) {
+        request.reject(new Error("MCP canary received malformed JSON-RPC response"))
+        continue
+      }
+      if (hasError) {
+        request.reject(new Error(`MCP canary received JSON-RPC error: ${JSON.stringify(response.error)}`))
+        continue
+      }
       request.resolve(response)
     }
   })
@@ -432,23 +461,21 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
 
   try {
     evidence.phase = "initialize"
-    await request("initialize", {
+    const initializeResponse = await request("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "ouro-mcp-canary", version: "1.0" },
     })
+    requireInitializeResult(initializeResponse)
     child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", method: "initialized" }) + "\n")
     evidence.phase = "status"
     const statusResponse = await request("tools/call", {
       name: "status",
       arguments: {},
     })
-    const result = statusResponse.result
-    if (result && typeof result === "object" && !Array.isArray(result) && (result as Record<string, unknown>).isError === true) {
-      throw new Error(responseText(statusResponse))
-    }
+    const statusText = requireStatusText(statusResponse)
     const bridgeHealthy = true
-    const parsed = parseMcpStatusText(responseText(statusResponse))
+    const parsed = parseMcpStatusText(sanitizeMcpCanaryText(statusText))
     const canary = validateMcpStatus(parsed, requiredSenses, {
       agent: options.agent,
       ignoreOverviewHealth: options.ignoreOverviewHealth,
