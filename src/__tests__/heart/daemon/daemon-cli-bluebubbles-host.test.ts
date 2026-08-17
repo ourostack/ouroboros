@@ -70,6 +70,20 @@ describe("ouro bluebubbles host CLI", () => {
     })
   })
 
+  it.each(["install", "status", "repair", "remove"] as const)("parses the %s lifecycle action", (action) => {
+    expect(parseOuroCommand(["bluebubbles", "host", action])).toEqual({
+      kind: "bluebubbles.host",
+      action,
+    })
+  })
+
+  it("advertises every standard host lifecycle and handoff command", async () => {
+    const output = await runOuroCli(["help", "bluebubbles"], deps())
+    expect(output).toContain("bluebubbles host <install|status|repair|remove|collect>")
+    expect(output).toContain("--username <name> --uid <uid> --home <path>")
+    expect(output).toContain("--request-id <id>")
+  })
+
   it("rejects incomplete or invalid host command arguments", () => {
     expect(() => parseOuroCommand(["bluebubbles", "host", "explode"])).toThrow("install|status|repair|remove|collect")
     expect(() => parseOuroCommand(["bluebubbles", "host", "install", "--username", "clawdbot"])).toThrow("--username, --uid, and --home")
