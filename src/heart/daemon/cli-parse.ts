@@ -2300,7 +2300,12 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "up") {
     const noRepair = args.includes("--no-repair")
-    return noRepair ? { kind: "daemon.up", noRepair: true } : { kind: "daemon.up" }
+    const latest = args.includes("--latest")
+    return {
+      kind: "daemon.up",
+      ...(noRepair ? { noRepair: true } : {}),
+      ...(latest ? { latest: true } : {}),
+    }
   }
   if (head === "dev") {
     const devArgs = args.slice(1)

@@ -50,6 +50,7 @@ describe("ouro rollback: execution", () => {
     const deps = makeDeps({
       getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      writeVersionIntent: vi.fn(),
       activateCliVersion: vi.fn(),
       sendCommand: vi.fn(async () => ({ ok: true, message: "stopped" })),
     })
@@ -57,6 +58,10 @@ describe("ouro rollback: execution", () => {
     const result = await runOuroCli(["rollback"], deps)
 
     expect(deps.activateCliVersion).toHaveBeenCalledWith("0.1.0-alpha.79")
+    expect(deps.writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.79" })
+    expect(vi.mocked(deps.writeVersionIntent!).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(deps.activateCliVersion!).mock.invocationCallOrder[0],
+    )
     expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.stop" })
     expect(result).toContain("rolled back to 0.1.0-alpha.79")
     expect(result).toContain("was 0.1.0-alpha.80")
@@ -166,6 +171,18 @@ describe("ouro rollback: execution", () => {
 
     expect(deps.activateCliVersion).not.toHaveBeenCalled()
     expect(result).toContain("npm install failed")
+  })
+
+  it("does not activate when pinned intent cannot be committed", async () => {
+    const deps = makeDeps({
+      getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      writeVersionIntent: vi.fn(() => { throw new Error("intent disk full") }),
+      activateCliVersion: vi.fn(),
+    })
+
+    await expect(runOuroCli(["rollback"], deps)).rejects.toThrow("intent disk full")
+    expect(deps.activateCliVersion).not.toHaveBeenCalled()
   })
 
   it("daemon stop failure is non-fatal — rollback still succeeds", async () => {

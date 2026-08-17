@@ -1293,6 +1293,7 @@ describe("daemon CLI default dependency branches", () => {
       }),
       checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
+      readVersionIntent: () => null,
       getCurrentCliVersion: () => null,
       detectMode: () => "production" as const,
       healthFilePath: undefined,

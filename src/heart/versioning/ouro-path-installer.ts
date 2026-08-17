@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { OURO_RECOVERY_LAUNCHER_SCRIPT, OURO_WRAPPER_SCRIPT, resolveOuroRecoveryLauncherAssets } from "./ouro-recovery-launcher"
 
 export interface OuroPathInstallResult {
   installed: boolean
@@ -34,39 +35,34 @@ export interface OuroPathInstallerDeps {
   realpathSync?: (p: string) => string
   lstatSync?: (p: string) => Pick<fs.Stats, "isSymbolicLink">
   unlinkSync?: (p: string) => void
+  renameSync?: (oldPath: string, newPath: string) => void
   ensureCliLayout?: () => void
   envPath?: string
   shell?: string
 }
 
-const WRAPPER_SCRIPT = `#!/bin/sh
-# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
-# Skip dev dispatch for "up" command (explicitly returns to production)
-DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
-if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
-  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
-  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
-  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
-    exec node "$DEV_ENTRY" "$@"
-  fi
-fi
-# Fall back to installed version
-ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
-if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
-  exit 1
-fi
-exec node "$ENTRY" "$@"
-`
+const WRAPPER_SCRIPT = OURO_WRAPPER_SCRIPT
 
 function writeWrapperScript(
   scriptPath: string,
   mkdirSync: NonNullable<OuroPathInstallerDeps["mkdirSync"]>,
   writeFileSync: NonNullable<OuroPathInstallerDeps["writeFileSync"]>,
   chmodSync: NonNullable<OuroPathInstallerDeps["chmodSync"]>,
+  renameSync: NonNullable<OuroPathInstallerDeps["renameSync"]>,
+  existsSync: NonNullable<OuroPathInstallerDeps["existsSync"]>,
+  readFileSync: NonNullable<OuroPathInstallerDeps["readFileSync"]>,
 ): void {
+  const assets = resolveOuroRecoveryLauncherAssets()
   mkdirSync(path.dirname(scriptPath), { recursive: true })
-  writeFileSync(scriptPath, WRAPPER_SCRIPT, { mode: 0o755 })
+  const launcherPath = path.join(path.dirname(scriptPath), "ouro-launcher.js")
+  const launcherTempPath = `${launcherPath}.next-${process.pid}`
+  writeFileSync(launcherTempPath, assets.launcherScript, { mode: 0o755 })
+  chmodSync(launcherTempPath, 0o755)
+  renameSync(launcherTempPath, launcherPath)
+  if (existsSync(launcherPath) && readFileSync(launcherPath, "utf8") !== assets.launcherScript) {
+    throw new Error("failed to verify installed Ouro recovery launcher")
+  }
+  writeFileSync(scriptPath, assets.wrapperScript, { mode: 0o755 })
   chmodSync(scriptPath, 0o755)
 }
 
@@ -117,6 +113,19 @@ function isWrapperCurrent(
   }
 }
 
+function isRecoveryLauncherCurrent(
+  scriptPath: string,
+  existsSync: (p: string) => boolean,
+  readFileSync: (p: string, encoding: BufferEncoding) => string,
+): boolean {
+  if (!existsSync(scriptPath)) return false
+  try {
+    return readFileSync(scriptPath, "utf-8") === OURO_RECOVERY_LAUNCHER_SCRIPT
+  } catch {
+    return false
+  }
+}
+
 function isOwnedOuroLauncherPath(resolvedPath: string): boolean {
   const normalized = path.normalize(resolvedPath)
   return (
@@ -131,7 +140,8 @@ function isOwnedOuroLauncherContent(content: string): boolean {
     content.includes("ouro.bot@latest") ||
     content.includes("ouro.bot@alpha") ||
     content.includes('exec npx --yes ouro.bot "$@"') ||
-    content.includes("CurrentVersion/node_modules/@ouro.bot/cli")
+    content.includes("CurrentVersion/node_modules/@ouro.bot/cli") ||
+    content.includes(".ouro-cli/bin/ouro-launcher.js")
   )
 }
 
@@ -273,6 +283,7 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
   const realpathSync = deps.realpathSync ?? fs.realpathSync
   const lstatSync = deps.lstatSync ?? fs.lstatSync
   const unlinkSync = deps.unlinkSync ?? fs.unlinkSync
+  const renameSync = deps.renameSync ?? fs.renameSync
   const envPath = deps.envPath ?? process.env.PATH ?? ""
   const shell = deps.shell ?? process.env.SHELL
   /* v8 ignore stop */
@@ -294,11 +305,13 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
 
   const binDir = path.join(homeDir, ".ouro-cli", "bin")
   const scriptPath = path.join(binDir, "ouro")
+  const recoveryLauncherPath = path.join(binDir, "ouro-launcher.js")
   const oldScriptPath = path.join(homeDir, ".local", "bin", "ouro")
 
   const resolvePath = (): OuroPathResolution => diagnoseOuroPath({ homeDir, envPath, existsSync, readFileSync })
 
   const modernCurrent = isWrapperCurrent(scriptPath, existsSync, readFileSync)
+    && isRecoveryLauncherCurrent(recoveryLauncherPath, existsSync, readFileSync)
   const oldExists = existsSync(oldScriptPath)
   const oldCurrent = oldExists && isWrapperCurrent(oldScriptPath, existsSync, readFileSync)
 
@@ -378,7 +391,7 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
 
   try {
     if (!modernCurrent) {
-      writeWrapperScript(scriptPath, mkdirSync, writeFileSync, chmodSync)
+      writeWrapperScript(scriptPath, mkdirSync, writeFileSync, chmodSync, renameSync, existsSync, readFileSync)
     }
   } catch (error) {
     emitNervesEvent({

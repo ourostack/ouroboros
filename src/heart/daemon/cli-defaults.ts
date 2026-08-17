@@ -31,6 +31,7 @@ import { detectRuntimeMode } from "./runtime-mode"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
+import { readVersionIntent as defaultReadVersionIntent, writeVersionIntent as defaultWriteVersionIntent } from "../versioning/version-intent"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
@@ -814,6 +815,8 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
         distTag: CLI_UPDATE_DIST_TAG,
       })
     },
+    readVersionIntent: () => defaultReadVersionIntent(),
+    writeVersionIntent: (intent) => defaultWriteVersionIntent(intent),
     installCliVersion: async (version: string) => { installVersion(version, {}) },
     validateCliVersionForActivation: (version: string) => validateInstalledVersionForActivation(version, {}),
     activateCliVersion: (version: string) => {

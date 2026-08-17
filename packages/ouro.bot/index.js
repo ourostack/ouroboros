@@ -16,13 +16,56 @@ const CURRENT_LINK = path.join(OURO_HOME, "CurrentVersion");
 const WRAPPER_PATH = path.join(BIN_DIR, "ouro");
 const ENTRY_RELPATH = "node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js";
 
+const INTENT_PATH = path.join(OURO_HOME, "version-intent.json");
+const LAUNCHER_PATH = path.join(BIN_DIR, "ouro-launcher.js");
 const WRAPPER_SCRIPT = `#!/bin/sh
-ENTRY="$HOME/.ouro-cli/CurrentVersion/${ENTRY_RELPATH}"
-if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
-  exit 1
-fi
-exec node "$ENTRY" "$@"
+exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
+`;
+const LAUNCHER_SCRIPT = `#!/usr/bin/env node
+"use strict";
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const cp = require("child_process");
+const home = path.join(os.homedir(), ".ouro-cli");
+const current = path.join(home, "CurrentVersion");
+const intentPath = path.join(home, "version-intent.json");
+const entryRel = "node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js";
+let intent = null;
+try {
+  intent = JSON.parse(fs.readFileSync(intentPath, "utf8"));
+  if (intent.schemaVersion !== 1 || !["pinned", "latest"].includes(intent.mode) || !intent.targetVersion) throw new Error("invalid fields");
+} catch (error) {
+  if (error && error.code !== "ENOENT") {
+    process.stderr.write("invalid Ouro version intent: " + error.message + "\\n");
+    process.exit(1);
+  }
+}
+if (intent) {
+  const target = path.join(home, "versions", intent.targetVersion);
+  const targetEntry = path.join(target, entryRel);
+  if (!fs.existsSync(targetEntry)) {
+    process.stderr.write("Ouro version intent target is not installed: " + intent.targetVersion + "\\n");
+    process.exit(1);
+  }
+  let active = null;
+  try { active = path.basename(fs.readlinkSync(current)); } catch {}
+  if (active !== intent.targetVersion) {
+    const next = current + ".next-" + process.pid;
+    try { fs.unlinkSync(next); } catch {}
+    fs.symlinkSync(target, next);
+    fs.renameSync(next, current);
+  }
+}
+const entry = path.join(current, entryRel);
+if (!fs.existsSync(entry)) {
+  process.stderr.write("ouro not installed. Run: npx ouro.bot@latest\\n");
+  process.exit(1);
+}
+const result = cp.spawnSync(process.execPath, [entry, ...process.argv.slice(2)], { stdio: "inherit" });
+if (result.error) throw result.error;
+if (result.signal) process.kill(process.pid, result.signal);
+process.exit(result.status == null ? 1 : result.status);
 `;
 
 function resolveBundledVersion() {
@@ -46,49 +89,6 @@ function getCurrentVersion() {
   } catch {
     return null;
   }
-}
-
-function parseSemver(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
-  if (!match) return null;
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4] ? match[4].split(".") : [],
-  };
-}
-
-function compareIdentifier(a, b) {
-  const aNumeric = /^\d+$/.test(a);
-  const bNumeric = /^\d+$/.test(b);
-  if (aNumeric && bNumeric) return Number(a) - Number(b);
-  if (aNumeric) return -1;
-  if (bNumeric) return 1;
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function compareVersions(a, b) {
-  const parsedA = parseSemver(a);
-  const parsedB = parseSemver(b);
-  if (!parsedA || !parsedB) return 0;
-  for (const key of ["major", "minor", "patch"]) {
-    const diff = parsedA[key] - parsedB[key];
-    if (diff !== 0) return diff;
-  }
-  if (parsedA.prerelease.length === 0 && parsedB.prerelease.length === 0) return 0;
-  if (parsedA.prerelease.length === 0) return 1;
-  if (parsedB.prerelease.length === 0) return -1;
-  const length = Math.max(parsedA.prerelease.length, parsedB.prerelease.length);
-  for (let i = 0; i < length; i++) {
-    const left = parsedA.prerelease[i];
-    const right = parsedB.prerelease[i];
-    if (left === undefined) return -1;
-    if (right === undefined) return 1;
-    const diff = compareIdentifier(left, right);
-    if (diff !== 0) return diff;
-  }
-  return 0;
 }
 
 function installedEntryPath(version) {
@@ -128,6 +128,14 @@ function activateVersion(version) {
 }
 
 function installWrapper() {
+  const launcherTemp = `${LAUNCHER_PATH}.next-${process.pid}`;
+  try { fs.unlinkSync(launcherTemp); } catch { /* may not exist */ }
+  fs.writeFileSync(launcherTemp, LAUNCHER_SCRIPT, { mode: 0o755 });
+  fs.chmodSync(launcherTemp, 0o755);
+  fs.renameSync(launcherTemp, LAUNCHER_PATH);
+  if (fs.readFileSync(LAUNCHER_PATH, "utf8") !== LAUNCHER_SCRIPT) {
+    throw new Error("failed to verify installed Ouro recovery launcher");
+  }
   const existing = fs.existsSync(WRAPPER_PATH) ? fs.readFileSync(WRAPPER_PATH, "utf-8") : "";
   if (existing === WRAPPER_SCRIPT) return;
   fs.writeFileSync(WRAPPER_PATH, WRAPPER_SCRIPT, { mode: 0o755 });
@@ -176,16 +184,15 @@ function cleanupOldWrapper() {
 
 const previousVersion = getCurrentVersion();
 const bundledVersion = resolveBundledVersion();
-const useInstalledNewer = previousVersion
-  && compareVersions(previousVersion, bundledVersion) > 0
-  && fs.existsSync(installedEntryPath(previousVersion));
-
 ensureLayout();
-if (!useInstalledNewer) {
-  installVersion(bundledVersion);
-}
+installWrapper();
+installVersion(bundledVersion);
+const nextIntent = { schemaVersion: 1, mode: "pinned", targetVersion: bundledVersion };
+const intentTemp = `${INTENT_PATH}.${process.pid}.tmp`;
+fs.writeFileSync(intentTemp, JSON.stringify(nextIntent, null, 2) + "\n", { mode: 0o600 });
+fs.renameSync(intentTemp, INTENT_PATH);
 
-if (!useInstalledNewer && previousVersion !== bundledVersion) {
+if (previousVersion !== bundledVersion) {
   activateVersion(bundledVersion);
   if (previousVersion) {
     console.error(`ouro updated to ${bundledVersion} (was ${previousVersion})`);
@@ -194,7 +201,6 @@ if (!useInstalledNewer && previousVersion !== bundledVersion) {
   }
 }
 
-installWrapper();
 addToPath();
 cleanupOldWrapper();
 

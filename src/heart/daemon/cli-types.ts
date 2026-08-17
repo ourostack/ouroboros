@@ -24,6 +24,7 @@ import type { MailroomRegistry } from "../../mailroom/core"
 import type { MailroomRuntimeConfig } from "../../mailroom/reader"
 import type { HabitCancelDeps } from "../habits/habit-cancel"
 import type { RsvpSendBoundaryDeps } from "../../rsvp/outbound-state"
+import type { VersionIntent } from "../versioning/version-intent"
 export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
 export type RuntimeConfigScope = "agent" | "machine"
@@ -35,7 +36,7 @@ export type RsvpSmokeMode = "preflight" | "live"
 export type RsvpSmokeSurface = "bluebubbles"
 
 export type OuroCliCommand =
-  | { kind: "daemon.up"; noRepair?: boolean }
+  | { kind: "daemon.up"; noRepair?: boolean; latest?: boolean }
   | { kind: "daemon.stop" }
   | { kind: "daemon.status"; json?: boolean }
   | { kind: "daemon.logs" }
@@ -177,6 +178,8 @@ export interface OuroCliDeps {
    */
   readMailroomRegistry?: (config: MailroomRuntimeConfig) => Promise<MailroomRegistry>
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
+  readVersionIntent?: () => VersionIntent | null
+  writeVersionIntent?: (intent: VersionIntent) => void
   updateCheckTimeoutMs?: number
   installCliVersion?: (version: string) => Promise<void>
   validateCliVersionForActivation?: (version: string) => { ok: boolean; message: string }

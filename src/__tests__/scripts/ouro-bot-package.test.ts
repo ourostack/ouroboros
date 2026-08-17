@@ -127,6 +127,73 @@ describe("ouro.bot package bootstrap", () => {
     }
   })
 
+  it.each([
+    ["0.0.1", "older"],
+    [wrapperPackageVersion, "equal"],
+  ])("replaces %s current state with exact bundled pinned intent (%s)", (installedVersion) => {
+    const result = runWrapper(["--version"], {
+      setupHome: (home) => {
+        writeInstalledRuntime(home, installedVersion)
+        fs.writeFileSync(path.join(home, ".ouro-cli", "version-intent.json"), JSON.stringify({
+          schemaVersion: 1,
+          mode: "latest",
+          targetVersion: installedVersion,
+        }))
+      },
+    })
+    try {
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toBe(`${wrapperPackageVersion}\n`)
+      expect(JSON.parse(fs.readFileSync(path.join(result.home, ".ouro-cli", "version-intent.json"), "utf8"))).toEqual({
+        schemaVersion: 1,
+        mode: "pinned",
+        targetVersion: wrapperPackageVersion,
+      })
+    } finally {
+      result.cleanup()
+    }
+  })
+
+  it("installs the recovery launcher before creating version intent", () => {
+    const result = runWrapper(["--version"], {
+      setupHome: (home) => {
+        fs.mkdirSync(path.join(home, ".ouro-cli"), { recursive: true })
+        fs.writeFileSync(path.join(home, ".ouro-cli", "bin"), "blocks launcher directory")
+      },
+    })
+    try {
+      expect(result.status).not.toBe(0)
+      expect(fs.existsSync(path.join(result.home, ".ouro-cli", "version-intent.json"))).toBe(false)
+    } finally {
+      result.cleanup()
+    }
+  })
+
+  it("recovery launcher reconciles CurrentVersion to committed intent before execution", () => {
+    const otherVersion = "999.0.0"
+    const result = runWrapper(["--version"], {
+      setupHome: (home) => writeInstalledRuntime(home, otherVersion),
+    })
+    try {
+      expect(result.status, result.stderr).toBe(0)
+      const currentLink = path.join(result.home, ".ouro-cli", "CurrentVersion")
+      fs.unlinkSync(currentLink)
+      fs.symlinkSync(path.join(result.home, ".ouro-cli", "versions", otherVersion), currentLink)
+
+      const recovery = spawnSync(process.execPath, [path.join(result.home, ".ouro-cli", "bin", "ouro-launcher.js"), "--version"], {
+        env: { ...process.env, HOME: result.home },
+        encoding: "utf8",
+      })
+
+      expect(recovery.status, recovery.stderr).toBe(0)
+      expect(recovery.stdout).toBe(`${wrapperPackageVersion}\n`)
+      expect(fs.readlinkSync(currentLink)).toContain(wrapperPackageVersion)
+      expect(fs.statSync(path.join(result.home, ".ouro-cli", "bin", "ouro-launcher.js")).mode & 0o777).toBe(0o755)
+    } finally {
+      result.cleanup()
+    }
+  })
+
   it("always passes through to CLI on first install (hatch-or-clone flow)", () => {
     const result = runWrapper([])
     try {

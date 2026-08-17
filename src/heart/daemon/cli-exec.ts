@@ -7304,7 +7304,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveAtBootStart))
 
     // ── versioned CLI update check ──
-    if (deps.checkForCliUpdate) {
+    const versionIntent = deps.readVersionIntent?.() ?? null
+    const pinnedUpdate = versionIntent?.mode === "pinned" && !command.latest
+    if (deps.checkForCliUpdate && pinnedUpdate) {
+      progress.startPhase("update check")
+      progress.completePhase("update check", `pinned to ${versionIntent.targetVersion}`)
+    } else if (deps.checkForCliUpdate) {
       progress.startPhase("update check")
       progress.updateDetail(`current runtime: ${getPackageVersion()}\nchecking npm registry\ncontinuing startup if it stays quiet`)
       let pendingReExec = false
@@ -7318,6 +7323,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
           await deps.installCliVersion!(updateResult.latestVersion)
+          const validation = deps.validateCliVersionForActivation?.(updateResult.latestVersion)
+          if (validation && !validation.ok) {
+            throw new Error(`refusing to activate ${updateResult.latestVersion}: ${validation.message}`)
+          }
+          deps.writeVersionIntent?.({ schemaVersion: 1, mode: "latest", targetVersion: updateResult.latestVersion })
           deps.activateCliVersion!(updateResult.latestVersion)
           progress.completePhase("update check", `installed ${updateResult.latestVersion}`)
           const changelogCommand = buildChangelogCommand(currentVersion, updateResult.latestVersion)
@@ -7328,6 +7338,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           pendingReExec = true
         } else if (updateResult.error) {
           updateCheckStatus = summarizeCliUpdateCheckStatus(updateResult.error, timedOut)
+        } else if (updateResult.latestVersion && (command.latest || !versionIntent)) {
+          deps.writeVersionIntent?.({ schemaVersion: 1, mode: "latest", targetVersion: updateResult.latestVersion })
         }
       /* v8 ignore start -- update check error: tested via daemon-cli-update-flow.test.ts @preserve */
       } catch (error) {
@@ -7787,8 +7799,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- rollback/versions: tested via daemon-cli-rollback/versions tests @preserve */
   if (command.kind === "rollback") {
     const currentVersion = deps.getCurrentCliVersion?.() ?? "unknown"
+    let targetVersion: string
 
     if (command.version) {
+      targetVersion = command.version
       // Rollback to a specific version
       const installed = deps.listCliVersions?.() ?? []
       if (!installed.includes(command.version)) {
@@ -7805,7 +7819,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const message = `refusing to roll back to ${command.version}: ${validation.message}`
         return returnCliFailure(deps, message)
       }
-      deps.activateCliVersion!(command.version)
     } else {
       // Rollback to previous version
       const previousVersion = deps.getPreviousCliVersion?.()
@@ -7819,9 +7832,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const message = `refusing to roll back to ${previousVersion}: ${validation.message}`
         return returnCliFailure(deps, message)
       }
-      deps.activateCliVersion!(previousVersion)
-      command = { ...command, version: previousVersion }
+      targetVersion = previousVersion
     }
+
+    deps.writeVersionIntent?.({ schemaVersion: 1, mode: "pinned", targetVersion })
+    deps.activateCliVersion!(targetVersion)
 
     // Stop daemon (non-fatal if not running)
     try {
@@ -7830,7 +7845,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Daemon may not be running — that's fine
     }
 
-    const message = `rolled back to ${command.version} (was ${currentVersion})`
+    const message = `rolled back to ${targetVersion} (was ${currentVersion})`
     deps.writeStdout(message)
     return message
   }
@@ -7849,7 +7864,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           return line
         }).join("\n")
 
-    const sections = [localSection]
+    const intent = deps.readVersionIntent?.() ?? null
+    const intentLine = intent
+      ? `version intent: ${intent.mode === "pinned" ? `pinned to ${intent.targetVersion}` : `latest (${intent.targetVersion})`}`
+      : "version intent: legacy (not yet recorded)"
+    const sections = [localSection, intentLine]
     if (deps.checkForCliUpdate) {
       try {
         const { result: updateResult, timedOut } = await runCliUpdateCheckWithTimeout(
@@ -7880,8 +7899,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
               lines: localSection.split("\n"),
             },
             {
+              title: "Version intent",
+              lines: [intentLine],
+            },
+            {
               title: "Published latest",
-              lines: sections.slice(1).length > 0 ? sections.slice(1) : ["published latest: unavailable"],
+              lines: sections.slice(2).length > 0 ? sections.slice(2) : ["published latest: unavailable"],
             },
           ],
         })
