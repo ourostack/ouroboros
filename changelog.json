@@ -6,7 +6,8 @@
       "changes": [
         "Make exact rollback intent durable, bound status and MCP diagnostics, and make BlueBubbles host continuity plus owner-safe webhook reconciliation part of standard setup.",
         "Verify the packed BlueBubbles host helper and exact wrapper intent across fresh, older, equal, and newer installations, and replace the vulnerable mail parsing dependency chain.",
-        "Enforce status as an absolute wall-clock deadline even under trickled socket data, and keep sanitized MCP failure evidence compliant with the runtime logging schema."
+        "Enforce status as an absolute wall-clock deadline even under trickled socket data, and keep sanitized MCP failure evidence compliant with the runtime logging schema.",
+        "Stage published latest targets in either direction, verify the recovery launcher before version-intent commits, and require BlueBubbles host repair to finish with a current loaded LaunchAgent."
       ]
     },
     {
