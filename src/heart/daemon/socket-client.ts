@@ -100,10 +100,10 @@ export function sendDaemonCommand(
     let raw = ""
     let settled = false
     const timeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_COMMAND_TIMEOUT_MS
-    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+    let deadlineTimer: ReturnType<typeof setTimeout>
 
     const clearDeadline = (): void => {
-      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+      clearTimeout(deadlineTimer)
     }
 
     const resolveOnce = (response: DaemonResponse) => {

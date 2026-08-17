@@ -1,3 +1,4 @@
+import * as os from "os"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const hostMocks = vi.hoisted(() => ({
@@ -138,12 +139,14 @@ describe("ouro bluebubbles host CLI", () => {
     const execFileSync = vi.fn()
       .mockReturnValueOnce("502\n")
       .mockReturnValueOnce("NFSHomeDirectory: /Users/clawdbot\n")
+    const cliDeps = deps()
+    delete cliDeps.homeDir
 
     const result = await setupBlueBubblesHostForConnect(
       "clawdbot",
       "http://127.0.0.1:1234",
       12_000,
-      deps(),
+      cliDeps,
       {
         userInfo: () => ({ username: "ari", uid: 501, homedir: "/Users/ari" }),
         execFileSync,
@@ -157,7 +160,7 @@ describe("ouro bluebubbles host CLI", () => {
       username: "clawdbot",
       uid: 502,
       targetHomeDir: "/Users/clawdbot",
-      originHomeDir: "/Users/ari",
+      originHomeDir: os.homedir(),
     })
     expect(result.summary).toContain("human-required")
     expect(result.summary).toContain("collect:")

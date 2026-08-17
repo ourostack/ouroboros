@@ -8114,6 +8114,8 @@ describe("provider CLI command execution", () => {
     })
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
+      reconcileBlueBubblesWebhook: undefined,
+      fetchImpl: vi.fn() as unknown as typeof fetch,
       promptInput: async (question) => {
         expect(question).not.toContain("password")
         return answers.shift() ?? ""
