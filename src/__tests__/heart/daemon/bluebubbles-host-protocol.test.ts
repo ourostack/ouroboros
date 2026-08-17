@@ -11,7 +11,9 @@ import {
   writeFileSync,
 } from "fs"
 import { tmpdir } from "os"
+import * as nodePath from "path"
 import { join } from "path"
+import { runInNewContext } from "vm"
 import { afterEach, describe, expect, it } from "vitest"
 import {
   BLUEBUBBLES_HOST_FRESHNESS_MS,
@@ -119,6 +121,50 @@ function writeTargetOwnedReceipt(
   }
 }
 
+function virtualProtocolDeps() {
+  const files = new Map<string, Buffer>()
+  const modes = new Map<string, number>()
+  const owners = new Map<string, number>()
+  const symlinks = new Set<string>()
+  const exists = (filePath: string) => files.has(filePath) || modes.has(filePath)
+  const eexist = () => Object.assign(new Error("EEXIST"), { code: "EEXIST" })
+  const deps: BlueBubblesHostProtocolDeps = {
+    now: () => NOW,
+    randomBytes: (size) => Buffer.alloc(size, 0xab),
+    existsSync: exists,
+    readFileSync: (filePath) => {
+      const value = files.get(filePath)
+      if (!value) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      return value
+    },
+    mkdirSync: (directoryPath, options) => { modes.set(directoryPath, options.mode ?? 0o777) },
+    chmodSync: (filePath, mode) => { modes.set(filePath, mode) },
+    writeFileSync: (filePath, content, options) => {
+      if (options.flag === "wx" && exists(filePath)) throw eexist()
+      files.set(filePath, Buffer.isBuffer(content) ? content : Buffer.from(content))
+      modes.set(filePath, options.mode)
+    },
+    linkSync: (existingPath, newPath) => {
+      if (exists(newPath)) throw eexist()
+      files.set(newPath, Buffer.from(files.get(existingPath)!))
+      modes.set(newPath, modes.get(existingPath)!)
+    },
+    unlinkSync: (filePath) => { files.delete(filePath); modes.delete(filePath) },
+    renameSync: (oldPath, newPath) => {
+      files.set(newPath, Buffer.from(files.get(oldPath)!))
+      modes.set(newPath, modes.get(oldPath)!)
+      files.delete(oldPath)
+      modes.delete(oldPath)
+    },
+    lstatSync: (filePath) => ({
+      uid: owners.get(filePath) ?? 501,
+      mode: modes.get(filePath) ?? 0,
+      isSymbolicLink: () => symlinks.has(filePath),
+    }),
+  }
+  return { deps, files, modes, owners, symlinks }
+}
+
 describe("cross-user BlueBubbles host protocol", () => {
   it("locks the shared protocol paths, schema, helper version, and freshness bound", () => {
     expect(BLUEBUBBLES_HOST_PROTOCOL_SCHEMA_VERSION).toBe(1)
@@ -156,6 +202,18 @@ describe("cross-user BlueBubbles host protocol", () => {
     expect(statSync(join(f.sharedRoot, "bluebubbles-host-receipts")).mode & 0o7777).toBe(0o1777)
   })
 
+  it("propagates helper replacement failure when no temporary file was created", () => {
+    const root = temporaryRoot()
+    const assetPath = join(root, "asset")
+    const sharedRoot = join(root, "shared")
+    writeFileSync(assetPath, "helper")
+
+    expect(() => installBlueBubblesHostSharedHelper({ assetPath, sharedRoot }, {
+      writeFileSync: () => { throw new Error("write failed") },
+    })).toThrow("write failed")
+    expect(existsSync(join(sharedRoot, `bluebubbles-host.${process.pid}.tmp`))).toBe(false)
+  })
+
   it("creates a nonce-bound read-only request and durable private attempt before returning exact handoff commands", () => {
     const f = fixture()
 
@@ -186,6 +244,47 @@ describe("cross-user BlueBubbles host protocol", () => {
       status: "pending",
       request,
     })
+  })
+
+  it("uses fixed shared paths when no test root is supplied", () => {
+    const memory = virtualProtocolDeps()
+    memory.files.set("/asset", Buffer.from("helper"))
+    memory.modes.set("/asset", 0o644)
+    memory.modes.set("/Users/clawdbot", 0o755)
+
+    installBlueBubblesHostSharedHelper({ assetPath: "/asset" }, memory.deps)
+    const handoff = requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: "/Users/clawdbot",
+      originHomeDir: "/origin",
+    }, memory.deps)
+    const receipt = receiptFixture()
+    const receiptPath = publishBlueBubblesHostReceipt(receipt, undefined, memory.deps)
+    memory.owners.set(receiptPath, 502)
+    const collection = collectCrossUserBlueBubblesHostAction({
+      requestId: handoff.requestId,
+      originHomeDir: "/origin",
+    }, memory.deps)
+
+    expect(handoff.requestPath).toBe(`${BLUEBUBBLES_HOST_REQUESTS_DIRECTORY}/${REQUEST_ID}.json`)
+    expect(receiptPath).toBe(`${BLUEBUBBLES_HOST_RECEIPTS_DIRECTORY}/${REQUEST_ID}.json`)
+    expect(memory.files.get(BLUEBUBBLES_HOST_SHARED_HELPER)?.toString()).toBe("helper")
+    expect(collection.status).toBe("collected")
+  })
+
+  it("rejects a nonce source that does not return exactly 32 bytes", () => {
+    const f = fixture()
+
+    expect(() => requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, { now: () => NOW, randomBytes: () => Buffer.alloc(31) })).toThrow("nonce source must return 32 bytes")
   })
 
   it.each([
@@ -231,6 +330,7 @@ describe("cross-user BlueBubbles host protocol", () => {
     ["future", requestFixture({ requestedAt: new Date(NOW + 2_000).toISOString() }), {}, "request timestamp is in the future"],
     ["wide expiry", requestFixture({ expiresAt: new Date(NOW + EXPECTED_FRESHNESS_MS + 1).toISOString() }), {}, "request freshness window exceeds"],
     ["expired", requestFixture(), { nowMs: NOW + EXPECTED_FRESHNESS_MS + 1 }, "request expired"],
+    ["invalid time", requestFixture({ requestedAt: "not-a-date" }), {}, "request timestamp is invalid"],
   ])("rejects invalid helper %s evidence", (_label, request, contextOverride, message) => {
     expect(() => validateBlueBubblesHostHelperRequest({
       request,
@@ -258,6 +358,26 @@ describe("cross-user BlueBubbles host protocol", () => {
       randomBytes: (size) => Buffer.alloc(size, 0xef),
     })).toThrow("receipt already exists")
     expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toEqual(receipt)
+  })
+
+  it("rejects an invalid receipt id before filesystem publication", () => {
+    expect(() => publishBlueBubblesHostReceipt(receiptFixture({ requestId: "../../escape" }))).toThrow(
+      "invalid BlueBubbles host receipt request id",
+    )
+  })
+
+  it("propagates unexpected publication failures and cleans the temporary file", () => {
+    const f = fixture()
+    const receipt = receiptFixture()
+    const temporaryPath = join(f.sharedRoot, "bluebubbles-host-receipts", `${REQUEST_ID}.json.${NONCE}.tmp`)
+
+    expect(() => publishBlueBubblesHostReceipt(receipt, { sharedRoot: f.sharedRoot }, {
+      linkSync: (existingPath) => {
+        rmSync(existingPath)
+        throw "link transport failed"
+      },
+    })).toThrow("link transport failed")
+    expect(existsSync(temporaryPath)).toBe(false)
   })
 
   it("collects only an ownership-bound exact receipt and stores idempotent point-in-time evidence", () => {
@@ -298,14 +418,39 @@ describe("cross-user BlueBubbles host protocol", () => {
     })
   })
 
+  it("collects a failed helper receipt with truthful point-in-time wording", () => {
+    const f = fixture()
+    requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)
+    const receipt = receiptFixture({ result: "failed", detail: "service unavailable" })
+    const deps = writeTargetOwnedReceipt(f.sharedRoot, receipt)
+
+    expect(collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, deps).detail).toBe(
+      "launchd helper reported failure at 2026-08-17T17:00:01.000Z; current service state requires a fresh helper run",
+    )
+  })
+
   it.each([
     ["missing", undefined, 502, "receipt is missing"],
     ["wrong owner", receiptFixture(), 501, "receipt owner uid 501 does not match target uid 502"],
     ["mismatched nonce", receiptFixture({ nonce: "cd".repeat(32) }), 502, "receipt nonce does not match request"],
     ["mismatched path", receiptFixture({ appPath: "/tmp/fake.app" }), 502, "receipt app path does not match"],
+    ["mismatched plist", receiptFixture({ plistPath: "/tmp/fake.plist" }), 502, "receipt plist path does not match"],
     ["mismatched label", receiptFixture({ launchAgentLabel: "other" as "com.bluebubbles.server" }), 502, "receipt launch agent label does not match"],
     ["mismatched domain", receiptFixture({ launchdDomain: "gui/501" }), 502, "receipt launchd domain does not match"],
     ["stale verification", receiptFixture({ verifiedAt: new Date(NOW + EXPECTED_FRESHNESS_MS + 1).toISOString() }), 502, "receipt verification is outside request freshness"],
+    ["invalid result", receiptFixture({ result: "unknown" as "verified" }), 502, "receipt result is invalid"],
+    ["empty detail", receiptFixture({ detail: "" }), 502, "receipt detail is invalid"],
   ])("rejects %s receipt evidence without collecting the attempt", (_label, receipt, ownerUid, message) => {
     const f = fixture()
     requestCrossUserBlueBubblesHostAction({
@@ -344,6 +489,97 @@ describe("cross-user BlueBubbles host protocol", () => {
     expect(readFileSync(collisionPath, "utf8")).toBe("existing")
   })
 
+  it.each([
+    ["invalid id", "invalid", undefined, "invalid BlueBubbles host request id"],
+    ["missing attempt", REQUEST_ID, undefined, "BlueBubbles host attempt is missing"],
+  ])("rejects collection with %s", (_label, requestId, setup, message) => {
+    const f = fixture()
+    setup?.()
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    })).toThrow(message)
+  })
+
+  it.each([
+    ["invalid attempt state", { schemaVersion: 2, status: "pending", request: requestFixture() }, "attempt state is invalid"],
+    ["mismatched request", { schemaVersion: 1, status: "pending", request: requestFixture({ requestId: `503-${NONCE}`, uid: 503 }) }, "attempt request id does not match"],
+  ])("rejects %s", (_label, attempt, message) => {
+    const f = fixture()
+    const attemptPath = blueBubblesHostAttemptPath(f.originHomeDir, REQUEST_ID)
+    mkdirSync(join(f.originHomeDir, ".ouro-cli", "bluebubbles-host", "attempts"), { recursive: true })
+    writeFileSync(attemptPath, JSON.stringify(attempt), { mode: 0o600 })
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    })).toThrow(message)
+  })
+
+  it("rejects symbolic-link receipt evidence", () => {
+    const f = fixture()
+    requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)
+    const receipt = receiptFixture()
+    publishBlueBubblesHostReceipt(receipt, { sharedRoot: f.sharedRoot })
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, {
+      lstatSync: (filePath) => ({ ...lstatSync(filePath), uid: 502, isSymbolicLink: () => true }),
+    })).toThrow("receipt must not be a symbolic link")
+  })
+
+  it.each([
+    ["Error", () => { throw new Error("disk read failed") }, "disk read failed"],
+    ["non-Error", () => { throw "disk read failed" }, "disk read failed"],
+  ])("normalizes %s attempt read failures", (_label, read, message) => {
+    const f = fixture()
+    const attemptPath = blueBubblesHostAttemptPath(f.originHomeDir, REQUEST_ID)
+    mkdirSync(join(f.originHomeDir, ".ouro-cli", "bluebubbles-host", "attempts"), { recursive: true })
+    writeFileSync(attemptPath, "present")
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, { readFileSync: read })).toThrow(`BlueBubbles host attempt is invalid: ${message}`)
+  })
+
+  it("cleans an atomic collection temporary file when replacement fails", () => {
+    const f = fixture()
+    requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)
+    const receipt = receiptFixture()
+    const targetDeps = writeTargetOwnedReceipt(f.sharedRoot, receipt)
+    const attemptPath = blueBubblesHostAttemptPath(f.originHomeDir, REQUEST_ID)
+    const temporaryPath = `${attemptPath}.${process.pid}.tmp`
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, { ...targetDeps, renameSync: () => { throw new Error("rename failed") } })).toThrow("rename failed")
+    expect(existsSync(temporaryPath)).toBe(false)
+    expect(JSON.parse(readFileSync(attemptPath, "utf8"))).toMatchObject({ status: "pending" })
+  })
+
   it("ships a credential-free helper that checks the effective actor and GUI launchd domain", () => {
     const helper = readFileSync(join(process.cwd(), "assets", "bluebubbles-host"), "utf8")
 
@@ -355,5 +591,85 @@ describe("cross-user BlueBubbles host protocol", () => {
     expect(helper).toContain("com.bluebubbles.server")
     expect(helper).not.toMatch(/password|vault|AgentBundles|slugger/i)
     expect(existsSync(join(process.cwd(), "assets", "bluebubbles-host"))).toBe(true)
+  })
+
+  it("sends exact actor and GUI-domain argv from the packaged helper", () => {
+    const helperPath = join(process.cwd(), "assets", "bluebubbles-host")
+    const helper = readFileSync(helperPath, "utf8")
+    const requestPath = `${BLUEBUBBLES_HOST_REQUESTS_DIRECTORY}/${REQUEST_ID}.json`
+    const request = requestFixture({
+      action: "remove",
+      requestedAt: new Date(Date.now() - 1_000).toISOString(),
+      expiresAt: new Date(Date.now() + EXPECTED_FRESHNESS_MS - 1_000).toISOString(),
+    })
+    const childCalls: Array<{ command: string; args: string[]; options: unknown }> = []
+    const writes = new Map<string, string>()
+    const fakeFs = {
+      readFileSync: (filePath: string) => {
+        if (filePath === requestPath) return JSON.stringify(request)
+        throw new Error(`unexpected read: ${filePath}`)
+      },
+      existsSync: (filePath: string) => writes.has(filePath),
+      writeFileSync: (filePath: string, content: string) => { writes.set(filePath, content) },
+      chmodSync: () => undefined,
+      linkSync: (source: string, destination: string) => { writes.set(destination, writes.get(source)!) },
+      unlinkSync: (filePath: string) => { writes.delete(filePath) },
+    }
+    const fakeExecFileSync = (command: string, args: string[], options: unknown) => {
+      childCalls.push({ command, args, options })
+      if (command === "id") return "clawdbot\n"
+      if (args.join(" ") === "print gui/502") return "gui session\n"
+      throw new Error("service not loaded")
+    }
+    const stdout: string[] = []
+    const stderr: string[] = []
+    const fakeProcess = {
+      argv: ["node", helperPath, "--request", requestPath],
+      getuid: () => 502,
+      pid: 123,
+      stdout: { write: (value: string) => { stdout.push(value) } },
+      stderr: { write: (value: string) => { stderr.push(value) } },
+      exitCode: 0,
+    }
+
+    runInNewContext(helper, {
+      Buffer,
+      Date,
+      Error,
+      JSON,
+      Number,
+      Set,
+      String,
+      process: fakeProcess,
+      require: (name: string) => {
+        if (name === "fs") return fakeFs
+        if (name === "os") return { homedir: () => "/Users/clawdbot" }
+        if (name === "path") return nodePath
+        if (name === "child_process") return { execFileSync: fakeExecFileSync }
+        throw new Error(`unexpected module: ${name}`)
+      },
+    }, { filename: helperPath })
+
+    expect(childCalls[0]).toEqual({ command: "id", args: ["-un"], options: { encoding: "utf8" } })
+    expect(childCalls[1]).toEqual({
+      command: "launchctl",
+      args: ["print", "gui/502"],
+      options: { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    })
+    expect(childCalls.slice(2)).toEqual([
+      {
+        command: "launchctl",
+        args: ["print", "gui/502/com.bluebubbles.server"],
+        options: { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      },
+      {
+        command: "launchctl",
+        args: ["print", "gui/502/com.bluebubbles.server"],
+        options: { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      },
+    ])
+    expect(stderr).toEqual([])
+    expect(fakeProcess.exitCode).toBe(0)
+    expect(JSON.parse(stdout[0])).toMatchObject({ ok: true, requestId: REQUEST_ID })
   })
 })

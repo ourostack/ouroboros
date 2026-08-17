@@ -94,6 +94,13 @@ function inspect(request) {
   return { plistPath, serviceTarget, service, plist }
 }
 
+function receiptState(request) {
+  return {
+    plistPath: path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`),
+    serviceTarget: `gui/${request.uid}/${LABEL}`,
+  }
+}
+
 function execute(request) {
   const before = inspect(request)
   if (request.action === "status") {
@@ -155,7 +162,7 @@ function main() {
   if (requestFlag < 0 || !process.argv[requestFlag + 1]) throw new Error("usage: bluebubbles-host --request <request.json>")
   const requestPath = path.resolve(process.argv[requestFlag + 1])
   const request = validateRequest(JSON.parse(fs.readFileSync(requestPath, "utf8")), requestPath)
-  let state = inspect(request)
+  let state = receiptState(request)
   try {
     state = execute(request)
     publishReceipt(request, "verified", `native ${request.action} verified`, state)
