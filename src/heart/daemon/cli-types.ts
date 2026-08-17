@@ -24,6 +24,10 @@ import type { MailroomRegistry } from "../../mailroom/core"
 import type { MailroomRuntimeConfig } from "../../mailroom/reader"
 import type { HabitCancelDeps } from "../habits/habit-cancel"
 import type { RsvpSendBoundaryDeps } from "../../rsvp/outbound-state"
+import type { VersionIntent } from "../versioning/version-intent"
+import type { Readable, Writable } from "stream"
+import type { McpServer, McpServerOptions } from "../mcp/mcp-server"
+import type { BlueBubblesWebhookRegistrationInput, BlueBubblesWebhookRegistrationResult } from "../../senses/bluebubbles/webhook-registration"
 export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
 export type RuntimeConfigScope = "agent" | "machine"
@@ -35,7 +39,7 @@ export type RsvpSmokeMode = "preflight" | "live"
 export type RsvpSmokeSurface = "bluebubbles"
 
 export type OuroCliCommand =
-  | { kind: "daemon.up"; noRepair?: boolean }
+  | { kind: "daemon.up"; noRepair?: boolean; latest?: boolean }
   | { kind: "daemon.stop" }
   | { kind: "daemon.status"; json?: boolean }
   | { kind: "daemon.logs" }
@@ -84,7 +88,7 @@ export type OuroCliCommand =
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | { kind: "mcp.canary"; agent: string; socketOverride?: string; requiredSenses?: string[]; json?: boolean }
-  | { kind: "mcp.doctor"; agent: string; socketOverride?: string; json?: boolean }
+  | { kind: "mcp.doctor"; agent: string; socketOverride?: string; json?: boolean; hostStallObserved?: boolean }
   | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
   | { kind: "config.models"; agent?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
@@ -121,6 +125,8 @@ export type OuroCliCommand =
   | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "bluebubbles.context-smoke"; agent?: string; messageGuid: string; persist?: boolean; json?: boolean }
+  | { kind: "bluebubbles.host"; action: "install" | "status" | "repair" | "remove"; target?: { username: string; uid: number; homeDir: string }; json?: boolean }
+  | { kind: "bluebubbles.host.collect"; requestId: string; json?: boolean }
   | { kind: "rsvp.doctor"; agent?: string; json?: boolean; strict?: boolean; outputPath?: string }
   | { kind: "rsvp.incident"; agent?: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.cutover"; agent?: string; legacyRoot: string; action: RsvpCutoverAction; yes?: boolean; json?: boolean; outputPath?: string }
@@ -177,6 +183,8 @@ export interface OuroCliDeps {
    */
   readMailroomRegistry?: (config: MailroomRuntimeConfig) => Promise<MailroomRegistry>
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
+  readVersionIntent?: () => VersionIntent | null
+  writeVersionIntent?: (intent: VersionIntent) => void
   updateCheckTimeoutMs?: number
   installCliVersion?: (version: string) => Promise<void>
   validateCliVersionForActivation?: (version: string) => { ok: boolean; message: string }
@@ -228,6 +236,19 @@ export interface OuroCliDeps {
   rsvpCutoverDeps?: RsvpCutoverDeps
   /** Test/alternate-host injection for the durable RSVP send boundary. */
   rsvpSendBoundaryDeps?: RsvpSendBoundaryDeps
+  /** Test/alternate-host seam for standard native BlueBubbles host setup during connect. */
+  setupBlueBubblesHost?: (input: { bridgeUsername: string }) => Promise<{
+    summary: string
+    bridgeUsername: string
+    bridgeUid: number
+    bridgeHomeDir: string
+  }>
+  /** Test/alternate-host seam for connect-time owner-safe webhook reconciliation. */
+  reconcileBlueBubblesWebhook?: (input: BlueBubblesWebhookRegistrationInput) => Promise<BlueBubblesWebhookRegistrationResult>
+  /** Test/alternate-host MCP stdio and server ownership seams. */
+  mcpServeInput?: Readable
+  mcpServeOutput?: Writable
+  createMcpServer?: (options: McpServerOptions) => McpServer
 }
 
 export interface SessionEntry {

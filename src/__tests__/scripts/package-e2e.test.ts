@@ -9,6 +9,7 @@ const {
   runLocalTarballCommandSmoke,
   runLocalTarballBinVersionSmoke,
   runLocalTarballSemanticOwnershipSmoke,
+  runLocalTarballBlueBubblesHostSmoke,
   runPackageE2ESuite,
 } = require(path.resolve(__dirname, "../../../scripts/package-e2e.cjs"))
 const {
@@ -167,6 +168,24 @@ describe("package-e2e", () => {
     expect(calls[1].env?.HOME).toBe("/tmp/ouro-package-e2e-abcd/home")
   })
 
+  it("installs byte-identical executable BlueBubbles host helper from the installed tarball", () => {
+    const { deps, calls } = makeDeps([
+      "",
+      "bluebubbles host helper verified\n",
+    ])
+
+    const result = runLocalTarballBlueBubblesHostSmoke({
+      tarballPath: "/tmp/ouro-cli-0.1.0-alpha.430.tgz",
+      binName: "ouro",
+    }, deps)
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain("BlueBubbles host helper")
+    expect(calls[1]).toMatchObject({ command: process.execPath, cwd: "/tmp/ouro-package-e2e-abcd" })
+    expect(calls[1].args.join(" ")).toContain("bluebubbles-host-protocol.js")
+    expect(calls[1].args.join(" ")).toContain("assets/bluebubbles-host")
+  })
+
   it("runs the current local package e2e suite", () => {
     const { deps } = makePackageInstallDeps([
       "",
@@ -176,6 +195,8 @@ describe("package-e2e", () => {
       "",
       "semantic ownership sqlite verified\n",
       "",
+      "bluebubbles host helper verified\n",
+      "",
     ])
 
     const results = runPackageE2ESuite({
@@ -183,10 +204,11 @@ describe("package-e2e", () => {
       version: "0.1.0-alpha.430",
     }, deps)
 
-    expect(results).toHaveLength(4)
-    expect(results.map((result: { ok: boolean }) => result.ok)).toEqual([true, true, true, true])
+    expect(results).toHaveLength(5)
+    expect(results.map((result: { ok: boolean }) => result.ok)).toEqual([true, true, true, true, true])
     expect(results[2].message).toContain("semantic ownership SQLite")
-    expect(results[3].message).toContain("package assets verified")
+    expect(results[3].message).toContain("BlueBubbles host helper")
+    expect(results[4].message).toContain("package assets verified")
   })
 
   it("reports package asset failures from the local package e2e suite", () => {
@@ -198,6 +220,8 @@ describe("package-e2e", () => {
       "",
       "semantic ownership sqlite verified\n",
       "",
+      "bluebubbles host helper verified\n",
+      "",
     ])
 
     const results = runPackageE2ESuite({
@@ -205,8 +229,8 @@ describe("package-e2e", () => {
       version: "0.1.0-alpha.430",
     }, deps)
 
-    expect(results).toHaveLength(4)
-    expect(results[3].ok).toBe(false)
-    expect(results[3].message).toContain("missing required package assets")
+    expect(results).toHaveLength(5)
+    expect(results[4].ok).toBe(false)
+    expect(results[4].message).toContain("missing required package assets")
   })
 })

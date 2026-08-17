@@ -44,6 +44,7 @@ import {
 import {
   getDefaultHealthPath,
 } from "../../../heart/daemon/daemon-health"
+import { isDaemonTimeoutError } from "../../../heart/daemon/cli-render"
 
 describe("ouro status with health file fallback", () => {
   let tmpDir: string
@@ -154,6 +155,51 @@ describe("ouro status with health file fallback", () => {
       error: "daemon unavailable",
       socketPath: "/tmp/ouro-test.sock",
     })
+  })
+
+  it("ouro status --json distinguishes a typed daemon timeout from unavailability", async () => {
+    const timeout = new Error("Daemon command daemon.status timed out after 25ms waiting for a response.") as NodeJS.ErrnoException
+    timeout.code = "ETIMEDOUT"
+    const deps = makeUnavailableDeps({
+      sendCommand: vi.fn(async () => { throw timeout }),
+    })
+
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({
+      ok: false,
+      error: "daemon timeout",
+      classification: "timeout",
+      code: "ETIMEDOUT",
+      socketPath: "/tmp/ouro-test.sock",
+      detail: timeout.message,
+    })
+  })
+
+  it("classifies only ETIMEDOUT as a daemon timeout", () => {
+    expect(isDaemonTimeoutError({ code: "ETIMEDOUT" })).toBe(true)
+    expect(isDaemonTimeoutError({ code: undefined })).toBe(false)
+    expect(isDaemonTimeoutError(null)).toBe(false)
+  })
+
+  it("renders non-JSON timeout diagnostics without daemon-down fallback", async () => {
+    const timeout = new Error("Daemon command daemon.status timed out after 25ms waiting for a response.") as NodeJS.ErrnoException
+    timeout.code = "ETIMEDOUT"
+    const deps = makeUnavailableDeps({ sendCommand: vi.fn(async () => { throw timeout }) })
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toBe(`daemon status timed out: ${timeout.message}`)
+    expect(result).not.toContain("daemon not running")
+  })
+
+  it("stringifies typed non-Error timeout details in JSON", async () => {
+    const timeout = { code: "ETIMEDOUT", toString: () => "silent daemon timeout" }
+    const deps = makeUnavailableDeps({ sendCommand: vi.fn(async () => { throw timeout }) })
+
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result).detail).toBe("silent daemon timeout")
   })
 
   it("ouro status falls back to the default health path when no explicit path is provided", async () => {

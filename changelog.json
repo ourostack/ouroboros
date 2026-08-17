@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.728",
+      "changes": [
+        "Make exact rollback intent durable, bound status and MCP diagnostics, and make BlueBubbles host continuity plus owner-safe webhook reconciliation part of standard setup.",
+        "Verify the packed BlueBubbles host helper and exact wrapper intent across fresh, older, equal, and newer installations, and replace the vulnerable mail parsing dependency chain.",
+        "Enforce status as an absolute wall-clock deadline even under trickled socket data, and keep sanitized MCP failure evidence compliant with the runtime logging schema.",
+        "Stage published latest targets in either direction, verify the recovery launcher before version-intent commits, and require BlueBubbles host repair to finish with a current loaded LaunchAgent."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.727",
       "changes": [
         "Keep BlueBubbles replies on the latest turn with pre-listen recovery epochs, conservative unresolved-route fences, retained retry generations, and durable inbound-reply send boundaries that suppress crash retries.",

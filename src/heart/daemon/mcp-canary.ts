@@ -27,14 +27,34 @@ export interface McpStatusCanaryOptions {
   ignoreOverviewHealth?: boolean
   ignoreSenseHealth?: boolean
   spawnImpl?: SpawnImpl
+  hostStallObserved?: boolean
 }
 
 export interface McpStatusCanaryResult {
   ok: boolean
   summary: string
   details: string[]
+  classification?: McpBoundaryClassification
+  evidence?: McpCanaryEvidence
   parsed?: ParsedMcpStatus
   repair?: McpBridgeRepairGuidance
+}
+
+export type McpBoundaryClassification =
+  | "ouro-bridge-failed"
+  | "ouro-bridge-healthy-at-capture"
+  | "host-stall-unexplained"
+
+export type McpCanaryPhase = "spawn" | "initialize" | "status" | "complete"
+
+export interface McpCanaryEvidence {
+  capturedAt: string
+  durationMs: number
+  childPid: number | null
+  phase: McpCanaryPhase
+  exitCode: number | null
+  exitSignal: NodeJS.Signals | null
+  stderr: string
 }
 
 export interface McpBridgeRepairGuidance {
@@ -51,7 +71,45 @@ export interface McpDoctorNextSteps {
 }
 
 export const DEFAULT_CANARY_TIMEOUT_MS = 60_000
+export const SETUP_CANARY_TIMEOUT_MS = 10_000
 const MCP_PROTOCOL_VERSION = "2024-11-05"
+
+export function classifyMcpBoundary(input: {
+  bridgeHealthy: boolean
+  hostStallObserved: boolean
+}): McpBoundaryClassification {
+  if (!input.bridgeHealthy) return "ouro-bridge-failed"
+  return input.hostStallObserved ? "host-stall-unexplained" : "ouro-bridge-healthy-at-capture"
+}
+
+export function sanitizeMcpCanaryText(text: string): string {
+  return text
+    .replace(/(https?:\/\/[^\s?]+)\?[^\s]*/g, "$1?[redacted]")
+    .replace(/"(?:password|token|secret|api[_-]?key)"\s*:\s*"[^"]*"/gi, '"credential":"[redacted]"')
+    .replace(/\bBearer\s+[^\s]+/gi, "Bearer [redacted]")
+    .replace(/--(?:password|token|secret|api[_-]?key)(\s+|=)[^\s]+/gi, "--credential$1[redacted]")
+    .replace(/\b(?:password|token|secret|api[_-]?key)=([^\s]+)/gi, "credential=[redacted]")
+    .trim()
+}
+
+export function sanitizeMcpCanaryArgs(args: string[]): string[] {
+  const sanitized: string[] = []
+  let redactNext = false
+  for (const arg of args) {
+    if (redactNext) {
+      sanitized.push("[redacted]")
+      redactNext = false
+      continue
+    }
+    if (/^--(?:password|token|secret|api[_-]?key)$/i.test(arg)) {
+      sanitized.push("--credential")
+      redactNext = true
+      continue
+    }
+    sanitized.push(sanitizeMcpCanaryText(arg))
+  }
+  return sanitized
+}
 
 function defaultCommandArgs(agent: string, socketPath?: string): string[] {
   const entryPath = path.join(__dirname, "ouro-bot-entry.js")
@@ -64,15 +122,34 @@ function defaultCommandArgs(agent: string, socketPath?: string): string[] {
   ]
 }
 
-function responseText(response: Record<string, unknown>): string {
-  const result = response.result
-  if (!result || typeof result !== "object" || Array.isArray(result)) return JSON.stringify(response)
-  const content = (result as Record<string, unknown>).content
-  if (!Array.isArray(content)) return JSON.stringify(response)
-  const first = content[0]
-  if (!first || typeof first !== "object" || Array.isArray(first)) return JSON.stringify(response)
-  const text = (first as Record<string, unknown>).text
-  return typeof text === "string" ? text : JSON.stringify(response)
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+function requireInitializeResult(response: Record<string, unknown>): void {
+  if (!isRecord(response.result)) {
+    throw new Error("MCP canary received invalid initialize result")
+  }
+}
+
+function requireStatusText(response: Record<string, unknown>): string {
+  if (!isRecord(response.result)) {
+    throw new Error("MCP canary received invalid status result")
+  }
+  if (response.result.isError === true) {
+    const errorContent = response.result.content
+    const errorFirst = Array.isArray(errorContent) ? errorContent[0] : undefined
+    const errorText = isRecord(errorFirst) && typeof errorFirst.text === "string"
+      ? errorFirst.text
+      : "MCP status tool returned an error"
+    throw new Error(errorText)
+  }
+  const content = response.result.content
+  const first = Array.isArray(content) ? content[0] : undefined
+  if (!isRecord(first) || typeof first.text !== "string") {
+    throw new Error("MCP canary received invalid status result")
+  }
+  return first.text
 }
 
 function parseFields(line: string): Record<string, string> {
@@ -232,7 +309,23 @@ function validateMcpStatus(
 }
 
 export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promise<McpStatusCanaryResult> {
+  const startedAt = Date.now()
   const timeoutMs = options.timeoutMs ?? DEFAULT_CANARY_TIMEOUT_MS
+  const deadlineAt = startedAt + timeoutMs
+  const evidence: McpCanaryEvidence = {
+    capturedAt: new Date(startedAt).toISOString(),
+    durationMs: 0,
+    childPid: null,
+    phase: "spawn",
+    exitCode: null,
+    exitSignal: null,
+    stderr: "",
+  }
+  const decorate = (result: McpStatusCanaryResult, bridgeHealthy = false): McpStatusCanaryResult => ({
+    ...result,
+    classification: classifyMcpBoundary({ bridgeHealthy, hostStallObserved: options.hostStallObserved === true }),
+    evidence,
+  })
   /* v8 ignore next -- default spawn is exercised by live canaries, while unit tests inject a fake child @preserve */
   const spawnImpl = options.spawnImpl ?? spawn
   const command = options.command ?? process.execPath
@@ -246,7 +339,7 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     meta: {
       agent: options.agent,
       command,
-      commandArgs,
+      commandArgs: sanitizeMcpCanaryArgs(commandArgs),
       timeoutMs,
       requiredSenses,
       ignoreOverviewHealth: options.ignoreOverviewHealth === true,
@@ -254,10 +347,31 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     },
   })
 
-  const child = spawnImpl(command, commandArgs, { stdio: ["pipe", "pipe", "pipe"] })
+  let child: ChildProcess
+  try {
+    child = spawnImpl(command, commandArgs, { stdio: ["pipe", "pipe", "pipe"] })
+    evidence.childPid = child.pid ?? null
+  } catch (error) {
+    const reason = sanitizeMcpCanaryText(error instanceof Error ? error.message : String(error))
+    evidence.durationMs = Date.now() - startedAt
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.mcp_canary_error",
+      level: "error",
+      message: "MCP status canary failed to spawn",
+      meta: { agent: options.agent, reason },
+    })
+    return decorate({ ok: false, summary: `mcp canary failed: ${reason}`, details: [reason] })
+  }
   let buffer = ""
   let stderr = ""
   const pending = new Map<number, PendingRequest>()
+  let resolveExit!: () => void
+  const exitObserved = new Promise<void>((resolve) => { resolveExit = resolve })
+
+  function safeStderr(): string {
+    return sanitizeMcpCanaryText(stderr)
+  }
 
   function cleanup(): void {
     for (const [, request] of pending) {
@@ -288,26 +402,44 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       const line = buffer.slice(0, idx).trim()
       buffer = buffer.slice(idx + 1)
       if (!line) continue
-      let response: Record<string, unknown>
+      let parsedResponse: unknown
       try {
-        response = JSON.parse(line) as Record<string, unknown>
+        parsedResponse = JSON.parse(line)
       } catch {
         failAll(new Error(`MCP canary received malformed JSON: ${line}`))
         return
       }
+      if (!isRecord(parsedResponse)) {
+        failAll(new Error("MCP canary received malformed JSON-RPC response"))
+        return
+      }
+      const response = parsedResponse
       const id = typeof response.id === "number" ? response.id : null
       if (id === null) continue
       const request = pending.get(id)
       if (!request) continue
       pending.delete(id)
       clearTimeout(request.timer)
+      const hasResult = Object.prototype.hasOwnProperty.call(response, "result")
+      const hasError = Object.prototype.hasOwnProperty.call(response, "error")
+      if (response.jsonrpc !== "2.0" || (!hasResult && !hasError)) {
+        request.reject(new Error("MCP canary received malformed JSON-RPC response"))
+        continue
+      }
+      if (hasError) {
+        request.reject(new Error(`MCP canary received JSON-RPC error: ${JSON.stringify(response.error)}`))
+        continue
+      }
       request.resolve(response)
     }
   })
   child.on("error", (error: Error) => failAll(error))
   child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+    evidence.exitCode = code
+    evidence.exitSignal = signal
+    resolveExit()
     if (pending.size === 0) return
-    failAll(new Error(`MCP canary process closed before response code=${code} signal=${signal ?? "none"} stderr=${stderr.trim()}`))
+    failAll(new Error(`MCP canary process closed before response code=${code} signal=${signal ?? "none"} stderr=${safeStderr()}`))
   })
 
   let nextId = 1
@@ -317,37 +449,44 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
         reject(new Error("MCP canary stdin is not writable"))
         return
       }
+      const remainingMs = deadlineAt - Date.now()
+      if (remainingMs <= 0) {
+        reject(new Error(`MCP canary timed out waiting for ${method}; stderr=${safeStderr()}`))
+        return
+      }
       const id = nextId++
       const timer = setTimeout(() => {
         pending.delete(id)
-        reject(new Error(`MCP canary timed out waiting for ${method}; stderr=${stderr.trim()}`))
-      }, timeoutMs)
+        reject(new Error(`MCP canary timed out waiting for ${method}; stderr=${safeStderr()}`))
+      }, remainingMs)
       pending.set(id, { resolve, reject, timer })
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n")
     })
   }
 
   try {
-    await request("initialize", {
+    evidence.phase = "initialize"
+    const initializeResponse = await request("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "ouro-mcp-canary", version: "1.0" },
     })
+    requireInitializeResult(initializeResponse)
     child.stdin?.write(JSON.stringify({ jsonrpc: "2.0", method: "initialized" }) + "\n")
+    evidence.phase = "status"
     const statusResponse = await request("tools/call", {
       name: "status",
       arguments: {},
     })
-    const result = statusResponse.result
-    if (result && typeof result === "object" && !Array.isArray(result) && (result as Record<string, unknown>).isError === true) {
-      throw new Error(responseText(statusResponse))
-    }
-    const parsed = parseMcpStatusText(responseText(statusResponse))
+    const statusText = requireStatusText(statusResponse)
+    const bridgeHealthy = true
+    const parsed = parseMcpStatusText(sanitizeMcpCanaryText(statusText))
     const canary = validateMcpStatus(parsed, requiredSenses, {
       agent: options.agent,
       ignoreOverviewHealth: options.ignoreOverviewHealth,
       ignoreSenseHealth: options.ignoreSenseHealth,
     })
+    evidence.phase = "complete"
     emitNervesEvent({
       component: "daemon",
       event: canary.ok ? "daemon.mcp_canary_end" : "daemon.mcp_canary_error",
@@ -355,9 +494,9 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       message: canary.summary,
       meta: { agent: options.agent, ok: canary.ok },
     })
-    return canary
+    return decorate(canary, bridgeHealthy)
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = sanitizeMcpCanaryText(error instanceof Error ? error.message : String(error))
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_canary_error",
@@ -365,16 +504,30 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       message: "MCP status canary failed",
       meta: { agent: options.agent, reason },
     })
-    return { ok: false, summary: `mcp canary failed: ${reason}`, details: [reason] }
+    return decorate({ ok: false, summary: `mcp canary failed: ${reason}`, details: [reason] })
   } finally {
     child.stdin?.end()
     cleanup()
+    let exitTimer!: ReturnType<typeof setTimeout>
+    const remainingExitWaitMs = Math.min(100, Math.max(0, deadlineAt - Date.now()))
+    await Promise.race([
+      exitObserved,
+      new Promise<void>((resolve) => { exitTimer = setTimeout(resolve, remainingExitWaitMs) }),
+    ])
+    clearTimeout(exitTimer)
+    evidence.stderr = safeStderr()
+    evidence.durationMs = Date.now() - startedAt
   }
 }
 
 export function formatMcpStatusCanaryResult(result: McpStatusCanaryResult): string {
   return [
     result.ok ? "mcp canary: ok" : "mcp canary: failed",
+    ...(result.classification ? [`classification: ${result.classification}`] : []),
+    ...(result.evidence ? [
+      `captured=${result.evidence.capturedAt} durationMs=${result.evidence.durationMs} childPid=${result.evidence.childPid ?? "none"} phase=${result.evidence.phase} exitCode=${result.evidence.exitCode ?? "none"} exitSignal=${result.evidence.exitSignal ?? "none"}`,
+      ...(result.evidence.stderr ? [`stderr=${result.evidence.stderr}`] : []),
+    ] : []),
     result.summary,
     ...result.details.map((line) => `  ${line}`),
   ].join("\n")
@@ -388,6 +541,11 @@ export function formatMcpStatusDoctorResult(result: McpStatusCanaryResult, agent
   )
   const lines = [
     result.ok ? "mcp doctor: ok" : "mcp doctor: failed",
+    ...(result.classification ? [`classification: ${result.classification}`] : []),
+    ...(result.evidence ? [
+      `captured=${result.evidence.capturedAt} durationMs=${result.evidence.durationMs} childPid=${result.evidence.childPid ?? "none"} phase=${result.evidence.phase} exitCode=${result.evidence.exitCode ?? "none"} exitSignal=${result.evidence.exitSignal ?? "none"}`,
+      ...(result.evidence.stderr ? [`stderr=${result.evidence.stderr}`] : []),
+    ] : []),
     result.summary,
     ...rawDetails.map((line) => `  ${line}`),
   ]

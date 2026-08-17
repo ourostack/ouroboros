@@ -32,6 +32,16 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   }
 }
 
+function successfulLauncherInstall() {
+  return {
+    installed: true,
+    scriptPath: "/tmp/.ouro-cli/bin/ouro",
+    pathReady: true,
+    shellProfileUpdated: null,
+    repairedOldLauncher: false,
+  }
+}
+
 describe("ouro rollback: parsing", () => {
   it("parses 'rollback' with no version", () => {
     expect(parseOuroCommand(["rollback"])).toEqual({ kind: "rollback" })
@@ -50,6 +60,8 @@ describe("ouro rollback: execution", () => {
     const deps = makeDeps({
       getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      writeVersionIntent: vi.fn(),
+      installOuroCommand: vi.fn(successfulLauncherInstall),
       activateCliVersion: vi.fn(),
       sendCommand: vi.fn(async () => ({ ok: true, message: "stopped" })),
     })
@@ -57,6 +69,10 @@ describe("ouro rollback: execution", () => {
     const result = await runOuroCli(["rollback"], deps)
 
     expect(deps.activateCliVersion).toHaveBeenCalledWith("0.1.0-alpha.79")
+    expect(deps.writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.79" })
+    expect(vi.mocked(deps.writeVersionIntent!).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(deps.activateCliVersion!).mock.invocationCallOrder[0],
+    )
     expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.stop" })
     expect(result).toContain("rolled back to 0.1.0-alpha.79")
     expect(result).toContain("was 0.1.0-alpha.80")
@@ -166,6 +182,77 @@ describe("ouro rollback: execution", () => {
 
     expect(deps.activateCliVersion).not.toHaveBeenCalled()
     expect(result).toContain("npm install failed")
+  })
+
+  it("does not activate when pinned intent cannot be committed", async () => {
+    const deps = makeDeps({
+      getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand: vi.fn(successfulLauncherInstall),
+      writeVersionIntent: vi.fn(() => { throw new Error("intent disk full") }),
+      activateCliVersion: vi.fn(),
+    })
+
+    await expect(runOuroCli(["rollback"], deps)).rejects.toThrow("intent disk full")
+    expect(deps.activateCliVersion).not.toHaveBeenCalled()
+  })
+
+  it("does not commit or activate rollback intent when recovery launcher verification fails", async () => {
+    const writeVersionIntent = vi.fn()
+    const activateCliVersion = vi.fn()
+    const deps = makeDeps({
+      getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand: vi.fn(() => ({
+        installed: false,
+        scriptPath: null,
+        pathReady: false,
+        shellProfileUpdated: null,
+        skippedReason: "permission denied",
+        repairedOldLauncher: false,
+      })),
+      writeVersionIntent,
+      activateCliVersion,
+    })
+
+    await expect(runOuroCli(["rollback"], deps)).rejects.toThrow(
+      "cannot change Ouro version intent without a verified recovery launcher: permission denied",
+    )
+    expect(writeVersionIntent).not.toHaveBeenCalled()
+    expect(activateCliVersion).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["the installer is unavailable", undefined, "installer unavailable"],
+    ["the installer throws an Error", () => { throw new Error("launcher disk failure") }, "launcher disk failure"],
+    ["the installer throws a non-Error", () => { throw "launcher exploded" }, "launcher exploded"],
+    [
+      "the installer cannot verify an unspecified failure",
+      () => ({
+        installed: false,
+        scriptPath: null,
+        pathReady: false,
+        shellProfileUpdated: null,
+        repairedOldLauncher: false,
+      }),
+      "installation was not verified",
+    ],
+  ] as const)("keeps rollback intent unchanged when %s", async (_label, installOuroCommand, detail) => {
+    const writeVersionIntent = vi.fn()
+    const activateCliVersion = vi.fn()
+    const deps = makeDeps({
+      getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand,
+      writeVersionIntent,
+      activateCliVersion,
+    })
+
+    await expect(runOuroCli(["rollback"], deps)).rejects.toThrow(
+      `cannot change Ouro version intent without a verified recovery launcher: ${detail}`,
+    )
+    expect(writeVersionIntent).not.toHaveBeenCalled()
+    expect(activateCliVersion).not.toHaveBeenCalled()
   })
 
   it("daemon stop failure is non-fatal — rollback still succeeds", async () => {

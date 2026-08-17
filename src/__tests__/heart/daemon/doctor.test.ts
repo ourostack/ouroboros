@@ -21,6 +21,10 @@ vi.mock("../../../heart/runtime-credentials", () => ({
   }),
 }))
 
+vi.mock("../../../heart/machine-identity", () => ({
+  loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine_test" })),
+}))
+
 import type { DoctorDeps, DoctorResult } from "../../../heart/daemon/doctor-types"
 import {
   runDoctorChecks,
@@ -36,6 +40,7 @@ import {
   checkDisk,
   checkLifecycle,
 } from "../../../heart/daemon/doctor"
+import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
 function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
@@ -999,6 +1004,99 @@ describe("checkSenses", () => {
       label: "test.ouro bluebubbles upstream",
       status: "pass",
       detail: "upstream reachable",
+    }))
+  })
+
+  it("reports an exact owned BlueBubbles webhook without exposing its callback secret", async () => {
+    const config = JSON.stringify({
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      bluebubbles: {
+        serverUrl: "http://bluebubbles.local",
+        password: "doctor-secret",
+      },
+      bluebubblesChannel: {
+        port: 19001,
+        webhookPath: "/incoming-bluebubbles",
+        requestTimeoutMs: 1234,
+      },
+    })
+    const desired = buildBlueBubblesWebhookCallbackUrl({
+      serverUrl: "http://bluebubbles.local",
+      password: "doctor-secret",
+      callbackPort: 19001,
+      callbackPath: "/incoming-bluebubbles",
+      agentName: "test",
+      machineId: "machine_test",
+      requestTimeoutMs: 1234,
+      listenerReady: true,
+    })
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const text = String(url)
+      if (text.includes("/api/v1/message/count")) return new Response("{}", { status: 200 })
+      return new Response(JSON.stringify({
+        data: [{ id: 44, url: desired, events: ["*"] }],
+      }), { status: 200 })
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://bluebubbles.local/api/v1/webhook?password=doctor-secret",
+      expect.objectContaining({ method: "GET", signal: expect.any(AbortSignal) }),
+    )
+    const webhook = cat.checks.find((check) => check.id === "senses.bluebubbles.webhook")
+    expect(webhook).toEqual({
+      id: "senses.bluebubbles.webhook",
+      label: "test.ouro bluebubbles webhook",
+      status: "pass",
+      detail: "one exact Ouro-owned BlueBubbles webhook is registered",
+    })
+    expect(JSON.stringify(webhook)).not.toContain("doctor-secret")
+    expect(JSON.stringify(webhook)).not.toContain("ouroWebhook=")
+  })
+
+  it("reports webhook drift separately from upstream reachability", async () => {
+    const config = JSON.stringify({ senses: { bluebubbles: { enabled: true } } })
+    seedRuntimeConfig("test", {
+      bluebubbles: { serverUrl: "http://bluebubbles.local", password: "pw" },
+      bluebubblesChannel: { port: 19001, webhookPath: "/incoming-bluebubbles" },
+    })
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => String(url).includes("/api/v1/message/count")
+      ? new Response("{}", { status: 200 })
+      : new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual({
+      id: "senses.bluebubbles.webhook",
+      label: "test.ouro bluebubbles webhook",
+      status: "fail",
+      detail: "the Ouro-owned BlueBubbles webhook is missing",
+    })
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro bluebubbles upstream",
+      status: "pass",
     }))
   })
 

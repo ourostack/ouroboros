@@ -1,4 +1,8 @@
 import { EventEmitter } from "events"
+import * as fs from "fs"
+import * as net from "net"
+import * as os from "os"
+import * as path from "path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 // This test exercises the REAL socket-client functions (not mocks). Disable
@@ -175,10 +179,125 @@ describe("daemon socket client", () => {
 
     const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
 
-    await expect(sendDaemonCommand("/tmp/daemon.sock", { kind: "agent.status", agent: "slugger" } as any, { timeoutMs: 25 }))
-      .rejects.toThrow("timed out after 25ms")
+    const error = await sendDaemonCommand("/tmp/daemon.sock", { kind: "agent.status", agent: "slugger" } as any, { timeoutMs: 25 })
+      .catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain("timed out after 25ms")
+    expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
     const connection = createConnection.mock.results[0]?.value as MockConnection
     expect(connection.destroy).toHaveBeenCalled()
+  })
+
+  it("bounds a connected silent status socket at the five-second production policy", async () => {
+    vi.resetModules()
+    vi.doUnmock("net")
+    vi.doUnmock("../../../nerves/runtime")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-silent-status-"))
+    const socketPath = path.join(root, "daemon.sock")
+    const clients = new Set<net.Socket>()
+    const server = net.createServer((socket) => {
+      clients.add(socket)
+      socket.on("close", () => clients.delete(socket))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(socketPath, resolve)
+    })
+
+    try {
+      const { DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+      const startedAt = Date.now()
+      const error = await sendDaemonCommand(
+        socketPath,
+        { kind: "daemon.status" },
+        { timeoutMs: DEFAULT_DAEMON_STATUS_TIMEOUT_MS },
+      ).catch((caught: unknown) => caught)
+      const durationMs = Date.now() - startedAt
+
+      expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
+      expect(durationMs).toBeGreaterThanOrEqual(4_900)
+      expect(durationMs).toBeLessThanOrEqual(6_000)
+    } finally {
+      for (const client of clients) client.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 7_000)
+
+  it("enforces an absolute deadline when the daemon trickles response bytes", async () => {
+    vi.resetModules()
+    vi.doUnmock("net")
+    vi.doUnmock("../../../nerves/runtime")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-trickle-status-"))
+    const socketPath = path.join(root, "daemon.sock")
+    const clients = new Set<net.Socket>()
+    const response = JSON.stringify({ ok: true, message: "eventually" })
+    const server = net.createServer((socket) => {
+      clients.add(socket)
+      socket.once("data", () => {
+        let offset = 0
+        const interval = setInterval(() => {
+          if (offset >= response.length) {
+            clearInterval(interval)
+            socket.end()
+            return
+          }
+          socket.write(response[offset])
+          offset += 1
+        }, 15)
+        socket.once("close", () => clearInterval(interval))
+      })
+      socket.on("close", () => clients.delete(socket))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(socketPath, resolve)
+    })
+
+    try {
+      const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+      const startedAt = Date.now()
+      const error = await sendDaemonCommand(
+        socketPath,
+        { kind: "daemon.status" },
+        { timeoutMs: 60 },
+      ).catch((caught: unknown) => caught)
+      const durationMs = Date.now() - startedAt
+
+      expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
+      expect(durationMs).toBeGreaterThanOrEqual(40)
+      expect(durationMs).toBeLessThanOrEqual(180)
+    } finally {
+      for (const client of clients) client.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("settles exactly once when timeout races with end and error events", async () => {
+    const emitNervesEvent = vi.fn()
+    class MockConnection extends EventEmitter {
+      setTimeout = vi.fn((_timeoutMs: number, callback: () => void) => {
+        queueMicrotask(() => {
+          callback()
+          this.emit("end")
+          this.emit("error", new Error("late socket error"))
+        })
+        return this
+      })
+      destroy = vi.fn()
+    }
+    vi.doMock("net", () => ({ createConnection: vi.fn(() => new MockConnection()) }))
+    vi.doMock("fs", () => ({ existsSync: vi.fn(() => true) }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+    const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+    const error = await sendDaemonCommand("/tmp/daemon.sock", { kind: "daemon.status" }, { timeoutMs: 25 })
+      .catch((caught: unknown) => caught)
+
+    expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
+    expect(emitNervesEvent.mock.calls.filter(([event]) => event.event === "daemon.socket_command_timeout")).toHaveLength(1)
+    expect(emitNervesEvent.mock.calls.filter(([event]) => event.event === "daemon.socket_command_error")).toHaveLength(0)
   })
 
   it("stringifies non-Error JSON parse failures from daemon responses", async () => {

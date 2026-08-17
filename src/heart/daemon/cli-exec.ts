@@ -7,6 +7,7 @@
 
 import { execFileSync, execSync, spawn } from "child_process"
 import { randomUUID } from "crypto"
+import type { EventEmitter } from "events"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -58,8 +59,16 @@ import {
 import { refreshContextLossSentinel, type ContextLossSentinelGitStatus } from "../context-loss-sentinel"
 import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
+import {
+  collectCrossUserBlueBubblesHostAction,
+  createDefaultBlueBubblesHostDeps,
+  installBlueBubblesHostSharedHelper,
+  requestCrossUserBlueBubblesHostAction,
+  runBlueBubblesHostAction,
+} from "./bluebubbles-host"
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
+import type { VersionIntent } from "../versioning/version-intent"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
@@ -142,6 +151,7 @@ import {
   formatVersionOutput,
   daemonUnavailableStatusOutput,
   isDaemonUnavailableError,
+  isDaemonTimeoutError,
   formatMcpResponse,
   type StatusPayload,
 } from "./cli-render"
@@ -201,7 +211,13 @@ import {
   requireVaultItemSecret,
   vaultItemTemplateSecretFields,
 } from "./vault-items"
-import { buildMcpBridgeRepairGuidance, buildMcpDoctorNextSteps, formatMcpStatusCanaryResult, formatMcpStatusDoctorResult, runMcpStatusCanary } from "./mcp-canary"
+import { buildMcpBridgeRepairGuidance, buildMcpDoctorNextSteps, formatMcpStatusCanaryResult, formatMcpStatusDoctorResult, runMcpStatusCanary, SETUP_CANARY_TIMEOUT_MS } from "./mcp-canary"
+import {
+  blueBubblesListenerReadyAfterApply,
+  formatBlueBubblesHostActionText,
+  formatBlueBubblesWebhookConnectLine,
+  reconcileBlueBubblesWebhookAfterConnect,
+} from "./bluebubbles-cli-integration"
 
 // ── ensureDaemonRunning ──
 
@@ -213,6 +229,26 @@ const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 function setupReloadNotice(tool: "claude-code" | "codex"): string {
   const host = tool === "codex" ? "Codex" : "Claude Code"
   return `  reload required: open a fresh ${host} session so the host launches the newly registered MCP bridge; existing MCP processes keep their old runtime`
+}
+
+export async function runMcpServeCliLifecycle(
+  server: { start: () => void; stop: () => void },
+  input: Pick<EventEmitter, "once" | "removeListener">,
+): Promise<void> {
+  server.start()
+  await new Promise<void>((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      input.removeListener("end", finish)
+      input.removeListener("close", finish)
+      server.stop()
+      resolve()
+    }
+    input.once("end", finish)
+    input.once("close", finish)
+  })
 }
 
 function commandFailureText(error: unknown): string {
@@ -870,6 +906,17 @@ function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: 
     error: "daemon unavailable",
     socketPath,
     ...(healthFilePath ? { healthFilePath } : {}),
+  }, null, 2)
+}
+
+function daemonTimeoutStatusJsonOutput(socketPath: string, error: unknown): string {
+  return JSON.stringify({
+    ok: false,
+    error: "daemon timeout",
+    classification: "timeout",
+    code: "ETIMEDOUT",
+    socketPath,
+    detail: error instanceof Error ? error.message : String(error),
   }, null, 2)
 }
 
@@ -1844,7 +1891,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -4236,6 +4283,53 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   })
 }
 
+export async function setupBlueBubblesHostForConnect(
+  bridgeUsername: string,
+  serverUrl: string,
+  requestTimeoutMs: number,
+  deps: OuroCliDeps,
+  hostAccountDeps: {
+    userInfo: () => { username: string; uid: number; homedir: string }
+    execFileSync: (file: string, args: string[], options: { encoding: "utf8" }) => string
+  } = {
+    userInfo: os.userInfo,
+    execFileSync: execFileSync as (file: string, args: string[], options: { encoding: "utf8" }) => string,
+  },
+): Promise<{ summary: string; bridgeUsername: string; bridgeUid: number; bridgeHomeDir: string }> {
+  if (deps.setupBlueBubblesHost) return deps.setupBlueBubblesHost({ bridgeUsername })
+  installBlueBubblesHostSharedHelper({
+    assetPath: path.resolve(__dirname, "../../../assets/bluebubbles-host"),
+  })
+  const currentUser = hostAccountDeps.userInfo()
+  if (bridgeUsername === currentUser.username) {
+    const host = await runBlueBubblesHostAction("install", createDefaultBlueBubblesHostDeps({ serverUrl, requestTimeoutMs, fetchImpl: deps.fetchImpl }))
+    return {
+      summary: `host: native LaunchAgent ${host.state.service}; process ${host.state.process}`,
+      bridgeUsername,
+      bridgeUid: currentUser.uid,
+      bridgeHomeDir: currentUser.homedir,
+    }
+  }
+  const uidText = hostAccountDeps.execFileSync("id", ["-u", bridgeUsername], { encoding: "utf8" }).trim()
+  const bridgeUid = Number(uidText)
+  const homeRecord = hostAccountDeps.execFileSync("dscl", [".", "-read", `/Users/${bridgeUsername}`, "NFSHomeDirectory"], { encoding: "utf8" }).trim()
+  const bridgeHomeDir = homeRecord.replace(/^NFSHomeDirectory:\s*/, "").trim()
+  if (!Number.isInteger(bridgeUid) || !bridgeHomeDir) throw new Error(`could not resolve BlueBubbles macOS account ${bridgeUsername}`)
+  const handoff = requestCrossUserBlueBubblesHostAction({
+    action: "install",
+    username: bridgeUsername,
+    uid: bridgeUid,
+    targetHomeDir: bridgeHomeDir,
+    originHomeDir: deps.homeDir ?? os.homedir(),
+  })
+  return {
+    summary: `human-required: run in ${bridgeUsername}'s logged-in desktop Terminal: ${handoff.helperCommand}\ncollect: ${handoff.collectCommand}`,
+    bridgeUsername,
+    bridgeUid,
+    bridgeHomeDir,
+  }
+}
+
 async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Promise<string> {
   if (agent === "SerpentGuide") {
     throw new Error("SerpentGuide has no persistent runtime credentials. Attach BlueBubbles on the hatchling agent instead.")
@@ -4289,11 +4383,15 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   const ownHandles = ownHandlesRaw
     ? ownHandlesRaw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
     : []
+  const bridgeUsernameAnswer = (await promptInput(`BlueBubbles macOS account username [${os.userInfo().username}]: `)).trim()
+  const bridgeUsername = bridgeUsernameAnswer || os.userInfo().username
   const machineId = currentMachineId(deps)
 
   const progress = createHumanCommandProgress(deps, "connect bluebubbles")
   let stored: Awaited<ReturnType<typeof upsertMachineRuntimeCredentialConfig>>
   let daemonApply = "not applied"
+  let hostSetup: Awaited<ReturnType<typeof setupBlueBubblesHostForConnect>>
+  let webhookRegistration: Awaited<ReturnType<typeof reconcileBlueBubblesWebhookAfterConnect>>
   try {
     progress.startPhase("saving BlueBubbles attachment")
     progress.updateDetail("checking existing machine runtime config")
@@ -4302,6 +4400,8 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       progress.end()
       throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
     }
+    progress.updateDetail("configuring native BlueBubbles host continuity")
+    hostSetup = await setupBlueBubblesHostForConnect(bridgeUsername, serverUrl, requestTimeoutMs, deps)
     const blueBubblesPatch: RuntimeCredentialConfig = {
       bluebubbles: {
         serverUrl,
@@ -4313,6 +4413,9 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
         port,
         webhookPath,
         requestTimeoutMs,
+        bridgeUsername: hostSetup.bridgeUsername,
+        bridgeUid: hostSetup.bridgeUid,
+        bridgeHomeDir: hostSetup.bridgeHomeDir,
       },
     }
     progress.updateDetail("storing local machine config")
@@ -4326,6 +4429,22 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       () => applyLocalSenseChangeToRunningDaemon(agent, "BlueBubbles", deps, (message) => progress.updateDetail(message)),
       (result) => result,
     )
+    progress.startPhase("verifying BlueBubbles webhook")
+    const webhookInput = {
+      serverUrl,
+      password,
+      callbackPort: port,
+      callbackPath: webhookPath,
+      agentName: agent,
+      machineId,
+      requestTimeoutMs,
+      listenerReady: blueBubblesListenerReadyAfterApply(daemonApply),
+    }
+    webhookRegistration = await reconcileBlueBubblesWebhookAfterConnect(webhookInput, {
+      ...(deps.reconcileBlueBubblesWebhook ? { reconcile: deps.reconcileBlueBubblesWebhook } : {}),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    progress.completePhase("verifying BlueBubbles webhook", webhookRegistration.detail)
     progress.end()
   } catch (error) {
     progress.end()
@@ -4340,13 +4459,17 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       `Stored: ${stored.itemPath}`,
       "agent.json: senses.bluebubbles.enabled = true",
       `Runtime: ${daemonApply}`,
+      hostSetup.summary,
+      formatBlueBubblesWebhookConnectLine(webhookRegistration),
       `ownHandles: ${ownHandles.length > 0 ? ownHandles.join(", ") : "(none — group self-talk filter inactive)"}`,
       "secret was not printed",
       ...(syncSummary ? [syncSummary] : []),
     ],
     nextMoves: [
-      `Point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
-      "If BlueBubbles was already pointed there, messages can now reach the agent.",
+      webhookRegistration.ok
+        ? `Ouro owns and repairs the BlueBubbles [*] webhook for port ${port}${webhookPath}.`
+        : "Run `ouro doctor --category Senses` after Ouro and BlueBubbles are running; the periodic reconciler will retry every 180 seconds.",
+      "Run the collect command after any human-required cross-user helper handoff.",
       `Attach other machines separately if ${agent} should use BlueBubbles there too.`,
     ],
     fallbackLines: [
@@ -4355,9 +4478,11 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       `stored: ${stored.itemPath}`,
       "agent.json: senses.bluebubbles.enabled = true",
       `runtime: ${daemonApply}`,
+      hostSetup.summary,
+      formatBlueBubblesWebhookConnectLine(webhookRegistration),
       "secret was not printed",
       "",
-      `Next: point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
+      `webhook target: Ouro reconciles [*] automatically on port ${port}${webhookPath}`,
       ...(syncSummary ? [syncSummary] : []),
     ],
   })
@@ -6642,6 +6767,27 @@ async function registerOuroBundleTypeNonBlocking(deps: OuroCliDeps): Promise<voi
   }
 }
 
+function writeVersionIntentWithRecoveryLauncher(deps: OuroCliDeps, intent: VersionIntent): void {
+  if (!deps.writeVersionIntent) return
+  if (!deps.installOuroCommand) {
+    throw new Error("cannot change Ouro version intent without a verified recovery launcher: installer unavailable")
+  }
+  let installResult: ReturnType<NonNullable<OuroCliDeps["installOuroCommand"]>>
+  try {
+    installResult = deps.installOuroCommand()
+  } catch (error) {
+    throw new Error(
+      `cannot change Ouro version intent without a verified recovery launcher: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+  if (!installResult.scriptPath) {
+    throw new Error(
+      `cannot change Ouro version intent without a verified recovery launcher: ${installResult.skippedReason ?? "installation was not verified"}`,
+    )
+  }
+  deps.writeVersionIntent(intent)
+}
+
 async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
   // Install ouro command to PATH (non-blocking)
   if (deps.installOuroCommand) {
@@ -7222,6 +7368,45 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return text
   }
 
+  if (command.kind === "bluebubbles.host") {
+    if (command.target) {
+      installBlueBubblesHostSharedHelper({
+        assetPath: path.resolve(__dirname, "../../../assets/bluebubbles-host"),
+      })
+      const handoff = requestCrossUserBlueBubblesHostAction({
+        action: command.action,
+        username: command.target.username,
+        uid: command.target.uid,
+        targetHomeDir: command.target.homeDir,
+        originHomeDir: deps.homeDir ?? os.homedir(),
+      })
+      const text = command.json
+        ? JSON.stringify(handoff, null, 2)
+        : [
+            `human-required: run in ${command.target.username}'s logged-in desktop Terminal: ${handoff.helperCommand}`,
+            `collect: ${handoff.collectCommand}`,
+          ].join("\n")
+      deps.writeStdout(text)
+      return text
+    }
+    const outcome = await runBlueBubblesHostAction(command.action, createDefaultBlueBubblesHostDeps())
+    const text = command.json
+      ? JSON.stringify(outcome, null, 2)
+      : formatBlueBubblesHostActionText(outcome)
+    deps.writeStdout(text)
+    return text
+  }
+
+  if (command.kind === "bluebubbles.host.collect") {
+    const collection = collectCrossUserBlueBubblesHostAction({
+      requestId: command.requestId,
+      originHomeDir: deps.homeDir ?? os.homedir(),
+    })
+    const text = command.json ? JSON.stringify(collection, null, 2) : collection.detail
+    deps.writeStdout(text)
+    return text
+  }
+
   if (command.kind === "bluebubbles.context-smoke") {
     const { smokeBlueBubblesContext, formatBlueBubblesContextSmokeText } = await import("../../senses/bluebubbles/context-smoke")
     const smoke = await smokeBlueBubblesContext({
@@ -7304,7 +7489,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveAtBootStart))
 
     // ── versioned CLI update check ──
-    if (deps.checkForCliUpdate) {
+    const versionIntent = deps.readVersionIntent?.() ?? null
+    const pinnedUpdate = versionIntent?.mode === "pinned" && !command.latest
+    if (deps.checkForCliUpdate && pinnedUpdate) {
+      progress.startPhase("update check")
+      progress.completePhase("update check", `pinned to ${versionIntent.targetVersion}`)
+    } else if (deps.checkForCliUpdate) {
       progress.startPhase("update check")
       progress.updateDetail(`current runtime: ${getPackageVersion()}\nchecking npm registry\ncontinuing startup if it stays quiet`)
       let pendingReExec = false
@@ -7314,18 +7504,32 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           deps.checkForCliUpdate,
           deps.updateCheckTimeoutMs ?? CLI_UPDATE_CHECK_TIMEOUT_MS,
         )
-        if (updateResult.available && updateResult.latestVersion) {
+        const shouldAdoptLatestTarget = Boolean(
+          updateResult.latestVersion && (updateResult.available || command.latest || !versionIntent),
+        )
+        if (shouldAdoptLatestTarget && updateResult.latestVersion) {
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
-          await deps.installCliVersion!(updateResult.latestVersion)
-          deps.activateCliVersion!(updateResult.latestVersion)
-          progress.completePhase("update check", `installed ${updateResult.latestVersion}`)
-          const changelogCommand = buildChangelogCommand(currentVersion, updateResult.latestVersion)
-          /* v8 ignore next -- buildChangelogCommand is non-null when an actual newer version is installed @preserve */
-          if (changelogCommand) {
-            deps.writeStdout(`review changes with: ${changelogCommand}`)
+          const targetVersion = updateResult.latestVersion
+          const needsActivation = updateResult.available || linkedVersionBeforeUp !== targetVersion
+          if (needsActivation) {
+            await deps.installCliVersion!(targetVersion)
+            const validation = deps.validateCliVersionForActivation?.(targetVersion)
+            if (validation && !validation.ok) {
+              throw new Error(`refusing to activate ${targetVersion}: ${validation.message}`)
+            }
           }
-          pendingReExec = true
+          writeVersionIntentWithRecoveryLauncher(deps, { schemaVersion: 1, mode: "latest", targetVersion })
+          if (needsActivation) {
+            deps.activateCliVersion!(targetVersion)
+            progress.completePhase("update check", `installed ${targetVersion}`)
+            const changelogCommand = buildChangelogCommand(currentVersion, targetVersion)
+            /* v8 ignore next -- buildChangelogCommand is non-null when an actual newer version is installed @preserve */
+            if (changelogCommand) {
+              deps.writeStdout(`review changes with: ${changelogCommand}`)
+            }
+            pendingReExec = true
+          }
         } else if (updateResult.error) {
           updateCheckStatus = summarizeCliUpdateCheckStatus(updateResult.error, timedOut)
         }
@@ -7787,8 +7991,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- rollback/versions: tested via daemon-cli-rollback/versions tests @preserve */
   if (command.kind === "rollback") {
     const currentVersion = deps.getCurrentCliVersion?.() ?? "unknown"
+    let targetVersion: string
 
     if (command.version) {
+      targetVersion = command.version
       // Rollback to a specific version
       const installed = deps.listCliVersions?.() ?? []
       if (!installed.includes(command.version)) {
@@ -7805,7 +8011,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const message = `refusing to roll back to ${command.version}: ${validation.message}`
         return returnCliFailure(deps, message)
       }
-      deps.activateCliVersion!(command.version)
     } else {
       // Rollback to previous version
       const previousVersion = deps.getPreviousCliVersion?.()
@@ -7819,9 +8024,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const message = `refusing to roll back to ${previousVersion}: ${validation.message}`
         return returnCliFailure(deps, message)
       }
-      deps.activateCliVersion!(previousVersion)
-      command = { ...command, version: previousVersion }
+      targetVersion = previousVersion
     }
+
+    writeVersionIntentWithRecoveryLauncher(deps, { schemaVersion: 1, mode: "pinned", targetVersion })
+    deps.activateCliVersion!(targetVersion)
 
     // Stop daemon (non-fatal if not running)
     try {
@@ -7830,7 +8037,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Daemon may not be running — that's fine
     }
 
-    const message = `rolled back to ${command.version} (was ${currentVersion})`
+    const message = `rolled back to ${targetVersion} (was ${currentVersion})`
     deps.writeStdout(message)
     return message
   }
@@ -7849,7 +8056,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           return line
         }).join("\n")
 
-    const sections = [localSection]
+    const intent = deps.readVersionIntent?.() ?? null
+    const intentLine = intent
+      ? `version intent: ${intent.mode === "pinned" ? `pinned to ${intent.targetVersion}` : `latest (${intent.targetVersion})`}`
+      : "version intent: legacy (not yet recorded)"
+    const sections = [localSection, intentLine]
     if (deps.checkForCliUpdate) {
       try {
         const { result: updateResult, timedOut } = await runCliUpdateCheckWithTimeout(
@@ -7880,8 +8091,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
               lines: localSection.split("\n"),
             },
             {
+              title: "Version intent",
+              lines: [intentLine],
+            },
+            {
               title: "Published latest",
-              lines: sections.slice(1).length > 0 ? sections.slice(1) : ["published latest: unavailable"],
+              lines: sections.slice(2).length > 0 ? sections.slice(2) : ["published latest: unavailable"],
             },
           ],
         })
@@ -8128,15 +8343,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const mcpAddCmd = `codex mcp add ouro-${setupAgent} -- ${mcpServeCommand}`
       const mcpRemoveCmd = `codex mcp remove ouro-${setupAgent}`
       const mcpRegistration = registerMcpServer(mcpAddCmd, mcpRemoveCmd)
+      const canary = await runMcpStatusCanary({
+        agent: setupAgent,
+        socketPath: deps.socketPath,
+        command: process.execPath,
+        commandArgs: [
+          path.join(__dirname, "ouro-bot-entry.js"),
+          "mcp-serve",
+          "--agent",
+          setupAgent,
+          "--socket",
+          deps.socketPath,
+        ],
+        timeoutMs: SETUP_CANARY_TIMEOUT_MS,
+      })
+      if (!canary.ok) deps.setExitCode?.(1)
 
       emitNervesEvent({
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode, platform, mcpRegistration },
+        meta: { tool, agent: setupAgent, runtimeMode, platform, mcpRegistration, canary: canary.classification },
       })
 
-      const message = `setup complete: codex + ${setupAgent}\n  MCP server ${mcpRegistration}\n${setupReloadNotice("codex")}`
+      const canarySummary = canary.ok
+        ? canary.summary
+        : `registration succeeded; bridge health failed — ${canary.summary}`
+      const message = `setup complete: codex + ${setupAgent}\n  MCP registration: ${mcpRegistration}\n  MCP server ${mcpRegistration}\n  MCP canary: ${canary.classification}\n  ${canarySummary}\n${setupReloadNotice("codex")}`
       deps.writeStdout(message)
       return message
     }
@@ -8172,6 +8405,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       command: process.execPath,
       ignoreOverviewHealth: true,
       ignoreSenseHealth: true,
+      hostStallObserved: command.hostStallObserved === true,
       commandArgs: [
         path.join(__dirname, "ouro-bot-entry.js"),
         "mcp-serve",
@@ -8192,12 +8426,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */
   // ── mcp-serve: start MCP server in-process on stdin/stdout ──
   if (command.kind === "mcp-serve") {
-    const { createMcpServer } = await import("../mcp/mcp-server")
+    const createMcpServer = deps.createMcpServer ?? (await import("../mcp/mcp-server")).createMcpServer
     const friendId = command.friendId ?? `local-${os.userInfo().username}`
     const mcpSocketPath = (command as { socketOverride?: string }).socketOverride ?? deps.socketPath
+    const mcpInput = deps.mcpServeInput ?? process.stdin
+    const mcpOutput = deps.mcpServeOutput ?? process.stdout
     // Resolve the optional --workbench-mcp flag into a concrete runtime MCP
     // override. A string is taken as the explicit binary path (falling back to
     // discovery if it does not exist); a boolean opt-in (true) self-discovers
@@ -8210,27 +8445,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       agent: command.agent,
       friendId,
       socketPath: mcpSocketPath,
-      stdin: process.stdin,
-      stdout: process.stdout,
+      stdin: mcpInput,
+      stdout: mcpOutput,
       ...(runtimeMcp ? { runtimeMcp } : {}),
     })
-    server.start()
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_serve_started",
       message: "MCP server started via CLI",
       meta: { agent: command.agent, friendId, workbenchRuntimeMcp: !!runtimeMcp },
     })
-    // Keep process alive until stdin closes
-    await new Promise<void>((resolve) => {
-      process.stdin.on("end", () => {
-        server.stop()
-        resolve()
-      })
-    })
+    await runMcpServeCliLifecycle(server, mcpInput)
     return ""
   }
-  /* v8 ignore stop */
 
   if (command.kind === "private.decisions") {
     let response: DaemonResponse
@@ -9467,6 +9694,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (command.kind === "message.send") {
       const pendingPath = deps.fallbackPendingMessage(command)
       const message = `daemon unavailable; queued message fallback at ${pendingPath}`
+      deps.writeStdout(message)
+      return message
+    }
+    if (command.kind === "daemon.status" && isDaemonTimeoutError(error)) {
+      const detail = error instanceof Error ? error.message : String(error)
+      const message = command.json
+        ? daemonTimeoutStatusJsonOutput(deps.socketPath, error)
+        : `daemon status timed out: ${detail}`
       deps.writeStdout(message)
       return message
     }

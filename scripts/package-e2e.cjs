@@ -196,6 +196,59 @@ function runLocalTarballSemanticOwnershipSmoke(input, deps = defaultDeps()) {
   }
 }
 
+function runLocalTarballBlueBubblesHostSmoke(input, deps = defaultDeps()) {
+  const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-package-e2e-"))
+
+  try {
+    deps.execFileSync("npm", buildLocalInstallArgs(prefixDir, input.tarballPath), {
+      cwd: prefixDir,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    const packageRoot = path.join(prefixDir, "node_modules", "@ouro.bot", "cli")
+    const protocolEntry = path.join(packageRoot, "dist", "heart", "daemon", "bluebubbles-host-protocol.js")
+    const assetPath = path.join(packageRoot, "assets", "bluebubbles-host")
+    const sharedRoot = path.join(prefixDir, "shared", "Ouro")
+    const output = deps.execFileSync(deps.execPath || process.execPath, [
+      "-e",
+      [
+        "const fs = require('node:fs')",
+        "const protocol = require(process.argv[1])",
+        "const assetPath = process.argv[2]",
+        "const sharedRoot = process.argv[3]",
+        "const installed = protocol.installBlueBubblesHostSharedHelper({ assetPath, sharedRoot })",
+        "const expected = fs.readFileSync(assetPath)",
+        "const actual = fs.readFileSync(installed.helperPath)",
+        "if (!actual.equals(expected)) throw new Error('installed helper bytes differ from packed asset')",
+        "if ((fs.statSync(installed.helperPath).mode & 0o777) !== 0o755) throw new Error('installed helper mode is not 0755')",
+        "process.stdout.write('bluebubbles host helper verified\\n')",
+      ].join("\n"),
+      protocolEntry,
+      assetPath,
+      sharedRoot,
+    ], {
+      cwd: prefixDir,
+      env: localSmokeEnv(prefixDir, deps.env),
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const marker = "bluebubbles host helper verified"
+
+    return {
+      ok: output.includes(marker),
+      binName: input.binName,
+      resolvedPath: assetPath,
+      output,
+      message: output.includes(marker)
+        ? "installed package BlueBubbles host helper verified"
+        : `installed package BlueBubbles host helper smoke did not emit ${marker}`,
+    }
+  } finally {
+    deps.rmSync(prefixDir, { recursive: true, force: true })
+  }
+}
+
 function runPackageE2ESuite(input, deps = defaultDeps()) {
   return [
     runLocalTarballBinVersionSmoke({
@@ -210,6 +263,10 @@ function runPackageE2ESuite(input, deps = defaultDeps()) {
       expectOutput: "Set up providers, portable integrations, and local senses from one guided screen",
     }, deps),
     runLocalTarballSemanticOwnershipSmoke({
+      tarballPath: input.tarballPath,
+      binName: "ouro",
+    }, deps),
+    runLocalTarballBlueBubblesHostSmoke({
       tarballPath: input.tarballPath,
       binName: "ouro",
     }, deps),
@@ -298,6 +355,7 @@ module.exports = {
   runLocalTarballCommandSmoke,
   runLocalTarballBinVersionSmoke,
   runLocalTarballSemanticOwnershipSmoke,
+  runLocalTarballBlueBubblesHostSmoke,
   runLocalTarballAssetSmoke,
   runPackageE2ESuite,
   packCurrentRepo,

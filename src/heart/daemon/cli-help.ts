@@ -32,8 +32,8 @@ export type CommandCategory =
 export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandCategory }> = {
   up: {
     category: "Lifecycle",
-    description: "Start and check Ouro: bring up the background runtime, refresh what this machine needs, and show anything that still needs attention. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
-    usage: "ouro [up] [--no-repair]",
+    description: "Start and check Ouro: bring up the background runtime, refresh what this machine needs, and show anything that still needs attention. A pinned rollback stays pinned during ordinary starts; use `--latest` to preflight and explicitly return to the latest release. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
+    usage: "ouro [up] [--no-repair] [--latest]",
     example: "ouro up --no-repair",
   },
   stop: {
@@ -75,13 +75,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   rollback: {
     category: "Lifecycle",
-    description: "Roll back to a previous CLI version",
+    description: "Pin Ouro to an exact installed CLI version; ordinary `ouro up` preserves the pinned intent until `ouro up --latest` succeeds",
     usage: "ouro rollback [<version>]",
     example: "ouro rollback 0.1.0-alpha.250",
   },
   versions: {
     category: "Lifecycle",
-    description: "List installed CLI versions",
+    description: "List installed CLI versions and show the active version intent mode and target",
     usage: "ouro versions",
     example: "ouro versions",
   },
@@ -380,9 +380,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: [
       "ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type <type>] [--json]",
       "ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
+      "ouro bluebubbles host <install|status|repair|remove|collect> [--username <name> --uid <uid> --home <path>] [--request-id <id>] [--json]",
     ].join("\n"),
     example: "ouro bluebubbles context-smoke --agent slugger --message-guid abc123 --persist --json",
-    subcommands: ["replay", "context-smoke"],
+    subcommands: ["replay", "context-smoke", "host"],
   },
 }
 
@@ -438,9 +439,19 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro connect teams",
   },
   "connect bluebubbles": {
-    description: "Attach BlueBubbles iMessage to this machine only; it does not travel with the agent",
+    description: "Attach BlueBubbles iMessage to this machine only, install or hand off its native host lifecycle, and reconcile the Ouro-owned webhook; it does not travel with the agent",
     usage: "ouro connect bluebubbles [--agent <name>]",
     example: "ouro connect bluebubbles",
+  },
+  "bluebubbles host": {
+    description: "Inspect or repair the native BlueBubbles host. Same-user actions run directly; dedicated-user actions return one nonce-bound `human-required` Terminal command and a matching collect command.",
+    usage: "ouro bluebubbles host <install|status|repair|remove> [--username <name> --uid <uid> --home <path>] [--json]\nouro bluebubbles host collect --request-id <uid>-<nonce> [--json]",
+    example: "ouro bluebubbles host status --json",
+  },
+  "mcp doctor": {
+    description: "Run a bounded direct MCP bridge check. Use `--host-stall-observed` only when the host app was independently observed stalled; `host-stall-unexplained` preserves that evidence but does not prove a host-app cause.",
+    usage: "ouro mcp doctor --agent <name> [--socket <path>] [--host-stall-observed] [--json]",
+    example: "ouro mcp doctor --agent slugger --json",
   },
   "connect mail": {
     description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",

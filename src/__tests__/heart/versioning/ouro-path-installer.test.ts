@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import * as path from "path"
 import { installOuroCommand, diagnoseOuroPath, type OuroPathInstallerDeps } from "../../../heart/versioning/ouro-path-installer"
+import { OURO_RECOVERY_LAUNCHER_SCRIPT } from "../../../heart/versioning/ouro-recovery-launcher"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 vi.mock("../../../nerves/runtime", () => ({
@@ -31,6 +33,12 @@ describe("installOuroCommand", () => {
       realpathSync: (p) => p,
       lstatSync: () => ({ isSymbolicLink: () => false }) as never,
       unlinkSync: (p) => { unlinked.push(p) },
+      renameSync: (oldPath, newPath) => {
+        if (oldPath in written) {
+          written[newPath] = written[oldPath]
+          delete written[oldPath]
+        }
+      },
       envPath: "/usr/bin:/usr/local/bin",
       shell: "/bin/zsh",
       ...overrides,
@@ -38,8 +46,8 @@ describe("installOuroCommand", () => {
   }
 
   const CORRECT_CONTENT = `#!/bin/sh
-# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
-# Skip dev dispatch for "up" command (explicitly returns to production)
+# Check for dev mode — if dev-config.json exists, dispatch to the dev repo.
+# Skip dev dispatch for "up" command (explicitly returns to production).
 DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
 if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
   DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
@@ -48,13 +56,7 @@ if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
     exec node "$DEV_ENTRY" "$@"
   fi
 fi
-# Fall back to installed version
-ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
-if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
-  exit 1
-fi
-exec node "$ENTRY" "$@"
+exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
 `
 
   beforeEach(() => {
@@ -68,10 +70,13 @@ exec node "$ENTRY" "$@"
     expect(result.installed).toBe(true)
     expect(result.scriptPath).toBe("/home/test/.ouro-cli/bin/ouro")
     expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("#!/bin/sh")
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain('exec node "$ENTRY" "$@"')
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain('exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"')
+    expect(written["/home/test/.ouro-cli/bin/ouro-launcher.js"]).toContain("version-intent.json")
     expect(chmoded["/home/test/.ouro-cli/bin/ouro"]).toBe(0o755)
     expect(mkdirCalls).toContain("/home/test/.ouro-cli/bin")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.ouro_recovery_launcher_assets_resolved",
+    }))
   })
 
   it("makes script executable with chmod 755", () => {
@@ -82,9 +87,10 @@ exec node "$ENTRY" "$@"
 
   it("skips if ouro script already exists with correct content", () => {
     const deps = makeDeps({
-      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/home/test/.ouro-cli/bin/ouro-launcher.js",
       readFileSync: (p) => {
         if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.ouro-cli/bin/ouro-launcher.js") return OURO_RECOVERY_LAUNCHER_SCRIPT
         throw new Error("ENOENT")
       },
     })
@@ -108,7 +114,7 @@ exec node "$ENTRY" "$@"
 
     expect(result.installed).toBe(true)
     expect(result.scriptPath).toBe("/home/test/.ouro-cli/bin/ouro")
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain('exec node "$ENTRY" "$@"')
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("ouro-launcher.js")
     expect(result.skippedReason).toBeUndefined()
   })
 
@@ -121,7 +127,27 @@ exec node "$ENTRY" "$@"
 
     // When we can't read existing content, we should overwrite it
     expect(result.installed).toBe(true)
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain('exec node "$ENTRY" "$@"')
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("ouro-launcher.js")
+  })
+
+  it("repairs the launcher when its content cannot be read", () => {
+    const wrapperPath = "/home/test/.ouro-cli/bin/ouro"
+    const launcherPath = "/home/test/.ouro-cli/bin/ouro-launcher.js"
+    let launcherReads = 0
+    const deps = makeDeps({
+      existsSync: (p) => p === wrapperPath || p === launcherPath,
+      readFileSync: (p) => {
+        if (p === wrapperPath) return CORRECT_CONTENT
+        if (p === launcherPath && launcherReads++ === 0) throw new Error("EACCES")
+        if (p === launcherPath) return written[launcherPath]
+        throw new Error("ENOENT")
+      },
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.installed).toBe(true)
+    expect(written[launcherPath]).toContain("version-intent.json")
   })
 
   it("skips on Windows", () => {
@@ -197,6 +223,23 @@ exec node "$ENTRY" "$@"
     expect(result.skippedReason).toBe("EACCES: permission denied")
   })
 
+  it("fails installation when the atomically installed recovery launcher cannot be verified", () => {
+    const launcherPath = "/home/test/.ouro-cli/bin/ouro-launcher.js"
+    const deps = makeDeps({
+      existsSync: (p) => p === launcherPath,
+      readFileSync: (p) => {
+        if (p === launcherPath) return "corrupt after rename"
+        throw new Error("ENOENT")
+      },
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.installed).toBe(false)
+    expect(result.skippedReason).toBe("failed to verify installed Ouro recovery launcher")
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toBeUndefined()
+  })
+
   it("handles shell profile update failure gracefully", () => {
     const deps = makeDeps({
       appendFileSync: () => { throw new Error("profile write failed") },
@@ -226,9 +269,10 @@ exec node "$ENTRY" "$@"
 
   it("reports pathReady correctly when already-installed and in PATH", () => {
     const deps = makeDeps({
-      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/home/test/.ouro-cli/bin/ouro-launcher.js",
       readFileSync: (p) => {
         if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.ouro-cli/bin/ouro-launcher.js") return OURO_RECOVERY_LAUNCHER_SCRIPT
         throw new Error("ENOENT")
       },
       envPath: "/usr/bin:/home/test/.ouro-cli/bin",
@@ -242,9 +286,10 @@ exec node "$ENTRY" "$@"
 
   it("reports pathReady false when already-installed but not in PATH", () => {
     const deps = makeDeps({
-      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/home/test/.ouro-cli/bin/ouro-launcher.js",
       readFileSync: (p) => {
         if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.ouro-cli/bin/ouro-launcher.js") return OURO_RECOVERY_LAUNCHER_SCRIPT
         throw new Error("ENOENT")
       },
       envPath: "/usr/bin",
@@ -255,11 +300,23 @@ exec node "$ENTRY" "$@"
     expect(result.pathReady).toBe(false)
   })
 
+  it("ignores empty PATH segments while diagnosing the managed command", () => {
+    const result = diagnoseOuroPath({
+      homeDir: "/home/test",
+      envPath: `${path.delimiter}/usr/bin`,
+      existsSync: () => false,
+      readFileSync: () => { throw new Error("ENOENT") },
+    })
+
+    expect(result.status).toBe("missing")
+  })
+
   it("reports a PATH shadow when another ouro appears before the managed wrapper", () => {
     const deps = makeDeps({
-      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/opt/homebrew/bin/ouro",
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/home/test/.ouro-cli/bin/ouro-launcher.js" || p === "/opt/homebrew/bin/ouro",
       readFileSync: (p) => {
         if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.ouro-cli/bin/ouro-launcher.js") return OURO_RECOVERY_LAUNCHER_SCRIPT
         if (p === "/opt/homebrew/bin/ouro") return '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n'
         throw new Error("ENOENT")
       },
@@ -285,11 +342,13 @@ exec node "$ENTRY" "$@"
     const deps = makeDeps({
       existsSync: (p) => {
         if (p === "/home/test/.ouro-cli/bin/ouro") return true
+        if (p === "/home/test/.ouro-cli/bin/ouro-launcher.js") return true
         if (p === "/opt/homebrew/bin/ouro") return !unlinked.includes(p) || p in written
         return false
       },
       readFileSync: (p) => {
         if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.ouro-cli/bin/ouro-launcher.js") return OURO_RECOVERY_LAUNCHER_SCRIPT
         if (p === "/opt/homebrew/bin/ouro" && p in written) return written[p]
         if (p === "/opt/homebrew/bin/ouro") return '"use strict"; require("./node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js")\n'
         throw new Error("ENOENT")
@@ -320,7 +379,7 @@ exec node "$ENTRY" "$@"
       remediation: null,
     })
     expect(unlinked).toContain("/opt/homebrew/bin/ouro")
-    expect(written["/opt/homebrew/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/opt/homebrew/bin/ouro"]).toContain("ouro-launcher.js")
     expect(chmoded["/opt/homebrew/bin/ouro"]).toBe(0o755)
   })
 
@@ -350,7 +409,7 @@ exec node "$ENTRY" "$@"
 
     expect(result.repairedShadowedLauncherPath).toBe("/usr/local/bin/ouro")
     expect(result.pathResolution?.status).toBe("ok")
-    expect(written["/usr/local/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/usr/local/bin/ouro"]).toContain("ouro-launcher.js")
   })
 
   it("stays calm when the shadowed launcher disappears before repair runs", () => {
@@ -490,7 +549,7 @@ exec node "$ENTRY" "$@"
 
     expect(result.installed).toBe(true)
     expect(result.pathResolution?.status).toBe("shadowed")
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("ouro-launcher.js")
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.ouro_path_shadowed",
       meta: expect.objectContaining({ resolvedPath: "/opt/homebrew/bin/ouro" }),
@@ -547,8 +606,8 @@ describe("installOuroCommand — versioned CLI layout", () => {
   let ensureCliLayoutCalls: number
 
   const CORRECT_CONTENT = `#!/bin/sh
-# Check for dev mode — if dev-config.json exists, dispatch to the dev repo
-# Skip dev dispatch for "up" command (explicitly returns to production)
+# Check for dev mode — if dev-config.json exists, dispatch to the dev repo.
+# Skip dev dispatch for "up" command (explicitly returns to production).
 DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
 if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
   DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
@@ -557,13 +616,7 @@ if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
     exec node "$DEV_ENTRY" "$@"
   fi
 fi
-# Fall back to installed version
-ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
-if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
-  exit 1
-fi
-exec node "$ENTRY" "$@"
+exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
 `
 
   function makeDeps(overrides: Partial<OuroPathInstallerDeps> = {}): OuroPathInstallerDeps {
@@ -582,6 +635,12 @@ exec node "$ENTRY" "$@"
       appendFileSync: (p, data) => { appended[p] = (appended[p] ?? "") + data },
       chmodSync: (p, mode) => { chmoded[p] = typeof mode === "number" ? mode : 0 },
       ensureCliLayout: () => { ensureCliLayoutCalls++ },
+      renameSync: (oldPath, newPath) => {
+        if (oldPath in written) {
+          written[newPath] = written[oldPath]
+          delete written[oldPath]
+        }
+      },
       envPath: "/usr/bin:/usr/local/bin",
       shell: "/bin/zsh",
       ...overrides,
@@ -592,15 +651,15 @@ exec node "$ENTRY" "$@"
     vi.clearAllMocks()
   })
 
-  it("installs wrapper script to ~/.ouro-cli/bin/ouro with exec-from-CurrentVersion content", () => {
+  it("installs wrapper script to ~/.ouro-cli/bin/ouro with recovery-launcher content", () => {
     const deps = makeDeps()
     const result = installOuroCommand(deps)
 
     expect(result.installed).toBe(true)
     expect(result.scriptPath).toBe("/home/test/.ouro-cli/bin/ouro")
     expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("#!/bin/sh")
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js")
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain('exec node "$ENTRY" "$@"')
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("$HOME/.ouro-cli/bin/ouro-launcher.js")
+    expect(written["/home/test/.ouro-cli/bin/ouro-launcher.js"]).toContain("version-intent.json")
     expect(written["/home/test/.ouro-cli/bin/ouro"]).not.toContain("exec npx")
   })
 
@@ -628,8 +687,8 @@ exec node "$ENTRY" "$@"
     expect(result.installed).toBe(true)
     expect(result.repairedOldLauncher).toBe(true)
     // Both modern and old paths get the correct wrapper
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
-    expect(written["/home/test/.local/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("ouro-launcher.js")
+    expect(written["/home/test/.local/bin/ouro"]).toContain("ouro-launcher.js")
   })
 
   it("does not repair old launcher when it already has correct content", () => {
@@ -668,7 +727,7 @@ exec node "$ENTRY" "$@"
 
     expect(result.installed).toBe(true)
     expect(result.repairedOldLauncher).toBe(false)
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("ouro-launcher.js")
   })
 
   it("sets repairedOldLauncher to false when no old launcher exists", () => {
@@ -678,7 +737,7 @@ exec node "$ENTRY" "$@"
     expect(result.repairedOldLauncher).toBe(false)
   })
 
-  it("repairs stale npx wrapper with new exec-from-CurrentVersion content", () => {
+  it("repairs stale npx wrapper with new recovery-launcher content", () => {
     const staleContent = '#!/bin/sh\nexec npx --prefer-online --yes @ouro.bot/cli@latest "$@"\n'
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
@@ -690,7 +749,7 @@ exec node "$ENTRY" "$@"
     const result = installOuroCommand(deps)
 
     expect(result.installed).toBe(true)
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("ouro-launcher.js")
     expect(written["/home/test/.ouro-cli/bin/ouro"]).not.toContain("exec npx")
   })
 
@@ -706,9 +765,11 @@ exec node "$ENTRY" "$@"
     const deps = makeDeps({
       existsSync: (p) =>
         p === "/home/test/.ouro-cli/bin/ouro"
+        || p === "/home/test/.ouro-cli/bin/ouro-launcher.js"
         || p === "/home/test/.local/bin/ouro",
       readFileSync: (p) => {
         if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/home/test/.ouro-cli/bin/ouro-launcher.js") return OURO_RECOVERY_LAUNCHER_SCRIPT
         if (p === "/home/test/.local/bin/ouro") return staleOldContent
         throw new Error("ENOENT")
       },
@@ -720,7 +781,7 @@ exec node "$ENTRY" "$@"
     expect(result.skippedReason).toBe("already-installed")
     // But old launcher was still repaired
     expect(result.repairedOldLauncher).toBe(true)
-    expect(written["/home/test/.local/bin/ouro"]).toContain("CurrentVersion")
+    expect(written["/home/test/.local/bin/ouro"]).toContain("ouro-launcher.js")
     // Modern path was NOT rewritten
     expect(written["/home/test/.ouro-cli/bin/ouro"]).toBeUndefined()
   })

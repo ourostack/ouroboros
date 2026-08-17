@@ -65,6 +65,9 @@ const mocks = vi.hoisted(() => ({
   findByExternalId: vi.fn().mockResolvedValue(null),
   listAll: vi.fn().mockResolvedValue([]),
   recoverRuntimeCwd: vi.fn(() => "/repo/root"),
+  createWebhookReconciler: vi.fn(() => ({ reconcileNow: vi.fn(), close: vi.fn() })),
+  webhookReconcilerClose: vi.fn(),
+  loadMachineIdentity: vi.fn(() => ({ machineId: "machine_test" })),
   lastStoreInstance: null as any,
 }))
 
@@ -156,6 +159,18 @@ vi.mock("../../../heart/config", () => ({
   getBlueBubblesConfig: (...args: any[]) => mocks.getBlueBubblesConfig(...args),
   getBlueBubblesChannelConfig: (...args: any[]) => mocks.getBlueBubblesChannelConfig(...args),
   sanitizeKey: (value: string) => value.replace(/[^a-zA-Z0-9;+.-]+/g, "_"),
+}))
+
+vi.mock("../../../heart/machine-identity", () => ({
+  loadOrCreateMachineIdentity: (...args: any[]) => mocks.loadMachineIdentity(...args),
+}))
+
+vi.mock("../../../senses/bluebubbles/webhook-registration", () => ({
+  createBlueBubblesWebhookReconciler: (...args: any[]) => {
+    const reconciler = mocks.createWebhookReconciler(...args)
+    reconciler.close = mocks.webhookReconcilerClose
+    return reconciler
+  },
 }))
 
 vi.mock("../../../mind/context", () => ({
@@ -779,6 +794,9 @@ function resetMocks(): void {
   mocks.findByExternalId.mockReset().mockResolvedValue(null)
   mocks.listAll.mockReset().mockResolvedValue([])
   mocks.recoverRuntimeCwd.mockReset().mockReturnValue("/repo/root")
+  mocks.createWebhookReconciler.mockReset().mockReturnValue({ reconcileNow: vi.fn(), close: mocks.webhookReconcilerClose })
+  mocks.webhookReconcilerClose.mockReset()
+  mocks.loadMachineIdentity.mockReset().mockReturnValue({ machineId: "machine_test" })
   mocks.lastStoreInstance = null
   // handleInboundTurn: by default, simulate a successful pipeline run that calls
   // the injected runAgent (which triggers BB callbacks for text buffering/flush).
@@ -4534,8 +4552,19 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(mocks.createServer).toHaveBeenCalledTimes(1)
     expect(closableServer.server.listen).toHaveBeenCalledWith(18790, expect.any(Function))
+    expect(mocks.createWebhookReconciler).toHaveBeenCalledWith({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      callbackPort: 18790,
+      callbackPath: "/bluebubbles-webhook",
+      agentName: "testagent",
+      machineId: "machine_test",
+      requestTimeoutMs: 30000,
+      listenerReady: true,
+    })
     await flushAsyncWork()
     closableServer.close()
+    expect(mocks.webhookReconcilerClose).toHaveBeenCalledOnce()
   })
 
   it("repairs and handles a captured v1 message once during recovery", async () => {

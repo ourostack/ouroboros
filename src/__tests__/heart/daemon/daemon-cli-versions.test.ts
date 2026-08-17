@@ -44,6 +44,7 @@ describe("ouro versions: execution", () => {
       listCliVersions: vi.fn(() => ["0.1.0-alpha.78", "0.1.0-alpha.79", "0.1.0-alpha.80"]),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
       getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      readVersionIntent: vi.fn(() => ({ schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.80" })),
       checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.81" })),
     })
 
@@ -55,6 +56,7 @@ describe("ouro versions: execution", () => {
     expect(result).toContain("(previous)")
     expect(result).toContain("0.1.0-alpha.78")
     expect(result).toContain("published latest: 0.1.0-alpha.81 (update available)")
+    expect(result).toContain("version intent: pinned to 0.1.0-alpha.80")
   })
 
   it("shows published version as up to date when no update is available", async () => {

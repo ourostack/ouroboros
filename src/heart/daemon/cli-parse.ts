@@ -130,6 +130,7 @@ export function usage(): string {
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
+    "  ouro bluebubbles host <install|status|repair|remove|collect> [--username <name> --uid <uid> --home <path>] [--request-id <id>] [--json]",
     "  ouro rsvp <doctor|incident|cutover|legacy-render|replay|config|habit|import-legacy|refresh|compare|smoke> ...",
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
@@ -1536,6 +1537,7 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
   if (sub === "doctor") {
     let socketOverride: string | undefined
     let json = false
+    let hostStallObserved = false
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === "--socket") {
         if (!rest[i + 1]) throw new Error("mcp doctor requires a value after --socket")
@@ -1546,6 +1548,10 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
         json = true
         continue
       }
+      if (rest[i] === "--host-stall-observed") {
+        hostStallObserved = true
+        continue
+      }
       throw new Error(`Unknown mcp doctor flag: ${rest[i]}`)
     }
     if (!agent) throw new Error("mcp doctor requires --agent <name>")
@@ -1554,6 +1560,7 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
       agent,
       ...(socketOverride ? { socketOverride } : {}),
       ...(json ? { json: true } : {}),
+      ...(hostStallObserved ? { hostStallObserved: true } : {}),
     }
   }
 
@@ -1736,6 +1743,53 @@ function parseMigrateToDeskCommand(args: string[]): OuroCliCommand {
 
 function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
   const subcommand = args[0]
+  if (subcommand === "host") {
+    const action = args[1]
+    const usageText = "Usage: ouro bluebubbles host <install|status|repair|remove|collect> [--username <name> --uid <uid> --home <path>] [--request-id <id>] [--json]"
+    if (action === "collect") {
+      let requestId: string | undefined
+      let json = false
+      for (let index = 2; index < args.length; index += 1) {
+        if (args[index] === "--request-id" && args[index + 1]) {
+          requestId = args[++index]
+        } else if (args[index] === "--json") {
+          json = true
+        } else {
+          throw new Error(usageText)
+        }
+      }
+      if (!requestId) throw new Error(`${usageText}\ncollect requires --request-id <id>`)
+      return { kind: "bluebubbles.host.collect", requestId, ...(json ? { json: true } : {}) }
+    }
+    if (action !== "install" && action !== "status" && action !== "repair" && action !== "remove") {
+      throw new Error(usageText)
+    }
+    let username: string | undefined
+    let uid: number | undefined
+    let homeDir: string | undefined
+    let json = false
+    for (let index = 2; index < args.length; index += 1) {
+      const token = args[index]
+      if (token === "--username" && args[index + 1]) username = args[++index]
+      else if (token === "--uid" && args[index + 1]) {
+        const value = Number(args[++index])
+        if (!Number.isInteger(value)) throw new Error(`${usageText}\n--uid must be an integer`)
+        uid = value
+      } else if (token === "--home" && args[index + 1]) homeDir = args[++index]
+      else if (token === "--json") json = true
+      else throw new Error(usageText)
+    }
+    const targetFields = [username, uid, homeDir].filter((value) => value !== undefined).length
+    if (targetFields !== 0 && targetFields !== 3) {
+      throw new Error(`${usageText}\ncross-user setup requires --username, --uid, and --home together`)
+    }
+    return {
+      kind: "bluebubbles.host",
+      action,
+      ...(targetFields === 3 ? { target: { username: username!, uid: uid!, homeDir: homeDir! } } : {}),
+      ...(json ? { json: true } : {}),
+    }
+  }
   if (subcommand !== "replay" && subcommand !== "context-smoke") {
     throw new Error(`Usage\n${usage()}`)
   }
@@ -2300,7 +2354,12 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "up") {
     const noRepair = args.includes("--no-repair")
-    return noRepair ? { kind: "daemon.up", noRepair: true } : { kind: "daemon.up" }
+    const latest = args.includes("--latest")
+    return {
+      kind: "daemon.up",
+      ...(noRepair ? { noRepair: true } : {}),
+      ...(latest ? { latest: true } : {}),
+    }
   }
   if (head === "dev") {
     const devArgs = args.slice(1)

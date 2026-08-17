@@ -6,6 +6,7 @@ import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { loadOrCreateMachineIdentity } from "../../heart/machine-identity"
 import { recoverRuntimeCwd } from "../../heart/runtime-cwd"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
 import {
@@ -40,6 +41,7 @@ import {
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient } from "./client"
+import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
   listRecordedBlueBubblesInbound,
   recordBlueBubblesInbound,
@@ -4388,6 +4390,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   let recoveryPassRunning = false
   let runtimeSyncRunning = false
   let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
+  let webhookReconciler: ReturnType<typeof createBlueBubblesWebhookReconciler> | null = null
   let closed = false
 
   function triggerRecoveryPass(): void {
@@ -4459,6 +4462,8 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   const recoveryTimer = setInterval(triggerRecoveryPass, BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS)
   server.on?.("close", () => {
     closed = true
+    webhookReconciler?.close()
+    webhookReconciler = null
     lifecycleController.abort(new Error("bluebubbles_runtime_shutdown"))
     clearInterval(runtimeTimer)
     clearInterval(recoveryTimer)
@@ -4468,6 +4473,17 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     }
   })
   server.listen(channelConfig.port, () => {
+    const blueBubblesConfig = getBlueBubblesConfig()
+    webhookReconciler = createBlueBubblesWebhookReconciler({
+      serverUrl: blueBubblesConfig.serverUrl,
+      password: blueBubblesConfig.password,
+      callbackPort: channelConfig.port,
+      callbackPath: channelConfig.webhookPath,
+      agentName: resolvedDeps.getAgentName(),
+      machineId: loadOrCreateMachineIdentity().machineId,
+      requestTimeoutMs: channelConfig.requestTimeoutMs,
+      listenerReady: true,
+    })
     emitNervesEvent({
       component: "channels",
       event: "channel.app_started",
