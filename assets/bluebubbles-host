@@ -16,23 +16,42 @@ const APP_PATH = "/Applications/BlueBubbles.app"
 const EXECUTABLE_PATH = `${APP_PATH}/Contents/MacOS/BlueBubbles`
 const LABEL = "com.bluebubbles.server"
 
-function fail(message) {
-  process.stderr.write(`bluebubbles-host: ${message}\n`)
-  process.exitCode = 1
+function createRuntime(overrides = {}) {
+  return {
+    fs,
+    homedir: os.homedir,
+    now: Date.now,
+    getuid: () => process.getuid(),
+    execFileSync,
+    argv: process.argv,
+    writeStdout: (value) => process.stdout.write(value),
+    writeStderr: (value) => process.stderr.write(value),
+    setExitCode: (code) => { process.exitCode = code },
+    ...overrides,
+  }
 }
 
-function runLaunchctl(args) {
+function fail(message, runtime) {
+  runtime.writeStderr(`bluebubbles-host: ${message}\n`)
+  runtime.setExitCode(1)
+}
+
+function runLaunchctl(args, runtime) {
   try {
-    const output = execFileSync("launchctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+    const output = runtime.execFileSync("launchctl", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
     return { ok: true, detail: output.trim() || "ok" }
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) }
   }
 }
 
-function requireLaunchctl(args, operation) {
-  const result = runLaunchctl(args)
-  if (!result.ok) throw new Error(`launchctl ${operation} failed: ${result.detail}`)
+function requireLaunchctl(args, operation, runtime) {
+  const result = runLaunchctl(args, runtime)
+  if (result.ok) {
+    return result.detail
+  } else {
+    throw new Error(`launchctl ${operation} failed: ${result.detail}`)
+  }
 }
 
 function nativePlist() {
@@ -61,7 +80,7 @@ function nativePlist() {
 </plist>`
 }
 
-function validateRequest(request, requestPath) {
+function validateRequest(request, requestPath, runtime) {
   if (path.dirname(path.resolve(requestPath)) !== REQUESTS_ROOT) throw new Error("request path is outside the shared request directory")
   if (request.schemaVersion !== SCHEMA_VERSION) throw new Error("unsupported request schema")
   if (request.helperVersion !== HELPER_VERSION) throw new Error("unsupported helper version")
@@ -72,68 +91,99 @@ function validateRequest(request, requestPath) {
   if (!new Set(["install", "status", "repair", "remove"]).has(request.action)) throw new Error("unsupported host action")
   const requestedAt = Date.parse(request.requestedAt)
   const expiresAt = Date.parse(request.expiresAt)
-  const now = Date.now()
+  const now = runtime.now()
   if (!Number.isFinite(requestedAt) || !Number.isFinite(expiresAt)) throw new Error("invalid request time")
   if (expiresAt - requestedAt > FRESHNESS_MS) throw new Error("request freshness window is too large")
   if (requestedAt > now || now > expiresAt) throw new Error("request is not fresh")
 
-  const currentUid = process.getuid()
-  const currentUsername = execFileSync("id", ["-un"], { encoding: "utf8" }).trim()
+  const currentUid = runtime.getuid()
+  const currentUsername = runtime.execFileSync("id", ["-un"], { encoding: "utf8" }).trim()
   if (currentUid !== request.uid || currentUsername !== request.username) throw new Error("run this request as its exact target user")
-  requireLaunchctl(["print", `gui/${currentUid}`], `print gui/${currentUid}`)
+  requireLaunchctl(["print", `gui/${currentUid}`], `print gui/${currentUid}`, runtime)
   return request
 }
 
-function inspect(request) {
-  const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`)
+function inspect(request, runtime) {
+  const plistPath = path.join(runtime.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`)
   const serviceTarget = `gui/${request.uid}/${LABEL}`
-  const service = runLaunchctl(["print", serviceTarget])
-  const plist = fs.existsSync(plistPath)
-    ? fs.readFileSync(plistPath, "utf8") === nativePlist() ? "current" : "drifted"
+  const service = runLaunchctl(["print", serviceTarget], runtime)
+  const plist = runtime.fs.existsSync(plistPath)
+    ? runtime.fs.readFileSync(plistPath, "utf8") === nativePlist() ? "current" : "drifted"
     : "missing"
   return { plistPath, serviceTarget, service, plist }
 }
 
-function receiptState(request) {
+function receiptState(request, runtime) {
   return {
-    plistPath: path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`),
+    plistPath: path.join(runtime.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`),
     serviceTarget: `gui/${request.uid}/${LABEL}`,
   }
 }
 
-function execute(request) {
-  const before = inspect(request)
-  if (request.action === "status") {
-    if (before.plist !== "current" || !before.service.ok) throw new Error(`native service is not current and loaded (${before.plist}; ${before.service.detail})`)
-    return before
+function requireApp(runtime) {
+  if (runtime.fs.existsSync(APP_PATH)) {
+    return APP_PATH
+  } else {
+    throw new Error(`BlueBubbles app is missing at ${APP_PATH}`)
   }
-  if (request.action === "remove") {
-    if (before.service.ok) {
-      requireLaunchctl(["disable", before.serviceTarget], "disable")
-      requireLaunchctl(["bootout", before.serviceTarget], "bootout")
-    }
-    if (before.plist !== "missing") fs.unlinkSync(before.plistPath)
-    const after = inspect(request)
-    if (after.plist !== "missing" || after.service.ok) throw new Error("native service removal did not verify")
-    return after
-  }
-  if (!fs.existsSync(APP_PATH)) throw new Error(`BlueBubbles app is missing at ${APP_PATH}`)
-  if (before.plist !== "current") {
-    fs.mkdirSync(path.dirname(before.plistPath), { recursive: true })
-    fs.writeFileSync(before.plistPath, nativePlist(), { mode: 0o644 })
-  }
-  if (before.plist !== "current" || !before.service.ok) {
-    if (before.service.ok) requireLaunchctl(["bootout", before.serviceTarget], "bootout")
-    requireLaunchctl(["disable", before.serviceTarget], "disable")
-    requireLaunchctl(["enable", before.serviceTarget], "enable")
-    requireLaunchctl(["bootstrap", `gui/${request.uid}`, before.plistPath], "bootstrap")
-  }
-  const after = inspect(request)
-  if (after.plist !== "current" || !after.service.ok) throw new Error("native service installation did not verify")
-  return after
 }
 
-function publishReceipt(request, result, detail, state) {
+function unloadService(state, disableFirst, runtime) {
+  if (!state.service.ok) {
+    return false
+  } else {
+    disableFirst && requireLaunchctl(["disable", state.serviceTarget], "disable", runtime)
+    requireLaunchctl(["bootout", state.serviceTarget], "bootout", runtime)
+    return true
+  }
+}
+
+function installPlistIfNeeded(state, runtime) {
+  if (state.plist === "current") {
+    return false
+  } else {
+    runtime.fs.mkdirSync(path.dirname(state.plistPath), { recursive: true })
+    runtime.fs.writeFileSync(state.plistPath, nativePlist(), { mode: 0o644 })
+    return true
+  }
+}
+
+function execute(request, runtime) {
+  const before = inspect(request, runtime)
+  if (request.action === "status") {
+    if (before.plist === "current" && before.service.ok) {
+      return before
+    } else {
+      throw new Error(`native service is not current and loaded (${before.plist}; ${before.service.detail})`)
+    }
+  }
+  if (request.action === "remove") {
+    unloadService(before, true, runtime)
+    before.plist !== "missing" && runtime.fs.unlinkSync(before.plistPath)
+    const after = inspect(request, runtime)
+    if (after.plist !== "missing" || after.service.ok) throw new Error("native service removal did not verify")
+    return after
+  } else {
+    requireApp(runtime)
+    if (before.plist === "current" && before.service.ok) {
+      return before
+    } else {
+      installPlistIfNeeded(before, runtime)
+      unloadService(before, false, runtime)
+      requireLaunchctl(["disable", before.serviceTarget], "disable", runtime)
+      requireLaunchctl(["enable", before.serviceTarget], "enable", runtime)
+      requireLaunchctl(["bootstrap", `gui/${request.uid}`, before.plistPath], "bootstrap", runtime)
+      const after = inspect(request, runtime)
+      if (after.plist === "current" && after.service.ok) {
+        return after
+      } else {
+        throw new Error("native service installation did not verify")
+      }
+    }
+  }
+}
+
+function publishReceipt(request, result, detail, state, runtime) {
   const receipt = {
     ...request,
     appPath: APP_PATH,
@@ -142,39 +192,73 @@ function publishReceipt(request, result, detail, state) {
     launchdDomain: `gui/${request.uid}`,
     result,
     detail,
-    verifiedAt: new Date().toISOString(),
+    verifiedAt: new Date(runtime.now()).toISOString(),
   }
   const finalPath = path.join(RECEIPTS_ROOT, `${request.requestId}.json`)
   const temporaryPath = `${finalPath}.${request.nonce}.tmp`
-  fs.writeFileSync(temporaryPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", mode: 0o444, flag: "wx" })
+  runtime.fs.writeFileSync(temporaryPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", mode: 0o444, flag: "wx" })
   try {
-    fs.chmodSync(temporaryPath, 0o444)
-    fs.linkSync(temporaryPath, finalPath)
-    fs.chmodSync(finalPath, 0o444)
+    runtime.fs.chmodSync(temporaryPath, 0o444)
+    runtime.fs.linkSync(temporaryPath, finalPath)
+    runtime.fs.chmodSync(finalPath, 0o444)
   } finally {
-    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath)
+    if (runtime.fs.existsSync(temporaryPath)) runtime.fs.unlinkSync(temporaryPath)
   }
-  process.stdout.write(`${JSON.stringify({ ok: result === "verified", requestId: request.requestId, receiptPath: finalPath })}\n`)
+  runtime.writeStdout(`${JSON.stringify({ ok: result === "verified", requestId: request.requestId, receiptPath: finalPath })}\n`)
 }
 
-function main() {
-  const requestFlag = process.argv.indexOf("--request")
-  if (requestFlag < 0 || !process.argv[requestFlag + 1]) throw new Error("usage: bluebubbles-host --request <request.json>")
-  const requestPath = path.resolve(process.argv[requestFlag + 1])
-  const request = validateRequest(JSON.parse(fs.readFileSync(requestPath, "utf8")), requestPath)
-  let state = receiptState(request)
+function main(runtime) {
+  const requestFlag = runtime.argv.indexOf("--request")
+  if (requestFlag >= 0 && runtime.argv[requestFlag + 1]) {
+    const requestPath = path.resolve(runtime.argv[requestFlag + 1])
+    const request = validateRequest(JSON.parse(runtime.fs.readFileSync(requestPath, "utf8")), requestPath, runtime)
+    let state = receiptState(request, runtime)
+    try {
+      state = execute(request, runtime)
+      publishReceipt(request, "verified", `native ${request.action} verified`, state, runtime)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      publishReceipt(request, "failed", detail, state, runtime)
+      throw error
+    }
+  } else {
+    throw new Error("usage: bluebubbles-host --request <request.json>")
+  }
+}
+
+function runCli(runtime = createRuntime()) {
   try {
-    state = execute(request)
-    publishReceipt(request, "verified", `native ${request.action} verified`, state)
+    main(runtime)
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    publishReceipt(request, "failed", detail, state)
-    throw error
+    fail(error instanceof Error ? error.message : String(error), runtime)
   }
 }
 
-try {
-  main()
-} catch (error) {
-  fail(error instanceof Error ? error.message : String(error))
+function runCliIfMain(isMain, runtime) {
+  if (isMain) {
+    runCli(runtime)
+  } else {
+    return false
+  }
+  return true
+}
+
+runCliIfMain(require.main === module)
+
+module.exports = {
+  constants: {
+    schemaVersion: SCHEMA_VERSION,
+    helperVersion: HELPER_VERSION,
+    freshnessMs: FRESHNESS_MS,
+    sharedRoot: SHARED_ROOT,
+  },
+  createRuntime,
+  nativePlist,
+  validateRequest,
+  inspect,
+  execute,
+  publishReceipt,
+  main,
+  runCli,
+  runCliIfMain,
 }

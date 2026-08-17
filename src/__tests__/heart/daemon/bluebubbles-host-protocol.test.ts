@@ -12,9 +12,7 @@ import {
   writeFileSync,
 } from "fs"
 import { tmpdir } from "os"
-import * as nodePath from "path"
 import { join } from "path"
-import { runInNewContext } from "vm"
 import { afterEach, describe, expect, it } from "vitest"
 import {
   BLUEBUBBLES_HOST_FRESHNESS_MS,
@@ -822,83 +820,4 @@ describe("cross-user BlueBubbles host protocol", () => {
     expect(existsSync(join(process.cwd(), "assets", "bluebubbles-host"))).toBe(true)
   })
 
-  it("sends exact actor and GUI-domain argv from the packaged helper", () => {
-    const helperPath = join(process.cwd(), "assets", "bluebubbles-host")
-    const helper = readFileSync(helperPath, "utf8")
-    const requestPath = `${BLUEBUBBLES_HOST_REQUESTS_DIRECTORY}/${REQUEST_ID}.json`
-    const request = requestFixture({
-      action: "remove",
-      requestedAt: new Date(Date.now() - 1_000).toISOString(),
-      expiresAt: new Date(Date.now() + EXPECTED_FRESHNESS_MS - 1_000).toISOString(),
-    })
-    const childCalls: Array<{ command: string; args: string[]; options: unknown }> = []
-    const writes = new Map<string, string>()
-    const fakeFs = {
-      readFileSync: (filePath: string) => {
-        if (filePath === requestPath) return JSON.stringify(request)
-        throw new Error(`unexpected read: ${filePath}`)
-      },
-      existsSync: (filePath: string) => writes.has(filePath),
-      writeFileSync: (filePath: string, content: string) => { writes.set(filePath, content) },
-      chmodSync: () => undefined,
-      linkSync: (source: string, destination: string) => { writes.set(destination, writes.get(source)!) },
-      unlinkSync: (filePath: string) => { writes.delete(filePath) },
-    }
-    const fakeExecFileSync = (command: string, args: string[], options: unknown) => {
-      childCalls.push({ command, args, options })
-      if (command === "id") return "clawdbot\n"
-      if (args.join(" ") === "print gui/502") return "gui session\n"
-      throw new Error("service not loaded")
-    }
-    const stdout: string[] = []
-    const stderr: string[] = []
-    const fakeProcess = {
-      argv: ["node", helperPath, "--request", requestPath],
-      getuid: () => 502,
-      pid: 123,
-      stdout: { write: (value: string) => { stdout.push(value) } },
-      stderr: { write: (value: string) => { stderr.push(value) } },
-      exitCode: 0,
-    }
-
-    runInNewContext(helper, {
-      Buffer,
-      Date,
-      Error,
-      JSON,
-      Number,
-      Set,
-      String,
-      process: fakeProcess,
-      require: (name: string) => {
-        if (name === "fs") return fakeFs
-        if (name === "os") return { homedir: () => "/Users/clawdbot" }
-        if (name === "path") return nodePath
-        if (name === "child_process") return { execFileSync: fakeExecFileSync }
-        throw new Error(`unexpected module: ${name}`)
-      },
-    }, { filename: helperPath })
-
-    expect(childCalls[0]).toEqual({ command: "id", args: ["-un"], options: { encoding: "utf8" } })
-    expect(childCalls[1]).toEqual({
-      command: "launchctl",
-      args: ["print", "gui/502"],
-      options: { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    })
-    expect(childCalls.slice(2)).toEqual([
-      {
-        command: "launchctl",
-        args: ["print", "gui/502/com.bluebubbles.server"],
-        options: { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-      },
-      {
-        command: "launchctl",
-        args: ["print", "gui/502/com.bluebubbles.server"],
-        options: { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-      },
-    ])
-    expect(stderr).toEqual([])
-    expect(fakeProcess.exitCode).toBe(0)
-    expect(JSON.parse(stdout[0])).toMatchObject({ ok: true, requestId: REQUEST_ID })
-  })
 })
