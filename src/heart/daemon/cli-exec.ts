@@ -68,6 +68,7 @@ import {
 } from "./bluebubbles-host"
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
+import type { VersionIntent } from "../versioning/version-intent"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
@@ -6766,6 +6767,27 @@ async function registerOuroBundleTypeNonBlocking(deps: OuroCliDeps): Promise<voi
   }
 }
 
+function writeVersionIntentWithRecoveryLauncher(deps: OuroCliDeps, intent: VersionIntent): void {
+  if (!deps.writeVersionIntent) return
+  if (!deps.installOuroCommand) {
+    throw new Error("cannot change Ouro version intent without a verified recovery launcher: installer unavailable")
+  }
+  let installResult: ReturnType<NonNullable<OuroCliDeps["installOuroCommand"]>>
+  try {
+    installResult = deps.installOuroCommand()
+  } catch (error) {
+    throw new Error(
+      `cannot change Ouro version intent without a verified recovery launcher: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+  if (!installResult.scriptPath) {
+    throw new Error(
+      `cannot change Ouro version intent without a verified recovery launcher: ${installResult.skippedReason ?? "installation was not verified"}`,
+    )
+  }
+  deps.writeVersionIntent(intent)
+}
+
 async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
   // Install ouro command to PATH (non-blocking)
   if (deps.installOuroCommand) {
@@ -7482,27 +7504,34 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           deps.checkForCliUpdate,
           deps.updateCheckTimeoutMs ?? CLI_UPDATE_CHECK_TIMEOUT_MS,
         )
-        if (updateResult.available && updateResult.latestVersion) {
+        const shouldAdoptLatestTarget = Boolean(
+          updateResult.latestVersion && (updateResult.available || command.latest || !versionIntent),
+        )
+        if (shouldAdoptLatestTarget && updateResult.latestVersion) {
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
-          await deps.installCliVersion!(updateResult.latestVersion)
-          const validation = deps.validateCliVersionForActivation?.(updateResult.latestVersion)
-          if (validation && !validation.ok) {
-            throw new Error(`refusing to activate ${updateResult.latestVersion}: ${validation.message}`)
+          const targetVersion = updateResult.latestVersion
+          const needsActivation = updateResult.available || linkedVersionBeforeUp !== targetVersion
+          if (needsActivation) {
+            await deps.installCliVersion!(targetVersion)
+            const validation = deps.validateCliVersionForActivation?.(targetVersion)
+            if (validation && !validation.ok) {
+              throw new Error(`refusing to activate ${targetVersion}: ${validation.message}`)
+            }
           }
-          deps.writeVersionIntent?.({ schemaVersion: 1, mode: "latest", targetVersion: updateResult.latestVersion })
-          deps.activateCliVersion!(updateResult.latestVersion)
-          progress.completePhase("update check", `installed ${updateResult.latestVersion}`)
-          const changelogCommand = buildChangelogCommand(currentVersion, updateResult.latestVersion)
-          /* v8 ignore next -- buildChangelogCommand is non-null when an actual newer version is installed @preserve */
-          if (changelogCommand) {
-            deps.writeStdout(`review changes with: ${changelogCommand}`)
+          writeVersionIntentWithRecoveryLauncher(deps, { schemaVersion: 1, mode: "latest", targetVersion })
+          if (needsActivation) {
+            deps.activateCliVersion!(targetVersion)
+            progress.completePhase("update check", `installed ${targetVersion}`)
+            const changelogCommand = buildChangelogCommand(currentVersion, targetVersion)
+            /* v8 ignore next -- buildChangelogCommand is non-null when an actual newer version is installed @preserve */
+            if (changelogCommand) {
+              deps.writeStdout(`review changes with: ${changelogCommand}`)
+            }
+            pendingReExec = true
           }
-          pendingReExec = true
         } else if (updateResult.error) {
           updateCheckStatus = summarizeCliUpdateCheckStatus(updateResult.error, timedOut)
-        } else if (updateResult.latestVersion && (command.latest || !versionIntent)) {
-          deps.writeVersionIntent?.({ schemaVersion: 1, mode: "latest", targetVersion: updateResult.latestVersion })
         }
       /* v8 ignore start -- update check error: tested via daemon-cli-update-flow.test.ts @preserve */
       } catch (error) {
@@ -7998,7 +8027,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       targetVersion = previousVersion
     }
 
-    deps.writeVersionIntent?.({ schemaVersion: 1, mode: "pinned", targetVersion })
+    writeVersionIntentWithRecoveryLauncher(deps, { schemaVersion: 1, mode: "pinned", targetVersion })
     deps.activateCliVersion!(targetVersion)
 
     // Stop daemon (non-fatal if not running)

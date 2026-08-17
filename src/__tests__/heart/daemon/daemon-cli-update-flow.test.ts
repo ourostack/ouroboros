@@ -73,6 +73,16 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   }
 }
 
+function successfulLauncherInstall() {
+  return {
+    installed: true,
+    scriptPath: "/tmp/.ouro-cli/bin/ouro",
+    pathReady: true,
+    shellProfileUpdated: null,
+    repairedOldLauncher: false,
+  }
+}
+
 describe("ouro up: CLI update flow", () => {
   it("parses --latest as an explicit unpin request", async () => {
     const { parseOuroCommand } = await import("../../../heart/daemon/daemon-cli")
@@ -102,12 +112,72 @@ describe("ouro up: CLI update flow", () => {
       writeVersionIntent: vi.fn(),
       checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.80" })),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand: vi.fn(successfulLauncherInstall),
     })
 
     await runOuroCli(["up", "--latest"], deps)
 
     expect(deps.checkForCliUpdate).toHaveBeenCalledOnce()
     expect(deps.writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.80" })
+  })
+
+  it("stages and activates an older published target before unpinning a newer runtime", async () => {
+    const reExec = vi.fn(() => { throw new Error("__REEXEC__") }) as unknown as (args: string[]) => never
+    const installCliVersion = vi.fn(async () => {})
+    const validateCliVersionForActivation = vi.fn(() => ({ ok: true, message: "ok" }))
+    const installOuroCommand = vi.fn(successfulLauncherInstall)
+    const writeVersionIntent = vi.fn()
+    const activateCliVersion = vi.fn()
+    const deps = makeDeps({
+      readVersionIntent: vi.fn(() => ({ schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.90" })),
+      checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.80" })),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.90"),
+      installCliVersion,
+      validateCliVersionForActivation,
+      installOuroCommand,
+      writeVersionIntent,
+      activateCliVersion,
+      reExecFromNewVersion: reExec,
+    })
+
+    await expect(runOuroCli(["up", "--latest"], deps)).rejects.toThrow("__REEXEC__")
+
+    expect(installCliVersion).toHaveBeenCalledWith("0.1.0-alpha.80")
+    expect(validateCliVersionForActivation).toHaveBeenCalledWith("0.1.0-alpha.80")
+    expect(writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.80" })
+    expect(activateCliVersion).toHaveBeenCalledWith("0.1.0-alpha.80")
+    expect(installCliVersion.mock.invocationCallOrder[0]).toBeLessThan(installOuroCommand.mock.invocationCallOrder[0])
+    expect(installOuroCommand.mock.invocationCallOrder[0]).toBeLessThan(writeVersionIntent.mock.invocationCallOrder[0])
+    expect(writeVersionIntent.mock.invocationCallOrder[0]).toBeLessThan(activateCliVersion.mock.invocationCallOrder[0])
+  })
+
+  it("does not mutate latest intent or activation when recovery launcher verification fails", async () => {
+    const writeVersionIntent = vi.fn()
+    const activateCliVersion = vi.fn()
+    const deps = makeDeps({
+      readVersionIntent: vi.fn(() => ({ schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.80" })),
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.90" })),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installCliVersion: vi.fn(async () => {}),
+      validateCliVersionForActivation: vi.fn(() => ({ ok: true, message: "ok" })),
+      installOuroCommand: vi.fn(() => ({
+        installed: false,
+        scriptPath: null,
+        pathReady: false,
+        shellProfileUpdated: null,
+        skippedReason: "permission denied",
+        repairedOldLauncher: false,
+      })),
+      writeVersionIntent,
+      activateCliVersion,
+      reExecFromNewVersion: vi.fn() as unknown as (args: string[]) => never,
+    })
+
+    await runOuroCli(["up", "--latest"], deps)
+
+    expect(writeVersionIntent).not.toHaveBeenCalled()
+    expect(activateCliVersion).not.toHaveBeenCalled()
+    expect(deps.reExecFromNewVersion).not.toHaveBeenCalled()
   })
 
   it("preserves pinned intent when --latest preflight cannot reach the registry", async () => {
@@ -129,6 +199,7 @@ describe("ouro up: CLI update flow", () => {
       writeVersionIntent: vi.fn(),
       checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.80" })),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand: vi.fn(successfulLauncherInstall),
     })
 
     await runOuroCli(["up"], deps)
@@ -162,6 +233,7 @@ describe("ouro up: CLI update flow", () => {
       installCliVersion: vi.fn(async () => {}),
       activateCliVersion: vi.fn(),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand: vi.fn(successfulLauncherInstall),
       writeVersionIntent: vi.fn(),
       reExecFromNewVersion: reExec,
     })
