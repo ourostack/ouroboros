@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "fs"
 import { tmpdir } from "os"
@@ -55,7 +56,7 @@ function fixture() {
   const root = temporaryRoot()
   const sharedRoot = join(root, "shared")
   const originHomeDir = join(root, "origin")
-  const targetHomeDir = join(root, "target")
+  const targetHomeDir = "/Users/clawdbot"
   const assetPath = join(root, "bluebubbles-host-asset")
   const helperBytes = "#!/usr/bin/env node\n// generic helper\n"
   const baseDeps = {
@@ -64,9 +65,10 @@ function fixture() {
       expect(size).toBe(32)
       return Buffer.from(NONCE, "hex")
     },
+    existsSync: (filePath: string) => filePath === targetHomeDir || existsSync(filePath),
   }
   writeFileSync(assetPath, helperBytes, { mode: 0o644 })
-  for (const directory of [originHomeDir, targetHomeDir]) {
+  for (const directory of [originHomeDir]) {
     mkdirSync(directory, { recursive: true })
   }
   installBlueBubblesHostSharedHelper({ assetPath, sharedRoot })
@@ -121,7 +123,7 @@ function writeTargetOwnedReceipt(
   }
 }
 
-function virtualProtocolDeps() {
+function virtualProtocolDeps(defaultUid = 501) {
   const files = new Map<string, Buffer>()
   const modes = new Map<string, number>()
   const owners = new Map<string, number>()
@@ -131,6 +133,7 @@ function virtualProtocolDeps() {
   const deps: BlueBubblesHostProtocolDeps = {
     now: () => NOW,
     randomBytes: (size) => Buffer.alloc(size, 0xab),
+    currentUid: () => defaultUid,
     existsSync: exists,
     readFileSync: (filePath) => {
       const value = files.get(filePath)
@@ -157,9 +160,11 @@ function virtualProtocolDeps() {
       modes.delete(oldPath)
     },
     lstatSync: (filePath) => ({
-      uid: owners.get(filePath) ?? 501,
+      uid: owners.get(filePath) ?? defaultUid,
       mode: modes.get(filePath) ?? 0,
       isSymbolicLink: () => symlinks.has(filePath),
+      isDirectory: () => !files.has(filePath),
+      isFile: () => files.has(filePath),
     }),
   }
   return { deps, files, modes, owners, symlinks }
@@ -200,6 +205,71 @@ describe("cross-user BlueBubbles host protocol", () => {
     expect(readFileSync(helperPath, "utf8")).toBe(f.helperBytes)
     expect(statSync(helperPath).mode & 0o7777).toBe(0o755)
     expect(statSync(join(f.sharedRoot, "bluebubbles-host-receipts")).mode & 0o7777).toBe(0o1777)
+  })
+
+  it("rejects symlink, wrong-owner, and non-directory shared roots", () => {
+    const root = temporaryRoot()
+    const assetPath = join(root, "asset")
+    const realDirectory = join(root, "real")
+    const symlinkRoot = join(root, "symlink-root")
+    const fileRoot = join(root, "file-root")
+    writeFileSync(assetPath, "helper")
+    mkdirSync(realDirectory)
+    symlinkSync(realDirectory, symlinkRoot)
+    writeFileSync(fileRoot, "not a directory")
+
+    expect(() => installBlueBubblesHostSharedHelper({ assetPath, sharedRoot: symlinkRoot })).toThrow(
+      "shared root must not be a symbolic link",
+    )
+    expect(() => installBlueBubblesHostSharedHelper({ assetPath, sharedRoot: fileRoot })).toThrow(
+      "shared root must be a directory",
+    )
+    expect(() => installBlueBubblesHostSharedHelper({ assetPath, sharedRoot: realDirectory }, {
+      currentUid: () => 501,
+      lstatSync: (filePath) => {
+        const stat = lstatSync(filePath)
+        return {
+          uid: 502,
+          mode: stat.mode,
+          isSymbolicLink: () => stat.isSymbolicLink(),
+          isDirectory: () => stat.isDirectory(),
+          isFile: () => stat.isFile(),
+        }
+      },
+    })).toThrow("shared root must be owned by uid 501")
+  })
+
+  it("rejects symlinked or wrong-owner shared helper state", () => {
+    const f = fixture()
+    const helperPath = join(f.sharedRoot, "bluebubbles-host")
+    rmSync(helperPath)
+    symlinkSync(f.assetPath, helperPath)
+
+    expect(() => installBlueBubblesHostSharedHelper({ assetPath: f.assetPath, sharedRoot: f.sharedRoot })).toThrow(
+      "shared helper must not be a symbolic link",
+    )
+    rmSync(helperPath)
+    writeFileSync(helperPath, f.helperBytes, { mode: 0o755 })
+    expect(() => installBlueBubblesHostSharedHelper({ assetPath: f.assetPath, sharedRoot: f.sharedRoot }, {
+      currentUid: () => 501,
+      lstatSync: (filePath) => {
+        const stat = lstatSync(filePath)
+        return filePath === helperPath
+          ? {
+              uid: 502,
+              mode: stat.mode,
+              isSymbolicLink: () => stat.isSymbolicLink(),
+              isDirectory: () => stat.isDirectory(),
+              isFile: () => stat.isFile(),
+            }
+          : stat
+      },
+    })).toThrow("shared helper must be owned by uid 501")
+    rmSync(helperPath)
+    mkdirSync(helperPath)
+    expect(() => installBlueBubblesHostSharedHelper({ assetPath: f.assetPath, sharedRoot: f.sharedRoot })).toThrow(
+      "shared helper must be a regular file",
+    )
   })
 
   it("propagates helper replacement failure when no temporary file was created", () => {
@@ -274,6 +344,22 @@ describe("cross-user BlueBubbles host protocol", () => {
     expect(collection.status).toBe("collected")
   })
 
+  it("uses uid zero when the runtime does not expose getuid", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "getuid")
+    Object.defineProperty(process, "getuid", { configurable: true, value: undefined })
+    const memory = virtualProtocolDeps(0)
+    const deps = { ...memory.deps }
+    delete deps.currentUid
+    memory.files.set("/asset", Buffer.from("helper"))
+    memory.modes.set("/asset", 0o644)
+
+    try {
+      expect(installBlueBubblesHostSharedHelper({ assetPath: "/asset" }, deps).changed).toBe(true)
+    } finally {
+      if (descriptor) Object.defineProperty(process, "getuid", descriptor)
+    }
+  })
+
   it("rejects a nonce source that does not return exactly 32 bytes", () => {
     const f = fixture()
 
@@ -284,7 +370,11 @@ describe("cross-user BlueBubbles host protocol", () => {
       targetHomeDir: f.targetHomeDir,
       originHomeDir: f.originHomeDir,
       sharedRoot: f.sharedRoot,
-    }, { now: () => NOW, randomBytes: () => Buffer.alloc(31) })).toThrow("nonce source must return 32 bytes")
+    }, {
+      now: () => NOW,
+      randomBytes: () => Buffer.alloc(31),
+      existsSync: f.baseDeps.existsSync,
+    })).toThrow("nonce source must return 32 bytes")
   })
 
   it.each([
@@ -431,13 +521,46 @@ describe("cross-user BlueBubbles host protocol", () => {
     const receipt = receiptFixture({ result: "failed", detail: "service unavailable" })
     const deps = writeTargetOwnedReceipt(f.sharedRoot, receipt)
 
+    const first = collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, deps)
+    expect(first.detail).toBe(
+      "launchd helper reported failure at 2026-08-17T17:00:01.000Z; current service state requires a fresh helper run",
+    )
     expect(collectCrossUserBlueBubblesHostAction({
       requestId: REQUEST_ID,
       originHomeDir: f.originHomeDir,
       sharedRoot: f.sharedRoot,
-    }, deps).detail).toBe(
-      "launchd helper reported failure at 2026-08-17T17:00:01.000Z; current service state requires a fresh helper run",
-    )
+    })).toEqual(first)
+  })
+
+  it("binds a canonical nonstandard target home in the private attempt", () => {
+    const f = fixture()
+    const customHome = join(f.root, "custom-home")
+    mkdirSync(customHome)
+    requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: customHome,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, { ...f.baseDeps, existsSync })
+    const receipt = receiptFixture({
+      plistPath: join(customHome, "Library", "LaunchAgents", "com.bluebubbles.server.plist"),
+    })
+    const deps = writeTargetOwnedReceipt(f.sharedRoot, receipt)
+
+    expect(collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, deps).receipt.plistPath).toBe(receipt.plistPath)
+    expect(JSON.parse(readFileSync(blueBubblesHostAttemptPath(f.originHomeDir, REQUEST_ID), "utf8"))).toMatchObject({
+      targetHomeDir: customHome,
+    })
   })
 
   it.each([
@@ -536,7 +659,17 @@ describe("cross-user BlueBubbles host protocol", () => {
       originHomeDir: f.originHomeDir,
       sharedRoot: f.sharedRoot,
     }, {
-      lstatSync: (filePath) => ({ ...lstatSync(filePath), uid: 502, isSymbolicLink: () => true }),
+      lstatSync: (filePath) => {
+        const stat = lstatSync(filePath)
+        const isReceipt = filePath.endsWith(`${REQUEST_ID}.json`)
+        return {
+          uid: isReceipt ? 502 : stat.uid,
+          mode: stat.mode,
+          isSymbolicLink: () => isReceipt,
+          isDirectory: () => stat.isDirectory(),
+          isFile: () => stat.isFile(),
+        }
+      },
     })).toThrow("receipt must not be a symbolic link")
   })
 
@@ -578,6 +711,102 @@ describe("cross-user BlueBubbles host protocol", () => {
     }, { ...targetDeps, renameSync: () => { throw new Error("rename failed") } })).toThrow("rename failed")
     expect(existsSync(temporaryPath)).toBe(false)
     expect(JSON.parse(readFileSync(attemptPath, "utf8"))).toMatchObject({ status: "pending" })
+  })
+
+  it.each([
+    ["schema", { schemaVersion: 2 }, "attempt state is invalid"],
+    ["request id", { collection: { requestId: `503-${NONCE}` } }, "stored collection request id does not match"],
+    ["receipt", { collection: { receipt: { nonce: "cd".repeat(32) } } }, "receipt nonce does not match"],
+  ])("rejects malformed stored repeat collection %s", (_label, mutation, message) => {
+    const f = fixture()
+    requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)
+    const receipt = receiptFixture()
+    const deps = writeTargetOwnedReceipt(f.sharedRoot, receipt)
+    collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, deps)
+    const attemptPath = blueBubblesHostAttemptPath(f.originHomeDir, REQUEST_ID)
+    const stored = JSON.parse(readFileSync(attemptPath, "utf8"))
+    const next = {
+      ...stored,
+      ...mutation,
+      ...(mutation.collection ? {
+        collection: {
+          ...stored.collection,
+          ...mutation.collection,
+          ...(mutation.collection.receipt ? {
+            receipt: { ...stored.collection.receipt, ...mutation.collection.receipt },
+          } : {}),
+        },
+      } : {}),
+    }
+    writeFileSync(attemptPath, JSON.stringify(next), { mode: 0o600 })
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    })).toThrow(message)
+  })
+
+  it.each([
+    ["target home", { targetHomeDir: "relative/home" }, "attempt target home is invalid"],
+    ["status", { status: "unknown", targetHomeDir: "/Users/clawdbot" }, "attempt state is invalid"],
+  ])("rejects invalid pending attempt %s", (_label, mutation, message) => {
+    const f = fixture()
+    const attemptPath = blueBubblesHostAttemptPath(f.originHomeDir, REQUEST_ID)
+    mkdirSync(join(f.originHomeDir, ".ouro-cli", "bluebubbles-host", "attempts"), { recursive: true })
+    writeFileSync(attemptPath, JSON.stringify({
+      schemaVersion: 1,
+      status: "pending",
+      request: requestFixture(),
+      targetHomeDir: "/Users/clawdbot",
+      ...mutation,
+    }), { mode: 0o600 })
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    })).toThrow(message)
+  })
+
+  it("rejects a stored collection detail that does not match its receipt", () => {
+    const f = fixture()
+    requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)
+    const receipt = receiptFixture()
+    const deps = writeTargetOwnedReceipt(f.sharedRoot, receipt)
+    collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, deps)
+    const attemptPath = blueBubblesHostAttemptPath(f.originHomeDir, REQUEST_ID)
+    const stored = JSON.parse(readFileSync(attemptPath, "utf8"))
+    stored.collection.detail = "tampered"
+    writeFileSync(attemptPath, JSON.stringify(stored), { mode: 0o600 })
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    })).toThrow("stored collection detail does not match receipt")
   })
 
   it("ships a credential-free helper that checks the effective actor and GUI launchd domain", () => {

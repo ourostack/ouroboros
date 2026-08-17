@@ -49,12 +49,14 @@ interface BlueBubblesHostAttempt {
   schemaVersion: typeof BLUEBUBBLES_HOST_PROTOCOL_SCHEMA_VERSION
   status: "pending" | "collected"
   request: BlueBubblesHostRequest
+  targetHomeDir: string
   collection?: BlueBubblesHostCollection
 }
 
 interface ResolvedBlueBubblesHostProtocolDeps {
   now: () => number
   randomBytes: (size: number) => Buffer
+  currentUid: () => number
   existsSync: (filePath: string) => boolean
   readFileSync: (filePath: string) => Buffer
   mkdirSync: (directoryPath: string, options: { recursive: true; mode?: number }) => void
@@ -71,6 +73,8 @@ interface ResolvedBlueBubblesHostProtocolDeps {
     uid: number
     mode: number
     isSymbolicLink?: () => boolean
+    isDirectory?: () => boolean
+    isFile?: () => boolean
   }
 }
 
@@ -80,6 +84,7 @@ function protocolDeps(overrides: BlueBubblesHostProtocolDeps = {}): ResolvedBlue
   return {
     now: Date.now,
     randomBytes: cryptoRandomBytes,
+    currentUid: () => process.getuid?.() ?? 0,
     existsSync: fs.existsSync,
     readFileSync: fs.readFileSync,
     mkdirSync: fs.mkdirSync,
@@ -105,13 +110,31 @@ function fileMode(deps: ResolvedBlueBubblesHostProtocolDeps, filePath: string): 
   return deps.existsSync(filePath) ? deps.lstatSync(filePath).mode & 0o7777 : null
 }
 
+function validateManagedPath(
+  deps: ResolvedBlueBubblesHostProtocolDeps,
+  filePath: string,
+  label: string,
+  kind: "directory" | "file",
+  expectedUid: number,
+): void {
+  const stat = deps.lstatSync(filePath)
+  if (stat.isSymbolicLink?.()) throw new Error(`${label} must not be a symbolic link`)
+  if (kind === "directory" && stat.isDirectory?.() !== true) throw new Error(`${label} must be a directory`)
+  if (kind === "file" && stat.isFile?.() !== true) throw new Error(`${label} must be a regular file`)
+  if (stat.uid !== expectedUid) throw new Error(`${label} must be owned by uid ${expectedUid}`)
+}
+
 function ensureDirectory(
   deps: ResolvedBlueBubblesHostProtocolDeps,
   directoryPath: string,
   mode: number,
+  label: string,
+  expectedUid: number,
 ): boolean {
   const priorMode = fileMode(deps, directoryPath)
+  if (priorMode !== null) validateManagedPath(deps, directoryPath, label, "directory", expectedUid)
   if (priorMode === null) deps.mkdirSync(directoryPath, { recursive: true, mode })
+  validateManagedPath(deps, directoryPath, label, "directory", expectedUid)
   deps.chmodSync(directoryPath, mode)
   return priorMode !== mode
 }
@@ -223,11 +246,13 @@ export function installBlueBubblesHostSharedHelper(
   const root = input.sharedRoot ?? BLUEBUBBLES_HOST_SHARED_ROOT
   const paths = sharedPaths(root)
   const asset = deps.readFileSync(input.assetPath)
+  const expectedUid = deps.currentUid()
   let changed = false
-  changed = ensureDirectory(deps, root, 0o755) || changed
-  changed = ensureDirectory(deps, paths.requests, 0o755) || changed
-  changed = ensureDirectory(deps, paths.receipts, 0o1777) || changed
+  changed = ensureDirectory(deps, root, 0o755, "shared root", expectedUid) || changed
+  changed = ensureDirectory(deps, paths.requests, 0o755, "shared request directory", expectedUid) || changed
+  changed = ensureDirectory(deps, paths.receipts, 0o1777, "shared receipt directory", expectedUid) || changed
 
+  if (deps.existsSync(paths.helper)) validateManagedPath(deps, paths.helper, "shared helper", "file", expectedUid)
   const helperCurrent = deps.existsSync(paths.helper) && deps.readFileSync(paths.helper).equals(asset)
   const helperModeCurrent = fileMode(deps, paths.helper) === 0o755
   if (!helperCurrent) {
@@ -237,6 +262,7 @@ export function installBlueBubblesHostSharedHelper(
     deps.chmodSync(paths.helper, 0o755)
     changed = !helperModeCurrent || changed
   }
+  validateManagedPath(deps, paths.helper, "shared helper", "file", expectedUid)
 
   emitNervesEvent({
     component: "daemon",
@@ -291,12 +317,17 @@ export function requestCrossUserBlueBubblesHostAction(
   }
   const root = input.sharedRoot ?? BLUEBUBBLES_HOST_SHARED_ROOT
   const paths = sharedPaths(root)
+  const expectedUid = deps.currentUid()
+  validateManagedPath(deps, root, "shared root", "directory", expectedUid)
+  validateManagedPath(deps, paths.requests, "shared request directory", "directory", expectedUid)
+  validateManagedPath(deps, paths.helper, "shared helper", "file", expectedUid)
   const requestPath = path.join(paths.requests, `${requestId}.json`)
   const attemptPath = blueBubblesHostAttemptPath(input.originHomeDir, requestId)
   const attempt: BlueBubblesHostAttempt = {
     schemaVersion: BLUEBUBBLES_HOST_PROTOCOL_SCHEMA_VERSION,
     status: "pending",
     request,
+    targetHomeDir: input.targetHomeDir,
   }
   deps.mkdirSync(path.dirname(attemptPath), { recursive: true, mode: 0o700 })
   deps.chmodSync(path.dirname(attemptPath), 0o700)
@@ -354,11 +385,15 @@ export function publishBlueBubblesHostReceipt(
   return receiptPath
 }
 
-function expectedPlistPath(request: BlueBubblesHostRequest): string {
-  return `/Users/${request.username}/Library/LaunchAgents/${BLUEBUBBLES_LAUNCH_AGENT_LABEL}.plist`
+function expectedPlistPath(targetHomeDir: string): string {
+  return path.join(targetHomeDir, "Library", "LaunchAgents", `${BLUEBUBBLES_LAUNCH_AGENT_LABEL}.plist`)
 }
 
-function requireReceiptMatch(request: BlueBubblesHostRequest, receipt: BlueBubblesHostReceipt): void {
+function requireReceiptMatch(
+  request: BlueBubblesHostRequest,
+  targetHomeDir: string,
+  receipt: BlueBubblesHostReceipt,
+): void {
   const exactFields: Array<keyof BlueBubblesHostRequest> = [
     "schemaVersion",
     "helperVersion",
@@ -374,7 +409,7 @@ function requireReceiptMatch(request: BlueBubblesHostRequest, receipt: BlueBubbl
     if (receipt[field] !== request[field]) throw new Error(`receipt ${field} does not match request`)
   }
   if (receipt.appPath !== BLUEBUBBLES_APP_PATH) throw new Error("receipt app path does not match")
-  if (receipt.plistPath !== expectedPlistPath(request)) throw new Error("receipt plist path does not match")
+  if (receipt.plistPath !== expectedPlistPath(targetHomeDir)) throw new Error("receipt plist path does not match")
   if (receipt.launchAgentLabel !== BLUEBUBBLES_LAUNCH_AGENT_LABEL) {
     throw new Error("receipt launch agent label does not match")
   }
@@ -398,15 +433,33 @@ export function collectCrossUserBlueBubblesHostAction(
   const attemptPath = blueBubblesHostAttemptPath(input.originHomeDir, input.requestId)
   if (!deps.existsSync(attemptPath)) throw new Error("BlueBubbles host attempt is missing")
   const attempt = readJson<BlueBubblesHostAttempt>(deps, attemptPath, "BlueBubbles host attempt")
-  if (attempt.status === "collected" && attempt.collection) return attempt.collection
-  if (attempt.schemaVersion !== BLUEBUBBLES_HOST_PROTOCOL_SCHEMA_VERSION || attempt.status !== "pending") {
+  if (attempt.schemaVersion !== BLUEBUBBLES_HOST_PROTOCOL_SCHEMA_VERSION) {
     throw new Error("BlueBubbles host attempt state is invalid")
   }
   const request = attempt.request
   validateRequestShape(request)
   if (request.requestId !== input.requestId) throw new Error("attempt request id does not match collection request")
+  if (typeof attempt.targetHomeDir !== "string" || !path.isAbsolute(attempt.targetHomeDir)) {
+    throw new Error("BlueBubbles host attempt target home is invalid")
+  }
+  if (attempt.status === "collected" && attempt.collection) {
+    if (attempt.collection.requestId !== request.requestId || attempt.collection.status !== "collected") {
+      throw new Error("stored collection request id does not match")
+    }
+    requireReceiptMatch(request, attempt.targetHomeDir, attempt.collection.receipt)
+    const expectedDetail = attempt.collection.receipt.result === "verified"
+      ? `launchd verified at ${attempt.collection.receipt.verifiedAt}; current service state requires a fresh helper run`
+      : `launchd helper reported failure at ${attempt.collection.receipt.verifiedAt}; current service state requires a fresh helper run`
+    if (attempt.collection.detail !== expectedDetail) throw new Error("stored collection detail does not match receipt")
+    return attempt.collection
+  }
+  if (attempt.status !== "pending") throw new Error("BlueBubbles host attempt state is invalid")
   const root = input.sharedRoot ?? BLUEBUBBLES_HOST_SHARED_ROOT
-  const receiptPath = path.join(sharedPaths(root).receipts, `${input.requestId}.json`)
+  const paths = sharedPaths(root)
+  const expectedUid = deps.currentUid()
+  validateManagedPath(deps, root, "shared root", "directory", expectedUid)
+  validateManagedPath(deps, paths.receipts, "shared receipt directory", "directory", expectedUid)
+  const receiptPath = path.join(paths.receipts, `${input.requestId}.json`)
   if (!deps.existsSync(receiptPath)) throw new Error("BlueBubbles host receipt is missing")
   const receiptStat = deps.lstatSync(receiptPath)
   if (receiptStat.isSymbolicLink?.()) throw new Error("BlueBubbles host receipt must not be a symbolic link")
@@ -414,7 +467,7 @@ export function collectCrossUserBlueBubblesHostAction(
     throw new Error(`receipt owner uid ${receiptStat.uid} does not match target uid ${request.uid}`)
   }
   const receipt = readJson<BlueBubblesHostReceipt>(deps, receiptPath, "BlueBubbles host receipt")
-  requireReceiptMatch(request, receipt)
+  requireReceiptMatch(request, attempt.targetHomeDir, receipt)
   const detail = receipt.result === "verified"
     ? `launchd verified at ${receipt.verifiedAt}; current service state requires a fresh helper run`
     : `launchd helper reported failure at ${receipt.verifiedAt}; current service state requires a fresh helper run`
