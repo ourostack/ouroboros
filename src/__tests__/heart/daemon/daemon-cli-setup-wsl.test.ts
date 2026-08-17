@@ -11,7 +11,10 @@ vi.mock("child_process", () => ({
   spawn: vi.fn().mockReturnValue({
     unref: vi.fn(),
     pid: 1234,
+    killed: false,
+    kill: vi.fn(),
     on: vi.fn(),
+    stdin: null,
     stdout: null,
     stderr: null,
   }),
