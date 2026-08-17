@@ -41,6 +41,25 @@ describe("mcp-serve CLI lifecycle", () => {
     expect(server.stop).toHaveBeenCalledOnce()
   })
 
+  it("deduplicates terminal callbacks when an input cannot remove queued listeners", async () => {
+    const listeners = new Map<string, () => void>()
+    const input = {
+      once: vi.fn((event: string, listener: () => void) => {
+        listeners.set(event, listener)
+        return input
+      }),
+      removeListener: vi.fn(() => input),
+    }
+    const server = fakeServer()
+    const promise = runMcpServeCliLifecycle(server, input)
+
+    listeners.get("end")?.()
+    listeners.get("close")?.()
+
+    await promise
+    expect(server.stop).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ["end", ["end"]],
     ["close", ["close"]],
