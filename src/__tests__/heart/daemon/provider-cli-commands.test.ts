@@ -8093,7 +8093,14 @@ describe("provider CLI command execution", () => {
       "/bb-webhook",
       "12000",
       "+1 415 555 0000, slugger@ouro.bot",
+      "clawdbot",
     ]
+    const setupBlueBubblesHost = vi.fn().mockResolvedValue({
+      summary: `human-required: run helper\ncollect: ouro bluebubbles host collect --request-id 502-${"ab".repeat(32)}`,
+      bridgeUsername: "clawdbot",
+      bridgeUid: 502,
+      bridgeHomeDir: "/Users/clawdbot",
+    })
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async (question) => {
@@ -8104,6 +8111,7 @@ describe("provider CLI command execution", () => {
         expect(question).toBe("BlueBubbles app password: ")
         return "bb-password"
       },
+      ...({ setupBlueBubblesHost } as unknown as Partial<OuroCliDeps>),
     })
     const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
@@ -8112,6 +8120,8 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("runtime/machines/machine_bb/config")
     expect(result).toContain("secret was not printed")
     expect(result).not.toContain("bb-password")
+    expect(result).toContain("human-required: run helper")
+    expect(result).not.toContain("point BlueBubbles")
     expect(output).toContain("Connect BlueBubbles for Slugger")
     expect(output).toContain("This is a local attachment for this machine.")
     expect(output).toContain("... saving BlueBubbles attachment")
@@ -8130,8 +8140,12 @@ describe("provider CLI command execution", () => {
         port: 18888,
         webhookPath: "/bb-webhook",
         requestTimeoutMs: 12000,
+        bridgeUsername: "clawdbot",
+        bridgeUid: 502,
+        bridgeHomeDir: "/Users/clawdbot",
       },
     })
+    expect(setupBlueBubblesHost).toHaveBeenCalledWith({ bridgeUsername: "clawdbot" })
 
     const agentJson = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
       senses?: { bluebubbles?: { enabled?: boolean; preserved?: string } }
