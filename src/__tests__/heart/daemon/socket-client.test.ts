@@ -224,6 +224,56 @@ describe("daemon socket client", () => {
     }
   }, 7_000)
 
+  it("enforces an absolute deadline when the daemon trickles response bytes", async () => {
+    vi.resetModules()
+    vi.doUnmock("net")
+    vi.doUnmock("../../../nerves/runtime")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-trickle-status-"))
+    const socketPath = path.join(root, "daemon.sock")
+    const clients = new Set<net.Socket>()
+    const response = JSON.stringify({ ok: true, message: "eventually" })
+    const server = net.createServer((socket) => {
+      clients.add(socket)
+      socket.once("data", () => {
+        let offset = 0
+        const interval = setInterval(() => {
+          if (offset >= response.length) {
+            clearInterval(interval)
+            socket.end()
+            return
+          }
+          socket.write(response[offset])
+          offset += 1
+        }, 15)
+        socket.once("close", () => clearInterval(interval))
+      })
+      socket.on("close", () => clients.delete(socket))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(socketPath, resolve)
+    })
+
+    try {
+      const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+      const startedAt = Date.now()
+      const error = await sendDaemonCommand(
+        socketPath,
+        { kind: "daemon.status" },
+        { timeoutMs: 60 },
+      ).catch((caught: unknown) => caught)
+      const durationMs = Date.now() - startedAt
+
+      expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
+      expect(durationMs).toBeGreaterThanOrEqual(40)
+      expect(durationMs).toBeLessThanOrEqual(180)
+    } finally {
+      for (const client of clients) client.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("settles exactly once when timeout races with end and error events", async () => {
     const emitNervesEvent = vi.fn()
     class MockConnection extends EventEmitter {

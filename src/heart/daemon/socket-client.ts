@@ -100,41 +100,48 @@ export function sendDaemonCommand(
     let raw = ""
     let settled = false
     const timeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_COMMAND_TIMEOUT_MS
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
 
-	    const resolveOnce = (response: DaemonResponse) => {
-	      /* v8 ignore next -- duplicate settlement guard; callers also guard event handlers before reaching this helper @preserve */
-	      if (settled) return
-	      settled = true
-	      resolve(response)
-	    }
-
-	    const rejectOnce = (error: unknown) => {
-	      /* v8 ignore next -- duplicate timeout/error races should not re-reject the command promise @preserve */
-	      if (settled) return
-	      settled = true
-	      reject(error)
+    const clearDeadline = (): void => {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
     }
 
-    if ("setTimeout" in client && typeof client.setTimeout === "function") {
-      client.setTimeout(timeoutMs, () => {
-        const error = new Error(`Daemon command ${command.kind} timed out after ${timeoutMs}ms waiting for a response.`) as NodeJS.ErrnoException
-        error.code = "ETIMEDOUT"
-        emitNervesEvent({
-          level: "error",
-          component: "daemon",
-          event: "daemon.socket_command_timeout",
-          message: "daemon socket command timed out",
-          meta: {
-            socketPath,
-            kind: command.kind,
-            timeoutMs,
-            error: error.message,
-          },
-        })
-        client.destroy()
-        rejectOnce(error)
+    const resolveOnce = (response: DaemonResponse) => {
+      /* v8 ignore next -- duplicate settlement guard; callers also guard event handlers before reaching this helper @preserve */
+      if (settled) return
+      settled = true
+      clearDeadline()
+      resolve(response)
+    }
+
+    const rejectOnce = (error: unknown) => {
+      /* v8 ignore next -- duplicate timeout/error races should not re-reject the command promise @preserve */
+      if (settled) return
+      settled = true
+      clearDeadline()
+      reject(error)
+    }
+
+    deadlineTimer = setTimeout(() => {
+      /* v8 ignore next -- terminal socket events clear this timer; guard protects a queued timer callback race @preserve */
+      if (settled) return
+      const error = new Error(`Daemon command ${command.kind} timed out after ${timeoutMs}ms waiting for a response.`) as NodeJS.ErrnoException
+      error.code = "ETIMEDOUT"
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.socket_command_timeout",
+        message: "daemon socket command timed out",
+        meta: {
+          socketPath,
+          kind: command.kind,
+          timeoutMs,
+          error: error.message,
+        },
       })
-    }
+      client.destroy()
+      rejectOnce(error)
+    }, timeoutMs)
 
     client.on("connect", () => {
       // Write the command + newline delimiter. DO NOT call client.end()
@@ -158,10 +165,10 @@ export function sendDaemonCommand(
     client.on("data", (chunk) => {
       raw += chunk.toString("utf-8")
     })
-	    client.on("error", (error) => {
-	      /* v8 ignore next -- duplicate post-settlement socket errors are ignored defensively @preserve */
-	      if (settled) return
-	      emitNervesEvent({
+    client.on("error", (error) => {
+      /* v8 ignore next -- duplicate post-settlement socket errors are ignored defensively @preserve */
+      if (settled) return
+      emitNervesEvent({
         level: "error",
         component: "daemon",
         event: "daemon.socket_command_error",
@@ -173,10 +180,10 @@ export function sendDaemonCommand(
         },
       })
       rejectOnce(error)
-	    })
-	    client.on("end", () => {
-	      /* v8 ignore next -- duplicate post-settlement socket end events are ignored defensively @preserve */
-	      if (settled) return
+    })
+    client.on("end", () => {
+      /* v8 ignore next -- duplicate post-settlement socket end events are ignored defensively @preserve */
+      if (settled) return
       const trimmed = raw.trim()
       if (trimmed.length === 0 && command.kind === "daemon.stop") {
         emitNervesEvent({
