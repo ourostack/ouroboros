@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import * as path from "path"
 import { installOuroCommand, diagnoseOuroPath, type OuroPathInstallerDeps } from "../../../heart/versioning/ouro-path-installer"
 import { OURO_RECOVERY_LAUNCHER_SCRIPT } from "../../../heart/versioning/ouro-recovery-launcher"
 import { emitNervesEvent } from "../../../nerves/runtime"
@@ -127,6 +128,26 @@ exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
     // When we can't read existing content, we should overwrite it
     expect(result.installed).toBe(true)
     expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("ouro-launcher.js")
+  })
+
+  it("repairs the launcher when its content cannot be read", () => {
+    const wrapperPath = "/home/test/.ouro-cli/bin/ouro"
+    const launcherPath = "/home/test/.ouro-cli/bin/ouro-launcher.js"
+    let launcherReads = 0
+    const deps = makeDeps({
+      existsSync: (p) => p === wrapperPath || p === launcherPath,
+      readFileSync: (p) => {
+        if (p === wrapperPath) return CORRECT_CONTENT
+        if (p === launcherPath && launcherReads++ === 0) throw new Error("EACCES")
+        if (p === launcherPath) return written[launcherPath]
+        throw new Error("ENOENT")
+      },
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.installed).toBe(true)
+    expect(written[launcherPath]).toContain("version-intent.json")
   })
 
   it("skips on Windows", () => {
@@ -277,6 +298,17 @@ exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
 
     expect(result.installed).toBe(false)
     expect(result.pathReady).toBe(false)
+  })
+
+  it("ignores empty PATH segments while diagnosing the managed command", () => {
+    const result = diagnoseOuroPath({
+      homeDir: "/home/test",
+      envPath: `${path.delimiter}/usr/bin`,
+      existsSync: () => false,
+      readFileSync: () => { throw new Error("ENOENT") },
+    })
+
+    expect(result.status).toBe("missing")
   })
 
   it("reports a PATH shadow when another ouro appears before the managed wrapper", () => {

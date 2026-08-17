@@ -38,6 +38,8 @@ describe("version intent", () => {
     fs.mkdirSync(path.join(homeDir, ".ouro-cli"), { recursive: true })
     fs.writeFileSync(path.join(homeDir, ".ouro-cli", "version-intent.json"), JSON.stringify({ mode: "pinned" }))
     expect(() => readVersionIntent({ homeDir })).toThrow("invalid version intent")
+    fs.writeFileSync(path.join(homeDir, ".ouro-cli", "version-intent.json"), "{not-json")
+    expect(() => readVersionIntent({ homeDir })).toThrow("invalid version intent: malformed JSON")
   })
 
   it("leaves previous intent authoritative when atomic replacement fails", async () => {
@@ -51,5 +53,15 @@ describe("version intent", () => {
     )).toThrow("interrupted")
 
     expect(readVersionIntent({ homeDir })?.targetVersion).toBe("old")
+  })
+
+  it("reports non-Error atomic replacement failures without replacing intent", async () => {
+    const { writeVersionIntent } = await import("../../../heart/versioning/version-intent")
+    const homeDir = home()
+
+    expect(() => writeVersionIntent(
+      { schemaVersion: 1, mode: "latest", targetVersion: "new" },
+      { homeDir, renameSync: () => { throw "rename interrupted" } },
+    )).toThrow("rename interrupted")
   })
 })
