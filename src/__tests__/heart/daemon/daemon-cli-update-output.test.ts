@@ -64,6 +64,14 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    bundlesRoot: "/tmp/ouro-update-output-tests-no-bundles",
+    listDiscoveredAgents: vi.fn(() => []),
+    runBootSyncProbeImpl: vi.fn(async () => ({ findings: [] })),
+    sleep: vi.fn(async () => undefined),
+    startupPollIntervalMs: 1,
+    startupStabilityWindowMs: 0,
+    startupTimeoutMs: 100,
+    finalDaemonHealthSettleTimeoutMs: 0,
     ...overrides,
   }
 }
