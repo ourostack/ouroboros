@@ -44,6 +44,7 @@ afterEach(() => {
 
 describe("package asset validation", () => {
   it("declares RepairGuide files as required package assets", () => {
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("assets/bluebubbles-host")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/agent.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/psyche/IDENTITY.md")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/psyche/SOUL.md")
