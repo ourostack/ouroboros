@@ -17,6 +17,7 @@ vi.mock("../../../heart/daemon/bluebubbles-host", () => ({
 }))
 
 import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
+import { setupBlueBubblesHostForConnect } from "../../../heart/daemon/cli-exec"
 
 function deps(): OuroCliDeps {
   return {
@@ -68,6 +69,10 @@ describe("ouro bluebubbles host CLI", () => {
       requestId,
       json: true,
     })
+    expect(parseOuroCommand(["bluebubbles", "host", "collect", "--request-id", requestId])).toEqual({
+      kind: "bluebubbles.host.collect",
+      requestId,
+    })
   })
 
   it.each(["install", "status", "repair", "remove"] as const)("parses the %s lifecycle action", (action) => {
@@ -89,6 +94,93 @@ describe("ouro bluebubbles host CLI", () => {
     expect(() => parseOuroCommand(["bluebubbles", "host", "install", "--username", "clawdbot"])).toThrow("--username, --uid, and --home")
     expect(() => parseOuroCommand(["bluebubbles", "host", "install", "--uid", "not-a-number"])).toThrow("--uid")
     expect(() => parseOuroCommand(["bluebubbles", "host", "collect"])).toThrow("--request-id")
+    expect(() => parseOuroCommand(["bluebubbles", "host", "collect", "--request-id", "request", "--wat"])).toThrow("install|status|repair|remove|collect")
+    expect(() => parseOuroCommand(["bluebubbles", "host", "collect", "--request-id"])).toThrow("install|status|repair|remove|collect")
+    expect(() => parseOuroCommand(["bluebubbles", "host", "status", "--wat"])).toThrow("install|status|repair|remove|collect")
+    expect(() => parseOuroCommand(["bluebubbles", "host", "status", "--username"])).toThrow("install|status|repair|remove|collect")
+    expect(() => parseOuroCommand(["bluebubbles", "host", "status", "--uid"])).toThrow("install|status|repair|remove|collect")
+    expect(() => parseOuroCommand(["bluebubbles", "host", "status", "--home"])).toThrow("install|status|repair|remove|collect")
+  })
+
+  it("sets up the standard same-user host during connect", async () => {
+    hostMocks.runAction.mockResolvedValueOnce({
+      action: "install",
+      changed: true,
+      state: { service: "loaded", process: "running" },
+    })
+
+    const result = await setupBlueBubblesHostForConnect(
+      "ari",
+      "http://127.0.0.1:1234",
+      12_000,
+      deps(),
+      {
+        userInfo: () => ({ username: "ari", uid: 501, homedir: "/Users/ari" }),
+        execFileSync: vi.fn(),
+      },
+    )
+
+    expect(hostMocks.installHelper).toHaveBeenCalledOnce()
+    expect(hostMocks.createDefaultDeps).toHaveBeenCalledWith(expect.objectContaining({
+      serverUrl: "http://127.0.0.1:1234",
+      requestTimeoutMs: 12_000,
+    }))
+    expect(hostMocks.runAction).toHaveBeenCalledWith("install", expect.any(Object))
+    expect(result).toEqual({
+      summary: "host: native LaunchAgent loaded; process running",
+      bridgeUsername: "ari",
+      bridgeUid: 501,
+      bridgeHomeDir: "/Users/ari",
+    })
+  })
+
+  it("creates the standard cross-user handoff during connect", async () => {
+    const execFileSync = vi.fn()
+      .mockReturnValueOnce("502\n")
+      .mockReturnValueOnce("NFSHomeDirectory: /Users/clawdbot\n")
+
+    const result = await setupBlueBubblesHostForConnect(
+      "clawdbot",
+      "http://127.0.0.1:1234",
+      12_000,
+      deps(),
+      {
+        userInfo: () => ({ username: "ari", uid: 501, homedir: "/Users/ari" }),
+        execFileSync,
+      },
+    )
+
+    expect(execFileSync).toHaveBeenNthCalledWith(1, "id", ["-u", "clawdbot"], { encoding: "utf8" })
+    expect(execFileSync).toHaveBeenNthCalledWith(2, "dscl", [".", "-read", "/Users/clawdbot", "NFSHomeDirectory"], { encoding: "utf8" })
+    expect(hostMocks.requestCrossUser).toHaveBeenCalledWith({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: "/Users/clawdbot",
+      originHomeDir: "/Users/ari",
+    })
+    expect(result.summary).toContain("human-required")
+    expect(result.summary).toContain("collect:")
+  })
+
+  it.each([
+    ["not-a-uid", "NFSHomeDirectory: /Users/clawdbot\n"],
+    ["502\n", "NFSHomeDirectory:   \n"],
+  ])("rejects an unresolved cross-user account (%s)", async (uidText, homeRecord) => {
+    const execFileSync = vi.fn()
+      .mockReturnValueOnce(uidText)
+      .mockReturnValueOnce(homeRecord)
+
+    await expect(setupBlueBubblesHostForConnect(
+      "clawdbot",
+      "http://127.0.0.1:1234",
+      12_000,
+      deps(),
+      {
+        userInfo: () => ({ username: "ari", uid: 501, homedir: "/Users/ari" }),
+        execFileSync,
+      },
+    )).rejects.toThrow("could not resolve BlueBubbles macOS account clawdbot")
   })
 
   it("executes a same-user action and renders truthful JSON", async () => {

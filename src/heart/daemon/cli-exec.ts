@@ -4282,17 +4282,24 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   })
 }
 
-async function setupBlueBubblesHostForConnect(
+export async function setupBlueBubblesHostForConnect(
   bridgeUsername: string,
   serverUrl: string,
   requestTimeoutMs: number,
   deps: OuroCliDeps,
+  hostAccountDeps: {
+    userInfo: () => { username: string; uid: number; homedir: string }
+    execFileSync: (file: string, args: string[], options: { encoding: "utf8" }) => string
+  } = {
+    userInfo: os.userInfo,
+    execFileSync: (file, args, options) => execFileSync(file, args, options),
+  },
 ): Promise<{ summary: string; bridgeUsername: string; bridgeUid: number; bridgeHomeDir: string }> {
   if (deps.setupBlueBubblesHost) return deps.setupBlueBubblesHost({ bridgeUsername })
   installBlueBubblesHostSharedHelper({
     assetPath: path.resolve(__dirname, "../../../assets/bluebubbles-host"),
   })
-  const currentUser = os.userInfo()
+  const currentUser = hostAccountDeps.userInfo()
   if (bridgeUsername === currentUser.username) {
     const host = await runBlueBubblesHostAction("install", createDefaultBlueBubblesHostDeps({ serverUrl, requestTimeoutMs, fetchImpl: deps.fetchImpl }))
     return {
@@ -4302,9 +4309,9 @@ async function setupBlueBubblesHostForConnect(
       bridgeHomeDir: currentUser.homedir,
     }
   }
-  const uidText = execFileSync("id", ["-u", bridgeUsername], { encoding: "utf8" }).trim()
+  const uidText = hostAccountDeps.execFileSync("id", ["-u", bridgeUsername], { encoding: "utf8" }).trim()
   const bridgeUid = Number(uidText)
-  const homeRecord = execFileSync("dscl", [".", "-read", `/Users/${bridgeUsername}`, "NFSHomeDirectory"], { encoding: "utf8" }).trim()
+  const homeRecord = hostAccountDeps.execFileSync("dscl", [".", "-read", `/Users/${bridgeUsername}`, "NFSHomeDirectory"], { encoding: "utf8" }).trim()
   const bridgeHomeDir = homeRecord.replace(/^NFSHomeDirectory:\s*/, "").trim()
   if (!Number.isInteger(bridgeUid) || !bridgeHomeDir) throw new Error(`could not resolve BlueBubbles macOS account ${bridgeUsername}`)
   const handoff = requestCrossUserBlueBubblesHostAction({
