@@ -1274,6 +1274,32 @@ describe("runAgent tool loop guard", () => {
       }))
     })
 
+    it("freezes intervening assistant and tool messages when protection is reached later in the same loop", async () => {
+      mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "printf ready" }), "call_prepare"))
+      mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "docker restart calibre-web" }), "call_restart_after_prepare"))
+      const execTool = vi.fn().mockResolvedValue("ready")
+      const propose = vi.fn().mockResolvedValue({
+        approvalId: "11111111-1111-4111-8111-111111111111",
+        checkpointDigest: "a".repeat(64),
+        suspendedSessionRevision: "b".repeat(64),
+      })
+      const { runAgent } = await import("../../heart/core")
+
+      await runAgent([{ role: "user", content: "prepare then restart" }], makeCallbacks(), "cli", undefined, {
+        execTool,
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+      } as any)
+
+      expect(propose).toHaveBeenCalledWith(expect.objectContaining({
+        preCallMessages: [
+          { role: "user", content: "prepare then restart" },
+          expect.objectContaining({ role: "assistant", tool_calls: [expect.objectContaining({ id: "call_prepare" })] }),
+          { role: "tool", tool_call_id: "call_prepare", content: "ready" },
+        ],
+      }))
+    })
+
     it.each([
       ["protected first", [
         { index: 0, id: "call_restart", function: { name: "shell", arguments: JSON.stringify({ command: "docker restart calibre-web" }) } },

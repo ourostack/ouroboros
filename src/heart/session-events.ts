@@ -89,6 +89,97 @@ export interface SessionEnvelope {
   structuredOutputs?: StructuredOutput[]
   lastUsage: SessionUsageData | null
   state: SessionContinuitySnapshot
+  approvalSuspensions?: SessionApprovalSuspensionCheckpoint[]
+}
+
+export interface SessionApprovalSuspensionCheckpoint {
+  approvalId: string
+  checkpointDigest: string
+  baseSessionRevision: string
+  suspendedSessionRevision: string
+  argumentDigest: string
+  schemaDigest: string
+  toolDigest: string
+  policyDigest: string
+  preCallDigest: string
+  preCallMessages: OpenAI.ChatCompletionMessageParam[]
+  frozenAssistantMessage: Record<string, unknown>
+}
+
+const APPROVAL_HASH = /^[a-f0-9]{64}$/
+
+function normalizeApprovalSuspensions(value: unknown): SessionApprovalSuspensionCheckpoint[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return []
+    const record = item as Record<string, unknown>
+    if (
+      typeof record.approvalId !== "string"
+      || typeof record.checkpointDigest !== "string"
+      || !APPROVAL_HASH.test(record.checkpointDigest)
+      || typeof record.baseSessionRevision !== "string"
+      || !APPROVAL_HASH.test(record.baseSessionRevision)
+      || typeof record.suspendedSessionRevision !== "string"
+      || !APPROVAL_HASH.test(record.suspendedSessionRevision)
+      || typeof record.argumentDigest !== "string"
+      || !APPROVAL_HASH.test(record.argumentDigest)
+      || typeof record.schemaDigest !== "string"
+      || !APPROVAL_HASH.test(record.schemaDigest)
+      || typeof record.toolDigest !== "string"
+      || !APPROVAL_HASH.test(record.toolDigest)
+      || typeof record.policyDigest !== "string"
+      || !APPROVAL_HASH.test(record.policyDigest)
+      || typeof record.preCallDigest !== "string"
+      || !APPROVAL_HASH.test(record.preCallDigest)
+      || !Array.isArray(record.preCallMessages)
+      || !record.frozenAssistantMessage
+      || typeof record.frozenAssistantMessage !== "object"
+      || Array.isArray(record.frozenAssistantMessage)
+    ) return []
+    return [{
+      approvalId: record.approvalId,
+      checkpointDigest: record.checkpointDigest,
+      baseSessionRevision: record.baseSessionRevision,
+      suspendedSessionRevision: record.suspendedSessionRevision,
+      argumentDigest: record.argumentDigest,
+      schemaDigest: record.schemaDigest,
+      toolDigest: record.toolDigest,
+      policyDigest: record.policyDigest,
+      preCallDigest: record.preCallDigest,
+      preCallMessages: structuredClone(record.preCallMessages) as OpenAI.ChatCompletionMessageParam[],
+      frozenAssistantMessage: structuredClone(record.frozenAssistantMessage) as Record<string, unknown>,
+    }]
+  })
+}
+
+export function attachApprovalSuspensionCheckpoint(
+  envelope: SessionEnvelope,
+  checkpoint: SessionApprovalSuspensionCheckpoint,
+): SessionEnvelope {
+  const existing = envelope.approvalSuspensions ?? []
+  const retained = existing.filter((item) => item.approvalId !== checkpoint.approvalId)
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.approval_checkpoint_attached",
+    message: "approval suspension checkpoint attached outside provider projection",
+    meta: { approvalId: checkpoint.approvalId },
+  })
+  return { ...envelope, approvalSuspensions: [...retained, structuredClone(checkpoint)] }
+}
+
+export function listApprovalSuspensionCheckpoints(envelope: SessionEnvelope): SessionApprovalSuspensionCheckpoint[] {
+  return structuredClone(envelope.approvalSuspensions ?? [])
+}
+
+export function removeApprovalSuspensionCheckpoint(envelope: SessionEnvelope, approvalId: string): SessionEnvelope {
+  const approvalSuspensions = (envelope.approvalSuspensions ?? []).filter((item) => item.approvalId !== approvalId)
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.approval_checkpoint_removed",
+    message: "approval suspension checkpoint removed",
+    meta: { approvalId },
+  })
+  return { ...envelope, approvalSuspensions }
 }
 
 interface SessionEnvelopeV1 {
@@ -1180,6 +1271,7 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       : normalizeStructuredOutputs(record.structuredOutputs),
     lastUsage: normalizeUsage(record.lastUsage),
     state: normalizeContinuityState(record.state),
+    approvalSuspensions: normalizeApprovalSuspensions(record.approvalSuspensions),
   }
 }
 
@@ -1345,6 +1437,7 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
       structuredOutputs: extractStructuredOutputsFromEvents(prunedEvents),
       lastUsage: normalizeUsage(options.lastUsage),
       state: normalizeContinuityState(options.state),
+      approvalSuspensions: structuredClone(options.existing?.approvalSuspensions ?? []),
     },
     evictedEvents,
   }

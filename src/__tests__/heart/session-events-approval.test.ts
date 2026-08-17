@@ -10,12 +10,14 @@ import {
   attachApprovalSuspensionCheckpoint,
   buildCanonicalSessionEnvelope,
   listApprovalSuspensionCheckpoints,
+  parseSessionEnvelope,
   projectProviderMessages,
   removeApprovalSuspensionCheckpoint,
   type SessionEnvelope,
 } from "../../heart/session-events"
 import {
   commitApprovalProposal,
+  digestApprovalSuspensionCheckpointPayload,
   recoverApprovalProposals,
   type ApprovalSuspensionCheckpoint,
   type ApprovalSuspensionCheckpointStore,
@@ -79,6 +81,11 @@ function checkpoint(): ApprovalSuspensionCheckpoint {
     checkpointDigest: "e".repeat(64),
     baseSessionRevision: "d".repeat(64),
     suspendedSessionRevision: "f".repeat(64),
+    argumentDigest: "1".repeat(64),
+    schemaDigest: "a".repeat(64),
+    toolDigest: "b".repeat(64),
+    policyDigest: "c".repeat(64),
+    preCallDigest: "2".repeat(64),
     preCallMessages: [{ role: "user", content: "restart calibre-web" }],
     frozenAssistantMessage: proposal().frozenAssistantMessage,
   }
@@ -89,7 +96,7 @@ function sessionCheckpointStore(initial = baseEnvelope()): ApprovalSuspensionChe
   return {
     envelope: () => envelope,
     write: vi.fn((draft) => {
-      const committed = { ...draft, checkpointDigest: "e".repeat(64), suspendedSessionRevision: "f".repeat(64) }
+      const committed = { ...draft, checkpointDigest: digestApprovalSuspensionCheckpointPayload(draft), suspendedSessionRevision: "f".repeat(64) }
       envelope = attachApprovalSuspensionCheckpoint(envelope, committed)
       return { checkpointDigest: committed.checkpointDigest, suspendedSessionRevision: committed.suspendedSessionRevision }
     }),
@@ -104,6 +111,7 @@ function tokenStore(): ApprovalTokenStore {
   return {
     put: (approvalId, token) => { records.set(approvalId, token) },
     has: (approvalId) => records.has(approvalId),
+    get: (approvalId) => records.get(approvalId) ?? null,
     remove: (approvalId) => { records.delete(approvalId) },
   }
 }
@@ -125,6 +133,31 @@ afterEach(() => {
 })
 
 describe("approval suspension session projection", () => {
+  it("round-trips suspension checkpoints through durable envelope parsing", () => {
+    const attached = attachApprovalSuspensionCheckpoint(baseEnvelope(), checkpoint())
+
+    const parsed = parseSessionEnvelope(JSON.parse(JSON.stringify(attached)))
+
+    expect(parsed).not.toBeNull()
+    expect(listApprovalSuspensionCheckpoints(parsed!)).toEqual([checkpoint()])
+  })
+
+  it("preserves suspension checkpoints while rebuilding the canonical envelope", () => {
+    const existing = attachApprovalSuspensionCheckpoint(baseEnvelope(), checkpoint())
+    const messages = projectProviderMessages(existing)
+
+    const rebuilt = buildCanonicalSessionEnvelope({
+      existing,
+      previousMessages: messages,
+      currentMessages: messages,
+      trimmedMessages: messages,
+      recordedAt: "2026-08-17T17:31:00.000Z",
+      projectionBasis: { maxTokens: 80_000, contextMargin: 20, inputTokens: 10 },
+    }).envelope
+
+    expect(listApprovalSuspensionCheckpoints(rebuilt)).toEqual([checkpoint()])
+  })
+
   it.each([
     ["journal-only", "afterJournalPrepare"],
     ["token-only", "afterTokenPersist"],

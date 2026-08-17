@@ -1,12 +1,14 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { openApprovalStore, type ApprovalStore, type PrepareApprovalInput } from "../../heart/approval-store"
 import {
   commitApprovalProposal,
+  digestApprovalSuspensionCheckpointPayload,
   recoverApprovalProposals,
   type ApprovalSuspensionCheckpoint,
   type ApprovalSuspensionCheckpointStore,
@@ -62,21 +64,21 @@ function proposal(): PrepareApprovalInput {
   }
 }
 
-function checkpointStore(attestation: { checkpointDigest: string; suspendedSessionRevision: string } = {
-  checkpointDigest: "e".repeat(64),
-  suspendedSessionRevision: "f".repeat(64),
-}): ApprovalSuspensionCheckpointStore & { records: Map<string, ApprovalSuspensionCheckpoint> } {
+function checkpointStore(attestation?: { checkpointDigest: string; suspendedSessionRevision: string }): ApprovalSuspensionCheckpointStore & { records: Map<string, ApprovalSuspensionCheckpoint> } {
   const records = new Map<string, ApprovalSuspensionCheckpoint>()
   return {
     records,
     write: vi.fn((draft) => {
       const checkpoint: ApprovalSuspensionCheckpoint = {
         ...structuredClone(draft),
-        checkpointDigest: attestation.checkpointDigest,
-        suspendedSessionRevision: attestation.suspendedSessionRevision,
+        checkpointDigest: attestation?.checkpointDigest ?? digestApprovalSuspensionCheckpointPayload(draft),
+        suspendedSessionRevision: attestation?.suspendedSessionRevision ?? "f".repeat(64),
       }
       records.set(checkpoint.approvalId, checkpoint)
-      return structuredClone(attestation)
+      return {
+        checkpointDigest: checkpoint.checkpointDigest,
+        suspendedSessionRevision: checkpoint.suspendedSessionRevision,
+      }
     }),
     read: vi.fn((approvalId) => structuredClone(records.get(approvalId) ?? null)),
     list: vi.fn(() => [...records.values()].map((record) => structuredClone(record))),
@@ -90,6 +92,7 @@ function tokenStore(): ApprovalTokenStore & { records: Map<string, string> } {
     records,
     put: vi.fn((approvalId, token) => { records.set(approvalId, token) }),
     has: vi.fn((approvalId) => records.has(approvalId)),
+    get: vi.fn((approvalId) => records.get(approvalId) ?? null),
     remove: vi.fn((approvalId) => { records.delete(approvalId) }),
   }
 }
@@ -117,11 +120,15 @@ describe("approval proposal commit recovery", () => {
     expect(tokens.records.get(UUID)).toBe(committed.decisionToken)
     expect(checkpoints.records.get(UUID)).toMatchObject({
       approvalId: UUID,
-      checkpointDigest: "e".repeat(64),
+      checkpointDigest: committed.record.checkpointDigest,
       baseSessionRevision: "d".repeat(64),
       suspendedSessionRevision: "f".repeat(64),
       preCallMessages,
       frozenAssistantMessage: proposal().frozenAssistantMessage,
+      argumentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      schemaDigest: "a".repeat(64),
+      toolDigest: "b".repeat(64),
+      policyDigest: "c".repeat(64),
     })
     approvals.close()
   })
@@ -226,6 +233,55 @@ describe("approval proposal commit recovery", () => {
 
     recoverApprovalProposals({ approvalStore: approvals, checkpointStore: checkpoints, tokenStore: tokens })
     expect(approvals.read(UUID)).toMatchObject({ state: "drifted", reason: expect.stringContaining("checkpoint") })
+    expect(tokens.records.has(UUID)).toBe(false)
+    expect(checkpoints.records.has(UUID)).toBe(false)
+    approvals.close()
+  })
+
+  it("terminalizes a tampered pre-call transcript instead of activating it", () => {
+    const approvals = store()
+    const checkpoints = checkpointStore()
+    const tokens = tokenStore()
+
+    expect(() => commitApprovalProposal({
+      approvalStore: approvals,
+      checkpointStore: checkpoints,
+      tokenStore: tokens,
+      proposal: proposal(),
+      preCallMessages: [{ role: "user", content: "restart" }],
+      hooks: { afterCheckpointWrite: () => { throw new Error("crash after checkpoint") } },
+    })).toThrow("crash after checkpoint")
+    checkpoints.records.get(UUID)!.preCallMessages = [{ role: "user", content: "different request" }]
+    checkpoints.records.get(UUID)!.preCallDigest = createHash("sha256")
+      .update(JSON.stringify(checkpoints.records.get(UUID)!.preCallMessages), "utf8")
+      .digest("hex")
+
+    recoverApprovalProposals({ approvalStore: approvals, checkpointStore: checkpoints, tokenStore: tokens })
+
+    expect(approvals.read(UUID)).toMatchObject({ state: "drifted", reason: expect.stringContaining("checkpoint") })
+    expect(tokens.records.has(UUID)).toBe(false)
+    expect(checkpoints.records.has(UUID)).toBe(false)
+    approvals.close()
+  })
+
+  it("terminalizes a token mapping that does not match canonical journal authority", () => {
+    const approvals = store()
+    const checkpoints = checkpointStore()
+    const tokens = tokenStore()
+
+    expect(() => commitApprovalProposal({
+      approvalStore: approvals,
+      checkpointStore: checkpoints,
+      tokenStore: tokens,
+      proposal: proposal(),
+      preCallMessages: [{ role: "user", content: "restart" }],
+      hooks: { afterCheckpointWrite: () => { throw new Error("crash after checkpoint") } },
+    })).toThrow("crash after checkpoint")
+    tokens.records.set(UUID, "wrong-token")
+
+    recoverApprovalProposals({ approvalStore: approvals, checkpointStore: checkpoints, tokenStore: tokens })
+
+    expect(approvals.read(UUID)).toMatchObject({ state: "drifted", reason: expect.stringContaining("token") })
     expect(tokens.records.has(UUID)).toBe(false)
     expect(checkpoints.records.has(UUID)).toBe(false)
     approvals.close()
