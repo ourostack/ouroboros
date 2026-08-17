@@ -4,6 +4,7 @@ import * as path from "path"
 
 const packageJson = require(path.resolve(__dirname, "../../../package.json"))
 const wrapperPackageJson = require(path.resolve(__dirname, "../../../packages/ouro.bot/package.json"))
+const mailboxPackageJson = require(path.resolve(__dirname, "../../../packages/mailbox-ui/package.json"))
 const {
   PACKAGE_PAYLOAD_PATH_PREFIXES,
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
@@ -47,5 +48,9 @@ describe("package metadata", () => {
   it("keeps current mail parsing fixes while overriding the vulnerable merge implementation", () => {
     expect(packageJson.dependencies.mailparser).toBe("^3.9.15")
     expect(packageJson.overrides["deepmerge-ts"]).toBe("^8.0.1")
+  })
+
+  it("keeps the mailbox build tool above the patched Vite floor", () => {
+    expect(mailboxPackageJson.devDependencies.vite).toBe("^6.4.3")
   })
 })
