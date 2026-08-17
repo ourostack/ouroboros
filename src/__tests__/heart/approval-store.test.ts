@@ -6,6 +6,8 @@ import * as path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 
+import { createLogger, type LogEvent } from "../../nerves"
+import { setRuntimeLogger } from "../../nerves/runtime"
 import {
   ApprovalStoreError,
   canonicalApprovalArguments,
@@ -99,6 +101,7 @@ function decisionInput(decisionToken: string, overrides: Record<string, unknown>
 }
 
 afterEach(() => {
+  setRuntimeLogger(null)
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -187,6 +190,27 @@ describe("approval store", () => {
     expect(() => parseApprovalRecord({ ...record, state: "succeeded", result: null })).toThrowError(ApprovalStoreError)
     expect(() => parseApprovalRecord({ ...record, argumentDigest: "0".repeat(64) })).toThrowError(ApprovalStoreError)
     expect(() => parseApprovalRecord("corrupt")).toThrowError(ApprovalStoreError)
+  })
+
+  it.each([
+    ["ownerId", 42],
+    ["ownerId", ""],
+    ["attemptedAt", 42],
+    ["attemptedAt", "yesterday"],
+    ["reason", 42],
+    ["reason", ""],
+    ["result", 42],
+    ["result", ""],
+    ["transportMessageId", 42],
+    ["transportMessageId", ""],
+    ["suspendedSessionRevision", 42],
+    ["suspendedSessionRevision", "not-a-revision"],
+  ])("rejects a malformed non-null %s value (%s)", (field, malformed) => {
+    const store = open()
+    const { record } = store.prepare(proposalInput())
+    store.close()
+
+    expect(() => parseApprovalRecord({ ...record, [field]: malformed })).toThrowError(ApprovalStoreError)
   })
 
   it("fails closed when a persisted record is malformed", () => {
@@ -356,6 +380,76 @@ describe("approval store", () => {
     claimant.close()
   })
 
+  it("rechecks expiry at the claim CAS boundary without requiring a competing writer", () => {
+    const root = makeRoot()
+    let clock = NOW
+    const store = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"),
+      now: () => new Date(clock),
+      randomUUID: () => UUID,
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+      hooks: { beforeClaimCas: () => { clock = EXPIRES } },
+    })
+    const proposed = makeProposed(store)
+
+    expect(store.decide(decisionInput(proposed.decisionToken))).toMatchObject({
+      state: "expired",
+      ownerId: null,
+      epoch: 0,
+    })
+    expect(store.read(UUID)?.state).toBe("expired")
+    store.close()
+  })
+
+  it("discovers and terminalizes stranded preparing records without inventing an owner or attempt", () => {
+    const store = open()
+    const prepared = store.prepare(proposalInput())
+
+    expect(store.listPreparing()).toEqual([prepared.record])
+    const abandoned = store.recoverPreparing({
+      approvalId: UUID,
+      state: "abandoned_before_attempt",
+      reason: "checkpoint was never written",
+    })
+    expect(abandoned).toMatchObject({
+      state: "abandoned_before_attempt",
+      ownerId: null,
+      epoch: 0,
+      attemptedAt: null,
+      reason: "checkpoint was never written",
+    })
+    expect(store.recoverPreparing({
+      approvalId: UUID,
+      state: "abandoned_before_attempt",
+      reason: "checkpoint was never written",
+    })).toEqual(abandoned)
+    expect(store.listPreparing()).toEqual([])
+    store.close()
+  })
+
+  it("can idempotently mark a stranded preparing record drifted without owner or attempt", () => {
+    const store = open()
+    store.prepare(proposalInput())
+
+    const drifted = store.recoverPreparing({
+      approvalId: UUID,
+      state: "drifted",
+      reason: "checkpoint digest does not match",
+    })
+    expect(drifted).toMatchObject({ state: "drifted", ownerId: null, epoch: 0, attemptedAt: null })
+    expect(store.recoverPreparing({
+      approvalId: UUID,
+      state: "drifted",
+      reason: "checkpoint digest does not match",
+    })).toEqual(drifted)
+    expect(() => store.recoverPreparing({
+      approvalId: UUID,
+      state: "abandoned_before_attempt",
+      reason: "different recovery",
+    })).toThrowError(ApprovalStoreError)
+    store.close()
+  })
+
   it("uses owner and epoch for the claimed-to-attempted CAS", () => {
     const store = open()
     const proposed = makeProposed(store)
@@ -502,5 +596,80 @@ describe("approval store", () => {
       updatedAt: NOW,
     })
     reopened.close()
+  })
+
+  it("emits a static operation event for every public API and marks representative errors", () => {
+    const events: LogEvent[] = []
+    setRuntimeLogger(createLogger({ level: "debug", sinks: [(event) => events.push(event)] }))
+    const store = open()
+    const prepared = store.prepare(proposalInput())
+    store.listPreparing()
+    expect(() => store.activate({
+      approvalId: UUID,
+      checkpointDigest: "0".repeat(64),
+      suspendedSessionRevision: "f".repeat(64),
+    })).toThrowError(ApprovalStoreError)
+    store.activate({
+      approvalId: UUID,
+      checkpointDigest: prepared.record.checkpointDigest,
+      suspendedSessionRevision: "f".repeat(64),
+    })
+    store.bindPrompt({
+      approvalId: UUID,
+      transport: "telegram",
+      transportChatId: "7",
+      transportMessageId: "99",
+    })
+    expect(() => store.decide(decisionInput("wrong"))).toThrowError(ApprovalStoreError)
+    const claimed = store.decide(decisionInput(prepared.decisionToken))
+    expect(() => store.expire({ approvalId: UUID })).toThrowError(ApprovalStoreError)
+    expect(() => store.markAttempted({ approvalId: UUID, ownerId: "wrong", epoch: claimed.epoch })).toThrowError(ApprovalStoreError)
+    const attempted = store.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+    expect(() => store.abandonBeforeAttempt({
+      approvalId: UUID,
+      ownerId: attempted.ownerId!,
+      epoch: attempted.epoch,
+      reason: "too late",
+    })).toThrowError(ApprovalStoreError)
+    store.complete({
+      approvalId: UUID,
+      ownerId: attempted.ownerId!,
+      epoch: attempted.epoch,
+      state: "succeeded",
+      result: "ok",
+    })
+    store.read(UUID)
+
+    const recovery = open()
+    recovery.prepare(proposalInput())
+    expect(() => recovery.recoverPreparing({ approvalId: UUID, state: "drifted", reason: "" })).toThrowError(ApprovalStoreError)
+    recovery.recoverPreparing({ approvalId: UUID, state: "drifted", reason: "mismatch" })
+    recovery.close()
+    store.close()
+
+    const operationEvents = events.filter((event) => event.event.startsWith("approval.store_"))
+    expect(new Set(operationEvents.map((event) => event.event))).toEqual(new Set([
+      "approval.store_prepare",
+      "approval.store_activate",
+      "approval.store_bind_prompt",
+      "approval.store_decide",
+      "approval.store_expire",
+      "approval.store_mark_attempted",
+      "approval.store_abandon_before_attempt",
+      "approval.store_complete",
+      "approval.store_read",
+      "approval.store_list_preparing",
+      "approval.store_recover_preparing",
+      "approval.store_close",
+    ]))
+    expect(operationEvents.filter((event) => event.level === "error").map((event) => event.event)).toEqual(expect.arrayContaining([
+      "approval.store_activate",
+      "approval.store_decide",
+      "approval.store_expire",
+      "approval.store_mark_attempted",
+      "approval.store_abandon_before_attempt",
+      "approval.store_recover_preparing",
+    ]))
+    expect(operationEvents.every((event) => Object.keys(event.meta).length > 0)).toBe(true)
   })
 })
