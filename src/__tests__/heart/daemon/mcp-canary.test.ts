@@ -496,6 +496,21 @@ describe("mcp canary", () => {
     expect(result.evidence).toEqual(expect.objectContaining({ phase: "initialize" }))
   })
 
+  it.each([null, [], "response", 42])("rejects a non-object JSON-RPC envelope: %j", async (payload) => {
+    const child = createManualChild()
+    child.stdin.on("data", () => {
+      child.stdout.write(JSON.stringify(payload) + "\n")
+    })
+
+    const result = await runMcpStatusCanary({ agent: "slugger", timeoutMs: 25, spawnImpl: spawnFake(child) })
+
+    expect(result).toMatchObject({
+      ok: false,
+      classification: "ouro-bridge-failed",
+      summary: expect.stringContaining("malformed JSON-RPC response"),
+    })
+  })
+
   it("captures exit signal and sanitized stderr without leaking credentials", async () => {
     const child = createManualChild()
     Object.assign(child, { pid: 9876 })
