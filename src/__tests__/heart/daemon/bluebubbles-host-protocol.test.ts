@@ -265,15 +265,13 @@ describe("cross-user BlueBubbles host protocol", () => {
       currentUid: () => 501,
       lstatSync: (filePath) => {
         const stat = lstatSync(filePath)
-        return filePath === helperPath
-          ? {
-              uid: 502,
-              mode: stat.mode,
-              isSymbolicLink: () => stat.isSymbolicLink(),
-              isDirectory: () => stat.isDirectory(),
-              isFile: () => stat.isFile(),
-            }
-          : stat
+        return {
+          uid: filePath === helperPath ? 502 : 501,
+          mode: stat.mode,
+          isSymbolicLink: () => stat.isSymbolicLink(),
+          isDirectory: () => stat.isDirectory(),
+          isFile: () => stat.isFile(),
+        }
       },
     })).toThrow("shared helper must be owned by uid 501")
     rmSync(helperPath)
@@ -438,9 +436,8 @@ describe("cross-user BlueBubbles host protocol", () => {
       originHomeDir: f.originHomeDir,
       sharedRoot: f.sharedRoot,
     }, {
-      now: () => NOW,
+      ...f.baseDeps,
       randomBytes: () => Buffer.alloc(31),
-      existsSync: f.baseDeps.existsSync,
     })).toThrow("nonce source must return 32 bytes")
   })
 
