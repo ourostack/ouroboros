@@ -86,6 +86,7 @@ export interface ApprovalStoreOptions {
   hooks?: {
     beforeClaimCas?: () => void
     beforeAttemptCas?: () => void
+    beforeClose?: () => void
   }
 }
 
@@ -261,11 +262,8 @@ function validStateShape(record: ApprovalRecord): boolean {
     return (validPostCheckpoint || validPostClaim)
       && !hasAttempt && record.result === null && record.reason === null
   }
-  if (record.state === "session_head_changed") {
-    return hasValidOwnershipEpoch && hasSuspension && hasPromptBinding
-      && !hasAttempt && record.result === null && isNonEmpty(record.reason)
-  }
-  return false
+  return hasValidOwnershipEpoch && hasSuspension && hasPromptBinding
+    && !hasAttempt && record.result === null && isNonEmpty(record.reason)
 }
 
 export function parseApprovalRecord(value: unknown): ApprovalRecord {
@@ -672,6 +670,11 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     },
 
     read(approvalId) { return observeRead(() => rawRead(approvalId)) },
-    close() { return observeClose(() => database.close()) },
+    close() {
+      return observeClose(() => {
+        options.hooks?.beforeClose?.()
+        database.close()
+      })
+    },
   }
 }

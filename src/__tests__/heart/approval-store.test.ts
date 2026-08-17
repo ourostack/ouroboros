@@ -754,4 +754,158 @@ describe("approval store", () => {
     ]))
     expect(operationEvents.every((event) => Object.keys(event.meta).length > 0)).toBe(true)
   })
+
+  describe("coverage closure", () => {
+    it("rejects non-object and non-JSON canonical arguments", () => {
+      expect(() => canonicalApprovalArguments(null as unknown as Record<string, never>)).toThrowError(ApprovalStoreError)
+      expect(() => canonicalApprovalArguments({ bad: undefined as never })).toThrowError(ApprovalStoreError)
+      expect(() => canonicalApprovalArguments({ bad: Number.NaN })).toThrowError(ApprovalStoreError)
+    })
+
+    it("rejects every primitive record identity and schema corruption class", () => {
+      const store = open()
+      const { record } = store.prepare(proposalInput())
+      store.close()
+
+      for (const mutation of [
+        { approvalId: "bad" },
+        { state: "impossible" },
+        { toolName: "" },
+        { schemaDigest: 42 },
+        { arguments: [] },
+        { frozenAssistantMessage: [] },
+        { expiresAt: "bad" },
+        { createdAt: "bad" },
+        { updatedAt: "bad" },
+        { epoch: -1 },
+      ]) {
+        expect(() => parseApprovalRecord({ ...record, ...mutation })).toThrowError(ApprovalStoreError)
+      }
+    })
+
+    it("accepts every valid drift, expiry, denial, and head-change ownership shape", () => {
+      const store = open()
+      const proposed = makeProposed(store)
+      const base = proposed.record
+      const claimed = store.decide(decisionInput(proposed.decisionToken))
+      store.close()
+
+      const ownerless = { ownerId: null, epoch: 0, attemptedAt: null, result: null }
+      const owned = { ownerId: claimed.ownerId, epoch: claimed.epoch, attemptedAt: null, result: null }
+      for (const record of [
+        { ...base, ...ownerless, state: "drifted", reason: "schema changed", transportMessageId: null },
+        { ...base, ...ownerless, state: "drifted", reason: "schema changed" },
+        { ...base, ...owned, state: "drifted", reason: "schema changed" },
+        { ...base, ...ownerless, state: "expired", reason: null, transportMessageId: null },
+        { ...base, ...owned, state: "expired", reason: null },
+        { ...base, ...ownerless, state: "denied", reason: null },
+        { ...base, ...owned, state: "denied", reason: null },
+        { ...base, ...ownerless, state: "session_head_changed", reason: "head advanced" },
+        { ...base, ...owned, state: "session_head_changed", reason: "head advanced" },
+      ]) {
+        expect(parseApprovalRecord(record).state).toBe(record.state)
+      }
+    })
+
+    it("rejects incomplete drift, expiry, and head-change shapes", () => {
+      const store = open()
+      const base = makeProposed(store).record
+      store.close()
+      for (const record of [
+        { ...base, state: "drifted", reason: "drift", suspendedSessionRevision: null },
+        { ...base, state: "expired", reason: null, suspendedSessionRevision: null },
+        { ...base, state: "session_head_changed", reason: null },
+        { ...base, state: "unknown" },
+      ]) {
+        expect(() => parseApprovalRecord(record)).toThrowError(ApprovalStoreError)
+      }
+    })
+
+    it("covers default entropy dependencies and their fail-closed guards", () => {
+      const root = makeRoot()
+      const defaults = openApprovalStore({ databasePath: path.join(root, "defaults.sqlite") })
+      const created = defaults.prepare(proposalInput({ expiresAt: new Date(Date.now() + 60_000).toISOString() }))
+      expect(created.record.approvalId).toMatch(/^[a-f0-9-]{36}$/)
+      defaults.close()
+
+      const badUuid = openApprovalStore({
+        databasePath: path.join(root, "bad-uuid.sqlite"),
+        randomUUID: () => "bad",
+      })
+      expect(() => badUuid.prepare(proposalInput())).toThrowError(ApprovalStoreError)
+      badUuid.close()
+
+      const badEntropy = openApprovalStore({
+        databasePath: path.join(root, "bad-entropy.sqlite"),
+        randomUUID: () => UUID,
+        randomBytes: () => Buffer.alloc(31),
+      })
+      expect(() => badEntropy.prepare(proposalInput())).toThrowError(ApprovalStoreError)
+      badEntropy.close()
+    })
+
+    it("covers absent rows, invalid owners, and invalid completion input", () => {
+      const store = open()
+      expect(store.read(UUID)).toBeNull()
+      expect(() => store.activate({ approvalId: UUID, checkpointDigest: "a".repeat(64), suspendedSessionRevision: "b".repeat(64) }))
+        .toThrowError(ApprovalStoreError)
+      const proposed = makeProposed(store)
+      expect(() => store.decide(decisionInput(proposed.decisionToken, { ownerId: "" }))).toThrowError(ApprovalStoreError)
+      const claimed = store.decide(decisionInput(proposed.decisionToken))
+      store.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+      expect(() => store.complete({
+        approvalId: UUID,
+        ownerId: claimed.ownerId!,
+        epoch: claimed.epoch,
+        state: "invalid" as "failed",
+        result: "x",
+      })).toThrowError(ApprovalStoreError)
+      store.close()
+    })
+
+    it("fails closed on syntactically corrupt rows in reads and preparing listings", () => {
+      const root = makeRoot()
+      const store = open(root)
+      store.prepare(proposalInput())
+      const database = new Database(path.join(root, "approvals.sqlite"))
+      database.prepare("UPDATE approval_actions SET record_json = ? WHERE approval_id = ?").run("{", UUID)
+      database.close()
+
+      expect(() => store.read(UUID)).toThrowError(ApprovalStoreError)
+      expect(() => store.listPreparing()).toThrowError(ApprovalStoreError)
+      store.close()
+    })
+
+    it("fails closed on structurally corrupt preparing rows", () => {
+      const root = makeRoot()
+      const store = open(root)
+      store.prepare(proposalInput())
+      const database = new Database(path.join(root, "approvals.sqlite"))
+      database.prepare("UPDATE approval_actions SET record_json = ? WHERE approval_id = ?").run("{}", UUID)
+      database.close()
+
+      expect(() => store.listPreparing()).toThrowError(ApprovalStoreError)
+      store.close()
+    })
+
+    it("emits an unexpected-error nerve when an operation uses a closed database", () => {
+      const store = open()
+      store.close()
+      expect(() => store.read(UUID)).toThrow()
+      expect(() => store.close()).not.toThrow()
+
+      let failClose = true
+      const closeFailure = openApprovalStore({
+        databasePath: path.join(makeRoot(), "close-failure.sqlite"),
+        hooks: { beforeClose: () => {
+          if (failClose) {
+            failClose = false
+            throw new Error("injected close failure")
+          }
+        } },
+      })
+      expect(() => closeFailure.close()).toThrow("injected close failure")
+      expect(() => closeFailure.close()).not.toThrow()
+    })
+  })
 })
