@@ -1939,6 +1939,7 @@ describe("daemon sense manager", () => {
         sense: "bluebubbles",
         status: "error",
         detail: "BlueBubbles listener is not running",
+        recoveryAction: "daemon process manager will restart the BlueBubbles listener after an unsolicited exit",
       }),
       expect.objectContaining({
         sense: "mail",

@@ -931,6 +931,43 @@ describe("daemon process manager", () => {
     }))
   })
 
+  it("respawns an autostart worker after an unsolicited clean exit", async () => {
+    const first = new MockChild()
+    const replacement = new MockChild()
+    replacement.pid = 222
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(replacement)
+    now.mockReturnValueOnce(1_000).mockReturnValue(10_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      initialBackoffMs: 100,
+    })
+
+    await manager.startAgent("slugger")
+    first.emit("exit", 0, null)
+
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      autoStart: true,
+      status: "starting",
+      pid: null,
+      lastExitCode: 0,
+      lastSignal: null,
+      restartCount: 1,
+    }))
+    expect(timers).toEqual([expect.objectContaining({ delay: 100 })])
+
+    timers[0]?.cb()
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2))
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 222,
+    }))
+  })
+
   it("does not respawn a non-autostart worker after an external signal", async () => {
     const child = new MockChild()
     spawn.mockReturnValue(child)
@@ -1140,7 +1177,7 @@ describe("daemon process manager", () => {
     }))
   })
 
-  it("resets backoff after a stable graceful run", async () => {
+  it("resets restart delay after a stable unsolicited clean exit", async () => {
     const first = new MockChild()
     const second = new MockChild()
     spawn.mockReturnValueOnce(first).mockReturnValueOnce(second)
@@ -1166,8 +1203,9 @@ describe("daemon process manager", () => {
     now.mockReturnValue(40)
     second.emit("exit", 0, null)
 
-    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
-    expect(manager.getAgentSnapshot("slugger")?.backoffMs).toBe(100)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("starting")
+    expect(timers.at(-1)?.delay).toBe(100)
+    expect(manager.getAgentSnapshot("slugger")?.backoffMs).toBe(200)
   })
 
   it("keeps the worker tracked when stopAgent cannot send SIGTERM", async () => {
@@ -1502,7 +1540,7 @@ describe("daemon process manager", () => {
     expect(clearTimeoutSpy).toHaveBeenCalledWith(99)
   })
 
-  it("keeps increased backoff after short graceful exits and handles null startedAt", async () => {
+  it("keeps increased restart delay after short unsolicited clean exits and handles null startedAt", async () => {
     const first = new MockChild()
     const second = new MockChild()
     spawn.mockReturnValueOnce(first).mockReturnValueOnce(second)
@@ -1530,8 +1568,9 @@ describe("daemon process manager", () => {
     now.mockReturnValue(3)
     second.emit("exit", 0, null)
 
-    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
-    expect(manager.getAgentSnapshot("slugger")?.backoffMs).toBe(200)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("starting")
+    expect(timers.at(-1)?.delay).toBe(200)
+    expect(manager.getAgentSnapshot("slugger")?.backoffMs).toBe(400)
   })
 
   it("spawns agents with ipc stdio channel", async () => {

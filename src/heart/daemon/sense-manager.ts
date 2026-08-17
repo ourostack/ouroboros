@@ -597,7 +597,7 @@ function readBlueBubblesRuntimeFacts(
       ...proofFacts,
       lastFailure: "listener process is not running",
       failureLayer: "listener",
-      recoveryAction: "daemon health monitor will restart the BlueBubbles listener when its probe fails",
+      recoveryAction: "daemon process manager will restart the BlueBubbles listener after an unsolicited exit",
     }
   }
 

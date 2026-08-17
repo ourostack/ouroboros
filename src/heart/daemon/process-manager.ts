@@ -796,24 +796,26 @@ export class DaemonProcessManager {
       state.snapshot.fixHint = null
     }
 
-    const crashed = !state.stopRequested && code !== 0
+    const unexpectedExit = !state.stopRequested
+    const crashed = unexpectedExit && code !== 0
     const now = this.currentTimeMs()
     const startedAt = state.snapshot.startedAt ? Date.parse(state.snapshot.startedAt) : now
     const runDuration = Math.max(0, now - startedAt)
 
     emitNervesEvent({
-      level: crashed ? "warn" : "info",
+      level: unexpectedExit ? "warn" : "info",
       component: "daemon",
       event: "daemon.agent_exit",
       message: "managed agent process exited",
-      meta: { agent: state.config.name, code, signal, crashed, runDurationMs: runDuration },
+      meta: { agent: state.config.name, code, signal, crashed, unexpectedExit, runDurationMs: runDuration },
     })
 
-    if (!crashed) {
+    if (runDuration >= this.stabilityThresholdMs) {
+      state.snapshot.backoffMs = this.initialBackoffMs
+    }
+
+    if (!unexpectedExit) {
       state.snapshot.status = "stopped"
-      if (runDuration >= this.stabilityThresholdMs) {
-        state.snapshot.backoffMs = this.initialBackoffMs
-      }
       this.notifySnapshotChange(state.snapshot)
       return
     }
