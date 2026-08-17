@@ -62,11 +62,22 @@ function proposal(): PrepareApprovalInput {
   }
 }
 
-function checkpointStore(): ApprovalSuspensionCheckpointStore & { records: Map<string, ApprovalSuspensionCheckpoint> } {
+function checkpointStore(attestation: { checkpointDigest: string; suspendedSessionRevision: string } = {
+  checkpointDigest: "e".repeat(64),
+  suspendedSessionRevision: "f".repeat(64),
+}): ApprovalSuspensionCheckpointStore & { records: Map<string, ApprovalSuspensionCheckpoint> } {
   const records = new Map<string, ApprovalSuspensionCheckpoint>()
   return {
     records,
-    write: vi.fn((checkpoint) => { records.set(checkpoint.approvalId, structuredClone(checkpoint)) }),
+    write: vi.fn((draft) => {
+      const checkpoint: ApprovalSuspensionCheckpoint = {
+        ...structuredClone(draft),
+        checkpointDigest: attestation.checkpointDigest,
+        suspendedSessionRevision: attestation.suspendedSessionRevision,
+      }
+      records.set(checkpoint.approvalId, checkpoint)
+      return structuredClone(attestation)
+    }),
     read: vi.fn((approvalId) => structuredClone(records.get(approvalId) ?? null)),
     list: vi.fn(() => [...records.values()].map((record) => structuredClone(record))),
     remove: vi.fn((approvalId) => { records.delete(approvalId) }),
@@ -100,7 +111,6 @@ describe("approval proposal commit recovery", () => {
       tokenStore: tokens,
       proposal: proposal(),
       preCallMessages,
-      suspendedSessionRevision: "f".repeat(64),
     })
 
     expect(committed.record.state).toBe("awaiting_prompt_binding")
@@ -127,7 +137,6 @@ describe("approval proposal commit recovery", () => {
       tokenStore: tokens,
       proposal: proposal(),
       preCallMessages: [{ role: "user", content: "restart" }],
-      suspendedSessionRevision: "f".repeat(64),
       hooks: { afterJournalPrepare: () => { throw new Error("crash after journal") } },
     })).toThrow("crash after journal")
 
@@ -150,7 +159,6 @@ describe("approval proposal commit recovery", () => {
       tokenStore: tokens,
       proposal: proposal(),
       preCallMessages: [{ role: "user", content: "restart" }],
-      suspendedSessionRevision: "f".repeat(64),
       hooks: { afterTokenPersist: () => { throw new Error("crash after token") } },
     })).toThrow("crash after token")
     expect(tokens.records.has(UUID)).toBe(true)
@@ -172,7 +180,6 @@ describe("approval proposal commit recovery", () => {
       tokenStore: tokens,
       proposal: proposal(),
       preCallMessages: [{ role: "user", content: "restart" }],
-      suspendedSessionRevision: "f".repeat(64),
       hooks: { afterCheckpointWrite: () => { throw new Error("crash after checkpoint") } },
     })).toThrow("crash after checkpoint")
 
@@ -187,7 +194,7 @@ describe("approval proposal commit recovery", () => {
     const approvals = store()
     const checkpoints = checkpointStore()
     const tokens = tokenStore()
-    checkpoints.write({
+    checkpoints.records.set(UUID, {
       approvalId: UUID,
       checkpointDigest: "e".repeat(64),
       baseSessionRevision: "d".repeat(64),
@@ -208,7 +215,7 @@ describe("approval proposal commit recovery", () => {
     const tokens = tokenStore()
     const prepared = approvals.prepare(proposal())
     tokens.put(UUID, prepared.decisionToken)
-    checkpoints.write({
+    checkpoints.records.set(UUID, {
       approvalId: UUID,
       checkpointDigest: "0".repeat(64),
       baseSessionRevision: "d".repeat(64),
@@ -219,6 +226,27 @@ describe("approval proposal commit recovery", () => {
 
     recoverApprovalProposals({ approvalStore: approvals, checkpointStore: checkpoints, tokenStore: tokens })
     expect(approvals.read(UUID)).toMatchObject({ state: "drifted", reason: expect.stringContaining("checkpoint") })
+    expect(tokens.records.has(UUID)).toBe(false)
+    expect(checkpoints.records.has(UUID)).toBe(false)
+    approvals.close()
+  })
+
+  it("refuses activation when the durable checkpoint write attests a different digest", () => {
+    const approvals = store()
+    const checkpoints = checkpointStore({
+      checkpointDigest: "0".repeat(64),
+      suspendedSessionRevision: "f".repeat(64),
+    })
+    const tokens = tokenStore()
+
+    expect(() => commitApprovalProposal({
+      approvalStore: approvals,
+      checkpointStore: checkpoints,
+      tokenStore: tokens,
+      proposal: proposal(),
+      preCallMessages: [{ role: "user", content: "restart" }],
+    })).toThrowError(expect.objectContaining({ code: "checkpoint_attestation_mismatch" }))
+    expect(approvals.read(UUID)).toMatchObject({ state: "drifted" })
     expect(tokens.records.has(UUID)).toBe(false)
     expect(checkpoints.records.has(UUID)).toBe(false)
     approvals.close()
