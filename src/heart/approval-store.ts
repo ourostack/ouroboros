@@ -256,20 +256,21 @@ function validStateShape(record: ApprovalRecord): boolean {
       && !hasAttempt && record.result === null && record.reason === null
   }
   if (record.state === "expired") {
-    const validPostCheckpoint = !hasOwner && record.epoch === 0 && hasSuspension
+    return !hasOwner && record.epoch === 0 && hasSuspension
       && (hasPromptBinding || record.transportMessageId === null)
-    const validPostClaim = hasOwner && record.epoch > 0 && hasSuspension && hasPromptBinding
-    return (validPostCheckpoint || validPostClaim)
       && !hasAttempt && record.result === null && record.reason === null
   }
-  return hasValidOwnershipEpoch && hasSuspension && hasPromptBinding
-    && !hasAttempt && record.result === null && isNonEmpty(record.reason)
+  if (record.state === "session_head_changed") {
+    return hasValidOwnershipEpoch && hasSuspension && hasPromptBinding
+      && !hasAttempt && record.result === null && isNonEmpty(record.reason)
+  }
+  return false
 }
 
 export function parseApprovalRecord(value: unknown): ApprovalRecord {
   if (!isObject(value) || !hasExactKeys(value)) fail("corrupt_record")
   const record = value as unknown as ApprovalRecord
-  if (!UUID.test(record.approvalId) || !STATES.has(record.state)) fail("corrupt_record")
+  if (!UUID.test(record.approvalId)) fail("corrupt_record")
   for (const field of [
     "toolCallId", "toolName", "policyId", "sessionKey", "sessionPath", "requesterId", "transport",
     "transportUserId", "transportChatId",
@@ -290,7 +291,7 @@ export function parseApprovalRecord(value: unknown): ApprovalRecord {
   if (record.transportMessageId !== null && !isNonEmpty(record.transportMessageId)) fail("corrupt_record")
   if (record.suspendedSessionRevision !== null
     && (typeof record.suspendedSessionRevision !== "string" || !HASH.test(record.suspendedSessionRevision))) fail("corrupt_record")
-  if (!Number.isInteger(record.epoch) || record.epoch < 0 || !validStateShape(record)) fail("corrupt_record")
+  if (!Number.isInteger(record.epoch) || record.epoch < 0 || !validStateShape(record) || !STATES.has(record.state)) fail("corrupt_record")
   return structuredClone(record)
 }
 

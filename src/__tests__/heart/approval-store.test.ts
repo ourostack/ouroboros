@@ -797,7 +797,6 @@ describe("approval store", () => {
         { ...base, ...ownerless, state: "drifted", reason: "schema changed" },
         { ...base, ...owned, state: "drifted", reason: "schema changed" },
         { ...base, ...ownerless, state: "expired", reason: null, transportMessageId: null },
-        { ...base, ...owned, state: "expired", reason: null },
         { ...base, ...ownerless, state: "denied", reason: null },
         { ...base, ...owned, state: "denied", reason: null },
         { ...base, ...ownerless, state: "session_head_changed", reason: "head advanced" },
@@ -814,6 +813,7 @@ describe("approval store", () => {
       for (const record of [
         { ...base, state: "drifted", reason: "drift", suspendedSessionRevision: null },
         { ...base, state: "expired", reason: null, suspendedSessionRevision: null },
+        { ...base, state: "expired", reason: null, ownerId: "worker-a", epoch: 1 },
         { ...base, state: "session_head_changed", reason: null },
         { ...base, state: "unknown" },
       ]) {
@@ -889,6 +889,8 @@ describe("approval store", () => {
     })
 
     it("emits an unexpected-error nerve when an operation uses a closed database", () => {
+      const events: LogEvent[] = []
+      setRuntimeLogger(createLogger({ level: "debug", sinks: [(event) => events.push(event)] }))
       const store = open()
       store.close()
       expect(() => store.read(UUID)).toThrow()
@@ -906,6 +908,19 @@ describe("approval store", () => {
       })
       expect(() => closeFailure.close()).toThrow("injected close failure")
       expect(() => closeFailure.close()).not.toThrow()
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          level: "error",
+          event: "approval.store_read",
+          meta: expect.objectContaining({ operation: "read", code: "unexpected_error" }),
+        }),
+        expect.objectContaining({
+          level: "error",
+          event: "approval.store_close",
+          meta: expect.objectContaining({ operation: "close", code: "unexpected_error" }),
+        }),
+      ]))
     })
   })
 })
