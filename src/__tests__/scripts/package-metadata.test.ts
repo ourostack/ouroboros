@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import * as fs from "fs"
 import * as path from "path"
 
 const packageJson = require(path.resolve(__dirname, "../../../package.json"))
@@ -33,5 +34,17 @@ describe("package metadata", () => {
       ...PACKAGE_PAYLOAD_PATH_PREFIXES,
       "changelog.json",
     ].sort())
+  })
+
+  it("gates publish on both packed artifact E2E suites", () => {
+    expect(packageJson.scripts["test:e2e:ouro-bot-package"]).toBe("node scripts/ouro-bot-package-e2e.cjs")
+    const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
+    const packageJob = workflow.slice(workflow.indexOf("  package-e2e:"), workflow.indexOf("  publish:"))
+    expect(packageJob).toContain("npm run test:e2e:package")
+    expect(packageJob).toContain("npm run test:e2e:ouro-bot-package")
+  })
+
+  it("pins mailparser to the last release before its vulnerable html conversion chain", () => {
+    expect(packageJson.dependencies.mailparser).toBe("3.9.8")
   })
 })
