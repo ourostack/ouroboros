@@ -261,3 +261,5 @@ export function createDefaultBlueBubblesHostDeps(input: {
     ...(input.probeHttp ? { probeHttp: input.probeHttp } : {}),
   }
 }
+
+export * from "./bluebubbles-host-protocol"
