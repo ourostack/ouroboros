@@ -179,6 +179,9 @@ If you are changing runtime code, keep all three green.
 ```bash
 ouro                             # open the interactive home deck in a human TTY
 ouro up                          # start daemon from installed production version
+ouro up --latest                 # preflight latest, then replace any exact rollback pin
+ouro rollback <version>          # pin normal starts to an exact installed version
+ouro versions                    # show installed versions and current intent
 ouro dev                         # start daemon from local repo build (auto-detects CWD)
 ouro dev --repo-path /path       # start from a specific repo checkout
 ouro dev --clone                 # clone repo to ~/Projects/ouroboros, build, start
@@ -198,6 +201,7 @@ ouro connect perplexity --agent <name>
 ouro connect embeddings --agent <name>
 ouro connect teams --agent <name>
 ouro connect bluebubbles --agent <name>
+ouro bluebubbles host status --json
 ouro connect voice --agent <name>
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
@@ -218,10 +222,17 @@ ouro attention --agent <agent>       # attention queue
 ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>
 ouro setup --tool <tool> --agent <name>   # register MCP server + hooks with a dev tool
 ouro mcp-serve --agent <name>             # start MCP server on stdin/stdout (used by dev tools)
+ouro mcp doctor --agent <name> --json     # bounded direct bridge evidence
 ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart, Stop, PostToolUse)
 ```
 
 The generic secret primitive is a vault item / credential in the owning agent vault: stable item name/path, hidden secret material, optional public fields, notes, timestamps/provenance, and no assumed use. `ouro connect` is for harness-managed workflows; workflow bindings reference ordinary vault items when they need secret material.
+
+### Standard BlueBubbles setup
+
+`ouro connect bluebubbles --agent <name>` is the standard local-Mac setup path. Besides saving the machine-scoped attachment, it installs or verifies the native-compatible BlueBubbles LaunchAgent for a same-user bridge and reconciles one Ouro-owned `[*]` webhook after the listener is bound. The daemon repairs that owned callback every 180 seconds, preserves unrelated callbacks, and creates the desired callback before removing a stale owned one. If the listener or BlueBubbles API is unavailable, connect says the attachment was saved but setup is incomplete; `ouro doctor` and `ouro bluebubbles host status --json` separate app, service, process, HTTP, and webhook failures.
+
+When BlueBubbles runs in another logged-in macOS account, standard setup installs a generic helper and returns one nonce-bound `human-required` Terminal command for that account plus `ouro bluebubbles host collect --request-id <id>`. Ouro never asks for or stores the other account's login password. The receipt proves that one handoff and reports launchd only as point-in-time evidence; current process and HTTP health are checked separately.
 
 ## Setting Up On Another Machine
 
@@ -252,7 +263,9 @@ ouro setup --tool claude-code --agent <name>
 ouro setup --tool codex --agent <name>
 ```
 
-This registers the MCP server, installs lifecycle hooks (SessionStart, Stop, PostToolUse), and detects dev vs installed mode automatically.
+This registers the MCP server, installs lifecycle hooks (SessionStart, Stop, PostToolUse), detects dev vs installed mode automatically, and runs a bounded direct canary. Registration success and canary health are reported separately.
+
+If the dev-tool host appears frozen, run `ouro mcp doctor --agent <name> --json`. Its classification is deliberately narrow: `ouro-bridge-failed`, `ouro-bridge-healthy-at-capture`, or `host-stall-unexplained`. Add `--host-stall-observed` only when the host stall was independently observed. A healthy bridge canary does not prove that Codex or another host caused the stall; it only bounds what Ouro observed at capture time.
 
 **How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `ask`, `check_response`, `status`, `search_facts`, `delegate`, etc.) and can invoke them mid-session. Conversation-shaped tools such as `send_message`, `ask`, `delegate`, `check_guidance`, and `report_progress` run full agent turns — you get your system prompt, your Desk record, your tools, everything. Read-only inspection tools such as `status` and `search_facts` do local lookup only. Missing `search_facts` hits are not evidence that the agent has no belief or preference.
 

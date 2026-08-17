@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.728",
+      "changes": [
+        "Make exact rollback intent durable, bound status and MCP diagnostics, and make BlueBubbles host continuity plus owner-safe webhook reconciliation part of standard setup."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.727",
       "changes": [
         "Keep BlueBubbles replies on the latest turn with pre-listen recovery epochs, conservative unresolved-route fences, retained retry generations, and durable inbound-reply send boundaries that suppress crash retries.",

@@ -9,6 +9,26 @@ Starting the private runtime worker is process supervision, not a model turn.
 Denied/default private-runtime policy records or queues work with zero provider calls.
 Provider-readiness pings are explicit readiness checks, not private turns.
 
+## BlueBubbles is running but inbound messages are silent
+
+**Symptom**: the BlueBubbles app/process and Ouro daemon look healthy, but new iMessages do not reach the agent.
+
+**Detection**: run `ouro doctor` and `ouro bluebubbles host status --json`. Host status deliberately separates app presence, LaunchAgent state, current process state, and bounded HTTP health. Doctor separately reports whether the Ouro-owned webhook is exact, missing, drifted, API-unreachable, or auth-failed. Secret-bearing callback query strings are redacted.
+
+**Recovery**: run `ouro connect bluebubbles --agent <name>` again. Standard setup repairs the native host and reconciles one owned `[*]` callback without deleting unrelated BlueBubbles webhooks. The daemon retries that reconciliation every 180 seconds. For a dedicated BlueBubbles macOS account, run only the fresh nonce-bound `human-required` command returned by Ouro in that logged-in account's Terminal, then run the matching `ouro bluebubbles host collect --request-id <id>` from the origin account. A collected launchd receipt is point-in-time evidence; current process and HTTP checks remain authoritative for current serving health.
+
+## A rollback unexpectedly advances on restart
+
+Exact rollback intent is persistent. The standard Ouro bootstrap installs/verifies the stable recovery launcher before version intent is first committed. `ouro rollback <version>` installs and validates the selected runtime, then atomically pins and activates it. Ordinary `ouro up` preserves that pin. Use `ouro versions` to inspect `pinned` versus `latest` intent and its target. To leave the pin, run `ouro up --latest`; Ouro changes the intent only after the latest version passes preflight. If an update is interrupted, rerun `ouro up` and the installed recovery launcher reconciles the installed link to the last committed intent.
+
+## `ouro status --json` times out
+
+Status has a command-specific 5,000 ms end-to-end socket-operation deadline; long agent turns keep their longer command timeout. A timeout still returns parseable diagnostic JSON classified as `timeout`, rather than hanging for the general ten-minute command window. This distinguishes a deadline from immediate socket unavailability, but does not by itself prove whether the timeout occurred before or after connection. Run `ouro doctor` or `ouro up` as indicated by the accompanying details.
+
+## Codex or another dev-tool host appears frozen around an Ouro MCP call
+
+Run `ouro mcp doctor --agent <name> --json`. The bounded canary records capture time, child PID, protocol phase, duration, exit code/signal, and sanitized stderr. It returns exactly one evidence classification: `ouro-bridge-failed`, `ouro-bridge-healthy-at-capture`, or `host-stall-unexplained`. Pass `--host-stall-observed` only when the host stall was independently observed. A healthy bridge at capture does not prove Codex caused or did not cause an earlier stall, and `host-stall-unexplained` intentionally preserves that uncertainty. Re-run `ouro setup --tool codex --agent <name>` when registration or bridge evidence fails, then open a fresh Codex session because existing MCP subprocesses keep their old runtime.
+
 ## "Agent only produces `<think>` content with no answer" — MiniMax replay rejection
 
 **Symptom**: agent sends MCP / CLI / BB messages but the operator sees

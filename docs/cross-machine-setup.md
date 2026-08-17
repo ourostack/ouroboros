@@ -126,7 +126,9 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors now show a short `checking current connections` preflight while they verify the selected providers live, read portable and machine-local settings, keep progress visible while they read/write the vault and reload the running agent, and do not print the entered secret. The root bay is a framed, responsive board with a recommended next move so the human can scan `Provider core`, portable capabilities, and this-machine attachments separately without getting buried in status prose. Each guided connector also opens with a short `Unlocks / What you need / Where it lives` board and closes with `What changed / Next moves`, so the human can tell at a glance whether the capability travels with the agent or only lives on this machine.
+The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector on every Mac that should host that bridge. The connector is the complete standard setup: it saves the machine attachment and installs/verifies same-user host continuity (or emits a nonce-bound dedicated-user handoff). When Ouro is already running, connect reloads the listener and reconciles the Ouro-owned `[*]` webhook immediately; otherwise it reports saved-but-incomplete and the next `ouro up` binds the listener and performs reconciliation. It preserves unrelated BlueBubbles callbacks. If a dedicated macOS account owns BlueBubbles, run the one returned `human-required` command in that already logged-in account's Terminal, then run the returned `ouro bluebubbles host collect --request-id <id>` command from the origin account. No account password belongs in Ouro config.
+
+Guided connectors show a short `checking current connections` preflight while they verify the selected providers live, read portable and machine-local settings, keep progress visible while they read/write the vault and reload the running agent, and do not print the entered secret. The root bay is a framed, responsive board with a recommended next move so the human can scan `Provider core`, portable capabilities, and this-machine attachments separately without getting buried in status prose. Each guided connector also opens with a short `Unlocks / What you need / Where it lives` board and closes with `What changed / Next moves`, so the human can tell at a glance whether the capability travels with the agent or only lives on this machine.
 
 ## Step 4: Start the daemon
 
@@ -151,7 +153,7 @@ If you want your agent available in Claude Code (or Codex), ask the agent direct
 
 > "Can you make it so Claude can talk to you?"
 
-The agent will run `ouro setup --tool claude-code --agent <name>` via its shell tool. This registers the MCP server and lifecycle hooks.
+The agent will run `ouro setup --tool claude-code --agent <name>` via its shell tool. This registers the MCP server and lifecycle hooks, then runs a bounded direct canary. Registration and canary health are reported independently. For a suspected host freeze, `ouro mcp doctor --agent <name> --json` captures timestamp, child PID, phase, duration, exit, and sanitized stderr. `ouro-bridge-healthy-at-capture` does not assign a cause to the host app; use `--host-stall-observed` only when that stall was independently observed.
 
 Or run it yourself:
 
