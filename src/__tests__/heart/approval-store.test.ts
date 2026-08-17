@@ -213,6 +213,88 @@ describe("approval store", () => {
     expect(() => parseApprovalRecord({ ...record, [field]: malformed })).toThrowError(ApprovalStoreError)
   })
 
+  it("rejects a forged preparing-to-claimed record without inherited suspension and prompt bindings", () => {
+    const store = open()
+    const { record } = store.prepare(proposalInput())
+    store.close()
+
+    expect(() => parseApprovalRecord({
+      ...record,
+      state: "claimed",
+      ownerId: "worker-a",
+      epoch: 1,
+    })).toThrowError(ApprovalStoreError)
+  })
+
+  it("requires claimed, attempted, and every attempt terminal to retain suspension and prompt bindings", () => {
+    const store = open()
+    const proposed = makeProposed(store)
+    const claimed = store.decide(decisionInput(proposed.decisionToken))
+    const attempted = store.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+    const states = [
+      claimed,
+      attempted,
+      { ...attempted, state: "succeeded", result: "ok" },
+      { ...attempted, state: "failed", result: "failed" },
+      { ...attempted, state: "attempted_indeterminate", result: "unknown" },
+    ]
+    store.close()
+
+    for (const record of states) {
+      expect(() => parseApprovalRecord({ ...record, suspendedSessionRevision: null })).toThrowError(ApprovalStoreError)
+      expect(() => parseApprovalRecord({ ...record, transportMessageId: null })).toThrowError(ApprovalStoreError)
+    }
+  })
+
+  it("enforces epoch and reason invariants for no-owner terminal states", () => {
+    const store = open()
+    const { record } = makeProposed(store)
+    store.close()
+    const terminals = [
+      { ...record, state: "denied", reason: null },
+      { ...record, state: "expired", reason: null },
+      { ...record, state: "session_head_changed", reason: "session head advanced" },
+    ]
+
+    for (const terminal of terminals) {
+      expect(parseApprovalRecord(terminal)).toMatchObject({ state: terminal.state, epoch: 0, ownerId: null })
+      expect(() => parseApprovalRecord({ ...terminal, epoch: 1 })).toThrowError(ApprovalStoreError)
+    }
+    expect(() => parseApprovalRecord({ ...terminals[0], reason: "unexpected" })).toThrowError(ApprovalStoreError)
+    expect(() => parseApprovalRecord({ ...terminals[1], reason: "unexpected" })).toThrowError(ApprovalStoreError)
+    expect(() => parseApprovalRecord({ ...terminals[2], reason: null })).toThrowError(ApprovalStoreError)
+  })
+
+  it("rejects reason fields in every non-recovery, non-drift state", () => {
+    const store = open()
+    const prepared = store.prepare(proposalInput())
+    const awaiting = store.activate({
+      approvalId: UUID,
+      checkpointDigest: prepared.record.checkpointDigest,
+      suspendedSessionRevision: "f".repeat(64),
+    })
+    const proposed = store.bindPrompt({
+      approvalId: UUID,
+      transport: "telegram",
+      transportChatId: "7",
+      transportMessageId: "99",
+    })
+    const claimed = store.decide(decisionInput(prepared.decisionToken))
+    const attempted = store.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+    const succeeded = store.complete({
+      approvalId: UUID,
+      ownerId: claimed.ownerId!,
+      epoch: claimed.epoch,
+      state: "succeeded",
+      result: "ok",
+    })
+    store.close()
+
+    for (const record of [prepared.record, awaiting, proposed, claimed, attempted, succeeded]) {
+      expect(() => parseApprovalRecord({ ...record, reason: "unexpected" })).toThrowError(ApprovalStoreError)
+    }
+  })
+
   it("fails closed when a persisted record is malformed", () => {
     const root = makeRoot()
     const store = open(root)
