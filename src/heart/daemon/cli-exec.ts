@@ -7,6 +7,7 @@
 
 import { execFileSync, execSync, spawn } from "child_process"
 import { randomUUID } from "crypto"
+import type { EventEmitter } from "events"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -209,7 +210,7 @@ import {
   requireVaultItemSecret,
   vaultItemTemplateSecretFields,
 } from "./vault-items"
-import { buildMcpBridgeRepairGuidance, buildMcpDoctorNextSteps, formatMcpStatusCanaryResult, formatMcpStatusDoctorResult, runMcpStatusCanary } from "./mcp-canary"
+import { buildMcpBridgeRepairGuidance, buildMcpDoctorNextSteps, formatMcpStatusCanaryResult, formatMcpStatusDoctorResult, runMcpStatusCanary, SETUP_CANARY_TIMEOUT_MS } from "./mcp-canary"
 import {
   blueBubblesListenerReadyAfterApply,
   formatBlueBubblesHostActionText,
@@ -227,6 +228,26 @@ const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 function setupReloadNotice(tool: "claude-code" | "codex"): string {
   const host = tool === "codex" ? "Codex" : "Claude Code"
   return `  reload required: open a fresh ${host} session so the host launches the newly registered MCP bridge; existing MCP processes keep their old runtime`
+}
+
+export async function runMcpServeCliLifecycle(
+  server: { start: () => void; stop: () => void },
+  input: Pick<EventEmitter, "once" | "removeListener">,
+): Promise<void> {
+  server.start()
+  await new Promise<void>((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      input.removeListener("end", finish)
+      input.removeListener("close", finish)
+      server.stop()
+      resolve()
+    }
+    input.once("end", finish)
+    input.once("close", finish)
+  })
 }
 
 function commandFailureText(error: unknown): string {
@@ -8286,15 +8307,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const mcpAddCmd = `codex mcp add ouro-${setupAgent} -- ${mcpServeCommand}`
       const mcpRemoveCmd = `codex mcp remove ouro-${setupAgent}`
       const mcpRegistration = registerMcpServer(mcpAddCmd, mcpRemoveCmd)
+      const canary = await runMcpStatusCanary({
+        agent: setupAgent,
+        socketPath: deps.socketPath,
+        command: process.execPath,
+        commandArgs: [
+          path.join(__dirname, "ouro-bot-entry.js"),
+          "mcp-serve",
+          "--agent",
+          setupAgent,
+          "--socket",
+          deps.socketPath,
+        ],
+        timeoutMs: SETUP_CANARY_TIMEOUT_MS,
+      })
+      if (!canary.ok) deps.setExitCode?.(1)
 
       emitNervesEvent({
         component: "daemon",
         event: "daemon.setup_complete",
         message: "dev tool setup complete",
-        meta: { tool, agent: setupAgent, runtimeMode, platform, mcpRegistration },
+        meta: { tool, agent: setupAgent, runtimeMode, platform, mcpRegistration, canary: canary.classification },
       })
 
-      const message = `setup complete: codex + ${setupAgent}\n  MCP server ${mcpRegistration}\n${setupReloadNotice("codex")}`
+      const canarySummary = canary.ok
+        ? canary.summary
+        : `registration succeeded; bridge health failed — ${canary.summary}`
+      const message = `setup complete: codex + ${setupAgent}\n  MCP registration: ${mcpRegistration}\n  MCP server ${mcpRegistration}\n  MCP canary: ${canary.classification}\n  ${canarySummary}\n${setupReloadNotice("codex")}`
       deps.writeStdout(message)
       return message
     }
@@ -8350,12 +8389,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */
   // ── mcp-serve: start MCP server in-process on stdin/stdout ──
   if (command.kind === "mcp-serve") {
-    const { createMcpServer } = await import("../mcp/mcp-server")
+    const createMcpServer = deps.createMcpServer ?? (await import("../mcp/mcp-server")).createMcpServer
     const friendId = command.friendId ?? `local-${os.userInfo().username}`
     const mcpSocketPath = (command as { socketOverride?: string }).socketOverride ?? deps.socketPath
+    const mcpInput = deps.mcpServeInput ?? process.stdin
+    const mcpOutput = deps.mcpServeOutput ?? process.stdout
     // Resolve the optional --workbench-mcp flag into a concrete runtime MCP
     // override. A string is taken as the explicit binary path (falling back to
     // discovery if it does not exist); a boolean opt-in (true) self-discovers
@@ -8368,27 +8408,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       agent: command.agent,
       friendId,
       socketPath: mcpSocketPath,
-      stdin: process.stdin,
-      stdout: process.stdout,
+      stdin: mcpInput,
+      stdout: mcpOutput,
       ...(runtimeMcp ? { runtimeMcp } : {}),
     })
-    server.start()
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_serve_started",
       message: "MCP server started via CLI",
       meta: { agent: command.agent, friendId, workbenchRuntimeMcp: !!runtimeMcp },
     })
-    // Keep process alive until stdin closes
-    await new Promise<void>((resolve) => {
-      process.stdin.on("end", () => {
-        server.stop()
-        resolve()
-      })
-    })
+    await runMcpServeCliLifecycle(server, mcpInput)
     return ""
   }
-  /* v8 ignore stop */
 
   if (command.kind === "private.decisions") {
     let response: DaemonResponse

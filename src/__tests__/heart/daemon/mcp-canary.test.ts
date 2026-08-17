@@ -517,11 +517,24 @@ describe("mcp canary", () => {
   })
 
   it("formats canary output for the CLI", () => {
-    expect(formatMcpStatusCanaryResult({
+    const healthy = formatMcpStatusCanaryResult({
       ok: true,
       summary: "mcp canary ok",
       details: ["daemon=running"],
-    })).toContain("mcp canary: ok")
+      classification: "ouro-bridge-healthy-at-capture",
+      evidence: {
+        capturedAt: "2026-08-17T18:00:00.000Z",
+        durationMs: 12,
+        childPid: 4321,
+        phase: "complete",
+        exitCode: 0,
+        exitSignal: null,
+        stderr: "",
+      },
+    })
+    expect(healthy).toContain("mcp canary: ok")
+    expect(healthy).toContain("classification: ouro-bridge-healthy-at-capture")
+    expect(healthy).toContain("captured=2026-08-17T18:00:00.000Z durationMs=12 childPid=4321 phase=complete exitCode=0 exitSignal=none")
     expect(formatMcpStatusCanaryResult({
       ok: false,
       summary: "mcp canary failed: health=warn",
