@@ -222,6 +222,39 @@ describe("ouro rollback: execution", () => {
     expect(activateCliVersion).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ["the installer is unavailable", undefined, "installer unavailable"],
+    ["the installer throws an Error", () => { throw new Error("launcher disk failure") }, "launcher disk failure"],
+    ["the installer throws a non-Error", () => { throw "launcher exploded" }, "launcher exploded"],
+    [
+      "the installer cannot verify an unspecified failure",
+      () => ({
+        installed: false,
+        scriptPath: null,
+        pathReady: false,
+        shellProfileUpdated: null,
+        repairedOldLauncher: false,
+      }),
+      "installation was not verified",
+    ],
+  ] as const)("keeps rollback intent unchanged when %s", async (_label, installOuroCommand, detail) => {
+    const writeVersionIntent = vi.fn()
+    const activateCliVersion = vi.fn()
+    const deps = makeDeps({
+      getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installOuroCommand,
+      writeVersionIntent,
+      activateCliVersion,
+    })
+
+    await expect(runOuroCli(["rollback"], deps)).rejects.toThrow(
+      `cannot change Ouro version intent without a verified recovery launcher: ${detail}`,
+    )
+    expect(writeVersionIntent).not.toHaveBeenCalled()
+    expect(activateCliVersion).not.toHaveBeenCalled()
+  })
+
   it("daemon stop failure is non-fatal — rollback still succeeds", async () => {
     const deps = makeDeps({
       getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
