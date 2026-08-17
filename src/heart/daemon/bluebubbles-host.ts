@@ -64,11 +64,11 @@ export function blueBubblesLaunchAgentPlist(appExecutablePath = BLUEBUBBLES_EXEC
         <true/>
         <key>KeepAlive</key>
         <dict>
-            <key>SuccessfulExit</key>
-            <false/>
+	        <key>SuccessfulExit</key>
+	        <false/>
             <key>Crashed</key>
             <true/>
-        </dict>
+	    </dict>
     </dict>
 </plist>`
 }

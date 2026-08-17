@@ -17,6 +17,30 @@ import {
 
 vi.mock("child_process", () => ({ execFileSync: vi.fn() }))
 
+const OFFICIAL_BLUEBUBBLES_1_9_9_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <key>AssociatedBundleIdentifiers</key>
+        <array>
+            <string>com.BlueBubbles.BlueBubbles-Server</string>
+        </array>
+        <key>Label</key>
+        <string>com.bluebubbles.server</string>
+        <key>Program</key>
+        <string>/Applications/BlueBubbles.app/Contents/MacOS/BlueBubbles</string>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>KeepAlive</key>
+        <dict>
+	        <key>SuccessfulExit</key>
+	        <false/>
+            <key>Crashed</key>
+            <true/>
+	    </dict>
+    </dict>
+</plist>`
+
 afterEach(() => {
   vi.restoreAllMocks()
   vi.mocked(execFileSync).mockReset()
@@ -83,6 +107,7 @@ describe("native BlueBubbles host lifecycle", () => {
     expect(plist).toMatch(/<key>Crashed<\/key>\s*<true\/>/)
     expect(plist).not.toContain("ProgramArguments")
     expect(plist).not.toContain("watchdog")
+    expect(plist).toBe(OFFICIAL_BLUEBUBBLES_1_9_9_PLIST)
     expect(blueBubblesLaunchAgentPlist("/custom/BlueBubbles")).toContain("<string>/custom/BlueBubbles</string>")
     expect(blueBubblesLaunchAgentPath("/Users/elsewhere")).toBe(
       "/Users/elsewhere/Library/LaunchAgents/com.bluebubbles.server.plist",
@@ -101,7 +126,27 @@ describe("native BlueBubbles host lifecycle", () => {
     expect(h.files.get(h.plistPath)).toBe(blueBubblesLaunchAgentPlist())
     expect(h.writes).toEqual([{ path: h.plistPath, content: blueBubblesLaunchAgentPlist(), mode: 0o644 }])
     expect(h.commands.filter(([verb]) => verb === "bootstrap")).toHaveLength(1)
+    expect(h.commands).toContainEqual(["disable", "gui/501/com.bluebubbles.server"])
+    expect(h.commands).toContainEqual(["enable", "gui/501/com.bluebubbles.server"])
+    expect(h.commands).toContainEqual([
+      "bootstrap",
+      "gui/501",
+      "/Users/test/Library/LaunchAgents/com.bluebubbles.server.plist",
+    ])
     expect(second.changed).toBe(false)
+  })
+
+  it("recognizes an authentic BlueBubbles 1.9.9 plist without rewriting it", async () => {
+    const h = harness()
+    h.files.set(h.plistPath, OFFICIAL_BLUEBUBBLES_1_9_9_PLIST)
+    h.setLoaded(true)
+
+    const result = await runBlueBubblesHostAction("install", h.deps)
+
+    expect(result.changed).toBe(false)
+    expect(result.state.plist).toBe("current")
+    expect(h.writes).toEqual([])
+    expect(h.commands).toEqual([["print", "gui/501/com.bluebubbles.server"]])
   })
 
   it("reports process and HTTP serving evidence independently", async () => {
@@ -172,6 +217,14 @@ describe("native BlueBubbles host lifecycle", () => {
     expect(result.changed).toBe(true)
     expect(h.files.get(h.plistPath)).toBe(blueBubblesLaunchAgentPlist())
     expect(h.commands.map(([verb]) => verb)).toEqual(expect.arrayContaining(["bootout", "disable", "enable", "bootstrap"]))
+    expect(h.commands).toContainEqual(["bootout", "gui/501/com.bluebubbles.server"])
+    expect(h.commands).toContainEqual(["disable", "gui/501/com.bluebubbles.server"])
+    expect(h.commands).toContainEqual(["enable", "gui/501/com.bluebubbles.server"])
+    expect(h.commands).toContainEqual([
+      "bootstrap",
+      "gui/501",
+      "/Users/test/Library/LaunchAgents/com.bluebubbles.server.plist",
+    ])
     expect(result.state.service).toBe("loaded")
   })
 
@@ -187,6 +240,8 @@ describe("native BlueBubbles host lifecycle", () => {
     expect(first.changed).toBe(true)
     expect(first.state.plist).toBe("missing")
     expect(first.state.service).toBe("not-loaded")
+    expect(h.commands).toContainEqual(["disable", "gui/501/com.bluebubbles.server"])
+    expect(h.commands).toContainEqual(["bootout", "gui/501/com.bluebubbles.server"])
     expect(second.changed).toBe(false)
     expect(h.commands).toHaveLength(commandCount + 1) // status print only
   })
