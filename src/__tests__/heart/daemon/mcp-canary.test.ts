@@ -235,16 +235,17 @@ describe("mcp canary", () => {
     const raw = 'https://host/path?password=query "token":"json-token" Bearer bearer-token --api-key cli-token secret=value'
     const sanitized = sanitizeMcpCanaryText(raw)
     expect(sanitized).toContain("https://host/path?[redacted]")
-    expect(sanitized).toContain('"token":"[redacted]"')
+    expect(sanitized).toContain('"credential":"[redacted]"')
     expect(sanitized).toContain("Bearer [redacted]")
-    expect(sanitized).toContain("--api-key [redacted]")
-    expect(sanitized).toContain("secret=[redacted]")
+    expect(sanitized).toContain("--credential [redacted]")
+    expect(sanitized).toContain("credential=[redacted]")
+    expect(sanitized).not.toMatch(/\b(?:password|token|secret|api[_-]?key)\b["']?\s*[:=]/i)
     expect(sanitized).not.toContain("query")
     expect(sanitized).not.toContain("json-token")
     expect(sanitized).not.toContain("bearer-token")
     expect(sanitized).not.toContain("cli-token")
     expect(sanitizeMcpCanaryArgs(["mcp-serve", "--token", "arg-token", "--password=inline", "safe"]))
-      .toEqual(["mcp-serve", "--token", "[redacted]", "--password=[redacted]", "safe"])
+      .toEqual(["mcp-serve", "--credential", "[redacted]", "--credential=[redacted]", "safe"])
   })
 
   it("can ignore aggregate health while preserving transport and required-sense checks", async () => {
@@ -531,7 +532,7 @@ describe("mcp canary", () => {
       childPid: 9876,
       exitCode: null,
       exitSignal: "SIGTERM",
-      stderr: "failed https://bridge.local/path?[redacted] token=[redacted]",
+      stderr: "failed https://bridge.local/path?[redacted] credential=[redacted]",
     }))
     expect(JSON.stringify(result)).not.toContain("top-secret")
     expect(JSON.stringify(result)).not.toContain("abc123")

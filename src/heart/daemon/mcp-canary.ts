@@ -85,10 +85,10 @@ export function classifyMcpBoundary(input: {
 export function sanitizeMcpCanaryText(text: string): string {
   return text
     .replace(/(https?:\/\/[^\s?]+)\?[^\s]*/g, "$1?[redacted]")
-    .replace(/("(?:password|token|secret|api[_-]?key)"\s*:\s*")[^"]*(")/gi, "$1[redacted]$2")
+    .replace(/"(?:password|token|secret|api[_-]?key)"\s*:\s*"[^"]*"/gi, '"credential":"[redacted]"')
     .replace(/\bBearer\s+[^\s]+/gi, "Bearer [redacted]")
-    .replace(/(--(?:password|token|secret|api[_-]?key))(\s+|=)[^\s]+/gi, "$1$2[redacted]")
-    .replace(/\b(password|token|secret|api[_-]?key)=([^\s]+)/gi, "$1=[redacted]")
+    .replace(/--(?:password|token|secret|api[_-]?key)(\s+|=)[^\s]+/gi, "--credential$1[redacted]")
+    .replace(/\b(?:password|token|secret|api[_-]?key)=([^\s]+)/gi, "credential=[redacted]")
     .trim()
 }
 
@@ -102,7 +102,7 @@ export function sanitizeMcpCanaryArgs(args: string[]): string[] {
       continue
     }
     if (/^--(?:password|token|secret|api[_-]?key)$/i.test(arg)) {
-      sanitized.push(arg)
+      sanitized.push("--credential")
       redactNext = true
       continue
     }
