@@ -142,6 +142,43 @@ describe("approval suspension session projection", () => {
     expect(listApprovalSuspensionCheckpoints(parsed!)).toEqual([checkpoint()])
   })
 
+  it.each([
+    ["non-array collection", "collection", "invalid"],
+    ["null item", "item", null],
+    ["array item", "item", []],
+    ["non-string approval id", "approvalId", 7],
+    ["non-string checkpoint digest", "checkpointDigest", 7],
+    ["malformed checkpoint digest", "checkpointDigest", "bad"],
+    ["non-string base revision", "baseSessionRevision", 7],
+    ["malformed base revision", "baseSessionRevision", "bad"],
+    ["non-string suspended revision", "suspendedSessionRevision", 7],
+    ["malformed suspended revision", "suspendedSessionRevision", "bad"],
+    ["non-string argument digest", "argumentDigest", 7],
+    ["malformed argument digest", "argumentDigest", "bad"],
+    ["non-string schema digest", "schemaDigest", 7],
+    ["malformed schema digest", "schemaDigest", "bad"],
+    ["non-string tool digest", "toolDigest", 7],
+    ["malformed tool digest", "toolDigest", "bad"],
+    ["non-string policy digest", "policyDigest", 7],
+    ["malformed policy digest", "policyDigest", "bad"],
+    ["non-string pre-call digest", "preCallDigest", 7],
+    ["malformed pre-call digest", "preCallDigest", "bad"],
+    ["non-array transcript", "preCallMessages", {}],
+    ["missing frozen assistant", "frozenAssistantMessage", null],
+    ["scalar frozen assistant", "frozenAssistantMessage", "bad"],
+    ["array frozen assistant", "frozenAssistantMessage", []],
+  ])("drops a malformed suspension checkpoint: %s", (_label, field, value) => {
+    const raw = JSON.parse(JSON.stringify(baseEnvelope()))
+    if (field === "collection") raw.approvalSuspensions = value
+    else if (field === "item") raw.approvalSuspensions = [value]
+    else raw.approvalSuspensions = [{ ...checkpoint(), [field]: value }]
+
+    const parsed = parseSessionEnvelope(raw)
+
+    expect(parsed).not.toBeNull()
+    expect(listApprovalSuspensionCheckpoints(parsed!)).toEqual([])
+  })
+
   it("preserves suspension checkpoints while rebuilding the canonical envelope", () => {
     const existing = attachApprovalSuspensionCheckpoint(baseEnvelope(), checkpoint())
     const messages = projectProviderMessages(existing)

@@ -25,8 +25,8 @@ function digest(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex")
 }
 
-function renderErrors(errors: ErrorObject[] | null | undefined): string {
-  return (errors ?? []).map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ")
+function renderErrors(errors: readonly ErrorObject[]): string {
+  return errors.map((error) => `${error.instancePath || "/"} ${error.message}`).join("; ")
 }
 
 export interface ValidatedToolArguments {
@@ -77,7 +77,7 @@ export function validateAdvertisedToolArguments(
     validator ??= ajv.compile(schema)
     validators.set(schema, validator)
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    const reason = String(error)
     emitNervesEvent({
       level: "error",
       component: "repertoire",
@@ -89,7 +89,7 @@ export function validateAdvertisedToolArguments(
   }
 
   if (!validator(parsed)) {
-    const reason = renderErrors(validator.errors)
+    const reason = renderErrors(validator.errors!)
     emitNervesEvent({
       level: "warn",
       component: "repertoire",

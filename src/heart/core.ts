@@ -2030,7 +2030,7 @@ export async function runAgent(
         if (invalidApprovalCall) {
           await streamCallbackBuffer?.flush()
           pushGenerated(msg)
-          for (const entry of validatedCalls ?? []) {
+          for (const entry of validatedCalls!) {
             const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
             const rejection = `invalid tool arguments: ${detail}`
             pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
@@ -2046,10 +2046,14 @@ export async function runAgent(
           continue
         }
 
-        const approvalCalls = validatedCalls?.flatMap((entry) => {
-          if (!("validated" in entry)) return []
-          return { ...entry, policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments) }
-        }) ?? []
+        const approvalCalls = (validatedCalls as Array<{
+          call: (typeof result.toolCalls)[number]
+          advertised: OpenAI.ChatCompletionFunctionTool
+          validated: ValidatedToolArguments
+        }> | null)?.map((entry) => ({
+          ...entry,
+          policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments),
+        })) ?? []
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
           streamCallbackBuffer?.discard()

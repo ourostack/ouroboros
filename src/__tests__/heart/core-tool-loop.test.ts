@@ -1369,6 +1369,69 @@ describe("runAgent tool loop guard", () => {
       }))
     })
 
+    it.each([
+      ["unadvertised tool", "not_advertised", [], JSON.stringify({ command: "docker restart calibre-web" })],
+      ["invalid advertised schema", "shell", [{
+        type: "function",
+        function: {
+          name: "shell",
+          description: "invalid schema fixture",
+          parameters: { type: "not-a-json-schema-type" },
+        },
+      }], JSON.stringify({ command: "docker restart calibre-web" })],
+    ])("fails closed for %s before proposal or execution", async (_label, name, tools, rawArguments) => {
+      mockCreate.mockReset()
+      mockCreate.mockReturnValueOnce(streamedCall(name, rawArguments, "call_schema_drift"))
+      mockCreate.mockReturnValueOnce(settled("schema rejected"))
+      const execTool = vi.fn()
+      const propose = vi.fn()
+      const messages: any[] = [{ role: "user", content: "restart it" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+        tools,
+        execTool,
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+      } as any)
+
+      expect(result.outcome).toBe("settled")
+      expect(execTool).not.toHaveBeenCalled()
+      expect(propose).not.toHaveBeenCalled()
+      expect(messages).toContainEqual(expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_schema_drift",
+        content: expect.stringContaining("invalid tool arguments"),
+      }))
+    })
+
+    it("rejects every valid companion when one call in the batch has invalid arguments", async () => {
+      mockCreate.mockReset()
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+        { index: 0, id: "call_invalid", function: { name: "shell", arguments: "{}" } },
+        { index: 1, id: "call_valid", function: { name: "read_file", arguments: JSON.stringify({ path: "/tmp/status" }) } },
+      ])]))
+      mockCreate.mockReturnValueOnce(settled("batch rejected"))
+      const execTool = vi.fn()
+      const propose = vi.fn()
+      const messages: any[] = [{ role: "user", content: "restart and inspect" }]
+      const { runAgent } = await import("../../heart/core")
+
+      await runAgent(messages, makeCallbacks(), "cli", undefined, {
+        execTool,
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+      } as any)
+
+      expect(execTool).not.toHaveBeenCalled()
+      expect(propose).not.toHaveBeenCalled()
+      expect(messages).toContainEqual(expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_valid",
+        content: expect.stringContaining("another call in this batch had invalid arguments"),
+      }))
+    })
+
     it("keeps genuinely non-protected low-risk shell calls unchanged", async () => {
       mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "printf ok" }), "call_safe_shell"))
       mockCreate.mockReturnValueOnce(settled("safe call finished"))
