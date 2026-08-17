@@ -1226,4 +1226,137 @@ describe("runAgent tool loop guard", () => {
     expect(execTool).not.toHaveBeenCalledWith(terminalToolName, expect.anything(), expect.anything())
     expect(result).toMatchObject({ outcome: "observed" })
   })
+
+  describe("approval suspension boundary", () => {
+    function streamedCall(name: string, rawArguments: string, id = `call_${name}`) {
+      return makeStream([makeChunk(undefined, [{
+        index: 0,
+        id,
+        function: { name, arguments: rawArguments },
+      }])])
+    }
+
+    function settled(answer = "done") {
+      return streamedCall("settle", JSON.stringify({ answer, intent: "complete" }), "call_settle_after_rejection")
+    }
+
+    it("suspends the exact Docker restart before the shell handler despite its low-risk profile", async () => {
+      mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "docker restart calibre-web" }), "call_restart"))
+      mockCreate.mockReturnValueOnce(settled("unexpected continuation"))
+      const execTool = vi.fn().mockResolvedValue("should never execute")
+      const propose = vi.fn().mockResolvedValue({
+        approvalId: "11111111-1111-4111-8111-111111111111",
+        checkpointDigest: "a".repeat(64),
+        suspendedSessionRevision: "b".repeat(64),
+      })
+      const messages: any[] = [{ role: "user", content: "restart calibre-web" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+        execTool,
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+      } as any)
+
+      expect(result).toMatchObject({
+        outcome: "suspended",
+        suspension: { approvalId: "11111111-1111-4111-8111-111111111111", toolCallId: "call_restart" },
+      })
+      expect(execTool).not.toHaveBeenCalled()
+      expect(propose).toHaveBeenCalledTimes(1)
+      expect(propose).toHaveBeenCalledWith(expect.objectContaining({
+        toolCall: expect.objectContaining({
+          id: "call_restart",
+          function: expect.objectContaining({ name: "shell" }),
+        }),
+        arguments: { command: "docker restart calibre-web" },
+        preCallMessages: [{ role: "user", content: "restart calibre-web" }],
+      }))
+    })
+
+    it.each([
+      ["protected first", [
+        { index: 0, id: "call_restart", function: { name: "shell", arguments: JSON.stringify({ command: "docker restart calibre-web" }) } },
+        { index: 1, id: "call_read", function: { name: "read_file", arguments: JSON.stringify({ path: "/tmp/status" }) } },
+      ]],
+      ["protected last", [
+        { index: 0, id: "call_read", function: { name: "read_file", arguments: JSON.stringify({ path: "/tmp/status" }) } },
+        { index: 1, id: "call_restart", function: { name: "shell", arguments: JSON.stringify({ command: "docker restart calibre-web" }) } },
+      ]],
+      ["multiple protected", [
+        { index: 0, id: "call_restart_a", function: { name: "shell", arguments: JSON.stringify({ command: "docker restart calibre-web" }) } },
+        { index: 1, id: "call_restart_b", function: { name: "shell", arguments: JSON.stringify({ command: "docker restart other" }) } },
+      ]],
+    ])("rejects the whole %s batch before every handler", async (_label, calls) => {
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, calls)]))
+      mockCreate.mockReturnValueOnce(settled("batch rejected"))
+      const execTool = vi.fn().mockResolvedValue("should never execute")
+      const propose = vi.fn()
+      const messages: any[] = [{ role: "user", content: "mixed request" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+        execTool,
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+      } as any)
+
+      expect(result.outcome).toBe("settled")
+      expect(execTool).not.toHaveBeenCalled()
+      expect(propose).not.toHaveBeenCalled()
+      const rejectedResults = messages.filter((message) => message.role === "tool" && String(message.content).includes("approval-eligible tool must be the sole call"))
+      expect(rejectedResults).toHaveLength(2)
+    })
+
+    it.each([
+      ["malformed JSON", "{"],
+      ["null", "null"],
+      ["array", "[]"],
+      ["missing required command", "{}"],
+      ["wrong command type", JSON.stringify({ command: 42 })],
+      ["prohibited extra property", JSON.stringify({ command: "docker restart calibre-web", surprise: true })],
+    ])("rejects %s before proposal persistence or handler execution", async (_label, rawArguments) => {
+      mockCreate.mockReset()
+      mockCreate.mockReturnValueOnce(streamedCall("shell", rawArguments, "call_invalid_restart"))
+      mockCreate.mockReturnValueOnce(settled("invalid arguments rejected"))
+      const execTool = vi.fn().mockResolvedValue("should never execute")
+      const propose = vi.fn()
+      const messages: any[] = [{ role: "user", content: "restart it" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+        execTool,
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+      } as any)
+
+      expect(result.outcome).toBe("settled")
+      expect(propose).not.toHaveBeenCalled()
+      expect(execTool).not.toHaveBeenCalled()
+      expect(messages).toContainEqual(expect.objectContaining({
+        role: "tool",
+        tool_call_id: "call_invalid_restart",
+        content: expect.stringContaining("invalid tool arguments"),
+      }))
+    })
+
+    it("keeps genuinely non-protected low-risk shell calls unchanged", async () => {
+      mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "printf ok" }), "call_safe_shell"))
+      mockCreate.mockReturnValueOnce(settled("safe call finished"))
+      const execTool = vi.fn().mockResolvedValue("ok")
+      const propose = vi.fn()
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([{ role: "user", content: "print ok" }], makeCallbacks(), "cli", undefined, {
+        execTool,
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+      } as any)
+
+      expect(result.outcome).toBe("settled")
+      expect(execTool).toHaveBeenCalledTimes(1)
+      expect(execTool).toHaveBeenCalledWith("shell", { command: "printf ok" }, expect.anything())
+      expect(propose).not.toHaveBeenCalled()
+    })
+  })
 })
