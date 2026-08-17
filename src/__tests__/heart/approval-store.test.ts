@@ -223,6 +223,18 @@ describe("approval store", () => {
     })
     expect(awaiting.state).toBe("awaiting_prompt_binding")
 
+    for (const mismatch of [
+      { transport: "teams", transportChatId: "7" },
+      { transport: "telegram", transportChatId: "8" },
+    ]) {
+      expect(() => store.bindPrompt({
+        approvalId: record.approvalId,
+        ...mismatch,
+        transportMessageId: "99",
+      })).toThrowError(ApprovalStoreError)
+      expect(store.read(record.approvalId)?.state).toBe("awaiting_prompt_binding")
+    }
+
     const proposed = store.bindPrompt({
       approvalId: record.approvalId,
       transport: "telegram",
@@ -256,6 +268,7 @@ describe("approval store", () => {
   it.each([
     ["token", { decisionToken: "wrong" }],
     ["requester", { requesterId: "friend-eve" }],
+    ["transport", { transport: "teams" }],
     ["transport user", { transportUserId: "84" }],
     ["chat", { transportChatId: "8" }],
     ["message", { transportMessageId: "100" }],
