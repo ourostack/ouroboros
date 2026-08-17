@@ -446,12 +446,12 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
   } finally {
     child.stdin?.end()
     cleanup()
-    let exitTimer: ReturnType<typeof setTimeout> | null = null
+    let exitTimer!: ReturnType<typeof setTimeout>
     await Promise.race([
       exitObserved,
       new Promise<void>((resolve) => { exitTimer = setTimeout(resolve, 100) }),
     ])
-    if (exitTimer) clearTimeout(exitTimer)
+    clearTimeout(exitTimer)
     evidence.stderr = safeStderr()
     evidence.durationMs = Date.now() - startedAt
   }
