@@ -968,6 +968,89 @@ describe("daemon process manager", () => {
     }))
   })
 
+  it("bounds repeated fast clean exits with truthful unexpected-exit diagnostics", async () => {
+    const children = [new MockChild(), new MockChild(), new MockChild()]
+    spawn.mockImplementation(() => children.shift()!)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      initialBackoffMs: 10,
+    })
+
+    await manager.startAgent("slugger")
+    for (let index = 0; index < 3; index += 1) {
+      const activeChild = index === 0 ? spawn.mock.results[0]?.value as MockChild : spawn.mock.results[index]?.value as MockChild
+      activeChild.emit("exit", 0, null)
+      if (index < 2) timers[index]?.cb()
+    }
+
+    const snapshot = manager.getAgentSnapshot("slugger")
+    expect(snapshot).toEqual(expect.objectContaining({
+      status: "crashed",
+      lastCrashAt: null,
+    }))
+    expect(snapshot?.errorReason).toContain("exited unexpectedly 3 times")
+    expect(snapshot?.errorReason).not.toMatch(/missing credentials|bad provider|agent crashed/)
+    expect(snapshot?.fixHint).toContain("Inspect daemon logs")
+    expect(spawn).toHaveBeenCalledTimes(3)
+  })
+
+  it("cancels a pending clean-exit respawn on explicit stop", async () => {
+    const first = new MockChild()
+    spawn.mockReturnValue(first)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+
+    await manager.startAgent("slugger")
+    first.emit("exit", 0, null)
+    await manager.stopAgent("slugger")
+
+    expect(clearTimeoutFn).toHaveBeenCalledWith(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+    expect(spawn).toHaveBeenCalledTimes(1)
+  })
+
+  it("cancels a pending clean-exit respawn on stopAll and fences its stale callback", async () => {
+    const first = new MockChild()
+    spawn.mockReturnValue(first)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+
+    await manager.startAgent("slugger")
+    first.emit("exit", 0, null)
+    await manager.stopAll()
+    timers[0]?.cb()
+    await Promise.resolve()
+
+    expect(clearTimeoutFn).toHaveBeenCalledWith(1)
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+    expect(spawn).toHaveBeenCalledTimes(1)
+  })
+
+  it("cancels a pending clean-exit respawn on manual restart without double-spawning", async () => {
+    const first = new MockChild()
+    const replacement = new MockChild()
+    replacement.pid = 222
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(replacement)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+
+    await manager.startAgent("slugger")
+    first.emit("exit", 0, null)
+    await manager.restartAgent("slugger")
+    timers[0]?.cb()
+    await Promise.resolve()
+
+    expect(clearTimeoutFn).toHaveBeenCalledWith(1)
+    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({ status: "running", pid: 222 }))
+  })
+
   it("does not respawn a non-autostart worker after an external signal", async () => {
     const child = new MockChild()
     spawn.mockReturnValue(child)

@@ -820,7 +820,9 @@ export class DaemonProcessManager {
       return
     }
 
-    state.snapshot.lastCrashAt = new Date(now).toISOString()
+    if (crashed) {
+      state.snapshot.lastCrashAt = new Date(now).toISOString()
+    }
     if (state.config.autoStart === false) {
       state.snapshot.status = "stopped"
       state.snapshot.errorReason = "non-autostart worker exited unexpectedly; not respawning"
@@ -829,32 +831,31 @@ export class DaemonProcessManager {
       return
     }
 
-    // Fast-crash detection: if the agent dies within 5 seconds of starting, it's likely
-    // a configuration issue (missing credentials, bad provider, etc.) not a transient failure.
-    // After 3 consecutive fast crashes, stop retrying and mark as config-failed.
+    // Fast-exit detection: repeated early exits, including clean exit-code-0
+    // terminations, indicate a startup/configuration or lifecycle fault rather
+    // than a stable long-lived worker. Bound them without claiming a crash.
     const FAST_CRASH_THRESHOLD_MS = 5000
     const FAST_CRASH_MAX = 3
     if (runDuration < FAST_CRASH_THRESHOLD_MS) {
       state.fastCrashCount = state.fastCrashCount + 1
       if (state.fastCrashCount >= FAST_CRASH_MAX) {
         state.snapshot.status = "crashed"
-        // Capture the fast-crash diagnosis on the snapshot so it surfaces
-        // via the pulse. The error message is prescriptive: it tells the
-        // user (and their sibling agents) exactly what to do.
-        state.snapshot.errorReason = `agent crashed ${FAST_CRASH_MAX} times within ${FAST_CRASH_THRESHOLD_MS}ms of startup — likely a configuration issue (missing credentials, bad provider).`
-        state.snapshot.fixHint = `Fix the config and run \`ouro up\` to restart, or check daemon logs for the underlying error.`
+        // Capture the fast-exit diagnosis on the snapshot so it surfaces via
+        // the pulse with a prescriptive, cause-neutral repair path.
+        state.snapshot.errorReason = `agent exited unexpectedly ${FAST_CRASH_MAX} times within ${FAST_CRASH_THRESHOLD_MS}ms of startup — likely a startup/configuration or lifecycle issue.`
+        state.snapshot.fixHint = `Inspect daemon logs and lifecycle/configuration, then run \`ouro up\` to restart.`
         emitNervesEvent({
           level: "error",
           component: "daemon",
           event: "daemon.agent_config_failure",
-          message: `agent crashed ${FAST_CRASH_MAX} times within ${FAST_CRASH_THRESHOLD_MS}ms of startup — likely a configuration issue (missing credentials, bad provider). Not retrying. Fix the config and run \`ouro up\` to restart.`,
-          meta: { agent: state.config.name, fastCrashCount: state.fastCrashCount, avgRunDurationMs: runDuration },
+          message: `agent exited unexpectedly ${FAST_CRASH_MAX} times within ${FAST_CRASH_THRESHOLD_MS}ms of startup. Not retrying. Inspect lifecycle/configuration and run \`ouro up\` to restart.`,
+          meta: { agent: state.config.name, fastUnexpectedExitCount: state.fastCrashCount, avgRunDurationMs: runDuration },
         })
         this.notifySnapshotChange(state.snapshot)
         return // Don't schedule cooldown recovery — this needs human/agent intervention
       }
     } else {
-      // Reset fast-crash counter on a stable run
+      // Reset the fast unexpected-exit counter on a stable run.
       state.fastCrashCount = 0
     }
 
@@ -863,13 +864,13 @@ export class DaemonProcessManager {
 
     if (state.crashTimestamps.length > this.maxRestartsPerHour) {
       state.snapshot.status = "crashed"
-      state.snapshot.errorReason = `agent exceeded restart limit (${this.maxRestartsPerHour}/hr) — entering cooldown`
-      state.snapshot.fixHint = "investigate why the agent keeps crashing; cooldown will retry shortly"
+      state.snapshot.errorReason = `agent exceeded unexpected-exit restart limit (${this.maxRestartsPerHour}/hr) — entering cooldown`
+      state.snapshot.fixHint = "investigate why the agent keeps exiting unexpectedly; cooldown will retry shortly"
       emitNervesEvent({
         level: "error",
         component: "daemon",
         event: "daemon.agent_restart_exhausted",
-        message: "managed agent exceeded restart limit and is marked crashed",
+        message: "managed agent exceeded unexpected-exit restart limit and is marked crashed",
         meta: { agent: state.config.name, maxRestartsPerHour: this.maxRestartsPerHour },
       })
       this.notifySnapshotChange(state.snapshot)
