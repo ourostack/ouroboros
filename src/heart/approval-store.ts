@@ -206,29 +206,66 @@ function hasExactKeys(value: Record<string, unknown>): boolean {
 function validStateShape(record: ApprovalRecord): boolean {
   const hasOwner = isNonEmpty(record.ownerId)
   const hasAttempt = isTimestamp(record.attemptedAt)
+  const hasSuspension = typeof record.suspendedSessionRevision === "string"
+    && HASH.test(record.suspendedSessionRevision)
+  const hasPromptBinding = isNonEmpty(record.transportMessageId)
+  const hasValidOwnershipEpoch = hasOwner ? record.epoch > 0 : record.epoch === 0
   if (record.state === "preparing") {
     return record.suspendedSessionRevision === null && record.transportMessageId === null
-      && !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null
+      && !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null && record.reason === null
   }
   if (record.state === "awaiting_prompt_binding") {
-    return HASH.test(record.suspendedSessionRevision ?? "") && record.transportMessageId === null
-      && !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null
+    return hasSuspension && record.transportMessageId === null
+      && !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null && record.reason === null
   }
   if (record.state === "proposed") {
-    return HASH.test(record.suspendedSessionRevision ?? "") && isNonEmpty(record.transportMessageId)
-      && !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null
+    return hasSuspension && hasPromptBinding
+      && !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null && record.reason === null
   }
-  if (record.state === "claimed") return hasOwner && record.epoch > 0 && !hasAttempt && record.result === null
-  if (record.state === "attempted") return hasOwner && record.epoch > 0 && hasAttempt && record.result === null
-  if (ATTEMPT_TERMINALS.has(record.state)) return hasOwner && record.epoch > 0 && hasAttempt && isNonEmpty(record.result)
+  if (record.state === "claimed") {
+    return hasSuspension && hasPromptBinding && hasOwner && record.epoch > 0
+      && !hasAttempt && record.result === null && record.reason === null
+  }
+  if (record.state === "attempted") {
+    return hasSuspension && hasPromptBinding && hasOwner && record.epoch > 0
+      && hasAttempt && record.result === null && record.reason === null
+  }
+  if (ATTEMPT_TERMINALS.has(record.state)) {
+    return hasSuspension && hasPromptBinding && hasOwner && record.epoch > 0
+      && hasAttempt && isNonEmpty(record.result) && record.reason === null
+  }
   if (record.state === "abandoned_before_attempt") {
-    const validOwnership = (hasOwner && record.epoch > 0) || (record.ownerId === null && record.epoch === 0)
-    return validOwnership && !hasAttempt && record.result === null && isNonEmpty(record.reason)
+    const validPreparingRecovery = !hasOwner && record.epoch === 0
+      && record.suspendedSessionRevision === null && record.transportMessageId === null
+    const validClaimRecovery = hasOwner && record.epoch > 0 && hasSuspension && hasPromptBinding
+    return (validPreparingRecovery || validClaimRecovery)
+      && !hasAttempt && record.result === null && isNonEmpty(record.reason)
   }
   if (record.state === "drifted") {
-    return !hasOwner && record.epoch === 0 && !hasAttempt && record.result === null && isNonEmpty(record.reason)
+    const validPreparingRecovery = !hasOwner && record.epoch === 0
+      && record.suspendedSessionRevision === null && record.transportMessageId === null
+    const validPostCheckpoint = !hasOwner && record.epoch === 0 && hasSuspension
+      && (hasPromptBinding || record.transportMessageId === null)
+    const validPostClaim = hasOwner && record.epoch > 0 && hasSuspension && hasPromptBinding
+    return (validPreparingRecovery || validPostCheckpoint || validPostClaim)
+      && !hasAttempt && record.result === null && isNonEmpty(record.reason)
   }
-  return !hasOwner && !hasAttempt && record.result === null
+  if (record.state === "denied") {
+    return hasValidOwnershipEpoch && hasSuspension && hasPromptBinding
+      && !hasAttempt && record.result === null && record.reason === null
+  }
+  if (record.state === "expired") {
+    const validPostCheckpoint = !hasOwner && record.epoch === 0 && hasSuspension
+      && (hasPromptBinding || record.transportMessageId === null)
+    const validPostClaim = hasOwner && record.epoch > 0 && hasSuspension && hasPromptBinding
+    return (validPostCheckpoint || validPostClaim)
+      && !hasAttempt && record.result === null && record.reason === null
+  }
+  if (record.state === "session_head_changed") {
+    return hasValidOwnershipEpoch && hasSuspension && hasPromptBinding
+      && !hasAttempt && record.result === null && isNonEmpty(record.reason)
+  }
+  return false
 }
 
 export function parseApprovalRecord(value: unknown): ApprovalRecord {
