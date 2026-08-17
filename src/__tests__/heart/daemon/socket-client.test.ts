@@ -224,6 +224,32 @@ describe("daemon socket client", () => {
     }
   }, 7_000)
 
+  it("settles exactly once when timeout races with end and error events", async () => {
+    const emitNervesEvent = vi.fn()
+    class MockConnection extends EventEmitter {
+      setTimeout = vi.fn((_timeoutMs: number, callback: () => void) => {
+        queueMicrotask(() => {
+          callback()
+          this.emit("end")
+          this.emit("error", new Error("late socket error"))
+        })
+        return this
+      })
+      destroy = vi.fn()
+    }
+    vi.doMock("net", () => ({ createConnection: vi.fn(() => new MockConnection()) }))
+    vi.doMock("fs", () => ({ existsSync: vi.fn(() => true) }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+
+    const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
+    const error = await sendDaemonCommand("/tmp/daemon.sock", { kind: "daemon.status" }, { timeoutMs: 25 })
+      .catch((caught: unknown) => caught)
+
+    expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
+    expect(emitNervesEvent.mock.calls.filter(([event]) => event.event === "daemon.socket_command_timeout")).toHaveLength(1)
+    expect(emitNervesEvent.mock.calls.filter(([event]) => event.event === "daemon.socket_command_error")).toHaveLength(0)
+  })
+
   it("stringifies non-Error JSON parse failures from daemon responses", async () => {
     class MockConnection extends EventEmitter {
       write = vi.fn(() => {
