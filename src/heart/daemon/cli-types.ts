@@ -25,6 +25,7 @@ import type { MailroomRuntimeConfig } from "../../mailroom/reader"
 import type { HabitCancelDeps } from "../habits/habit-cancel"
 import type { RsvpSendBoundaryDeps } from "../../rsvp/outbound-state"
 import type { VersionIntent } from "../versioning/version-intent"
+import type { BlueBubblesWebhookRegistrationInput, BlueBubblesWebhookRegistrationResult } from "../../senses/bluebubbles/webhook-registration"
 export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
 export type RuntimeConfigScope = "agent" | "machine"
@@ -240,6 +241,8 @@ export interface OuroCliDeps {
     bridgeUid: number
     bridgeHomeDir: string
   }>
+  /** Test/alternate-host seam for connect-time owner-safe webhook reconciliation. */
+  reconcileBlueBubblesWebhook?: (input: BlueBubblesWebhookRegistrationInput) => Promise<BlueBubblesWebhookRegistrationResult>
 }
 
 export interface SessionEntry {

@@ -93,5 +93,20 @@ describe("BlueBubbles CLI integration", () => {
       state: "api-unreachable",
       detail: "webhook verification failed before BlueBubbles returned a diagnostic result",
     })
+
+    const fetchImpl = vi.fn()
+    await expect(reconcileBlueBubblesWebhookAfterConnect({ ...input, listenerReady: false }, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })).resolves.toMatchObject({ state: "listener-not-ready" })
+    expect(fetchImpl).not.toHaveBeenCalled()
+
+    vi.stubGlobal("fetch", fetchImpl)
+    try {
+      await expect(reconcileBlueBubblesWebhookAfterConnect({ ...input, listenerReady: false })).resolves.toMatchObject({
+        state: "listener-not-ready",
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

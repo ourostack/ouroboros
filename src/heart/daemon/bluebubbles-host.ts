@@ -231,7 +231,25 @@ export async function runBlueBubblesHostAction(
 
 export function createDefaultBlueBubblesHostDeps(input: {
   probeHttp?: BlueBubblesHostDeps["probeHttp"]
+  serverUrl?: string
+  requestTimeoutMs?: number
+  fetchImpl?: typeof fetch
 } = {}): BlueBubblesHostDeps {
+  const serverUrl = input.serverUrl ?? "http://127.0.0.1:1234/"
+  const requestTimeoutMs = input.requestTimeoutMs ?? 30_000
+  /* v8 ignore next -- production uses global fetch; unit tests inject the adapter @preserve */
+  const fetchImpl = input.fetchImpl ?? fetch
+  const probeHttp = input.probeHttp ?? (async () => {
+    try {
+      const response = await fetchImpl(serverUrl, {
+        method: "GET",
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      })
+      return { ok: true, detail: `HTTP server responded with ${response.status}` }
+    } catch (error) {
+      return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+    }
+  })
   return {
     platform: process.platform,
     homeDir: os.homedir(),
@@ -258,7 +276,7 @@ export function createDefaultBlueBubblesHostDeps(input: {
         return false
       }
     },
-    ...(input.probeHttp ? { probeHttp: input.probeHttp } : {}),
+    probeHttp,
   }
 }
 

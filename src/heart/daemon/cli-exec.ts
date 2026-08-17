@@ -210,6 +210,12 @@ import {
   vaultItemTemplateSecretFields,
 } from "./vault-items"
 import { buildMcpBridgeRepairGuidance, buildMcpDoctorNextSteps, formatMcpStatusCanaryResult, formatMcpStatusDoctorResult, runMcpStatusCanary } from "./mcp-canary"
+import {
+  blueBubblesListenerReadyAfterApply,
+  formatBlueBubblesHostActionText,
+  formatBlueBubblesWebhookConnectLine,
+  reconcileBlueBubblesWebhookAfterConnect,
+} from "./bluebubbles-cli-integration"
 
 // ── ensureDaemonRunning ──
 
@@ -4257,6 +4263,8 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
 
 async function setupBlueBubblesHostForConnect(
   bridgeUsername: string,
+  serverUrl: string,
+  requestTimeoutMs: number,
   deps: OuroCliDeps,
 ): Promise<{ summary: string; bridgeUsername: string; bridgeUid: number; bridgeHomeDir: string }> {
   if (deps.setupBlueBubblesHost) return deps.setupBlueBubblesHost({ bridgeUsername })
@@ -4265,7 +4273,7 @@ async function setupBlueBubblesHostForConnect(
   })
   const currentUser = os.userInfo()
   if (bridgeUsername === currentUser.username) {
-    const host = await runBlueBubblesHostAction("install", createDefaultBlueBubblesHostDeps())
+    const host = await runBlueBubblesHostAction("install", createDefaultBlueBubblesHostDeps({ serverUrl, requestTimeoutMs, fetchImpl: deps.fetchImpl }))
     return {
       summary: `host: native LaunchAgent ${host.state.service}; process ${host.state.process}`,
       bridgeUsername,
@@ -4354,6 +4362,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   let stored: Awaited<ReturnType<typeof upsertMachineRuntimeCredentialConfig>>
   let daemonApply = "not applied"
   let hostSetup: Awaited<ReturnType<typeof setupBlueBubblesHostForConnect>>
+  let webhookRegistration: Awaited<ReturnType<typeof reconcileBlueBubblesWebhookAfterConnect>>
   try {
     progress.startPhase("saving BlueBubbles attachment")
     progress.updateDetail("checking existing machine runtime config")
@@ -4363,7 +4372,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
     }
     progress.updateDetail("configuring native BlueBubbles host continuity")
-    hostSetup = await setupBlueBubblesHostForConnect(bridgeUsername, deps)
+    hostSetup = await setupBlueBubblesHostForConnect(bridgeUsername, serverUrl, requestTimeoutMs, deps)
     const blueBubblesPatch: RuntimeCredentialConfig = {
       bluebubbles: {
         serverUrl,
@@ -4391,6 +4400,22 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       () => applyLocalSenseChangeToRunningDaemon(agent, "BlueBubbles", deps, (message) => progress.updateDetail(message)),
       (result) => result,
     )
+    progress.startPhase("verifying BlueBubbles webhook")
+    const webhookInput = {
+      serverUrl,
+      password,
+      callbackPort: port,
+      callbackPath: webhookPath,
+      agentName: agent,
+      machineId,
+      requestTimeoutMs,
+      listenerReady: blueBubblesListenerReadyAfterApply(daemonApply),
+    }
+    webhookRegistration = await reconcileBlueBubblesWebhookAfterConnect(webhookInput, {
+      ...(deps.reconcileBlueBubblesWebhook ? { reconcile: deps.reconcileBlueBubblesWebhook } : {}),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    progress.completePhase("verifying BlueBubbles webhook", webhookRegistration.detail)
     progress.end()
   } catch (error) {
     progress.end()
@@ -4406,12 +4431,15 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       "agent.json: senses.bluebubbles.enabled = true",
       `Runtime: ${daemonApply}`,
       hostSetup.summary,
+      formatBlueBubblesWebhookConnectLine(webhookRegistration),
       `ownHandles: ${ownHandles.length > 0 ? ownHandles.join(", ") : "(none — group self-talk filter inactive)"}`,
       "secret was not printed",
       ...(syncSummary ? [syncSummary] : []),
     ],
     nextMoves: [
-      `Ouro owns and repairs the BlueBubbles [*] webhook for port ${port}${webhookPath}.`,
+      webhookRegistration.ok
+        ? `Ouro owns and repairs the BlueBubbles [*] webhook for port ${port}${webhookPath}.`
+        : "Run `ouro doctor --category Senses` after Ouro and BlueBubbles are running; the periodic reconciler will retry every 180 seconds.",
       "Run the collect command after any human-required cross-user helper handoff.",
       `Attach other machines separately if ${agent} should use BlueBubbles there too.`,
     ],
@@ -4422,9 +4450,10 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       "agent.json: senses.bluebubbles.enabled = true",
       `runtime: ${daemonApply}`,
       hostSetup.summary,
+      formatBlueBubblesWebhookConnectLine(webhookRegistration),
       "secret was not printed",
       "",
-      `webhook: Ouro reconciles [*] automatically on port ${port}${webhookPath}`,
+      `webhook target: Ouro reconciles [*] automatically on port ${port}${webhookPath}`,
       ...(syncSummary ? [syncSummary] : []),
     ],
   })
@@ -7313,7 +7342,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const outcome = await runBlueBubblesHostAction(command.action, createDefaultBlueBubblesHostDeps())
     const text = command.json
       ? JSON.stringify(outcome, null, 2)
-      : `BlueBubbles host ${command.action}: ${outcome.state.service}; process ${outcome.state.process}; HTTP ${outcome.state.http.ok === true ? "healthy" : outcome.state.http.ok === false ? "unhealthy" : "not checked"}`
+      : formatBlueBubblesHostActionText(outcome)
     deps.writeStdout(text)
     return text
   }

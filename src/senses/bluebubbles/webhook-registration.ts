@@ -42,6 +42,7 @@ interface WebhookRegistrationDeps {
   fetchImpl?: typeof fetch
   setIntervalImpl?: (callback: () => void, intervalMs: number) => unknown
   clearIntervalImpl?: (timer: unknown) => void
+  signal?: AbortSignal
 }
 
 interface WebhookListSuccess {
@@ -132,23 +133,26 @@ async function request(
   method: "GET" | "POST" | "DELETE",
   id?: number,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<Response> {
+  const timeoutSignal = AbortSignal.timeout(input.requestTimeoutMs)
   return fetchImpl(apiUrl(input, id), {
     method,
     ...(body === undefined ? {} : {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
-    signal: AbortSignal.timeout(input.requestTimeoutMs),
+    signal: signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal,
   })
 }
 
 async function readHooks(
   input: BlueBubblesWebhookRegistrationInput,
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<WebhookListSuccess | BlueBubblesWebhookRegistrationResult> {
   try {
-    const response = await request(input, fetchImpl, "GET")
+    const response = await request(input, fetchImpl, "GET", undefined, undefined, signal)
     if (response.status === 401 || response.status === 403) {
       return result("auth-failed", `BlueBubbles rejected webhook credentials (HTTP ${response.status})`)
     }
@@ -197,7 +201,7 @@ export async function inspectBlueBubblesWebhookRegistration(
   deps: WebhookRegistrationDeps = {},
 ): Promise<BlueBubblesWebhookRegistrationResult> {
   if (!input.listenerReady) return result("listener-not-ready", "the local BlueBubbles listener is not ready")
-  const listed = await readHooks(input, deps.fetchImpl ?? fetch)
+  const listed = await readHooks(input, deps.fetchImpl ?? fetch, deps.signal)
   return "hooks" in listed ? inspectHooks(listed.hooks, input) : listed
 }
 
@@ -206,6 +210,7 @@ async function mutate(
   fetchImpl: typeof fetch,
   method: "POST" | "DELETE",
   id?: number,
+  signal?: AbortSignal,
 ): Promise<{ ok: true } | { ok: false; detail: string }> {
   try {
     const response = await request(
@@ -214,6 +219,7 @@ async function mutate(
       method,
       id,
       method === "POST" ? { url: buildBlueBubblesWebhookCallbackUrl(input), events: ["*"] } : undefined,
+      signal,
     )
     if (!response.ok) return { ok: false, detail: `HTTP ${response.status}` }
     return { ok: true }
@@ -228,7 +234,7 @@ export async function reconcileBlueBubblesWebhookRegistration(
 ): Promise<BlueBubblesWebhookRegistrationResult> {
   if (!input.listenerReady) return result("listener-not-ready", "the local BlueBubbles listener is not ready")
   const fetchImpl = deps.fetchImpl ?? fetch
-  const listed = await readHooks(input, fetchImpl)
+  const listed = await readHooks(input, fetchImpl, deps.signal)
   if (!("hooks" in listed)) return listed
 
   const desired = buildBlueBubblesWebhookCallbackUrl(input)
@@ -241,7 +247,7 @@ export async function reconcileBlueBubblesWebhookRegistration(
   let changed = false
 
   if (!keep) {
-    const created = await mutate(input, fetchImpl, "POST")
+    const created = await mutate(input, fetchImpl, "POST", undefined, deps.signal)
     if (!created.ok) {
       return result(owned.length === 0 ? "missing" : "drifted", `could not create the desired webhook: ${created.detail}`, {
         ownedCount: owned.length,
@@ -252,7 +258,7 @@ export async function reconcileBlueBubblesWebhookRegistration(
   }
 
   for (const hook of [...stale, ...adopt]) {
-    const deleted = await mutate(input, fetchImpl, "DELETE", hook.id)
+    const deleted = await mutate(input, fetchImpl, "DELETE", hook.id, deps.signal)
     if (!deleted.ok) {
       return result("drifted", `could not remove 1 stale owned registration: ${deleted.detail}`, {
         ownedCount: owned.length,
@@ -264,7 +270,7 @@ export async function reconcileBlueBubblesWebhookRegistration(
   }
 
   if (!changed) return inspectHooks(listed.hooks, input)
-  const verified = await readHooks(input, fetchImpl)
+  const verified = await readHooks(input, fetchImpl, deps.signal)
   if (!("hooks" in verified)) return { ...verified, changed }
   return { ...inspectHooks(verified.hooks, input), changed }
 }
@@ -280,10 +286,11 @@ export function createBlueBubblesWebhookReconciler(
   const clearIntervalImpl = deps.clearIntervalImpl ?? ((timer: unknown) => clearInterval(timer as ReturnType<typeof setInterval>))
   let closed = false
   let active: Promise<BlueBubblesWebhookRegistrationResult> | null = null
+  const abortController = new AbortController()
   const reconcileNow = (): Promise<BlueBubblesWebhookRegistrationResult> => {
     if (closed) return Promise.resolve(result("listener-not-ready", "the BlueBubbles webhook reconciler is closed"))
     if (active) return active
-    active = reconcileBlueBubblesWebhookRegistration(input, deps).finally(() => { active = null })
+    active = reconcileBlueBubblesWebhookRegistration(input, { ...deps, signal: abortController.signal }).finally(() => { active = null })
     return active
   }
   const timer = setIntervalImpl(() => { void reconcileNow() }, BLUEBUBBLES_WEBHOOK_RECONCILE_INTERVAL_MS)
@@ -302,6 +309,7 @@ export function createBlueBubblesWebhookReconciler(
       if (closed) return
       closed = true
       clearIntervalImpl(timer)
+      abortController.abort(new Error("BlueBubbles webhook reconciliation closed"))
     },
   }
 }

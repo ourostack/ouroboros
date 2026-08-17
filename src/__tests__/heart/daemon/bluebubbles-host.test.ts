@@ -375,10 +375,14 @@ describe("native BlueBubbles host lifecycle", () => {
   })
 
   it("reports default HTTP transport failure without throwing", async () => {
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error("socket closed"))
+      .mockRejectedValueOnce("connection refused")
     const deps = createDefaultBlueBubblesHostDeps({
-      fetchImpl: vi.fn().mockRejectedValue("connection refused") as unknown as typeof fetch,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
     })
 
+    await expect(deps.probeHttp?.()).resolves.toEqual({ ok: false, detail: "socket closed" })
     await expect(deps.probeHttp?.()).resolves.toEqual({ ok: false, detail: "connection refused" })
   })
 
