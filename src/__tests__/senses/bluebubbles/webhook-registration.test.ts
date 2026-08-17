@@ -51,6 +51,7 @@ describe("BlueBubbles webhook registration", () => {
     expect(desiredUrl()).toBe(
       `http://127.0.0.1:18790/bluebubbles-webhook?password=super-secret&ouroWebhook=${token}`,
     )
+    expect(desiredUrl({ callbackPath: "plain-path" })).toContain(":18790/plain-path?")
   })
 
   it("inspects an exact owned registration with one bounded GET", async () => {
@@ -77,6 +78,18 @@ describe("BlueBubbles webhook registration", () => {
       exactCount: 0,
     })
     expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it("classifies owned drift while ignoring malformed unrelated URL text", async () => {
+    const stale = desiredUrl({ callbackPort: 18789 })
+    const fetchImpl = vi.fn().mockResolvedValue(json({ data: [hook(3, stale), hook(4, "not a URL")] }))
+
+    await expect(inspectBlueBubblesWebhookRegistration(input, { fetchImpl })).resolves.toMatchObject({
+      ok: false,
+      state: "drifted",
+      ownedCount: 1,
+      exactCount: 0,
+    })
   })
 
   it("creates a missing registration with exact outbound POST shape then verifies it", async () => {
@@ -149,6 +162,20 @@ describe("BlueBubbles webhook registration", () => {
     expect(requestShape(fetchImpl.mock.calls[2]).url).toContain("/api/v1/webhook/5?")
   })
 
+  it("ignores malformed unowned URL text while creating the desired registration", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json({ data: [hook(5, "not a URL")] }))
+      .mockResolvedValueOnce(json({ data: hook(6, desiredUrl()) }))
+      .mockResolvedValueOnce(json({ data: [hook(5, "not a URL"), hook(6, desiredUrl())] }))
+
+    await expect(reconcileBlueBubblesWebhookRegistration(input, { fetchImpl })).resolves.toMatchObject({
+      ok: true,
+      state: "exact",
+      changed: true,
+    })
+    expect(fetchImpl.mock.calls.map((call) => requestShape(call).init.method)).toEqual(["GET", "POST", "GET"])
+  })
+
   it("leaves all prior hooks untouched when desired creation fails", async () => {
     const stale = desiredUrl({ callbackPort: 18789 })
     const fetchImpl = vi.fn()
@@ -160,6 +187,19 @@ describe("BlueBubbles webhook registration", () => {
     expect(result).toMatchObject({ ok: false, state: "drifted", changed: false })
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     expect(fetchImpl.mock.calls.some((call) => requestShape(call).init.method === "DELETE")).toBe(false)
+  })
+
+  it("reports missing when first creation fails without prior owned state", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json({ data: [] }))
+      .mockRejectedValueOnce("transport refused")
+
+    await expect(reconcileBlueBubblesWebhookRegistration(input, { fetchImpl })).resolves.toMatchObject({
+      ok: false,
+      state: "missing",
+      changed: false,
+      detail: expect.stringContaining("transport refused"),
+    })
   })
 
   it("reports degraded drift when stale owned deletion fails", async () => {
@@ -174,6 +214,16 @@ describe("BlueBubbles webhook registration", () => {
     expect(result.detail).toContain("could not remove 1 stale owned registration")
   })
 
+  it("sanitizes Error failures from mutation transport", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json({ data: [] }))
+      .mockRejectedValueOnce(new Error(`POST ${desiredUrl()} failed`))
+
+    const result = await reconcileBlueBubblesWebhookRegistration(input, { fetchImpl })
+    expect(result).toMatchObject({ state: "missing", changed: false })
+    expect(JSON.stringify(result)).not.toContain("super-secret")
+  })
+
   it.each([401, 403])("classifies HTTP %s as auth-failed", async (status) => {
     const fetchImpl = vi.fn().mockResolvedValue(json({ error: "no" }, status))
 
@@ -181,6 +231,15 @@ describe("BlueBubbles webhook registration", () => {
 
     expect(result).toMatchObject({ ok: false, state: "auth-failed" })
     expect(JSON.stringify(result)).not.toContain("super-secret")
+  })
+
+  it("classifies non-auth HTTP and non-Error transport failures", async () => {
+    await expect(inspectBlueBubblesWebhookRegistration(input, {
+      fetchImpl: vi.fn().mockResolvedValue(json({ error: "down" }, 503)),
+    })).resolves.toMatchObject({ state: "api-unreachable", detail: expect.stringContaining("503") })
+    await expect(inspectBlueBubblesWebhookRegistration(input, {
+      fetchImpl: vi.fn().mockRejectedValue("offline"),
+    })).resolves.toMatchObject({ state: "api-unreachable", detail: "offline" })
   })
 
   it("classifies transport failure as API-unreachable and redacts every secret-bearing URL", async () => {
@@ -198,7 +257,9 @@ describe("BlueBubbles webhook registration", () => {
 
   it.each([
     ["invalid JSON", new Response("not json", { status: 200 })],
+    ["null payload", json(null)],
     ["missing data", json({ nope: [] })],
+    ["null row", json({ data: [null] })],
     ["invalid row", json({ data: [{ id: "x", url: 4, events: null }] })],
   ])("classifies malformed API response: %s", async (_label, response) => {
     const result = await inspectBlueBubblesWebhookRegistration(input, {
@@ -215,6 +276,29 @@ describe("BlueBubbles webhook registration", () => {
 
     expect(result).toMatchObject({ ok: false, state: "listener-not-ready" })
     expect(fetchImpl).not.toHaveBeenCalled()
+    await expect(reconcileBlueBubblesWebhookRegistration({ ...input, listenerReady: false }, { fetchImpl })).resolves.toMatchObject({
+      state: "listener-not-ready",
+    })
+  })
+
+  it("preserves changed truth when post-mutation verification fails", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json({ data: [] }))
+      .mockResolvedValueOnce(json({ data: hook(8, desiredUrl()) }))
+      .mockResolvedValueOnce(json({ error: "verify unavailable" }, 503))
+
+    await expect(reconcileBlueBubblesWebhookRegistration(input, { fetchImpl })).resolves.toMatchObject({
+      state: "api-unreachable",
+      changed: true,
+    })
+  })
+
+  it("returns initial reconciliation diagnostics without mutation", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ error: "no" }, 401))
+    await expect(reconcileBlueBubblesWebhookRegistration(input, { fetchImpl })).resolves.toMatchObject({
+      state: "auth-failed",
+      changed: false,
+    })
   })
 
   it("runs one immediate and periodic single-flight reconciliation and cancels its timer", async () => {
@@ -246,7 +330,28 @@ describe("BlueBubbles webhook registration", () => {
     timerCallback()
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     reconciler.close()
+    reconciler.close()
     expect(clearIntervalImpl).toHaveBeenCalledWith({ timer: 1 })
     await expect(reconciler.reconcileNow()).resolves.toMatchObject({ ok: false, state: "listener-not-ready" })
+  })
+
+  it("uses the default fetch and timer adapters and records a degraded immediate outcome", async () => {
+    vi.useFakeTimers()
+    const fetchImpl = vi.fn().mockResolvedValue(json({ error: "offline" }, 503))
+    vi.stubGlobal("fetch", fetchImpl)
+    try {
+      const reconciler = createBlueBubblesWebhookReconciler(input)
+      await vi.runAllTicks()
+      await Promise.resolve()
+      expect(fetchImpl).toHaveBeenCalledOnce()
+      reconciler.close()
+
+      fetchImpl.mockClear()
+      await expect(inspectBlueBubblesWebhookRegistration(input)).resolves.toMatchObject({ state: "api-unreachable" })
+      expect(fetchImpl).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
   })
 })
