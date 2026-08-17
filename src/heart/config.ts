@@ -96,6 +96,9 @@ export interface BlueBubblesChannelConfig {
   port: number
   webhookPath: string
   requestTimeoutMs: number
+  bridgeUsername?: string
+  bridgeUid?: number
+  bridgeHomeDir?: string
 }
 
 export interface VaultSecretsConfig {
@@ -436,8 +439,7 @@ export function getBlueBubblesConfig(): BlueBubblesConfig {
 
 export function getBlueBubblesChannelConfig(): BlueBubblesChannelConfig {
   const config = loadConfig()
-  const { port, webhookPath, requestTimeoutMs } = config.bluebubblesChannel
-  return { port, webhookPath, requestTimeoutMs }
+  return { ...config.bluebubblesChannel }
 }
 
 export function getIntegrationsConfig(): IntegrationsConfig {

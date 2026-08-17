@@ -122,6 +122,8 @@ export type OuroCliCommand =
   | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "bluebubbles.context-smoke"; agent?: string; messageGuid: string; persist?: boolean; json?: boolean }
+  | { kind: "bluebubbles.host"; action: "install" | "status" | "repair" | "remove"; target?: { username: string; uid: number; homeDir: string }; json?: boolean }
+  | { kind: "bluebubbles.host.collect"; requestId: string; json?: boolean }
   | { kind: "rsvp.doctor"; agent?: string; json?: boolean; strict?: boolean; outputPath?: string }
   | { kind: "rsvp.incident"; agent?: string; json?: boolean; outputPath?: string }
   | { kind: "rsvp.cutover"; agent?: string; legacyRoot: string; action: RsvpCutoverAction; yes?: boolean; json?: boolean; outputPath?: string }
@@ -231,6 +233,13 @@ export interface OuroCliDeps {
   rsvpCutoverDeps?: RsvpCutoverDeps
   /** Test/alternate-host injection for the durable RSVP send boundary. */
   rsvpSendBoundaryDeps?: RsvpSendBoundaryDeps
+  /** Test/alternate-host seam for standard native BlueBubbles host setup during connect. */
+  setupBlueBubblesHost?: (input: { bridgeUsername: string }) => Promise<{
+    summary: string
+    bridgeUsername: string
+    bridgeUid: number
+    bridgeHomeDir: string
+  }>
 }
 
 export interface SessionEntry {

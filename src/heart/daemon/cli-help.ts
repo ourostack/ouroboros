@@ -380,6 +380,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: [
       "ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type <type>] [--json]",
       "ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
+      "ouro bluebubbles host <install|status|repair|remove|collect> [--username <name> --uid <uid> --home <path>] [--request-id <id>] [--json]",
     ].join("\n"),
     example: "ouro bluebubbles context-smoke --agent slugger --message-guid abc123 --persist --json",
     subcommands: ["replay", "context-smoke"],

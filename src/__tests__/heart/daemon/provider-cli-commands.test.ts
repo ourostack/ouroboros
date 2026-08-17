@@ -475,6 +475,12 @@ function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<Ou
     readMailroomRegistry: async () => {
       throw new Error("test: hosted registry read not stubbed")
     },
+    setupBlueBubblesHost: async ({ bridgeUsername }) => ({
+      summary: "host: test native lifecycle verified",
+      bridgeUsername,
+      bridgeUid: 501,
+      bridgeHomeDir: `/Users/${bridgeUsername}`,
+    }),
     bundlesRoot,
     homeDir,
     ...overrides,

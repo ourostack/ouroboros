@@ -58,6 +58,13 @@ import {
 import { refreshContextLossSentinel, type ContextLossSentinelGitStatus } from "../context-loss-sentinel"
 import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
+import {
+  collectCrossUserBlueBubblesHostAction,
+  createDefaultBlueBubblesHostDeps,
+  installBlueBubblesHostSharedHelper,
+  requestCrossUserBlueBubblesHostAction,
+  runBlueBubblesHostAction,
+} from "./bluebubbles-host"
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
@@ -1856,7 +1863,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -4248,6 +4255,44 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   })
 }
 
+async function setupBlueBubblesHostForConnect(
+  bridgeUsername: string,
+  deps: OuroCliDeps,
+): Promise<{ summary: string; bridgeUsername: string; bridgeUid: number; bridgeHomeDir: string }> {
+  if (deps.setupBlueBubblesHost) return deps.setupBlueBubblesHost({ bridgeUsername })
+  installBlueBubblesHostSharedHelper({
+    assetPath: path.resolve(__dirname, "../../../assets/bluebubbles-host"),
+  })
+  const currentUser = os.userInfo()
+  if (bridgeUsername === currentUser.username) {
+    const host = await runBlueBubblesHostAction("install", createDefaultBlueBubblesHostDeps())
+    return {
+      summary: `host: native LaunchAgent ${host.state.service}; process ${host.state.process}`,
+      bridgeUsername,
+      bridgeUid: currentUser.uid,
+      bridgeHomeDir: currentUser.homedir,
+    }
+  }
+  const uidText = execFileSync("id", ["-u", bridgeUsername], { encoding: "utf8" }).trim()
+  const bridgeUid = Number(uidText)
+  const homeRecord = execFileSync("dscl", [".", "-read", `/Users/${bridgeUsername}`, "NFSHomeDirectory"], { encoding: "utf8" }).trim()
+  const bridgeHomeDir = homeRecord.replace(/^NFSHomeDirectory:\s*/, "").trim()
+  if (!Number.isInteger(bridgeUid) || !bridgeHomeDir) throw new Error(`could not resolve BlueBubbles macOS account ${bridgeUsername}`)
+  const handoff = requestCrossUserBlueBubblesHostAction({
+    action: "install",
+    username: bridgeUsername,
+    uid: bridgeUid,
+    targetHomeDir: bridgeHomeDir,
+    originHomeDir: deps.homeDir ?? os.homedir(),
+  })
+  return {
+    summary: `human-required: run in ${bridgeUsername}'s logged-in desktop Terminal: ${handoff.helperCommand}\ncollect: ${handoff.collectCommand}`,
+    bridgeUsername,
+    bridgeUid,
+    bridgeHomeDir,
+  }
+}
+
 async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Promise<string> {
   if (agent === "SerpentGuide") {
     throw new Error("SerpentGuide has no persistent runtime credentials. Attach BlueBubbles on the hatchling agent instead.")
@@ -4301,11 +4346,14 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   const ownHandles = ownHandlesRaw
     ? ownHandlesRaw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
     : []
+  const bridgeUsernameAnswer = (await promptInput(`BlueBubbles macOS account username [${os.userInfo().username}]: `)).trim()
+  const bridgeUsername = bridgeUsernameAnswer || os.userInfo().username
   const machineId = currentMachineId(deps)
 
   const progress = createHumanCommandProgress(deps, "connect bluebubbles")
   let stored: Awaited<ReturnType<typeof upsertMachineRuntimeCredentialConfig>>
   let daemonApply = "not applied"
+  let hostSetup: Awaited<ReturnType<typeof setupBlueBubblesHostForConnect>>
   try {
     progress.startPhase("saving BlueBubbles attachment")
     progress.updateDetail("checking existing machine runtime config")
@@ -4314,6 +4362,8 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       progress.end()
       throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
     }
+    progress.updateDetail("configuring native BlueBubbles host continuity")
+    hostSetup = await setupBlueBubblesHostForConnect(bridgeUsername, deps)
     const blueBubblesPatch: RuntimeCredentialConfig = {
       bluebubbles: {
         serverUrl,
@@ -4325,6 +4375,9 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
         port,
         webhookPath,
         requestTimeoutMs,
+        bridgeUsername: hostSetup.bridgeUsername,
+        bridgeUid: hostSetup.bridgeUid,
+        bridgeHomeDir: hostSetup.bridgeHomeDir,
       },
     }
     progress.updateDetail("storing local machine config")
@@ -4352,13 +4405,14 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       `Stored: ${stored.itemPath}`,
       "agent.json: senses.bluebubbles.enabled = true",
       `Runtime: ${daemonApply}`,
+      hostSetup.summary,
       `ownHandles: ${ownHandles.length > 0 ? ownHandles.join(", ") : "(none — group self-talk filter inactive)"}`,
       "secret was not printed",
       ...(syncSummary ? [syncSummary] : []),
     ],
     nextMoves: [
-      `Point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
-      "If BlueBubbles was already pointed there, messages can now reach the agent.",
+      `Ouro owns and repairs the BlueBubbles [*] webhook for port ${port}${webhookPath}.`,
+      "Run the collect command after any human-required cross-user helper handoff.",
       `Attach other machines separately if ${agent} should use BlueBubbles there too.`,
     ],
     fallbackLines: [
@@ -4367,9 +4421,10 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       `stored: ${stored.itemPath}`,
       "agent.json: senses.bluebubbles.enabled = true",
       `runtime: ${daemonApply}`,
+      hostSetup.summary,
       "secret was not printed",
       "",
-      `Next: point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
+      `webhook: Ouro reconciles [*] automatically on port ${port}${webhookPath}`,
       ...(syncSummary ? [syncSummary] : []),
     ],
   })
@@ -7230,6 +7285,45 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const text = command.json
       ? JSON.stringify(replay, null, 2)
       : formatBlueBubblesReplayText(replay)
+    deps.writeStdout(text)
+    return text
+  }
+
+  if (command.kind === "bluebubbles.host") {
+    if (command.target) {
+      installBlueBubblesHostSharedHelper({
+        assetPath: path.resolve(__dirname, "../../../assets/bluebubbles-host"),
+      })
+      const handoff = requestCrossUserBlueBubblesHostAction({
+        action: command.action,
+        username: command.target.username,
+        uid: command.target.uid,
+        targetHomeDir: command.target.homeDir,
+        originHomeDir: deps.homeDir ?? os.homedir(),
+      })
+      const text = command.json
+        ? JSON.stringify(handoff, null, 2)
+        : [
+            `human-required: run in ${command.target.username}'s logged-in desktop Terminal: ${handoff.helperCommand}`,
+            `collect: ${handoff.collectCommand}`,
+          ].join("\n")
+      deps.writeStdout(text)
+      return text
+    }
+    const outcome = await runBlueBubblesHostAction(command.action, createDefaultBlueBubblesHostDeps())
+    const text = command.json
+      ? JSON.stringify(outcome, null, 2)
+      : `BlueBubbles host ${command.action}: ${outcome.state.service}; process ${outcome.state.process}; HTTP ${outcome.state.http.ok === true ? "healthy" : outcome.state.http.ok === false ? "unhealthy" : "not checked"}`
+    deps.writeStdout(text)
+    return text
+  }
+
+  if (command.kind === "bluebubbles.host.collect") {
+    const collection = collectCrossUserBlueBubblesHostAction({
+      requestId: command.requestId,
+      originHomeDir: deps.homeDir ?? os.homedir(),
+    })
+    const text = command.json ? JSON.stringify(collection, null, 2) : collection.detail
     deps.writeStdout(text)
     return text
   }
