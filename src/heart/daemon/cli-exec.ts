@@ -4292,7 +4292,7 @@ export async function setupBlueBubblesHostForConnect(
     execFileSync: (file: string, args: string[], options: { encoding: "utf8" }) => string
   } = {
     userInfo: os.userInfo,
-    execFileSync: (file, args, options) => execFileSync(file, args, options),
+    execFileSync: execFileSync as (file: string, args: string[], options: { encoding: "utf8" }) => string,
   },
 ): Promise<{ summary: string; bridgeUsername: string; bridgeUid: number; bridgeHomeDir: string }> {
   if (deps.setupBlueBubblesHost) return deps.setupBlueBubblesHost({ bridgeUsername })
