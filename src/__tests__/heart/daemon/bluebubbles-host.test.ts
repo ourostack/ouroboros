@@ -268,6 +268,19 @@ describe("native BlueBubbles host lifecycle", () => {
     await expect(runBlueBubblesHostAction("install", h.deps)).rejects.toThrow("launchctl bootstrap failed: bootstrap denied")
   })
 
+  it("rejects a nominally successful bootstrap when the final LaunchAgent state is not loaded", async () => {
+    const h = harness({
+      launchctl: (args) => args[0] === "print"
+        ? { ok: false, detail: "not found after bootstrap" }
+        : { ok: true, detail: "ok" },
+    })
+
+    await expect(runBlueBubblesHostAction("install", h.deps)).rejects.toThrow(
+      "BlueBubbles host postcondition failed: plist=current, service=not-loaded",
+    )
+    expect(h.files.get(h.plistPath)).toBe(blueBubblesLaunchAgentPlist())
+  })
+
   it.each([
     ["bootout", "repair", true, "stale plist"],
     ["disable", "repair", false, "stale plist"],

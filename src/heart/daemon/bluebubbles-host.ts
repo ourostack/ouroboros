@@ -210,6 +210,11 @@ export async function runBlueBubblesHostAction(
     }
 
     const state = changed ? await inspectBlueBubblesHost(deps) : before
+    if (state.plist !== "current" || state.service !== "loaded") {
+      throw new Error(
+        `BlueBubbles host postcondition failed: plist=${state.plist}, service=${state.service}`,
+      )
+    }
     emitNervesEvent({
       component: "daemon",
       event: "daemon.bluebubbles_host_action_end",
