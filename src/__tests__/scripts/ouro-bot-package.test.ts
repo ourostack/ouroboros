@@ -106,16 +106,22 @@ describe("ouro.bot package bootstrap", () => {
     }
   })
 
-  it("does not downgrade an already-installed newer CurrentVersion", () => {
+  it("activates its exact bundled version and replaces a newer current version with pinned intent", () => {
     const installedVersion = "999.0.0"
     const result = runWrapper(["--version"], {
       setupHome: (home) => writeInstalledRuntime(home, installedVersion),
     })
     try {
       expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout).toBe(`${installedVersion}\n`)
-      expect(result.stderr).not.toContain("ouro updated to")
-      expect(fs.readlinkSync(path.join(result.home, ".ouro-cli", "CurrentVersion"))).toContain(installedVersion)
+      expect(result.stdout).toBe(`${wrapperPackageVersion}\n`)
+      expect(result.stderr).toContain(`ouro updated to ${wrapperPackageVersion}`)
+      expect(fs.readlinkSync(path.join(result.home, ".ouro-cli", "CurrentVersion"))).toContain(wrapperPackageVersion)
+      expect(JSON.parse(fs.readFileSync(path.join(result.home, ".ouro-cli", "version-intent.json"), "utf8"))).toEqual({
+        schemaVersion: 1,
+        mode: "pinned",
+        targetVersion: wrapperPackageVersion,
+      })
+      expect(fs.existsSync(path.join(result.home, ".ouro-cli", "bin", "ouro-launcher.js"))).toBe(true)
     } finally {
       result.cleanup()
     }
