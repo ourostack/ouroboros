@@ -3,6 +3,7 @@ import { EventEmitter, PassThrough } from "node:stream"
 import type { ChildProcess, SpawnOptionsWithoutStdio } from "child_process"
 import {
   buildMcpBridgeRepairGuidance,
+  classifyMcpBoundary,
   createMcpStatusCanaryProbe,
   DEFAULT_CANARY_TIMEOUT_MS,
   formatMcpStatusDoctorResult,
@@ -25,6 +26,7 @@ function createFakeChild(statusText: string): FakeChild {
   child.stdout = new PassThrough()
   child.stderr = new PassThrough()
   child.killed = false
+  Object.assign(child, { pid: 4321 })
   child.kill = vi.fn(() => {
     child.killed = true
     child.emit("close", 0, null)
@@ -104,6 +106,13 @@ function createStatusResponseChild(response: Record<string, unknown>): FakeChild
 }
 
 describe("mcp canary", () => {
+  it("limits boundary classification to truthful bridge and host-stall states", () => {
+    expect(classifyMcpBoundary({ bridgeHealthy: false, hostStallObserved: false })).toBe("ouro-bridge-failed")
+    expect(classifyMcpBoundary({ bridgeHealthy: true, hostStallObserved: false })).toBe("ouro-bridge-healthy-at-capture")
+    expect(classifyMcpBoundary({ bridgeHealthy: true, hostStallObserved: true })).toBe("host-stall-unexplained")
+    expect(classifyMcpBoundary({ bridgeHealthy: false, hostStallObserved: true })).toBe("ouro-bridge-failed")
+  })
+
   it("uses a production-safe default timeout for slow status paths", () => {
     expect(DEFAULT_CANARY_TIMEOUT_MS).toBe(60_000)
   })
@@ -144,6 +153,16 @@ describe("mcp canary", () => {
 
     expect(result.ok).toBe(true)
     expect(result.summary).toContain("mcp canary ok")
+    expect(result.classification).toBe("ouro-bridge-healthy-at-capture")
+    expect(result.evidence).toEqual(expect.objectContaining({
+      capturedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      durationMs: expect.any(Number),
+      childPid: 4321,
+      phase: "complete",
+      exitCode: 0,
+      exitSignal: null,
+      stderr: "",
+    }))
     expect(child.kill).toHaveBeenCalled()
   })
 
@@ -347,6 +366,48 @@ describe("mcp canary", () => {
 
     expect(result.ok).toBe(false)
     expect(result.summary).toContain("malformed JSON")
+    expect(result.classification).toBe("ouro-bridge-failed")
+    expect(result.evidence).toEqual(expect.objectContaining({ phase: "initialize" }))
+  })
+
+  it("captures exit signal and sanitized stderr without leaking credentials", async () => {
+    const child = createManualChild()
+    Object.assign(child, { pid: 9876 })
+    child.kill.mockImplementation(() => {
+      child.killed = true
+      child.emit("close", null, "SIGTERM")
+      return true
+    })
+    child.stdin.on("data", () => {
+      child.stderr.write("failed https://bridge.local/path?password=top-secret token=abc123\n")
+      child.emit("close", null, "SIGTERM")
+    })
+
+    const result = await runMcpStatusCanary({ agent: "slugger", timeoutMs: 25, spawnImpl: spawnFake(child) })
+
+    expect(result.classification).toBe("ouro-bridge-failed")
+    expect(result.evidence).toEqual(expect.objectContaining({
+      childPid: 9876,
+      exitCode: null,
+      exitSignal: "SIGTERM",
+      stderr: "failed https://bridge.local/path?[redacted] token=[redacted]",
+    }))
+    expect(JSON.stringify(result)).not.toContain("top-secret")
+    expect(JSON.stringify(result)).not.toContain("abc123")
+  })
+
+  it("returns structured spawn-failure evidence instead of throwing", async () => {
+    const result = await runMcpStatusCanary({
+      agent: "slugger",
+      spawnImpl: vi.fn(() => { throw new Error("spawn denied") }),
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      classification: "ouro-bridge-failed",
+      evidence: { childPid: null, phase: "spawn", exitCode: null, exitSignal: null },
+    })
+    expect(result.summary).toContain("spawn denied")
   })
 
   it("fails when stdin is not writable", async () => {

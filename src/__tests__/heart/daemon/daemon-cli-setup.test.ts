@@ -55,12 +55,33 @@ vi.mock("../../../heart/provider-ping", () => ({
   pingProvider: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
+const mockRunMcpStatusCanary = vi.hoisted(() => vi.fn())
+vi.mock("../../../heart/daemon/mcp-canary", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../heart/daemon/mcp-canary")>(),
+  runMcpStatusCanary: (...args: unknown[]) => mockRunMcpStatusCanary(...args),
+}))
+
 // ── Tests ──────────────────────────────────────────────────────
 
 describe("ouro setup command", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockExecSync.mockReturnValue("")
+    mockRunMcpStatusCanary.mockResolvedValue({
+      ok: true,
+      classification: "ouro-bridge-healthy-at-capture",
+      summary: "mcp canary ok",
+      details: [],
+      evidence: {
+        capturedAt: "2026-08-17T18:00:00.000Z",
+        durationMs: 12,
+        childPid: 4321,
+        phase: "complete",
+        exitCode: 0,
+        exitSignal: null,
+        stderr: "",
+      },
+    })
     emitNervesEvent({
       component: "daemon",
       event: "daemon.setup_test_start",
@@ -274,6 +295,40 @@ describe("ouro setup command", () => {
       expect(calls.some((c: string) => c.includes("codex") && c.includes("mcp") && c.includes("add"))).toBe(true)
       expect(result).toContain("reload required")
       expect(result).toContain("fresh Codex session")
+      expect(result).toContain("MCP registration:")
+      expect(result).toContain("MCP canary: ouro-bridge-healthy-at-capture")
+      expect(mockRunMcpStatusCanary).toHaveBeenCalledWith(expect.objectContaining({
+        agent: "test-agent",
+        timeoutMs: 10_000,
+      }))
+    })
+
+    it("codex setup keeps successful registration separate from failed canary health", async () => {
+      mockRunMcpStatusCanary.mockResolvedValueOnce({
+        ok: false,
+        classification: "ouro-bridge-failed",
+        summary: "mcp canary failed: initialize timeout",
+        details: ["initialize timeout"],
+        evidence: {
+          capturedAt: "2026-08-17T18:00:00.000Z",
+          durationMs: 10_000,
+          childPid: 4321,
+          phase: "initialize",
+          exitCode: null,
+          exitSignal: "SIGTERM",
+          stderr: "",
+        },
+      })
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const cliDeps = createDefaultOuroCliDeps()
+      cliDeps.writeStdout = vi.fn()
+
+      const result = await runOuroCli(["setup", "--tool", "codex", "--agent", "test-agent"], cliDeps)
+
+      expect(result).toContain("MCP registration: registered")
+      expect(result).toContain("MCP canary: ouro-bridge-failed")
+      expect(result).toContain("initialize timeout")
+      expect(result).toContain("registration succeeded; bridge health failed")
     })
 
     it("codex setup replaces an existing MCP server registration", async () => {

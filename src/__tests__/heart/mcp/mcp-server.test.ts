@@ -98,6 +98,28 @@ describe("MCP server protocol layer", () => {
     expect(typeof createMcpServer).toBe("function")
   })
 
+  it("owns and removes only its stdin data listener across idempotent start/stop", async () => {
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const preexisting = vi.fn()
+    stdin.on("data", preexisting)
+    const before = stdin.listenerCount("data")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "test-friend",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    server.start()
+    server.start()
+    expect(stdin.listenerCount("data")).toBe(before + 1)
+    server.stop()
+    server.stop()
+    expect(stdin.listenerCount("data")).toBe(before)
+    expect(stdin.listeners("data")).toContain(preexisting)
+  })
+
   it("responds to initialize with protocol version and capabilities", async () => {
     const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
     const server = createMcpServer({
