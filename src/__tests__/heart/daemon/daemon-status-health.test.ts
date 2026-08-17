@@ -156,6 +156,25 @@ describe("ouro status with health file fallback", () => {
     })
   })
 
+  it("ouro status --json distinguishes a typed daemon timeout from unavailability", async () => {
+    const timeout = new Error("Daemon command daemon.status timed out after 25ms waiting for a response.") as NodeJS.ErrnoException
+    timeout.code = "ETIMEDOUT"
+    const deps = makeUnavailableDeps({
+      sendCommand: vi.fn(async () => { throw timeout }),
+    })
+
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({
+      ok: false,
+      error: "daemon timeout",
+      classification: "timeout",
+      code: "ETIMEDOUT",
+      socketPath: "/tmp/ouro-test.sock",
+      detail: timeout.message,
+    })
+  })
+
   it("ouro status falls back to the default health path when no explicit path is provided", async () => {
     const dir = makeTmpDir()
     const originalHome = process.env.HOME

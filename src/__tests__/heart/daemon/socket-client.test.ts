@@ -175,8 +175,11 @@ describe("daemon socket client", () => {
 
     const { sendDaemonCommand } = await import("../../../heart/daemon/socket-client")
 
-    await expect(sendDaemonCommand("/tmp/daemon.sock", { kind: "agent.status", agent: "slugger" } as any, { timeoutMs: 25 }))
-      .rejects.toThrow("timed out after 25ms")
+    const error = await sendDaemonCommand("/tmp/daemon.sock", { kind: "agent.status", agent: "slugger" } as any, { timeoutMs: 25 })
+      .catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain("timed out after 25ms")
+    expect((error as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
     const connection = createConnection.mock.results[0]?.value as MockConnection
     expect(connection.destroy).toHaveBeenCalled()
   })
