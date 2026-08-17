@@ -406,6 +406,57 @@ describe("mcp canary", () => {
   })
 
   it.each([
+    ["initialize", { jsonrpc: "2.0", error: { code: -32603, message: "init failed" } }, "init failed"],
+    ["initialize", { result: {} }, "malformed JSON-RPC response"],
+    ["initialize", { jsonrpc: "2.0", result: null }, "invalid initialize result"],
+    ["tools/call", { jsonrpc: "2.0", error: { code: -32603, message: "status failed" } }, "status failed"],
+    ["tools/call", { jsonrpc: "2.0", result: {} }, "invalid status result"],
+  ])("does not classify an invalid %s envelope as a healthy bridge %#", async (targetMethod, payload, expected) => {
+    const child = createManualChild()
+    child.stdin.on("data", (chunk) => {
+      const request = JSON.parse(chunk.toString().trim()) as { id?: number; method?: string }
+      if (request.id === undefined) return
+      if (request.method === "initialize" && targetMethod !== "initialize") {
+        child.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\n")
+        return
+      }
+      if (request.method === targetMethod) {
+        child.stdout.write(JSON.stringify({ id: request.id, ...payload }) + "\n")
+      }
+    })
+
+    const result = await runMcpStatusCanary({
+      agent: "slugger",
+      hostStallObserved: true,
+      timeoutMs: 25,
+      spawnImpl: spawnFake(child),
+    })
+
+    expect(result.classification).toBe("ouro-bridge-failed")
+    expect(result.summary).toContain(expected)
+  })
+
+  it("redacts successful status payloads in structured, JSON, and text output", async () => {
+    const child = createFakeChild([
+      "daemon=running\thealth=ok\tdetail=https://host/path?password=raw-query",
+      "sense=mail:running\tdetail=Bearer raw-bearer\ttoken=raw-token",
+    ].join("\n"))
+
+    const result = await runMcpStatusCanary({ agent: "slugger", spawnImpl: spawnFake(child) })
+    const json = JSON.stringify(result)
+    const textOutput = formatMcpStatusCanaryResult(result)
+
+    expect(result.ok).toBe(true)
+    expect(result.parsed?.raw).toContain("[redacted]")
+    expect(json).not.toContain("raw-query")
+    expect(json).not.toContain("raw-bearer")
+    expect(json).not.toContain("raw-token")
+    expect(textOutput).not.toContain("raw-query")
+    expect(textOutput).not.toContain("raw-bearer")
+    expect(textOutput).not.toContain("raw-token")
+  })
+
+  it.each([
     [{}, "daemon=missing"],
     [{ result: { content: { bad: true } } }, "daemon=missing"],
     [{ result: { content: [] } }, "daemon=missing"],
@@ -579,7 +630,7 @@ describe("mcp canary", () => {
 
     const result = await runMcpStatusCanary({
       agent: "slugger",
-      timeoutMs: 1,
+      timeoutMs: 25,
       spawnImpl: spawnFake(child),
     })
 
