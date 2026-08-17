@@ -211,6 +211,30 @@ describe("getCommandHelp()", () => {
     expect(COMMAND_REGISTRY["up"].description).toContain("Start and check Ouro")
   })
 
+  it("documents exact version intent and its explicit latest escape hatch", () => {
+    expect(getCommandHelp("up")).toContain("--latest")
+    expect(getCommandHelp("rollback")).toContain("pinned")
+    expect(getCommandHelp("rollback")).toContain("ouro up --latest")
+    expect(getCommandHelp("versions")).toContain("intent")
+  })
+
+  it("documents truthful MCP freeze diagnostics", () => {
+    const help = getCommandHelp("mcp doctor")!
+    expect(help).toContain("--host-stall-observed")
+    expect(help).toContain("host-stall-unexplained")
+    expect(help).toContain("does not prove")
+  })
+
+  it("documents BlueBubbles host and webhook setup as standard connect behavior", () => {
+    const connectHelp = getCommandHelp("connect bluebubbles")!
+    const hostHelp = getCommandHelp("bluebubbles host")!
+    expect(connectHelp).toContain("host")
+    expect(connectHelp).toContain("webhook")
+    expect(hostHelp).toContain("human-required")
+    expect(hostHelp).toContain("collect --request-id")
+    expect(COMMAND_REGISTRY.bluebubbles.subcommands).toContain("host")
+  })
+
   it("describes connect subcommands in terms of what travels with the agent versus this machine", () => {
     expect(COMMAND_REGISTRY["connect"].description).toContain("guided screen")
     expect(getCommandHelp("connect perplexity")).toContain("portable")
