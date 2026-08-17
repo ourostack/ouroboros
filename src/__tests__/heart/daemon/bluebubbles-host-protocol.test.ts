@@ -64,6 +64,10 @@ function fixture() {
       return Buffer.from(NONCE, "hex")
     },
     existsSync: (filePath: string) => filePath === targetHomeDir || existsSync(filePath),
+    expectedHelperBytes: () => Buffer.from(helperBytes),
+    lstatSync: (filePath: string) => filePath === targetHomeDir
+      ? { uid: 502, mode: 0o755, isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false }
+      : lstatSync(filePath),
   }
   writeFileSync(assetPath, helperBytes, { mode: 0o644 })
   for (const directory of [originHomeDir]) {
@@ -132,6 +136,7 @@ function virtualProtocolDeps(defaultUid = 501) {
     now: () => NOW,
     randomBytes: (size) => Buffer.alloc(size, 0xab),
     currentUid: () => defaultUid,
+    expectedHelperBytes: () => Buffer.from("helper"),
     existsSync: exists,
     readFileSync: (filePath) => {
       const value = files.get(filePath)
@@ -314,6 +319,31 @@ describe("cross-user BlueBubbles host protocol", () => {
     })
   })
 
+  it("rejects drifted shared helper trust state before creating a handoff", () => {
+    const f = fixture()
+    const helperPath = join(f.sharedRoot, "bluebubbles-host")
+    chmodSync(helperPath, 0o777)
+    expect(() => requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)).toThrow("shared helper mode must be 0755")
+
+    chmodSync(helperPath, 0o755)
+    writeFileSync(helperPath, "tampered", { mode: 0o755 })
+    expect(() => requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)).toThrow("shared helper bytes do not match")
+  })
+
   it("uses fixed shared paths when no test root is supplied", () => {
     const memory = virtualProtocolDeps()
     memory.files.set("/asset", Buffer.from("helper"))
@@ -393,6 +423,27 @@ describe("cross-user BlueBubbles host protocol", () => {
 
     expect(() => requestCrossUserBlueBubblesHostAction(input, f.baseDeps)).toThrow(message)
     expect(readdirSync(join(f.sharedRoot, "bluebubbles-host-requests"))).toEqual([])
+  })
+
+  it.each([
+    ["relative", "relative/home", { uid: 502, mode: 0o755, isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false }, "target home must be absolute"],
+    ["symlink", "/Users/clawdbot", { uid: 502, mode: 0o755, isSymbolicLink: () => true, isDirectory: () => true, isFile: () => false }, "target home must not be a symbolic link"],
+    ["file", "/Users/clawdbot", { uid: 502, mode: 0o755, isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true }, "target home must be a directory"],
+    ["owner", "/Users/clawdbot", { uid: 501, mode: 0o755, isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false }, "target home must be owned by uid 502"],
+  ])("rejects %s target home trust", (_label, targetHomeDir, targetStat, message) => {
+    const f = fixture()
+    expect(() => requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, {
+      ...f.baseDeps,
+      existsSync: (filePath) => filePath === targetHomeDir || existsSync(filePath),
+      lstatSync: (filePath) => filePath === targetHomeDir ? targetStat : lstatSync(filePath),
+    })).toThrow(message)
   })
 
   it("validates the target actor, request shape, exact GUI domain, and freshness", () => {
@@ -545,7 +596,13 @@ describe("cross-user BlueBubbles host protocol", () => {
       targetHomeDir: customHome,
       originHomeDir: f.originHomeDir,
       sharedRoot: f.sharedRoot,
-    }, { ...f.baseDeps, existsSync })
+    }, {
+      ...f.baseDeps,
+      existsSync,
+      lstatSync: (filePath) => filePath === customHome
+        ? { uid: 502, mode: 0o755, isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false }
+        : lstatSync(filePath),
+    })
     const receipt = receiptFixture({
       plistPath: join(customHome, "Library", "LaunchAgents", "com.bluebubbles.server.plist"),
     })
@@ -669,6 +726,36 @@ describe("cross-user BlueBubbles host protocol", () => {
         }
       },
     })).toThrow("receipt must not be a symbolic link")
+  })
+
+  it.each([
+    ["non-file", 0o444, false, "receipt must be a regular file"],
+    ["writable", 0o644, true, "receipt mode must be 0444"],
+  ])("rejects %s receipt trust state", (_label, mode, isFile, message) => {
+    const f = fixture()
+    requestCrossUserBlueBubblesHostAction({
+      action: "install",
+      username: "clawdbot",
+      uid: 502,
+      targetHomeDir: f.targetHomeDir,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, f.baseDeps)
+    const receipt = receiptFixture()
+    publishBlueBubblesHostReceipt(receipt, { sharedRoot: f.sharedRoot })
+
+    expect(() => collectCrossUserBlueBubblesHostAction({
+      requestId: REQUEST_ID,
+      originHomeDir: f.originHomeDir,
+      sharedRoot: f.sharedRoot,
+    }, {
+      lstatSync: (filePath) => {
+        const stat = lstatSync(filePath)
+        return filePath.endsWith(`${REQUEST_ID}.json`)
+          ? { uid: 502, mode, isSymbolicLink: () => false, isDirectory: () => !isFile, isFile: () => isFile }
+          : stat
+      },
+    })).toThrow(message)
   })
 
   it.each([
