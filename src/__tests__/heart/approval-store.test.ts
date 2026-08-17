@@ -1,7 +1,9 @@
 import * as fs from "node:fs"
+import { createHash } from "node:crypto"
 import * as os from "node:os"
 import * as path from "node:path"
 
+import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 
 import {
@@ -107,14 +109,38 @@ describe("approval store", () => {
 
     expect(left.canonical).toBe('{"a":"x","z":[3,{"a":null,"b":true}]}')
     expect(right).toEqual(left)
-    expect(left.digest).toMatch(/^[a-f0-9]{64}$/)
+    expect(left.digest).toBe(createHash("sha256").update(left.canonical, "utf8").digest("hex"))
+    expect(canonicalApprovalArguments({ a: "different" }).digest).not.toBe(left.digest)
   })
 
   it("creates a preparing record with a high-entropy token whose plaintext is not persisted", () => {
     const root = makeRoot()
-    const store = open(root)
+    const requestedSizes: number[] = []
+    let fill = 1
+    let uuidCounter = 1
+    const store = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"),
+      now: () => new Date(NOW),
+      randomUUID: () => uuidCounter++ === 1 ? UUID : "22222222-2222-4222-8222-222222222222",
+      randomBytes: (size) => {
+        requestedSizes.push(size)
+        return Buffer.alloc(size, fill++)
+      },
+    })
 
     const created = store.prepare(proposalInput())
+    const second = store.prepare(proposalInput({
+      toolCallId: "call_restart_2",
+      frozenAssistantMessage: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_restart_2",
+          type: "function",
+          function: { name: "shell", arguments: "{\"command\":\"docker restart calibre-web\"}" },
+        }],
+      },
+    }))
 
     expect(created.record).toMatchObject({
       approvalId: UUID,
@@ -127,6 +153,8 @@ describe("approval store", () => {
     expect(created.record.argumentDigest).toMatch(/^[a-f0-9]{64}$/)
     expect(created.record.decisionTokenDigest).toMatch(/^[a-f0-9]{64}$/)
     expect(created.decisionToken).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(second.decisionToken).not.toBe(created.decisionToken)
+    expect(requestedSizes).toEqual([32, 32])
     expect(created.record).not.toHaveProperty("decisionToken")
     store.close()
 
@@ -155,8 +183,26 @@ describe("approval store", () => {
 
     expect(() => parseApprovalRecord({ ...record, surprise: true })).toThrowError(ApprovalStoreError)
     expect(() => parseApprovalRecord({ ...record, state: "attempted", ownerId: null })).toThrowError(ApprovalStoreError)
+    expect(() => parseApprovalRecord({ ...record, state: "claimed", ownerId: "worker-a", epoch: 0 })).toThrowError(ApprovalStoreError)
+    expect(() => parseApprovalRecord({ ...record, state: "succeeded", result: null })).toThrowError(ApprovalStoreError)
     expect(() => parseApprovalRecord({ ...record, argumentDigest: "0".repeat(64) })).toThrowError(ApprovalStoreError)
     expect(() => parseApprovalRecord("corrupt")).toThrowError(ApprovalStoreError)
+  })
+
+  it("fails closed when a persisted record is malformed", () => {
+    const root = makeRoot()
+    const store = open(root)
+    store.prepare(proposalInput())
+    store.close()
+
+    const database = new Database(path.join(root, "approvals.sqlite"))
+    database.prepare("UPDATE approval_actions SET record_json = ? WHERE approval_id = ?")
+      .run('{"state":"claimed","ownerId":null}', UUID)
+    database.close()
+
+    const reopened = open(root)
+    expect(() => reopened.read(UUID)).toThrowError(ApprovalStoreError)
+    reopened.close()
   })
 
   it("activates only the matching checkpoint and binds prompt identity exactly once", () => {
@@ -223,18 +269,33 @@ describe("approval store", () => {
     store.close()
   })
 
-  it("allows only one atomic claimant across independent database connections", () => {
+  it("allows only one atomic claimant when two connections overlap at the claim CAS", () => {
     const root = makeRoot()
     const first = open(root)
     const proposed = makeProposed(first)
     const second = open(root)
+    let secondWinner: ReturnType<ApprovalStore["decide"]> | undefined
+    let hookCalls = 0
+    const pausedFirst = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"),
+      now: () => new Date(NOW),
+      randomUUID: () => "22222222-2222-4222-8222-222222222222",
+      randomBytes: (size) => Buffer.alloc(size, 0xcd),
+      hooks: {
+        beforeClaimCas: () => {
+          hookCalls += 1
+          secondWinner = second.decide(decisionInput(proposed.decisionToken, { ownerId: "worker-b" }))
+        },
+      },
+    })
 
-    const winner = first.decide(decisionInput(proposed.decisionToken, { ownerId: "worker-a" }))
-    expect(winner).toMatchObject({ state: "claimed", ownerId: "worker-a", epoch: 1 })
-    expect(() => second.decide(decisionInput(proposed.decisionToken, { ownerId: "worker-b" }))).toThrowError(ApprovalStoreError)
-    expect(second.read(UUID)).toMatchObject({ state: "claimed", ownerId: "worker-a", epoch: 1 })
+    expect(() => pausedFirst.decide(decisionInput(proposed.decisionToken, { ownerId: "worker-a" }))).toThrowError(ApprovalStoreError)
+    expect(hookCalls).toBe(1)
+    expect(secondWinner).toMatchObject({ state: "claimed", ownerId: "worker-b", epoch: 1 })
+    expect(second.read(UUID)).toMatchObject({ state: "claimed", ownerId: "worker-b", epoch: 1 })
     first.close()
     second.close()
+    pausedFirst.close()
   })
 
   it("denies atomically and never creates an execution owner", () => {
@@ -243,19 +304,43 @@ describe("approval store", () => {
 
     const denied = store.decide(decisionInput(proposed.decisionToken, { decision: "deny" }))
     expect(denied).toMatchObject({ state: "denied", ownerId: null, attemptedAt: null })
+    expect(store.decide(decisionInput(proposed.decisionToken, { decision: "deny" }))).toEqual(denied)
     expect(() => store.decide(decisionInput(proposed.decisionToken))).toThrowError(ApprovalStoreError)
     store.close()
   })
 
-  it("expires a proposal at the boundary and rejects later decisions", () => {
+  it("makes decide atomically expire a proposal at the time boundary", () => {
     const root = makeRoot()
+    const setup = open(root)
+    const proposed = makeProposed(setup)
+    setup.close()
     const store = open(root, EXPIRES)
-    const proposed = makeProposed(store)
 
-    const expired = store.expire({ approvalId: proposed.record.approvalId })
-    expect(expired.state).toBe("expired")
-    expect(() => store.decide(decisionInput(proposed.decisionToken))).toThrowError(ApprovalStoreError)
+    expect(store.decide(decisionInput(proposed.decisionToken))).toMatchObject({ state: "expired", ownerId: null })
+    expect(store.expire({ approvalId: proposed.record.approvalId })).toEqual(store.read(UUID))
     store.close()
+  })
+
+  it("lets expiry beat a paused approval claim atomically", () => {
+    const root = makeRoot()
+    const setup = open(root)
+    const proposed = makeProposed(setup)
+    const expirer = open(root, EXPIRES)
+    let expired = false
+    const claimant = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"),
+      now: () => new Date(NOW),
+      randomUUID: () => "22222222-2222-4222-8222-222222222222",
+      randomBytes: (size) => Buffer.alloc(size, 0xcd),
+      hooks: { beforeClaimCas: () => { expired = expirer.expire({ approvalId: UUID }).state === "expired" } },
+    })
+
+    expect(() => claimant.decide(decisionInput(proposed.decisionToken))).toThrowError(ApprovalStoreError)
+    expect(expired).toBe(true)
+    expect(claimant.read(UUID)?.state).toBe("expired")
+    setup.close()
+    expirer.close()
+    claimant.close()
   })
 
   it("uses owner and epoch for the claimed-to-attempted CAS", () => {
@@ -272,24 +357,53 @@ describe("approval store", () => {
     store.close()
   })
 
-  it("deterministically fences a paused stale owner before attempted CAS", () => {
-    const store = open()
-    const proposed = makeProposed(store)
-    const staleClaim = store.decide(decisionInput(proposed.decisionToken))
-
-    const abandoned = store.abandonBeforeAttempt({
-      approvalId: UUID,
-      ownerId: staleClaim.ownerId!,
-      epoch: staleClaim.epoch,
-      reason: "owner process died before attempted CAS",
+  it("deterministically fences a stale owner paused immediately before attempted CAS", () => {
+    const root = makeRoot()
+    const setup = open(root)
+    const proposed = makeProposed(setup)
+    const staleClaim = setup.decide(decisionInput(proposed.decisionToken))
+    const recovery = open(root)
+    let recoveryRan = false
+    const staleWorker = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"),
+      now: () => new Date(NOW),
+      randomUUID: () => "22222222-2222-4222-8222-222222222222",
+      randomBytes: (size) => Buffer.alloc(size, 0xcd),
+      hooks: {
+        beforeAttemptCas: () => {
+          recoveryRan = recovery.abandonBeforeAttempt({
+            approvalId: UUID,
+            ownerId: staleClaim.ownerId!,
+            epoch: staleClaim.epoch,
+            reason: "owner process died before attempted CAS",
+          }).state === "abandoned_before_attempt"
+        },
+      },
     })
-    expect(abandoned.state).toBe("abandoned_before_attempt")
-    expect(() => store.markAttempted({
+
+    expect(() => staleWorker.markAttempted({
       approvalId: UUID,
       ownerId: staleClaim.ownerId!,
       epoch: staleClaim.epoch,
     })).toThrowError(ApprovalStoreError)
-    expect(store.read(UUID)?.attemptedAt).toBeNull()
+    expect(recoveryRan).toBe(true)
+    expect(staleWorker.read(UUID)).toMatchObject({ state: "abandoned_before_attempt", attemptedAt: null })
+    setup.close()
+    recovery.close()
+    staleWorker.close()
+  })
+
+  it("requires the winning owner and epoch to abandon a pre-attempt claim", () => {
+    const store = open()
+    const proposed = makeProposed(store)
+    const claim = store.decide(decisionInput(proposed.decisionToken))
+    const request = { approvalId: UUID, ownerId: claim.ownerId!, epoch: claim.epoch, reason: "dead owner" }
+
+    expect(() => store.abandonBeforeAttempt({ ...request, ownerId: "worker-b" })).toThrowError(ApprovalStoreError)
+    expect(() => store.abandonBeforeAttempt({ ...request, epoch: claim.epoch + 1 })).toThrowError(ApprovalStoreError)
+    expect(store.read(UUID)?.state).toBe("claimed")
+    const abandoned = store.abandonBeforeAttempt(request)
+    expect(store.abandonBeforeAttempt(request)).toEqual(abandoned)
     store.close()
   })
 
@@ -311,6 +425,21 @@ describe("approval store", () => {
     store.close()
   })
 
+  it("does not retry a bare durable attempted row after close and reopen", () => {
+    const root = makeRoot()
+    const first = open(root)
+    const proposed = makeProposed(first)
+    const claimed = first.decide(decisionInput(proposed.decisionToken))
+    first.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+    first.close()
+
+    const reopened = open(root, LATER)
+    expect(reopened.read(UUID)?.state).toBe("attempted")
+    expect(() => reopened.decide(decisionInput(proposed.decisionToken, { ownerId: "worker-b" }))).toThrowError(ApprovalStoreError)
+    expect(() => reopened.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })).toThrowError(ApprovalStoreError)
+    reopened.close()
+  })
+
   it("makes an identical terminal completion idempotent and rejects conflicting completion", () => {
     const store = open()
     const proposed = makeProposed(store)
@@ -327,6 +456,23 @@ describe("approval store", () => {
     const first = store.complete(completion)
     expect(store.complete(completion)).toEqual(first)
     expect(() => store.complete({ ...completion, result: "different" })).toThrowError(ApprovalStoreError)
+    store.close()
+  })
+
+  it.each(["failed", "attempted_indeterminate"] as const)("makes %s completion idempotent", (state) => {
+    const store = open()
+    const proposed = makeProposed(store)
+    const claimed = store.decide(decisionInput(proposed.decisionToken))
+    store.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+    const completion = {
+      approvalId: UUID,
+      ownerId: claimed.ownerId!,
+      epoch: claimed.epoch,
+      state,
+      result: state === "failed" ? "handler failed" : "outcome unknown",
+    }
+
+    expect(store.complete(completion)).toEqual(store.complete(completion))
     store.close()
   })
 
