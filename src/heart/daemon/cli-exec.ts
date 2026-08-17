@@ -8369,6 +8369,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       command: process.execPath,
       ignoreOverviewHealth: true,
       ignoreSenseHealth: true,
+      hostStallObserved: command.hostStallObserved === true,
       commandArgs: [
         path.join(__dirname, "ouro-bot-entry.js"),
         "mcp-serve",

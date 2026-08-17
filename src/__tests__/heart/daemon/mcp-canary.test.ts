@@ -216,6 +216,21 @@ describe("mcp canary", () => {
     }
   })
 
+  it("does not start the status phase after the total deadline is exhausted", async () => {
+    const now = vi.spyOn(Date, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(25)
+    const child = createStatusResponseChild({ result: { content: [] } })
+    try {
+      const result = await runMcpStatusCanary({ agent: "slugger", timeoutMs: 25, spawnImpl: spawnFake(child) })
+      expect(result.summary).toContain("timed out waiting for tools/call")
+      expect(result.evidence?.durationMs).toBe(25)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
   it("redacts JSON, bearer, CLI, query, and key-value credential shapes", () => {
     const raw = 'https://host/path?password=query "token":"json-token" Bearer bearer-token --api-key cli-token secret=value'
     const sanitized = sanitizeMcpCanaryText(raw)

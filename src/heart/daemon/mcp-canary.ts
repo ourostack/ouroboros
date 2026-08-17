@@ -27,6 +27,7 @@ export interface McpStatusCanaryOptions {
   ignoreOverviewHealth?: boolean
   ignoreSenseHealth?: boolean
   spawnImpl?: SpawnImpl
+  hostStallObserved?: boolean
 }
 
 export interface McpStatusCanaryResult {
@@ -84,8 +85,30 @@ export function classifyMcpBoundary(input: {
 export function sanitizeMcpCanaryText(text: string): string {
   return text
     .replace(/(https?:\/\/[^\s?]+)\?[^\s]*/g, "$1?[redacted]")
+    .replace(/("(?:password|token|secret|api[_-]?key)"\s*:\s*")[^"]*(")/gi, "$1[redacted]$2")
+    .replace(/\bBearer\s+[^\s]+/gi, "Bearer [redacted]")
+    .replace(/(--(?:password|token|secret|api[_-]?key))(\s+|=)[^\s]+/gi, "$1$2[redacted]")
     .replace(/\b(password|token|secret|api[_-]?key)=([^\s]+)/gi, "$1=[redacted]")
     .trim()
+}
+
+export function sanitizeMcpCanaryArgs(args: string[]): string[] {
+  const sanitized: string[] = []
+  let redactNext = false
+  for (const arg of args) {
+    if (redactNext) {
+      sanitized.push("[redacted]")
+      redactNext = false
+      continue
+    }
+    if (/^--(?:password|token|secret|api[_-]?key)$/i.test(arg)) {
+      sanitized.push(arg)
+      redactNext = true
+      continue
+    }
+    sanitized.push(sanitizeMcpCanaryText(arg))
+  }
+  return sanitized
 }
 
 function defaultCommandArgs(agent: string, socketPath?: string): string[] {
@@ -268,6 +291,8 @@ function validateMcpStatus(
 
 export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promise<McpStatusCanaryResult> {
   const startedAt = Date.now()
+  const timeoutMs = options.timeoutMs ?? DEFAULT_CANARY_TIMEOUT_MS
+  const deadlineAt = startedAt + timeoutMs
   const evidence: McpCanaryEvidence = {
     capturedAt: new Date(startedAt).toISOString(),
     durationMs: 0,
@@ -277,12 +302,11 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     exitSignal: null,
     stderr: "",
   }
-  const decorate = (result: McpStatusCanaryResult): McpStatusCanaryResult => ({
+  const decorate = (result: McpStatusCanaryResult, bridgeHealthy = false): McpStatusCanaryResult => ({
     ...result,
-    classification: classifyMcpBoundary({ bridgeHealthy: result.ok, hostStallObserved: false }),
+    classification: classifyMcpBoundary({ bridgeHealthy, hostStallObserved: options.hostStallObserved === true }),
     evidence,
   })
-  const timeoutMs = options.timeoutMs ?? DEFAULT_CANARY_TIMEOUT_MS
   /* v8 ignore next -- default spawn is exercised by live canaries, while unit tests inject a fake child @preserve */
   const spawnImpl = options.spawnImpl ?? spawn
   const command = options.command ?? process.execPath
@@ -296,7 +320,7 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     meta: {
       agent: options.agent,
       command,
-      commandArgs,
+      commandArgs: sanitizeMcpCanaryArgs(commandArgs),
       timeoutMs,
       requiredSenses,
       ignoreOverviewHealth: options.ignoreOverviewHealth === true,
@@ -391,11 +415,16 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
         reject(new Error("MCP canary stdin is not writable"))
         return
       }
+      const remainingMs = deadlineAt - Date.now()
+      if (remainingMs <= 0) {
+        reject(new Error(`MCP canary timed out waiting for ${method}; stderr=${safeStderr()}`))
+        return
+      }
       const id = nextId++
       const timer = setTimeout(() => {
         pending.delete(id)
         reject(new Error(`MCP canary timed out waiting for ${method}; stderr=${safeStderr()}`))
-      }, timeoutMs)
+      }, remainingMs)
       pending.set(id, { resolve, reject, timer })
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n")
     })
@@ -418,6 +447,7 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     if (result && typeof result === "object" && !Array.isArray(result) && (result as Record<string, unknown>).isError === true) {
       throw new Error(responseText(statusResponse))
     }
+    const bridgeHealthy = true
     const parsed = parseMcpStatusText(responseText(statusResponse))
     const canary = validateMcpStatus(parsed, requiredSenses, {
       agent: options.agent,
@@ -432,7 +462,7 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       message: canary.summary,
       meta: { agent: options.agent, ok: canary.ok },
     })
-    return decorate(canary)
+    return decorate(canary, bridgeHealthy)
   } catch (error) {
     const reason = sanitizeMcpCanaryText(error instanceof Error ? error.message : String(error))
     emitNervesEvent({
@@ -447,9 +477,10 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     child.stdin?.end()
     cleanup()
     let exitTimer!: ReturnType<typeof setTimeout>
+    const remainingExitWaitMs = Math.min(100, Math.max(0, deadlineAt - Date.now()))
     await Promise.race([
       exitObserved,
-      new Promise<void>((resolve) => { exitTimer = setTimeout(resolve, 100) }),
+      new Promise<void>((resolve) => { exitTimer = setTimeout(resolve, remainingExitWaitMs) }),
     ])
     clearTimeout(exitTimer)
     evidence.stderr = safeStderr()

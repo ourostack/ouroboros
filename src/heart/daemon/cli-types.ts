@@ -88,7 +88,7 @@ export type OuroCliCommand =
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | { kind: "mcp.canary"; agent: string; socketOverride?: string; requiredSenses?: string[]; json?: boolean }
-  | { kind: "mcp.doctor"; agent: string; socketOverride?: string; json?: boolean }
+  | { kind: "mcp.doctor"; agent: string; socketOverride?: string; json?: boolean; hostStallObserved?: boolean }
   | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
   | { kind: "config.models"; agent?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }

@@ -1537,6 +1537,7 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
   if (sub === "doctor") {
     let socketOverride: string | undefined
     let json = false
+    let hostStallObserved = false
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === "--socket") {
         if (!rest[i + 1]) throw new Error("mcp doctor requires a value after --socket")
@@ -1547,6 +1548,10 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
         json = true
         continue
       }
+      if (rest[i] === "--host-stall-observed") {
+        hostStallObserved = true
+        continue
+      }
       throw new Error(`Unknown mcp doctor flag: ${rest[i]}`)
     }
     if (!agent) throw new Error("mcp doctor requires --agent <name>")
@@ -1555,6 +1560,7 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
       agent,
       ...(socketOverride ? { socketOverride } : {}),
       ...(json ? { json: true } : {}),
+      ...(hostStallObserved ? { hostStallObserved: true } : {}),
     }
   }
 
