@@ -481,6 +481,11 @@ function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<Ou
       bridgeUid: 501,
       bridgeHomeDir: `/Users/${bridgeUsername}`,
     }),
+    ...({
+      reconcileBlueBubblesWebhook: async (input: { listenerReady: boolean }) => input.listenerReady
+        ? { ok: true, state: "exact", changed: false, ownedCount: 1, exactCount: 1, detail: "one exact Ouro-owned BlueBubbles webhook is registered" }
+        : { ok: false, state: "listener-not-ready", changed: false, ownedCount: 0, exactCount: 0, detail: "the local BlueBubbles listener is not ready" },
+    } as unknown as Partial<OuroCliDeps>),
     bundlesRoot,
     homeDir,
     ...overrides,
@@ -8127,6 +8132,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("secret was not printed")
     expect(result).not.toContain("bb-password")
     expect(result).toContain("human-required: run helper")
+    expect(result).toContain("webhook saved-but-incomplete: the local BlueBubbles listener is not ready")
     expect(result).not.toContain("point BlueBubbles")
     expect(output).toContain("Connect BlueBubbles for Slugger")
     expect(output).toContain("This is a local attachment for this machine.")
@@ -8177,6 +8183,14 @@ describe("provider CLI command execution", () => {
     const cleanupStaleSocket = vi.fn()
     const startDaemonProcess = vi.fn(async () => ({ pid: 42 }))
     const sentCommands: string[] = []
+    const reconcileBlueBubblesWebhook = vi.fn().mockResolvedValue({
+      ok: true,
+      state: "exact",
+      changed: true,
+      ownedCount: 1,
+      exactCount: 1,
+      detail: "one exact Ouro-owned BlueBubbles webhook is registered",
+    })
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => nowMs,
       sleep: async (ms) => { nowMs += ms },
@@ -8223,6 +8237,7 @@ describe("provider CLI command execution", () => {
       },
       promptInput: async () => answers.shift() ?? "",
       promptSecret: async () => "bb-password",
+      ...({ reconcileBlueBubblesWebhook } as unknown as Partial<OuroCliDeps>),
     })
 
     const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
@@ -8232,6 +8247,17 @@ describe("provider CLI command execution", () => {
     expect(sentCommands).toContain("daemon.status")
     expect(cleanupStaleSocket).toHaveBeenCalledWith("/tmp/test-socket")
     expect(startDaemonProcess).toHaveBeenCalledWith("/tmp/test-socket")
+    expect(reconcileBlueBubblesWebhook).toHaveBeenCalledWith(expect.objectContaining({
+      serverUrl: "http://127.0.0.1:1234",
+      password: "bb-password",
+      callbackPort: 18888,
+      callbackPath: "/bb-webhook",
+      agentName: "Slugger",
+      machineId: "machine_bb_live",
+      requestTimeoutMs: 12000,
+      listenerReady: true,
+    }))
+    expect(result).toContain("webhook: one exact Ouro-owned BlueBubbles webhook is registered")
   })
 
   it("keeps BlueBubbles setup successful when live daemon apply cannot inspect the socket", async () => {

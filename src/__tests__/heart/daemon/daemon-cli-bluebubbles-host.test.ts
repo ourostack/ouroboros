@@ -87,6 +87,34 @@ describe("ouro bluebubbles host CLI", () => {
     expect(cliDeps.writeStdout).toHaveBeenCalledWith(output)
   })
 
+  it("renders actor-aware host diagnostics for every independent state", async () => {
+    hostMocks.runAction.mockResolvedValueOnce({
+      action: "status",
+      changed: false,
+      state: {
+        app: "missing",
+        plist: "drifted",
+        service: "not-loaded",
+        serviceDetail: "Could not find service",
+        process: "not-running",
+        http: { ok: false, detail: "connection refused" },
+        plistPath: "/Users/ari/Library/LaunchAgents/com.bluebubbles.server.plist",
+        launchdDomain: "gui/501",
+        launchAgentLabel: "com.bluebubbles.server",
+      },
+    })
+
+    const output = await runOuroCli(["bluebubbles", "host", "status"], deps())
+
+    expect(output).toContain("actor: agent-runnable")
+    expect(output).toContain("app: missing")
+    expect(output).toContain("plist: drifted")
+    expect(output).toContain("service: not-loaded (Could not find service)")
+    expect(output).toContain("process: not-running")
+    expect(output).toContain("HTTP: unhealthy (connection refused)")
+    expect(output).toContain("repair: ouro bluebubbles host repair")
+  })
+
   it("installs the packaged generic helper before returning one exact cross-user handoff", async () => {
     const cliDeps = deps()
     const output = await runOuroCli([

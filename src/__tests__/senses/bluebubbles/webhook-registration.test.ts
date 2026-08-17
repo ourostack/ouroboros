@@ -126,6 +126,10 @@ describe("BlueBubbles webhook registration", () => {
     expect(fetchImpl.mock.calls.map((call) => requestShape(call).init.method)).toEqual(["GET", "POST", "DELETE", "GET"])
     const deletion = requestShape(fetchImpl.mock.calls[2])
     expect(deletion.url).toBe("http://bluebubbles.local:1234/api/v1/webhook/3?password=super-secret")
+    expect(deletion.init).toEqual({
+      method: "DELETE",
+      signal: expect.any(AbortSignal),
+    })
   })
 
   it("removes duplicate owned registrations but preserves unrelated hooks", async () => {
@@ -303,7 +307,12 @@ describe("BlueBubbles webhook registration", () => {
 
   it("runs one immediate and periodic single-flight reconciliation and cancels its timer", async () => {
     let resolveFetch!: (response: Response) => void
-    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => { resolveFetch = resolve }))
+    let activeSignal: AbortSignal | undefined
+    const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      resolveFetch = resolve
+      activeSignal = init?.signal ?? undefined
+      activeSignal?.addEventListener("abort", () => reject(activeSignal?.reason ?? new Error("aborted")), { once: true })
+    }))
     let timerCallback!: () => void
     const setIntervalImpl = vi.fn((callback: () => void, intervalMs: number) => {
       timerCallback = callback
@@ -329,9 +338,12 @@ describe("BlueBubbles webhook registration", () => {
 
     timerCallback()
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const periodic = reconciler.reconcileNow()
     reconciler.close()
     reconciler.close()
     expect(clearIntervalImpl).toHaveBeenCalledWith({ timer: 1 })
+    expect(activeSignal?.aborted).toBe(true)
+    await expect(periodic).resolves.toMatchObject({ ok: false, state: "api-unreachable" })
     await expect(reconciler.reconcileNow()).resolves.toMatchObject({ ok: false, state: "listener-not-ready" })
   })
 

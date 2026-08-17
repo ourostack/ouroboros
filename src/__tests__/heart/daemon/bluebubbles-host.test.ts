@@ -353,16 +353,33 @@ describe("native BlueBubbles host lifecycle", () => {
     }
   })
 
-  it("normalizes empty and non-Error default launchctl results and omits absent HTTP probes", () => {
+  it("normalizes default launchctl results and provides a bounded HTTP serving probe", async () => {
     vi.mocked(execFileSync)
       .mockReturnValueOnce("" as never)
       .mockImplementationOnce(() => { throw "launchctl unavailable" })
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("unauthorized", { status: 401 }))
 
-    const deps = createDefaultBlueBubblesHostDeps()
+    const deps = createDefaultBlueBubblesHostDeps({
+      serverUrl: "http://127.0.0.1:4321/",
+      requestTimeoutMs: 77,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
 
     expect(deps.launchctl([])).toEqual({ ok: true, detail: "ok" })
     expect(deps.launchctl([])).toEqual({ ok: false, detail: "launchctl unavailable" })
-    expect(deps.probeHttp).toBeUndefined()
+    await expect(deps.probeHttp?.()).resolves.toEqual({ ok: true, detail: "HTTP server responded with 401" })
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:4321/", {
+      method: "GET",
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it("reports default HTTP transport failure without throwing", async () => {
+    const deps = createDefaultBlueBubblesHostDeps({
+      fetchImpl: vi.fn().mockRejectedValue("connection refused") as unknown as typeof fetch,
+    })
+
+    await expect(deps.probeHttp?.()).resolves.toEqual({ ok: false, detail: "connection refused" })
   })
 
   it("uses uid zero when the runtime does not expose getuid", () => {
