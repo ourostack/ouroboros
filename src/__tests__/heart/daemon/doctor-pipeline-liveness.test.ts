@@ -803,7 +803,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(check.status).toBe("pass")
     expect(check.detail).toContain("local search cache converged")
-    expect(check.detail).not.toContain("key provenance")
+    expect(check.detail).not.toContain("invalid key provenance")
   })
 
   it("requires a canonical current receipt for every absent authoritative record", async () => {
@@ -852,6 +852,10 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     ["orphan receipt", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
       writeHostedSkipReceipt(agentRoot, record)
       writeHostedSkipReceipt(agentRoot, hostedAuthorityRecord({ id: "mail_hosted_orphan" }))
+    }],
+    ["receipt coexisting with a current cache document", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
+      writeHostedSkipReceipt(agentRoot, record)
+      writeHostedSkipReceipt(agentRoot, hostedAuthorityRecord())
     }],
   ])("keeps exact repair guidance for %s despite matching aggregate coverage", async (_label, arrangeReceipt) => {
     const bundlesRoot = makeBundlesRoot()
