@@ -212,7 +212,7 @@ describe("Telegram Bot API HTTP core", () => {
 })
 
 describe("Telegram durable authorized long poll", () => {
-  it("captures an authorized update before advancing its offset and replays it after a crashed turn", async () => {
+  it("captures before offset and quarantines a turn whose dispatch may have begun", async () => {
     const directory = makeTempDirectory("ouro-telegram-inbox-")
     const inboxPath = join(directory, "inbox.json")
     const inboxStore = new FileTelegramUpdateInboxStore(inboxPath)
@@ -233,7 +233,7 @@ describe("Telegram durable authorized long poll", () => {
 
     await expect(poll.pollOnce()).rejects.toThrow("synthetic turn crash")
     expect(offset).toBe(12)
-    expect(inboxStore.load()).toHaveLength(1)
+    expect(inboxStore.loadIndeterminate()).toHaveLength(1)
 
     const recoveredMessage = vi.fn(async () => undefined)
     const recoveredApi: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => []) }
@@ -246,8 +246,8 @@ describe("Telegram durable authorized long poll", () => {
       onMessage: recoveredMessage,
     })
     await recovered.pollOnce()
-    expect(recoveredMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 11, text: "restart" }))
-    expect(inboxStore.load()).toEqual([])
+    expect(recoveredMessage).not.toHaveBeenCalled()
+    expect(inboxStore.loadIndeterminate()).toHaveLength(1)
   })
 
   it("rejects a conflicting durable update with the same update id", () => {

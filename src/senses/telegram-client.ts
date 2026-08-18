@@ -113,13 +113,17 @@ export interface TelegramInboundMessage {
 
 export interface TelegramUpdateInboxStore {
   load(): TelegramUpdate[]
+  loadPending(): TelegramUpdate[]
+  loadIndeterminate(): TelegramUpdate[]
   capture(update: TelegramUpdate): boolean
+  claim(updateId: number): boolean
   complete(updateId: number): void
   discardCompletedBefore(nextUpdateId: number): void
 }
 
 interface TelegramUpdateInboxState {
   pending: TelegramUpdate[]
+  dispatching: TelegramUpdate[]
   completedUpdateIds: number[]
 }
 
@@ -130,11 +134,13 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
     try {
       const value = JSON.parse(readFileSync(this.path, "utf8")) as Partial<TelegramUpdateInboxState>
       if (!Array.isArray(value.pending) || !Array.isArray(value.completedUpdateIds)) throw new Error("invalid inbox shape")
+      if (value.dispatching !== undefined && !Array.isArray(value.dispatching)) throw new Error("invalid dispatching updates")
       if (!value.pending.every((update) => update && Number.isSafeInteger(update.update_id) && update.update_id >= 0)) throw new Error("invalid pending update")
+      if (!(value.dispatching ?? []).every((update) => update && Number.isSafeInteger(update.update_id) && update.update_id >= 0)) throw new Error("invalid dispatching update")
       if (!value.completedUpdateIds.every((id) => Number.isSafeInteger(id) && id >= 0)) throw new Error("invalid completed update")
-      return { pending: structuredClone(value.pending), completedUpdateIds: [...value.completedUpdateIds] }
+      return { pending: structuredClone(value.pending), dispatching: structuredClone(value.dispatching ?? []), completedUpdateIds: [...value.completedUpdateIds] }
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { pending: [], completedUpdateIds: [] }
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { pending: [], dispatching: [], completedUpdateIds: [] }
       throw new Error("Telegram update inbox state is corrupt", { cause: error })
     }
   }
@@ -144,12 +150,21 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
   }
 
   load(): TelegramUpdate[] {
+    const state = this.read()
+    return [...state.pending, ...state.dispatching]
+  }
+
+  loadPending(): TelegramUpdate[] {
     return this.read().pending
+  }
+
+  loadIndeterminate(): TelegramUpdate[] {
+    return this.read().dispatching
   }
 
   capture(update: TelegramUpdate): boolean {
     const state = this.read()
-    const existing = state.pending.find((candidate) => candidate.update_id === update.update_id)
+    const existing = [...state.pending, ...state.dispatching].find((candidate) => candidate.update_id === update.update_id)
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(update)) throw new Error(`Telegram update inbox has conflicting update ${update.update_id}`)
       return false
@@ -161,9 +176,21 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
     return true
   }
 
+  claim(updateId: number): boolean {
+    const state = this.read()
+    if (state.dispatching.some((update) => update.update_id === updateId)) return false
+    const index = state.pending.findIndex((update) => update.update_id === updateId)
+    if (index < 0) return false
+    const [update] = state.pending.splice(index, 1)
+    state.dispatching.push(update!)
+    this.write(state)
+    return true
+  }
+
   complete(updateId: number): void {
     const state = this.read()
     state.pending = state.pending.filter((update) => update.update_id !== updateId)
+    state.dispatching = state.dispatching.filter((update) => update.update_id !== updateId)
     if (!state.completedUpdateIds.includes(updateId)) state.completedUpdateIds.push(updateId)
     this.write(state)
   }
@@ -224,9 +251,19 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   const pollOnce = async (signal?: AbortSignal): Promise<number> => {
     const requestSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
     if (requestSignal.aborted) throw new Error("Telegram long poll stopped")
-    for (const pending of options.inboxStore?.load() ?? []) {
+    for (const indeterminate of options.inboxStore?.loadIndeterminate() ?? []) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "telegram.update_dropped",
+        message: "Telegram update dispatch outcome is indeterminate after restart",
+        meta: { updateClass: indeterminate.callback_query ? "callback" : "message", reason: "dispatch_indeterminate" },
+      })
+    }
+    for (const pending of options.inboxStore?.loadPending() ?? []) {
+      if (!options.inboxStore?.claim(pending.update_id)) continue
       await dispatch(pending)
-      options.inboxStore?.complete(pending.update_id)
+      options.inboxStore.complete(pending.update_id)
     }
     const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
       offset: nextUpdateId,
@@ -242,6 +279,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       options.offsetStore.save(next)
       nextUpdateId = next
       if (newlyCaptured) {
+        if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update.update_id)) continue
         await dispatch(update)
         if (requiresDurableDispatch) options.inboxStore?.complete(update.update_id)
       }
