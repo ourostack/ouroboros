@@ -50,6 +50,7 @@ import {
   runDoctorChecks,
   senseInboundDeliveryCheck,
 } from "../../../heart/daemon/doctor"
+import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
@@ -233,6 +234,28 @@ function seedBlueBubblesRuntime(agent = "slugger"): void {
     config: {
       bluebubbles: { serverUrl: "http://bluebubbles.local", password: "pw" },
     },
+  })
+}
+
+function blueBubblesFetch(webhook: "exact" | "missing" = "exact"): ReturnType<typeof vi.fn> {
+  const desired = buildBlueBubblesWebhookCallbackUrl({
+    serverUrl: "http://bluebubbles.local",
+    password: "pw",
+    callbackPort: 18_790,
+    callbackPath: "/bluebubbles-webhook",
+    agentName: "slugger",
+    machineId: "machine_test",
+    requestTimeoutMs: 30_000,
+    listenerReady: true,
+  })
+  return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    expect(init?.method).toBe("GET")
+    if (String(url).includes("/api/v1/message/count")) {
+      return new Response("{}", { status: 200 })
+    }
+    return new Response(JSON.stringify({
+      data: webhook === "exact" ? [{ id: 1, url: desired, events: ["*"] }] : [],
+    }), { status: 200 })
   })
 }
 
@@ -644,6 +667,87 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     expect(inbound.detail).toContain("upstream probe reachable — which does not prove inbound delivery")
     expect(inbound.detail).toContain("no bluebubbles inbound delivery in 9 days")
     expect(inbound.detail).toContain("stale webhook port")
+  })
+
+  it("warns as quiet and unverified when stale inbound has healthy upstream and the exact owned webhook", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("exact")
+
+    const category = await checkSenses(depsFor(bundlesRoot, { fetchImpl: fetchImpl as unknown as typeof fetch }))
+    const inbound = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("no recent inbound was observed")
+    expect(inbound.detail).toContain("upstream and exact owned webhook are healthy")
+    expect(inbound.detail).toContain("quiet and delivery failure are indistinguishable without a new message")
+    expect(inbound.detail).toContain("doctor did not send a test message")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls.every((call) => call[1]?.method === "GET")).toBe(true)
+  })
+
+  it("warns rather than inventing a failure when stale inbound cannot run infrastructure probes", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("infrastructure probes were not run")
+    expect(inbound.detail).toContain("unverified")
+  })
+
+  it("warns when network-unreachable infrastructure cannot corroborate stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("infrastructure probes were unavailable")
+    expect(inbound.detail).toContain("unverified")
+  })
+
+  it("fails when a missing owned webhook corroborates stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("missing")
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("missing owned webhook corroborates the silence")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("warns for a never-used but exactly wired quiet conversation", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const inboundDir = writeInbound(agentRoot, {})
+    setMtime(path.dirname(inboundDir), Date.now() - 30 * DAY_MS)
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("exact")
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("no recent inbound was observed")
+    expect(inbound.detail).toContain("doctor did not send a test message")
   })
 
   it("notes when the upstream probe did not run in this pass", async () => {

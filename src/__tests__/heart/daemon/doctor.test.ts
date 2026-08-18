@@ -395,14 +395,17 @@ describe("checkAgents", () => {
     expect(cat.checks[0].detail).toContain("unparseable")
   })
 
-  it("fails when agent.json is missing entirely", () => {
+  it("ignores task-only .ouro directories without agent.json", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkAgents(deps)
-    expect(cat.checks[0].status).toBe("fail")
-    expect(cat.checks[0].detail).toBe("missing")
+    expect(cat.checks).toEqual([{
+      label: "agent bundles",
+      status: "warn",
+      detail: "no agent bundles found",
+    }])
   })
 
   it("warns when humanFacing.provider is missing but model is present", () => {
