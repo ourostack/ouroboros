@@ -9,7 +9,7 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("Unraid GraphQL client", () => {
-  it("posts the fixed document and variables with bearer auth", async () => {
+  it("posts the fixed document and variables with the Unraid API-key header", async () => {
     let request: Request | undefined
     const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       request = input instanceof Request ? input : new Request(input, init)
@@ -18,7 +18,8 @@ describe("Unraid GraphQL client", () => {
     const client = new UnraidClient({ endpoint: "http://127.0.0.1:80/graphql", apiKey: "private-key", fetch })
     await expect(client.read(DOC, { exact: "value" })).resolves.toEqual({ docker: { containers: [] } })
     expect(request?.url).toBe("http://127.0.0.1/graphql")
-    expect(request?.headers.get("authorization")).toBe("Bearer private-key")
+    expect(request?.headers.get("x-api-key")).toBe("private-key")
+    expect(request?.headers.has("authorization")).toBe(false)
     expect(await request?.json()).toEqual({ query: DOC, variables: { exact: "value" } })
   })
 

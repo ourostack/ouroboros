@@ -100,7 +100,7 @@ export class UnraidClient {
       try {
         response = await this.fetchImpl(this.endpoint, {
           method: "POST",
-          headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
+          headers: { "x-api-key": this.apiKey, "Content-Type": "application/json" },
           body: JSON.stringify({ query: document, variables }),
           signal: requestSignal,
         })
