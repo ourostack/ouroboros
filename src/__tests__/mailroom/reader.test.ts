@@ -47,6 +47,9 @@ describe("mailroom reader", () => {
       agentName: "slugger",
       storeLabel: "https://mail.blob.core.windows.net/authority",
     }))
+    if (!resolved.ok) throw new Error("expected hosted authority resolution")
+    expect(Object.keys(resolved.authority)).toEqual(["observeMessageIndexAuthority"])
+    expect(resolved).not.toHaveProperty("store")
     expect(serviceUrls).toEqual(["https://mail.blob.core.windows.net"])
     expect(credentialOptions).toEqual([{ managedIdentityClientId: "authority-client" }])
   })
@@ -68,6 +71,9 @@ describe("mailroom reader", () => {
       ok: false,
       reason: "auth-required",
       error: expect.stringContaining("vault:slugger:runtime/config"),
+    }))
+    expect(resolveHostedMailAuthority("slugger")).toEqual(expect.objectContaining({
+      error: expect.stringContaining("authorization rejected"),
     }))
   })
 

@@ -254,6 +254,29 @@ describe("AzureBlobMailroomStore", () => {
     expect(serviceClient.container.createCalls).toBe(0)
   })
 
+  it("counts partially numeric sort keys, invalid placements, and empty ids as malformed authority", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const names = [
+      "message-index/slugger/8235587199999garbage__native__imbox__~__mail_partial_sort.json",
+      "message-index/slugger/8235587199999__native__somewhere__~__mail_bad_placement.json",
+      "message-index/slugger/8235587199999__native__imbox__~__.json",
+    ]
+    for (const name of names) {
+      serviceClient.container.blobs.set(name, { data: Buffer.from("unused"), downloads: 0, uploads: 0, deletes: 0 })
+    }
+
+    await expect(store.observeMessageIndexAuthority("slugger")).resolves.toEqual(expect.objectContaining({
+      totalNameCount: 3,
+      parsedRecordCount: 0,
+      parseFailureCount: 3,
+      records: [],
+    }))
+  })
+
   it("surfaces hosted index authorization rejection without any mutation", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const rejection = Object.assign(new Error("authorization denied"), { statusCode: 403 })
