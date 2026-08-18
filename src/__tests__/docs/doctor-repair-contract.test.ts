@@ -75,17 +75,17 @@ describe("doctor and bounded-repair documentation contract", () => {
     expect(releasePreflight).toContain("intentional debt gate")
   })
 
-  it("aligns the next release metadata after the cache-truth implementation", () => {
+  it("aligns the Sanctuary butler release metadata", () => {
     const packageJson = JSON.parse(readRepoFile("package.json")) as { version: string }
     const wrapper = JSON.parse(readRepoFile("packages", "ouro.bot", "package.json")) as { version: string }
     const changelog = JSON.parse(readRepoFile("changelog.json")) as {
       versions: Array<{ version: string; changes: string[] }>
     }
-    expect(packageJson.version).toBe("0.1.0-alpha.733")
+    expect(packageJson.version).toBe("0.1.0-alpha.734")
     expect(wrapper.version).toBe(packageJson.version)
     expect(changelog.versions[0]?.version).toBe(packageJson.version)
-    expect(changelog.versions[0]?.changes.join("\n")).toContain("create-once")
-    expect(changelog.versions[0]?.changes.join("\n")).toContain("missing-key receipts")
-    expect(changelog.versions[0]?.changes.join("\n")).toContain("stable")
+    expect(changelog.versions[0]?.changes.join("\n")).toContain("Sanctuary Telegram butler")
+    expect(changelog.versions[0]?.changes.join("\n")).toContain("durable approvals")
+    expect(changelog.versions[0]?.changes.join("\n")).toContain("Unraid")
   })
 })
