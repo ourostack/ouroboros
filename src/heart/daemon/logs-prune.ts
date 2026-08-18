@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, statSync } from "fs"
-import { join } from "path"
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs"
+import { dirname, join } from "path"
 import { randomUUID } from "crypto"
 
 import {
@@ -56,6 +56,31 @@ function isActiveLogStream(name: string): boolean {
   return false
 }
 
+function isManagedLogEntry(name: string): boolean {
+  return isActiveLogStream(name) ||
+    /\.\d+\.ndjson(?:\.gz)?$/.test(name) ||
+    /\.log\.\d+(?:\.gz)?$/.test(name) ||
+    /\.\d+\.log$/.test(name)
+}
+
+function validateLogsDirectory(logsDir: string): string {
+  const stat = lstatSync(logsDir)
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`daemon logs directory must be a real directory: ${logsDir}`)
+  }
+  return realpathSync(logsDir)
+}
+
+function validateManagedLogEntry(filePath: string, logsReal: string): void {
+  const stat = lstatSync(filePath)
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`daemon log entry must be a regular non-symlink file: ${filePath}`)
+  }
+  if (dirname(realpathSync(filePath)) !== logsReal) {
+    throw new Error(`daemon log entry escapes the canonical logs directory: ${filePath}`)
+  }
+}
+
 export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaemonLogsResult {
   const logsDir = options.logsDir ?? (options.agentName
     ? resolvePrunableAgentBundle({
@@ -90,6 +115,12 @@ export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaem
       return { filesCompacted: 0, bytesFreed: 0 }
     }
 
+    const logsReal = validateLogsDirectory(logsDir)
+    const entries = readdirSync(logsDir)
+    for (const name of entries) {
+      if (isManagedLogEntry(name)) validateManagedLogEntry(join(logsDir, name), logsReal)
+    }
+
     let filesCompacted = 0
     let bytesFreed = 0
 
@@ -98,10 +129,11 @@ export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaem
     // stream can be a rotation candidate. Legacy generation files are handled
     // inside rotateIfNeeded's generation-shift step, so we skip them here to
     // avoid double-rotating.
-    for (const name of readdirSync(logsDir)) {
+    for (const name of entries) {
       if (!isActiveLogStream(name)) continue
 
       const filePath = join(logsDir, name)
+      validateManagedLogEntry(filePath, logsReal)
       let sizeBefore: number
       try {
         sizeBefore = statSync(filePath).size

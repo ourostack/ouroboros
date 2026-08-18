@@ -86,6 +86,7 @@ import * as sessionActivity from "../../../heart/session-activity"
 import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
+import { pruneDaemonLogs as pruneDaemonLogsOnDisk } from "../../../heart/daemon/logs-prune"
 import {
   writeHabitRunReceipt,
   type HabitRunReceipt,
@@ -5955,6 +5956,49 @@ describe("ensureDaemonRunning", () => {
     })
 
     expect(pruneDaemonLogs).toHaveBeenCalledWith(expect.objectContaining({ agentName: "Slugger" }))
+  })
+
+  it("uses the sole prunable bundle for a bare prune command", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "logs-prune-cli-"))
+    const bundleDir = path.join(bundlesRoot, "Slugger.ouro")
+    fs.mkdirSync(bundleDir)
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{", "utf8")
+    const pruneDaemonLogs = vi.fn(() => ({ filesCompacted: 0, bytesFreed: 0 }))
+    try {
+      await runOuroCli(["logs", "prune"], {
+        socketPath: "/tmp/ouro-test.sock",
+        sendCommand: vi.fn(),
+        startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+        bundlesRoot,
+        pruneDaemonLogs,
+      })
+      expect(pruneDaemonLogs).toHaveBeenCalledWith({ agentName: "Slugger", bundlesRoot })
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects an unknown explicit prune target before resolving its logs path", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "logs-prune-cli-"))
+    try {
+      await expect(runOuroCli(["logs", "prune", "--agent", "Missing"], {
+        socketPath: "/tmp/ouro-test.sock",
+        sendCommand: vi.fn(),
+        startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+        bundlesRoot,
+        pruneDaemonLogs: pruneDaemonLogsOnDisk,
+      })).rejects.toThrow("not a prunable agent bundle")
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
   })
 })
 

@@ -60,6 +60,10 @@ export interface DoctorDeps {
   readdirSync: (p: string) => string[]
   /** Get file stats (for permissions, size, and last-write freshness). */
   statSync: (p: string) => { mode: number; size: number; mtimeMs: number }
+  /** Inspect a path without following symlinks when validating repair targets. */
+  lstatSync?: (p: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+  /** Resolve a canonical path when validating repair-target containment. */
+  realpathSync?: (p: string) => string
   /** Check whether the daemon socket is alive. */
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   /** Optional fetch implementation used for active network diagnostics. */

@@ -9515,6 +9515,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
       readdirSync: (p: string) => fs.readdirSync(p),
       statSync: (p: string) => fs.statSync(p),
+      lstatSync: (p: string) => fs.lstatSync(p),
+      realpathSync: (p: string) => fs.realpathSync(p),
       /* v8 ignore stop */
       checkSocketAlive: deps.checkSocketAlive,
       fetchImpl: deps.fetchImpl ?? fetch,

@@ -42,6 +42,7 @@ import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/di
 import type { MailMessageIndexRecord } from "../../mailroom/file-store"
 import { mailSearchCacheDocumentMatchesRecord } from "../../mailroom/hosted-cache-sync"
 import type { MailSearchCacheDocument } from "../../mailroom/search-cache"
+import { resolvePrunableAgentBundle, type PrunableBundleFs } from "./prunable-bundle"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_BLUEBUBBLES_PORT = 18_790
@@ -1486,7 +1487,7 @@ export function checkDisk(deps: DoctorDeps): DoctorCategory {
     return false
   }
 
-  const addLogSizeCheck = (labelPrefix: string, logsDir: string): void => {
+  const addLogSizeCheck = (labelPrefix: string, logsDir: string, pruneCommand?: string): void => {
     let totalSize = 0
     let activeSize = 0
     const oversizedActive: string[] = []
@@ -1512,13 +1513,14 @@ export function checkDisk(deps: DoctorDeps): DoctorCategory {
 
     const sizeMB = totalSize / (1024 * 1024)
     const activeSizeMB = activeSize / (1024 * 1024)
+    const repair = pruneCommand ? ` — run \`${pruneCommand}\`` : ""
     if (activeSizeMB > 500) {
-      checks.push({ label: `${labelPrefix} daemon log size`, status: "fail", detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total — active logs exceed 500MB limit` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "fail", detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total — active logs exceed 500MB limit${repair}` })
     } else if (oversizedActive.length > 0) {
       checks.push({
         label: `${labelPrefix} daemon log size`,
         status: "warn",
-        detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total; active stream(s) over ${Math.round(DEFAULT_MAX_LOG_SIZE_BYTES / (1024 * 1024))}MB: ${oversizedActive.join(", ")} — run \`ouro logs prune\``,
+        detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total; active stream(s) over ${Math.round(DEFAULT_MAX_LOG_SIZE_BYTES / (1024 * 1024))}MB: ${oversizedActive.join(", ")}${repair}`,
       })
     } else {
       checks.push({ label: `${labelPrefix} daemon log size`, status: "pass", detail: `${activeSizeMB.toFixed(1)}MB active / ${sizeMB.toFixed(1)}MB total` })
@@ -1532,10 +1534,26 @@ export function checkDisk(deps: DoctorDeps): DoctorCategory {
 
   for (const agentDir of agents) {
     const logsDir = `${deps.bundlesRoot}/${agentDir}/state/daemon/logs`
+    let pruneCommand: string | undefined
+    if (deps.lstatSync && deps.realpathSync) {
+      const io: PrunableBundleFs = {
+        existsSync: deps.existsSync,
+        lstatSync: deps.lstatSync,
+        readdirSync: deps.readdirSync,
+        realpathSync: deps.realpathSync,
+      }
+      try {
+        const agentName = agentDir.slice(0, -".ouro".length)
+        resolvePrunableAgentBundle({ bundlesRoot: deps.bundlesRoot, agentName, fs: io })
+        pruneCommand = `ouro logs prune --agent ${agentName}`
+      } catch {
+        // Doctor reports size but only offers repair for an exactly validated target.
+      }
+    }
     if (!deps.existsSync(logsDir)) {
       checks.push({ label: `${agentDir} daemon logs dir`, status: "warn", detail: `${logsDir} not found` })
     } else {
-      addLogSizeCheck(agentDir, logsDir)
+      addLogSizeCheck(agentDir, logsDir, pruneCommand)
     }
   }
 
