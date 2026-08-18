@@ -1372,8 +1372,8 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["account", "ensure"])).toEqual({
       kind: "account.ensure",
     })
-    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench")
-    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench")
+    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench")
+    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench")
     expect(() => parseOuroCommand(["connect", "teams", "--agent", "Slugger", "--owner-email", "ari@mendelow.me"])).toThrow("Mail source flags require")
     expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email"])).toThrow("ouro connect")
     expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--source", "hey"])).toThrow("--source requires --owner-email")
