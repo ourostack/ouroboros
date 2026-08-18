@@ -8,6 +8,72 @@ afterEach(() => {
 })
 
 describe("mailroom reader", () => {
+  it("resolves hosted authority from coordinates without mailbox or private keys", async () => {
+    const serviceUrls: string[] = []
+    vi.doMock("@azure/identity", () => ({ DefaultAzureCredential: class {} }))
+    vi.doMock("@azure/storage-blob", () => ({
+      BlobServiceClient: class {
+        constructor(url: string) {
+          serviceUrls.push(url)
+        }
+
+        getContainerClient() {
+          return {}
+        }
+      },
+    }))
+
+    const { cacheRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    const { resolveHostedMailAuthority } = await import("../../mailroom/reader")
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        azureAccountUrl: "https://mail.blob.core.windows.net",
+        azureContainer: "authority",
+      },
+    })
+
+    const resolved = resolveHostedMailAuthority("slugger")
+
+    expect(resolved).toEqual(expect.objectContaining({
+      ok: true,
+      agentName: "slugger",
+      storeLabel: "https://mail.blob.core.windows.net/authority",
+    }))
+    expect(serviceUrls).toEqual(["https://mail.blob.core.windows.net"])
+  })
+
+  it("reports vault authorization rejection while resolving hosted authority", async () => {
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: `vault:${agentName}:runtime/config`,
+        error: "authorization rejected",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { resolveHostedMailAuthority } = await import("../../mailroom/reader")
+
+    expect(resolveHostedMailAuthority("slugger")).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "auth-required",
+      error: expect.stringContaining("vault:slugger:runtime/config"),
+    }))
+  })
+
+  it("reports missing hosted coordinates without requiring mailbox identity fields", async () => {
+    const { cacheRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    const { resolveHostedMailAuthority } = await import("../../mailroom/reader")
+    cacheRuntimeCredentialConfig("slugger", { mailroom: { azureContainer: "mailroom" } })
+
+    expect(resolveHostedMailAuthority("slugger")).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "misconfigured",
+      error: expect.stringContaining("mailroom.azureAccountUrl"),
+    }))
+  })
+
   it("parses optional runtime knobs without requiring Azure storage", async () => {
     const { parseMailroomConfig } = await import("../../mailroom/reader")
 

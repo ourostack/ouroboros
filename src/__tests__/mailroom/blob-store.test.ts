@@ -4,7 +4,12 @@ import * as path from "node:path"
 import { describe, expect, it } from "vitest"
 import type { BlobServiceClient } from "@azure/storage-blob"
 import { provisionMailboxRegistry, resolveMailAddress, type StoredMailMessage } from "../../mailroom/core"
-import { AzureBlobMailroomStore, decryptBlobMessages } from "../../mailroom/blob-store"
+import {
+  AzureBlobMailroomStore,
+  canonicalMailIndexRecordSnapshot,
+  decryptBlobMessages,
+} from "../../mailroom/blob-store"
+import type { MailMessageIndexRecord } from "../../mailroom/file-store"
 import { decryptMessages } from "../../mailroom/file-store"
 import { resetMailSearchCacheForTests, searchMailSearchCache } from "../../mailroom/search-cache"
 
@@ -79,8 +84,12 @@ class FakeContainerClient {
   readonly blobs = new Map<string, FakeBlobState>()
   activeDownloads = 0
   maxConcurrentDownloads = 0
+  createCalls = 0
+  listError: unknown = null
+  stallListing = false
 
   async createIfNotExists(): Promise<void> {
+    this.createCalls += 1
     return undefined
   }
 
@@ -88,7 +97,13 @@ class FakeContainerClient {
     return new FakeBlockBlobClient(this, name)
   }
 
-  async *listBlobsFlat(options: { prefix?: string } = {}): AsyncGenerator<{ name: string }> {
+  async *listBlobsFlat(options: { prefix?: string; abortSignal?: AbortSignal } = {}): AsyncGenerator<{ name: string }> {
+    if (this.listError) throw this.listError
+    if (this.stallListing) {
+      await new Promise<never>((_resolve, reject) => {
+        options.abortSignal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")), { once: true })
+      })
+    }
     for (const [name, state] of [...this.blobs.entries()].sort((left, right) => left[0].localeCompare(right[0]))) {
       if (!state.data) continue
       if (!options.prefix || name.startsWith(options.prefix)) {
@@ -135,6 +150,133 @@ async function waitForAbortableDelay(ms: number, abortSignal?: AbortSignal): Pro
 }
 
 describe("AzureBlobMailroomStore", () => {
+  const indexRecord = (overrides: Partial<MailMessageIndexRecord> = {}): MailMessageIndexRecord => ({
+    schemaVersion: 1,
+    id: "mail_a",
+    agentId: "slugger",
+    compartmentKind: "native",
+    placement: "imbox",
+    receivedAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  })
+
+  it("builds an order-independent canonical message-index fingerprint", () => {
+    const newer = indexRecord({ id: "mail_new", receivedAt: "2026-08-10T00:00:00.000Z" })
+    const older = indexRecord({ id: "mail_old", compartmentKind: "delegated", source: "HEY", receivedAt: "2020-01-01T00:00:00.000Z" })
+
+    const forward = canonicalMailIndexRecordSnapshot([newer, older])
+    const reversed = canonicalMailIndexRecordSnapshot([older, newer])
+
+    expect(forward).toEqual(reversed)
+    expect(forward).toEqual(expect.objectContaining({
+      visibleMessageCount: 2,
+      oldestReceivedAt: "2020-01-01T00:00:00.000Z",
+      newestReceivedAt: "2026-08-10T00:00:00.000Z",
+    }))
+    expect(forward.messageIndexFingerprint).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("changes the canonical fingerprint for old backfills and authority-visible metadata changes", () => {
+    const current = indexRecord({ id: "mail_current", receivedAt: "2026-08-10T00:00:00.000Z" })
+    const oldBackfill = indexRecord({ id: "mail_old", receivedAt: "2020-01-01T00:00:00.000Z" })
+    const baseline = canonicalMailIndexRecordSnapshot([current])
+
+    expect(canonicalMailIndexRecordSnapshot([current, oldBackfill]).messageIndexFingerprint)
+      .not.toBe(baseline.messageIndexFingerprint)
+    expect(canonicalMailIndexRecordSnapshot([{ ...current, placement: "screener" }]).messageIndexFingerprint)
+      .not.toBe(baseline.messageIndexFingerprint)
+    expect(canonicalMailIndexRecordSnapshot([{ ...current, source: "HEY" }]).messageIndexFingerprint)
+      .not.toBe(baseline.messageIndexFingerprint)
+  })
+
+  it("returns a deterministic canonical snapshot for an empty corpus", () => {
+    expect(canonicalMailIndexRecordSnapshot([])).toEqual({
+      visibleMessageCount: 0,
+      messageIndexFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
+  })
+
+  it("observes the complete hosted index-name corpus without creating, writing, or reading message bodies", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const names = [
+      "message-index/slugger/8235587199999__native__imbox__~__mail_new.json",
+      "message-index/slugger/8395932799999__delegated__screener__hey__mail_dup.json",
+      "message-index/slugger/8295932799999__delegated__imbox__hey__mail_dup.json",
+      "message-index/slugger/not-a-valid-index.json",
+    ]
+    for (const name of names) {
+      serviceClient.container.blobs.set(name, { data: Buffer.from("unused"), downloads: 0, uploads: 0, deletes: 0 })
+    }
+    serviceClient.container.blobs.set("messages/mail_new.json", { data: Buffer.from("secret body"), downloads: 0, uploads: 0, deletes: 0 })
+
+    const observed = await store.observeMessageIndexAuthority("slugger")
+
+    expect(observed).toEqual(expect.objectContaining({
+      totalNameCount: 4,
+      parsedRecordCount: 3,
+      parseFailureCount: 1,
+      duplicateIds: ["mail_dup"],
+      records: expect.arrayContaining([
+        expect.objectContaining({ id: "mail_new" }),
+        expect.objectContaining({ id: "mail_dup", placement: "screener" }),
+        expect.objectContaining({ id: "mail_dup", placement: "imbox" }),
+      ]),
+    }))
+    expect(observed.snapshot.visibleMessageCount).toBe(3)
+    expect(serviceClient.container.createCalls).toBe(0)
+    expect(totalDownloads(serviceClient.container, "messages/")).toBe(0)
+    expect(totalDownloads(serviceClient.container, "message-index/")).toBe(0)
+    expect([...serviceClient.container.blobs.values()].every((state) => state.uploads === 0 && state.deletes === 0)).toBe(true)
+  })
+
+  it("observes an empty hosted index corpus without treating absence as a legacy fallback", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+
+    await expect(store.observeMessageIndexAuthority("slugger")).resolves.toEqual({
+      totalNameCount: 0,
+      parsedRecordCount: 0,
+      parseFailureCount: 0,
+      duplicateIds: [],
+      records: [],
+      snapshot: canonicalMailIndexRecordSnapshot([]),
+    })
+    expect(serviceClient.container.createCalls).toBe(0)
+  })
+
+  it("surfaces hosted index authorization rejection without any mutation", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const rejection = Object.assign(new Error("authorization denied"), { statusCode: 403 })
+    serviceClient.container.listError = rejection
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+
+    await expect(store.observeMessageIndexAuthority("slugger")).rejects.toBe(rejection)
+    expect(serviceClient.container.createCalls).toBe(0)
+  })
+
+  it("bounds a stalled hosted index observation and surfaces unavailability", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    serviceClient.container.stallListing = true
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+      blobOperationTimeoutMs: 5,
+    })
+
+    await expect(store.observeMessageIndexAuthority("slugger")).rejects.toThrow("timed out after 5ms")
+    expect(serviceClient.container.createCalls).toBe(0)
+  })
+
   it("exposes store-specific mail search cache options", () => {
     const serviceClient = new FakeBlobServiceClient()
     const cacheOptions = {
