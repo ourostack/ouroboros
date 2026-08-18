@@ -11,6 +11,8 @@ import {
   splitTelegramText,
   FileTelegramOffsetStore,
   createTelegramLongPoll,
+  createTelegramApprovalTransport,
+  type TelegramPendingApprovalStore,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
 
@@ -19,6 +21,125 @@ const tempDirectories: string[] = []
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
+describe("Telegram approval callback transport", () => {
+  function approvalFixture(input: {
+    now?: () => number
+    records?: ReturnType<TelegramPendingApprovalStore["load"]>
+    onDecision?: ReturnType<typeof vi.fn>
+  } = {}) {
+    let records = structuredClone(input.records ?? [])
+    const store: TelegramPendingApprovalStore = {
+      load: () => structuredClone(records),
+      save: (next) => { records = structuredClone(next) },
+    }
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = []
+    const api: TelegramBotApi = {
+      stop: vi.fn(),
+      request: vi.fn(async (method: string, body: Record<string, unknown>) => {
+        calls.push({ method, body })
+        return method === "sendMessage" ? { message_id: 99 } : true
+      }),
+    }
+    const onDecision = input.onDecision ?? vi.fn(async (decision) => ({
+      accepted: true,
+      terminalText: decision.decision === "approve" ? "✅ Approved — running" : "❌ Denied",
+    }))
+    const transport = createTelegramApprovalTransport({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      pendingStore: store,
+      createOpaqueHandle: (() => { const values = ["approve", "deny"]; return () => values.shift() ?? "extra" })(),
+      onDecision,
+      resolveDecisionToken: async () => "restored-secret-token",
+      now: input.now ?? (() => 1_000_000),
+    })
+    return { transport, calls, onDecision, records: () => records }
+  }
+
+  function approvalCallback(data: string, overrides: { userId?: number; chatId?: number; messageId?: number; id?: string } = {}) {
+    return {
+      update_id: 1,
+      callback_query: {
+        id: overrides.id ?? "query-1",
+        from: { id: overrides.userId ?? 10 },
+        data,
+        message: { message_id: overrides.messageId ?? 99, chat: { id: overrides.chatId ?? 10 } },
+      },
+    }
+  }
+
+  it("sends a token-free prompt with opaque callbacks and an exact 300000ms durable TTL", async () => {
+    const fixture = approvalFixture()
+    const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret-token", prompt: "Restart <books>?" })
+
+    expect(sent).toEqual({ messageId: "99", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_300_000 })
+    expect(fixture.calls[0]).toEqual({
+      method: "sendMessage",
+      body: {
+        chat_id: "10",
+        text: "Restart &lt;books&gt;?",
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [[
+          { text: "Approve", callback_data: "a:approve" },
+          { text: "Deny", callback_data: "d:deny" },
+        ]] },
+      },
+    })
+    expect(JSON.stringify(fixture.records())).not.toContain("secret-token")
+  })
+
+  it("acknowledges, decides once, terminalizes, removes buttons, and refuses replay", async () => {
+    const fixture = approvalFixture()
+    const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret-token", prompt: "Restart?" })
+    await expect(fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData))).resolves.toMatchObject({ accepted: true })
+    await expect(fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-2" }))).resolves.toEqual({ handled: true, accepted: false, reason: "stale_callback" })
+    expect(fixture.onDecision).toHaveBeenCalledTimes(1)
+    expect(fixture.calls.slice(1, 3)).toEqual([
+      { method: "answerCallbackQuery", body: { callback_query_id: "query-1" } },
+      { method: "editMessageText", body: { chat_id: "10", message_id: 99, text: "✅ Approved — running", parse_mode: "HTML", reply_markup: { inline_keyboard: [] } } },
+    ])
+  })
+
+  it.each([
+    ["foreign_user", { userId: 11 }],
+    ["foreign_chat", { chatId: 11 }],
+    ["foreign_message", { messageId: 100 }],
+  ])("refuses %s before authority", async (reason, overrides) => {
+    const fixture = approvalFixture()
+    const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?" })
+    await expect(fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, overrides))).resolves.toEqual({ handled: true, accepted: false, reason })
+    expect(fixture.onDecision).not.toHaveBeenCalled()
+  })
+
+  it("restores pending callbacks, resolves the secret server-side, and reconciles startup expiry", async () => {
+    const liveRecord = { approvalId: "live", messageId: "99", approveCallbackData: "a:live", denyCallbackData: "d:live", expiresAt: 1_300_000 }
+    const restored = approvalFixture({ records: [liveRecord] })
+    await restored.transport.handleUpdate(approvalCallback("a:live"))
+    expect(restored.onDecision).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "live", decisionToken: "restored-secret-token" }))
+
+    const expired = approvalFixture({ records: [{ ...liveRecord, approvalId: "expired", expiresAt: 999_999 }] })
+    await expired.transport.reconcileExpired()
+    expect(expired.onDecision).not.toHaveBeenCalled()
+    expect(expired.records()).toEqual([])
+    expect(expired.calls.at(-1)?.body).toHaveProperty("reply_markup", { inline_keyboard: [] })
+  })
+
+  it("atomically consumes concurrent duplicate callbacks before authority", async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const onDecision = vi.fn(async () => { await gate; return { accepted: true, terminalText: "done" } })
+    const fixture = approvalFixture({ onDecision })
+    const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?" })
+    const first = fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-1" }))
+    const second = fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-2" }))
+    await vi.waitFor(() => expect(onDecision).toHaveBeenCalledTimes(1))
+    release()
+    await expect(first).resolves.toMatchObject({ accepted: true })
+    await expect(second).resolves.toMatchObject({ accepted: false, reason: "stale_callback" })
+  })
 })
 
 function makeTempDirectory(prefix: string): string {
