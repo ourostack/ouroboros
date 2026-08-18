@@ -19,6 +19,7 @@ import {
 } from "./telegram-client"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
+import { createSanctuaryHealthSweep } from "./sanctuary-health"
 
 export interface TelegramSenseCredentials {
   botToken: string
@@ -44,6 +45,7 @@ export interface CreateTelegramSenseAppOptions {
   runTurn?: TelegramTurnRunner
   approvalTransport?: TelegramApprovalTransport
   approvalRuntime?: TelegramApprovalRuntime
+  healthSweep?: () => Promise<{ message: string | null }>
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -83,6 +85,27 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     toolContext: toolContext ?? {},
   }))
   const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
+  const healthSweep = options.healthSweep ?? (toolContext ? createSanctuaryHealthSweep({
+    toolContext,
+    statePath: path.join(getAgentRoot(options.agentName), "state", "health", "sanctuary-health.json"),
+  }) : undefined)
+  let healthTimer: ReturnType<typeof setInterval> | null = null
+
+  const runHealthSweep = async (): Promise<void> => {
+    if (!healthSweep) return
+    try {
+      const result = await healthSweep()
+      if (result.message) await deliver(result.message)
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.sanctuary_health_error",
+        message: "Sanctuary deterministic health sweep failed",
+        meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) },
+      })
+    }
+  }
 
   const deliver = async (text: string, signal?: AbortSignal): Promise<void> => {
     await sendTelegramText(api, authorizedChatId, text, signal)
@@ -154,6 +177,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   return {
     async run(signal) {
       await approvalTransport?.reconcileExpired()
+      await runHealthSweep()
+      healthTimer ??= setInterval(() => { void runHealthSweep() }, 15 * 60_000)
       emitNervesEvent({
         component: "senses",
         event: "senses.telegram_poll_start",
@@ -167,6 +192,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     },
     stop() {
       poll.stop()
+      if (healthTimer) clearInterval(healthTimer)
+      healthTimer = null
       api.stop()
       approvalRuntime?.close()
       emitNervesEvent({
