@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "enabled": true,
+  "humanFacing": { "provider": "openai-compatible", "model": "glm-5.2" },
+  "agentFacing": { "provider": "openai-compatible", "model": "glm-5.2" },
+  "context": { "maxTokens": 80000, "contextMargin": 20 },
+  "privateRuntime": { "autoStart": true },
+  "phrases": {
+    "thinking": ["checking sanctuary"],
+    "tool": ["checking the server"],
+    "followup": ["closing the loop"]
+  },
+  "senses": {
+    "cli": { "enabled": false },
+    "teams": { "enabled": false },
+    "bluebubbles": { "enabled": false },
+    "mail": { "enabled": false },
+    "voice": { "enabled": false },
+    "a2a": { "enabled": false },
+    "telegram": { "enabled": true },
+    "workbench": { "enabled": false }
+  },
+  "sync": { "enabled": false }
+}

@@ -52,6 +52,7 @@ import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habi
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
+import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
@@ -1000,20 +1001,21 @@ export class OuroDaemon {
   }
 
   private async startInner(): Promise<void> {
+    const containerPolicy = readContainerRuntimePolicy()
     // Register update hooks and apply pending updates before starting agents
     registerUpdateHook(bundleMetaHook)
     registerUpdateHook(agentConfigV2Hook)
     const currentVersion = getPackageVersion()
-    await applyPendingUpdates(this.bundlesRoot, currentVersion)
+    if (containerPolicy?.updates !== "disabled") await applyPendingUpdates(this.bundlesRoot, currentVersion)
 
     // Start periodic update checker (polls npm registry every 30 minutes)
     // Skip in dev mode — dev builds should not auto-update from npm
-    if (this.mode === "dev") {
+    if (this.mode === "dev" || containerPolicy?.updates === "disabled") {
       emitNervesEvent({
         component: "daemon",
         event: "daemon.update_checker_skip",
         message: "skipping update checker in dev mode",
-        meta: { reason: "dev mode" },
+        meta: { reason: this.mode === "dev" ? "dev mode" : "container policy" },
       })
     } else {
       startUpdateChecker({
