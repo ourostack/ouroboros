@@ -25,8 +25,11 @@ import {
   FRESHNESS_DAY_MS,
   FRESHNESS_HOUR_MS,
   type FreshnessProbe,
+  type FreshnessResult,
   type FreshnessThresholds,
 } from "./freshness"
+import type { BlueBubblesHealthProbeResult } from "./bluebubbles-health-diagnostics"
+import type { BlueBubblesWebhookRegistrationState } from "../../senses/bluebubbles/webhook-registration"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
 import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
@@ -97,10 +100,12 @@ export async function checkDaemon(deps: DoctorDeps): Promise<DoctorCategory> {
   return { name: "Daemon", checks }
 }
 
-/** Discover all *.ouro directories under bundlesRoot. */
+/** Discover doctor candidates: *.ouro directories with a present agent.json. */
 function discoverAgents(deps: DoctorDeps): string[] {
   if (!deps.existsSync(deps.bundlesRoot)) return []
-  return deps.readdirSync(deps.bundlesRoot).filter((name) => name.endsWith(".ouro"))
+  return deps.readdirSync(deps.bundlesRoot).filter((name) =>
+    name.endsWith(".ouro") && deps.existsSync(`${deps.bundlesRoot}/${name}/agent.json`),
+  )
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -261,13 +266,18 @@ export interface SenseInboundDeliveryInput {
  * A sense opts in by calling this with its inbound log directory.
  */
 export function senseInboundDeliveryCheck(input: SenseInboundDeliveryInput): DoctorCheck {
+  const result = senseInboundDeliveryResult(input)
+  return { id: `senses.${input.sense}.inbound_liveness`, label: `${input.agentDir} ${input.sense} inbound delivery`, status: result.status, detail: result.detail }
+}
+
+function senseInboundDeliveryResult(input: SenseInboundDeliveryInput): FreshnessResult {
   const suffix = input.logSuffix ?? ".ndjson"
-  return pipelineLivenessCheck({
-    id: `senses.${input.sense}.inbound_liveness`,
-    label: `${input.agentDir} ${input.sense} inbound delivery`,
+  const probe = observeAppendPerEventStore(input.inboundDir, input.deps, { suffix, maxEntries: SENSE_DELIVERY_MAX_LOG_SCAN })
+  return evaluateFreshness({
     activity: `${input.sense} inbound delivery`,
     unit: "inbound message",
-    probe: observeAppendPerEventStore(input.inboundDir, input.deps, { suffix, maxEntries: SENSE_DELIVERY_MAX_LOG_SCAN }),
+    observation: probe.observation,
+    provenance: probe.provenance,
     thresholds: resolveFreshnessThresholds(
       DEFAULT_SENSE_DELIVERY_THRESHOLDS,
       senseFreshnessOverride(input.deps, input.agentDir, input.sense),
@@ -277,6 +287,59 @@ export function senseInboundDeliveryCheck(input: SenseInboundDeliveryInput): Doc
     context: input.context,
     nowMs: input.nowMs,
   })
+}
+
+type BlueBubblesInfrastructureEvidence = {
+  upstream: "healthy" | "definitive-fault" | "unavailable" | "not-run"
+  webhook: BlueBubblesWebhookRegistrationState | null
+}
+
+function blueBubblesUpstreamEvidence(probe: BlueBubblesHealthProbeResult): BlueBubblesInfrastructureEvidence["upstream"] {
+  if (probe.ok) return "healthy"
+  if (probe.classification === "auth-failure" || probe.classification === "rate-limit" || probe.classification === "server-error" || probe.classification === "usage-limit") {
+    return "definitive-fault"
+  }
+  return "unavailable"
+}
+
+function blueBubblesInboundDeliveryCheck(
+  input: SenseInboundDeliveryInput,
+  evidence: BlueBubblesInfrastructureEvidence,
+): DoctorCheck {
+  const result = senseInboundDeliveryResult(input)
+  const base = {
+    id: "senses.bluebubbles.inbound_liveness",
+    label: `${input.agentDir} bluebubbles inbound delivery`,
+  }
+  if (result.state !== "stale" && result.state !== "never") {
+    return { ...base, status: result.status, detail: result.detail }
+  }
+
+  const webhookDefinitive = evidence.webhook === "missing"
+    || evidence.webhook === "drifted"
+    || evidence.webhook === "auth-failed"
+    || evidence.webhook === "malformed"
+    || evidence.webhook === "listener-not-ready"
+  if (evidence.upstream === "definitive-fault" || webhookDefinitive) {
+    const corroboration = evidence.webhook === "missing"
+      ? "missing owned webhook corroborates the silence"
+      : evidence.webhook && webhookDefinitive
+        ? `${evidence.webhook} owned-webhook evidence corroborates the silence`
+        : "a definitive upstream fault corroborates the silence"
+    return { ...base, status: "fail", detail: `${corroboration}; ${result.detail}` }
+  }
+
+  const orientation = evidence.upstream === "healthy" && evidence.webhook === "exact"
+    ? "no recent inbound was observed; upstream and exact owned webhook are healthy"
+    : evidence.upstream === "not-run"
+      ? "no recent inbound was observed; infrastructure probes were not run, so delivery is unverified"
+      : "no recent inbound was observed; infrastructure probes were unavailable, so delivery is unverified"
+  const observed = result.detail.replace(/; fix: .*$/u, "")
+  return {
+    ...base,
+    status: "warn",
+    detail: `${orientation}; quiet and delivery failure are indistinguishable without a new message; doctor did not send a test message; ${observed}`,
+  }
 }
 
 export function checkAgents(deps: DoctorDeps): DoctorCategory {
@@ -289,7 +352,7 @@ export function checkAgents(deps: DoctorDeps): DoctorCategory {
 
   const agents = discoverAgents(deps)
   if (agents.length === 0) {
-    checks.push({ label: "agent bundles", status: "warn", detail: "no *.ouro bundles found" })
+    checks.push({ label: "agent bundles", status: "warn", detail: "no agent bundles found" })
     return { name: "Agents", checks }
   }
 
@@ -479,6 +542,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
         })
 
         let upstreamContext = "upstream probe not run in this pass"
+        let infrastructure: BlueBubblesInfrastructureEvidence = { upstream: "not-run", webhook: null }
         if (deps.fetchImpl) {
           const requestTimeoutMs = numberField(bluebubblesChannel, "requestTimeoutMs", DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS)
           const probe = await probeBlueBubblesHealth({
@@ -495,6 +559,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           upstreamContext = probe.ok
             ? "upstream probe reachable — which does not prove inbound delivery"
             : "upstream probe failing"
+          infrastructure = { ...infrastructure, upstream: blueBubblesUpstreamEvidence(probe) }
 
           const webhook = await inspectBlueBubblesWebhookRegistration({
             serverUrl,
@@ -512,10 +577,11 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
             status: webhook.ok ? "pass" : "fail",
             detail: webhook.detail,
           })
+          infrastructure = { ...infrastructure, webhook: webhook.state }
         }
 
         const bluebubblesStateRoot = `${deps.bundlesRoot}/${agentDir}/state/senses/bluebubbles`
-        checks.push(senseInboundDeliveryCheck({
+        checks.push(blueBubblesInboundDeliveryCheck({
           deps,
           agentDir,
           sense: "bluebubbles",
@@ -524,7 +590,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
           context: upstreamContext,
           remediation: "no iMessage is reaching this agent — confirm the BlueBubbles server's configured webhook URL/port matches the port this daemon is listening on (a stale webhook port is the known cause), then re-attach with `ouro connect bluebubbles --agent <agent>`",
           nowMs: Date.now(),
-        }))
+        }, infrastructure))
       }
 
       if (sense === "mail" && senseObj.enabled === true) {
