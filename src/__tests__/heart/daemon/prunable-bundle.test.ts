@@ -65,11 +65,12 @@ describe("prunable bundle resolution", () => {
 
   it("resolves a direct real bundle with a present agent.json", () => {
     const bundlePath = bundle("Slugger")
+    const bundleReal = fs.realpathSync(bundlePath)
 
     expect(resolvePrunableAgentBundle({ bundlesRoot: root, agentName: "Slugger" })).toEqual({
       agentName: "Slugger",
-      bundleDir: bundlePath,
-      logsDir: path.join(bundlePath, "state", "daemon", "logs"),
+      bundleDir: bundleReal,
+      logsDir: path.join(bundleReal, "state", "daemon", "logs"),
     })
   })
 

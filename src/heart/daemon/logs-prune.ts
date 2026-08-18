@@ -9,6 +9,8 @@ import {
 } from "../../nerves"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentDaemonLogsDir } from "../identity"
+import { getAgentBundlesRoot } from "../identity"
+import { resolvePrunableAgentBundle } from "./prunable-bundle"
 
 /**
  * Apply the current rotation policy to every active `.ndjson` and `.log` file
@@ -35,6 +37,8 @@ export interface PruneDaemonLogsOptions {
   maxGenerations?: number
   /** Override the agent name used to resolve the default logs dir. */
   agentName?: string
+  /** Override the root used to validate an agent-qualified bundle. */
+  bundlesRoot?: string
 }
 
 export interface PruneDaemonLogsResult {
@@ -53,8 +57,13 @@ function isActiveLogStream(name: string): boolean {
 }
 
 export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaemonLogsResult {
-  /* v8 ignore next -- defensive: tests always pass logsDir to avoid prod paths @preserve */
-  const logsDir = options.logsDir ?? getAgentDaemonLogsDir(options.agentName)
+  const logsDir = options.logsDir ?? (options.agentName
+    ? resolvePrunableAgentBundle({
+      bundlesRoot: options.bundlesRoot ?? getAgentBundlesRoot(),
+      agentName: options.agentName,
+    }).logsDir
+    /* v8 ignore next -- compatibility fallback; the user-facing command always supplies an agent @preserve */
+    : getAgentDaemonLogsDir())
   const maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
   const maxGenerations = options.maxGenerations ?? DEFAULT_MAX_GENERATIONS
   const traceId = randomUUID()

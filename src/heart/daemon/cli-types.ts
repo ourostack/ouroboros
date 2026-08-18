@@ -43,7 +43,7 @@ export type OuroCliCommand =
   | { kind: "daemon.stop" }
   | { kind: "daemon.status"; json?: boolean }
   | { kind: "daemon.logs" }
-  | { kind: "daemon.logs.prune" }
+  | { kind: "daemon.logs.prune"; agent?: string }
   | { kind: "mailbox"; json?: boolean }
   | { kind: "provider.use"; agent?: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
   | { kind: "provider.check"; agent?: string; lane: ProviderLane; legacyFacing?: Facing }
@@ -172,7 +172,7 @@ export interface OuroCliDeps {
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
-  pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string }) => { filesCompacted: number; bytesFreed: number }
+  pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string; bundlesRoot?: string }) => { filesCompacted: number; bytesFreed: number }
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
   scanSessions?: (agentName: string) => Promise<SessionEntry[]>

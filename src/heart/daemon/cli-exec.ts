@@ -197,6 +197,7 @@ import { createProviderPingProgressReporter } from "./provider-ping-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
 import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
+import { listPrunableAgentBundles } from "./prunable-bundle"
 import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
 import {
@@ -591,6 +592,7 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
 
 type AgentResolutionFailureMode = "throw" | "return-message"
 type MissingAgentResolvableKind =
+  | "daemon.logs.prune"
   | "friend.list"
   | "friend.show"
   | "friend.create"
@@ -696,6 +698,7 @@ function invalidAgentSelectionMessage(agentNames: string[]): string {
 
 function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFailureMode | undefined {
   switch (command.kind) {
+    case "daemon.logs.prune":
     case "friend.list":
     case "friend.show":
     case "friend.create":
@@ -758,13 +761,14 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
 async function resolveMissingAgentName(
   deps: OuroCliDeps,
   failureMode: AgentResolutionFailureMode,
+  candidateOverride?: string[],
 ): Promise<AgentNameResolutionOutcome> {
   const runtimeAgent = runtimeContextAgentName(deps)
   if (runtimeAgent) {
     return { ok: true, agent: runtimeAgent }
   }
 
-  const discoveredAgents = normalizeCliAgentNames(await listCliAgents(deps))
+  const discoveredAgents = normalizeCliAgentNames(candidateOverride ?? await listCliAgents(deps))
   if (discoveredAgents.length === 0) {
     return { ok: false, message: noAgentsFoundMessage(), failureMode }
   }
@@ -801,7 +805,13 @@ async function resolveCommandAgent(
     return { ok: true, command: { ...command, agent: explicitAgent } as ResolvedOuroCliCommand }
   }
 
-  const resolvedAgent = await resolveMissingAgentName(deps, failureMode)
+  const resolvedAgent = await resolveMissingAgentName(
+    deps,
+    failureMode,
+    command.kind === "daemon.logs.prune"
+      ? listPrunableAgentBundles({ bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot() })
+      : undefined,
+  )
   if (!resolvedAgent.ok) return resolvedAgent
   return { ok: true, command: { ...command, agent: resolvedAgent.agent } as ResolvedOuroCliCommand }
 }
@@ -8126,7 +8136,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
-    const result = deps.pruneDaemonLogs()
+    const result = deps.pruneDaemonLogs({
+      agentName: command.agent,
+      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+    })
     const message = `compacted ${result.filesCompacted} file${result.filesCompacted === 1 ? "" : "s"}, freed ${result.bytesFreed} bytes`
     deps.writeStdout(message)
     return message

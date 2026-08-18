@@ -57,7 +57,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   logs: {
     category: "Lifecycle",
     description: "View or prune daemon logs",
-    usage: "ouro logs [prune]",
+    usage: "ouro logs | ouro logs prune --agent <name>",
     example: "ouro logs",
     subcommands: ["prune"],
   },
