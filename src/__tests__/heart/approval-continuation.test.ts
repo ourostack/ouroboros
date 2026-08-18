@@ -284,6 +284,70 @@ describe("approval terminal transcript projection", () => {
     expect(projected).toMatchObject({ materialized: false, resumeProvider: false, messages: forgedPair })
     expect(projected.directNotice).toContain("session changed")
   })
+
+  it("fails closed for an approval state that has no terminal projection", () => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+
+    expect(() => materializeApprovalTerminal({
+      messages: checkpoint().preCallMessages,
+      checkpoint: checkpoint(),
+      record: record("claimed"),
+      currentSessionRevision: REVISION,
+    })).toThrow("approval state claimed cannot be materialized")
+  })
+
+  it.each([
+    ["expired", null, false, "approval expired before execution; the protected action was not executed", undefined],
+    ["attempted_indeterminate", "execution may have occurred", false, "execution may have occurred; do not retry automatically", "high"],
+  ] as const)("authenticates an exact persisted %s terminal pair", (state, result, resumeProvider, content, severity) => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const persistedPair = [
+      ...checkpoint().preCallMessages,
+      assistantMessage(),
+      { role: "tool" as const, tool_call_id: "call_restart", content },
+    ]
+
+    const projected = materializeApprovalTerminal({
+      messages: persistedPair,
+      checkpoint: checkpoint(),
+      record: record(state, result),
+      currentSessionRevision: "0".repeat(64),
+    })
+
+    expect(projected).toMatchObject({ materialized: false, resumeProvider, directNotice: content, messages: persistedPair })
+    expect(projected.severity).toBe(severity)
+  })
+
+  it.each([
+    ["succeeded", "restarted", true, undefined, undefined],
+    ["attempted_indeterminate", "execution may have occurred", false, "execution may have occurred; do not retry automatically", "high"],
+  ] as const)("honors a durable approval-id marker for %s", (state, result, resumeProvider, directNotice, severity) => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const projected = materializeApprovalTerminal({
+      messages: checkpoint().preCallMessages,
+      checkpoint: checkpoint(),
+      record: record(state, result),
+      currentSessionRevision: REVISION,
+      materializedApprovalIds: [APPROVAL_ID],
+    })
+
+    expect(projected).toMatchObject({ materialized: false, resumeProvider, messages: checkpoint().preCallMessages })
+    expect(projected.directNotice).toBe(directNotice)
+    expect(projected.severity).toBe(severity)
+  })
+
+  it("does not authenticate a partial terminal pair", () => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const projected = materializeApprovalTerminal({
+      messages: [assistantMessage()],
+      checkpoint: checkpoint(),
+      record: record("succeeded", "restarted"),
+      currentSessionRevision: "0".repeat(64),
+    })
+
+    expect(projected).toMatchObject({ materialized: false, resumeProvider: false })
+    expect(projected.directNotice).toContain("session changed")
+  })
 })
 
 describe("same-loop approval continuation", () => {
@@ -301,7 +365,12 @@ describe("same-loop approval continuation", () => {
     })
     const persist = vi.fn()
     const deliver = vi.fn()
-    const callbacks = { onTextChunk: vi.fn() }
+    const callbacks = {
+      onTextChunk: vi.fn(),
+      onClearText: vi.fn(),
+      flushNow: vi.fn(),
+      settleOutputMode: vi.fn(),
+    }
 
     const result = await resumeApprovalContinuation({
       record: record("succeeded", "restarted"),
@@ -326,11 +395,38 @@ describe("same-loop approval continuation", () => {
     expect(result.outcome).toBe("settled")
   })
 
+  it("completes a non-resumable terminal continuation after delivering its direct notice", async () => {
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
+    const lifecycle = continuationLifecycle()
+    const runAgent = vi.fn()
+    const persist = vi.fn()
+    const deliver = vi.fn()
+
+    const result = await resumeApprovalContinuation({
+      record: record("expired"),
+      checkpoint: checkpoint(),
+      currentSessionRevision: REVISION,
+      sessionMessages: checkpoint().preCallMessages,
+      callbacks: {},
+      runAgent,
+      persist,
+      deliver,
+      claimContinuation: () => continuationClaim(true),
+      ...lifecycle,
+    })
+
+    expect(result.outcome).toBe("terminal_notice")
+    expect(runAgent).not.toHaveBeenCalled()
+    expect(deliver).toHaveBeenCalledWith("approval expired before execution; the protected action was not executed")
+    expect(lifecycle.completeContinuation).toHaveBeenCalledTimes(1)
+  })
+
   it("restarts from durable checkpoint state without replaying the originating provider work or handler", async () => {
     const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
     const execute = vi.fn()
-    const runAgent = vi.fn(async (messages: any[]) => {
+    const runAgent = vi.fn(async (messages: any[], callbacks: any) => {
       expect(messages.filter((message: any) => message.role === "user" && message.content === "restart calibre-web")).toHaveLength(1)
+      callbacks.onModelStart()
       return { outcome: "settled" as const }
     })
 

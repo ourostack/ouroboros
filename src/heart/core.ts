@@ -560,7 +560,7 @@ export async function resumeApprovalContinuation(options: ResumeApprovalContinua
     await options.markContinuationMaterialized()
   }
   if (!materialized.resumeProvider) {
-    if (materialized.directNotice) await options.deliver(materialized.directNotice)
+    await options.deliver(materialized.directNotice!)
     await options.completeContinuation()
     return { outcome: "terminal_notice", messages: materialized.messages }
   }

@@ -133,6 +133,22 @@ afterEach(() => {
 })
 
 describe("approval suspension session projection", () => {
+  it("treats absent checkpoint collections as empty and supports no-op removal", () => {
+    const envelope = baseEnvelope()
+    delete envelope.approvalSuspensions
+
+    expect(listApprovalSuspensionCheckpoints(envelope)).toEqual([])
+    expect(removeApprovalSuspensionCheckpoint(envelope, UUID).approvalSuspensions).toEqual([])
+    expect(attachApprovalSuspensionCheckpoint(envelope, checkpoint()).approvalSuspensions).toEqual([checkpoint()])
+  })
+
+  it("replaces an existing checkpoint with the same approval id", () => {
+    const first = attachApprovalSuspensionCheckpoint(baseEnvelope(), checkpoint())
+    const replacement = { ...checkpoint(), suspendedSessionRevision: "0".repeat(64) }
+
+    expect(attachApprovalSuspensionCheckpoint(first, replacement).approvalSuspensions).toEqual([replacement])
+  })
+
   it("round-trips suspension checkpoints through durable envelope parsing", () => {
     const attached = attachApprovalSuspensionCheckpoint(baseEnvelope(), checkpoint())
 

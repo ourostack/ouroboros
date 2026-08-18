@@ -848,7 +848,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
             WHERE approval_id = ? AND owner_id = ? AND owner_pid = ? AND epoch = ? AND state = ?
           `).run(input.ownerId, ownerPid, claimedAt, input.approvalId, row.owner_id, row.owner_pid, row.epoch, row.state)
           claimed = reclaimed.changes === 1
-          if (claimed) row = readContinuationRow(input.approvalId)
+          row = readContinuationRow(input.approvalId)
         }
         if (!claimed && row.state === "attempted" && !processIsAlive(row.owner_pid)) {
           const terminalized = database.prepare(`

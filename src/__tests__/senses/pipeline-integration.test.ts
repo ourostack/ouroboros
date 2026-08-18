@@ -155,6 +155,16 @@ describe("pipeline integration — full UX/AX scenarios", () => {
       expect(input.accumulateFriendTokens).not.toHaveBeenCalled()
     })
 
+    it("fails closed when a suspended provider turn omits its durable checkpoint", async () => {
+      const input = makeIntegrationInput({
+        runAgent: vi.fn().mockResolvedValue({ outcome: "suspended" }),
+      })
+
+      await expect(handleInboundTurn(input)).rejects.toThrow("suspended agent turn omitted durable approval suspension")
+      expect(input.postTurn).not.toHaveBeenCalled()
+      expect(input.accumulateFriendTokens).not.toHaveBeenCalled()
+    })
+
     it("rejects a loader path outside the caller-held session lease before provider invocation", async () => {
       const runAgent = vi.fn()
       const input = makeIntegrationInput({

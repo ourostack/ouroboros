@@ -1064,7 +1064,7 @@ export async function main(agentName?: string, options?: {
         } finally {
           const lease = sessionTurnLease
           sessionTurnLease = null
-          if (lease) await lease.release()
+          await lease!.release()
         }
       },
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
@@ -1107,7 +1107,7 @@ export async function main(agentName?: string, options?: {
           messages: [{ role: "user", content: userContent ?? userInput }],
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),
           callbacks: failoverAwareCallbacks,
-          sessionTurnLease: sessionTurnLease ?? undefined,
+          sessionTurnLease: sessionTurnLease!,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
           sessionLoader: {
             loadOrCreate: () => Promise.resolve({

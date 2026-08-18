@@ -440,7 +440,10 @@ function createTestInputSource(inputSequence: string[]): AsyncIterable<string> {
 let _currentTestInputSource: AsyncIterable<string> | undefined
 
 /** Wrapper around main() that injects _testInputSource to skip Ink rendering */
-async function testMain(agentName?: string, opts?: { pasteDebounceMs?: number }) {
+async function testMain(agentName?: string, opts?: {
+  pasteDebounceMs?: number
+  _acquireSessionTurnLease?: (sessionPath: string) => Promise<any>
+}) {
   return main(agentName, { ...opts, _testInputSource: _currentTestInputSource })
 }
 
@@ -1550,6 +1553,24 @@ describe("agent.ts main() - pipeline integration", () => {
     expect(drainDeferredReturns).toHaveBeenCalledWith("testagent", "friend-1")
   })
 
+  it("releases the session lease when turn-start session loading fails", async () => {
+    setupBasic({ inputSequence: ["hello"] })
+    const release = vi.fn().mockResolvedValue(undefined)
+    mocks.loadSession.mockImplementation(() => { throw new Error("session load failed") })
+
+    await expect(testMain(undefined, {
+      pasteDebounceMs: 0,
+      _acquireSessionTurnLease: vi.fn().mockResolvedValue({
+        sessionPath: "/tmp/test-session.json",
+        ownerId: "owner-a",
+        ownerToken: "token-a",
+        release,
+      }),
+    })).rejects.toThrow("session load failed")
+
+    expect(release).toHaveBeenCalledTimes(1)
+  })
+
   it("passes CLI coding feedback into the shared pipeline and persists async updates", async () => {
     setupBasic({ inputSequence: ["hello", "/exit"] })
 
@@ -1574,8 +1595,10 @@ describe("agent.ts main() - pipeline integration", () => {
       expect.any(Object),
       undefined,
       undefined,
+      undefined,
     )
     expect(stdoutChunks.join("")).toContain("codex coding-001 completed: hi")
+
   })
 
   it("persists postTurn continuity state across CLI turns", async () => {
@@ -1633,6 +1656,17 @@ describe("agent.ts main() - pipeline integration", () => {
       expect.any(Object),
       undefined,
       { mustResolveBeforeHandoff: true },
+      expect.objectContaining({ sessionPath: "/tmp/test-session.json", ownerId: expect.any(String), ownerToken: expect.any(String) }),
+    )
+
+    const pipelineInput = mocks.handleInboundTurn.mock.calls[0][0]
+    pipelineInput.postTurn([], "/tmp/test-session.json", undefined)
+    expect(mocks.deferPostTurnPersist).toHaveBeenLastCalledWith(
+      "/tmp/test-session.json",
+      expect.any(Object),
+      undefined,
+      undefined,
+      undefined,
     )
   })
 })
