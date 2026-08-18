@@ -228,9 +228,10 @@ describe("speak interception in runAgent", () => {
       }),
     ]))
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "engine.unadvertised_speak_blocked",
+      event: "engine.unadvertised_tool_blocked",
       component: "engine",
       level: "warn",
+      meta: expect.objectContaining({ toolName: "speak" }),
     }))
   })
 

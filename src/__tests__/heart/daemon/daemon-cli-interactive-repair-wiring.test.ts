@@ -452,12 +452,12 @@ describe("ouro up: interactive repair wiring", () => {
     expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalled()
     expect(promptInput).toHaveBeenNthCalledWith(1, "Choose [1-4]: ")
     expect(promptInput).toHaveBeenNthCalledWith(2, "Choose [1-3]: ")
-    expect(runAuthFlow).toHaveBeenCalledWith({
+    expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
       agentName: "test-agent",
       provider: "anthropic",
       promptInput,
       onProgress: expect.any(Function),
-    })
+    }))
     expect(startDaemonProcess).toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")

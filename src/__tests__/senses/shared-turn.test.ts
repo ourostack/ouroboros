@@ -7,6 +7,7 @@ import type { InboundTurnResult } from "../../senses/pipeline"
 // ── Mocks ──────────────────────────────────────────────────────
 
 const mockHandleInboundTurn = vi.fn()
+const mockReadSessionTransaction = vi.fn(() => ({ bytes: "", value: null, revision: "revision-a" }))
 const mockWithSessionTurnLease = vi.fn(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
   sessionPath: "/tmp/session.json",
   ownerId: "owner-a",
@@ -16,6 +17,7 @@ const mockWithSessionTurnLease = vi.fn(async (_sessionPath: string, work: (lease
 
 vi.mock("../../mind/session-transaction", () => ({
   withSessionTurnLease: (...args: any[]) => mockWithSessionTurnLease(...args),
+  readSessionTransaction: (...args: any[]) => mockReadSessionTransaction(...args),
 }))
 
 vi.mock("../../senses/pipeline", async () => {
