@@ -25,7 +25,8 @@ Backup:
   Stop ouro-butler, then snapshot both of these directories together:
     /mnt/user/appdata/ouro-butler/runtime
     /mnt/user/appdata/ouro-butler/AgentBundles/sanctuary.ouro
-  Preserve mode 0600 on runtime/container-credentials.json.
+  The backup must not contain container-credentials.json; that file is a
+  single-use migration import deleted durably before the daemon applies it.
 
 Restore:
   Stop and remove the current container, restore both directories with numeric
@@ -33,9 +34,13 @@ Restore:
   then verify health before enabling array autostart.
 
 Credential recovery:
-  Replace runtime/container-credentials.json atomically as root, set ownership
-  10001:10001 and mode 0600, then restart the container. Never print or place
-  credential values in logs, templates, command arguments, or this runbook.
+  Restore or unlock the Sanctuary agent vault, then run provider refresh.
+  runtime/container-credentials.json exists only for a one-time migration: if
+  used, install it atomically as root with ownership 10001:10001 and mode 0600.
+  Startup claims and durably deletes it before applying anything; it is never
+  a credential source of truth and must not be recreated for routine boots.
+  Never print or place credential values in logs, templates, command arguments,
+  backups, or this runbook.
 
 Audit and safety verification:
   Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and

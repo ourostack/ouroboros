@@ -32,6 +32,16 @@ function parseEnvelope(raw: string): ContainerBootstrapEnvelope {
   return value as unknown as ContainerBootstrapEnvelope
 }
 
+function fsyncDirectory(directoryPath: string): void {
+  const descriptor = fs.openSync(directoryPath, "r")
+  try { fs.fsyncSync(descriptor) } finally { fs.closeSync(descriptor) }
+}
+
+function deleteDurably(filePath: string): void {
+  fs.unlinkSync(filePath)
+  fsyncDirectory(path.dirname(filePath))
+}
+
 export function getDefaultContainerCredentialBootstrapPath(): string {
   return path.join(os.homedir(), ".ouro-cli", "container-credentials.json")
 }
@@ -41,6 +51,14 @@ export function loadContainerCredentialBootstrap(
   options: ContainerCredentialBootstrapOptions = {},
 ): string[] {
   const filePath = options.path ?? getDefaultContainerCredentialBootstrapPath()
+  const consumingPath = `${filePath}.consuming`
+  try {
+    const interrupted = fs.lstatSync(consumingPath)
+    if (!interrupted.isFile() || interrupted.isSymbolicLink()) throw new Error("container credential consuming state must be a regular file")
+    deleteDurably(consumingPath)
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error
+  }
   let stat: fs.Stats
   try {
     stat = fs.lstatSync(filePath)
@@ -58,14 +76,20 @@ export function loadContainerCredentialBootstrap(
   const envelope = parseEnvelope(fs.readFileSync(filePath, "utf8"))
   const allowed = new Set(enabledAgents)
   const loaded = new Set<string>()
-  const apply = options.apply ?? applyRuntimeCredentialBootstrapMessage
   for (const message of envelope.credentials) {
     if (!isRecord(message) || typeof message.agentName !== "string" || !allowed.has(message.agentName)) {
       throw new Error("container credential bootstrap agent is not enabled")
     }
     if (loaded.has(message.agentName)) throw new Error("container credential bootstrap contains a duplicate agent")
-    if (!apply(message)) throw new Error("container credential bootstrap message is invalid")
     loaded.add(message.agentName)
+  }
+  fs.renameSync(filePath, consumingPath)
+  fsyncDirectory(path.dirname(filePath))
+  deleteDurably(consumingPath)
+
+  const apply = options.apply ?? applyRuntimeCredentialBootstrapMessage
+  for (const message of envelope.credentials) {
+    if (!apply(message)) throw new Error("container credential bootstrap message is invalid")
   }
   emitNervesEvent({
     component: "config/identity",

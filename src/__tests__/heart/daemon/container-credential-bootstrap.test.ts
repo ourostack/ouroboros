@@ -20,8 +20,13 @@ describe("container credential bootstrap", () => {
   }
 
   it("loads a private bootstrap only for an enabled agent", () => {
-    const apply = vi.fn(() => true)
-    const file = fixture({
+    let file = ""
+    const apply = vi.fn(() => {
+      expect(fs.existsSync(file)).toBe(false)
+      expect(fs.existsSync(`${file}.consuming`)).toBe(false)
+      return true
+    })
+    file = fixture({
       type: "ouro.runtimeCredentialBootstrap",
       agentName: "sanctuary",
       runtimeConfig: { telegramBotToken: "secret" },
@@ -31,6 +36,15 @@ describe("container credential bootstrap", () => {
 
     expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, apply })).toEqual(["sanctuary"])
     expect(apply).toHaveBeenCalledTimes(1)
+    expect(fs.existsSync(file)).toBe(false)
+  })
+
+  it("deletes the claimed single-use import before surfacing an apply failure", () => {
+    const file = fixture({ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} })
+
+    expect(() => loadContainerCredentialBootstrap(["sanctuary"], { path: file, apply: () => false })).toThrow("message is invalid")
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.existsSync(`${file}.consuming`)).toBe(false)
   })
 
   it("rejects group-readable, symlinked, oversized, duplicate, or unknown-agent bootstrap files", () => {
@@ -55,5 +69,16 @@ describe("container credential bootstrap", () => {
 
   it("treats an absent bootstrap as no credentials", () => {
     expect(loadContainerCredentialBootstrap(["sanctuary"], { path: "/tmp/definitely-absent-sanctuary-bootstrap", apply: () => true })).toEqual([])
+  })
+
+  it("durably discards an interrupted consuming file without replaying it", () => {
+    const file = fixture({ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} })
+    const consuming = `${file}.consuming`
+    fs.renameSync(file, consuming)
+    const apply = vi.fn(() => true)
+
+    expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, apply })).toEqual([])
+    expect(fs.existsSync(consuming)).toBe(false)
+    expect(apply).not.toHaveBeenCalled()
   })
 })
