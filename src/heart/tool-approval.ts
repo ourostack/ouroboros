@@ -110,7 +110,7 @@ function checkpointMatches(record: ApprovalRecord, checkpoint: ApprovalSuspensio
   return checkpoint.approvalId === record.approvalId
     && checkpoint.checkpointDigest === record.checkpointDigest
     && checkpoint.baseSessionRevision === record.baseSessionRevision
-    && checkpoint.suspendedSessionRevision === record.suspendedSessionRevision
+    && (record.state === "preparing" || checkpoint.suspendedSessionRevision === record.suspendedSessionRevision)
     && checkpoint.argumentDigest === record.argumentDigest
     && checkpoint.schemaDigest === record.schemaDigest
     && checkpoint.toolDigest === record.toolDigest

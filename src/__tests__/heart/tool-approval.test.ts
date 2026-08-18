@@ -378,6 +378,11 @@ describe("approval decision and crash-safe execution", () => {
         },
       },
     }) }],
+    ["missing advertised schema", { resolveTool: () => ({
+      ...shellToolDefinitions[0]!,
+      tool: { ...shellToolDefinitions[0]!.tool, function: { ...shellToolDefinitions[0]!.tool.function, parameters: undefined } },
+    }) }],
+    ["missing approval policy", { resolveTool: () => ({ ...shellToolDefinitions[0]!, approvalPolicy: undefined }) }],
   ])("terminalizes %s before attempted", async (_label, overrides) => {
     const fixture = ready()
     const execute = vi.fn()
@@ -438,6 +443,47 @@ describe("approval decision and crash-safe execution", () => {
     ["non-function frozen call", (fixture: ReturnType<typeof ready>) => {
       const frozen = fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any
       frozen.tool_calls[0].type = "custom"
+      resignCheckpointEvidence(fixture)
+    }],
+    ["missing frozen tool calls", (fixture: ReturnType<typeof ready>) => {
+      delete (fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls
+      resignCheckpointEvidence(fixture)
+    }],
+    ["multiple frozen tool calls", (fixture: ReturnType<typeof ready>) => {
+      const frozen = fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any
+      frozen.tool_calls.push(structuredClone(frozen.tool_calls[0]))
+      resignCheckpointEvidence(fixture)
+    }],
+    ["null frozen call", (fixture: ReturnType<typeof ready>) => {
+      ;(fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls = [null]
+      resignCheckpointEvidence(fixture)
+    }],
+    ["array frozen call", (fixture: ReturnType<typeof ready>) => {
+      ;(fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls = [[]]
+      resignCheckpointEvidence(fixture)
+    }],
+    ["missing frozen function", (fixture: ReturnType<typeof ready>) => {
+      delete (fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls[0].function
+      resignCheckpointEvidence(fixture)
+    }],
+    ["array frozen function", (fixture: ReturnType<typeof ready>) => {
+      ;(fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls[0].function = []
+      resignCheckpointEvidence(fixture)
+    }],
+    ["frozen call id drift", (fixture: ReturnType<typeof ready>) => {
+      ;(fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls[0].id = "other"
+      resignCheckpointEvidence(fixture)
+    }],
+    ["frozen tool name drift", (fixture: ReturnType<typeof ready>) => {
+      ;(fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls[0].function.name = "read_file"
+      resignCheckpointEvidence(fixture)
+    }],
+    ["non-string frozen arguments", (fixture: ReturnType<typeof ready>) => {
+      ;(fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls[0].function.arguments = 7
+      resignCheckpointEvidence(fixture)
+    }],
+    ["malformed frozen arguments", (fixture: ReturnType<typeof ready>) => {
+      ;(fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any).tool_calls[0].function.arguments = "{"
       resignCheckpointEvidence(fixture)
     }],
   ])("terminalizes %s evidence drift before attempted", async (_label, mutate) => {
@@ -526,6 +572,35 @@ describe("approval decision and crash-safe execution", () => {
 
     expect(recovered.state).toBe("abandoned_before_attempt")
     await expect(executeApprovalDecision(executionOptions(fixture) as any)).rejects.toBeTruthy()
+    fixture.approvalStore.close()
+  })
+
+  it("rejects claimed recovery when the record is not claimed", () => {
+    const fixture = ready()
+
+    expect(() => recoverClaimedApproval({ approvalStore: fixture.approvalStore, approvalId: UUID, reason: "not claimed" }))
+      .toThrowError(expect.objectContaining({ code: "claimed_recovery_not_eligible" }))
+    fixture.approvalStore.close()
+  })
+
+  it("rejects attempted recovery when the record is not attempted", () => {
+    const fixture = ready()
+
+    expect(() => recoverAttemptedApproval({ approvalStore: fixture.approvalStore, approvalId: UUID }))
+      .toThrowError(expect.objectContaining({ code: "attempted_recovery_not_eligible" }))
+    fixture.approvalStore.close()
+  })
+
+  it("rejects direct pre-attempt terminalization without a matching claimed owner", () => {
+    const fixture = ready()
+
+    expect(() => fixture.approvalStore.terminalizeBeforeAttempt({
+      approvalId: UUID,
+      ownerId: "wrong-owner",
+      epoch: 0,
+      state: "drifted",
+      reason: "invalid direct transition",
+    })).toThrowError(expect.objectContaining({ code: "pre_attempt_terminalization_not_eligible" }))
     fixture.approvalStore.close()
   })
 
