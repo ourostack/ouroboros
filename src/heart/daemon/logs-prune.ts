@@ -56,7 +56,6 @@ function resolveLogsTarget(options: PruneDaemonLogsOptions): { logsDir: string; 
   if (!options.agentName) {
     throw new Error("daemon logs prune requires an explicit agent or an internal logs directory")
   }
-  /* v8 ignore next -- production default; CLI execution always passes its resolved bundles root @preserve */
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
   const target = resolvePrunableAgentBundle({ bundlesRoot, agentName: options.agentName })
   return { logsDir: target.logsDir, target }

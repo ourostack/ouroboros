@@ -3,7 +3,15 @@ import * as os from "os"
 import * as path from "path"
 import * as zlib from "zlib"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const identityMocks = vi.hoisted(() => ({
+  getAgentBundlesRoot: vi.fn<() => string>(),
+}))
+
+vi.mock("../../../heart/identity", () => ({
+  getAgentBundlesRoot: identityMocks.getAgentBundlesRoot,
+}))
 
 import { pruneDaemonLogs } from "../../../heart/daemon/logs-prune"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
@@ -29,6 +37,7 @@ describe("pruneDaemonLogs", () => {
 
   beforeEach(() => {
     dir = tmpDir()
+    identityMocks.getAgentBundlesRoot.mockReturnValue(dir)
   })
 
   afterEach(() => {
@@ -365,6 +374,21 @@ describe("pruneDaemonLogs", () => {
       maxSizeBytes: 100,
       maxGenerations: 3,
     })).toEqual({ filesCompacted: 1, bytesFreed: 200 })
+  })
+
+  it("uses the canonical bundles root when an agent target omits the root override", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const logsDir = path.join(bundleDir, "state", "daemon", "logs")
+    fs.mkdirSync(logsDir, { recursive: true })
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), "x".repeat(200), "utf8")
+
+    expect(pruneDaemonLogs({
+      agentName: "Slugger",
+      maxSizeBytes: 100,
+      maxGenerations: 3,
+    })).toEqual({ filesCompacted: 1, bytesFreed: 200 })
+    expect(identityMocks.getAgentBundlesRoot).toHaveBeenCalledOnce()
   })
 
   it("rejects a symlinked logs directory before touching its target", () => {

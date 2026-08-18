@@ -8,7 +8,9 @@ import {
   isSafePrunableAgentName,
   listPrunableAgentBundles,
   resolvePrunableAgentBundle,
+  validatePrunableLogEntry,
   type PrunableBundleFs,
+  type PrunableLogsFs,
 } from "../../../heart/daemon/prunable-bundle"
 
 describe("prunable bundle resolution", () => {
@@ -180,5 +182,23 @@ describe("prunable bundle resolution", () => {
     fs.writeFileSync(path.join(root, "README.txt"), "ignore me", "utf8")
 
     expect(listPrunableAgentBundles({ bundlesRoot: root })).toEqual(["Good", "Real"])
+  })
+
+  it("rejects a regular log entry whose canonical path escapes the logs directory", () => {
+    const logsDir = path.join(root, "logs")
+    const logPath = path.join(logsDir, "daemon.ndjson")
+    fs.mkdirSync(logsDir)
+    fs.writeFileSync(logPath, "event\n", "utf8")
+    const logsReal = fs.realpathSync(logsDir)
+    const io: PrunableLogsFs = {
+      lstatSync: fs.lstatSync,
+      readdirSync: fs.readdirSync,
+      realpathSync: (filePath) => filePath === logPath
+        ? path.join(root, "outside", "daemon.ndjson")
+        : fs.realpathSync(filePath),
+    }
+
+    expect(() => validatePrunableLogEntry(logPath, logsReal, io))
+      .toThrow("escapes the canonical logs directory")
   })
 })

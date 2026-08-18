@@ -158,7 +158,6 @@ export function validatePrunableLogEntry(
   if (stat.isSymbolicLink() || !stat.isFile()) {
     throw new Error(`daemon log entry must be a regular non-symlink file: ${filePath}`)
   }
-  /* v8 ignore next 3 -- defensive: a real direct-child file cannot escape after lstat absent a same-user path swap @preserve */
   if (dirname(io.realpathSync(filePath)) !== logsReal) {
     throw new Error(`daemon log entry escapes the canonical logs directory: ${filePath}`)
   }
