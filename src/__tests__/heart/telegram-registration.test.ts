@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest"
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 import { DEFAULT_AGENT_SENSES, normalizeSenses, type SenseName } from "../../heart/identity"
 import { getSenseInventory } from "../../heart/sense-truth"
@@ -19,5 +21,13 @@ describe("Telegram sense registration", () => {
       .find((entry) => entry.sense === "telegram")
     expect(ready).toMatchObject({ label: "Telegram", enabled: true, daemonManaged: true, status: "ready" })
     expect(missing).toMatchObject({ status: "needs_config" })
+  })
+
+  it("ships the daemon entrypoint that waits for credential bootstrap before polling", () => {
+    const entry = path.resolve(__dirname, "../../senses/telegram-entry.ts")
+    expect(fs.existsSync(entry)).toBe(true)
+    const source = fs.readFileSync(entry, "utf8")
+    expect(source).toContain("waitForRuntimeCredentialBootstrap")
+    expect(source).toContain("await app.run()")
   })
 })
