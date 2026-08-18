@@ -17,6 +17,7 @@
     "skills/",
     "assets/",
     "deploy/unraid/",
+    "npm-shrinkwrap.json",
     "changelog.json"
   ],
   "exports": {

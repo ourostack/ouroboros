@@ -18,8 +18,11 @@ describe("container runtime policy", () => {
     const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[] }
 
     expect(packageJson.files).toContain("deploy/unraid/")
-    expect(dockerfile).toContain("COPY package.json ./")
-    expect(dockerfile).not.toContain("package-lock.json")
+    expect(packageJson.files).toContain("npm-shrinkwrap.json")
+    expect(fs.existsSync("npm-shrinkwrap.json")).toBe(true)
+    expect(dockerfile).toContain("COPY package.json npm-shrinkwrap.json ./")
+    expect(dockerfile).toContain("npm ci --omit=dev")
+    expect(dockerfile).not.toContain("npm install")
   })
 
   it("keeps Workbench and duplicate habit scheduling out of the dedicated bundle", () => {

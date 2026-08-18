@@ -11,8 +11,8 @@ RUN apt-get update \
   && useradd --uid 10001 --gid 10001 --home-dir /home/ouro --create-home --shell /usr/sbin/nologin ouro
 
 WORKDIR /opt/ouro
-COPY package.json ./
-RUN npm install --omit=dev --workspaces=false --no-audit --no-fund
+COPY package.json npm-shrinkwrap.json ./
+RUN npm ci --omit=dev --workspaces=false --no-audit --no-fund
 COPY dist ./dist
 COPY assets ./assets
 COPY skills ./skills
