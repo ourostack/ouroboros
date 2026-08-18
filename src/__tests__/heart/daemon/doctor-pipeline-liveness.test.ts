@@ -734,6 +734,21 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 
+  it("warns when hosted authority is sound but no local cache directory exists", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
   it("warns without mutation when hosted authority is malformed, duplicated, or transiently unavailable", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
@@ -1274,6 +1289,23 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 // ── Reusable seam for other senses ──
 
 describe("senseInboundDeliveryCheck", () => {
+  it("uses default freshness when the agent config is absent", () => {
+    const bundlesRoot = makeBundlesRoot()
+    const inboundDir = path.join(bundlesRoot, "missing.ouro", "state", "senses", "teams", "inbound")
+    fs.mkdirSync(inboundDir, { recursive: true })
+
+    const check = senseInboundDeliveryCheck({
+      deps: depsFor(bundlesRoot),
+      agentDir: "missing.ouro",
+      sense: "teams",
+      inboundDir,
+      nowMs: Date.now(),
+    })
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("no teams inbound delivery ever")
+  })
+
   it("lets another sense opt in with its own inbound directory and remediation", () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", { teams: { enabled: true } })

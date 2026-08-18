@@ -314,6 +314,7 @@ describe("guardInvocation — structural guardrails", () => {
     expect(guardInvocation("shell", { command: "cmd=(echo ok); \"${cmd[@]}suffix\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: "cmd=(); \"${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: "cmd=(); \"prefix${cmd[@]}suffix\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); \"${cmd[@]}" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
     expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); printf '%s\\n' ${cmd[@]}" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: `printf '%s\\n' "'" '\"'` }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
   })
@@ -322,6 +323,31 @@ describe("guardInvocation — structural guardrails", () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const command = `${"cmd=(echo ok);".repeat(9_999)}cmd=(ouro mail sync-cache); "\${cmd[@]}"`
     expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+  })
+
+  it("fails closed when the shell-word dependency rejects an otherwise prefiltered fragment", async () => {
+    vi.doMock("shell-quote", async () => {
+      const actual = await vi.importActual<typeof import("shell-quote")>("shell-quote")
+      return {
+        ...actual,
+        parse: (value: string, ...args: Parameters<typeof actual.parse> extends [string, ...infer Rest] ? Rest : never) => {
+          if (value.includes("__THROW__")) throw new Error("synthetic parser rejection")
+          return actual.parse(value, ...args)
+        },
+      }
+    })
+    vi.resetModules()
+
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("shell", {
+      command: "cmd=(__THROW__); \"${cmd[@]}\"",
+    }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", {
+      command: "cmd=(echo); \"__THROW__${cmd[@]}\"",
+    }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+
+    vi.doUnmock("shell-quote")
+    vi.resetModules()
   })
 
   // --- protected paths blocked for writes ---

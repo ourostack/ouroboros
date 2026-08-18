@@ -498,6 +498,25 @@ describe("checkAgents", () => {
 // ── Senses checks ──
 
 describe("checkSenses", () => {
+  it("skips a discovered agent whose config disappears before inspection", async () => {
+    let configChecks = 0
+    const deps = createMockDeps({
+      existsSync: (target) => {
+        if (target === "/tmp/bundles") return true
+        if (target === "/tmp/bundles/test.ouro/agent.json") {
+          configChecks += 1
+          return configChecks === 1
+        }
+        return false
+      },
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toEqual([{ label: "senses", status: "warn", detail: "no agents with senses config found" }])
+  })
+
   it("passes for well-formed senses config", async () => {
     const config = JSON.stringify({
       senses: {
@@ -1397,6 +1416,25 @@ describe("checkHabits", () => {
 // ── Security checks ──
 
 describe("checkSecurity", () => {
+  it("skips a discovered agent whose config disappears before the security scan", () => {
+    let configChecks = 0
+    const deps = createMockDeps({
+      existsSync: (target) => {
+        if (target === "/tmp/bundles") return true
+        if (target === "/tmp/bundles/test.ouro/agent.json") {
+          configChecks += 1
+          return configChecks === 1
+        }
+        return false
+      },
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+
+    const cat = checkSecurity(deps)
+
+    expect(cat.checks.find((check) => check.label.includes("credential leak"))).toBeUndefined()
+  })
+
   it("passes when agent.json has no leaked creds", () => {
     const config = JSON.stringify({ version: 2, humanFacing: { provider: "anthropic" } })
     const deps = createMockDeps({
