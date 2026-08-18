@@ -354,6 +354,27 @@ describe("pruneDaemonLogs", () => {
     }
   })
 
+  it("rejects an intermediate symlink that redirects canonical agent logs outside the bundle", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const externalDaemon = fs.mkdtempSync(path.join(os.tmpdir(), "external-agent-daemon-"))
+    const externalLogs = path.join(externalDaemon, "logs")
+    fs.mkdirSync(path.join(bundleDir, "state"), { recursive: true })
+    fs.mkdirSync(externalLogs)
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(externalLogs, "daemon.ndjson"), "x".repeat(200), "utf8")
+    fs.symlinkSync(externalDaemon, path.join(bundleDir, "state", "daemon"))
+    try {
+      expect(() => pruneDaemonLogs({
+        bundlesRoot: dir,
+        agentName: "Slugger",
+        maxSizeBytes: 100,
+      })).toThrow("canonical agent bundle")
+      expect(fs.existsSync(path.join(externalLogs, "daemon.ndjson"))).toBe(true)
+    } finally {
+      fs.rmSync(externalDaemon, { recursive: true, force: true })
+    }
+  })
+
   it("rejects symlinked and non-regular active streams before rotation", () => {
     const externalFile = path.join(dir, "external.ndjson")
     fs.writeFileSync(externalFile, "x".repeat(200), "utf8")
