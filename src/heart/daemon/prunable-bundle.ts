@@ -16,6 +16,21 @@ export interface PrunableBundleFs {
   realpathSync: (filePath: string) => string
 }
 
+export interface PrunableLogsFs {
+  lstatSync: (filePath: string) => {
+    isDirectory: () => boolean
+    isFile: () => boolean
+    isSymbolicLink: () => boolean
+  }
+  readdirSync: (dirPath: string) => string[]
+  realpathSync: (filePath: string) => string
+}
+
+export interface PrunableLogsInspection {
+  entries: string[]
+  logsReal: string
+}
+
 export interface PrunableBundleOptions {
   bundlesRoot: string
   fs?: PrunableBundleFs
@@ -26,6 +41,7 @@ export interface ResolvePrunableBundleOptions extends PrunableBundleOptions {
 }
 
 const defaultFs: PrunableBundleFs = { existsSync, lstatSync, readdirSync, realpathSync }
+const defaultLogsFs: PrunableLogsFs = { lstatSync, readdirSync, realpathSync }
 const SAFE_AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 export function isSafePrunableAgentName(agentName: string): boolean {
@@ -114,4 +130,55 @@ export function listPrunableAgentBundles(options: PrunableBundleOptions): string
     meta: { bundlesRoot: options.bundlesRoot, count: agents.length },
   })
   return agents
+}
+
+export function isManagedDaemonLogEntry(name: string): boolean {
+  const activeNdjson = name.endsWith(".ndjson") && !/\.\d+\.ndjson$/.test(name)
+  const activeLog = name.endsWith(".log") && !/\.\d+\.log$/.test(name)
+  return activeNdjson || activeLog ||
+    /\.\d+\.ndjson(?:\.gz)?$/.test(name) ||
+    /\.log\.\d+(?:\.gz)?$/.test(name) ||
+    /\.\d+\.log$/.test(name)
+}
+
+export function validatePrunableLogEntry(
+  filePath: string,
+  logsReal: string,
+  io: PrunableLogsFs = defaultLogsFs,
+): void {
+  const stat = io.lstatSync(filePath)
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`daemon log entry must be a regular non-symlink file: ${filePath}`)
+  }
+  /* v8 ignore next 3 -- defensive: a real direct-child file cannot escape after lstat absent a same-user path swap @preserve */
+  if (dirname(io.realpathSync(filePath)) !== logsReal) {
+    throw new Error(`daemon log entry escapes the canonical logs directory: ${filePath}`)
+  }
+}
+
+export function validatePrunableLogsDirectory(
+  logsDir: string,
+  expectedCanonicalLogsDir?: string,
+  io: PrunableLogsFs = defaultLogsFs,
+): PrunableLogsInspection {
+  const stat = io.lstatSync(logsDir)
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`daemon logs directory must be a real directory: ${logsDir}`)
+  }
+  const logsReal = io.realpathSync(logsDir)
+  if (expectedCanonicalLogsDir && logsReal !== expectedCanonicalLogsDir) {
+    throw new Error(`daemon logs directory must remain inside its canonical agent bundle: ${logsDir}`)
+  }
+  const entries = io.readdirSync(logsDir)
+  for (const name of entries) {
+    if (isManagedDaemonLogEntry(name)) validatePrunableLogEntry(join(logsDir, name), logsReal, io)
+  }
+  return { entries, logsReal }
+}
+
+export function validatePrunableLogsTarget(
+  target: PrunableBundleTarget,
+  io: PrunableLogsFs = defaultLogsFs,
+): PrunableLogsInspection {
+  return validatePrunableLogsDirectory(target.logsDir, target.logsDir, io)
 }

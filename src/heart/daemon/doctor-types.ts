@@ -61,7 +61,7 @@ export interface DoctorDeps {
   /** Get file stats (for permissions, size, and last-write freshness). */
   statSync: (p: string) => { mode: number; size: number; mtimeMs: number }
   /** Inspect a path without following symlinks when validating repair targets. */
-  lstatSync?: (p: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+  lstatSync?: (p: string) => { isDirectory: () => boolean; isFile?: () => boolean; isSymbolicLink: () => boolean }
   /** Resolve a canonical path when validating repair-target containment. */
   realpathSync?: (p: string) => string
   /** Check whether the daemon socket is alive. */

@@ -2498,10 +2498,14 @@ describe("checkDisk", () => {
       statSync: statFor({
         [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize },
       }),
-      lstatSync: vi.fn(() => ({ isDirectory: () => true, isSymbolicLink: () => false })),
+      lstatSync: vi.fn((filePath: string) => ({
+        isDirectory: () => filePath !== `${logsDir}/big.log`,
+        isFile: () => filePath === `${logsDir}/big.log`,
+        isSymbolicLink: () => false,
+      })),
       realpathSync: vi.fn((filePath: string) => filePath),
     } as Partial<DoctorDeps> & {
-      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isFile: () => boolean; isSymbolicLink: () => boolean }
       realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)
@@ -2618,10 +2622,14 @@ describe("checkDisk", () => {
       statSync: statFor({
         [`${logsDir}/huge.log`]: { mode: 0o644, size: hugeSize },
       }),
-      lstatSync: vi.fn(() => ({ isDirectory: () => true, isSymbolicLink: () => false })),
+      lstatSync: vi.fn((filePath: string) => ({
+        isDirectory: () => filePath !== `${logsDir}/huge.log`,
+        isFile: () => filePath === `${logsDir}/huge.log`,
+        isSymbolicLink: () => false,
+      })),
       realpathSync: vi.fn((filePath: string) => filePath),
     } as Partial<DoctorDeps> & {
-      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isFile: () => boolean; isSymbolicLink: () => boolean }
       realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)

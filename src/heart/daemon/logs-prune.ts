@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs"
-import { dirname, join } from "path"
+import { existsSync, statSync } from "fs"
+import { join } from "path"
 import { randomUUID } from "crypto"
 
 import {
@@ -9,7 +9,13 @@ import {
 } from "../../nerves"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot } from "../identity"
-import { resolvePrunableAgentBundle } from "./prunable-bundle"
+import {
+  resolvePrunableAgentBundle,
+  validatePrunableLogEntry,
+  validatePrunableLogsDirectory,
+  validatePrunableLogsTarget,
+  type PrunableBundleTarget,
+} from "./prunable-bundle"
 
 /**
  * Apply the current rotation policy to every active `.ndjson` and `.log` file
@@ -45,14 +51,15 @@ export interface PruneDaemonLogsResult {
   bytesFreed: number
 }
 
-function resolveLogsDir(options: PruneDaemonLogsOptions): string {
-  if (options.logsDir) return options.logsDir
+function resolveLogsTarget(options: PruneDaemonLogsOptions): { logsDir: string; target?: PrunableBundleTarget } {
+  if (options.logsDir) return { logsDir: options.logsDir }
   if (!options.agentName) {
     throw new Error("daemon logs prune requires an explicit agent or an internal logs directory")
   }
   /* v8 ignore next -- production default; CLI execution always passes its resolved bundles root @preserve */
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
-  return resolvePrunableAgentBundle({ bundlesRoot, agentName: options.agentName }).logsDir
+  const target = resolvePrunableAgentBundle({ bundlesRoot, agentName: options.agentName })
+  return { logsDir: target.logsDir, target }
 }
 
 function isActiveLogStream(name: string): boolean {
@@ -65,34 +72,9 @@ function isActiveLogStream(name: string): boolean {
   return false
 }
 
-function isManagedLogEntry(name: string): boolean {
-  return isActiveLogStream(name) ||
-    /\.\d+\.ndjson(?:\.gz)?$/.test(name) ||
-    /\.log\.\d+(?:\.gz)?$/.test(name) ||
-    /\.\d+\.log$/.test(name)
-}
-
-function validateLogsDirectory(logsDir: string): string {
-  const stat = lstatSync(logsDir)
-  if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw new Error(`daemon logs directory must be a real directory: ${logsDir}`)
-  }
-  return realpathSync(logsDir)
-}
-
-function validateManagedLogEntry(filePath: string, logsReal: string): void {
-  const stat = lstatSync(filePath)
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new Error(`daemon log entry must be a regular non-symlink file: ${filePath}`)
-  }
-  /* v8 ignore next 3 -- defensive: a real direct-child file cannot escape after lstat absent a same-user path swap @preserve */
-  if (dirname(realpathSync(filePath)) !== logsReal) {
-    throw new Error(`daemon log entry escapes the canonical logs directory: ${filePath}`)
-  }
-}
-
 export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaemonLogsResult {
-  const logsDir = resolveLogsDir(options)
+  const resolved = resolveLogsTarget(options)
+  const { logsDir } = resolved
   const maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
   const maxGenerations = options.maxGenerations ?? DEFAULT_MAX_GENERATIONS
   const traceId = randomUUID()
@@ -119,11 +101,10 @@ export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaem
       return { filesCompacted: 0, bytesFreed: 0 }
     }
 
-    const logsReal = validateLogsDirectory(logsDir)
-    const entries = readdirSync(logsDir)
-    for (const name of entries) {
-      if (isManagedLogEntry(name)) validateManagedLogEntry(join(logsDir, name), logsReal)
-    }
+    const inspection = resolved.target
+      ? validatePrunableLogsTarget(resolved.target)
+      : validatePrunableLogsDirectory(logsDir)
+    const { entries, logsReal } = inspection
 
     let filesCompacted = 0
     let bytesFreed = 0
@@ -137,7 +118,7 @@ export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaem
       if (!isActiveLogStream(name)) continue
 
       const filePath = join(logsDir, name)
-      validateManagedLogEntry(filePath, logsReal)
+      validatePrunableLogEntry(filePath, logsReal)
       let sizeBefore: number
       try {
         sizeBefore = statSync(filePath).size

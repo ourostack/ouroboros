@@ -42,7 +42,12 @@ import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/di
 import type { MailMessageIndexRecord } from "../../mailroom/file-store"
 import { mailSearchCacheDocumentMatchesRecord } from "../../mailroom/hosted-cache-sync"
 import type { MailSearchCacheDocument } from "../../mailroom/search-cache"
-import { resolvePrunableAgentBundle, type PrunableBundleFs } from "./prunable-bundle"
+import {
+  resolvePrunableAgentBundle,
+  validatePrunableLogsTarget,
+  type PrunableBundleFs,
+  type PrunableLogsFs,
+} from "./prunable-bundle"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_BLUEBUBBLES_PORT = 18_790
@@ -1544,7 +1549,21 @@ export function checkDisk(deps: DoctorDeps): DoctorCategory {
       }
       try {
         const agentName = agentDir.slice(0, -".ouro".length)
-        resolvePrunableAgentBundle({ bundlesRoot: deps.bundlesRoot, agentName, fs: io })
+        const target = resolvePrunableAgentBundle({ bundlesRoot: deps.bundlesRoot, agentName, fs: io })
+        if (!deps.existsSync(target.logsDir)) throw new Error("logs directory does not exist")
+        const logsIo: PrunableLogsFs = {
+          lstatSync: (filePath) => {
+            const stat = deps.lstatSync!(filePath)
+            return {
+              isDirectory: stat.isDirectory,
+              isFile: stat.isFile ?? (() => false),
+              isSymbolicLink: stat.isSymbolicLink,
+            }
+          },
+          readdirSync: deps.readdirSync,
+          realpathSync: deps.realpathSync,
+        }
+        validatePrunableLogsTarget(target, logsIo)
         pruneCommand = `ouro logs prune --agent ${agentName}`
       } catch {
         // Doctor reports size but only offers repair for an exactly validated target.
