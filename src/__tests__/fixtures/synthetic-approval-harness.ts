@@ -1,10 +1,27 @@
+import { spawn } from "node:child_process"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+
+import Database from "better-sqlite3"
+
 import { runAgent, resumeApprovalContinuation } from "../../heart/core"
-import { openApprovalStore } from "../../heart/approval-store"
+import { openApprovalStore, type JsonObject, type PrepareApprovalInput } from "../../heart/approval-store"
+import { buildCanonicalSessionEnvelope } from "../../heart/session-events"
 import {
   commitApprovalProposal,
   coordinateApprovalDecision,
+  digestApprovalSuspensionCheckpointPayload,
   executeApprovalDecision,
+  recoverAttemptedApproval,
+  recoverClaimedApproval,
+  type ApprovalSuspensionCheckpoint,
+  type ApprovalSuspensionCheckpointStore,
+  type ApprovalTokenStore,
 } from "../../heart/tool-approval"
+import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
+import { approvalPolicyForToolName, shellRiskProfile } from "../../repertoire/tools"
+import { shellToolDefinitions } from "../../repertoire/tools-shell"
 
 export const syntheticApprovalProductionSeams = {
   runAgent,
@@ -61,8 +78,316 @@ export interface SyntheticApprovalArtifacts {
   callbackOutcomes: Array<{ processPid: number; accepted: boolean; reason: string }>
 }
 
-export async function runSyntheticApprovalScenario(
-  _scenario: SyntheticApprovalScenario,
-): Promise<SyntheticApprovalArtifacts> {
-  throw new Error("synthetic approval vertical slice is not implemented")
+const BASE_REVISION = "d".repeat(64)
+const SUSPENDED_REVISION = "f".repeat(64)
+const RECORDED_AT = "2026-08-17T17:30:00.000Z"
+
+function append(filePath: string, value: unknown): void {
+  fs.appendFileSync(filePath, `${JSON.stringify(value)}\n`)
+}
+
+function fileCheckpointStore(filePath: string): ApprovalSuspensionCheckpointStore {
+  const readAll = (): Record<string, ApprovalSuspensionCheckpoint> => fs.existsSync(filePath)
+    ? JSON.parse(fs.readFileSync(filePath, "utf8"))
+    : {}
+  const writeAll = (records: Record<string, ApprovalSuspensionCheckpoint>) => fs.writeFileSync(filePath, JSON.stringify(records))
+  return {
+    write(draft) {
+      const checkpoint = { ...structuredClone(draft), checkpointDigest: digestApprovalSuspensionCheckpointPayload(draft), suspendedSessionRevision: SUSPENDED_REVISION }
+      const records = readAll()
+      records[checkpoint.approvalId] = checkpoint
+      writeAll(records)
+      return { checkpointDigest: checkpoint.checkpointDigest, suspendedSessionRevision: checkpoint.suspendedSessionRevision }
+    },
+    read(approvalId) { return structuredClone(readAll()[approvalId] ?? null) },
+    list() { return Object.values(readAll()).map((record) => structuredClone(record)) },
+    remove(approvalId) { const records = readAll(); delete records[approvalId]; writeAll(records) },
+  }
+}
+
+function fileTokenStore(filePath: string): ApprovalTokenStore {
+  const readAll = (): Record<string, string> => fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, "utf8")) : {}
+  const writeAll = (records: Record<string, string>) => fs.writeFileSync(filePath, JSON.stringify(records))
+  return {
+    put(approvalId, token) { const records = readAll(); records[approvalId] = token; writeAll(records) },
+    has(approvalId) { return approvalId in readAll() },
+    get(approvalId) { return readAll()[approvalId] ?? null },
+    remove(approvalId) { const records = readAll(); delete records[approvalId]; writeAll(records) },
+  }
+}
+
+function writeSession(sessionPath: string, messages: any[]): void {
+  const envelope = buildCanonicalSessionEnvelope({
+    existing: null,
+    previousMessages: [],
+    currentMessages: messages,
+    trimmedMessages: messages,
+    recordedAt: RECORDED_AT,
+    projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+  }).envelope
+  fs.writeFileSync(sessionPath, JSON.stringify(envelope))
+}
+
+function proposal(sessionPath: string, args: JsonObject): PrepareApprovalInput {
+  const definition = shellToolDefinitions[0]!
+  const schemaDigest = digestJson(definition.tool.function.parameters as any)
+  const policy = approvalPolicyForToolName("shell", args)
+  if (policy.kind !== "required") throw new Error("synthetic policy unexpectedly did not require approval")
+  return {
+    toolCallId: "call_restart", toolName: "shell", arguments: args,
+    schemaDigest,
+    toolDigest: digestJson({ name: "shell", schemaDigest, policyId: policy.policyId }),
+    policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
+    policyId: policy.policyId,
+    sessionKey: "telegram:chat-7", sessionPath, baseSessionRevision: BASE_REVISION,
+    checkpointDigest: "e".repeat(64), requesterId: "friend-ari", transport: "telegram",
+    transportUserId: "42", transportChatId: "7", expiresAt: "2099-08-17T18:30:00.000Z",
+    frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [{ id: "call_restart", type: "function", function: { name: "shell", arguments: JSON.stringify(args) } }] },
+  }
+}
+
+function workerScript(): string {
+  return String.raw`
+const ts = require("typescript")
+require.extensions[".ts"] = (module, filename) => {
+  const source = require("fs").readFileSync(filename, "utf8")
+  module._compile(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true }, fileName: filename }).outputText, filename)
+}
+const fs = require("fs")
+const approval = require(process.argv[1])
+const core = require(process.argv[2])
+const storeModule = require(process.argv[3])
+const argsModule = require(process.argv[4])
+const shellModule = require(process.argv[5])
+const fixture = JSON.parse(fs.readFileSync(process.argv[6], "utf8"))
+const append = (file, value) => fs.appendFileSync(file, JSON.stringify(value) + "\n")
+const readCheckpoints = () => JSON.parse(fs.readFileSync(fixture.checkpointPath, "utf8"))
+const checkpoints = { read: id => readCheckpoints()[id] || null, list: () => Object.values(readCheckpoints()), write: () => { throw new Error("worker cannot write checkpoint") }, remove: () => {} }
+const store = storeModule.openApprovalStore({ databasePath: fixture.databasePath })
+const trace = (type, detail) => append(fixture.traceLogPath, { sequence: Date.now(), pid: process.pid, atMs: fixture.decisionAtMs, type, ...(detail ? { detail } : {}) })
+let continuationClaim
+let accepted = false
+let reason = "already claimed"
+const ownerId = "decision-" + process.pid
+const liveDefinition = () => {
+  const original = shellModule.shellToolDefinitions[0]
+  if (!fixture.liveSchemaMutation) return original
+  const clone = { ...original, tool: { ...original.tool, function: { ...original.tool.function, parameters: structuredClone(original.tool.function.parameters) } } }
+  const schema = clone.tool.function.parameters
+  if (fixture.liveSchemaMutation === "require_missing_property") { schema.properties.confirmation = { type: "string" }; schema.required.push("confirmation") }
+  if (fixture.liveSchemaMutation === "wrong_command_type") schema.properties.command = { type: "number" }
+  if (fixture.liveSchemaMutation === "treat_command_as_extra") { delete schema.properties.command; schema.required = []; schema.additionalProperties = false }
+  return clone
+}
+const persist = messages => {
+  const events = require(process.argv[7])
+  const envelope = events.buildCanonicalSessionEnvelope({ existing: null, previousMessages: [], currentMessages: messages, trimmedMessages: messages, recordedAt: "2026-08-17T17:30:00.000Z", projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null } }).envelope
+  fs.writeFileSync(fixture.sessionPath, JSON.stringify(envelope))
+}
+async function resume(record) {
+  if (fixture.crashAt === "after_terminal_persist") throw new Error("synthetic_crash")
+  await core.resumeApprovalContinuation({
+    record, checkpoint: checkpoints.read(fixture.approvalId), currentSessionRevision: fixture.currentRevision,
+    sessionMessages: fixture.preCallMessages, callbacks: { onTextChunk: () => {} }, channel: "telegram",
+    claimContinuation: () => { continuationClaim = store.claimContinuation({ approvalId: fixture.approvalId, ownerId: "continuation-" + process.pid, ownerPid: process.pid }); return continuationClaim },
+    markContinuationMaterialized: () => {
+      if (fixture.crashAt === "after_terminal_pair_persist_before_materialized") throw new Error("synthetic_crash")
+      const value = store.markContinuationMaterialized({ approvalId: fixture.approvalId, ownerId: "continuation-" + process.pid, epoch: continuationClaim.record.continuationEpoch })
+      if (fixture.crashAt === "after_materialized_marker_before_continuation_attempt") throw new Error("synthetic_crash")
+      return value
+    },
+    markContinuationAttempted: () => store.markContinuationAttempted({ approvalId: fixture.approvalId, ownerId: "continuation-" + process.pid, epoch: continuationClaim.record.continuationEpoch }),
+    completeContinuation: () => store.completeContinuation({ approvalId: fixture.approvalId, ownerId: "continuation-" + process.pid, epoch: continuationClaim.record.continuationEpoch }),
+    runAgent: async (messages, callbacks) => {
+      trace("continuation_provider_start")
+      append(fixture.providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId: fixture.approvalId, messages: structuredClone(messages) })
+      if (fixture.crashAt === "after_continuation_attempt") throw new Error("synthetic_crash")
+      const text = record.state === "denied" ? "I did not restart calibre-web." : record.state === "failed" ? "calibre-web restart failed safely." : "calibre-web is back up"
+      callbacks.onTextChunk(text); messages.push({ role: "assistant", content: text }); return { outcome: "settled" }
+    },
+    persist,
+    deliver: text => append(fixture.deliveryLogPath, { pid: process.pid, kind: text.includes("indeterminate") ? "indeterminate" : (record.state === "succeeded" || record.state === "failed" || record.state === "denied") ? "provider" : "direct", text }),
+  })
+}
+(async () => {
+  try {
+    if (fixture.resumeOnly) {
+      await resume(store.read(fixture.approvalId))
+      process.stdout.write(JSON.stringify({ pid: process.pid, accepted: false, reason: "continuation recovery" }) + "\n")
+      return
+    }
+    const coordinated = await approval.coordinateApprovalDecision({
+      withSessionLease: work => work({ ownerId, ownerToken: ownerId + "-token" }),
+      readCurrentRevision: () => fixture.currentRevision,
+      decideAndExecute: async ({ currentSessionRevision, hooks }) => approval.executeApprovalDecision({
+        approvalStore: store, checkpointStore: checkpoints,
+        decision: fixture.decision, ownerId, currentSessionRevision,
+        resolveTool: liveDefinition,
+        liveGuard: () => ({ ok: true }), liveRisk: () => ({ ok: true }),
+        execute: async () => {
+          trace("handler_start")
+          if (fixture.handlerMode === "observable_failure") throw new approval.ApprovalExecutionFailedError("restart failed")
+          append(fixture.effectsLogPath, { pid: process.pid, command: "docker restart calibre-web" }); return "restarted"
+        },
+        hooks: {
+          afterClaim: async () => { accepted = true; reason = "claimed"; trace("decision_received"); await hooks.afterClaim(); if (fixture.crashAt === "after_claim") throw new Error("synthetic_crash") },
+          afterAttempt: () => { trace("attempted_committed"); if (fixture.crashAt === "after_attempt") throw new Error("synthetic_crash") },
+          afterHandler: () => { if (fixture.crashAt === "after_handler") throw new Error("synthetic_crash") },
+        },
+      }),
+      persist: record => trace("terminal_persisted", record.state),
+      resume,
+    })
+    process.stdout.write(JSON.stringify({ pid: process.pid, accepted, reason, state: coordinated.record.state }) + "\n")
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ pid: process.pid, accepted, reason, error: String(error && error.message || error) }) + "\n")
+  } finally { store.close() }
+})()
+`
+}
+
+function runWorker(fixturePath: string): Promise<{ pid: number; accepted: boolean; reason: string; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", workerScript(),
+      path.resolve("src/heart/tool-approval.ts"), path.resolve("src/heart/core.ts"), path.resolve("src/heart/approval-store.ts"),
+      path.resolve("src/repertoire/tool-arguments.ts"), path.resolve("src/repertoire/tools-shell.ts"), fixturePath,
+      path.resolve("src/heart/session-events.ts"),
+    ], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""; let stderr = ""
+    child.stdout.on("data", (chunk) => { stdout += String(chunk) })
+    child.stderr.on("data", (chunk) => { stderr += String(chunk) })
+    child.once("exit", (code) => {
+      const line = stdout.trim().split("\n").at(-1)
+      if (!line) reject(new Error(`synthetic worker exited ${code}: ${stderr}`))
+      else resolve(JSON.parse(line))
+    })
+  })
+}
+
+export async function runSyntheticApprovalScenario(scenario: SyntheticApprovalScenario): Promise<SyntheticApprovalArtifacts> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-synthetic-approval-"))
+  const approvalDatabasePath = path.join(root, "approvals.sqlite")
+  const sessionPath = path.join(root, "session.json")
+  const effectsLogPath = path.join(root, "effects.ndjson")
+  const providerLogPath = path.join(root, "providers.ndjson")
+  const deliveryLogPath = path.join(root, "deliveries.ndjson")
+  const traceLogPath = path.join(root, "trace.ndjson")
+  const checkpointPath = path.join(root, "checkpoints.json")
+  const tokenPath = path.join(root, "tokens.json")
+  for (const file of [effectsLogPath, providerLogPath, deliveryLogPath, traceLogPath]) fs.writeFileSync(file, "")
+  const base = { root, approvalId: null, approvalDatabasePath, sessionPath, effectsLogPath, providerLogPath, deliveryLogPath, traceLogPath,
+    initialOutcome: "rejected" as const, rejectionAt: null, runErrorCode: null, originPid: process.pid, decisionPids: [] as number[], continuationPids: [] as number[], callbackOutcomes: [] as Array<{ processPid: number; accepted: boolean; reason: string }> }
+  const preCallMessages = [{ role: "user" as const, content: "restart calibre-web" }]
+  writeSession(sessionPath, preCallMessages)
+  append(providerLogPath, { pid: process.pid, kind: "origin", invokedBy: "runAgent", approvalId: null, messages: preCallMessages })
+
+  if (scenario.batch) return { ...base, rejectionAt: "protected_batch" }
+  const argumentsJson = scenario.argumentsJson ?? JSON.stringify({ command: scenario.command ?? "docker restart calibre-web" })
+  const validated = validateAdvertisedToolArguments(argumentsJson, shellToolDefinitions[0]!.tool.function.parameters as any)
+  if (!validated.ok) return { ...base, rejectionAt: "pre_proposal_schema" }
+  const args = validated.value.arguments
+  const risk = shellRiskProfile(args as Record<string, string>)
+  append(traceLogPath, { sequence: 1, pid: process.pid, atMs: 0, type: "classification", detail: `required:${risk.risk}` })
+
+  const store = openApprovalStore({ databasePath: approvalDatabasePath })
+  const checkpoints = fileCheckpointStore(checkpointPath)
+  const tokens = fileTokenStore(tokenPath)
+  let approvalId: string | null = null
+  let decisionToken = ""
+  try {
+    const committed = commitApprovalProposal({ approvalStore: store, checkpointStore: checkpoints, tokenStore: tokens,
+      proposal: proposal(sessionPath, args), preCallMessages,
+      hooks: {
+        afterJournalPrepare: scenario.crashAt === "after_journal_prepare" ? () => { throw new Error("synthetic_crash") } : undefined,
+        afterTokenPersist: scenario.crashAt === "after_token_persist" ? () => { throw new Error("synthetic_crash") } : undefined,
+        afterCheckpointWrite: scenario.crashAt === "after_checkpoint_write" ? () => { throw new Error("synthetic_crash") } : undefined,
+      },
+    })
+    approvalId = committed.record.approvalId; decisionToken = committed.decisionToken
+    append(traceLogPath, { sequence: 2, pid: process.pid, atMs: 0, type: "proposal_suspended" })
+  } catch (error) {
+    const prepared = store.listPreparing().at(0) ?? null
+    approvalId = prepared?.approvalId ?? null
+    if (approvalId && scenario.crashAt === "after_checkpoint_write") {
+      const checkpoint = checkpoints.read(approvalId)!
+      store.activate({ approvalId, checkpointDigest: checkpoint.checkpointDigest, suspendedSessionRevision: checkpoint.suspendedSessionRevision })
+    } else if (approvalId) {
+      store.recoverPreparing({ approvalId, state: "abandoned_before_attempt", reason: "crash before durable suspension" })
+      append(traceLogPath, { sequence: 3, pid: process.pid, atMs: 1, type: "fresh_approval_required" })
+      append(deliveryLogPath, { pid: process.pid, kind: "direct", text: "request a fresh approval" })
+    }
+    store.close()
+    return { ...base, approvalId, initialOutcome: "suspended", rejectionAt: null }
+  }
+  if (!approvalId) throw new Error("approval proposal did not produce an id")
+  if (scenario.crashAt === "after_prompt_accept_before_bind") {
+    store.close()
+    return { ...base, approvalId, initialOutcome: "suspended", rejectionAt: null,
+      callbackOutcomes: [{ processPid: process.pid, accepted: false, reason: "prompt binding not durable" }] }
+  }
+  store.bindPrompt({ approvalId, transport: "telegram", transportChatId: "7", transportMessageId: "99" })
+
+  if (!scenario.decision && !scenario.crashAt) {
+    store.close()
+    return { ...base, approvalId, initialOutcome: "suspended", rejectionAt: null }
+  }
+
+  if (scenario.corruptJournalAfterProposal) {
+    store.close()
+    const database = new Database(approvalDatabasePath)
+    const row = database.prepare("SELECT record_json FROM approval_actions WHERE approval_id = ?").get(approvalId) as { record_json: string }
+    const corrupted = scenario.corruptJournalAfterProposal === "non_object_arguments"
+      ? JSON.stringify({ ...JSON.parse(row.record_json), arguments: [] })
+      : "{"
+    database.prepare("UPDATE approval_actions SET record_json = ? WHERE approval_id = ?").run(corrupted, approvalId)
+    database.close()
+    return { ...base, approvalId, initialOutcome: "suspended", rejectionAt: null, runErrorCode: scenario.corruptJournalAfterProposal === "non_object_arguments" ? "invalid_arguments" : "corrupt_record" }
+  }
+  store.close()
+
+  const decisionAtMs = scenario.delayMs ?? 1
+  const fixturePath = path.join(root, "worker.json")
+  fs.writeFileSync(fixturePath, JSON.stringify({ approvalId, databasePath: approvalDatabasePath, checkpointPath, sessionPath, effectsLogPath, providerLogPath, deliveryLogPath, traceLogPath,
+    preCallMessages, currentRevision: scenario.advanceSessionHeadBeforeDecision ? "a".repeat(64) : SUSPENDED_REVISION,
+    decisionAtMs, liveSchemaMutation: scenario.liveSchemaMutation, crashAt: scenario.crashAt, handlerMode: scenario.handlerMode,
+    decision: { approvalId, decisionToken, decision: scenario.decision ?? "approve", requesterId: "friend-ari", transport: "telegram", transportUserId: "42", transportChatId: "7", transportMessageId: "99", sessionKey: "telegram:chat-7" } }))
+  const workerCount = scenario.concurrentDecisionProcesses ?? 1
+  const results = await Promise.all(Array.from({ length: workerCount }, () => runWorker(fixturePath)))
+  const decisionPids = results.map((result) => result.pid)
+  let runErrorCode: string | null = results.find((result) => result.error)?.error ?? null
+
+  const recoveryStore = openApprovalStore({ databasePath: approvalDatabasePath })
+  let record = recoveryStore.read(approvalId)
+  if (scenario.crashAt === "after_claim" && record?.state === "claimed") {
+    record = recoverClaimedApproval({ approvalStore: recoveryStore, approvalId, reason: "worker crashed after claim" })
+    append(traceLogPath, { sequence: 90, pid: process.pid, atMs: decisionAtMs + 1, type: "fresh_approval_required" })
+    append(deliveryLogPath, { pid: process.pid, kind: "direct", text: "request a fresh approval" })
+  }
+  if ((scenario.crashAt === "after_attempt" || scenario.crashAt === "after_handler") && record?.state === "attempted") {
+    record = recoverAttemptedApproval({ approvalStore: recoveryStore, approvalId })
+    writeSession(sessionPath, [...preCallMessages, proposal(sessionPath, args).frozenAssistantMessage as any, { role: "tool", tool_call_id: "call_restart", content: record.result }])
+    append(deliveryLogPath, { pid: process.pid, kind: "indeterminate", text: "execution outcome is indeterminate; do not retry" })
+  }
+  recoveryStore.close()
+
+  if (["after_terminal_persist", "after_terminal_pair_persist_before_materialized", "after_materialized_marker_before_continuation_attempt"].includes(scenario.crashAt ?? "")) {
+    const retryFixture = JSON.parse(fs.readFileSync(fixturePath, "utf8")); retryFixture.crashAt = null; retryFixture.resumeOnly = true; fs.writeFileSync(fixturePath, JSON.stringify(retryFixture))
+    const retry = await runWorker(fixturePath)
+    if (retry.error) append(traceLogPath, { sequence: 98, pid: retry.pid, atMs: decisionAtMs + 2, type: "worker_error", detail: retry.error })
+    if (retry.error) throw new Error(`synthetic recovery worker failed: ${retry.error}`)
+    if (!decisionPids.includes(retry.pid)) decisionPids.push(retry.pid)
+  }
+  if (scenario.crashAt === "after_continuation_attempt") {
+    const retryFixture = JSON.parse(fs.readFileSync(fixturePath, "utf8")); retryFixture.crashAt = null; retryFixture.resumeOnly = true; fs.writeFileSync(fixturePath, JSON.stringify(retryFixture))
+    const retry = await runWorker(fixturePath)
+    if (retry.error) append(traceLogPath, { sequence: 99, pid: retry.pid, atMs: decisionAtMs + 2, type: "worker_error", detail: retry.error })
+    if (retry.error) throw new Error(`synthetic continuation recovery worker failed: ${retry.error}`)
+    if (!decisionPids.includes(retry.pid)) decisionPids.push(retry.pid)
+    runErrorCode = null
+  }
+
+  const providers = fs.readFileSync(providerLogPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
+  return { ...base, approvalId, initialOutcome: "suspended", rejectionAt: null, runErrorCode,
+    decisionPids: decisionPids.slice(0, workerCount), continuationPids: providers.filter((entry) => entry.kind === "continuation").map((entry) => entry.pid),
+    callbackOutcomes: results.map((result) => ({ processPid: result.pid, accepted: result.accepted, reason: result.reason })) }
 }
