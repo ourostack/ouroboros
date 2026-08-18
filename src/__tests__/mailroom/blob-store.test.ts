@@ -624,6 +624,67 @@ describe("AzureBlobMailroomStore", () => {
     await expect(sequentialStore.putRawMessage({ resolved, envelope, rawMime })).rejects.toThrow(/different resolved destination/i)
   })
 
+  it("rejects malformed sequential and conditional winners before indexing or loser cleanup", async () => {
+    const provision = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(provision.registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Invalid winner\r\n\r\nHello.\r\n")
+    const built = await buildEncryptedStoredMailMessage({ resolved, envelope, rawMime })
+    const invalidWinners: Array<{ label: string; message: unknown }> = [
+      { label: "wrong id", message: { ...built.message, id: "mail_wrong_id" } },
+      {
+        label: "plaintext body",
+        message: { ...built.message, bodyForm: "plaintext", private: { subject: "not encrypted" }, privateEnvelope: undefined },
+      },
+      {
+        label: "foreign raw reference",
+        message: { ...built.message, rawObject: `raw/other.${"a".repeat(64)}.json` },
+      },
+      {
+        label: "malformed encrypted payload",
+        message: { ...built.message, privateEnvelope: { ...built.message.privateEnvelope, ciphertext: "" } },
+      },
+    ]
+
+    for (const invalid of invalidWinners) {
+      const sequentialService = new FakeBlobServiceClient()
+      const sequentialStore = new AzureBlobMailroomStore({
+        serviceClient: sequentialService as unknown as BlobServiceClient,
+        containerName: "mailroom",
+      })
+      sequentialService.container.blobs.set(`messages/${built.message.id}.json`, {
+        data: Buffer.from(`${JSON.stringify(invalid.message)}\n`),
+        downloads: 0,
+        uploads: 0,
+        deletes: 0,
+      })
+
+      await expect(sequentialStore.putRawMessage({ resolved, envelope, rawMime }), invalid.label)
+        .rejects.toThrow(/committed message .* invalid/i)
+      expect([...sequentialService.container.blobs.keys()].some((name) => name.startsWith("message-index/"))).toBe(false)
+
+      const conditionalService = new FakeBlobServiceClient()
+      const conditionalStore = new AzureBlobMailroomStore({
+        serviceClient: conditionalService as unknown as BlobServiceClient,
+        containerName: "mailroom",
+      })
+      conditionalService.container.blobs.set(`messages/${built.message.id}.json`, {
+        data: Buffer.from(`${JSON.stringify(invalid.message)}\n`),
+        downloads: 0,
+        uploads: 0,
+        deletes: 0,
+        existsFalseRemaining: 1,
+      })
+
+      await expect(conditionalStore.putRawMessage({ resolved, envelope, rawMime }), invalid.label)
+        .rejects.toThrow(/committed winner .* invalid/i)
+      expect(conditionalService.container.blobs.get(built.message.rawObject)?.data).toBeDefined()
+      expect(conditionalService.container.blobs.get(built.message.rawObject)?.deletes).toBe(0)
+      expect([...conditionalService.container.blobs.keys()].some((name) => name.startsWith("message-index/"))).toBe(false)
+    }
+  })
+
   it("fails when a conditional-create winner cannot be read and propagates non-412 upload errors", async () => {
     const unreadableService = new FakeBlobServiceClient()
     const unreadableStore = new AzureBlobMailroomStore({

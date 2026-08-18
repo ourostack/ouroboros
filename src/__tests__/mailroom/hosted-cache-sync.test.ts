@@ -257,6 +257,46 @@ describe("hosted cache stable-tail convergence", () => {
     expect(progress).toContainEqual({ phase: "pass-complete", pass: 1, settled: 251, total: 251 })
   })
 
+  it("rejects a canonical receipt symlink, fetches the body, and replaces it with regular evidence", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const message = missingKeyMessage("mail_symlink_receipt", "2026-08-18T00:00:00.000Z")
+    const record = recordFor(message)
+    const skippedDir = path.join(cacheRoot, "skipped")
+    const receiptPath = path.join(skippedDir, `${Buffer.from(message.id).toString("base64url")}.json`)
+    const externalReceipt = path.join(tempDir(), "external-receipt.json")
+    fs.mkdirSync(skippedDir, { recursive: true })
+    fs.writeFileSync(externalReceipt, `${JSON.stringify({
+      schemaVersion: 1,
+      agentId: "slugger",
+      messageId: message.id,
+      recordFingerprint: canonicalMailIndexRecordSnapshot([record]).messageIndexFingerprint,
+      missingKeyId: "mail_key_missing",
+      reason: "missing-private-key",
+      observedAt: "2026-08-18T00:00:00.000Z",
+    })}\n`)
+    fs.symlinkSync(externalReceipt, receiptPath)
+    const getIndexedMessageById = vi.fn(async () => message)
+
+    await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: { observeMessageIndexAuthority: vi.fn(async () => observation([record])) },
+      store: { getIndexedMessageById } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(getIndexedMessageById).toHaveBeenCalledTimes(1)
+    expect(fs.lstatSync(receiptPath).isFile()).toBe(true)
+    expect(fs.lstatSync(receiptPath).isSymbolicLink()).toBe(false)
+    expect(readMailSearchSkipReceipt("slugger", message.id, cacheOptions)).toEqual(expect.objectContaining({
+      messageId: message.id,
+      missingKeyId: "mail_key_missing",
+    }))
+  })
+
   it("emits the exact 250 boundary once and handles a zero-record scoped pass", async () => {
     const cacheRoot = tempDir()
     const cacheOptions = { cacheDirForAgent: () => cacheRoot }
@@ -430,6 +470,76 @@ describe("hosted cache stable-tail convergence", () => {
     await vi.advanceTimersByTimeAsync(30_000)
     expect(progress).toContainEqual({ phase: "heartbeat", pass: 1, settled: 0, total: 1 })
     releaseBody()
+    await sync
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("emits heartbeats while the initial authority observation is stalled", async () => {
+    vi.useFakeTimers()
+    const cacheRoot = tempDir()
+    const message = plaintextMessage("mail_initial_observation_stall")
+    let releaseInitial!: () => void
+    const initialGate = new Promise<void>((resolve) => { releaseInitial = resolve })
+    const progress: Array<{ phase: string; pass: number; settled: number; total: number }> = []
+    let calls = 0
+    const sync = syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => {
+          calls += 1
+          if (calls === 1) await initialGate
+          return observation([recordFor(message)])
+        }),
+      },
+      store: { getIndexedMessageById: vi.fn(async () => message) } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      onProgress: (event) => progress.push(event),
+    })
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(progress).toContainEqual({ phase: "heartbeat", pass: 1, settled: 0, total: 0 })
+    releaseInitial()
+    await sync
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("emits heartbeats while a follow-up authority observation is stalled", async () => {
+    vi.useFakeTimers()
+    const cacheRoot = tempDir()
+    const message = plaintextMessage("mail_followup_observation_stall")
+    let releaseFollowup!: () => void
+    let followupStarted!: () => void
+    const followupGate = new Promise<void>((resolve) => { releaseFollowup = resolve })
+    const started = new Promise<void>((resolve) => { followupStarted = resolve })
+    const progress: Array<{ phase: string; pass: number; settled: number; total: number }> = []
+    let calls = 0
+    const sync = syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => {
+          calls += 1
+          if (calls === 2) {
+            followupStarted()
+            await followupGate
+          }
+          return observation([recordFor(message)])
+        }),
+      },
+      store: { getIndexedMessageById: vi.fn(async () => message) } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      onProgress: (event) => progress.push(event),
+    })
+
+    await started
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(progress).toContainEqual({ phase: "heartbeat", pass: 1, settled: 1, total: 1 })
+    releaseFollowup()
     await sync
     expect(vi.getTimerCount()).toBe(0)
   })
