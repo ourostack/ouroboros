@@ -206,6 +206,28 @@ export interface TelegramPendingApprovalStore {
   save(records: TelegramPersistedPendingApproval[]): void
 }
 
+export class FileTelegramPendingApprovalStore implements TelegramPendingApprovalStore {
+  constructor(private readonly path: string) {}
+
+  load(): TelegramPersistedPendingApproval[] {
+    try {
+      const value = JSON.parse(readFileSync(this.path, "utf8")) as unknown
+      if (!Array.isArray(value)) throw new Error("pending approvals must be an array")
+      return structuredClone(value as TelegramPersistedPendingApproval[])
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return []
+      throw new Error("Telegram pending approval state is corrupt", { cause: error })
+    }
+  }
+
+  save(records: TelegramPersistedPendingApproval[]): void {
+    mkdirSync(dirname(this.path), { recursive: true })
+    const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`
+    writeFileSync(temporaryPath, `${JSON.stringify(records)}\n`, { mode: 0o600 })
+    renameSync(temporaryPath, this.path)
+  }
+}
+
 export interface TelegramApprovalTransport {
   sendApproval(input: { approvalId: string; decisionToken: string; prompt: string }): Promise<{
     messageId: string

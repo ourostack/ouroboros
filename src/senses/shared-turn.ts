@@ -26,7 +26,7 @@ import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
-import { withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
+import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -180,6 +180,8 @@ export interface RunSenseTurnOptions {
   deliverySink?: OutwardSenseDeliverySink
   /** Optional transport-specific controls surfaced to tools during this turn. */
   toolContext?: Partial<ToolContext>
+  /** Builds a durable approval coordinator after the exact leased session path/revision are known. */
+  approvalCoordinatorFactory?: (context: { sessionPath: string; baseSessionRevision: string }) => import("../heart/core").ApprovalCoordinator
   /**
    * Per-turn, per-agent runtime MCP server overrides (e.g. Workbench's
    * `ouro_workbench`). Merged into the agent's toolset with highest precedence
@@ -284,6 +286,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const sessPath = path.join(sessionDir, `${sanitizeKey(sessionKey)}.json`)
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   return runWithLease(sessPath, async (sessionTurnLease) => {
+  const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
   let persistPromise: Promise<unknown> | undefined
@@ -391,6 +394,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     drainPending,
     runAgentOptions: {
       mcpManager,
+      ...(options.approvalCoordinatorFactory ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
       toolContext: {
         signin: async () => undefined,

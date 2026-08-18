@@ -17,6 +17,8 @@ import {
   type TelegramOffsetStore,
   type TelegramUpdate,
 } from "./telegram-client"
+import { createSanctuaryToolContext } from "./sanctuary-runtime"
+import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 
 export interface TelegramSenseCredentials {
   botToken: string
@@ -41,6 +43,7 @@ export interface CreateTelegramSenseAppOptions {
   createLongPoll?: TelegramLongPollFactory
   runTurn?: TelegramTurnRunner
   approvalTransport?: TelegramApprovalTransport
+  approvalRuntime?: TelegramApprovalRuntime
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -71,6 +74,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     path.join(getAgentRoot(options.agentName), "state", "senses", "telegram", "offset.json"),
   )
   const runTurn = options.runTurn ?? runSenseTurn
+  const toolContext = options.runTurn ? undefined : createSanctuaryToolContext(options.agentName)
+  const approvalRuntime = options.approvalRuntime ?? (options.runTurn ? undefined : createTelegramApprovalRuntime({
+    agentName: options.agentName,
+    api,
+    authorizedUserId,
+    authorizedChatId,
+    toolContext: toolContext ?? {},
+  }))
+  const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
 
   const deliver = async (text: string, signal?: AbortSignal): Promise<void> => {
     await sendTelegramText(api, authorizedChatId, text, signal)
@@ -102,6 +114,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             deliveryCount += 1
           },
         },
+        ...(toolContext ? { toolContext } : {}),
+        ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
       })
       if (deliveryCount === 0 && result.response.trim()) await deliver(result.response)
       emitNervesEvent({
@@ -123,8 +137,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
-    if (!update.callback_query || !options.approvalTransport) return false
-    const result = await options.approvalTransport.handleUpdate(update)
+    if (!update.callback_query || !approvalTransport) return false
+    const result = await approvalTransport.handleUpdate(update)
     return result.handled
   }
 
@@ -139,7 +153,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   return {
     async run(signal) {
-      await options.approvalTransport?.reconcileExpired()
+      await approvalTransport?.reconcileExpired()
       emitNervesEvent({
         component: "senses",
         event: "senses.telegram_poll_start",
@@ -154,6 +168,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     stop() {
       poll.stop()
       api.stop()
+      approvalRuntime?.close()
       emitNervesEvent({
         component: "senses",
         event: "senses.telegram_poll_end",
