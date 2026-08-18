@@ -94,6 +94,15 @@ describe("foreground hosted mail cache sync", () => {
     expect(mocks.resolveReader.mock.results[0]?.value.store.recordAccess).not.toHaveBeenCalled()
   })
 
+  it("completes without attaching progress when no output sink is provided", async () => {
+    const text = await runHostedMailCacheSync("slugger")
+
+    expect(mocks.sync).toHaveBeenCalledWith(expect.not.objectContaining({
+      onProgress: expect.anything(),
+    }))
+    expect(text).toContain("hosted mail cache converged for slugger")
+  })
+
   it("stops before reader resolution when fresh credentials fail", async () => {
     mocks.refresh.mockResolvedValue({ ok: false, itemPath: "vault:slugger:runtime/config", error: "vault locked" })
     await expect(runHostedMailCacheSync("slugger")).rejects.toThrow("vault locked")
