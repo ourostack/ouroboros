@@ -40,6 +40,7 @@ import {
   checkDisk,
   checkLifecycle,
 } from "../../../heart/daemon/doctor"
+import { refreshRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
 function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
@@ -61,7 +62,12 @@ function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
 // ── Helper: build an existsSync that returns true only for specified paths ──
 function existsFor(paths: string[]): (p: string) => boolean {
   const set = new Set(paths)
-  return (p: string) => set.has(p)
+  return (p: string) => {
+    if (set.has(p)) return true
+    if (!p.endsWith(".ouro/agent.json")) return false
+    const bundleRoot = p.slice(0, -"/agent.json".length)
+    return paths.some((candidate) => candidate.startsWith(`${bundleRoot}/`))
+  }
 }
 
 // ── Helper: build a readdirSync that returns entries for specified dirs ──
@@ -320,7 +326,7 @@ describe("checkAgents", () => {
     })
     const cat = checkAgents(deps)
     expect(cat.checks[0].status).toBe("warn")
-    expect(cat.checks[0].detail).toContain("no *.ouro")
+    expect(cat.checks[0].detail).toContain("no agent bundles")
   })
 
   it("passes for agent with valid agent.json", () => {
@@ -395,14 +401,35 @@ describe("checkAgents", () => {
     expect(cat.checks[0].detail).toContain("unparseable")
   })
 
-  it("fails when agent.json is missing entirely", () => {
+  it("keeps a present but unreadable agent.json diagnosable", () => {
+    const configPath = "/tmp/bundles/test.ouro/agent.json"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", configPath]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: (target) => {
+        if (target === configPath) throw new Error("EACCES")
+        return "{}"
+      },
+    })
+
+    expect(checkAgents(deps).checks).toEqual([expect.objectContaining({
+      label: "test.ouro/agent.json",
+      status: "fail",
+      detail: "unparseable JSON",
+    })])
+  })
+
+  it("ignores task-only .ouro directories without agent.json", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkAgents(deps)
-    expect(cat.checks[0].status).toBe("fail")
-    expect(cat.checks[0].detail).toBe("missing")
+    expect(cat.checks).toEqual([{
+      label: "agent bundles",
+      status: "warn",
+      detail: "no agent bundles found",
+    }])
   })
 
   it("warns when humanFacing.provider is missing but model is present", () => {
@@ -447,7 +474,7 @@ describe("checkAgents", () => {
     expect(cat.checks[0].status).toBe("warn")
   })
 
-  it("handles multiple agents with mixed health", () => {
+  it("keeps a valid agent and ignores a second task-only directory", () => {
     const validConfig = JSON.stringify({
       version: 2,
       humanFacing: { provider: "anthropic", model: "claude-4" },
@@ -463,15 +490,33 @@ describe("checkAgents", () => {
       readFileSync: readFileFor({ "/tmp/bundles/good.ouro/agent.json": validConfig }),
     })
     const cat = checkAgents(deps)
-    expect(cat.checks).toHaveLength(2)
+    expect(cat.checks).toHaveLength(1)
     expect(cat.checks[0].status).toBe("pass")
-    expect(cat.checks[1].status).toBe("fail")
   })
 })
 
 // ── Senses checks ──
 
 describe("checkSenses", () => {
+  it("skips a discovered agent whose config disappears before inspection", async () => {
+    let configChecks = 0
+    const deps = createMockDeps({
+      existsSync: (target) => {
+        if (target === "/tmp/bundles") return true
+        if (target === "/tmp/bundles/test.ouro/agent.json") {
+          configChecks += 1
+          return configChecks === 1
+        }
+        return false
+      },
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toEqual([{ label: "senses", status: "warn", detail: "no agents with senses config found" }])
+  })
+
   it("passes for well-formed senses config", async () => {
     const config = JSON.stringify({
       senses: {
@@ -508,7 +553,7 @@ describe("checkSenses", () => {
     expect(cat.checks[4]).toEqual(expect.objectContaining({
       id: "senses.bluebubbles.inbound_liveness",
       label: "test.ouro bluebubbles inbound delivery",
-      status: "fail",
+      status: "warn",
     }))
   })
 
@@ -1286,7 +1331,7 @@ describe("checkHabits", () => {
 
   it("warns when habits dir is missing", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkHabits(deps)
@@ -1371,6 +1416,25 @@ describe("checkHabits", () => {
 // ── Security checks ──
 
 describe("checkSecurity", () => {
+  it("skips a discovered agent whose config disappears before the security scan", () => {
+    let configChecks = 0
+    const deps = createMockDeps({
+      existsSync: (target) => {
+        if (target === "/tmp/bundles") return true
+        if (target === "/tmp/bundles/test.ouro/agent.json") {
+          configChecks += 1
+          return configChecks === 1
+        }
+        return false
+      },
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+
+    const cat = checkSecurity(deps)
+
+    expect(cat.checks.find((check) => check.label.includes("credential leak"))).toBeUndefined()
+  })
+
   it("passes when agent.json has no leaked creds", () => {
     const config = JSON.stringify({ version: 2, humanFacing: { provider: "anthropic" } })
     const deps = createMockDeps({
@@ -1631,7 +1695,7 @@ describe("checkTrips", () => {
 
   it("passes when an agent has no trip ledger directory yet (optional feature)", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkTrips(deps)
@@ -1908,7 +1972,7 @@ describe("checkMailroom", () => {
 
   it("passes when no mailroom dir (mail not connected)", async () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = await checkMailroom(deps)
@@ -1982,6 +2046,35 @@ describe("checkMailroom", () => {
     expect(cat.checks[0].detail).toContain("1 source grant")
     expect(cat.checks[0].detail).toContain("3 messages")
   })
+
+  it("resolves the mail store from a fail-closed fresh runtime credential refresh", async () => {
+    seedRuntimeConfig("test", {
+      workSubstrate: { mode: "local" },
+      mailroom: { storePath: "/tmp/bundles/test.ouro/state/mailroom" },
+    })
+    const refresh = vi.mocked(refreshRuntimeCredentialConfig)
+    refresh.mockClear()
+    const registryPath = "/tmp/bundles/test.ouro/state/mailroom/registry.json"
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        registryPath,
+        "/tmp/bundles/test.ouro/state/mailroom/messages",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/state/mailroom/messages": ["mail_a.json"],
+      }),
+      readFileSync: readFileFor({ [registryPath]: registryJson() }),
+    })
+
+    const category = await checkMailroom(deps)
+
+    expect(category.checks.find((check) => check.id === "mail.ingest_liveness")?.detail)
+      .toContain("state/mailroom/messages")
+    expect(refresh).toHaveBeenCalledWith("test", { preserveCachedOnFailure: false })
+  })
 })
 
 // ── Friends checks ──
@@ -2008,7 +2101,7 @@ describe("checkFriends", () => {
 
   it("passes when no friends directory (no friends recorded)", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkFriends(deps)
@@ -2125,6 +2218,25 @@ describe("checkLifecycle", () => {
     const activity = cat.checks.find((c) => c.label === "recent daemon activity")
     expect(activity?.status).toBe("pass")
     expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("reads a lifecycle log once when machine-local and bundle-local paths coincide", () => {
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const logsDir = "/tmp/bundles/slugger.ouro/state/daemon/logs"
+    const logPath = `${logsDir}/daemon.ndjson`
+    const readFileSync = vi.fn(readFileFor({ [logPath]: ndjsonLine(recentTs, "daemon.command_received") }))
+    const deps = createMockDeps({
+      daemonLogsDir: logsDir,
+      existsSync: existsFor(["/tmp/bundles", logPath]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync,
+    })
+
+    const cat = checkLifecycle(deps)
+
+    expect(cat.checks.find((c) => c.label === "recent daemon activity")?.status).toBe("pass")
+    expect(readFileSync).toHaveBeenCalledTimes(1)
+    expect(readFileSync).toHaveBeenCalledWith(logPath)
   })
 
   it("warns when last activity is older than 5 minutes", () => {
@@ -2455,13 +2567,24 @@ describe("checkDisk", () => {
   })
 
   it("warns when log directory is missing", () => {
+    const bundleDir = "/tmp/bundles/test.ouro"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", `${bundleDir}/agent.json`]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      lstatSync: vi.fn(() => ({
+        isDirectory: () => true,
+        isFile: () => false,
+        isSymbolicLink: () => false,
+      })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isFile: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)
     expect(cat.checks.find((c) => c.label.includes("logs dir"))?.status).toBe("warn")
     expect(cat.checks.find((c) => c.label.includes("logs dir"))?.detail).toContain("/tmp/bundles/test.ouro/state/daemon/logs")
+    expect(deps.lstatSync).toHaveBeenCalledWith(bundleDir)
   })
 
   it("warns when an active log stream is over the rotation threshold", () => {
@@ -2473,10 +2596,83 @@ describe("checkDisk", () => {
       statSync: statFor({
         [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize },
       }),
+      lstatSync: vi.fn((filePath: string) => ({
+        isDirectory: () => filePath !== `${logsDir}/big.log`,
+        isFile: () => filePath === `${logsDir}/big.log`,
+        isSymbolicLink: () => false,
+      })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isFile: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("warn")
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.detail).toContain("prune")
+    const check = cat.checks.find((c) => c.label.includes("log size"))
+    expect(check?.status).toBe("warn")
+    expect(check?.detail).toContain("ouro logs prune --agent test")
+    expect(check?.detail).not.toContain("`ouro logs prune`")
+  })
+
+  it("does not offer a prune command for a symlinked bundle", () => {
+    const bigSize = 150 * 1024 * 1024
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["big.log"] }),
+      statSync: statFor({ [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize } }),
+      lstatSync: vi.fn(() => ({ isDirectory: () => true, isSymbolicLink: () => true })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
+    })
+
+    const detail = checkDisk(deps).checks.find((c) => c.label.includes("log size"))?.detail
+    expect(detail).not.toContain("ouro logs prune")
+  })
+
+  it("does not offer a prune command when the canonical logs path resolves outside the bundle", () => {
+    const bigSize = 150 * 1024 * 1024
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["big.log"] }),
+      statSync: statFor({ [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize } }),
+      lstatSync: vi.fn((filePath: string) => ({
+        isDirectory: () => filePath === "/tmp/bundles/test.ouro" || filePath === logsDir,
+        isSymbolicLink: () => false,
+        isFile: () => filePath === `${logsDir}/big.log`,
+      })),
+      realpathSync: vi.fn((filePath: string) => filePath === logsDir ? "/tmp/outside/logs" : filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean; isFile: () => boolean }
+      realpathSync: (filePath: string) => string
+    })
+
+    const detail = checkDisk(deps).checks.find((c) => c.label.includes("log size"))?.detail
+    expect(detail).not.toContain("ouro logs prune")
+  })
+
+  it("does not offer a prune command when a managed log entry stat omits isFile", () => {
+    const bigSize = 150 * 1024 * 1024
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["big.log"] }),
+      statSync: statFor({ [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize } }),
+      lstatSync: vi.fn((filePath: string) => ({
+        isDirectory: () => filePath === "/tmp/bundles/test.ouro" || filePath === logsDir,
+        isSymbolicLink: () => false,
+      })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
+    })
+
+    const detail = checkDisk(deps).checks.find((c) => c.label.includes("log size"))?.detail
+    expect(deps.lstatSync).toHaveBeenCalledWith(`${logsDir}/big.log`)
+    expect(detail).not.toContain("ouro logs prune")
   })
 
   it("passes when compressed generations push total over 100MB but active streams are under threshold", () => {
@@ -2524,10 +2720,21 @@ describe("checkDisk", () => {
       statSync: statFor({
         [`${logsDir}/huge.log`]: { mode: 0o644, size: hugeSize },
       }),
+      lstatSync: vi.fn((filePath: string) => ({
+        isDirectory: () => filePath !== `${logsDir}/huge.log`,
+        isFile: () => filePath === `${logsDir}/huge.log`,
+        isSymbolicLink: () => false,
+      })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isFile: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("fail")
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.detail).toContain("500MB")
+    const check = cat.checks.find((c) => c.label.includes("log size"))
+    expect(check?.status).toBe("fail")
+    expect(check?.detail).toContain("500MB")
+    expect(check?.detail).toContain("ouro logs prune --agent test")
   })
 
   it("warns when bundles root missing", () => {

@@ -1338,6 +1338,10 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["mail", "backfill-indexes"])).toEqual({
       kind: "mail.backfill-indexes",
     })
+    expect(parseOuroCommand(["mail", "sync-cache", "--agent", "Slugger"])).toEqual({
+      kind: "mail.sync-cache",
+      agent: "Slugger",
+    })
     expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger"])).toEqual({
       kind: "account.ensure",
       agent: "Slugger",
@@ -1376,6 +1380,20 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["mail", "import-mbox", "--discover", "--file", "/tmp/hey.mbox"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "backfill-indexes", "extra"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "sync-cache", "--foreground"])).toThrow("ouro mail sync-cache")
+    expect(() => parseOuroCommand(["mail", "sync-cache", "leftover"])).toThrow("ouro mail sync-cache")
+    for (const malformedArgs of [
+      ["--agent"],
+      ["--agent", ""],
+      ["--agent", "   "],
+      ["--agent", "--agent"],
+      ["--agent", "--json"],
+      ["--agent", "  --json"],
+      ["--agent", "Slugger", "--agent", "Rach"],
+      ["--agent", "Slugger", "--json"],
+    ]) {
+      expect(() => parseOuroCommand(["mail", "sync-cache", ...malformedArgs])).toThrow("ouro mail sync-cache")
+    }
     expect(() => parseOuroCommand(["account"])).toThrow("ouro account ensure")
     expect(() => parseOuroCommand(["account", "reset"])).toThrow("ouro account ensure")
     expect(() => parseOuroCommand(["account", "ensure", "extra"])).toThrow("ouro account ensure")
@@ -1402,6 +1420,26 @@ describe("provider CLI command parsing", () => {
 })
 
 describe("provider CLI command execution", () => {
+  it("resolves a missing cache-sync agent and fails closed when fresh runtime credentials are unavailable", async () => {
+    emitTestEvent("provider cli mail sync cache fresh credentials")
+    const bundlesRoot = makeTempDir("provider-cli-mail-sync-cache-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-sync-cache-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    runtimeCredentials.cacheRuntimeCredentialConfig("Slugger", {
+      mailroom: { azureAccountUrl: "https://stale.example.invalid" },
+    })
+    const cacheRoot = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mail-search")
+    fs.mkdirSync(cacheRoot, { recursive: true })
+    const sentinel = path.join(cacheRoot, "preserve.json")
+    fs.writeFileSync(sentinel, "preserve stale cache")
+
+    await expect(runOuroCli(["mail", "sync-cache"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => ["Slugger"],
+    })))
+      .rejects.toThrow(/Slugger.*runtime\/config|runtime\/config.*Slugger/i)
+    expect(fs.readFileSync(sentinel, "utf-8")).toBe("preserve stale cache")
+  })
+
   it("prints Voice setup guidance without collecting secrets in-process", async () => {
     emitTestEvent("provider cli connect voice")
     const bundlesRoot = makeTempDir("provider-cli-connect-voice-bundles")

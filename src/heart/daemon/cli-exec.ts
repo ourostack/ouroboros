@@ -73,7 +73,7 @@ import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versi
 import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
 import { importMboxFileToStore } from "../../mailroom/mbox-import"
-import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader, type MailroomRuntimeConfig } from "../../mailroom/reader"
+import { parseMailroomConfig, readMailroomRegistry, resolveHostedMailAuthority, resolveMailroomReader, type MailroomRuntimeConfig } from "../../mailroom/reader"
 import { queuePendingMessage } from "../../mind/pending"
 import {
   completeBackgroundOperation,
@@ -197,6 +197,7 @@ import { createProviderPingProgressReporter } from "./provider-ping-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
 import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
+import { listPrunableAgentBundles } from "./prunable-bundle"
 import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
 import {
@@ -591,6 +592,7 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
 
 type AgentResolutionFailureMode = "throw" | "return-message"
 type MissingAgentResolvableKind =
+  | "daemon.logs.prune"
   | "friend.list"
   | "friend.show"
   | "friend.create"
@@ -618,6 +620,7 @@ type MissingAgentResolvableKind =
   | "account.ensure"
   | "mail.import-mbox"
   | "mail.backfill-indexes"
+  | "mail.sync-cache"
   | "auth.run"
   | "auth.verify"
   | "auth.switch"
@@ -695,6 +698,7 @@ function invalidAgentSelectionMessage(agentNames: string[]): string {
 
 function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFailureMode | undefined {
   switch (command.kind) {
+    case "daemon.logs.prune":
     case "friend.list":
     case "friend.show":
     case "friend.create":
@@ -739,6 +743,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "connect":
     case "account.ensure":
     case "mail.import-mbox":
+    case "mail.sync-cache":
     case "auth.run":
     case "auth.verify":
     case "auth.switch":
@@ -756,13 +761,14 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
 async function resolveMissingAgentName(
   deps: OuroCliDeps,
   failureMode: AgentResolutionFailureMode,
+  candidateOverride?: string[],
 ): Promise<AgentNameResolutionOutcome> {
   const runtimeAgent = runtimeContextAgentName(deps)
   if (runtimeAgent) {
     return { ok: true, agent: runtimeAgent }
   }
 
-  const discoveredAgents = normalizeCliAgentNames(await listCliAgents(deps))
+  const discoveredAgents = normalizeCliAgentNames(candidateOverride ?? await listCliAgents(deps))
   if (discoveredAgents.length === 0) {
     return { ok: false, message: noAgentsFoundMessage(), failureMode }
   }
@@ -799,7 +805,13 @@ async function resolveCommandAgent(
     return { ok: true, command: { ...command, agent: explicitAgent } as ResolvedOuroCliCommand }
   }
 
-  const resolvedAgent = await resolveMissingAgentName(deps, failureMode)
+  const resolvedAgent = await resolveMissingAgentName(
+    deps,
+    failureMode,
+    command.kind === "daemon.logs.prune"
+      ? listPrunableAgentBundles({ bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot() })
+      : undefined,
+  )
   if (!resolvedAgent.ok) return resolvedAgent
   return { ok: true, command: { ...command, agent: resolvedAgent.agent } as ResolvedOuroCliCommand }
 }
@@ -1891,7 +1903,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -7442,6 +7454,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return executeMailBackfillIndexes(command, deps)
   }
 
+  if (command.kind === "mail.sync-cache") {
+    const { runHostedMailCacheSync } = await import("../../mailroom/cache-sync-cli")
+    const text = await runHostedMailCacheSync(command.agent)
+    deps.writeStdout(text)
+    return text
+  }
+
   if (command.kind === "daemon.up") {
     // ── dev mode cleanup: delete dev-config.json so the wrapper stops dispatching to dev repo ──
     /* v8 ignore start -- dev-config cleanup: requires real filesystem state @preserve */
@@ -8117,7 +8136,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
-    const result = deps.pruneDaemonLogs()
+    const result = deps.pruneDaemonLogs({
+      agentName: command.agent,
+      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+    })
     const message = `compacted ${result.filesCompacted} file${result.filesCompacted === 1 ? "" : "s"}, freed ${result.bytesFreed} bytes`
     deps.writeStdout(message)
     return message
@@ -9493,6 +9515,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       readFileSync: (p: string) => fs.readFileSync(p, "utf-8"),
       readdirSync: (p: string) => fs.readdirSync(p),
       statSync: (p: string) => fs.statSync(p),
+      lstatSync: (p: string) => fs.lstatSync(p),
+      realpathSync: (p: string) => fs.realpathSync(p),
       /* v8 ignore stop */
       checkSocketAlive: deps.checkSocketAlive,
       fetchImpl: deps.fetchImpl ?? fetch,
@@ -9502,6 +9526,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
       platform: process.platform,
+      observeHostedMailAuthority: async (agentName: string) => {
+        const resolved = resolveHostedMailAuthority(agentName)
+        if (!resolved.ok) return { ok: false as const, definitive: true, detail: resolved.error }
+        try {
+          return { ok: true as const, observation: await resolved.authority.observeMessageIndexAuthority(agentName) }
+        } catch (error) {
+          const statusCode = typeof error === "object" && error !== null && "statusCode" in error
+            ? (error as { statusCode?: unknown }).statusCode
+            : undefined
+          return {
+            ok: false as const,
+            definitive: statusCode === 401 || statusCode === 403 || statusCode === 404,
+            detail: error instanceof Error ? error.message : String(error),
+          }
+        }
+      },
     }
     const doctorResult = command.category
       ? await runDoctorChecks(doctorDeps, { category: command.category })

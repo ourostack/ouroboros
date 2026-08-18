@@ -86,6 +86,7 @@ import * as sessionActivity from "../../../heart/session-activity"
 import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
+import { pruneDaemonLogs as pruneDaemonLogsOnDisk } from "../../../heart/daemon/logs-prune"
 import {
   writeHabitRunReceipt,
   type HabitRunReceipt,
@@ -229,6 +230,10 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["status", "--json"])).toEqual({ kind: "daemon.status", json: true })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
     expect(parseOuroCommand(["logs", "prune"])).toEqual({ kind: "daemon.logs.prune" })
+    expect(parseOuroCommand(["logs", "prune", "--agent", "Slugger"])).toEqual({
+      kind: "daemon.logs.prune",
+      agent: "Slugger",
+    })
     expect(parseOuroCommand(["mailbox"])).toEqual({ kind: "mailbox" })
     expect(parseOuroCommand(["mailbox", "--json"])).toEqual({ kind: "mailbox", json: true })
     expect(parseOuroCommand(["outlook"])).toEqual({ kind: "mailbox" })
@@ -299,6 +304,10 @@ describe("ouro CLI parsing", () => {
     expect(() => parseOuroCommand(["status", "--agent", "slugger", "--json"])).toThrow(
       "Usage: ouro status [--json] OR ouro status --agent <name>",
     )
+  })
+
+  it("rejects unsupported logs subcommands", () => {
+    expect(() => parseOuroCommand(["logs", "tail"])).toThrow("Usage: ouro logs prune [--agent <name>]")
   })
 
   it("parses hook command with event name and agent", () => {
@@ -5881,9 +5890,10 @@ describe("ensureDaemonRunning", () => {
       pruneDaemonLogs,
     }
 
-    const result = await runOuroCli(["logs", "prune"], deps)
+    const result = await runOuroCli(["logs", "prune", "--agent", "Slugger"], deps)
 
     expect(pruneDaemonLogs).toHaveBeenCalledTimes(1)
+    expect(pruneDaemonLogs).toHaveBeenCalledWith(expect.objectContaining({ agentName: "Slugger" }))
     expect(deps.sendCommand).not.toHaveBeenCalled()
     expect(result).toBe("compacted 3 files, freed 123456 bytes")
     expect(writeStdout).toHaveBeenCalledWith("compacted 3 files, freed 123456 bytes")
@@ -5902,7 +5912,7 @@ describe("ensureDaemonRunning", () => {
       pruneDaemonLogs,
     }
 
-    const result = await runOuroCli(["logs", "prune"], deps)
+    const result = await runOuroCli(["logs", "prune", "--agent", "Slugger"], deps)
     expect(result).toBe("compacted 1 file, freed 42 bytes")
   })
 
@@ -5918,9 +5928,81 @@ describe("ensureDaemonRunning", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     }
 
-    const result = await runOuroCli(["logs", "prune"], deps)
+    const result = await runOuroCli(["logs", "prune", "--agent", "Slugger"], deps)
     expect(result).toBe("logs prune unavailable (dep not wired)")
     expect(writeStdout).toHaveBeenCalledWith("logs prune unavailable (dep not wired)")
+  })
+
+  it.each([
+    ["missing value", ["logs", "prune", "--agent"]],
+    ["duplicate flag", ["logs", "prune", "--agent", "Slugger", "--agent", "Rach"]],
+    ["leftover flag", ["logs", "prune", "--agent", "Slugger", "--json"]],
+    ["leftover positional", ["logs", "prune", "Slugger"]],
+    ["traversal", ["logs", "prune", "--agent", "../Slugger"]],
+    ["separator", ["logs", "prune", "--agent", "Slugger/Rach"]],
+    ["shell syntax", ["logs", "prune", "--agent", "Slugger$(id)"]],
+  ])("rejects %s for ouro logs prune", (_label, argv) => {
+    expect(() => parseOuroCommand(argv)).toThrow("Usage: ouro logs prune [--agent <name>]")
+  })
+
+  it("uses the runtime agent for a bare prune command", async () => {
+    const pruneDaemonLogs = vi.fn(() => ({ filesCompacted: 0, bytesFreed: 0 }))
+    await runOuroCli(["logs", "prune"], {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      whoamiInfo: () => ({ agentName: "Slugger", homePath: "/tmp", bonesVersion: "test" }),
+      pruneDaemonLogs,
+    })
+
+    expect(pruneDaemonLogs).toHaveBeenCalledWith(expect.objectContaining({ agentName: "Slugger" }))
+  })
+
+  it("uses the sole prunable bundle for a bare prune command", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "logs-prune-cli-"))
+    const bundleDir = path.join(bundlesRoot, "Slugger.ouro")
+    fs.mkdirSync(bundleDir)
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{", "utf8")
+    const pruneDaemonLogs = vi.fn(() => ({ filesCompacted: 0, bytesFreed: 0 }))
+    try {
+      await runOuroCli(["logs", "prune"], {
+        socketPath: "/tmp/ouro-test.sock",
+        sendCommand: vi.fn(),
+        startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+        bundlesRoot,
+        pruneDaemonLogs,
+      })
+      expect(pruneDaemonLogs).toHaveBeenCalledWith({ agentName: "Slugger", bundlesRoot })
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects an unknown explicit prune target before resolving its logs path", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "logs-prune-cli-"))
+    try {
+      await expect(runOuroCli(["logs", "prune", "--agent", "Missing"], {
+        socketPath: "/tmp/ouro-test.sock",
+        sendCommand: vi.fn(),
+        startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+        bundlesRoot,
+        pruneDaemonLogs: pruneDaemonLogsOnDisk,
+      })).rejects.toThrow("not a prunable agent bundle")
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
   })
 })
 

@@ -3,7 +3,15 @@ import * as os from "os"
 import * as path from "path"
 import * as zlib from "zlib"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const identityMocks = vi.hoisted(() => ({
+  getAgentBundlesRoot: vi.fn<() => string>(),
+}))
+
+vi.mock("../../../heart/identity", () => ({
+  getAgentBundlesRoot: identityMocks.getAgentBundlesRoot,
+}))
 
 import { pruneDaemonLogs } from "../../../heart/daemon/logs-prune"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
@@ -29,6 +37,7 @@ describe("pruneDaemonLogs", () => {
 
   beforeEach(() => {
     dir = tmpDir()
+    identityMocks.getAgentBundlesRoot.mockReturnValue(dir)
   })
 
   afterEach(() => {
@@ -196,6 +205,42 @@ describe("pruneDaemonLogs", () => {
     expect(result).toEqual({ filesCompacted: 0, bytesFreed: 0 })
   })
 
+  it("rejects an implicit process-selected target", () => {
+    expect(() => pruneDaemonLogs()).toThrow("requires an explicit agent")
+  })
+
+  it.each([
+    {
+      label: "missing agent",
+      run: () => pruneDaemonLogs(),
+      expectedError: "requires an explicit agent",
+    },
+    {
+      label: "unsafe agent name",
+      run: () => pruneDaemonLogs({ bundlesRoot: dir, agentName: "../outside" }),
+      expectedError: "not a prunable agent bundle",
+    },
+  ])("emits paired start/error nerves events for $label target rejection", ({ run, expectedError }) => {
+    const { events, unregister } = captureNervesEvents(
+      (event) => event.event === "nerves.logs_prune_start" || event.event === "nerves.logs_prune_error",
+    )
+    try {
+      expect(run).toThrow(expectedError)
+    } finally {
+      unregister()
+    }
+
+    const start = events.find((event) => event.event === "nerves.logs_prune_start")
+    const error = events.find((event) => event.event === "nerves.logs_prune_error")
+    expect(start).toBeDefined()
+    expect(error).toBeDefined()
+    expect(start?.trace_id).toBe(error?.trace_id)
+    expect(error?.level).toBe("error")
+    expect(error?.meta).toEqual(expect.objectContaining({
+      error: expect.stringMatching(/\S/),
+    }))
+  })
+
   it("coerces non-Error throws to a string in the _error meta", () => {
     // Sabotage so the inner rotation throws, AND arrange for a non-Error
     // value to bubble up. rotateIfNeeded rethrows whatever err it caught,
@@ -314,5 +359,100 @@ describe("pruneDaemonLogs", () => {
       fs.unlinkSync(path.join(plain1, "blocker"))
       fs.rmdirSync(plain1)
     } catch { /* best effort */ }
+  })
+
+  it("resolves and prunes an agent-qualified canonical logs directory", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const logsDir = path.join(bundleDir, "state", "daemon", "logs")
+    fs.mkdirSync(logsDir, { recursive: true })
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), "x".repeat(200), "utf8")
+
+    expect(pruneDaemonLogs({
+      bundlesRoot: dir,
+      agentName: "Slugger",
+      maxSizeBytes: 100,
+      maxGenerations: 3,
+    })).toEqual({ filesCompacted: 1, bytesFreed: 200 })
+  })
+
+  it("uses the canonical bundles root when an agent target omits the root override", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const logsDir = path.join(bundleDir, "state", "daemon", "logs")
+    fs.mkdirSync(logsDir, { recursive: true })
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), "x".repeat(200), "utf8")
+
+    expect(pruneDaemonLogs({
+      agentName: "Slugger",
+      maxSizeBytes: 100,
+      maxGenerations: 3,
+    })).toEqual({ filesCompacted: 1, bytesFreed: 200 })
+    expect(identityMocks.getAgentBundlesRoot).toHaveBeenCalledOnce()
+  })
+
+  it("rejects a symlinked logs directory before touching its target", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const externalLogs = fs.mkdtempSync(path.join(os.tmpdir(), "external-agent-logs-"))
+    fs.mkdirSync(path.join(bundleDir, "state", "daemon"), { recursive: true })
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(externalLogs, "daemon.ndjson"), "x".repeat(200), "utf8")
+    fs.symlinkSync(externalLogs, path.join(bundleDir, "state", "daemon", "logs"))
+    try {
+      expect(() => pruneDaemonLogs({
+        bundlesRoot: dir,
+        agentName: "Slugger",
+        maxSizeBytes: 100,
+      })).toThrow("logs directory")
+      expect(fs.existsSync(path.join(externalLogs, "daemon.ndjson"))).toBe(true)
+    } finally {
+      fs.rmSync(externalLogs, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects an intermediate symlink that redirects canonical agent logs outside the bundle", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const externalDaemon = fs.mkdtempSync(path.join(os.tmpdir(), "external-agent-daemon-"))
+    const externalLogs = path.join(externalDaemon, "logs")
+    fs.mkdirSync(path.join(bundleDir, "state"), { recursive: true })
+    fs.mkdirSync(externalLogs)
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(externalLogs, "daemon.ndjson"), "x".repeat(200), "utf8")
+    fs.symlinkSync(externalDaemon, path.join(bundleDir, "state", "daemon"))
+    try {
+      expect(() => pruneDaemonLogs({
+        bundlesRoot: dir,
+        agentName: "Slugger",
+        maxSizeBytes: 100,
+      })).toThrow("canonical agent bundle")
+      expect(fs.existsSync(path.join(externalLogs, "daemon.ndjson"))).toBe(true)
+    } finally {
+      fs.rmSync(externalDaemon, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects symlinked and non-regular active streams before rotation", () => {
+    const externalFile = path.join(dir, "external.ndjson")
+    fs.writeFileSync(externalFile, "x".repeat(200), "utf8")
+    const linked = path.join(dir, "linked.ndjson")
+    fs.symlinkSync(externalFile, linked)
+    expect(() => pruneDaemonLogs({ logsDir: dir, maxSizeBytes: 100 })).toThrow("regular non-symlink")
+    expect(fs.existsSync(externalFile)).toBe(true)
+
+    fs.unlinkSync(linked)
+    fs.mkdirSync(path.join(dir, "directory.log"))
+    expect(() => pruneDaemonLogs({ logsDir: dir, maxSizeBytes: 100 })).toThrow("regular non-symlink")
+  })
+
+  it("rejects symlinked generation entries before rotating an active stream", () => {
+    const active = path.join(dir, "daemon.ndjson")
+    const external = path.join(dir, "external-generation.gz")
+    fs.writeFileSync(active, "x".repeat(200), "utf8")
+    fs.writeFileSync(external, "outside", "utf8")
+    fs.symlinkSync(external, path.join(dir, "daemon.1.ndjson.gz"))
+
+    expect(() => pruneDaemonLogs({ logsDir: dir, maxSizeBytes: 100, maxGenerations: 3 }))
+      .toThrow("regular non-symlink")
+    expect(fs.readFileSync(external, "utf8")).toBe("outside")
   })
 })

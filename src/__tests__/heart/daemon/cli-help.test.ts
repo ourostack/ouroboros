@@ -16,6 +16,10 @@ import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 // ── Unit 0a: Command metadata registry ──
 
 describe("COMMAND_REGISTRY", () => {
+  it("documents agent-qualified daemon log pruning", () => {
+    expect(COMMAND_REGISTRY.logs.usage).toContain("prune --agent <name>")
+  })
+
   it("exports a registry object", () => {
     emitNervesEvent({ component: "daemon", event: "cli_help_test_start", message: "testing registry export" })
     expect(COMMAND_REGISTRY).toBeDefined()
@@ -345,6 +349,13 @@ describe("getCommandHelp()", () => {
     expect(result).not.toBeNull()
     expect(result).toContain("ouro mail import-mbox (--file <path>|--discover)")
     expect(result).toContain("--owner-email <email>")
+  })
+
+  it("returns focused help for foreground hosted mail cache convergence", () => {
+    const result = getCommandHelp("mail sync-cache")
+    expect(result).toContain("ouro mail sync-cache [--agent <name>]")
+    expect(result).toContain("foreground")
+    expect(result).toContain("hosted")
   })
 })
 

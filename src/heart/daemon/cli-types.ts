@@ -43,7 +43,7 @@ export type OuroCliCommand =
   | { kind: "daemon.stop" }
   | { kind: "daemon.status"; json?: boolean }
   | { kind: "daemon.logs" }
-  | { kind: "daemon.logs.prune" }
+  | { kind: "daemon.logs.prune"; agent?: string }
   | { kind: "mailbox"; json?: boolean }
   | { kind: "provider.use"; agent?: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
   | { kind: "provider.check"; agent?: string; lane: ProviderLane; legacyFacing?: Facing }
@@ -65,6 +65,7 @@ export type OuroCliCommand =
   | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
   | { kind: "mail.import-mbox"; agent?: string; filePath?: string; discover?: boolean; ownerEmail?: string; source?: string; foreground?: boolean; operationId?: string }
   | { kind: "mail.backfill-indexes"; agent?: string; foreground?: boolean; operationId?: string }
+  | { kind: "mail.sync-cache"; agent?: string }
   | { kind: "auth.run"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent?: string; provider: AgentProvider; facing?: Facing }
@@ -171,7 +172,7 @@ export interface OuroCliDeps {
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
-  pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string }) => { filesCompacted: number; bytesFreed: number }
+  pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string; bundlesRoot?: string }) => { filesCompacted: number; bytesFreed: number }
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
   scanSessions?: (agentName: string) => Promise<SessionEntry[]>

@@ -14,20 +14,26 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
 const mockRuntimeConfigs = vi.hoisted(() => new Map<string, any>())
+const mockRuntimeRefreshFailures = vi.hoisted(() => new Map<string, any>())
 const mockMachineRuntimeConfigs = vi.hoisted(() => new Map<string, any>())
 vi.mock("../../../heart/runtime-credentials", () => ({
-  refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => mockRuntimeConfigs.get(agentName) ?? {
-    ok: false,
-    reason: "missing",
-    itemPath: `vault:${agentName}:runtime/config`,
-    error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+  refreshRuntimeCredentialConfig: vi.fn(async (agentName: string, options?: { preserveCachedOnFailure?: boolean }) => {
+    const cached = mockRuntimeConfigs.get(agentName)
+    const failure = mockRuntimeRefreshFailures.get(agentName)
+    if (failure) return options?.preserveCachedOnFailure && cached?.ok ? cached : failure
+    return cached ?? {
+      ok: false,
+      reason: "missing",
+      itemPath: `vault:${agentName}:runtime/config`,
+      error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+    }
   }),
   refreshMachineRuntimeCredentialConfig: vi.fn(async (agentName: string, machineId: string) => mockMachineRuntimeConfigs.get(agentName) ?? {
     ok: false,
@@ -50,6 +56,11 @@ import {
   runDoctorChecks,
   senseInboundDeliveryCheck,
 } from "../../../heart/daemon/doctor"
+import {
+  MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+  writeMailSearchCoverageRecord,
+} from "../../../mailroom/search-cache"
+import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
@@ -218,6 +229,75 @@ function seedHostedMailRuntime(agent = "slugger", mailroom: Record<string, unkno
   seedMailRuntime(agent, { azureAccountUrl: HOSTED_ACCOUNT_URL, ...mailroom })
 }
 
+function hostedAuthorityRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1 as const,
+    id: "mail_hosted_current",
+    agentId: "slugger",
+    compartmentKind: "native" as const,
+    placement: "imbox" as const,
+    receivedAt: "2026-08-17T19:00:00.000Z",
+    ...overrides,
+  }
+}
+
+function writeHostedCoverage(agentRoot: string, overrides: Record<string, unknown> = {}): void {
+  const mirrorDir = path.join(agentRoot, "state", "mail-search")
+  writeMailSearchCoverageRecord({
+    schemaVersion: 1,
+    agentId: "slugger",
+    storeKind: "azure-blob",
+    indexedAt: "2026-08-17T19:01:00.000Z",
+    visibleMessageCount: 1,
+    cachedMessageCount: 1,
+    decryptableMessageCount: 1,
+    skippedMessageCount: 0,
+    messageIndexFingerprint: "fingerprint",
+    textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    oldestReceivedAt: "2026-08-17T19:00:00.000Z",
+    newestReceivedAt: "2026-08-17T19:00:00.000Z",
+    ...overrides,
+  }, { cacheDirForAgent: () => mirrorDir })
+}
+
+function writeConvergedHostedCache(agentRoot: string, record = hostedAuthorityRecord(), overrides: Record<string, unknown> = {}): void {
+  const mirrorDir = path.join(agentRoot, "state", "mail-search")
+  fs.mkdirSync(mirrorDir, { recursive: true })
+  fs.writeFileSync(path.join(mirrorDir, `${record.id}.json`), `${JSON.stringify({
+    schemaVersion: 1,
+    messageId: record.id,
+    agentId: record.agentId,
+    receivedAt: record.receivedAt,
+    placement: record.placement,
+    compartmentKind: record.compartmentKind,
+    from: ["remote@example.com"],
+    subject: "Hosted truth",
+    snippet: "Hosted truth",
+    textExcerpt: "Hosted truth",
+    untrustedContentWarning: "untrusted",
+    searchText: "hosted truth",
+    textProjectionVersion: 2,
+    attachmentCount: 0,
+    decryptionKeyId: "mail_slugger_native",
+    ...overrides,
+  })}\n`, "utf-8")
+  writeHostedCoverage(agentRoot)
+}
+
+function soundHostedAuthority(records = [hostedAuthorityRecord()]) {
+  return {
+    ok: true as const,
+    observation: {
+      totalNameCount: records.length,
+      parsedRecordCount: records.length,
+      parseFailureCount: 0,
+      duplicateIds: [],
+      records,
+      snapshot: { visibleMessageCount: records.length, messageIndexFingerprint: "fingerprint" },
+    },
+  }
+}
+
 function findCheck(checks: DoctorCheck[], id: string): DoctorCheck {
   const found = checks.find((check) => check.id === id)
   if (!found) throw new Error(`no check with id ${id} in: ${checks.map((c) => c.label).join(", ")}`)
@@ -236,8 +316,37 @@ function seedBlueBubblesRuntime(agent = "slugger"): void {
   })
 }
 
+function blueBubblesFetch(
+  webhook: "exact" | "missing" | "drifted" = "exact",
+  upstreamStatus = 200,
+): ReturnType<typeof vi.fn> {
+  const desired = buildBlueBubblesWebhookCallbackUrl({
+    serverUrl: "http://bluebubbles.local",
+    password: "pw",
+    callbackPort: 18_790,
+    callbackPath: "/bluebubbles-webhook",
+    agentName: "slugger",
+    machineId: "machine_test",
+    requestTimeoutMs: 30_000,
+    listenerReady: true,
+  })
+  return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    expect(init?.method).toBe("GET")
+    if (String(url).includes("/api/v1/message/count")) {
+      return new Response("{}", { status: upstreamStatus })
+    }
+    const hooks = webhook === "missing"
+      ? []
+      : [{ id: 1, url: webhook === "exact" ? desired : desired.replace(":18790", ":18791"), events: ["*"] }]
+    return new Response(JSON.stringify({
+      data: hooks,
+    }), { status: 200 })
+  })
+}
+
 afterEach(() => {
   mockRuntimeConfigs.clear()
+  mockRuntimeRefreshFailures.clear()
   mockMachineRuntimeConfigs.clear()
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true })
@@ -247,6 +356,10 @@ afterEach(() => {
 // ── Mail ingest liveness ──
 
 describe("checkMailroom mail-ingest liveness", () => {
+  beforeEach(() => {
+    seedMailRuntime("slugger", { storePath: "state/mailroom" }, "local")
+  })
+
   it("passes when mail was ingested recently", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { lastIngestAgoMs: 20 * 60 * 1000 })
@@ -399,7 +512,7 @@ describe("checkMailroom mail-ingest liveness", () => {
     expect(check.detail).toContain("no mail ingested in 3 hours")
   })
 
-  it("falls back to defaults when agent.json is missing or unparseable", async () => {
+  it("falls back to defaults for a present unparseable agent.json and skips a task-only directory once it is removed", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
     writeMailroom(agentRoot, { lastIngestAgoMs: 30 * HOUR_MS })
@@ -408,7 +521,12 @@ describe("checkMailroom mail-ingest liveness", () => {
     expect(findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness").status).toBe("warn")
 
     fs.rmSync(path.join(agentRoot, "agent.json"))
-    expect(findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness").status).toBe("warn")
+    const category = await checkMailroom(depsFor(bundlesRoot))
+    expect(category.checks).toEqual([{
+      label: "mailroom",
+      status: "warn",
+      detail: "no agent bundles found",
+    }])
   })
 
   it("uses 24h/72h defaults, so a quiet weekend warns before it fails", () => {
@@ -441,6 +559,320 @@ describe("checkMailroom mail-ingest liveness", () => {
 // was built for. These pin the mode-aware signal.
 
 describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
+  it("passes only when local cache metadata, projection, and key provenance match sound hosted authority", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("pass")
+    expect(check.detail).toContain("1 authoritative hosted message")
+    expect(check.detail).toContain("local search cache converged")
+  })
+
+  it("reports the plural hosted-message count when multiple authoritative records converge", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const firstRecord = hostedAuthorityRecord()
+    const secondRecord = hostedAuthorityRecord({
+      id: "mail_hosted_second",
+      receivedAt: "2026-08-17T19:00:30.000Z",
+    })
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, firstRecord)
+    writeConvergedHostedCache(agentRoot, secondRecord)
+    writeHostedCoverage(agentRoot, {
+      visibleMessageCount: 2,
+      cachedMessageCount: 2,
+      decryptableMessageCount: 2,
+      newestReceivedAt: secondRecord.receivedAt,
+    })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([firstRecord, secondRecord])),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("pass")
+    expect(check.detail).toContain("2 authoritative hosted messages")
+    expect(check.detail).toContain("local search cache converged")
+  })
+
+  it("treats matching non-empty hosted authority/cache/coverage as healthy quiet despite an old local mirror mtime", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, { lastIngestAgoMs: 77 * DAY_MS })
+    writeConvergedHostedCache(agentRoot)
+    setMtime(path.join(agentRoot, "state", "mail-search"), Date.now() - 9 * DAY_MS)
+    seedHostedMailRuntime()
+
+    const checks = (await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks
+    const authority = findCheck(checks, "mail.cache_authority")
+    const liveness = findCheck(checks, "mail.ingest_liveness")
+
+    expect(authority.status).toBe("pass")
+    expect(liveness.status).toBe("pass")
+    expect(liveness.detail).toContain("healthy quiet")
+    expect(liveness.detail).not.toContain("no hosted mail observed locally")
+  })
+
+  it("derives hosted liveness severity from transient and definitive authority results instead of stale mirror age", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeHostedMirror(agentRoot, { lastObservedAgoMs: 9 * DAY_MS })
+    seedHostedMailRuntime()
+
+    const transientChecks = (await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({
+        ok: false,
+        definitive: false,
+        detail: "authority request timed out",
+      })),
+    }))).checks
+    const transientAuthority = findCheck(transientChecks, "mail.cache_authority")
+    const transientLiveness = findCheck(transientChecks, "mail.ingest_liveness")
+    expect(transientAuthority.status).toBe("warn")
+    expect(transientLiveness.status).toBe("warn")
+    expect(transientLiveness.detail).toContain("authority request timed out")
+    expect(transientLiveness.detail).not.toContain("no hosted mail observed locally")
+
+    const definitiveChecks = (await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({
+        ok: false,
+        definitive: true,
+        detail: "authorization rejected with 403",
+      })),
+    }))).checks
+    expect(findCheck(definitiveChecks, "mail.cache_authority").status).toBe("fail")
+    expect(findCheck(definitiveChecks, "mail.ingest_liveness").status).toBe("fail")
+  })
+
+  it("does not use stale cached hosted credentials after a fresh vault refresh fails", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+    mockRuntimeRefreshFailures.set("slugger", {
+      ok: false,
+      reason: "unavailable",
+      itemPath: "vault:slugger:runtime/config",
+      error: "vault is locked",
+    })
+    const observeHostedMailAuthority = vi.fn(async () => soundHostedAuthority())
+
+    const checks = (await checkMailroom(depsFor(bundlesRoot, { observeHostedMailAuthority }))).checks
+    const authority = findCheck(checks, "mail.cache_authority")
+    const liveness = findCheck(checks, "mail.ingest_liveness")
+
+    expect(authority.status).toBe("warn")
+    expect(authority.detail).toContain("fresh runtime credentials are unavailable")
+    expect(authority.detail).toContain("vault is locked")
+    expect(liveness.status).toBe("warn")
+    expect(liveness.detail).toContain("store mode is unverified")
+    expect(observeHostedMailAuthority).not.toHaveBeenCalled()
+  })
+
+  it("warns when all-scope coverage is absent, malformed, or disagrees with hosted authority and cache counts", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+    const coverageDir = path.join(agentRoot, "state", "mail-search", "coverage")
+
+    const check = async (): Promise<DoctorCheck> => findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    fs.rmSync(coverageDir, { recursive: true })
+    expect((await check()).status).toBe("warn")
+
+    writeHostedCoverage(agentRoot)
+    const [coverageFile] = fs.readdirSync(coverageDir)
+    fs.writeFileSync(path.join(coverageDir, coverageFile), "{not json", "utf-8")
+    expect((await check()).status).toBe("warn")
+
+    const mismatches = [
+      { textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION - 1 },
+      { messageIndexFingerprint: "stale-fingerprint" },
+      { visibleMessageCount: 2 },
+      { cachedMessageCount: 0 },
+      { decryptableMessageCount: 0 },
+      { skippedMessageCount: 1 },
+    ]
+    for (const mismatch of mismatches) {
+      writeHostedCoverage(agentRoot, mismatch)
+      const result = await check()
+      expect(result.status).toBe("warn")
+      expect(result.detail).toContain("coverage")
+      expect(result.detail).toContain("ouro mail sync-cache --agent slugger")
+    }
+  })
+
+  it("warns with exact repair guidance when sound authority and local cache diverge", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, hostedAuthorityRecord(), { placement: "screener", textProjectionVersion: 1 })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("warns when hosted authority is sound but no local cache directory exists", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("warns without mutation when hosted authority is malformed, duplicated, or transiently unavailable", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+    const ambiguous = soundHostedAuthority()
+    ambiguous.observation.parseFailureCount = 1
+    ambiguous.observation.duplicateIds = ["mail_hosted_current"]
+
+    const ambiguousCheck = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ambiguous),
+    }))).checks, "mail.cache_authority")
+    expect(ambiguousCheck.status).toBe("warn")
+    expect(ambiguousCheck.detail).toContain("authority is ambiguous")
+
+    const transientCheck = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => {
+        throw new Error("network timed out")
+      }),
+    }))).checks, "mail.cache_authority")
+    expect(transientCheck.status).toBe("warn")
+    expect(transientCheck.detail).toContain("network timed out")
+
+    const nonErrorTransient = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => {
+        throw "offline as string"
+      }),
+    }))).checks, "mail.cache_authority")
+    expect(nonErrorTransient.detail).toContain("offline as string")
+
+    const unavailableCheck = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({ ok: false, definitive: false, detail: "service unavailable" })),
+    }))).checks, "mail.cache_authority")
+    expect(unavailableCheck.status).toBe("warn")
+    expect(unavailableCheck.detail).toContain("service unavailable")
+  })
+
+  it("warns on unreadable or malformed local cache state after sound authority", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    const mirrorDir = path.join(agentRoot, "state", "mail-search")
+    fs.mkdirSync(mirrorDir, { recursive: true })
+    fs.writeFileSync(path.join(mirrorDir, "malformed.json"), "{not json")
+    seedHostedMailRuntime()
+
+    const malformed = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+    expect(malformed.status).toBe("warn")
+    expect(malformed.detail).toContain("malformed/orphan/noncanonical/duplicate")
+
+    const unreadable = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+      readdirSync: (target) => {
+        if (target === mirrorDir) throw "cache offline"
+        return fs.readdirSync(target)
+      },
+    }))).checks, "mail.cache_authority")
+    expect(unreadable.status).toBe("warn")
+    expect(unreadable.detail).toContain("cache offline")
+
+    const unreadableError = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+      readdirSync: (target) => {
+        if (target === mirrorDir) throw new Error("cache denied")
+        return fs.readdirSync(target)
+      },
+    }))).checks, "mail.cache_authority")
+    expect(unreadableError.detail).toContain("cache denied")
+  })
+
+  it("treats empty hosted authority as unverified even when the local cache is empty", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    writeMailroom(writeAgent(bundlesRoot))
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([])),
+    }))).checks, "mail.cache_authority")
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("empty")
+    expect(check.detail).toContain("unverified")
+  })
+
+  it("fails on positive hosted authority configuration or authorization faults", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    writeMailroom(writeAgent(bundlesRoot))
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({
+        ok: false,
+        definitive: true,
+        detail: "authorization rejected with 403",
+      })),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("authorization rejected with 403")
+  })
+
+  it("warns when a canonical hosted cache document lacks current key provenance", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, hostedAuthorityRecord(), { decryptionKeyId: "missing_key" })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("key provenance")
+
+    seedHostedMailRuntime("slugger", { privateKeys: null })
+    const absentKeyMap = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+    expect(absentKeyMap.status).toBe("warn")
+  })
+
   it("passes on the local hosted mirror, and names the hosted store it cannot read", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
@@ -455,7 +887,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.detail).toContain("hosted mail observed locally 20 minutes ago")
     expect(check.detail).toContain(HOSTED_STORE_LABEL)
     expect(check.detail).toContain("state/mail-search")
-    expect(check.detail).toContain("which doctor does not read")
+    expect(check.detail).toContain("separate hosted cache authority check reads without mutation")
     expect(check.detail).not.toContain("fix:")
   })
 
@@ -504,7 +936,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(warned.status).toBe("warn")
     expect(warned.detail).toContain("no hosted mail observed locally in 30 hours")
-    expect(warned.detail).toContain("fix: doctor measures hosted mail only through this machine's local mirror")
+    expect(warned.detail).toContain("fix: this liveness check measures recency only through this machine's local mirror")
 
     const failRoot = makeBundlesRoot()
     const failAgentRoot = writeAgent(failRoot)
@@ -515,7 +947,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(failed.status).toBe("fail")
     expect(failed.detail).toContain("no hosted mail observed locally in 9 days")
-    expect(failed.detail).toContain(`listing \`messages/\` blobs in ${HOSTED_STORE_LABEL} by Last-Modified`)
+    expect(failed.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 
   it("reports the unverified 'unknown' state — not pass, not a fake outage — when no hosted mirror exists", async () => {
@@ -528,7 +960,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.status).toBe("fail")
     expect(check.detail).toContain("last-activity time could not be determined")
     expect(check.detail).toContain("is absent")
-    expect(check.detail).toContain("not read by doctor (no network calls, no credentials)")
+    expect(check.detail).toContain("separate hosted cache authority check reads without mutation")
     expect(check.detail).toContain("unverified, not healthy")
     // Neither of the two wrong answers: a confident pass, or the local store's
     // frozen mtime dressed up as a hosted outage.
@@ -628,6 +1060,40 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     expect(check.detail).toContain("bluebubbles inbound delivery 30 minutes ago")
   })
 
+  it("warns when BlueBubbles inbound evidence is future-dated", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": -2 * DAY_MS })
+    seedBlueBubblesRuntime()
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("in the future")
+    expect(inbound.detail).toContain("clock skew")
+  })
+
+  it("fails closed when every BlueBubbles inbound log is unreadable", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const inboundDir = writeInbound(agentRoot, { "chat_a.ndjson": DAY_MS })
+    seedBlueBubblesRuntime()
+    const unreadableLog = path.join(inboundDir, "chat_a.ndjson")
+    const deps = depsFor(bundlesRoot, {
+      statSync: (target) => {
+        if (target === unreadableLog) throw new Error("EACCES")
+        return fs.statSync(target)
+      },
+    })
+
+    const inbound = findCheck((await checkSenses(deps)).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("none of the 1 log(s)")
+    expect(inbound.detail).toContain("EACCES")
+    expect(inbound.detail).toContain("unverified, not healthy")
+  })
+
   it("REGRESSION: fails on dead inbound delivery even while the upstream probe is green", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
@@ -646,6 +1112,119 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     expect(inbound.detail).toContain("stale webhook port")
   })
 
+  it("warns as quiet and unverified when stale inbound has healthy upstream and the exact owned webhook", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("exact")
+
+    const category = await checkSenses(depsFor(bundlesRoot, { fetchImpl: fetchImpl as unknown as typeof fetch }))
+    const inbound = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("no recent inbound was observed")
+    expect(inbound.detail).toContain("upstream and exact owned webhook are healthy")
+    expect(inbound.detail).toContain("quiet and delivery failure are indistinguishable without a new message")
+    expect(inbound.detail).toContain("doctor did not send a test message")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls.every((call) => call[1]?.method === "GET")).toBe(true)
+  })
+
+  it("warns rather than inventing a failure when stale inbound cannot run infrastructure probes", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("infrastructure probes were not run")
+    expect(inbound.detail).toContain("unverified")
+  })
+
+  it("warns when network-unreachable infrastructure cannot corroborate stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("infrastructure probes were unavailable")
+    expect(inbound.detail).toContain("unverified")
+  })
+
+  it("fails when a missing owned webhook corroborates stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("missing")
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("missing owned webhook corroborates the silence")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails when a drifted owned webhook corroborates stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("drifted")
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("drifted owned-webhook evidence corroborates the silence")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails when a definitive upstream auth fault corroborates stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("exact", 401)
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("a definitive upstream fault corroborates the silence")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("warns for a never-used but exactly wired quiet conversation", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const inboundDir = writeInbound(agentRoot, {})
+    setMtime(path.dirname(inboundDir), Date.now() - 30 * DAY_MS)
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("exact")
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("no recent inbound was observed")
+    expect(inbound.detail).toContain("doctor did not send a test message")
+  })
+
   it("notes when the upstream probe did not run in this pass", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
@@ -659,7 +1238,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     expect(check.detail).toContain("upstream probe not run in this pass")
   })
 
-  it("reports the failing upstream probe as context when the upstream is also down", async () => {
+  it("keeps network-unreachable upstream evidence unverified instead of inventing corroboration", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
@@ -669,8 +1248,8 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     const category = await checkSenses(depsFor(bundlesRoot, { fetchImpl: fetchImpl as unknown as typeof fetch }))
     const check = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
 
-    expect(check.status).toBe("fail")
-    expect(check.detail).toContain("upstream probe failing")
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("infrastructure probes were unavailable")
   })
 
   it("flags a sense that has been attached for a while but never delivered anything", async () => {
@@ -683,7 +1262,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     const category = await checkSenses(depsFor(bundlesRoot))
     const check = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
 
-    expect(check.status).toBe("fail")
+    expect(check.status).toBe("warn")
     expect(check.detail).toContain("no bluebubbles inbound delivery ever")
     expect(check.detail).toContain("has been configured for 30 days")
   })
@@ -699,7 +1278,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     const category = await checkSenses(depsFor(bundlesRoot))
     const check = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
 
-    expect(check.status).toBe("fail")
+    expect(check.status).toBe("warn")
   })
 
   it("uses 72h/7d defaults, so bursty human chat traffic does not cry wolf", () => {
@@ -710,6 +1289,23 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 // ── Reusable seam for other senses ──
 
 describe("senseInboundDeliveryCheck", () => {
+  it("uses default freshness when the agent config is absent", () => {
+    const bundlesRoot = makeBundlesRoot()
+    const inboundDir = path.join(bundlesRoot, "missing.ouro", "state", "senses", "teams", "inbound")
+    fs.mkdirSync(inboundDir, { recursive: true })
+
+    const check = senseInboundDeliveryCheck({
+      deps: depsFor(bundlesRoot),
+      agentDir: "missing.ouro",
+      sense: "teams",
+      inboundDir,
+      nowMs: Date.now(),
+    })
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("no teams inbound delivery ever")
+  })
+
   it("lets another sense opt in with its own inbound directory and remediation", () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", { teams: { enabled: true } })

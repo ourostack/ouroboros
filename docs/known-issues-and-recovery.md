@@ -13,9 +13,21 @@ Provider-readiness pings are explicit readiness checks, not private turns.
 
 **Symptom**: the BlueBubbles app/process and Ouro daemon look healthy, but new iMessages do not reach the agent.
 
-**Detection**: run `ouro doctor` and `ouro bluebubbles host status --json`. Host status deliberately separates app presence, LaunchAgent state, current process state, and bounded HTTP health. Doctor separately reports whether the Ouro-owned webhook is exact, missing, drifted, API-unreachable, or auth-failed. Secret-bearing callback query strings are redacted.
+**Detection**: run `ouro doctor` and `ouro bluebubbles host status --json`. Host status deliberately separates app presence, LaunchAgent state, current process state, and bounded HTTP health. Doctor separately reports whether the Ouro-owned webhook is exact, missing, drifted, API-unreachable, or auth-failed. When upstream and exact webhook are healthy but there is no recent inbound evidence, doctor reports quiet/unverified: this is uncertainty, not proof of a broken pipe. Secret-bearing callback query strings are redacted.
 
 **Recovery**: run `ouro connect bluebubbles --agent <name>` again. Standard setup repairs the native host and reconciles one owned `[*]` callback without deleting unrelated BlueBubbles webhooks. The daemon retries that reconciliation every 180 seconds. For a dedicated BlueBubbles macOS account, run only the fresh nonce-bound `human-required` command returned by Ouro in that logged-in account's Terminal, then run the matching `ouro bluebubbles host collect --request-id <id>` from the origin account. A collected launchd receipt is point-in-time evidence; current process and HTTP checks remain authoritative for current serving health.
+
+Do not send a synthetic iMessage just to make the diagnostic green. A real new inbound message may add evidence later, but diagnosis itself remains read-only.
+
+## Doctor reports a hosted-mail cache mismatch
+
+**Detection**: the Mailroom category compares a bounded, read-only hosted index authority snapshot with local search-cache metadata, projection, and key provenance. A mismatch means the reconstructible local cache is stale, malformed, or incomplete; it does not mean hosted mail is missing.
+
+**Recovery**: run `ouro mail sync-cache --agent <name>`. The command refreshes credentials, re-observes complete hosted authority, reads only the bodies required for convergence, and atomically repairs the local cache. It does not mutate hosted mail. Definitive auth/config faults must be repaired first; transient or ambiguous authority does not authorize local deletion.
+
+## Doctor identifies an oversized agent log stream
+
+Run only the exact command doctor prints, such as `ouro logs prune --agent <name>`. A prune candidate must be a canonical direct `<name>.ouro` directory with present `agent.json`; directories without `agent.json` are task/work directories, not agents. The command rejects unsafe names, unknown bundles, symlinked bundle/log paths, and symlinked or non-regular active/generation entries before rotation. There is no aggregate or path-shaped prune command.
 
 ## A rollback unexpectedly advances on restart
 

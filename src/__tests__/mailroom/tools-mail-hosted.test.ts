@@ -6,8 +6,11 @@ import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { resetIdentity, setAgentName } from "../../heart/identity"
-import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord } from "../../mailroom/search-cache"
+import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, searchMailSearchCache, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord } from "../../mailroom/search-cache"
+import { syncHostedMailSearchCache } from "../../mailroom/hosted-cache-sync"
+import { canonicalMailIndexRecordSnapshot as canonicalSnapshot } from "../../mailroom/blob-store"
 import type { ToolContext } from "../../repertoire/tools-base"
+import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 
 const tempRoots: string[] = []
 const originalHome = process.env.HOME
@@ -16,6 +19,39 @@ function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-mail-hosted-tools-"))
   tempRoots.push(dir)
   return dir
+}
+
+function captureMailSyncNervesEvents(): { events: LogEvent[]; unregister: () => void } {
+  const events: LogEvent[] = []
+  const names = new Set([
+    "senses.mail_search_cache_sync_start",
+    "senses.mail_search_cache_sync_end",
+    "senses.mail_search_cache_sync_error",
+    "senses.mail_search_cache_synced",
+  ])
+  const unregister = registerGlobalLogSink((event) => {
+    if (names.has(event.event)) events.push(event)
+  })
+  return { events, unregister }
+}
+
+function expectPairedMailSyncFailure(events: LogEvent[]): void {
+  const start = events.find((event) => event.event === "senses.mail_search_cache_sync_start")
+  const end = events.find((event) => event.event === "senses.mail_search_cache_sync_end")
+  const error = events.find((event) => event.event === "senses.mail_search_cache_sync_error")
+  expect(start).toBeDefined()
+  expect(end).toBeUndefined()
+  expect(error).toBeDefined()
+  expect(start?.trace_id).toBe(error?.trace_id)
+  expect(error?.level).toBe("error")
+  expect(error?.meta).toEqual(expect.objectContaining({
+    agentId: "slugger",
+    error: expect.stringMatching(/\S/),
+  }))
+}
+
+function searchMailCacheIds(cacheOptions: { cacheDirForAgent(agentId: string): string }): string[] {
+  return searchMailSearchCache({ agentId: "slugger" }, cacheOptions).map((document) => document.messageId)
 }
 
 function trustedContext(): ToolContext {
@@ -87,6 +123,476 @@ afterEach(() => {
 })
 
 describe("hosted mail tools", () => {
+  it("emits paired start/end nerves events while preserving the existing success event", async () => {
+    const cacheRoot = tempDir()
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "scoped-upsert",
+        store: { listMessageIndexRecords: vi.fn(async () => []) } as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      })
+    } finally {
+      unregister()
+    }
+
+    const start = events.find((event) => event.event === "senses.mail_search_cache_sync_start")
+    const end = events.find((event) => event.event === "senses.mail_search_cache_sync_end")
+    expect(start).toBeDefined()
+    expect(end).toBeDefined()
+    expect(start?.trace_id).toBe(end?.trace_id)
+    expect(events.some((event) => event.event === "senses.mail_search_cache_synced")).toBe(true)
+    expect(events.some((event) => event.event === "senses.mail_search_cache_sync_error")).toBe(false)
+  })
+
+  it("emits paired start/error nerves events when hosted authority observation fails", async () => {
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: {
+          observeMessageIndexAuthority: vi.fn(async () => { throw new Error("authority offline") }),
+        },
+        store: {} as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => tempDir() },
+      })).rejects.toThrow("authority offline")
+    } finally {
+      unregister()
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
+  it("emits paired start/error nerves events when a scoped hosted body fetch fails", async () => {
+    const record = {
+      schemaVersion: 1 as const,
+      id: "mail_fetch_failure",
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: "2026-08-17T00:00:00.000Z",
+    }
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "scoped-upsert",
+        store: {
+          listMessageIndexRecords: vi.fn(async () => [record]),
+          getIndexedMessageById: vi.fn(async () => { throw new Error("body fetch failed") }),
+        } as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => tempDir() },
+      })).rejects.toThrow("body fetch failed")
+    } finally {
+      unregister()
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
+  it("emits paired start/error nerves events when stale cache deletion fails", async () => {
+    const cacheRoot = tempDir()
+    const record = {
+      schemaVersion: 1 as const,
+      id: "mail_delete_failure",
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: "2026-08-17T00:00:00.000Z",
+    }
+    fs.writeFileSync(path.join(cacheRoot, "orphan.json"), "{}\n", "utf-8")
+    fs.chmodSync(cacheRoot, 0o500)
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: {
+          observeMessageIndexAuthority: vi.fn(async () => ({
+            totalNameCount: 1,
+            parsedRecordCount: 1,
+            parseFailureCount: 0,
+            duplicateIds: [],
+            records: [record],
+            snapshot: canonicalSnapshot([record]),
+          })),
+        },
+        store: {} as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      })).rejects.toThrow()
+    } finally {
+      unregister()
+      fs.chmodSync(cacheRoot, 0o700)
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
+  it("emits paired start/error nerves events when coverage persistence fails", async () => {
+    const cacheRoot = tempDir()
+    const record = {
+      schemaVersion: 1 as const,
+      id: "mail_coverage_failure",
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: "2026-08-17T00:00:00.000Z",
+    }
+    fs.writeFileSync(path.join(cacheRoot, `${record.id}.json`), `${JSON.stringify({
+      schemaVersion: 1,
+      messageId: record.id,
+      agentId: record.agentId,
+      receivedAt: record.receivedAt,
+      placement: record.placement,
+      compartmentKind: record.compartmentKind,
+      from: [],
+      subject: "current",
+      snippet: "current",
+      textExcerpt: "current",
+      untrustedContentWarning: "untrusted",
+      searchText: "current",
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+      attachmentCount: 0,
+      decryptionKeyId: "mail_current",
+    })}\n`, "utf-8")
+    fs.chmodSync(cacheRoot, 0o500)
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: {
+          observeMessageIndexAuthority: vi.fn(async () => ({
+            totalNameCount: 1,
+            parsedRecordCount: 1,
+            parseFailureCount: 0,
+            duplicateIds: [],
+            records: [record],
+            snapshot: canonicalSnapshot([record]),
+          })),
+        },
+        store: {} as never,
+        privateKeys: { mail_current: "private-key" },
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      })).rejects.toThrow()
+    } finally {
+      unregister()
+      fs.chmodSync(cacheRoot, 0o700)
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
+  it("fully converges stale, malformed, duplicate, orphaned, moved, and missing-key local cache state", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_key_current", "Current hosted truth")
+    const missingKey = await buildEncryptedMessageForKey("mail_key_missing", "Unavailable hosted truth")
+    const currentPrivateKey = Object.values(current.keys)[0]!
+    const records = [current.message, missingKey.message].map((message) => ({
+      schemaVersion: 1 as const,
+      id: message.id,
+      agentId: message.agentId,
+      compartmentKind: message.compartmentKind,
+      placement: message.placement,
+      ...(message.source ? { source: message.source } : {}),
+      receivedAt: message.receivedAt,
+    }))
+    const authority = {
+      totalNameCount: records.length,
+      parsedRecordCount: records.length,
+      parseFailureCount: 0,
+      duplicateIds: [],
+      records,
+      snapshot: canonicalSnapshot(records),
+    }
+
+    const legacy = upsertMailSearchCacheDocument(current.message, {
+      from: ["stale@example.com"], to: ["slugger@ouro.bot"], cc: [], subject: "Legacy stale subject", text: "", snippet: "", attachments: [], untrustedContentWarning: "untrusted",
+    }, cacheOptions)
+    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({
+      ...legacy,
+      placement: "screener",
+      textProjectionVersion: 1,
+      textExcerpt: "",
+    })}\n`, "utf-8")
+    const missingDocument = upsertMailSearchCacheDocument(missingKey.message, {
+      from: ["missing@example.com"], to: ["slugger@ouro.bot"], cc: [], subject: "Stale missing-key subject", text: "stale", snippet: "stale", attachments: [], untrustedContentWarning: "untrusted",
+    }, cacheOptions)
+    fs.writeFileSync(path.join(cacheRoot, `${missingKey.message.id}.json`), `${JSON.stringify({
+      ...missingDocument,
+      decryptionKeyId: "mail_key_missing",
+    })}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "orphan.json"), `${JSON.stringify({ ...legacy, messageId: "mail_orphan" })}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "duplicate-current.json"), `${JSON.stringify(legacy)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "malformed.json"), "{not json", "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "wrong-filename.json"), `${JSON.stringify({ ...legacy, messageId: current.message.id })}\n`, "utf-8")
+    expect(searchMailCacheIds(cacheOptions)).toContain("mail_orphan")
+
+    const getIndexedMessageById = vi.fn(async (id: string) => {
+      if (id === current.message.id) return current.message
+      throw new Error(`missing-key record ${id} must not be fetched while its cached provenance proves the key is absent`)
+    })
+    const recordAccess = vi.fn()
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      store: {
+        observeMessageIndexAuthority: vi.fn(async () => authority),
+        getIndexedMessageById,
+        recordAccess,
+      } as never,
+      privateKeys: { mail_key_current: currentPrivateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      fetched: 1,
+      alreadyCached: 0,
+      removed: 5,
+      skipped: 1,
+    }))
+    expect(fs.readdirSync(cacheRoot).sort()).toEqual(["coverage", `${current.message.id}.json`].sort())
+    expect(JSON.parse(fs.readFileSync(path.join(cacheRoot, `${current.message.id}.json`), "utf-8"))).toEqual(expect.objectContaining({
+      messageId: current.message.id,
+      subject: "Current hosted truth",
+      placement: current.message.placement,
+      decryptionKeyId: "mail_key_current",
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    }))
+    expect(searchMailCacheIds(cacheOptions)).toEqual([current.message.id])
+    expect(getIndexedMessageById).toHaveBeenCalledTimes(1)
+    expect(recordAccess).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { parseFailureCount: 1, duplicateIds: [] as string[], label: "malformed names" },
+    { parseFailureCount: 0, duplicateIds: ["mail_duplicate"], label: "duplicate ids" },
+  ])("aborts full convergence before local mutation when authority has $label", async ({ parseFailureCount, duplicateIds }) => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    fs.writeFileSync(path.join(cacheRoot, "orphan.json"), "preserve me", "utf-8")
+    const before = fs.readFileSync(path.join(cacheRoot, "orphan.json"))
+    const getIndexedMessageById = vi.fn()
+
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      store: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 0,
+          parseFailureCount,
+          duplicateIds,
+          records: [],
+          snapshot: canonicalSnapshot([]),
+        })),
+        getIndexedMessageById,
+      } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })).rejects.toThrow("hosted mail authority is ambiguous")
+
+    expect(fs.readFileSync(path.join(cacheRoot, "orphan.json"))).toEqual(before)
+    expect(getIndexedMessageById).not.toHaveBeenCalled()
+  })
+
+  it("aborts full convergence before local mutation when hosted authority is empty", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const orphanPath = path.join(cacheRoot, "orphan.json")
+    fs.writeFileSync(orphanPath, "preserve me", "utf-8")
+    writeMailSearchCoverageRecord({
+      schemaVersion: 1,
+      agentId: "slugger",
+      storeKind: "azure-blob",
+      indexedAt: "2026-08-17T00:00:00.000Z",
+      visibleMessageCount: 1,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 0,
+      messageIndexFingerprint: "preserve-existing-coverage",
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    }, cacheOptions)
+    const coverageBefore = fs.readdirSync(path.join(cacheRoot, "coverage")).map((fileName) => ({
+      fileName,
+      contents: fs.readFileSync(path.join(cacheRoot, "coverage", fileName)),
+    }))
+    const getIndexedMessageById = vi.fn()
+    const recordAccess = vi.fn()
+
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 0,
+          parsedRecordCount: 0,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records: [],
+          snapshot: canonicalSnapshot([]),
+        })),
+      },
+      store: { getIndexedMessageById, recordAccess } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })).rejects.toThrow("hosted mail authority is empty")
+
+    expect(fs.readFileSync(orphanPath, "utf-8")).toBe("preserve me")
+    expect(fs.readdirSync(path.join(cacheRoot, "coverage"))).toEqual(coverageBefore.map(({ fileName }) => fileName))
+    for (const { fileName, contents } of coverageBefore) {
+      expect(fs.readFileSync(path.join(cacheRoot, "coverage", fileName))).toEqual(contents)
+    }
+    expect(getIndexedMessageById).not.toHaveBeenCalled()
+    expect(recordAccess).not.toHaveBeenCalled()
+  })
+
+  it("requires an explicit read-only authority observer for full convergence", async () => {
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      store: {} as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions: { cacheDirForAgent: () => tempDir() },
+    })).rejects.toThrow("hosted mail authority observer is unavailable")
+  })
+
+  it("accepts an exact current hosted cache document without fetching its body", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_key_current", "Already current")
+    const currentPrivateKey = Object.values(current.keys)[0]!
+    const { readDecryptedMailMessage } = await import("../../mailroom/core")
+    const decrypted = readDecryptedMailMessage(current.message, { mail_key_current: currentPrivateKey })
+    upsertMailSearchCacheDocument(current.message, decrypted.private, cacheOptions, {
+      decryptionKeyId: "mail_key_current",
+    })
+    const records = [current.message].map((message) => ({
+      schemaVersion: 1 as const,
+      id: message.id,
+      agentId: message.agentId,
+      compartmentKind: message.compartmentKind,
+      placement: message.placement,
+      receivedAt: message.receivedAt,
+    }))
+    const getIndexedMessageById = vi.fn(async () => {
+      throw new Error("current cache must not fetch a hosted body")
+    })
+
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records,
+          snapshot: canonicalSnapshot(records),
+        })),
+      },
+      store: { getIndexedMessageById } as never,
+      privateKeys: { mail_key_current: currentPrivateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 1, removed: 0, skipped: 0 }))
+    expect(getIndexedMessageById).not.toHaveBeenCalled()
+  })
+
+  it("removes a stale canonical projection when its hosted body cannot be fetched", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_fetch_missing", "No hosted body")
+    const legacy = upsertMailSearchCacheDocument(current.message, {
+      from: ["stale@example.com"], to: [], cc: [], subject: "Stale", text: "stale", snippet: "stale", attachments: [], untrustedContentWarning: "untrusted",
+    }, cacheOptions)
+    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({ ...legacy, decryptionKeyId: undefined })}\n`)
+    const records = [{
+      schemaVersion: 1 as const,
+      id: current.message.id,
+      agentId: current.message.agentId,
+      compartmentKind: current.message.compartmentKind,
+      placement: current.message.placement,
+      receivedAt: current.message.receivedAt,
+    }]
+
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records,
+          snapshot: canonicalSnapshot(records),
+        })),
+      },
+      store: { getIndexedMessageById: vi.fn(async () => null) } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 0, removed: 1, skipped: 1 }))
+    expect(fs.readdirSync(cacheRoot)).toEqual(["coverage"])
+  })
+
+  it("does not cache a fetched body whose metadata disagrees with authority", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_metadata_mismatch", "Wrong body")
+    const currentPrivateKey = Object.values(current.keys)[0]!
+    const authoritativeId = "mail_authoritative"
+    const records = [{
+      schemaVersion: 1 as const,
+      id: authoritativeId,
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: current.message.receivedAt,
+    }]
+
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records,
+          snapshot: canonicalSnapshot(records),
+        })),
+      },
+      store: { getIndexedMessageById: vi.fn(async () => current.message) } as never,
+      privateKeys: { mail_metadata_mismatch: currentPrivateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ fetched: 1, alreadyCached: 0, skipped: 1 }))
+    expect(fs.readdirSync(cacheRoot)).toEqual(["coverage"])
+    expect(searchMailCacheIds(cacheOptions)).toEqual([])
+  })
+
   it("merges cached and imported search docs newest-first, dedupes ids, and respects the limit", async () => {
     const { mergeCachedMailSearchDocuments } = await import("../../repertoire/tools-mail")
 
@@ -1087,7 +1593,7 @@ describe("hosted mail tools", () => {
       `${JSON.stringify({ ...staleVisible, textProjectionVersion: 1, textExcerpt: "" })}\n`,
       "utf-8",
     )
-    upsertMailSearchCacheDocument({
+    const scopedOrphan = upsertMailSearchCacheDocument({
       ...firstVisible,
       id: "mail_orphan_cached_not_in_visible_index",
       receivedAt: "2026-04-24T17:00:00.000Z",
@@ -1097,6 +1603,8 @@ describe("hosted mail tools", () => {
       text: "This cached document is not in the current visible hosted index.",
       snippet: "Cached orphan",
     })
+    const scopedOrphanPath = path.join(process.env.HOME!, "AgentBundles", "slugger.ouro", "state", "mail-search", `${scopedOrphan.messageId}.json`)
+    const scopedOrphanBytes = fs.readFileSync(scopedOrphanPath)
     const listMessages = vi.fn(async () => {
       throw new Error("hosted full scan should not run after index records are available")
     })
@@ -1156,6 +1664,7 @@ describe("hosted mail tools", () => {
     expect(refresh).toContain("mail search index refreshed.")
     expect(refresh).toContain("visible messages: 2")
     expect(refresh).toContain("fetched this run: 1")
+    expect(fs.readFileSync(scopedOrphanPath)).toEqual(scopedOrphanBytes)
 
     const hit = await searchTool!.handler({
       query: "REBOOK42",

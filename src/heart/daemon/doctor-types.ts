@@ -6,6 +6,11 @@
  */
 
 import type { RsvpCutoverDeps } from "../../rsvp/cutover"
+import type { HostedMailIndexAuthorityObservation } from "../../mailroom/blob-store"
+
+export type HostedMailAuthorityProbeResult =
+  | { ok: true; observation: HostedMailIndexAuthorityObservation }
+  | { ok: false; definitive: boolean; detail: string }
 
 /** Result status for a single health check. */
 export type DoctorCheckStatus = "pass" | "warn" | "fail"
@@ -55,6 +60,10 @@ export interface DoctorDeps {
   readdirSync: (p: string) => string[]
   /** Get file stats (for permissions, size, and last-write freshness). */
   statSync: (p: string) => { mode: number; size: number; mtimeMs: number }
+  /** Inspect a path without following symlinks when validating repair targets. */
+  lstatSync?: (p: string) => { isDirectory: () => boolean; isFile?: () => boolean; isSymbolicLink: () => boolean }
+  /** Resolve a canonical path when validating repair-target containment. */
+  realpathSync?: (p: string) => string
   /** Check whether the daemon socket is alive. */
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   /** Optional fetch implementation used for active network diagnostics. */
@@ -75,4 +84,6 @@ export interface DoctorDeps {
   rsvpCutoverLegacyRoot?: string
   /** Optional injection for side-effect-free legacy RSVP cutover probes. */
   rsvpCutoverDeps?: RsvpCutoverDeps
+  /** Optional mutation-free hosted index authority probe used by Mailroom diagnostics. */
+  observeHostedMailAuthority?: (agentName: string) => Promise<HostedMailAuthorityProbeResult>
 }

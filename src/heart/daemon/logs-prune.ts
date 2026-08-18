@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "fs"
+import { existsSync, statSync } from "fs"
 import { join } from "path"
 import { randomUUID } from "crypto"
 
@@ -8,7 +8,14 @@ import {
   rotateIfNeeded,
 } from "../../nerves"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentDaemonLogsDir } from "../identity"
+import { getAgentBundlesRoot } from "../identity"
+import {
+  resolvePrunableAgentBundle,
+  validatePrunableLogEntry,
+  validatePrunableLogsDirectory,
+  validatePrunableLogsTarget,
+  type PrunableBundleTarget,
+} from "./prunable-bundle"
 
 /**
  * Apply the current rotation policy to every active `.ndjson` and `.log` file
@@ -35,11 +42,23 @@ export interface PruneDaemonLogsOptions {
   maxGenerations?: number
   /** Override the agent name used to resolve the default logs dir. */
   agentName?: string
+  /** Override the root used to validate an agent-qualified bundle. */
+  bundlesRoot?: string
 }
 
 export interface PruneDaemonLogsResult {
   filesCompacted: number
   bytesFreed: number
+}
+
+function resolveLogsTarget(options: PruneDaemonLogsOptions): { logsDir: string; target?: PrunableBundleTarget } {
+  if (options.logsDir) return { logsDir: options.logsDir }
+  if (!options.agentName) {
+    throw new Error("daemon logs prune requires an explicit agent or an internal logs directory")
+  }
+  const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
+  const target = resolvePrunableAgentBundle({ bundlesRoot, agentName: options.agentName })
+  return { logsDir: target.logsDir, target }
 }
 
 function isActiveLogStream(name: string): boolean {
@@ -53,22 +72,28 @@ function isActiveLogStream(name: string): boolean {
 }
 
 export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaemonLogsResult {
-  /* v8 ignore next -- defensive: tests always pass logsDir to avoid prod paths @preserve */
-  const logsDir = options.logsDir ?? getAgentDaemonLogsDir(options.agentName)
   const maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
   const maxGenerations = options.maxGenerations ?? DEFAULT_MAX_GENERATIONS
   const traceId = randomUUID()
+  let logsDir = options.logsDir ?? "unresolved"
 
   emitNervesEvent({
     component: "nerves",
     event: "nerves.logs_prune_start",
     trace_id: traceId,
     message: "pruning daemon logs",
-    meta: { logsDir, maxSizeBytes, maxGenerations },
+    meta: {
+      logsDir: options.logsDir ?? null,
+      agentName: options.agentName ?? null,
+      maxSizeBytes,
+      maxGenerations,
+    },
   })
 
   let completed = false
   try {
+    const resolved = resolveLogsTarget(options)
+    logsDir = resolved.logsDir
     if (!existsSync(logsDir)) {
       completed = true
       emitNervesEvent({
@@ -81,6 +106,11 @@ export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaem
       return { filesCompacted: 0, bytesFreed: 0 }
     }
 
+    const inspection = resolved.target
+      ? validatePrunableLogsTarget(resolved.target)
+      : validatePrunableLogsDirectory(logsDir)
+    const { entries, logsReal } = inspection
+
     let filesCompacted = 0
     let bytesFreed = 0
 
@@ -89,10 +119,11 @@ export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaem
     // stream can be a rotation candidate. Legacy generation files are handled
     // inside rotateIfNeeded's generation-shift step, so we skip them here to
     // avoid double-rotating.
-    for (const name of readdirSync(logsDir)) {
+    for (const name of entries) {
       if (!isActiveLogStream(name)) continue
 
       const filePath = join(logsDir, name)
+      validatePrunableLogEntry(filePath, logsReal)
       let sizeBefore: number
       try {
         sizeBefore = statSync(filePath).size

@@ -19,6 +19,7 @@ import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
 import { DEFAULT_NERVES_PROCESS } from "../../nerves/review/core"
+import { isSafePrunableAgentName } from "./prunable-bundle"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -37,6 +38,24 @@ export function extractAgentFlag(args: string[]): { agent?: string; rest: string
   const agent = args[idx + 1]
   const rest = [...args.slice(0, idx), ...args.slice(idx + 2)]
   return { agent, rest }
+}
+
+function parseLogsCommand(args: string[]): OuroCliCommand {
+  if (args.length === 0) return { kind: "daemon.logs" }
+  if (args[0] !== "prune") throw new Error("Usage: ouro logs prune [--agent <name>]")
+
+  const tail = args.slice(1)
+  const agentFlagCount = tail.filter((token) => token === "--agent").length
+  const { agent, rest } = extractAgentFlag(tail)
+  if (
+    agentFlagCount > 1 ||
+    rest.length > 0 ||
+    (agentFlagCount === 1 && !agent) ||
+    (agent !== undefined && !isSafePrunableAgentName(agent))
+  ) {
+    throw new Error("Usage: ouro logs prune [--agent <name>]")
+  }
+  return { kind: "daemon.logs.prune", ...(agent ? { agent } : {}) }
 }
 
 export function extractFacingFlag(args: string[]): { facing?: Facing; rest: string[] } {
@@ -1075,7 +1094,19 @@ function parseConnectCommand(args: string[]): OuroCliCommand {
 
 function parseMailCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
-  const usageText = "Usage: ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]"
+  const usageText = "Usage: ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]\n       ouro mail sync-cache [--agent <name>]"
+  if (sub === "sync-cache") {
+    const agentFlagCount = subArgs.filter((token) => token === "--agent").length
+    const { agent, rest } = extractAgentFlag(subArgs)
+    if (
+      agentFlagCount > 1 ||
+      rest.length > 0 ||
+      (agentFlagCount === 1 && (!agent || agent.trim().length === 0 || agent.trim().startsWith("--")))
+    ) {
+      throw new Error("Usage: ouro mail sync-cache [--agent <name>]")
+    }
+    return { kind: "mail.sync-cache", ...(agent ? { agent } : {}) }
+  }
   if (sub === "backfill-indexes") {
     const { agent, rest } = extractAgentFlag(subArgs)
     let foreground = false
@@ -2397,10 +2428,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "provider") return parseProviderCommand(args.slice(1))
   if (head === "mail") return parseMailCommand(args.slice(1))
   if (head === "dns") return parseDnsCommand(args.slice(1))
-  if (head === "logs") {
-    if (second === "prune") return { kind: "daemon.logs.prune" }
-    return { kind: "daemon.logs" }
-  }
+  if (head === "logs") return parseLogsCommand(args.slice(1))
   if (head === "mailbox" || head === "outlook") return { kind: "mailbox", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))

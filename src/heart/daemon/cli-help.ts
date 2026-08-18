@@ -57,7 +57,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   logs: {
     category: "Lifecycle",
     description: "View or prune daemon logs",
-    usage: "ouro logs [prune]",
+    usage: "ouro logs | ouro logs prune --agent <name>",
     example: "ouro logs",
     subcommands: ["prune"],
   },
@@ -278,10 +278,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   mail: {
     category: "Auth",
-    description: "Import delegated mail and repair hosted Mailroom mailbox indexes",
-    usage: "ouro mail <import-mbox|backfill-indexes> [--agent <name>]",
+    description: "Import delegated mail and repair hosted Mailroom indexes or local search cache",
+    usage: "ouro mail <import-mbox|backfill-indexes|sync-cache> [--agent <name>]",
     example: "ouro mail import-mbox --discover --owner-email you@example.com --source hey --agent <agent>",
-    subcommands: ["import-mbox", "backfill-indexes"],
+    subcommands: ["import-mbox", "backfill-indexes", "sync-cache"],
   },
   use: {
     category: "Auth",
@@ -557,6 +557,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Rebuild hosted blob mailbox indexes for faster recent-mail reads after large legacy imports or drift repair.",
     usage: "ouro mail backfill-indexes [--agent <name>] [--foreground]",
     example: "ouro mail backfill-indexes --agent <agent>",
+  },
+  "mail sync-cache": {
+    description: "Converge the local decrypted search cache against complete hosted Mailroom authority in the foreground.",
+    usage: "ouro mail sync-cache [--agent <name>]",
+    example: "ouro mail sync-cache --agent <agent>",
   },
   "provider refresh": {
     description: "Reload this agent's provider credentials from its vault into the running daemon",

@@ -1,5 +1,4 @@
 import fs from "node:fs"
-import { createHash } from "node:crypto"
 import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "@ouro.bot/friends"
 import { decryptMessages, type MailAccessLogEntry, type MailAccessLogListing, type MailListFilters, type MailMessageIndexRecord, type MailroomStore } from "../mailroom/file-store"
@@ -13,7 +12,6 @@ import {
   snapshotMailSearchCacheForFilters,
   snapshotMailSearchCache,
   upsertMailSearchCacheDocument,
-  writeMailSearchCoverageRecord,
   type MailSearchCacheDocument,
   type MailSearchCacheOptions,
   type MailSearchCacheSnapshot,
@@ -42,6 +40,8 @@ import { getCredentialStore } from "./credential-access"
 import { listBackgroundOperations, type BackgroundOperationRecord } from "../heart/background-operations"
 import { defaultMailImportDiscoveryDirs, listDiscoveredMboxCandidates, type DiscoveredMboxCandidate } from "../heart/mail-import-discovery"
 import { getAgentRoot, getRepoRoot } from "../heart/identity"
+import { canonicalMailIndexRecordSnapshot, type MailIndexRecordSnapshot } from "../mailroom/blob-store"
+import { syncHostedMailSearchCache } from "../mailroom/hosted-cache-sync"
 
 interface MailDecryptSkip {
   messageId: string
@@ -52,16 +52,6 @@ interface VisibleMailDecryptResult {
   decrypted: DecryptedMailMessage[]
   skipped: MailDecryptSkip[]
 }
-
-interface MailSearchCoverageSnapshot {
-  visibleMessageCount: number
-  messageIndexFingerprint: string
-  oldestReceivedAt?: string
-  newestReceivedAt?: string
-}
-
-const MAIL_SEARCH_INDEX_FETCH_CONCURRENCY = 80
-const MAIL_SEARCH_INDEX_BATCH_SIZE = 500
 
 function trustAllowsMailRead(ctx: Parameters<ToolDefinition["handler"]>[1]): boolean {
   const trustLevel = ctx?.context?.friend?.trustLevel
@@ -382,27 +372,6 @@ function appendDelegatedSearchCoverage(
   ].join("\n\n")
 }
 
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  /* v8 ignore next -- refresh callers pass only non-empty slices into the worker pool. @preserve */
-  if (items.length === 0) return []
-  const results = new Array<R>(items.length)
-  let nextIndex = 0
-  const workerLoop = async () => {
-    while (true) {
-      const current = nextIndex
-      nextIndex += 1
-      if (current >= items.length) return
-      results[current] = await worker(items[current]!, current)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => workerLoop()))
-  return results
-}
-
 function mailListFilters(input: {
   agentId: string
   placement?: MailPlacement
@@ -437,32 +406,9 @@ function mailSearchCoverageKey(input: {
   }
 }
 
-function mailSearchCacheDocumentNeedsProjectionRefresh(document: MailSearchCacheDocument): boolean {
-  if (document.textProjectionVersion === MAIL_SEARCH_TEXT_PROJECTION_VERSION) return false
-  return document.textExcerpt.trim().length === 0
-}
-
-function mailSearchCoverageSnapshot(records: MailMessageIndexRecord[]): MailSearchCoverageSnapshot {
-  const normalizedRecords = records
-    .map((record) => ({
-      id: record.id,
-      receivedAt: record.receivedAt,
-      placement: record.placement,
-      compartmentKind: record.compartmentKind,
-      source: record.source?.toLowerCase() ?? null,
-    }))
-    .sort((left, right) => left.id.localeCompare(right.id))
-  return {
-    visibleMessageCount: records.length,
-    messageIndexFingerprint: createHash("sha256").update(JSON.stringify(normalizedRecords)).digest("hex"),
-    ...(oldestReceivedAt(records) ? { oldestReceivedAt: oldestReceivedAt(records) } : {}),
-    ...(newestReceivedAt(records) ? { newestReceivedAt: newestReceivedAt(records) } : {}),
-  }
-}
-
 function mailSearchCoverageStalenessReason(
   record: MailSearchCoverageRecord | null,
-  currentSnapshot: MailSearchCoverageSnapshot | null,
+  currentSnapshot: MailIndexRecordSnapshot | null,
 ): string {
   if (!record) return "hosted search index incomplete"
   if (record.textProjectionVersion !== MAIL_SEARCH_TEXT_PROJECTION_VERSION) return "hosted search index needs projection refresh"
@@ -481,7 +427,7 @@ function mailSearchCoverageStalenessReason(
 
 function mailSearchCoverageIsCurrent(
   record: MailSearchCoverageRecord | null,
-  currentSnapshot: MailSearchCoverageSnapshot | null,
+  currentSnapshot: MailIndexRecordSnapshot | null,
 ): record is MailSearchCoverageRecord {
   return mailSearchCoverageStalenessReason(record, currentSnapshot) === ""
 }
@@ -496,122 +442,6 @@ function mailSearchCoverageUnsearchableReason(record: MailSearchCoverageRecord |
   if (unsearchableCount === 0) return ""
   const noun = unsearchableCount === 1 ? "message was" : "messages were"
   return `${unsearchableCount} visible ${noun} not searchable because the index skipped missing/decryption-key mail`
-}
-
-function newestReceivedAt(records: MailMessageIndexRecord[]): string | undefined {
-  return records.reduce<string | undefined>((newest, record) => {
-    if (!newest || Date.parse(record.receivedAt) > Date.parse(newest)) return record.receivedAt
-    return newest
-  }, undefined)
-}
-
-function oldestReceivedAt(records: MailMessageIndexRecord[]): string | undefined {
-  return records.reduce<string | undefined>((oldest, record) => {
-    if (!oldest || Date.parse(record.receivedAt) < Date.parse(oldest)) return record.receivedAt
-    return oldest
-  }, undefined)
-}
-
-async function refreshMailSearchIndex(input: {
-  agentId: string
-  store: MailroomStore
-  privateKeys: Record<string, string>
-  storeKind: string
-  cacheOptions?: MailSearchCacheOptions
-  placement?: MailPlacement
-  scope?: "native" | "delegated"
-  source?: string
-}): Promise<{ coverage: MailSearchCoverageRecord; fetched: number; alreadyCached: number }> {
-  const filters = mailListFilters(input)
-  const indexedRecords = await input.store.listMessageIndexRecords?.(filters)
-  const visibleRecords = indexedRecords ?? (await input.store.listMessages(filters)).map((message) => ({
-    schemaVersion: 1 as const,
-    id: message.id,
-    agentId: message.agentId,
-    compartmentKind: message.compartmentKind,
-    placement: message.placement,
-    ...(message.source ? { source: message.source } : {}),
-    receivedAt: message.receivedAt,
-  }))
-  const visibleIds = new Set(visibleRecords.map((record) => record.id))
-  const coverageSnapshot = mailSearchCoverageSnapshot(visibleRecords)
-  const cachedForScope = searchMailSearchCache({
-    agentId: input.agentId,
-    placement: input.placement,
-    compartmentKind: input.scope,
-    source: input.source,
-  }, input.cacheOptions)
-  const cachedVisibleIds = new Set(cachedForScope
-    .filter((document) => visibleIds.has(document.messageId))
-    .filter((document) => !mailSearchCacheDocumentNeedsProjectionRefresh(document))
-    .map((document) => document.messageId))
-  const idsToFetch = visibleRecords
-    .filter((record) => !cachedVisibleIds.has(record.id))
-    .map((record) => record.id)
-  const failures: Array<{ id: string; error: string }> = []
-  let fetchedCount = 0
-  let skippedCount = 0
-  for (let start = 0; start < idsToFetch.length; start += MAIL_SEARCH_INDEX_BATCH_SIZE) {
-    const batchIds = idsToFetch.slice(start, start + MAIL_SEARCH_INDEX_BATCH_SIZE)
-    const fetchedMessages = await mapWithConcurrency(batchIds, MAIL_SEARCH_INDEX_FETCH_CONCURRENCY, async (id) => {
-      try {
-        const message = input.store.getIndexedMessageById
-          ? await input.store.getIndexedMessageById(id)
-          : await input.store.getMessage(id)
-        return { id, message, error: message ? null : "indexed message was not retrievable" }
-      } catch (error) {
-        return { id, message: null, error: error instanceof Error ? error.message : String(error) }
-      }
-    })
-    failures.push(...fetchedMessages.filter((entry): entry is { id: string; message: null; error: string } => entry.error !== null))
-    const fetchedStored = fetchedMessages
-      .map((entry) => entry.message)
-      .filter((message): message is StoredMailMessage => message !== null)
-    const result = decryptVisibleMessages(fetchedStored, input.privateKeys)
-    cacheDecryptedMessages(result.decrypted, input.cacheOptions)
-    fetchedCount += fetchedStored.length
-    skippedCount += result.skipped.length
-    emitNervesEvent({
-      component: "repertoire",
-      event: "repertoire.mail_search_index_refresh_progress",
-      message: "mail search index refresh cached a batch",
-      meta: {
-        agentId: input.agentId,
-        fetched: fetchedCount,
-        totalToFetch: idsToFetch.length,
-        alreadyCached: cachedVisibleIds.size,
-        failures: failures.length,
-      },
-    })
-  }
-  const refreshedCachedForScope = searchMailSearchCache({
-    agentId: input.agentId,
-    placement: input.placement,
-    compartmentKind: input.scope,
-    source: input.source,
-  }, input.cacheOptions).filter((document) => visibleIds.has(document.messageId))
-  if (failures.length > 0) {
-    const sample = failures.slice(0, 3).map((entry) => `${entry.id}: ${entry.error}`).join("; ")
-    throw new Error(`mail search index refresh incomplete after fetching ${fetchedCount}/${idsToFetch.length} missing message(s); ${failures.length} fetch failed. first failure(s): ${sample}`)
-  }
-  const coverage = writeMailSearchCoverageRecord({
-    schemaVersion: 1,
-    ...mailSearchCoverageKey(input),
-    indexedAt: new Date().toISOString(),
-    visibleMessageCount: visibleRecords.length,
-    cachedMessageCount: refreshedCachedForScope.length,
-    decryptableMessageCount: refreshedCachedForScope.length,
-    skippedMessageCount: skippedCount,
-    messageIndexFingerprint: coverageSnapshot.messageIndexFingerprint,
-    textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
-    ...(coverageSnapshot.oldestReceivedAt ? { oldestReceivedAt: coverageSnapshot.oldestReceivedAt } : {}),
-    ...(coverageSnapshot.newestReceivedAt ? { newestReceivedAt: coverageSnapshot.newestReceivedAt } : {}),
-  }, input.cacheOptions)
-  return {
-    coverage,
-    fetched: fetchedCount,
-    alreadyCached: cachedVisibleIds.size,
-  }
 }
 
 function accessProvenance(message: StoredMailMessageBase): Pick<MailAccessLogEntry, "mailboxRole" | "compartmentKind" | "ownerEmail" | "source"> {
@@ -1525,7 +1355,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           storeKind: resolved.storeKind,
         }), cacheOptions)
         : null
-      let currentCoverageSnapshot: MailSearchCoverageSnapshot | null = null
+      let currentCoverageSnapshot: MailIndexRecordSnapshot | null = null
       let coverageValidationError: string | undefined
       let currentIndexRecords: MailMessageIndexRecord[] = []
       let currentIndexRecordsLoaded = false
@@ -1545,7 +1375,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       }
       if (hostedDelegatedSearch && storedCoverageRecord) {
         if (currentIndexRecordsLoaded) {
-          currentCoverageSnapshot = mailSearchCoverageSnapshot(currentIndexRecords)
+          currentCoverageSnapshot = canonicalMailIndexRecordSnapshot(currentIndexRecords)
         } else if (!coverageValidationError) {
           coverageValidationError = "hosted store does not expose message index records"
         }
@@ -1731,8 +1561,9 @@ export const mailToolDefinitions: ToolDefinition[] = [
         : requestedScope ?? (args.source ? "delegated" : (familyOrAgentSelf(ctx) ? undefined : "native"))
       try {
         const cacheOptions = mailSearchCacheOptionsForStore(resolved.store)
-        const refreshed = await refreshMailSearchIndex({
+        const refreshed = await syncHostedMailSearchCache({
           agentId: resolved.agentName,
+          mode: "scoped-upsert",
           store: resolved.store,
           privateKeys: resolved.config.privateKeys,
           storeKind: resolved.storeKind,

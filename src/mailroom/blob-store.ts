@@ -1,4 +1,5 @@
 import { BlobServiceClient } from "@azure/storage-blob"
+import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   buildEncryptedStoredMailMessage,
@@ -44,6 +45,26 @@ export interface AzureBlobMailroomStoreOptions {
   blobOperationTimeoutMs?: number
   messageFetchConcurrency?: number
   backfillConcurrency?: number
+}
+
+export interface MailIndexRecordSnapshot {
+  visibleMessageCount: number
+  messageIndexFingerprint: string
+  oldestReceivedAt?: string
+  newestReceivedAt?: string
+}
+
+export interface HostedMailIndexAuthorityObservation {
+  totalNameCount: number
+  parsedRecordCount: number
+  parseFailureCount: number
+  duplicateIds: string[]
+  records: MailMessageIndexRecord[]
+  snapshot: MailIndexRecordSnapshot
+}
+
+export interface HostedMailIndexAuthorityReader {
+  observeMessageIndexAuthority(agentId: string): Promise<HostedMailIndexAuthorityObservation>
 }
 
 interface DownloadBlobClientLike {
@@ -111,7 +132,7 @@ async function withBlobOperationTimeout<T>(timeoutMs: number, operation: (abortS
   }
 }
 
-function normalizeBlobOperationError(action: "download" | "upload", blob: { name?: string }, timeoutMs: number, error: unknown): Error {
+function normalizeBlobOperationError(action: "download" | "upload" | "list", blob: { name?: string }, timeoutMs: number, error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error)
   if ((error instanceof Error && error.name === "AbortError") || message.toLowerCase().includes("aborted")) {
     return new Error(`${action} ${blobClientName(blob)} timed out after ${timeoutMs}ms`)
@@ -247,18 +268,51 @@ function parseMessageIndexBlobName(name: string): MailMessageIndexRecord | null 
   const agentId = parts[1]
   const stem = parts[2]!.slice(0, -5)
   const [sortKey, compartmentKind, placement, sourceToken, ...idParts] = stem.split("__")
-  if (!sortKey || !compartmentKind || !placement || !sourceToken || idParts.length === 0) return null
+  const id = idParts.join("__")
+  if (!agentId || !sortKey || !compartmentKind || !placement || !sourceToken || !id) return null
+  if (!/^\d{13}$/.test(sortKey)) return null
   if (compartmentKind !== "native" && compartmentKind !== "delegated") return null
-  const receivedAtMs = MESSAGE_INDEX_SORT_MAX_MS - Number.parseInt(sortKey, 10)
+  if (!(["imbox", "screener", "discarded", "quarantine", "draft", "sent"] as const).includes(placement as MailPlacement)) return null
+  const decodedSource = decodeSourceToken(sourceToken)
+  const receivedAtMs = MESSAGE_INDEX_SORT_MAX_MS - Number(sortKey)
   return {
     schemaVersion: 1,
-    id: idParts.join("__"),
+    id,
     agentId,
     compartmentKind,
     placement: placement as MailPlacement,
-    ...(decodeSourceToken(sourceToken) ? { source: decodeSourceToken(sourceToken) } : {}),
-    receivedAt: Number.isFinite(receivedAtMs) ? new Date(receivedAtMs).toISOString() : new Date(0).toISOString(),
+    ...(decodedSource ? { source: decodedSource } : {}),
+    receivedAt: new Date(receivedAtMs).toISOString(),
   }
+}
+
+function canonicalIndexRecord(record: MailMessageIndexRecord) {
+  return {
+    id: record.id,
+    receivedAt: record.receivedAt,
+    placement: record.placement,
+    compartmentKind: record.compartmentKind,
+    source: record.source?.toLowerCase() ?? null,
+  }
+}
+
+export function canonicalMailIndexRecordSnapshot(records: readonly MailMessageIndexRecord[]): MailIndexRecordSnapshot {
+  const normalizedRecords = records
+    .map(canonicalIndexRecord)
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+  const receivedTimes = records
+    .map((record) => record.receivedAt)
+    .sort((left, right) => Date.parse(left) - Date.parse(right))
+  return {
+    visibleMessageCount: records.length,
+    messageIndexFingerprint: createHash("sha256").update(JSON.stringify(normalizedRecords)).digest("hex"),
+    ...(receivedTimes[0] ? { oldestReceivedAt: receivedTimes[0] } : {}),
+    ...(receivedTimes.at(-1) ? { newestReceivedAt: receivedTimes.at(-1) } : {}),
+  }
+}
+
+function canonicalMailIndexRecordOrder(left: MailMessageIndexRecord, right: MailMessageIndexRecord): number {
+  return JSON.stringify(canonicalIndexRecord(left)).localeCompare(JSON.stringify(canonicalIndexRecord(right)))
 }
 
 function sourceMatchesFilter(source: string | undefined, filter: string | undefined): boolean {
@@ -405,6 +459,67 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return applyOptionalLimit(sorted, filters.limit)
   }
 
+  async observeMessageIndexAuthority(agentId: string): Promise<HostedMailIndexAuthorityObservation> {
+    const prefix = messageIndexPrefix(agentId)
+    const operationTimeout = timeoutSignal(this.blobOperationTimeoutMs)
+    const records: MailMessageIndexRecord[] = []
+    let totalNameCount = 0
+    let parseFailureCount = 0
+    try {
+      for await (const item of this.container.listBlobsFlat({ prefix, abortSignal: operationTimeout.signal })) {
+        totalNameCount += 1
+        let parsed: MailMessageIndexRecord | null = null
+        try {
+          parsed = parseMessageIndexBlobName(item.name)
+        } catch {
+          parsed = null
+        }
+        if (!parsed) {
+          parseFailureCount += 1
+          continue
+        }
+        records.push(parsed)
+      }
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+      if ((error instanceof Error && error.name === "AbortError") || message.includes("aborted")) {
+        throw normalizeBlobOperationError("list", { name: prefix }, this.blobOperationTimeoutMs, error)
+      }
+      throw error
+    } finally {
+      operationTimeout.dispose()
+    }
+
+    records.sort(canonicalMailIndexRecordOrder)
+    const counts = new Map<string, number>()
+    for (const record of records) counts.set(record.id, (counts.get(record.id) ?? 0) + 1)
+    const duplicateIds = [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([id]) => id)
+      .sort((left, right) => left.localeCompare(right))
+    const observation = {
+      totalNameCount,
+      parsedRecordCount: records.length,
+      parseFailureCount,
+      duplicateIds,
+      records,
+      snapshot: canonicalMailIndexRecordSnapshot(records),
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_store_authority_observed",
+      message: "azure blob mailroom index authority observed",
+      meta: {
+        agentId,
+        totalNameCount,
+        parsedRecordCount: records.length,
+        parseFailureCount,
+        duplicateIdCount: duplicateIds.length,
+      },
+    })
+    return observation
+  }
+
   private async listMessagesFromIndexes(filters: MailListFilters): Promise<StoredMailMessage[] | null> {
     const records = await this.listMessageIndexRecords(filters)
     if (records === null) return null
@@ -538,7 +653,6 @@ export class AzureBlobMailroomStore implements MailroomStore {
   }
 
   async getIndexedMessageById(id: string): Promise<StoredMailMessage | null> {
-    await this.ensureContainer()
     const message = await downloadIndexedJson<StoredMailMessage>(this.messageBlob(id), this.blobOperationTimeoutMs)
     emitNervesEvent({
       component: "senses",

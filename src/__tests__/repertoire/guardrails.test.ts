@@ -109,6 +109,254 @@ describe("guardInvocation — structural guardrails", () => {
     expect(result.allowed).toBe(true)
   })
 
+  it.each([
+    "ouro mail sync-cache --agent slugger",
+    "echo ready && ouro mail sync-cache --agent slugger",
+    "echo ready\nouro mail sync-cache --agent slugger",
+    "ouro mail sync\\-cache --agent slugger",
+    `ouro mail "sync-"cache --agent slugger`,
+    `ouro mail sync'-cache' --agent slugger`,
+    `ou"ro" ma'il' sy"nc-"cache --agent slugger`,
+    `ouro mail $'sync-cache' --agent slugger`,
+    `ouro mail $"sync-cache" --agent slugger`,
+    `ou$'ro' ma$'il' sy$'nc-'cache --agent slugger`,
+    `ou"ro" ma$'il' sy"nc-"cache --agent slugger`,
+    `ou'ro' ma$'il' sy'nc-'cache --agent slugger`,
+    `ou\\ro ma$'il' sy\\nc-\\cache --agent slugger`,
+    "ouro mail $'sync\\x2dcache' --agent slugger",
+    "ou$'\\x72o' mail sync-cache --agent slugger",
+    "ouro mail $'sync\\055cache' --agent slugger",
+    "sh -c $'ouro\\x20mail\\x20sync-cache --agent slugger'",
+    "sh -c $'ouro\\040mail\\040sync-cache --agent slugger'",
+    "eval ouro$'\\x20'mail$'\\x20'sync-cache --agent slugger",
+    "bash -c $'ou\\x72o\\x20mail\\x20sync\\x2dcache --agent slugger'",
+    "command zsh -c $'ouro\\x20mail\\040sync-cache --agent slugger'",
+    "M=mail; ouro $M sync-cache --agent slugger",
+    "C=sync-cache; ouro mail $C --agent slugger",
+    "O=ouro; $O mail sync-cache --agent slugger",
+    "M=mail; ouro ${M} sync-cache --agent slugger",
+    "C=sync-cache; ouro mail \"${C}\" --agent slugger",
+    "O=ouro; \"${O}\" mail sync-cache --agent slugger",
+    "R=ro; ou${R} mail sync-cache --agent slugger",
+    "command $O mail sync-cache --agent slugger",
+    "eval $O mail sync-cache --agent slugger",
+    "eval eval eval eval ouro mail sync-cache --agent slugger",
+    `${"eval ".repeat(33)}ouro mail sync-cache --agent slugger`,
+    `${"$(".repeat(33)}ouro mail sync-cache --agent slugger${")".repeat(33)}`,
+    "ouro ${M:-mail} sync-cache --agent slugger",
+    "M=$X; ouro $M sync-cache --agent slugger",
+    "M=mail; M=recent ouro $M sync-cache --agent slugger",
+    "O=ouro sh -c '$O mail sync-cache --agent slugger'",
+    "command -- ouro mail sync-cache --agent slugger",
+    "env X=y ouro mail sync-cache --agent slugger",
+    "ouro mail sync-cache > /tmp/ouro-sync.out",
+    "echo <(ouro $M sync-cache --agent slugger)",
+    "ouro mail sync-cache$'\\x0a' --agent slugger",
+    "true # cache warmed\nouro mail sync-cache --agent slugger",
+    "true # ignored <<EOF\nouro mail sync-cache --agent slugger",
+    "if true; then ouro mail sync-cache --agent slugger; fi",
+    "for item in one; do ouro mail sync-cache --agent slugger; done",
+    "refresh_cache() { ouro mail sync-cache --agent slugger; }; refresh_cache",
+    "function refresh_cache { ouro mail sync-cache --agent slugger; }; refresh_cache",
+    "coproc ouro mail sync-cache --agent slugger",
+    "coproc CACHE ouro mail sync-cache --agent slugger",
+    "coproc cache_worker ouro mail sync-cache --agent slugger",
+    "/opt/ouro/bin/ouro mail sync-cache --agent slugger",
+    "O=/opt/ouro/bin/ouro; $O mail sync-cache --agent slugger",
+    "D=/opt/ouro/bin; $D/ouro mail sync-cache --agent slugger",
+    "\"$(command -v ouro)\" mail sync-cache --agent slugger",
+    "env -u O ouro mail sync-cache --agent slugger",
+    "env -C /tmp ouro mail sync-cache --agent slugger",
+    "env -S 'ouro mail sync-cache --agent slugger'",
+    "env -S ouro mail sync-cache --agent slugger",
+    "env --split-string 'ouro mail sync-cache --agent slugger'",
+    "env --split-string='ouro mail sync-cache --agent slugger'",
+    "env -S '-u X ouro mail sync-cache --agent slugger'",
+    "env --split-string='--chdir /tmp ouro mail sync-cache --agent slugger'",
+    "/usr/bin/env ouro mail sync-cache --agent slugger",
+    "sudo -u nobody ouro mail sync-cache --agent slugger",
+    ...[
+      ["-C", "4"], ["-D", "/tmp"], ["-g", "staff"], ["-h", "host"], ["-p", "prompt"], ["-R", "/tmp"],
+      ["-r", "role"], ["-T", "30"], ["-t", "type"], ["-U", "other"], ["-u", "nobody"],
+      ["--close-from", "4"], ["--chdir", "/tmp"], ["--group", "staff"], ["--host", "host"],
+      ["--prompt", "prompt"], ["--chroot", "/tmp"], ["--role", "role"], ["--command-timeout", "30"],
+      ["--type", "type"], ["--other-user", "other"], ["--user", "nobody"],
+    ].map(([option, operand]) => `sudo ${option} ${operand} ouro mail sync-cache --agent slugger`),
+    "sudo -gstaff ouro mail sync-cache --agent slugger",
+    "sudo --group=staff ouro mail sync-cache --agent slugger",
+    "sudo -n ouro mail sync-cache --agent slugger",
+    "time -p ouro mail sync-cache --agent slugger",
+    "time -o /tmp/time.out ouro mail sync-cache --agent slugger",
+    "time -f %E ouro mail sync-cache --agent slugger",
+    "time --output /tmp/time.out ouro mail sync-cache --agent slugger",
+    "time --format %E ouro mail sync-cache --agent slugger",
+    "time --output=/tmp/time.out ouro mail sync-cache --agent slugger",
+    "time --format=%E ouro mail sync-cache --agent slugger",
+    "exec -a ouro-sync ouro mail sync-cache --agent slugger",
+    "exec -c ouro mail sync-cache --agent slugger",
+    "/bin/sh -c 'ouro mail sync-cache --agent slugger'",
+    "bash --noprofile -lc 'ouro mail sync-cache --agent slugger'",
+    "bash -O extglob -c 'ouro mail sync-cache --agent slugger'",
+    "cat <<EOF\n$(ouro mail sync-cache --agent slugger)\nEOF",
+    "cat <<EOF\n`ouro mail sync-cache --agent slugger`\nEOF",
+    "values=(`ouro mail sync-cache --agent slugger`)",
+    "cmd=(ouro mail sync-cache); \"${cmd[@]}\" --agent slugger",
+    "cmd=(ouro mail sync-cache); command \"${cmd[@]}\" --agent slugger",
+    "cmd=(ouro mail sync-cache); env \"${cmd[@]}\" --agent slugger",
+    "cmd=(ouro mail sync-cache); sudo \"${cmd[@]}\" --agent slugger",
+    "cmd=(ouro mail sync-cache); eval \"${cmd[*]} --agent slugger\"",
+    "cmd=\"ouro mail sync-cache --agent slugger\"; eval \"$cmd\"",
+    "cmd=\"ouro mail sync-cache --agent slugger\"; sh -c \"$cmd\"",
+    "eval \"$cmd\"",
+    "sh -c \"$cmd\"",
+    "cmd=\"ouro mail sync-cache --agent slugger\"; $cmd",
+    "cmd=(/opt/ouro/bin/ouro mail sync-cache); \"${cmd[@]}\" --agent slugger",
+    "cmd=(echo ok); cmd=(ouro mail sync-cache); \"${cmd[@]}\" --agent slugger",
+    "cmd+=(ouro mail sync-cache); \"${cmd[@]}\" --agent slugger",
+    "cmd=(); cmd+=(ouro mail sync-cache); \"${cmd[@]}\" --agent slugger",
+    "cmd[0]=ouro; cmd[1]=mail; cmd[2]=sync-cache; \"${cmd[@]}\" --agent slugger",
+    "word=ouro; cmd=($word mail sync-cache); \"${cmd[@]}\" --agent slugger",
+    "cmd=($X); ouro mail \"${cmd[@]}\" --agent slugger",
+    "cmd=(*); ouro mail \"${cmd[@]}\" --agent slugger",
+    "cmd=($X); ouro \"${cmd[@]}\" sync-cache --agent slugger",
+    "cmd=(\"ouro mail sync-cache\"); ${cmd[@]} --agent slugger",
+    "cmd=(\"ouro mail\" sync-cache); ${cmd[@]} --agent slugger",
+    "cmd=(ouro \"mail sync-cache\"); ${cmd[@]} --agent slugger",
+    "cmd=(\"ouro mail sync-cache\"); ${cmd[*]} --agent slugger",
+    "cmd=(ro mail sync-cache); \"ou${cmd[@]}\" --agent slugger",
+    "cmd=(ouro mail sync-ca); \"${cmd[@]}che\" --agent slugger",
+    "cmd=(ouro); \"${cmd[@]}\" mail sync-cache --agent slugger",
+    "cmd=(ouro mail); \"${cmd[@]}\" sync-cache --agent slugger",
+    "cmd=(); \"ouro${cmd[@]}\" mail sync-cache --agent slugger",
+    "export cmd='ouro mail sync-cache'; $cmd --agent slugger",
+    "readonly cmd='ouro mail sync-cache'; $cmd --agent slugger",
+    "typeset cmd='ouro mail sync-cache'; $cmd --agent slugger",
+    "$cmd --agent slugger",
+    "word=ouro; cmd=(); cmd[0]=$word; \"${cmd[@]}\" --agent slugger",
+    "\"${cmd[@]}\" --agent slugger",
+    "cmd=(`printf ouro` mail sync-cache); \"${cmd[@]}\" --agent slugger",
+    "cmd=(*); \"${cmd[@]}\" --agent slugger",
+    `${"$(".repeat(33)}ouro mail sync-cache${")".repeat(33)}`,
+    "echo \"$(printf '%s' ')' && (ouro mail sync-cache --agent slugger))\"",
+    "command ouro mail sync-cache --agent slugger",
+    "env ouro mail sync-cache --agent slugger",
+    "sh -c 'ouro mail sync-cache --agent slugger'",
+    "$(ouro mail sync-cache --agent slugger)",
+    "`ouro mail sync-cache --agent slugger`",
+  ])("requires family trust for cache convergence through shell shape %s", async (command) => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const trustLevel of ["stranger", "acquaintance", "friend"] as const) {
+      expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false }))
+    }
+    expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel: "family" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command }, { readPaths: new Set() })).toEqual({ allowed: true })
+  })
+
+  it("preserves friend access to unrelated Ouro commands", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("shell", { command: "ouro status" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "ouro status $'sync\\x2dcache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo $'sync\\x2dcache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "ouro mail $'recent'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "M=recent; ouro mail $M" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "O=echo; $O ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "C=sync-cache; echo $C" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "M=mail; ouro status $M" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "sh -c 'ouro mail recent'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "eval echo ok" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo > /tmp/ouro.out ouro mail $C" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo *.txt" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo ok # ouro mail $C" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo ${" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cat <<'EOF'\nouro mail sync-cache\nEOF" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cat <<EOF\nouro mail sync-cache\nEOF" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cat <<EOF\nouro mail sync-cache $(echo ready)\nEOF" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cat <<-'EOF'\n\touro mail sync-cache\n\tEOF" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "commands=(ouro mail sync-cache); printf '%s\\n' \"${commands[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "commands=(\\`literal); printf '%s\\n' \"${commands[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "printf '%s\\n' \\`ouro mail sync-cache\\`" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "printf '%s\\n' '\\\\# ouro mail sync-cache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo $(" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo `unterminated" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo \\" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: `echo "$(printf '%s' '\\literal' "double" \\x)"` }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo `printf \\x`" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "bash -c" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "env -S" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "coproc" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(\"unterminated); printf ok" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "eval echo ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "env -S echo ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "bash script.sh ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "grep ouro mail sync-cache README.md" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "rg ouro mail sync-cache ." }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "python script.py ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "test ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "git log -- ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "\"$cmd\" --agent slugger" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd='echo; ouro mail sync-cache'; $cmd" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "C='sync-cache; echo'; ouro mail $C" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=\"echo ok\"; eval \"$cmd\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=\"echo ok\"; sh -c \"$cmd\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "ouro mail" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "command -v ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "sudo -g ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "time -o ouro mail sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "env -S '-u X echo ouro mail sync-cache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); cmd=(echo ok); \"${cmd[@]}\" --agent slugger" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(echo); cmd+=(ouro mail sync-cache); \"${cmd[@]}\" --agent slugger" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=\"ouro mail sync-cache\"; \"$cmd\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(\"ouro mail sync-cache\"); \"${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); \"${cmd[*]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); echo \"prefix${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(printf '%s\\n' ok); \"${cmd[@]}suffix\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(rintf '%s\\n' ok); \"p${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(echo ok); \"${cmd[@]}suffix\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(); \"${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(); \"prefix${cmd[@]}suffix\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); \"${cmd[@]}" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", { command: "cmd=(\"*\"); ouro mail ${cmd[@]} sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", { command: "cmd=(echo); \"$(unterminated${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", { command: "cmd=(echo); \"${cmd[@]}suffix\\\\x\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); printf '%s\\n' ${cmd[@]}" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: `printf '%s\\n' "'" '\"'` }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+  })
+
+  it("keeps ordered assignment analysis bounded across 10,000 mutations", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const command = `${"cmd=(echo ok);".repeat(9_999)}cmd=(ouro mail sync-cache); "\${cmd[@]}"`
+    expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+  })
+
+  it("fails closed when the shell-word dependency rejects an otherwise prefiltered fragment", async () => {
+    vi.doMock("shell-quote", async () => {
+      const actual = await vi.importActual<typeof import("shell-quote")>("shell-quote")
+      return {
+        ...actual,
+        parse: (value: string, ...args: Parameters<typeof actual.parse> extends [string, ...infer Rest] ? Rest : never) => {
+          if (value.includes("__THROW__")) throw new Error("synthetic parser rejection")
+          if (value.includes("__EMPTY__")) return []
+          return actual.parse(value, ...args)
+        },
+      }
+    })
+    vi.resetModules()
+
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("shell", {
+      command: "cmd=(__THROW__); \"${cmd[@]}\"",
+    }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", {
+      command: "cmd=(echo); \"__THROW__${cmd[@]}\"",
+    }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", {
+      command: "cmd=(echo); \"__EMPTY__${cmd[@]}\"",
+    }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+
+    vi.doUnmock("shell-quote")
+    vi.resetModules()
+  })
+
   // --- protected paths blocked for writes ---
 
   it("blocks write_file to .git/config", async () => {
