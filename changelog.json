@@ -8,8 +8,8 @@
         "Add read-only hosted-mail authority comparison and a fail-closed foreground command that reconstructs only the local search cache.",
         "Make daemon log pruning explicitly agent-scoped, shell-safe, and fail closed on unknown, symlinked, non-regular, or containment-escaping targets.",
         "Keep doctor repair guidance on the same canonical target preflight enforced by log execution.",
-        "Require hosted-mail cache coverage to match current authority and treat an empty hosted index as unverified instead of proven healthy.",
-        "Keep delegated cache repair family-only across shell quote concatenation and emit paired lifecycle evidence for every local repair success or failure.",
+        "Require hosted-mail cache coverage to match current authority, treat an empty hosted index as unverified, and refuse empty-authority convergence before local mutation.",
+        "Keep delegated cache repair family-only across shell quote concatenation and quote-prefix forms, and emit paired lifecycle evidence for every local repair success or failure.",
         "Document BlueBubbles, mail-cache, and targeted-log recovery as standard Ouro setup and diagnostic behavior."
       ]
     },
