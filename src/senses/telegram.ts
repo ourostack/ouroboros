@@ -50,7 +50,7 @@ export interface CreateTelegramSenseAppOptions {
   approvalRuntime?: TelegramApprovalRuntime
   healthSweep?: (() => Promise<SanctuaryHealthSweepResult>) & {
     markDeliveryAttempting?: (deliveryId: string) => void
-    markDelivered?: (deliveryId: string) => void
+    markDelivered?: (deliveryId: string, messageIds: number[]) => void
   }
 }
 
@@ -105,9 +105,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     try {
       const result = await healthSweep()
       if (result.message) {
-        if (result.deliveryId) healthSweep.markDeliveryAttempting?.(result.deliveryId)
-        await deliver(result.message)
-        if (result.deliveryId) healthSweep.markDelivered?.(result.deliveryId)
+        if (result.deliveryId) await healthSweep.markDeliveryAttempting?.(result.deliveryId)
+        const messageIds = await deliver(result.message)
+        if (result.deliveryId) await healthSweep.markDelivered?.(result.deliveryId, messageIds)
       }
     } catch (error) {
       emitNervesEvent({
@@ -120,8 +120,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
   }
 
-  const deliver = async (text: string, signal?: AbortSignal): Promise<void> => {
-    await sendTelegramText(api, authorizedChatId, text, signal)
+  const deliver = async (text: string, signal?: AbortSignal): Promise<number[]> => {
+    return sendTelegramText(api, authorizedChatId, text, signal)
   }
 
   const onMessage = async (message: TelegramInboundMessage): Promise<void> => {

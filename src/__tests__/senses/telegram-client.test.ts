@@ -357,11 +357,16 @@ describe("Telegram HTML rendering and chunking", () => {
         return { message_id: 7 }
       }),
     }
-    await expect(sendTelegramText(api, "42", "a < b")).resolves.toEqual([{ message_id: 7 }])
+    await expect(sendTelegramText(api, "42", "a < b")).resolves.toEqual([7])
     expect(calls).toEqual([
       { method: "sendMessage", body: { chat_id: "42", text: "a &lt; b", parse_mode: "HTML" } },
       { method: "sendMessage", body: { chat_id: "42", text: "a < b" } },
     ])
+  })
+
+  it("refuses to receipt a sendMessage result without one canonical message id", async () => {
+    const api: TelegramBotApi = { request: vi.fn(async () => ({ ok: true })), stop: vi.fn() }
+    await expect(sendTelegramText(api, "42", "hello")).rejects.toThrow("message_id")
   })
 
   it("does not retry non-400 failures or retry a failed plaintext fallback", async () => {

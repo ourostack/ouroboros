@@ -51,21 +51,44 @@ describe("Sanctuary deterministic health sweep", () => {
     expect(opened.message).toContain("calibre-web")
     expect(opened.deliveryId).toBeTypeOf("string")
     expect((await broken())).toMatchObject({ message: opened.message, deliveryId: opened.deliveryId })
-    broken.markDeliveryAttempting(opened.deliveryId!)
+    await broken.markDeliveryAttempting(opened.deliveryId!)
     const restarted = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now })
     expect((await restarted()).message).toBeNull()
     clock = new Date("2026-08-19T18:00:00.000Z")
     const nextDigest = await restarted()
     expect(nextDigest.deliveryId).not.toBe(opened.deliveryId)
     expect(nextDigest.message).toContain("prior Telegram delivery was indeterminate")
-    restarted.markDelivered(nextDigest.deliveryId!)
+    await restarted.markDeliveryAttempting(nextDigest.deliveryId!)
+    await restarted.markDelivered(nextDigest.deliveryId!, [7001])
+    expect(JSON.parse(fs.readFileSync(statePath, "utf8")).deliveredReceipts).toEqual([
+      expect.objectContaining({ deliveryId: nextDigest.deliveryId, messageIds: [7001] }),
+    ])
     expect((await broken()).message).toBeNull()
 
     const healthy = createSanctuaryHealthSweep({ toolContext: context("running"), statePath, fetch, now })
     const recovered = await healthy()
     expect(recovered.message).toContain("recovered")
-    healthy.markDelivered(recovered.deliveryId!)
+    await healthy.markDeliveryAttempting(recovered.deliveryId!)
+    await healthy.markDelivered(recovered.deliveryId!, [7002])
     expect((await healthy()).message).toBeNull()
+  })
+
+  it("serializes overlapping sweeps so they share one durable delivery", async () => {
+    const statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-overlap-")), "state.json")
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const toolContext = context("exited")
+    toolContext.sanctuary.listContainers.mockImplementationOnce(async () => {
+      await gate
+      return { ok: true, data: { containers: [{ id: "Docker:a", name: "calibre-web", autostart: true, state: "exited", exitCode: 1, degraded: false, status: "Exited" }], truncated: false } }
+    })
+    const sweep = createSanctuaryHealthSweep({ toolContext, statePath, fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })), now: () => new Date("2026-08-18T18:00:00.000Z") })
+    const first = sweep()
+    const second = sweep()
+    release()
+    const [left, right] = await Promise.all([first, second])
+    expect(right.deliveryId).toBe(left.deliveryId)
+    expect(toolContext.sanctuary.listContainers).toHaveBeenCalledTimes(1)
   })
 
   it("reports a named mandate container down even when Unraid autostart is disabled", async () => {

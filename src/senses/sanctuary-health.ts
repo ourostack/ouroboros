@@ -26,6 +26,7 @@ interface HealthState {
   updatedAt: string
   outbox: HealthDelivery | null
   indeterminateDeliveries: HealthDelivery[]
+  deliveredReceipts: Array<{ deliveryId: string; messageIds: number[]; deliveredAt: string }>
 }
 
 export interface SanctuaryHealthSweepResult {
@@ -36,8 +37,24 @@ export interface SanctuaryHealthSweepResult {
 
 export interface SanctuaryHealthSweep {
   (): Promise<SanctuaryHealthSweepResult>
-  markDeliveryAttempting(deliveryId: string): void
-  markDelivered(deliveryId: string): void
+  markDeliveryAttempting(deliveryId: string): Promise<void>
+  markDelivered(deliveryId: string, messageIds: number[]): Promise<void>
+}
+
+const healthLockTails = new Map<string, Promise<void>>()
+
+async function withHealthLock<T>(statePath: string, operation: () => Promise<T> | T): Promise<T> {
+  const previous = healthLockTails.get(statePath) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  healthLockTails.set(statePath, current)
+  await previous
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (healthLockTails.get(statePath) === current) healthLockTails.delete(statePath)
+  }
 }
 
 function load(filePath: string): HealthState {
@@ -57,16 +74,22 @@ function load(filePath: string): HealthState {
     if (value.indeterminateDeliveries !== undefined && (
       !Array.isArray(value.indeterminateDeliveries) || !value.indeterminateDeliveries.every(validDelivery)
     )) throw new Error("invalid indeterminate deliveries")
+    if (value.deliveredReceipts !== undefined && (!Array.isArray(value.deliveredReceipts) || !value.deliveredReceipts.every((receipt) => (
+      receipt && typeof receipt.deliveryId === "string" && typeof receipt.deliveredAt === "string"
+      && Array.isArray(receipt.messageIds) && receipt.messageIds.length > 0
+      && receipt.messageIds.every((id) => Number.isSafeInteger(id) && id > 0)
+    )))) throw new Error("invalid delivered receipts")
     return {
       incidents: value.incidents as Record<string, Incident>,
       lastDigestDay: value.lastDigestDay,
       updatedAt: value.updatedAt,
       outbox: value.outbox ?? null,
       indeterminateDeliveries: value.indeterminateDeliveries ?? [],
+      deliveredReceipts: value.deliveredReceipts ?? [],
     }
   }
   catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { incidents: {}, lastDigestDay: null, updatedAt: new Date(0).toISOString(), outbox: null, indeterminateDeliveries: [] }
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { incidents: {}, lastDigestDay: null, updatedAt: new Date(0).toISOString(), outbox: null, indeterminateDeliveries: [], deliveredReceipts: [] }
     throw new Error("Sanctuary health state is corrupt", { cause: error })
   }
 }
@@ -125,7 +148,7 @@ export function createSanctuaryHealthSweep(options: {
 }): SanctuaryHealthSweep {
   const fetchImpl = options.fetch ?? fetch
   const now = options.now ?? (() => new Date())
-  const sweep = async (): Promise<SanctuaryHealthSweepResult> => {
+  const runSweep = async (): Promise<SanctuaryHealthSweepResult> => {
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_start", message: "Sanctuary deterministic health sweep started", meta: { statePath: options.statePath } })
     const pendingState = load(options.statePath)
     if (pendingState.outbox?.status === "pending") {
@@ -199,27 +222,34 @@ export function createSanctuaryHealthSweep(options: {
       updatedAt: now().toISOString(),
       outbox: delivery,
       indeterminateDeliveries: digestDue ? [] : previous.indeterminateDeliveries,
+      deliveredReceipts: previous.deliveredReceipts,
     }
     save(options.statePath, next)
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue } })
     return { message, incidents: Object.values(current), ...(delivery ? { deliveryId: delivery.id } : {}) }
   }
 
-  sweep.markDeliveryAttempting = (deliveryId: string): void => {
+  const sweep = (() => withHealthLock(options.statePath, runSweep)) as SanctuaryHealthSweep
+
+  sweep.markDeliveryAttempting = (deliveryId: string): Promise<void> => withHealthLock(options.statePath, () => {
     const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId) throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
+    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
     state.outbox.status = "attempting"
     state.updatedAt = now().toISOString()
     save(options.statePath, state)
-  }
+  })
 
-  sweep.markDelivered = (deliveryId: string): void => {
+  sweep.markDelivered = (deliveryId: string, messageIds: number[]): Promise<void> => withHealthLock(options.statePath, () => {
+    if (!Array.isArray(messageIds) || messageIds.length < 1 || !messageIds.every((id) => Number.isSafeInteger(id) && id > 0)) {
+      throw new Error("Sanctuary health delivery receipt requires canonical Telegram message ids")
+    }
     const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId) throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
+    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "attempting") throw new Error(`Sanctuary health delivery ${deliveryId} is not attempting`)
+    state.deliveredReceipts = [...state.deliveredReceipts, { deliveryId, messageIds: [...messageIds], deliveredAt: now().toISOString() }].slice(-100)
     state.outbox = null
     state.updatedAt = now().toISOString()
     save(options.statePath, state)
-  }
+  })
 
   return sweep
 }

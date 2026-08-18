@@ -99,8 +99,8 @@ describe("Telegram sense", () => {
     const healthSweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
       {
-        markDeliveryAttempting: vi.fn(() => { order.push("attempting") }),
-        markDelivered: vi.fn(() => { order.push("delivered") }),
+        markDeliveryAttempting: vi.fn(async () => { order.push("attempting") }),
+        markDelivered: vi.fn(async () => { order.push("delivered") }),
       },
     )
     const f = fixture({ healthSweep })

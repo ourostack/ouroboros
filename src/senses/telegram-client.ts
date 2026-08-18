@@ -578,18 +578,25 @@ export async function sendTelegramText(
   chatId: string,
   text: string,
   signal?: AbortSignal,
-): Promise<unknown[]> {
-  const results: unknown[] = []
+): Promise<number[]> {
+  const results: number[] = []
+  const recordMessageId = (value: unknown): void => {
+    const messageId = value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { message_id?: unknown }).message_id
+      : undefined
+    if (!Number.isSafeInteger(messageId) || (messageId as number) < 1) throw new TelegramApiError("Telegram sendMessage result omitted a canonical message_id")
+    results.push(messageId as number)
+  }
   for (const chunk of splitTelegramText(text)) {
     try {
-      results.push(await api.request("sendMessage", {
+      recordMessageId(await api.request("sendMessage", {
         chat_id: chatId,
         text: escapeTelegramHtml(chunk),
         parse_mode: "HTML",
       }, signal))
     } catch (error) {
       if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-      results.push(await api.request("sendMessage", { chat_id: chatId, text: chunk }, signal))
+      recordMessageId(await api.request("sendMessage", { chat_id: chatId, text: chunk }, signal))
     }
   }
   return results
