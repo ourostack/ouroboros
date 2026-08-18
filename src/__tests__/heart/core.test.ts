@@ -9161,7 +9161,7 @@ describe("integration: kick + tool_choice required combined", () => {
     expect(toolMessage).toBeDefined()
     // The result should come from the graph_profile handler (not "unknown")
     expect(toolMessage.content).not.toContain("unknown")
-  }, 10_000)
+  })
 })
 
 describe("tool_choice forcing after kick (Bug 4)", () => {
