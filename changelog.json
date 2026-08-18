@@ -9,7 +9,7 @@
         "Make daemon log pruning explicitly agent-scoped, shell-safe, and fail closed on unknown, symlinked, non-regular, or containment-escaping targets.",
         "Keep doctor repair guidance on the same canonical target preflight enforced by log execution.",
         "Require hosted-mail cache coverage and liveness to follow fresh current authority, keep quiet old state healthy, treat transient or empty authority as unverified, and refuse empty-authority convergence before local mutation.",
-        "Keep delegated cache repair family-only across shell quote concatenation, quote-prefix forms, variable/parameter expansion, wrappers, encoded scripts, and ambiguous ANSI-C escape synthesis without blocking unrelated commands; reject malformed or duplicate cache-sync agent flags and emit paired lifecycle evidence for every local repair success or failure.",
+        "Keep delegated cache repair family-only across shell quote concatenation, compound grammar, ordered scalar/array expansion, path-qualified executables, wrappers, encoded scripts, and ambiguous ANSI-C escape synthesis without blocking unrelated argument data; bound recursive and large-input classification, reject malformed or duplicate cache-sync agent flags, and emit paired lifecycle evidence for every local repair success or failure.",
         "Document BlueBubbles, mail-cache, and targeted-log recovery as standard Ouro setup and diagnostic behavior."
       ]
     },
