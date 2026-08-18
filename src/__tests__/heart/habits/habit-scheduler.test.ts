@@ -1774,6 +1774,7 @@ describe("HabitScheduler", () => {
         osCronManager: cronManager,
         onHabitFire,
         deps,
+        platform: "darwin",
       })
 
       scheduler.start()
