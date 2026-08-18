@@ -1,4 +1,3 @@
-import { existsSync, lstatSync, readdirSync, realpathSync } from "fs"
 import { basename, dirname, join } from "path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -40,8 +39,17 @@ export interface ResolvePrunableBundleOptions extends PrunableBundleOptions {
   agentName: string
 }
 
-const defaultFs: PrunableBundleFs = { existsSync, lstatSync, readdirSync, realpathSync }
-const defaultLogsFs: PrunableLogsFs = { lstatSync, readdirSync, realpathSync }
+const defaultFs: PrunableBundleFs = {
+  existsSync: (filePath) => require("fs").existsSync(filePath),
+  readdirSync: (dirPath) => require("fs").readdirSync(dirPath),
+  lstatSync: (filePath) => require("fs").lstatSync(filePath),
+  realpathSync: (filePath) => require("fs").realpathSync(filePath),
+}
+const defaultLogsFs: PrunableLogsFs = {
+  readdirSync: (dirPath) => require("fs").readdirSync(dirPath),
+  lstatSync: (filePath) => require("fs").lstatSync(filePath),
+  realpathSync: (filePath) => require("fs").realpathSync(filePath),
+}
 const SAFE_AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 export function isSafePrunableAgentName(agentName: string): boolean {
