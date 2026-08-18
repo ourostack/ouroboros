@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
+import { randomUUID } from "node:crypto"
 import { getAgentBundlesRoot, getRepoRoot, setAgentName } from "../identity"
 import {
   listAllBundleAgents,
@@ -54,6 +55,7 @@ import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecor
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
+import { completeHabitRun } from "../habits/habit-session"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -570,12 +572,13 @@ export interface OuroDaemonOptions {
    * use this to schedule process-level shutdown without putting process.exit()
    * in the daemon core.
    */
-  onStopCommandComplete?: () => void
+  onStopCommandComplete?: () => void | Promise<void>
   /** Test seam for external-event receipts. Defaults to ~/.ouro-cli/daemon/external-events. */
   externalEventRoot?: string
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
   nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string }) => Promise<DaemonResponse | null>
+  nativeHabitMatch?: (agent: string, habitName: string) => boolean
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
@@ -855,10 +858,12 @@ export class OuroDaemon {
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
-  private readonly onStopCommandComplete: (() => void) | null
+  private readonly onStopCommandComplete: (() => void | Promise<void>) | null
   private readonly externalEventRoot: string | null
   private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
   private readonly nativeHabitRunner?: OuroDaemonOptions["nativeHabitRunner"]
+  private readonly nativeHabitMatch?: OuroDaemonOptions["nativeHabitMatch"]
+  private readonly nativeHabitClaims = new Set<string>()
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
 
   constructor(options: OuroDaemonOptions) {
@@ -876,6 +881,7 @@ export class OuroDaemon {
     this.externalEventRoot = options.externalEventRoot ?? null
     this.rsvpHabitRunner = options.rsvpHabitRunner
     this.nativeHabitRunner = options.nativeHabitRunner
+    this.nativeHabitMatch = options.nativeHabitMatch
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
   }
 
@@ -1893,7 +1899,7 @@ export class OuroDaemon {
         try {
           await this.stop()
         } finally {
-          this.onStopCommandComplete?.()
+          await this.onStopCommandComplete?.()
         }
         return { ok: true, message: "daemon stopped" }
       case "daemon.restart": {
@@ -1913,7 +1919,7 @@ export class OuroDaemon {
         try {
           await this.stop()
         } finally {
-          this.onStopCommandComplete?.()
+          await this.onStopCommandComplete?.()
         }
         return {
           ok: true,
@@ -2276,13 +2282,48 @@ export class OuroDaemon {
           trigger,
           resolution,
         })
-        const nativeResult = await this.nativeHabitRunner?.({
-          agent: command.agent,
-          habitName: command.habitName,
-          trigger,
-          ...(resolution.occurrenceId ? { occurrenceId: resolution.occurrenceId } : {}),
-        })
-        if (nativeResult) return nativeResult
+        if (this.nativeHabitRunner && this.nativeHabitMatch?.(command.agent, command.habitName)) {
+          const occurrenceId = resolution.occurrenceId ?? `${trigger}:${command.agent}:${command.habitName}`
+          const claimKey = `${command.agent}:${command.habitName}:${occurrenceId}`
+          if (this.nativeHabitClaims.has(claimKey)) {
+            return { ok: true, message: `skipped overlapping native habit occurrence ${occurrenceId}` }
+          }
+          this.nativeHabitClaims.add(claimKey)
+          const startedAt = new Date().toISOString()
+          let nativeResult: DaemonResponse
+          try {
+            nativeResult = await this.nativeHabitRunner({
+              agent: command.agent,
+              habitName: command.habitName,
+              trigger,
+              occurrenceId,
+            }) ?? { ok: false, error: "native habit runner declined a matched habit" }
+          } catch (error) {
+            nativeResult = { ok: false, error: error instanceof Error ? error.message : String(error) }
+          }
+          const endedAt = new Date().toISOString()
+          let completion
+          try {
+            completion = completeHabitRun({
+              agentRoot: path.join(this.bundlesRoot, `${command.agent}.ouro`),
+              habit: resolution.habit,
+              runId: randomUUID(),
+              trigger,
+              startedAt,
+              endedAt,
+              operationId: occurrenceId,
+              permissionEnvelope: { schemaVersion: 1, canMessageOutward: true, returnRoutes: [], deniedTools: [], warnings: [] },
+              toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: true },
+              ...(nativeResult.ok ? {} : { errors: [nativeResult.error ?? nativeResult.message ?? "native habit failed"] }),
+            })
+          } finally {
+            this.nativeHabitClaims.delete(claimKey)
+          }
+          if (!completion.receiptWritten || !completion.runtimeStateRecorded) {
+            return { ok: false, error: "native habit completed but its durable receipt or cursor could not be recorded", data: nativeResult }
+          }
+          return nativeResult
+        }
         if (isRsvpHabitName(command.habitName)) {
           return this.runNativeRsvpHabit(command, trigger, resolution.occurrenceId)
         }

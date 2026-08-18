@@ -367,18 +367,20 @@ const healthMonitor = new HealthMonitor({
   },
 })
 
-let entryRuntimeStopping = false
+let entryRuntimeStopPromise: Promise<void> | null = null
 let stopCommandExitScheduled = false
 let stopHealthHeartbeat = (): void => undefined
 
-function stopEntryRuntime(): void {
-  if (entryRuntimeStopping) return
-  entryRuntimeStopping = true
-  stopHealthHeartbeat()
-  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
-  for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
-  void supercronicSupervisor?.stop()
-  healthMonitor.stopPeriodicChecks()
+function stopEntryRuntime(): Promise<void> {
+  if (entryRuntimeStopPromise) return entryRuntimeStopPromise
+  entryRuntimeStopPromise = (async () => {
+    stopHealthHeartbeat()
+    for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
+    for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
+    await supercronicSupervisor?.stop()
+    healthMonitor.stopPeriodicChecks()
+  })()
+  return entryRuntimeStopPromise
 }
 
 function scheduleCleanProcessExitAfterStopCommand(): void {
@@ -402,9 +404,10 @@ const daemon = new OuroDaemon({
     if (agent !== "sanctuary" || habitName !== "sanctuary-health") return null
     return runSanctuaryHealthHabit(agent)
   },
+  nativeHabitMatch: (agent, habitName) => agent === "sanctuary" && habitName === "sanctuary-health",
   mode,
-  onStopCommandComplete: () => {
-    stopEntryRuntime()
+  onStopCommandComplete: async () => {
+    await stopEntryRuntime()
     scheduleCleanProcessExitAfterStopCommand()
   },
 })
@@ -922,10 +925,9 @@ process.on("SIGINT", () => {
   // tombstone is strictly better than silence.
   _tombstoneWritten = true
   writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
-  stopEntryRuntime()
-  const forcedExit = setTimeout(() => process.exit(1), 5_000)
+  const forcedExit = setTimeout(() => process.exit(1), 12_000)
   forcedExit.unref()
-  void daemon.stop().then(
+  void stopEntryRuntime().then(() => daemon.stop()).then(
     () => {
       clearTimeout(forcedExit)
       process.exit(0)
@@ -940,10 +942,9 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
-  stopEntryRuntime()
-  const forcedExit = setTimeout(() => process.exit(1), 5_000)
+  const forcedExit = setTimeout(() => process.exit(1), 12_000)
   forcedExit.unref()
-  void daemon.stop().then(
+  void stopEntryRuntime().then(() => daemon.stop()).then(
     () => {
       clearTimeout(forcedExit)
       process.exit(0)

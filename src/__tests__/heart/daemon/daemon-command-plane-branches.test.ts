@@ -12,6 +12,8 @@ vi.mock("../../../nerves/runtime", () => ({
 import { OuroDaemon, handleAgentSenseTurn, messageFromHabitPokeError, type DaemonCommand } from "../../../heart/daemon/daemon"
 import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-private-wake"
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
+import { readHabitLastRun } from "../../../heart/habits/habit-runtime-state"
+import { listHabitRunReceipts } from "../../../arc/flight-recorder"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -50,6 +52,8 @@ describe("daemon command plane branches", () => {
       privateRuntimePolicyDeps?: unknown
       externalEventRoot?: string
       rsvpHabitRunner?: unknown
+      nativeHabitRunner?: unknown
+      nativeHabitMatch?: unknown
       orphanStartupDrain?: (socketPath: string) => Promise<void>
     },
   ) => {
@@ -98,6 +102,8 @@ describe("daemon command plane branches", () => {
       senseManager,
       privateRuntimePolicyDeps: options?.privateRuntimePolicyDeps,
       rsvpHabitRunner: options?.rsvpHabitRunner,
+      nativeHabitRunner: options?.nativeHabitRunner,
+      nativeHabitMatch: options?.nativeHabitMatch,
       externalEventRoot: options?.externalEventRoot,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
@@ -1357,6 +1363,35 @@ describe("daemon command plane branches", () => {
     expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
     expect(processManager.startAgent).not.toHaveBeenCalled()
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("records native habit attempts durably and rejects an overlapping occurrence", async () => {
+    const socketPath = tmpSocketPath("daemon-native-habit")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-native-habit-bundles-"))
+    writeHabitFile({ bundlesRoot, agent: "sanctuary", habitName: "sanctuary-health", cadence: "15m", lastRun: null })
+    const deferred = createDeferred<{ ok: boolean; message: string }>()
+    const nativeHabitRunner = vi.fn(() => deferred.promise)
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      nativeHabitRunner,
+      nativeHabitMatch: (agent: string, habitName: string) => agent === "sanctuary" && habitName === "sanctuary-health",
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
+    const command = { kind: "habit.poke", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "cron:slot-1" } as const
+
+    const first = daemon.handleCommand(command)
+    await vi.waitFor(() => expect(nativeHabitRunner).toHaveBeenCalledOnce())
+    await expect(daemon.handleCommand(command)).resolves.toEqual({ ok: true, message: "skipped overlapping native habit occurrence cron:slot-1" })
+    deferred.resolve({ ok: true, message: "health sweep complete" })
+    await expect(first).resolves.toEqual({ ok: true, message: "health sweep complete" })
+
+    const agentRoot = path.join(bundlesRoot, "sanctuary.ouro")
+    expect(readHabitLastRun(agentRoot, "sanctuary-health")).toMatch(/^\d{4}-/u)
+    expect(listHabitRunReceipts(agentRoot)).toEqual([expect.objectContaining({
+      habitName: "sanctuary-health",
+      trigger: "cron",
+      operationId: "cron:slot-1",
+      outcome: "no_change",
+    })])
   })
 
   it("deduplicates repeated scheduled habit pokes while lastRun has not advanced", async () => {

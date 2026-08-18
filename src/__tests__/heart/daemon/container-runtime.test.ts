@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import * as fs from "node:fs"
-import { hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
+import { hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 
 describe("container runtime policy", () => {
   it("accepts only the locked scheduler/update policy", () => {
@@ -39,5 +39,12 @@ describe("container runtime policy", () => {
     expect(hasManagedTelegramProcess("node daemon-entry.js\n", "sanctuary")).toBe(false)
     expect(hasManagedTelegramProcess(`${telegram}\n${telegram}\n`, "sanctuary")).toBe(false)
     expect(hasManagedTelegramProcess("node /opt/ouro/dist/senses/telegram-entry.js --agent other\n", "sanctuary")).toBe(false)
+  })
+
+  it("requires exactly one matching owned Supercronic child", () => {
+    const scheduler = "/usr/local/bin/supercronic -split-logs -inotify /home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
+    expect(hasManagedSupercronicProcess(`node daemon-entry.js\n${scheduler}\n`, "sanctuary")).toBe(true)
+    expect(hasManagedSupercronicProcess(`${scheduler}\n${scheduler}\n`, "sanctuary")).toBe(false)
+    expect(hasManagedSupercronicProcess("/usr/local/bin/supercronic /tmp/other.crontab\n", "sanctuary")).toBe(false)
   })
 })

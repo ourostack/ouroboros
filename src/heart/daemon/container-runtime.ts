@@ -15,6 +15,20 @@ export function hasManagedTelegramProcess(processArguments: string, agent: strin
   return matches.length === 1
 }
 
+export function hasManagedSupercronicProcess(processArguments: string, agent: string): boolean {
+  const expected = [
+    "/usr/local/bin/supercronic",
+    "-split-logs",
+    "-inotify",
+    `/home/ouro/.ouro-cli/scheduler/${agent}.crontab`,
+  ]
+  const matches = processArguments.split("\n").filter((line) => {
+    const fields = line.trim().split(/\s+/u)
+    return fields.length === expected.length && fields.every((field, index) => field === expected[index])
+  })
+  return matches.length === 1
+}
+
 export function readContainerRuntimePolicy(options: { path?: string; readFile?: (path: string) => string } = {}): ContainerRuntimePolicy | null {
   const filePath = options.path ?? "/opt/ouro/container-runtime.json"
   const readFile = options.readFile ?? ((target: string) => fs.readFileSync(target, "utf8"))
