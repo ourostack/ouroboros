@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.730",
+      "changes": [
+        "Add opt-in primitives for durable human-approval suspension and restart-safe continuation, proving the WI-0 architecture without wiring a production caller.",
+        "Align Mailbox backend typechecking with its ES2023 dependencies, instantiate Stripe v22 through its constructor-compatible module shape, and give the subprocess-heavy synthetic approval suite an explicit coverage-safe timeout."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.729",
       "changes": [
         "Respawn long-lived auto-start workers after unsolicited clean exits so managed BlueBubbles listeners recover without a full daemon restart.",

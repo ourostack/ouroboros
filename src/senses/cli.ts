@@ -10,7 +10,7 @@ import { sessionPath } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
 import { loadSession, postTurnPersist, postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
-import type { UsageData } from "../mind/context"
+import type { SessionContinuityState, UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
 import { getAgentName, setAgentName, getAgentRoot, getAgentBundlesRoot, loadAgentConfig } from "../heart/identity"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
@@ -21,7 +21,7 @@ import { configureCliRuntimeLogger } from "../nerves/cli-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
-import { acquireSessionLock, SessionLockError } from "./session-lock"
+import { acquireSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/versioning/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { agentConfigV2Hook } from "../heart/daemon/hooks/agent-config-v2"
@@ -533,6 +533,8 @@ export interface RunCliSessionOptions {
     toolContext?: ToolContext,
     userContent?: OpenAI.ChatCompletionContentPart[],
   ) => Promise<{ usage?: UsageData; turnOutcome?: string; commandAction?: string }>;
+  onTurnStart?: (messages: OpenAI.ChatCompletionMessageParam[]) => void | Promise<void>;
+  onTurnFinish?: () => void | Promise<void>;
 }
 
 export interface RunCliSessionResult {
@@ -832,6 +834,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         }
       }
 
+      await options.onTurnStart?.(messages)
+      try {
+
       // Check for slash commands (legacy path only — pipeline handles commands for runTurn path)
       if (!options.runTurn) {
         const parsed = parseSlashCommand(input)
@@ -924,6 +929,9 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       if (options.onTurnEnd) {
         await options.onTurnEnd(messages, result ?? { usage: undefined })
       }
+      } finally {
+        await options.onTurnFinish?.()
+      }
 
       if (closed) break
     }
@@ -954,7 +962,11 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   return { exitReason, toolResult: exitToolResult }
 }
 
-export async function main(agentName?: string, options?: { pasteDebounceMs?: number; _testInputSource?: AsyncIterable<string> }) {
+export async function main(agentName?: string, options?: {
+  pasteDebounceMs?: number
+  _testInputSource?: AsyncIterable<string>
+  _acquireSessionTurnLease?: (sessionPath: string) => Promise<SessionTurnLease>
+}) {
   if (agentName) setAgentName(agentName)
   const pasteDebounceMs = options?.pasteDebounceMs ?? 50
 
@@ -1003,30 +1015,16 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   })
   const sessPath = sessionPath(friendId, "cli", "session")
 
-  let sessionLock: { release: () => void } | null = null
-  try {
-    sessionLock = acquireSessionLock(`${sessPath}.lock`, getAgentName())
-  } catch (error) {
-    /* v8 ignore start -- integration: main() is interactive, lock tested in session-lock.test.ts @preserve */
-    if (error instanceof SessionLockError) {
-      process.stderr.write(`${error.message}\n`)
-      return
-    }
-    throw error
-    /* v8 ignore stop */
-  }
-
-  // Load existing session or start fresh
-  const existing = loadSession(sessPath)
-  let sessionState = existing?.state
-  let sessionEvents = existing?.events ?? []
+  const acquireTurnLease = options?._acquireSessionTurnLease ?? acquireSessionTurnLease
+  let sessionTurnLease: SessionTurnLease | null = null
+  let pendingPersists: Promise<unknown>[] = []
+  let existing: ReturnType<typeof loadSession> = null
+  let sessionState: SessionContinuityState | undefined
+  let sessionEvents: import("../heart/session-events").SessionEvent[] = []
   const mcpManager = await getSharedMcpManager() ?? undefined
-  const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
-    ? existing.messages
-    : [{ role: "system", content: flattenSystemPrompt(await buildSystem("cli", {}, resolvedContext)) }]
-
-  // Repair any orphaned tool calls from a crash mid-turn
-  repairOrphanedToolCalls(sessionMessages)
+  const sessionMessages: OpenAI.ChatCompletionMessageParam[] = [
+    { role: "system", content: flattenSystemPrompt(await buildSystem("cli", {}, resolvedContext)) },
+  ]
 
   // Per-turn pipeline input: CLI capabilities and pending dir
   const cliCapabilities = getChannelCapabilities("cli")
@@ -1035,16 +1033,43 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const summarize = createSummarize("human")
   const cliFailoverState: import("./pipeline").FailoverState = { pending: null }
 
-  try {
-    await runCliSession({
+  await runCliSession({
       agentName: currentAgentName,
       pasteDebounceMs,
       messages: sessionMessages,
       lastActivityAt: sessionState?.lastFriendActivityAt,
       _testInputSource: options?._testInputSource,
+      onTurnStart: async (messages) => {
+        sessionTurnLease = await acquireTurnLease(sessPath)
+        try {
+          pendingPersists = []
+          existing = loadSession(sessPath)
+          sessionState = existing?.state
+          sessionEvents = existing?.events ?? []
+          const loadedMessages = existing?.messages && existing.messages.length > 0
+            ? existing.messages
+            : [{ role: "system" as const, content: flattenSystemPrompt(await buildSystem("cli", {}, resolvedContext)) }]
+          repairOrphanedToolCalls(loadedMessages)
+          messages.splice(0, messages.length, ...loadedMessages)
+        } catch (error) {
+          const lease = sessionTurnLease
+          sessionTurnLease = null
+          await lease.release()
+          throw error
+        }
+      },
+      onTurnFinish: async () => {
+        try {
+          await Promise.all(pendingPersists)
+        } finally {
+          const lease = sessionTurnLease
+          sessionTurnLease = null
+          await lease!.release()
+        }
+      },
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
         const prepared = postTurnTrim(messages)
-        const events = postTurnPersist(sessPath, prepared, undefined, sessionState)
+        const events = postTurnPersist(sessPath, prepared, undefined, sessionState, sessionTurnLease ?? undefined)
         /* v8 ignore next -- defensive: postTurnPersist always returns events in practice @preserve */
         sessionEvents = events.length > 0 ? events : sessionEvents
       },
@@ -1062,7 +1087,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           // Save session after each tool result for crash recovery (deferred to avoid blocking)
           onToolResult: (turnMessages) => {
             const prepared = postTurnTrim(turnMessages)
-            deferPostTurnPersist(sessPath, prepared, undefined, sessionState)
+            pendingPersists.push(deferPostTurnPersist(sessPath, prepared, undefined, sessionState, sessionTurnLease ?? undefined))
           },
           onError: (error: Error, severity: "transient" | "terminal") => {
             if (severity === "terminal" && failoverState) {
@@ -1082,6 +1107,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
           messages: [{ role: "user", content: userContent ?? userInput }],
           continuityIngressTexts: getCliContinuityIngressTexts(userInput),
           callbacks: failoverAwareCallbacks,
+          sessionTurnLease: sessionTurnLease!,
           friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
           sessionLoader: {
             loadOrCreate: () => Promise.resolve({
@@ -1113,10 +1139,11 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
             // then defer envelope build + disk I/O to avoid blocking the TUI.
             const prepared = postTurnTrim(turnMessages, usage, hooks)
             sessionState = state
-            deferPostTurnPersist(sessionPathArg, prepared, usage, state).then((events) => {
+            const persist = deferPostTurnPersist(sessionPathArg, prepared, usage, state, sessionTurnLease ?? undefined).then((events) => {
               /* v8 ignore next -- defensive: deferPostTurnPersist always resolves events in practice @preserve */
               sessionEvents = events.length > 0 ? events : sessionEvents
             })
+            pendingPersists.push(persist)
           },
           accumulateFriendTokens,
           signal,
@@ -1149,9 +1176,6 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
         return { usage: result.usage, turnOutcome: result.turnOutcome, commandAction: result.commandAction }
       },
     })
-  } finally {
-    sessionLock?.release()
-  }
 
   // Force exit: lingering handles (Ink cleanup timers, MCP connections) keep the
   // event loop alive after the interactive session ends. This is safe because all

@@ -226,6 +226,74 @@ describe("teams stranger gate integration (pipeline-based)", () => {
     expect(typeof input.enforceTrustGate).toBe("function")
   })
 
+  it("behaviorally holds the turn lease before load/provider through persistence and stream delivery", async () => {
+    const entered = Promise.withResolvers<void>()
+    const allowTurn = Promise.withResolvers<void>()
+    const order: string[] = []
+    const withSessionTurnLease = vi.fn(async (_path: string, work: (lease: any) => Promise<any>) => {
+      order.push("lease:acquired")
+      entered.resolve()
+      await allowTurn.promise
+      const result = await work({ sessionPath: "/tmp/mock-session.json", ownerId: "owner-a", ownerToken: "token-a" })
+      order.push("lease:released")
+      return result
+    })
+    mockLoadSession.mockImplementation(() => { order.push("session:load"); return null })
+    mockRunAgent.mockImplementation(async () => { order.push("provider:run"); return { outcome: "settled" } })
+    mockDeferPostTurnPersist.mockImplementation(async () => { order.push("session:persist"); return [] })
+    const stream = {
+      update: vi.fn(),
+      emit: vi.fn(() => { order.push("outward:delivered") }),
+      close: vi.fn(),
+    }
+    const { handleTeamsMessage } = await import("../../senses/teams")
+    const running = handleTeamsMessage(
+      "hello",
+      stream as any,
+      "conv-lease",
+      { signin: vi.fn(async () => undefined), aadObjectId: "aad-user-1", tenantId: "tenant-1", displayName: "Unknown" },
+      undefined,
+      undefined,
+      { _withSessionTurnLease: withSessionTurnLease } as any,
+    )
+
+    await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("lease was not acquired")), 100))])
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(mockLoadSession).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    allowTurn.resolve()
+    await running
+
+    expect(order.indexOf("lease:acquired")).toBe(0)
+    expect(order.indexOf("session:load")).toBeGreaterThan(0)
+    expect(order.indexOf("provider:run")).toBeGreaterThan(order.indexOf("session:load"))
+    expect(order.indexOf("session:persist")).toBeGreaterThan(order.indexOf("provider:run"))
+    expect(order.indexOf("lease:released")).toBeGreaterThan(order.indexOf("session:persist"))
+    expect(order.indexOf("lease:released")).toBeGreaterThan(order.lastIndexOf("outward:delivered"))
+  })
+
+  it("emits no thinking activity before a busy lease decision and returns a retryable notice", async () => {
+    const busy = new Error("busy")
+    busy.name = "SessionTurnBusyError"
+    const stream = { update: vi.fn(), emit: vi.fn(), close: vi.fn() }
+    const { handleTeamsMessage } = await import("../../senses/teams")
+
+    await handleTeamsMessage(
+      "hello",
+      stream as any,
+      "conv-busy",
+      { signin: vi.fn(async () => undefined), aadObjectId: "aad-user-1", tenantId: "tenant-1", displayName: "Unknown" },
+      undefined,
+      undefined,
+      { _withSessionTurnLease: vi.fn(async () => { throw busy }) } as any,
+    )
+
+    expect(stream.update).not.toHaveBeenCalled()
+    expect(mockLoadSession).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(stream.emit).toHaveBeenCalledWith(expect.stringContaining("busy"))
+  })
+
   it("sends auto-reply via stream when pipeline gate rejects with stranger_first_reply", async () => {
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: {

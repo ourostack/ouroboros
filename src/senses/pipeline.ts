@@ -5,7 +5,8 @@
 // Transport-level concerns (BB API calls, Teams cards, readline) stay in sense adapters.
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
-import type { ChannelCallbacks, CompletionMetadata, ProviderErrorClassification, RunAgentOptions, RunAgentOutcome } from "../heart/core"
+import type { ApprovalSuspensionResult, ChannelCallbacks, CompletionMetadata, ProviderErrorClassification, RunAgentOptions, RunAgentOutcome } from "../heart/core"
+import type { SessionTurnLease } from "../mind/session-transaction"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
@@ -468,6 +469,8 @@ export interface InboundTurnInput {
   friendResolver: { resolve(): Promise<ResolvedContext> }
   /** Loads an existing session or creates a fresh one. */
   sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; events?: SessionEvent[]; structuredOutputs?: StructuredOutput[] }> }
+  /** Outer adapter-owned lease spanning load, provider work, persistence, and delivery. */
+  sessionTurnLease?: SessionTurnLease
   /** Directory to drain pending messages from. */
   pendingDir: string
   /** Friend store used for token accumulation. */
@@ -505,7 +508,7 @@ export interface InboundTurnInput {
     channel?: Channel,
     signal?: AbortSignal,
     options?: RunAgentOptions,
-  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }>
+  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult; error?: Error; errorClassification?: ProviderErrorClassification }>
   /** Process-local failover state for this session. Channel owns this, pipeline reads/writes it. */
   failoverState?: FailoverState
   /** Set by the pipeline during failover switch — signals that a provider switch occurred this turn. */
@@ -537,6 +540,8 @@ export interface InboundTurnResult {
   turnOutcome?: RunAgentOutcome | "command"
   /** Explicit completion metadata from runAgent when available. */
   completion?: CompletionMetadata
+  /** Durable approval suspension committed by the approval coordinator. */
+  suspension?: ApprovalSuspensionResult
   /** Session file path. Undefined when gate rejects. */
   sessionPath?: string
   /** The final messages array after the turn. Undefined when gate rejects. */
@@ -900,6 +905,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Step 3: Load/create session
   const session = await input.sessionLoader.loadOrCreate()
+  if (input.sessionTurnLease && path.resolve(session.sessionPath) !== input.sessionTurnLease.sessionPath) {
+    throw new Error(`leased session path mismatch: expected ${input.sessionTurnLease.sessionPath}, loaded ${path.resolve(session.sessionPath)}`)
+  }
   const sessionMessages = session.messages
   const sessionEvents = session.events ?? []
   let mustResolveBeforeHandoff = resolveMustResolveBeforeHandoff(
@@ -1228,6 +1236,26 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ...(result.error ? { errorName: result.error.name } : {}),
     ...(result.errorClassification ? { errorCode: result.errorClassification } : {}),
   }))
+
+  if (result.outcome === "suspended") {
+    if (!result.suspension) throw new Error("suspended agent turn omitted durable approval suspension")
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.pipeline_approval_suspended",
+      message: "pipeline returned a durably checkpointed approval suspension without duplicate post-turn persistence",
+      meta: { approvalId: result.suspension.approvalId, sessionPath: session.sessionPath },
+    })
+    return {
+      resolvedContext,
+      gateResult,
+      usage: result.usage,
+      turnOutcome: result.outcome,
+      suspension: result.suspension,
+      sessionPath: session.sessionPath,
+      messages: sessionMessages,
+      drainedPending: pending,
+    }
+  }
 
   // Step 5b: Failover on terminal error
   if (result.outcome === "errored" && input.failoverState) {

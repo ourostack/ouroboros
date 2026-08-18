@@ -13,7 +13,15 @@ import {
 import type { StructuredOutput } from "../heart/structured-output"
 import { emitNervesEvent } from "../nerves/runtime"
 import * as fs from "fs"
-import * as path from "path"
+import {
+  assertSessionTurnLease,
+  currentSessionTurnLease,
+  deleteSessionTransaction,
+  readSessionTransaction,
+  withImmediateSessionTurnLease,
+  writeSessionTransaction,
+  type SessionTurnLease,
+} from "./session-transaction"
 import { estimateTokensForMessages } from "./token-estimate"
 
 export { detectDuplicateToolCallIds, migrateToolNames, repairSessionMessages, validateSessionMessages } from "../heart/session-events"
@@ -300,9 +308,27 @@ function denormalizeContinuityState(state: { mustResolveBeforeHandoff: boolean; 
   }
 }
 
-function writeSessionEnvelope(filePath: string, envelope: SessionEnvelope): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2))
+function withMutationLease<T>(filePath: string, lease: SessionTurnLease | undefined, work: (owned: SessionTurnLease) => T): T {
+  if (lease) {
+    assertSessionTurnLease(filePath, lease)
+    return work(lease)
+  }
+  const contextual = currentSessionTurnLease(filePath)
+  if (contextual) return work(contextual)
+  return withImmediateSessionTurnLease(filePath, work)
+}
+
+function writeSessionEnvelopeUnderLease(
+  filePath: string,
+  envelope: SessionEnvelope,
+  lease: SessionTurnLease,
+  expectedRevision?: string,
+): void {
+  const current = readSessionTransaction(filePath, lease)
+  writeSessionTransaction(filePath, envelope, {
+    lease,
+    expectedRevision: expectedRevision ?? current.revision,
+  })
 }
 
 export function saveSession(
@@ -310,43 +336,48 @@ export function saveSession(
   messages: OpenAI.ChatCompletionMessageParam[],
   lastUsage?: UsageData,
   state?: SessionContinuityState,
+  lease?: SessionTurnLease,
 ): void {
-  const existing = loadSessionEnvelopeFile(filePath)
-  const previousMessages = existing ? projectProviderMessages(existing) : []
-  const currentIngressTimes = messages.map(getIngressTime)
-  const sanitized = sanitizeProviderMessages(messages)
-  const { envelope } = buildCanonicalSessionEnvelope({
-    existing,
-    previousMessages,
-    currentMessages: sanitized,
-    trimmedMessages: sanitized,
-    currentIngressTimes,
-    recordedAt: new Date().toISOString(),
-    lastUsage: lastUsage ?? null,
-    state,
-    projectionBasis: {
-      maxTokens: null,
-      contextMargin: null,
-      inputTokens: lastUsage?.input_tokens ?? null,
-    },
+  withMutationLease(filePath, lease, (owned) => {
+    const existing = loadSessionEnvelopeFile(filePath)
+    const previousMessages = existing ? projectProviderMessages(existing) : []
+    const currentIngressTimes = messages.map(getIngressTime)
+    const sanitized = sanitizeProviderMessages(messages)
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing,
+      previousMessages,
+      currentMessages: sanitized,
+      trimmedMessages: sanitized,
+      currentIngressTimes,
+      recordedAt: new Date().toISOString(),
+      lastUsage: lastUsage ?? null,
+      state,
+      projectionBasis: {
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: lastUsage?.input_tokens ?? null,
+      },
+    })
+    writeSessionEnvelopeUnderLease(filePath, envelope, owned)
   })
-  writeSessionEnvelope(filePath, envelope)
 }
 
-export function appendSyntheticAssistantMessage(filePath: string, content: string): boolean {
+export function appendSyntheticAssistantMessage(filePath: string, content: string, lease?: SessionTurnLease): boolean {
   try {
-    if (!fs.existsSync(filePath)) return false
-    const envelope = loadSessionEnvelopeFile(filePath)
-    if (!envelope) return false
-    const updated = appendSyntheticAssistantEvent(envelope, content, new Date().toISOString())
-    writeSessionEnvelope(filePath, updated)
-    emitNervesEvent({
-      component: "mind",
-      event: "mind.session_synthetic_message_appended",
-      message: "appended synthetic assistant message to session",
-      meta: { path: filePath, contentLength: content.length },
+    return withMutationLease(filePath, lease, (owned) => {
+      if (!fs.existsSync(filePath)) return false
+      const envelope = loadSessionEnvelopeFile(filePath)
+      if (!envelope) return false
+      const updated = appendSyntheticAssistantEvent(envelope, content, new Date().toISOString())
+      writeSessionEnvelopeUnderLease(filePath, updated, owned)
+      emitNervesEvent({
+        component: "mind",
+        event: "mind.session_synthetic_message_appended",
+        message: "appended synthetic assistant message to session",
+        meta: { path: filePath, contentLength: content.length },
+      })
+      return true
     })
-    return true
   } catch {
     return false
   }
@@ -433,26 +464,30 @@ export function postTurnPersist(
   prepared: PostTurnPrepared,
   usage?: UsageData,
   state?: SessionContinuityState,
+  lease?: SessionTurnLease,
+  expectedRevision?: string,
 ): SessionEvent[] {
-  const existing = loadSessionEnvelopeFile(sessPath)
-  const previousMessages = existing ? projectProviderMessages(existing) : []
-  const { envelope } = buildCanonicalSessionEnvelope({
-    existing,
-    previousMessages,
-    currentMessages: prepared.currentMessages,
-    trimmedMessages: prepared.trimmedMessages,
-    currentIngressTimes: prepared.currentIngressTimes,
-    recordedAt: new Date().toISOString(),
-    lastUsage: usage ?? null,
-    state,
-    projectionBasis: {
-      maxTokens: prepared.maxTokens,
-      contextMargin: prepared.contextMargin,
-      inputTokens: usage?.input_tokens ?? null,
-    },
+  return withMutationLease(sessPath, lease, (owned) => {
+    const existing = loadSessionEnvelopeFile(sessPath)
+    const previousMessages = existing ? projectProviderMessages(existing) : []
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing,
+      previousMessages,
+      currentMessages: prepared.currentMessages,
+      trimmedMessages: prepared.trimmedMessages,
+      currentIngressTimes: prepared.currentIngressTimes,
+      recordedAt: new Date().toISOString(),
+      lastUsage: usage ?? null,
+      state,
+      projectionBasis: {
+        maxTokens: prepared.maxTokens,
+        contextMargin: prepared.contextMargin,
+        inputTokens: usage?.input_tokens ?? null,
+      },
+    })
+    writeSessionEnvelopeUnderLease(sessPath, envelope, owned, expectedRevision)
+    return envelope.events
   })
-  writeSessionEnvelope(sessPath, envelope)
-  return envelope.events
 }
 
 /**
@@ -498,11 +533,13 @@ export function deferPostTurnPersist(
   prepared: PostTurnPrepared,
   usage?: UsageData,
   state?: SessionContinuityState,
+  lease?: SessionTurnLease,
+  expectedRevision?: string,
 ): Promise<SessionEvent[]> {
   return enqueueSessionPersist(sessPath, () => new Promise<SessionEvent[]>((resolve) => {
     setImmediate(() => {
       try {
-        const events = postTurnPersist(sessPath, prepared, usage, state)
+        const events = postTurnPersist(sessPath, prepared, usage, state, lease, expectedRevision)
         resolve(events)
       } catch (err) {
         emitNervesEvent({
@@ -518,10 +555,6 @@ export function deferPostTurnPersist(
   }))
 }
 
-export function deleteSession(filePath: string): void {
-  try {
-    fs.unlinkSync(filePath)
-  } catch (e: unknown) {
-    if (e instanceof Error && (e as NodeJS.ErrnoException).code !== "ENOENT") throw e
-  }
+export function deleteSession(filePath: string, lease?: SessionTurnLease): void {
+  withMutationLease(filePath, lease, (owned) => deleteSessionTransaction(filePath, owned))
 }

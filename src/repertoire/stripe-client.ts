@@ -8,7 +8,7 @@
  * never escape the calling function's scope.
  */
 
-import StripeConstructor from "stripe"
+import StripeConstructor, { type Stripe as StripeInstance } from "stripe"
 import { getCredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -64,8 +64,8 @@ function toCardInfo(card: { id: string; last4: string; status: string }): CardIn
 export async function createStripeClient(): Promise<StripeClient> {
   const store = getCredentialStore()
   const apiKey = await store.getRawSecret("stripe.com", "restrictedKey")
-  // StripeConstructor is a callable (not a class), cast the result
-  const stripe = StripeConstructor(apiKey) as ReturnType<typeof StripeConstructor>
+  const StripeFactory = StripeConstructor as unknown as new (key: string) => StripeInstance
+  const stripe = new StripeFactory(apiKey)
 
   return {
     async createVirtualCard(opts: CardCreateOptions): Promise<CardInfo> {

@@ -3,8 +3,13 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
+import { approvalPolicyForToolName, execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
+import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
+import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
+import type { ApprovalContinuationClaim, ApprovalRecord, JsonObject } from "./approval-store";
+import { materializeApprovalTerminal } from "./session-events";
+import type { ApprovalSuspensionCheckpoint } from "./tool-approval";
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
@@ -427,6 +432,7 @@ export interface RunAgentOptions {
    * it from a provider input array whose prefix core is allowed to replace.
    */
   captureGeneratedMessages?: (messages: OpenAI.ChatCompletionMessageParam[]) => void;
+  approvalCoordinator?: ApprovalCoordinator;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -439,6 +445,150 @@ export interface RunAgentOptions {
   daemonHealth?: import("./daemon/daemon-health").DaemonHealthState | null;
   /** Pre-read Arc flight-recorder resume. When provided, renders deterministic continuation state. */
   flightRecorderResume?: import("../arc/flight-recorder").FlightRecorderResume;
+}
+
+export interface ApprovalProposalRequest {
+  toolCall: OpenAI.ChatCompletionMessageToolCall
+  arguments: JsonObject
+  preCallMessages: OpenAI.ChatCompletionMessageParam[]
+  frozenAssistantMessage: OpenAI.ChatCompletionAssistantMessageParam
+  schemaDigest: string
+  toolDigest: string
+  policyDigest: string
+  policyId: string
+  actionClass: string
+}
+
+export interface ApprovalCoordinator {
+  propose(request: ApprovalProposalRequest): Promise<{
+    approvalId: string
+    checkpointDigest: string
+    suspendedSessionRevision: string
+  }>
+}
+
+export interface ApprovalSuspensionResult {
+  approvalId: string
+  toolCallId: string
+  checkpointDigest: string
+  suspendedSessionRevision: string
+}
+
+export interface ResumeApprovalContinuationOptions {
+  record: ApprovalRecord
+  checkpoint: ApprovalSuspensionCheckpoint
+  currentSessionRevision: string
+  sessionMessages: OpenAI.ChatCompletionMessageParam[]
+  callbacks: Partial<ChannelCallbacks>
+  channel?: Channel
+  runAgent: (
+    messages: OpenAI.ChatCompletionMessageParam[],
+    callbacks: ChannelCallbacks,
+    channel?: Channel,
+    signal?: AbortSignal,
+    options?: RunAgentOptions,
+  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult }>
+  persist: (messages: OpenAI.ChatCompletionMessageParam[], result?: { usage?: UsageData; outcome: RunAgentOutcome }) => void | Promise<void>
+  deliver: (text: string) => void | Promise<void>
+  claimContinuation: () => ApprovalContinuationClaim
+  markContinuationMaterialized: () => void | Promise<void>
+  markContinuationAttempted: () => void | Promise<void>
+  completeContinuation: () => void | Promise<void>
+  runAgentOptions?: RunAgentOptions
+  signal?: AbortSignal
+  materializedApprovalIds?: string[]
+  repairOrphans?: (messages: OpenAI.ChatCompletionMessageParam[]) => void
+  execute?: (...args: unknown[]) => unknown
+}
+
+function continuationCallbacks(callbacks: Partial<ChannelCallbacks>, text: { value: string }): ChannelCallbacks {
+  const noop = () => undefined
+  return {
+    onModelStart: callbacks.onModelStart ?? noop,
+    onModelStreamStart: callbacks.onModelStreamStart ?? noop,
+    onTextChunk: (chunk) => {
+      text.value += chunk
+      callbacks.onTextChunk?.(chunk)
+    },
+    onReasoningChunk: callbacks.onReasoningChunk ?? noop,
+    onToolStart: callbacks.onToolStart ?? noop,
+    onToolEnd: callbacks.onToolEnd ?? noop,
+    onError: callbacks.onError ?? noop,
+    ...(callbacks.onClearText ? { onClearText: callbacks.onClearText } : {}),
+    ...(callbacks.flushNow ? { flushNow: callbacks.flushNow } : {}),
+    ...(callbacks.settleOutputMode ? { settleOutputMode: callbacks.settleOutputMode } : {}),
+  }
+}
+
+export async function resumeApprovalContinuation(options: ResumeApprovalContinuationOptions): Promise<{
+  outcome: RunAgentOutcome | "already_continued" | "terminal_notice"
+  messages: OpenAI.ChatCompletionMessageParam[]
+  suspension?: ApprovalSuspensionResult
+}> {
+  const claim = options.claimContinuation()
+  if (!claim.claimed) {
+    if (claim.interruptedAfterAttempt) {
+      const notice = "the approval continuation was interrupted after provider work began; its outcome is indeterminate and it will not be retried automatically"
+      await options.deliver(notice)
+      emitNervesEvent({
+        level: "error",
+        component: "engine",
+        event: "engine.approval_continuation_indeterminate",
+        message: "approval continuation interrupted after provider attempt",
+        meta: { approvalId: options.record.approvalId, continuationState: claim.record.continuationState },
+      })
+      return { outcome: "terminal_notice", messages: structuredClone(options.sessionMessages) }
+    }
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.approval_continuation_duplicate",
+      message: "approval continuation was already consumed",
+      meta: { approvalId: options.record.approvalId },
+    })
+    return { outcome: "already_continued", messages: structuredClone(options.sessionMessages) }
+  }
+  const materialized = materializeApprovalTerminal({
+    messages: options.sessionMessages,
+    checkpoint: options.checkpoint,
+    record: options.record,
+    currentSessionRevision: options.currentSessionRevision,
+    materializedApprovalIds: options.materializedApprovalIds,
+  })
+  const recoveredMaterialization = claim.record.continuationState === "materialized"
+  if (!recoveredMaterialization) {
+    await options.persist(materialized.messages)
+    await options.markContinuationMaterialized()
+  }
+  if (!materialized.resumeProvider) {
+    await options.deliver(materialized.directNotice!)
+    await options.completeContinuation()
+    return { outcome: "terminal_notice", messages: materialized.messages }
+  }
+
+  const outward = { value: "" }
+  const callbacks = continuationCallbacks(options.callbacks, outward)
+  await options.markContinuationAttempted()
+  const result = await options.runAgent(
+    materialized.messages,
+    callbacks,
+    options.channel,
+    options.signal,
+    options.runAgentOptions,
+  )
+  if (result.outcome === "suspended") {
+    await options.completeContinuation()
+    return { outcome: result.outcome, messages: materialized.messages, suspension: result.suspension }
+  }
+  await options.persist(materialized.messages, result)
+  if (outward.value) await options.deliver(outward.value)
+  await options.completeContinuation()
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.approval_continuation_completed",
+    message: "approval continuation completed through existing provider loop",
+    meta: { approvalId: options.record.approvalId, outcome: result.outcome },
+  })
+  return { outcome: result.outcome, messages: materialized.messages }
 }
 
 /**
@@ -560,6 +710,7 @@ async function habitToolBatchBlockReason(
 
 export type RunAgentOutcome =
   | "settled"
+  | "suspended"
   | "blocked"
   | "superseded"
   | "aborted"
@@ -1083,7 +1234,7 @@ export async function runAgent(
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
-): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }> {
+): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult; error?: Error; errorClassification?: ProviderErrorClassification }> {
   const generatedMessages: OpenAI.ChatCompletionMessageParam[] = [];
   const pushGenerated = (...next: OpenAI.ChatCompletionMessageParam[]): void => {
     messages.push(...next);
@@ -1235,6 +1386,7 @@ export async function runAgent(
   let overflowRetried = false;
   let outcome: RunAgentOutcome = "settled";
   let completion: CompletionMetadata | undefined;
+  let suspension: ApprovalSuspensionResult | undefined;
   let terminalError: Error | undefined;
   let terminalErrorClassification: ProviderErrorClassification | undefined;
   let sawSteeringFollowUp = false;
@@ -1977,6 +2129,109 @@ export async function runAgent(
           continue;
         }
 
+        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
+        const validatedCalls: Array<
+          | { call: (typeof result.toolCalls)[number]; advertised: OpenAI.ChatCompletionFunctionTool; validated: ValidatedToolArguments }
+          | { call: (typeof result.toolCalls)[number]; error: string }
+        > | null = options?.approvalCoordinator
+          ? result.toolCalls.map((call) => {
+              const advertised = activeTools.find((tool) => tool.function.name === call.name)
+              if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") {
+                return { call, error: "tool was not advertised with a valid argument schema" } as const
+              }
+              const validated = validateAdvertisedToolArguments(call.arguments, advertised.function.parameters)
+              return validated.ok
+                ? { call, advertised, validated: validated.value } as const
+                : { call, error: validated.reason } as const
+            })
+          : null
+        const invalidApprovalCall = validatedCalls?.find((entry) => "error" in entry)
+        if (invalidApprovalCall) {
+          await streamCallbackBuffer?.flush()
+          pushGenerated(msg)
+          for (const entry of validatedCalls!) {
+            const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
+            const rejection = `invalid tool arguments: ${detail}`
+            pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
+            providerRuntime.appendToolOutput(entry.call.id, rejection)
+          }
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.tool_arguments_rejected",
+            message: "tool batch rejected before execution because arguments were invalid",
+            meta: { toolCallId: invalidApprovalCall.call.id, toolName: invalidApprovalCall.call.name },
+          })
+          continue
+        }
+
+        const approvalCalls = (validatedCalls as Array<{
+          call: (typeof result.toolCalls)[number]
+          advertised: OpenAI.ChatCompletionFunctionTool
+          validated: ValidatedToolArguments
+        }> | null)?.map((entry) => ({
+          ...entry,
+          policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments),
+        })) ?? []
+        const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
+        if (protectedCall && result.toolCalls.length !== 1) {
+          streamCallbackBuffer?.discard()
+          pushGenerated(msg)
+          for (const call of result.toolCalls) {
+            const rejection = "rejected: approval-eligible tool must be the sole call; no call in this batch was executed."
+            pushGenerated({ role: "tool", tool_call_id: call.id, content: rejection })
+            providerRuntime.appendToolOutput(call.id, rejection)
+          }
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.approval_mixed_batch_rejected",
+            message: "protected tool batch rejected before every handler",
+            meta: { toolCallCount: result.toolCalls.length, protectedToolName: protectedCall.call.name },
+          })
+          continue
+        }
+        if (protectedCall && protectedCall.policy.kind === "required") {
+          streamCallbackBuffer?.discard()
+          pushGenerated(msg)
+          const toolDigest = digestJson({
+            name: protectedCall.call.name,
+            schemaDigest: protectedCall.validated.schemaDigest,
+            policyId: protectedCall.policy.policyId,
+          })
+          const policyDigest = digestJson({
+            policyId: protectedCall.policy.policyId,
+            actionClass: protectedCall.policy.actionClass,
+            classification: "required",
+          })
+          const committed = await options!.approvalCoordinator!.propose({
+            toolCall: structuredClone(msg.tool_calls![0]!),
+            arguments: structuredClone(protectedCall.validated.arguments),
+            preCallMessages,
+            frozenAssistantMessage: structuredClone(msg),
+            schemaDigest: protectedCall.validated.schemaDigest,
+            toolDigest,
+            policyDigest,
+            policyId: protectedCall.policy.policyId,
+            actionClass: protectedCall.policy.actionClass,
+          })
+          suspension = {
+            approvalId: committed.approvalId,
+            toolCallId: protectedCall.call.id,
+            checkpointDigest: committed.checkpointDigest,
+            suspendedSessionRevision: committed.suspendedSessionRevision,
+          }
+          outcome = "suspended"
+          done = true
+          emitNervesEvent({
+            component: "engine",
+            event: "engine.approval_turn_suspended",
+            message: "agent turn suspended before protected tool execution",
+            meta: { approvalId: committed.approvalId, toolCallId: protectedCall.call.id },
+          })
+          continue
+        }
+
         const containsSoleCallOnlyViolation = result.toolCalls.length > 1
           && result.toolCalls.some((call) => {
             const terminalProjection = resolveToolDefinition(call.name)?.terminalProjection
@@ -2326,6 +2581,7 @@ export async function runAgent(
     usage: lastUsage,
     outcome,
     completion,
+    ...(suspension ? { suspension } : {}),
     ...(terminalError ? { error: terminalError, errorClassification: terminalErrorClassification } : {}),
   };
 }

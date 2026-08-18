@@ -30,16 +30,16 @@ const mockCardsUpdate = vi.fn()
 const mockCardsList = vi.fn()
 
 vi.mock("stripe", () => ({
-  default: () => ({
-    issuing: {
+  default: class StripeMock {
+    issuing = {
       cards: {
         create: mockCardsCreate,
         retrieve: mockCardsRetrieve,
         update: mockCardsUpdate,
         list: mockCardsList,
       },
-    },
-  }),
+    }
+  },
 }))
 
 // Mock fetch for Duffel

@@ -26,6 +26,7 @@ import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
+import { withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -187,6 +188,8 @@ export interface RunSenseTurnOptions {
    * turn for a different agent.
    */
   runtimeMcpServers?: RuntimeMcpServers
+  /** Test seam for the same production whole-turn lease wrapper. */
+  _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -279,6 +282,8 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
   fs.mkdirSync(sessionDir, { recursive: true })
   const sessPath = path.join(sessionDir, `${sanitizeKey(sessionKey)}.json`)
+  const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
+  return runWithLease(sessPath, async (sessionTurnLease) => {
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
   let persistPromise: Promise<unknown> | undefined
@@ -364,6 +369,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     capabilities,
     messages: [userMsg],
     callbacks,
+    sessionTurnLease,
     /* v8 ignore start — delegation wrappers; pipeline integration tested separately */
     friendResolver: { resolve: () => resolver.resolve() },
     sessionLoader: {
@@ -415,6 +421,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     }
   }
 
+  if (persistPromise) await persistPromise
   await deliverPending(terminalDeliveryKind, { throwOnError: false })
 
   const ponderDeferred = false
@@ -470,4 +477,5 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   })
 
   return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures }
+  })
 }

@@ -135,6 +135,55 @@ describe("pipeline integration — full UX/AX scenarios", () => {
     resetIdentity()
   })
 
+  describe("approval suspension ownership", () => {
+    it("returns the durable suspension and skips ordinary duplicate post-turn persistence", async () => {
+      const suspension = {
+        approvalId: "11111111-1111-4111-8111-111111111111",
+        toolCallId: "call_restart",
+        checkpointDigest: "e".repeat(64),
+        suspendedSessionRevision: "f".repeat(64),
+      }
+      const input = makeIntegrationInput({
+        runAgent: vi.fn().mockResolvedValue({ outcome: "suspended", suspension }),
+      })
+
+      const result = await handleInboundTurn(input)
+
+      expect(result.turnOutcome).toBe("suspended")
+      expect((result as any).suspension).toEqual(suspension)
+      expect(input.postTurn).not.toHaveBeenCalled()
+      expect(input.accumulateFriendTokens).not.toHaveBeenCalled()
+    })
+
+    it("fails closed when a suspended provider turn omits its durable checkpoint", async () => {
+      const input = makeIntegrationInput({
+        runAgent: vi.fn().mockResolvedValue({ outcome: "suspended" }),
+      })
+
+      await expect(handleInboundTurn(input)).rejects.toThrow("suspended agent turn omitted durable approval suspension")
+      expect(input.postTurn).not.toHaveBeenCalled()
+      expect(input.accumulateFriendTokens).not.toHaveBeenCalled()
+    })
+
+    it("rejects a loader path outside the caller-held session lease before provider invocation", async () => {
+      const runAgent = vi.fn()
+      const input = makeIntegrationInput({
+        sessionLoader: { loadOrCreate: vi.fn().mockResolvedValue(makeSession()) },
+        runAgent,
+        sessionTurnLease: {
+          sessionPath: "/tmp/other-session.json",
+          ownerId: "owner-a",
+          ownerToken: "token-a",
+          release: vi.fn(),
+        },
+      } as any)
+
+      await expect(handleInboundTurn(input)).rejects.toThrow(/leased session path/i)
+      expect(runAgent).not.toHaveBeenCalled()
+      expect(input.postTurn).not.toHaveBeenCalled()
+    })
+  })
+
   // ── Scenario 1: Family DMs on BB -> full turn, full tools ─────────
 
   describe("scenario 1: family DMs on BB", () => {

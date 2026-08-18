@@ -28,6 +28,7 @@ import * as http from "http"
 import * as path from "path"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type FailoverState } from "./pipeline"
+import { SessionTurnBusyError, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
@@ -641,19 +642,16 @@ function handleTeamsSlashCommand(
 /* v8 ignore stop */
 
 // Handle an incoming Teams message
-export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>, reactionOverrides?: { isReactionSignal?: boolean; suppressEmptyStreamMessage?: boolean }): Promise<void> {
+export async function handleTeamsMessage(text: string, stream: TeamsStream, conversationId: string, teamsContext?: TeamsMessageContext, sendMessage?: (text: string) => Promise<void>, reactionOverrides?: {
+  isReactionSignal?: boolean
+  suppressEmptyStreamMessage?: boolean
+}, runtimeOverrides?: {
+  _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
+}): Promise<void> {
   const turnKey = teamsTurnKey(conversationId)
   // NOTE: Confirmation resolution is handled in the app.on("message") handler
   // BEFORE the conversation lock.  By the time we get here, any pending
   // confirmation has already been resolved and the reply consumed.
-
-  // Send first thinking phrase immediately so the user sees feedback
-  // before sync I/O (session load, trim) blocks the event loop.
-  // Skip for reaction signals — they should be processed quietly.
-  if (!reactionOverrides) {
-    stream.update(pickPhrase(getPhrases().thinking) + "...")
-  }
-  await new Promise(r => setImmediate(r))
 
   // Resolve identity provider early for friend resolution + slash command session path
   const store = getFriendStore()
@@ -681,7 +679,15 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
   const pendingDir = getPendingDir(getAgentName(), friendId, "teams", conversationId)
+  const runWithLease = runtimeOverrides?._withSessionTurnLease ?? withSessionTurnLease
 
+  try {
+  await runWithLease(sessPath, async (sessionTurnLease) => {
+  // Do not emit any activity until this turn owns the durable session.
+  if (!reactionOverrides) {
+    stream.update(pickPhrase(getPhrases().thinking) + "...")
+  }
+  await new Promise(r => setImmediate(r))
   // Build Teams-specific toolContext fields for injection into the pipeline
   const teamsToolContext: Partial<ToolContext> = teamsContext ? {
     graphToken: teamsContext.graphToken,
@@ -742,6 +748,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       messages: [{ role: "user" as const, content: currentText }],
       continuityIngressTexts: [currentText],
       callbacks: failoverAwareCallbacks,
+      sessionTurnLease,
       friendResolver: { resolve: () => Promise.resolve(resolvedContext) },
       sessionLoader: {
         loadOrCreate: async () => {
@@ -781,7 +788,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       }),
       postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
         const prepared = postTurnTrim(turnMessages, usage, hooks)
-        deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+        return deferPostTurnPersist(sessionPathArg, prepared, usage, state)
       },
       accumulateFriendTokens,
       signal: controller.signal,
@@ -855,6 +862,14 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     }
 
     currentText = supersedingFollowUp.text
+  }
+  })
+  } catch (error) {
+    if (error instanceof SessionTurnBusyError || (error instanceof Error && error.name === "SessionTurnBusyError")) {
+      stream.emit("this conversation is busy finishing another turn; please try again")
+      return
+    }
+    throw error
   }
 }
 

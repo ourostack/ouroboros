@@ -30,6 +30,11 @@ const mocks = vi.hoisted(() => ({
       maxMessageLength: Infinity,
     },
   }),
+  loadSession: vi.fn().mockReturnValue(null),
+  runAgent: vi.fn(),
+  postTurnTrim: vi.fn((messages: any[]) => ({ currentMessages: messages, trimmedMessages: messages, currentIngressTimes: messages.map(() => null), maxTokens: 128000, contextMargin: 0 })),
+  deferPostTurnPersist: vi.fn().mockResolvedValue([]),
+  handleInboundTurn: vi.fn(),
 }))
 
 vi.mock("../../heart/versioning/update-hooks", () => ({
@@ -56,7 +61,7 @@ vi.mock("../../mind/bundle-manifest", () => ({
   createBundleMeta: vi.fn(),
 }))
 vi.mock("../../heart/core", () => ({
-  runAgent: vi.fn().mockResolvedValue({ usage: undefined }),
+  runAgent: (...a: any[]) => mocks.runAgent(...a),
   getProvider: () => "azure",
   createSummarize: () => vi.fn(),
   repairOrphanedToolCalls: vi.fn(),
@@ -70,10 +75,13 @@ vi.mock("../../mind/prompt", () => ({
   flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 vi.mock("../../mind/context", () => ({
-  loadSession: vi.fn().mockReturnValue(null),
+  loadSession: (...a: any[]) => mocks.loadSession(...a),
   saveSession: vi.fn(),
   deleteSession: vi.fn(),
   postTurn: vi.fn(),
+  postTurnTrim: (...a: any[]) => mocks.postTurnTrim(...a),
+  postTurnPersist: vi.fn().mockReturnValue([]),
+  deferPostTurnPersist: (...a: any[]) => mocks.deferPostTurnPersist(...a),
 }))
 vi.mock("../../mind/pending", () => ({
   getPendingDir: vi.fn(() => "/mock/pending"),
@@ -132,6 +140,9 @@ vi.mock("@ouro.bot/friends", async () => {
 vi.mock("../../senses/trust-gate", () => ({
   enforceTrustGate: vi.fn().mockReturnValue({ allowed: true }),
 }))
+vi.mock("../../senses/pipeline", () => ({
+  handleInboundTurn: (...a: any[]) => mocks.handleInboundTurn(...a),
+}))
 vi.mock("os", async () => {
   const actual = await vi.importActual<typeof import("os")>("os")
   return {
@@ -185,9 +196,116 @@ describe("CLI main(): applyPendingUpdates wiring", () => {
   beforeEach(() => {
     mocks.applyPendingUpdates.mockClear()
     mocks.getPackageVersion.mockClear()
+    mocks.handleInboundTurn.mockImplementation(async (input: any) => {
+      const session = await input.sessionLoader.loadOrCreate()
+      const result = await input.runAgent(session.messages, input.callbacks, input.channel, input.signal, input.runAgentOptions)
+      await input.postTurn(session.messages, session.sessionPath, result.usage, undefined, session.state)
+      return {
+        resolvedContext: await input.friendResolver.resolve(),
+        gateResult: { allowed: true },
+        usage: result.usage,
+        turnOutcome: result.outcome,
+        sessionPath: session.sessionPath,
+        messages: session.messages,
+      }
+    })
     vi.spyOn(process.stdout, "write").mockImplementation(() => true)
     vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     vi.spyOn(console, "log").mockImplementation(() => {})
+  })
+
+  it("behaviorally acquires the turn lease before load and releases after the CLI session returns", async () => {
+    const acquired = Promise.withResolvers<void>()
+    const allowTurn = Promise.withResolvers<void>()
+    const order: string[] = []
+    mocks.loadSession.mockImplementation(() => { order.push("session:load"); return null })
+    mocks.runAgent.mockImplementation(async (_messages: any[], callbacks: any) => {
+      order.push("provider:run")
+      callbacks.onTextChunk("lease-visible-answer")
+      callbacks.flushMarkdown()
+      return { outcome: "settled" }
+    })
+    mocks.deferPostTurnPersist.mockImplementation(async () => { order.push("session:persist"); return [] })
+    ;(process.stdout.write as any).mockImplementation((chunk: unknown) => {
+      if (String(chunk).includes("lease-visible-answer")) order.push("outward:delivered")
+      return true
+    })
+    const acquireSessionTurnLease = vi.fn(async () => {
+      order.push("lease:acquired")
+      acquired.resolve()
+      await allowTurn.promise
+      return {
+        sessionPath: "/tmp/test-session.json",
+        ownerId: "owner-a",
+        ownerToken: "token-a",
+        release: async () => { order.push("lease:released") },
+      }
+    })
+
+    const { main } = await import("../../senses/cli")
+    const running = main("testagent", {
+      pasteDebounceMs: 0,
+      _testInputSource: (async function*() { yield "hello" })(),
+      _acquireSessionTurnLease: acquireSessionTurnLease,
+    } as any)
+    await Promise.race([acquired.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("lease was not acquired")), 100))])
+    expect(mocks.loadSession).not.toHaveBeenCalled()
+    allowTurn.resolve()
+    await running
+
+    expect(order).toEqual([
+      "lease:acquired",
+      "session:load",
+      "provider:run",
+      "outward:delivered",
+      "session:persist",
+      "lease:released",
+    ])
+    expect(mocks.deferPostTurnPersist).toHaveBeenCalledWith(
+      "/tmp/test-session.json",
+      expect.any(Object),
+      undefined,
+      undefined,
+      expect.objectContaining({ ownerId: "owner-a", ownerToken: "token-a" }),
+    )
+  })
+
+  it("releases the per-turn lease while the interactive CLI waits for the next input", async () => {
+    const secondInput = Promise.withResolvers<void>()
+    const order: string[] = []
+    mocks.loadSession.mockReturnValue(null)
+    mocks.runAgent.mockImplementation(async (_messages: any[], callbacks: any) => {
+      callbacks.onTextChunk("answer")
+      callbacks.flushMarkdown()
+      return { outcome: "settled" }
+    })
+    const acquireSessionTurnLease = vi.fn(async () => {
+      const turn = acquireSessionTurnLease.mock.calls.length
+      order.push(`acquire:${turn}`)
+      return {
+        sessionPath: "/tmp/test-session.json",
+        ownerId: `owner-${turn}`,
+        ownerToken: `token-${turn}`,
+        release: async () => {
+          order.push(`release:${turn}`)
+          if (turn === 1) secondInput.resolve()
+        },
+      }
+    })
+    const input = (async function*() {
+      yield "first"
+      await secondInput.promise
+      expect(order).toContain("release:1")
+      yield "second"
+    })()
+
+    await main("testagent", {
+      pasteDebounceMs: 0,
+      _testInputSource: input,
+      _acquireSessionTurnLease: acquireSessionTurnLease,
+    })
+
+    expect(order).toEqual(["acquire:1", "release:1", "acquire:2", "release:2"])
   })
 
   afterEach(() => {
