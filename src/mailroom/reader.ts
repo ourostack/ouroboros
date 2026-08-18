@@ -5,7 +5,7 @@ import { DefaultAzureCredential } from "@azure/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentMailroomRoot, getAgentName, getAgentRoot } from "../heart/identity"
 import { readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { AzureBlobMailroomStore } from "./blob-store"
+import { AzureBlobMailroomStore, type HostedMailIndexAuthorityReader } from "./blob-store"
 import { FileMailroomStore, type MailroomStore } from "./file-store"
 import type { MailroomRegistry } from "./core"
 import type { MailAutonomyPolicy } from "./core"
@@ -51,7 +51,7 @@ export type HostedMailAuthorityResolution =
   | {
       ok: true
       agentName: string
-      store: AzureBlobMailroomStore
+      authority: HostedMailIndexAuthorityReader
       storeLabel: string
     }
   | {
@@ -260,7 +260,7 @@ export function resolveHostedMailAuthority(agentName: string = getAgentName()): 
       ok: false,
       agentName,
       reason: "auth-required",
-      error: `AUTH_REQUIRED:mailroom -- Hosted mail authority is unavailable because ${runtime.itemPath} is ${runtime.reason}.`,
+      error: `AUTH_REQUIRED:mailroom -- Hosted mail authority is unavailable because ${runtime.itemPath} is ${runtime.reason}: ${runtime.error}`,
     }
     emitNervesEvent({
       component: "senses",
@@ -303,7 +303,9 @@ export function resolveHostedMailAuthority(agentName: string = getAgentName()): 
   const result: HostedMailAuthorityResolution = {
     ok: true,
     agentName,
-    store,
+    authority: {
+      observeMessageIndexAuthority: (authorityAgentId) => store.observeMessageIndexAuthority(authorityAgentId),
+    },
     storeLabel: `${azureAccountUrl}/${azureContainer}`,
   }
   emitNervesEvent({

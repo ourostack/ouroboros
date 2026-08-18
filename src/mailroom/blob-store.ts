@@ -63,6 +63,10 @@ export interface HostedMailIndexAuthorityObservation {
   snapshot: MailIndexRecordSnapshot
 }
 
+export interface HostedMailIndexAuthorityReader {
+  observeMessageIndexAuthority(agentId: string): Promise<HostedMailIndexAuthorityObservation>
+}
+
 interface DownloadBlobClientLike {
   name?: string
   exists(): Promise<boolean>
@@ -264,17 +268,24 @@ function parseMessageIndexBlobName(name: string): MailMessageIndexRecord | null 
   const agentId = parts[1]
   const stem = parts[2]!.slice(0, -5)
   const [sortKey, compartmentKind, placement, sourceToken, ...idParts] = stem.split("__")
-  if (!sortKey || !compartmentKind || !placement || !sourceToken || idParts.length === 0) return null
+  const id = idParts.join("__")
+  if (!agentId || !sortKey || !compartmentKind || !placement || !sourceToken || !id) return null
+  if (!/^\d{13}$/.test(sortKey)) return null
   if (compartmentKind !== "native" && compartmentKind !== "delegated") return null
-  const receivedAtMs = MESSAGE_INDEX_SORT_MAX_MS - Number.parseInt(sortKey, 10)
+  if (!(["imbox", "screener", "discarded", "quarantine", "draft", "sent"] as const).includes(placement as MailPlacement)) return null
+  const parsedSortKey = Number(sortKey)
+  if (!Number.isSafeInteger(parsedSortKey) || parsedSortKey < 0 || parsedSortKey > MESSAGE_INDEX_SORT_MAX_MS) return null
+  const decodedSource = decodeSourceToken(sourceToken)
+  if (decodedSource !== undefined && decodedSource.length === 0) return null
+  const receivedAtMs = MESSAGE_INDEX_SORT_MAX_MS - parsedSortKey
   return {
     schemaVersion: 1,
-    id: idParts.join("__"),
+    id,
     agentId,
     compartmentKind,
     placement: placement as MailPlacement,
-    ...(decodeSourceToken(sourceToken) ? { source: decodeSourceToken(sourceToken) } : {}),
-    receivedAt: Number.isFinite(receivedAtMs) ? new Date(receivedAtMs).toISOString() : new Date(0).toISOString(),
+    ...(decodedSource ? { source: decodedSource } : {}),
+    receivedAt: new Date(receivedAtMs).toISOString(),
   }
 }
 
