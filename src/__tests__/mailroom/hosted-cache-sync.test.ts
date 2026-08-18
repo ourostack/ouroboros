@@ -257,6 +257,43 @@ describe("hosted cache stable-tail convergence", () => {
     expect(progress).toContainEqual({ phase: "pass-complete", pass: 1, settled: 251, total: 251 })
   })
 
+  it("emits the exact 250 boundary once and handles a zero-record scoped pass", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const messages = Array.from({ length: 250 }, (_, index) => plaintextMessage(`mail_boundary_${index}`))
+    const records = messages.map(recordFor)
+    const progress: Array<{ phase: string; pass: number; settled: number; total: number }> = []
+
+    await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: { observeMessageIndexAuthority: vi.fn(async () => observation(records)) },
+      store: { getIndexedMessageById: vi.fn(async (id: string) => messages.find((message) => message.id === id) ?? null) } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+      onProgress: (event) => progress.push(event),
+    })
+    expect(progress.filter((event) => event.phase === "settled"))
+      .toEqual([{ phase: "settled", pass: 1, settled: 250, total: 250 }])
+
+    const zeroProgress: typeof progress = []
+    const zero = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "scoped-upsert",
+      store: { listMessageIndexRecords: vi.fn(async () => []) } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+      onProgress: (event) => zeroProgress.push(event),
+    })
+    expect(zero.coverage.visibleMessageCount).toBe(0)
+    expect(zeroProgress).toEqual([
+      { phase: "pass-start", pass: 1, settled: 0, total: 0 },
+      { phase: "pass-complete", pass: 1, settled: 0, total: 0 },
+    ])
+  })
+
   it("waits for all workers before failing and publishes neither receipt nor coverage for generic errors", async () => {
     const cacheRoot = tempDir()
     const cacheOptions = { cacheDirForAgent: () => cacheRoot }
@@ -282,6 +319,85 @@ describe("hosted cache stable-tail convergence", () => {
     expect(completed).toBe(3)
     expect(readMailSearchCoverageRecord({ agentId: "slugger", storeKind: "azure-blob" }, cacheOptions)).toBeNull()
     expect(readMailSearchSkipReceipt("slugger", "mail_fail", cacheOptions)).toBeNull()
+  })
+
+  it("orders concurrent failures by authority order, preserves current cache, and clears timers", async () => {
+    vi.useFakeTimers()
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = plaintextMessage("mail_current")
+    const failFirst = plaintextMessage("mail_fail_first")
+    const failSecond = plaintextMessage("mail_fail_second")
+    const records = [current, failFirst, failSecond].map(recordFor)
+    const currentSync = syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "scoped-upsert",
+      store: {
+        listMessageIndexRecords: vi.fn(async () => [recordFor(current)]),
+        getIndexedMessageById: vi.fn(async () => current),
+      } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+    await vi.runAllTimersAsync()
+    await currentSync
+
+    const sync = syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: { observeMessageIndexAuthority: vi.fn(async () => observation(records)) },
+      store: {
+        getIndexedMessageById: vi.fn(async (id: string) => {
+          if (id === current.id) return current
+          await new Promise((resolve) => setTimeout(resolve, id === failFirst.id ? 20 : 1))
+          throw new Error(`failure for ${id}`)
+        }),
+      } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+    const rejection = expect(sync).rejects.toThrow(
+      `mail_fail_first: failure for mail_fail_first; mail_fail_second: failure for mail_fail_second`,
+    )
+    await vi.runAllTimersAsync()
+    await rejection
+    expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions).map((document) => document.messageId))
+      .toEqual([current.id])
+    expect(readMailSearchCoverageRecord({ agentId: "slugger", storeKind: "azure-blob" }, cacheOptions)).not.toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("settles other workers when receipt persistence itself fails", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    fs.writeFileSync(path.join(cacheRoot, "skipped"), "blocks receipt directory")
+    const missing = missingKeyMessage("mail_receipt_failure", "2026-08-18T00:00:00.000Z")
+    const slow = plaintextMessage("mail_slow_settlement")
+    let slowCompleted = false
+
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: { observeMessageIndexAuthority: vi.fn(async () => observation([recordFor(missing), recordFor(slow)])) },
+      store: {
+        getIndexedMessageById: vi.fn(async (id: string) => {
+          if (id === slow.id) {
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            slowCompleted = true
+            return slow
+          }
+          return missing
+        }),
+      } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })).rejects.toThrow(/mail_receipt_failure/i)
+
+    expect(slowCompleted).toBe(true)
+    expect(readMailSearchCoverageRecord({ agentId: "slugger", storeKind: "azure-blob" }, cacheOptions)).toBeNull()
   })
 
   it("emits a 30-second heartbeat during a stalled pass, isolates callback failures, and clears its timer", async () => {
