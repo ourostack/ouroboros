@@ -166,6 +166,31 @@ function executionOptions(fixture: ReturnType<typeof ready>, execute = vi.fn().m
   }
 }
 
+function expectLiveContext(context: any, fixture: ReturnType<typeof ready>): void {
+  expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+  expect(context).toMatchObject({
+    record: {
+      state: "claimed",
+      toolName: "shell",
+      arguments: { command: "docker restart calibre-web" },
+      requesterId: "friend-ari",
+      transport: "telegram",
+      transportUserId: "42",
+      transportChatId: "7",
+      transportMessageId: "99",
+      sessionKey: "telegram:chat-7",
+    },
+    checkpoint: {
+      approvalId: UUID,
+      frozenAssistantMessage: proposal().frozenAssistantMessage,
+    },
+    definition: {
+      tool: { function: { name: "shell" } },
+    },
+    arguments: { command: "docker restart calibre-web" },
+  })
+}
+
 afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
@@ -173,16 +198,32 @@ afterEach(() => {
 describe("approval decision and crash-safe execution", () => {
   it("marks attempted before invoking the frozen handler and records success", async () => {
     const fixture = ready()
+    const resolveTool = vi.fn((name: string) => {
+      expect(name).toBe("shell")
+      expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+      return shellToolDefinitions[0]
+    })
+    const liveGuard = vi.fn((context: unknown) => {
+      expectLiveContext(context, fixture)
+      return { ok: true as const }
+    })
+    const liveRisk = vi.fn((context: unknown) => {
+      expectLiveContext(context, fixture)
+      return { ok: true as const }
+    })
     const execute = vi.fn(async () => {
       expect(fixture.approvalStore.read(UUID)?.state).toBe("attempted")
       return "restarted"
     })
 
-    const record = await executeApprovalDecision(executionOptions(fixture, execute) as any)
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, { resolveTool, liveGuard, liveRisk }) as any)
 
     expect(record).toMatchObject({ state: "succeeded", result: "restarted", ownerId: "owner-a", epoch: 1 })
     expect(execute).toHaveBeenCalledTimes(1)
     expect(execute).toHaveBeenCalledWith("shell", { command: "docker restart calibre-web" })
+    expect(resolveTool).toHaveBeenCalledWith("shell")
+    expect(liveGuard).toHaveBeenCalledTimes(1)
+    expect(liveRisk).toHaveBeenCalledTimes(1)
     fixture.approvalStore.close()
   })
 
@@ -255,13 +296,26 @@ describe("approval decision and crash-safe execution", () => {
     const fixture = ready()
     const execute = vi.fn().mockResolvedValue("restarted")
     const attemptedOwners: Array<{ ownerId: string | null; epoch: number }> = []
+    let releaseClaim!: () => void
+    let signalClaimed!: () => void
+    const claimHeld = new Promise<void>((resolve) => { releaseClaim = resolve })
+    const claimed = new Promise<void>((resolve) => { signalClaimed = resolve })
     const first = executeApprovalDecision(executionOptions(fixture, execute, {
       ownerId: "owner-a",
-      hooks: { afterAttempt: () => {
-        const record = fixture.approvalStore.read(UUID)!
-        attemptedOwners.push({ ownerId: record.ownerId, epoch: record.epoch })
-      } },
+      hooks: {
+        afterClaim: async () => {
+          expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+          signalClaimed()
+          await claimHeld
+        },
+        afterAttempt: () => {
+          const record = fixture.approvalStore.read(UUID)!
+          attemptedOwners.push({ ownerId: record.ownerId, epoch: record.epoch })
+        },
+      },
     }) as any)
+    await claimed
+    expect(fixture.approvalStore.read(UUID)).toMatchObject({ state: "claimed", ownerId: "owner-a", epoch: 1 })
     const second = executeApprovalDecision(executionOptions(fixture, execute, {
       ownerId: "owner-b",
       decision: decision(fixture.decisionToken, { decision: competingDecision }),
@@ -270,11 +324,11 @@ describe("approval decision and crash-safe execution", () => {
         attemptedOwners.push({ ownerId: record.ownerId, epoch: record.epoch })
       } },
     }) as any)
+    await expect(second).rejects.toMatchObject({ code: "decision_not_eligible" })
+    expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+    releaseClaim()
 
-    const outcomes = await Promise.allSettled([first, second])
-
-    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1)
-    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1)
+    await expect(first).resolves.toMatchObject({ state: "succeeded", ownerId: "owner-a", epoch: 1 })
     expect(attemptedOwners).toEqual([{ ownerId: "owner-a", epoch: 1 }])
     expect(execute).toHaveBeenCalledTimes(1)
     fixture.approvalStore.close()
@@ -319,14 +373,15 @@ describe("approval decision and crash-safe execution", () => {
       ...overrides,
       ...(overrides.resolveTool ? { resolveTool: (...args: any[]) => {
         expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+        expect(args[0]).toBe("shell")
         return (overrides.resolveTool as any)(...args)
       } } : {}),
       ...(overrides.liveGuard ? { liveGuard: (...args: any[]) => {
-        expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+        expectLiveContext(args[0], fixture)
         return (overrides.liveGuard as any)(...args)
       } } : {}),
       ...(overrides.liveRisk ? { liveRisk: (...args: any[]) => {
-        expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+        expectLiveContext(args[0], fixture)
         return (overrides.liveRisk as any)(...args)
       } } : {}),
     }
@@ -367,6 +422,24 @@ describe("approval decision and crash-safe execution", () => {
     const markAttempted = vi.spyOn(fixture.approvalStore, "markAttempted")
 
     const record = await executeApprovalDecision(executionOptions(fixture, execute) as any)
+
+    expect(record.state).toBe("drifted")
+    expect(markAttempted).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
+  it("re-reads checkpoint evidence after claim so a claim-boundary mutation cannot pass", async () => {
+    const fixture = ready()
+    const execute = vi.fn()
+    const markAttempted = vi.spyOn(fixture.approvalStore, "markAttempted")
+
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+      hooks: { afterClaim: () => {
+        expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+        fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage = { role: "assistant", content: "changed after claim" }
+      } },
+    }) as any)
 
     expect(record.state).toBe("drifted")
     expect(markAttempted).not.toHaveBeenCalled()
