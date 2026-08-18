@@ -184,6 +184,16 @@ function readSkipReceipt(filePath: string): MailSearchSkipReceipt | null {
   return receipt as MailSearchSkipReceipt
 }
 
+function isRegularFileNoFollow(filePath: string): boolean {
+  try {
+    return fs.lstatSync(filePath).isFile()
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error &&
+      (error.code === "ENOENT" || error.code === "ENOTDIR")) return false
+    throw error
+  }
+}
+
 function writeJsonAtomically(filePath: string, value: unknown): void {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
   try {
@@ -263,7 +273,9 @@ export function readMailSearchSkipReceipt(
   messageId: string,
   options?: MailSearchCacheOptions,
 ): MailSearchSkipReceipt | null {
-  const receipt = readSkipReceipt(skipReceiptPath(agentId, messageId, options))
+  const filePath = skipReceiptPath(agentId, messageId, options)
+  if (!isRegularFileNoFollow(filePath)) return null
+  const receipt = readSkipReceipt(filePath)
   return receipt?.agentId === agentId && receipt.messageId === messageId ? receipt : null
 }
 
@@ -274,10 +286,10 @@ export function inspectMailSearchSkipReceipts(
   const dir = skippedDir(agentId, options)
   if (!fs.existsSync(dir)) return []
   return fs.readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".json"))
     .map((entry) => {
       const filePath = path.join(dir, entry.name)
-      const receipt = readSkipReceipt(filePath)
+      const receipt = entry.isFile() ? readSkipReceipt(filePath) : null
       return {
         fileName: entry.name,
         filePath,
@@ -295,7 +307,8 @@ export function removeMailSearchSkipReceipt(
 ): boolean {
   const filePath = skipReceiptPath(agentId, messageId, options)
   try {
-    if (!fs.lstatSync(filePath).isFile()) return false
+    const entry = fs.lstatSync(filePath)
+    if (!entry.isFile() && !entry.isSymbolicLink()) return false
     fs.unlinkSync(filePath)
     return true
   } catch (error) {
@@ -312,7 +325,8 @@ export function removeMailSearchSkipReceiptFile(
   if (path.basename(fileName) !== fileName || !fileName.endsWith(".json")) return false
   const filePath = path.join(skippedDir(agentId, options), fileName)
   try {
-    if (!fs.lstatSync(filePath).isFile()) return false
+    const entry = fs.lstatSync(filePath)
+    if (!entry.isFile() && !entry.isSymbolicLink()) return false
     fs.unlinkSync(filePath)
     return true
   } catch (error) {

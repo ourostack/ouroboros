@@ -189,6 +189,7 @@ describe("mail search cache", () => {
     expect(api.removeMailSearchSkipReceiptFile("slugger", "missing.json", options)).toBe(false)
     fs.chmodSync(skippedDir, 0o000)
     try {
+      expect(() => api.readMailSearchSkipReceipt("slugger", "denied", options)).toThrow()
       expect(() => api.removeMailSearchSkipReceiptFile("slugger", "denied.json", options)).toThrow()
       expect(() => api.removeMailSearchSkipReceipt("slugger", "denied", options)).toThrow()
     } finally {

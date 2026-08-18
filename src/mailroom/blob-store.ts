@@ -169,6 +169,55 @@ function messageDestinationMatches(message: StoredMailMessage, resolved: Resolve
     message.recipient.toLowerCase() === resolved.address.toLowerCase()
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0
+}
+
+function isEncryptedPayload(value: unknown): value is EncryptedPayload {
+  if (typeof value !== "object" || value === null) return false
+  const payload = value as Partial<EncryptedPayload>
+  return payload.algorithm === "RSA-OAEP-SHA256+A256GCM" &&
+    isNonEmptyString(payload.keyId) &&
+    isNonEmptyString(payload.wrappedKey) &&
+    isNonEmptyString(payload.iv) &&
+    isNonEmptyString(payload.authTag) &&
+    isNonEmptyString(payload.ciphertext)
+}
+
+function validateCommittedEncryptedMessage(
+  value: unknown,
+  expectedId: string,
+  resolved: ResolvedMailAddress,
+  label: "committed message" | "committed winner",
+): StoredMailMessageEncrypted {
+  if (typeof value !== "object" || value === null) {
+    throw new Error(`${label} ${expectedId} is invalid: expected an object`)
+  }
+  const message = value as Partial<StoredMailMessageEncrypted>
+  if (message.schemaVersion !== 1 || message.id !== expectedId) {
+    throw new Error(`${label} ${expectedId} is invalid: message identity does not match its committed path`)
+  }
+  if (!isNonEmptyString(message.agentId) || !isNonEmptyString(message.mailboxId) || !isNonEmptyString(message.recipient)) {
+    throw new Error(`${label} ${expectedId} is invalid: resolved destination metadata is incomplete`)
+  }
+  if (!messageDestinationMatches(message as StoredMailMessage, resolved)) {
+    throw new Error(`${label} ${expectedId} belongs to a different resolved destination`)
+  }
+  if (message.bodyForm !== "encrypted" || !isEncryptedPayload(message.privateEnvelope) || "private" in message) {
+    throw new Error(`${label} ${expectedId} is invalid: committed body is not a coherent encrypted payload`)
+  }
+  const rawPrefix = `raw/${expectedId}.`
+  const rawFingerprint = isNonEmptyString(message.rawObject) && message.rawObject.startsWith(rawPrefix) && message.rawObject.endsWith(".json")
+    ? message.rawObject.slice(rawPrefix.length, -".json".length)
+    : ""
+  if (!/^[a-f0-9]{64}$/.test(rawFingerprint) ||
+    !isNonEmptyString(message.rawSha256) || !/^[a-f0-9]{64}$/.test(message.rawSha256) ||
+    typeof message.rawSize !== "number" || !Number.isSafeInteger(message.rawSize) || message.rawSize < 0) {
+    throw new Error(`${label} ${expectedId} is invalid: encrypted raw metadata is incoherent`)
+  }
+  return message as StoredMailMessageEncrypted
+}
+
 async function downloadJson<T>(blob: DownloadBlobClientLike, timeoutMs: number): Promise<T | null> {
   if (!await blob.exists()) return null
   let lastError: unknown = null
@@ -612,18 +661,16 @@ export class AzureBlobMailroomStore implements MailroomStore {
       )
     }
     if (existing) {
-      if (!messageDestinationMatches(existing, input.resolved)) {
-        throw new Error(`committed message ${message.id} belongs to a different resolved destination`)
-      }
-      this.upsertMailSearchCache(existing, privateEnvelope)
-      await this.putMessageIndex(existing)
+      const committed = validateCommittedEncryptedMessage(existing, message.id, input.resolved, "committed message")
+      this.upsertMailSearchCache(committed, privateEnvelope)
+      await this.putMessageIndex(committed)
       emitNervesEvent({
         component: "senses",
         event: "senses.mail_blob_store_dedupe",
         message: "azure blob mailroom store deduped existing message",
         meta: { id: message.id, agentId: message.agentId },
       })
-      return { created: false, message: existing }
+      return { created: false, message: committed }
     }
     await this.rawBlob(message.rawObject).uploadData(blobText(rawPayload))
     try {
@@ -640,7 +687,8 @@ export class AzureBlobMailroomStore implements MailroomStore {
         )
       }
       if (!winner) throw new Error(`committed winner ${message.id} could not be read: message blob is absent`)
-      if (winner.rawObject !== message.rawObject) {
+      const committed = validateCommittedEncryptedMessage(winner, message.id, input.resolved, "committed winner")
+      if (committed.rawObject !== message.rawObject) {
         try {
           await this.rawBlob(message.rawObject).deleteIfExists()
         } catch (cleanupError) {
@@ -658,18 +706,15 @@ export class AzureBlobMailroomStore implements MailroomStore {
           })
         }
       }
-      if (!messageDestinationMatches(winner, input.resolved)) {
-        throw new Error(`committed winner ${message.id} belongs to a different resolved destination`)
-      }
-      this.upsertMailSearchCache(winner, privateEnvelope)
-      await this.putMessageIndex(winner)
+      this.upsertMailSearchCache(committed, privateEnvelope)
+      await this.putMessageIndex(committed)
       emitNervesEvent({
         component: "senses",
         event: "senses.mail_blob_store_dedupe",
         message: "azure blob mailroom store deduped existing message",
-        meta: { id: winner.id, agentId: winner.agentId },
+        meta: { id: committed.id, agentId: committed.agentId },
       })
-      return { created: false, message: winner }
+      return { created: false, message: committed }
     }
     await this.putMessageIndex(message)
     this.upsertMailSearchCache(message, privateEnvelope)

@@ -632,19 +632,34 @@ describe("AzureBlobMailroomStore", () => {
     const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Invalid winner\r\n\r\nHello.\r\n")
     const built = await buildEncryptedStoredMailMessage({ resolved, envelope, rawMime })
     const invalidWinners: Array<{ label: string; message: unknown }> = [
+      { label: "non-object", message: "not-an-object" },
+      { label: "wrong schema", message: { ...built.message, schemaVersion: 2 } },
       { label: "wrong id", message: { ...built.message, id: "mail_wrong_id" } },
+      { label: "missing agent", message: { ...built.message, agentId: undefined } },
+      { label: "missing mailbox", message: { ...built.message, mailboxId: undefined } },
+      { label: "missing recipient", message: { ...built.message, recipient: undefined } },
       {
         label: "plaintext body",
         message: { ...built.message, bodyForm: "plaintext", private: { subject: "not encrypted" }, privateEnvelope: undefined },
       },
+      { label: "mixed encrypted body", message: { ...built.message, private: { subject: "unexpected plaintext" } } },
+      { label: "missing encrypted payload", message: { ...built.message, privateEnvelope: undefined } },
+      {
+        label: "wrong payload algorithm",
+        message: { ...built.message, privateEnvelope: { ...built.message.privateEnvelope, algorithm: "plaintext" } },
+      },
+      ...(["keyId", "wrappedKey", "iv", "authTag", "ciphertext"] as const).map((field) => ({
+        label: `empty encrypted ${field}`,
+        message: { ...built.message, privateEnvelope: { ...built.message.privateEnvelope, [field]: "" } },
+      })),
       {
         label: "foreign raw reference",
         message: { ...built.message, rawObject: `raw/other.${"a".repeat(64)}.json` },
       },
-      {
-        label: "malformed encrypted payload",
-        message: { ...built.message, privateEnvelope: { ...built.message.privateEnvelope, ciphertext: "" } },
-      },
+      { label: "invalid raw digest", message: { ...built.message, rawSha256: "not-a-digest" } },
+      { label: "non-numeric raw size", message: { ...built.message, rawSize: "86" } },
+      { label: "fractional raw size", message: { ...built.message, rawSize: 1.5 } },
+      { label: "negative raw size", message: { ...built.message, rawSize: -1 } },
     ]
 
     for (const invalid of invalidWinners) {

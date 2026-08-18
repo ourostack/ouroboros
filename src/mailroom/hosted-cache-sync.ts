@@ -149,6 +149,12 @@ interface ReconciliationResult {
   skipped: number
 }
 
+interface ProgressCursor {
+  pass: number
+  settled: number
+  total: number
+}
+
 function safeProgress(
   input: HostedMailSearchCacheSyncInput,
   progress: HostedMailSearchCacheSyncProgress,
@@ -178,6 +184,7 @@ async function reconcileRecords(
   input: HostedMailSearchCacheSyncInput,
   records: MailMessageIndexRecord[],
   pass: number,
+  progressCursor: ProgressCursor,
 ): Promise<ReconciliationResult> {
   const recordsById = new Map(records.map((record) => [record.id, record]))
   const canonicalDocuments = new Map<string, MailSearchCacheDocument>()
@@ -216,10 +223,10 @@ async function reconcileRecords(
   let settled = 0
   let nextRecord = 0
   const failures: Array<{ index: number; id: string; error: string }> = []
+  progressCursor.pass = pass
+  progressCursor.settled = settled
+  progressCursor.total = records.length
   safeProgress(input, { phase: "pass-start", pass, settled, total: records.length })
-  const heartbeat = setInterval(() => {
-    safeProgress(input, { phase: "heartbeat", pass, settled, total: records.length })
-  }, PROGRESS_HEARTBEAT_MS)
 
   async function processRecord(record: MailMessageIndexRecord): Promise<void> {
     const cached = canonicalDocuments.get(record.id)
@@ -298,6 +305,7 @@ async function reconcileRecords(
         })
       } finally {
         settled += 1
+        progressCursor.settled = settled
         if (settled % PROGRESS_SETTLEMENT_INTERVAL === 0) {
           safeProgress(input, { phase: "settled", pass, settled, total: records.length })
         }
@@ -309,7 +317,6 @@ async function reconcileRecords(
     const workerCount = Math.min(FULL_CONVERGENCE_CONCURRENCY, records.length)
     await Promise.allSettled(Array.from({ length: workerCount }, () => worker()))
   } finally {
-    clearInterval(heartbeat)
     safeProgress(input, { phase: "pass-complete", pass, settled, total: records.length })
   }
 
@@ -357,8 +364,9 @@ function writeCoverage(
  * the legacy bounded upsert used by the in-agent refresh tool. This core never
  * writes remote mail state and never records access; adapters own audit policy.
  */
-async function performHostedMailSearchCacheSync(
+async function performHostedMailSearchCacheSyncWithProgress(
   input: HostedMailSearchCacheSyncInput,
+  progressCursor: ProgressCursor,
 ): Promise<HostedMailSearchCacheSyncResult> {
   let finalRecords: MailMessageIndexRecord[]
   let finalSnapshot: HostedMailIndexAuthorityObservation["snapshot"]
@@ -374,7 +382,7 @@ async function performHostedMailSearchCacheSync(
     let authority = validateAuthorityObservation(await observer.observeMessageIndexAuthority(input.agentId))
     let stable = false
     for (let pass = 1; pass <= FULL_CONVERGENCE_MAX_PASSES; pass += 1) {
-      const reconciliation = await reconcileRecords(input, authority.records, pass)
+      const reconciliation = await reconcileRecords(input, authority.records, pass, progressCursor)
       fetched += reconciliation.fetched
       removed += reconciliation.removed
       alreadyCached = reconciliation.alreadyCached
@@ -393,7 +401,7 @@ async function performHostedMailSearchCacheSync(
     finalSnapshot = authority.snapshot
   } else {
     finalRecords = await scopedRecords(input)
-    const reconciliation = await reconcileRecords(input, finalRecords, 1)
+    const reconciliation = await reconcileRecords(input, finalRecords, 1, progressCursor)
     fetched = reconciliation.fetched
     removed = reconciliation.removed
     alreadyCached = reconciliation.alreadyCached
@@ -417,6 +425,20 @@ async function performHostedMailSearchCacheSync(
     },
   })
   return { coverage, fetched, alreadyCached, removed, skipped }
+}
+
+async function performHostedMailSearchCacheSync(
+  input: HostedMailSearchCacheSyncInput,
+): Promise<HostedMailSearchCacheSyncResult> {
+  const progressCursor: ProgressCursor = { pass: 1, settled: 0, total: 0 }
+  const heartbeat = setInterval(() => {
+    safeProgress(input, { phase: "heartbeat", ...progressCursor })
+  }, PROGRESS_HEARTBEAT_MS)
+  try {
+    return await performHostedMailSearchCacheSyncWithProgress(input, progressCursor)
+  } finally {
+    clearInterval(heartbeat)
+  }
 }
 
 export async function syncHostedMailSearchCache(
