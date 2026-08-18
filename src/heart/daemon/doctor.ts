@@ -1309,12 +1309,17 @@ async function hostedMailCacheAuthorityCheck(
     documentsById.set(document.messageId, document)
   }
 
-  let mismatched = 0
+  let missing = 0
+  let stale = 0
   let invalidKeyProvenance = 0
   for (const record of observation.records) {
     const document = documentsById.get(record.id)
-    if (!document || !mailSearchCacheDocumentMatchesRecord(document, record, true)) {
-      mismatched += 1
+    if (!document) {
+      missing += 1
+      continue
+    }
+    if (!mailSearchCacheDocumentMatchesRecord(document, record, true)) {
+      stale += 1
       continue
     }
     if (!document.decryptionKeyId || !store.privateKeyIds.has(document.decryptionKeyId)) {
@@ -1335,11 +1340,26 @@ async function hostedMailCacheAuthorityCheck(
     && coverage.decryptableMessageCount === expectedCachedCount
     && coverage.skippedMessageCount === observation.snapshot.visibleMessageCount - expectedCachedCount
 
-  if (malformedOrNoncanonical > 0 || mismatched > 0 || invalidKeyProvenance > 0 || !coverageMatches) {
+  if (
+    coverageMatches
+    && coverage.skippedMessageCount > 0
+    && missing === coverage.skippedMessageCount
+    && stale === 0
+    && malformedOrNoncanonical === 0
+    && invalidKeyProvenance === 0
+  ) {
     return {
       ...base,
       status: "warn",
-      detail: `hosted authority is sound but cache diverges: ${mismatched} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical/duplicate file(s), ${invalidKeyProvenance} invalid key provenance document(s), all-scope coverage ${coverageMatches ? "matches" : "missing/malformed/stale"}; run \`ouro mail sync-cache --agent ${agentName}\``,
+      detail: `hosted authority is sound; the last completed sync skipped ${missing} hosted message(s), so local search remains incomplete; retry only if conditions have changed since that sync`,
+    }
+  }
+
+  if (malformedOrNoncanonical > 0 || missing > 0 || stale > 0 || invalidKeyProvenance > 0 || !coverageMatches) {
+    return {
+      ...base,
+      status: "warn",
+      detail: `hosted authority is sound but cache diverges: ${missing + stale} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical/duplicate file(s), ${invalidKeyProvenance} invalid key provenance document(s), all-scope coverage ${coverageMatches ? "matches" : "missing/malformed/stale"}; run \`ouro mail sync-cache --agent ${agentName}\``,
     }
   }
   const count = observation.records.length
