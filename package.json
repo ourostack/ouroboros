@@ -62,7 +62,7 @@
     "@microsoft/teams.common": "2.0.11",
     "@microsoft/teams.dev": "2.0.11",
     "@microsoft/teams.graph": "2.0.11",
-    "@ouro.bot/friends": "0.1.0-alpha.8",
+    "@ouro.bot/friends": "0.1.0-alpha.9",
     "@types/react": "^17.0.91",
     "@types/ws": "^8.18.1",
     "ajv": "^8.20.0",
@@ -104,5 +104,17 @@
       "@types/react": "$@types/react"
     },
     "shell-quote": "^1.8.4"
-  }
+  },
+  "description": "If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ourostack/ouroboros/issues"
+  },
+  "homepage": "https://github.com/ourostack/ouroboros#readme"
 }
