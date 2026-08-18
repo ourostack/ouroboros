@@ -31,6 +31,18 @@ describe("Unraid typed read tools", () => {
     expect(read.mock.calls[0]?.[0]).toContain("query SanctuaryContainers")
   })
 
+  it("accepts the live 129-byte Docker PrefixedID without relaxing container-name bounds", async () => {
+    const id = `${"a".repeat(64)}:${"b".repeat(64)}`
+    const read = vi.fn(async () => ({ docker: { containers: [
+      { id, names: ["/calibre-web"], state: "EXITED", status: "Exited (255) 2 months ago", autoStart: true },
+    ] } }))
+
+    await expect(createUnraidReadTools({ read } as any).listContainers()).resolves.toMatchObject({
+      ok: true,
+      data: { containers: [{ id, name: "calibre-web", state: "exited", exitCode: 255 }] },
+    })
+  })
+
   it("resolves logs by exact case-sensitive name and returns the 65,536-byte recent suffix", async () => {
     const huge = "x".repeat(70_000)
     const read = vi.fn()

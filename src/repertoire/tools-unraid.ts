@@ -31,8 +31,8 @@ type ReadClient = Pick<UnraidClient, "read">
 
 function utf8Bytes(value: string): number { return Buffer.byteLength(value, "utf8") }
 
-function identifier(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0 || utf8Bytes(value) > 128 || value.includes("\uFFFD")) {
+function identifier(value: unknown, label: string, maxBytes = 128): string {
+  if (typeof value !== "string" || value.length === 0 || utf8Bytes(value) > maxBytes || value.includes("\uFFFD")) {
     throw new UnraidClientError("invalid_response", `${label} is invalid`)
   }
   return value
@@ -118,7 +118,7 @@ function mapContainers(data: Record<string, unknown>) {
   const truncated = raw.length > 200
   const containers = raw.slice(0, 200).map((entry) => {
     const item = record(entry, "container")
-    const id = UnraidClient.assertPrefixedId(identifier(item.id, "container id"))
+    const id = UnraidClient.assertPrefixedId(identifier(item.id, "container id", 256))
     const name = containerName(item.names)
     const shownStatus = display(item.status, 256)
     const normalized = normalizeDockerStatus(item.state, shownStatus.value)

@@ -65,7 +65,7 @@ export class UnraidClient {
   }
 
   static assertPrefixedId(value: string): string {
-    if (Buffer.byteLength(value, "utf8") > 128 || !/^[^:]+:[^:]+$/u.test(value)) {
+    if (Buffer.byteLength(value, "utf8") > 256 || !/^[^:]+:[^:]+$/u.test(value)) {
       throw new Error("Unraid identifier must be one bounded prefixed ID")
     }
     return value
