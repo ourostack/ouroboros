@@ -1,3 +1,20 @@
+import { runAgent, resumeApprovalContinuation } from "../../heart/core"
+import { openApprovalStore } from "../../heart/approval-store"
+import {
+  commitApprovalProposal,
+  coordinateApprovalDecision,
+  executeApprovalDecision,
+} from "../../heart/tool-approval"
+
+export const syntheticApprovalProductionSeams = {
+  runAgent,
+  openApprovalStore,
+  commitApprovalProposal,
+  coordinateApprovalDecision,
+  executeApprovalDecision,
+  resumeApprovalContinuation,
+}
+
 export type SyntheticCrashPoint =
   | "after_journal_prepare"
   | "after_token_persist"
@@ -7,47 +24,45 @@ export type SyntheticCrashPoint =
   | "after_attempt"
   | "after_handler"
   | "after_terminal_persist"
-  | "after_continuation_materialize"
+  | "after_terminal_pair_persist_before_materialized"
+  | "after_materialized_marker_before_continuation_attempt"
   | "after_continuation_attempt"
 
 export interface SyntheticApprovalScenario {
   command?: string
   argumentsJson?: string
-  liveArgumentsJson?: string
+  liveSchemaMutation?: "require_missing_property" | "wrong_command_type" | "treat_command_as_extra"
+  corruptJournalAfterProposal?: "non_object_arguments" | "malformed_record_json"
   decision?: "approve" | "deny"
   delayMs?: number
   restartBeforeDecision?: boolean
   crashAt?: SyntheticCrashPoint
-  handlerMode?: "idempotent" | "non_idempotent"
+  handlerMode?: "idempotent" | "non_idempotent" | "observable_failure"
   batch?: Array<{ name: string; argumentsJson: string }>
   concurrentDecisionProcesses?: number
   advanceSessionHeadBeforeDecision?: boolean
 }
 
-export interface SyntheticApprovalEvidence {
+export interface SyntheticApprovalArtifacts {
+  root: string
+  approvalId: string | null
+  approvalDatabasePath: string
+  sessionPath: string
+  effectsLogPath: string
+  providerLogPath: string
+  deliveryLogPath: string
+  traceLogPath: string
   initialOutcome: "suspended" | "rejected"
-  protectedByPolicy: boolean
-  reportedRisk: "low" | "medium" | "high"
-  rejectedAt: "pre_proposal_schema" | "pre_attempt_schema" | "protected_batch" | null
-  journalState: string | null
-  handlerCallsAtSuspension: number
-  handlerCalls: number
-  externalEffects: number
-  attemptedPersistedBeforeHandler: boolean
-  originatingProviderCalls: number
-  continuationProviderCalls: number
-  originalUserMessageCount: number
-  correlatedTerminalPairs: number
-  ordinaryOrphanRepairResults: number
-  deliveries: string[]
-  processIds: number[]
-  staleCallbackAccepted: boolean
-  freshApprovalRequired: boolean
-  retryableAttemptObserved: boolean
+  rejectionAt: "pre_proposal_schema" | "protected_batch" | null
+  runErrorCode: string | null
+  originPid: number
+  decisionPids: number[]
+  continuationPids: number[]
+  callbackOutcomes: Array<{ processPid: number; accepted: boolean; reason: string }>
 }
 
 export async function runSyntheticApprovalScenario(
   _scenario: SyntheticApprovalScenario,
-): Promise<SyntheticApprovalEvidence> {
+): Promise<SyntheticApprovalArtifacts> {
   throw new Error("synthetic approval vertical slice is not implemented")
 }
