@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core"
+import * as searchCacheApi from "../../mailroom/search-cache"
 import {
 	  MAIL_SEARCH_TEXT_PROJECTION_VERSION,
 	  buildMailSearchCacheDocument,
@@ -105,9 +106,45 @@ describe("mail search cache", () => {
 
     expect(buildMailSearchCacheDocument(encrypted, privateEnvelope())).toEqual(expect.objectContaining({
       messageId: encrypted.id,
+      bodyForm: "encrypted",
       decryptionKeyId: "mail_key_current",
     }))
+    expect(buildMailSearchCacheDocument(message(), privateEnvelope())).toEqual(expect.objectContaining({
+      bodyForm: "plaintext",
+    }))
     expect(buildMailSearchCacheDocument(message(), privateEnvelope())).not.toHaveProperty("decryptionKeyId")
+  })
+
+  it("persists encoded, body-free missing-key receipts and supports inspection and removal", () => {
+    const cacheRoot = tempDir()
+    const options = { cacheDirForAgent: () => cacheRoot }
+    const api = searchCacheApi as typeof searchCacheApi & {
+      writeMailSearchSkipReceipt(receipt: unknown, options: unknown): unknown
+      readMailSearchSkipReceipt(agentId: string, messageId: string, options: unknown): unknown
+      inspectMailSearchSkipReceipts(agentId: string, options: unknown): Array<{ fileName: string; receipt: unknown }>
+      removeMailSearchSkipReceipt(agentId: string, messageId: string, options: unknown): boolean
+    }
+    const receipt = {
+      schemaVersion: 1,
+      agentId: "slugger",
+      messageId: "mail/../../unsafe",
+      recordFingerprint: "a".repeat(64),
+      missingKeyId: "mail_key_missing",
+      reason: "missing-private-key",
+      observedAt: "2026-08-18T00:00:00.000Z",
+    }
+
+    expect(api.writeMailSearchSkipReceipt(receipt, options)).toEqual(receipt)
+    expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toEqual(receipt)
+    const inspected = api.inspectMailSearchSkipReceipts("slugger", options)
+    expect(inspected).toEqual([expect.objectContaining({ receipt })])
+    expect(inspected[0]?.fileName).toMatch(/^[A-Za-z0-9_-]+\.json$/)
+    expect(inspected[0]?.fileName).not.toContain("unsafe")
+    const serialized = JSON.stringify(receipt)
+    expect(serialized).not.toContain("BEGIN PRIVATE KEY")
+    expect(serialized).not.toContain("ciphertext")
+    expect(api.removeMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBe(true)
+    expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBeNull()
   })
 
   it("removes and reloads cache documents in an already-loaded process", () => {
