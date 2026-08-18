@@ -33,6 +33,7 @@ describe("Unraid typed read tools", () => {
     const read = vi.fn()
       .mockResolvedValueOnce({ docker: { containers: [{ id: "sanctuary:a", names: ["calibre-web"], state: "EXITED", status: "Exited (255) 2 months ago", autoStart: false }] } })
       .mockResolvedValueOnce({ docker: { logs: { containerId: "sanctuary:a", lines: [{ timestamp: "2026-08-18T00:00:00Z", message: huge }], cursor: null } } })
+      .mockResolvedValueOnce({ docker: { containers: [{ id: "sanctuary:a", names: ["calibre-web"], state: "EXITED", status: "Exited (255) 2 months ago", autoStart: false }] } })
     const tools = createUnraidReadTools({ read } as any)
     const result = await tools.getContainerLogs({ container: "calibre-web", tailLines: 200 })
     expect(result).toMatchObject({ ok: true, data: { container: { id: "sanctuary:a", name: "calibre-web" }, originalBytes: 70_000, returnedBytes: 65_536, truncated: true } })
