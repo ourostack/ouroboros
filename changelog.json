@@ -6,6 +6,7 @@
       "changes": [
         "Make hosted encrypted-message commits create-once per resolved destination with key-qualified raw payloads.",
         "Converge the hosted search cache against stable authority with bounded parallelism, progress heartbeats, durable per-message missing-key receipts, and truthful final coverage.",
+        "Reject non-regular receipt evidence and malformed committed winners before trust or cleanup, and keep cache-sync heartbeats active through authority observations.",
         "Make doctor distinguish plaintext cache, current encrypted cache, receipted missing keys, and actionable stale or unreceipted state."
       ]
     },
