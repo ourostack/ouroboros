@@ -54,6 +54,23 @@ export async function executeApprovedTelegramTool(
       : "approved restart failed"
     throw new ApprovalExecutionFailedError(message)
   }
+  const data = (parsed as { data?: unknown }).data
+  const container = data && typeof data === "object" ? (data as { container?: unknown }).container : null
+  const validSuccess = data !== null
+    && typeof data === "object"
+    && container !== null
+    && typeof container === "object"
+    && typeof (container as { id?: unknown }).id === "string"
+    && (container as { id: string }).id.length > 0
+    && typeof (container as { name?: unknown }).name === "string"
+    && (container as { name: string }).name.length > 0
+    && typeof (data as { beforeState?: unknown }).beforeState === "string"
+    && typeof (data as { afterState?: unknown }).afterState === "string"
+    && (data as { observedRestart?: unknown }).observedRestart === true
+    && (data as { degraded?: unknown }).degraded === false
+  if (!validSuccess) {
+    throw new ApprovalExecutionFailedError("approved restart returned an invalid result")
+  }
   return result
 }
 
