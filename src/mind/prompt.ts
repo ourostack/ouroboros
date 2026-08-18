@@ -346,6 +346,7 @@ const PROCESS_TYPE_LABELS: Record<Channel, string> = {
   voice: "voice handler",
   a2a: "a2a handler",
   mcp: "mcp bridge",
+  telegram: "telegram handler",
 }
 
 function processTypeLabel(channel: Channel): string {
