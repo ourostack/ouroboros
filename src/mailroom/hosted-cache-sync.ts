@@ -85,6 +85,15 @@ function documentMatchesRecord(
     && (!requireKeyProvenance || typeof document.decryptionKeyId === "string")
 }
 
+function messageMatchesRecord(message: StoredMailMessage, record: MailMessageIndexRecord): boolean {
+  return message.id === record.id
+    && message.agentId === record.agentId
+    && message.receivedAt === record.receivedAt
+    && message.placement === record.placement
+    && message.compartmentKind === record.compartmentKind
+    && sameOptionalText(message.source, record.source)
+}
+
 async function scopedRecords(input: HostedMailSearchCacheSyncInput): Promise<MailMessageIndexRecord[]> {
   const filters = filtersFor(input)
   const indexed = await input.store.listMessageIndexRecords?.(filters)
@@ -183,6 +192,9 @@ export async function syncHostedMailSearchCache(
       const message = await fetchIndexedMessage(input.store, record.id)
       if (!message) throw new Error("indexed message was not retrievable")
       fetched += 1
+      if (!messageMatchesRecord(message, record)) {
+        throw new Error(`indexed message metadata did not match authority for ${record.id}`)
+      }
       const decrypted = readDecryptedMailMessage(message, input.privateKeys)
       upsertMailSearchCacheDocument(message, decrypted.private, input.cacheOptions, {
         ...(message.bodyForm === "encrypted" ? { decryptionKeyId: message.privateEnvelope.keyId } : {}),

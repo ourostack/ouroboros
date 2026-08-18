@@ -256,8 +256,8 @@ export function removeMailSearchCacheDocument(agentId: string, messageId: string
       fs.unlinkSync(filePath)
       removed = true
     }
-  } catch {
-    removed = false
+  } catch (error) {
+    if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) throw error
   }
   const state = cacheState(agentId, options)
   if (state.loaded) state.docs.delete(messageId)
@@ -272,7 +272,8 @@ export function removeMailSearchCacheFile(agentId: string, fileName: string, opt
     fs.unlinkSync(filePath)
     reloadMailSearchCache(agentId, options)
     return true
-  } catch {
+  } catch (error) {
+    if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) throw error
     return false
   }
 }

@@ -653,7 +653,6 @@ export class AzureBlobMailroomStore implements MailroomStore {
   }
 
   async getIndexedMessageById(id: string): Promise<StoredMailMessage | null> {
-    await this.ensureContainer()
     const message = await downloadIndexedJson<StoredMailMessage>(this.messageBlob(id), this.blobOperationTimeoutMs)
     emitNervesEvent({
       component: "senses",
