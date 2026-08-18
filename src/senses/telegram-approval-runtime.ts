@@ -121,6 +121,10 @@ export function createTelegramApprovalRuntime(options: {
     pendingStore: new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json")),
     createOpaqueHandle: () => randomBytes(12).toString("base64url"),
     resolveDecisionToken: async (approvalId) => tokens.get(approvalId) ?? "",
+    onExpire: async (approvalId) => {
+      store.expire({ approvalId })
+      tokens.remove(approvalId)
+    },
     onDecision: async (decision) => {
       const existing = store.read(decision.approvalId)
       if (!existing) return { accepted: false, terminalText: "⚠️ Approval is no longer valid" }

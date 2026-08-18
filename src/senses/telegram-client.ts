@@ -133,6 +133,8 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     for (const update of updates) {
       if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
       const next = update.update_id + 1
+      nextUpdateId = next
+      options.offsetStore.save(nextUpdateId)
       const handled = await options.onUpdate?.(update) ?? false
       if (!handled) {
         const message = update.message
@@ -160,8 +162,6 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
           })
         }
       }
-      nextUpdateId = next
-      options.offsetStore.save(nextUpdateId)
     }
     return nextUpdateId
   }
@@ -246,6 +246,7 @@ export interface TelegramApprovalTransportOptions {
   pendingStore: TelegramPendingApprovalStore
   createOpaqueHandle: () => string
   onDecision: (decision: TelegramApprovalDecision) => Promise<{ accepted: boolean; terminalText: string }>
+  onExpire?: (approvalId: string) => void | Promise<void>
   resolveDecisionToken?: (approvalId: string) => Promise<string>
   now?: () => number
 }
@@ -318,6 +319,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const reconcileExpired = async (): Promise<void> => {
     for (const pending of uniquePending()) {
       if (now() < pending.expiresAt) continue
+      await options.onExpire?.(pending.approvalId)
       await editTerminal(pending, "⚠️ Approval expired")
       remove(pending)
       persist()
@@ -391,6 +393,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       if (invalidReason) {
         await acknowledge(callback.id, true)
         if (pending && invalidReason === "expired") {
+          await options.onExpire?.(pending.approvalId)
           await editTerminal(pending, "⚠️ Approval expired")
           remove(pending)
           persist()

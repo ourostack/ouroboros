@@ -28,6 +28,7 @@ describe("Telegram approval callback transport", () => {
     now?: () => number
     records?: ReturnType<TelegramPendingApprovalStore["load"]>
     onDecision?: ReturnType<typeof vi.fn>
+    onExpire?: ReturnType<typeof vi.fn>
   } = {}) {
     let records = structuredClone(input.records ?? [])
     const store: TelegramPendingApprovalStore = {
@@ -53,6 +54,7 @@ describe("Telegram approval callback transport", () => {
       pendingStore: store,
       createOpaqueHandle: (() => { const values = ["approve", "deny"]; return () => values.shift() ?? "extra" })(),
       onDecision,
+      onExpire: input.onExpire,
       resolveDecisionToken: async () => "restored-secret-token",
       now: input.now ?? (() => 1_000_000),
     })
@@ -127,6 +129,20 @@ describe("Telegram approval callback transport", () => {
     expect(expired.calls.at(-1)?.body).toHaveProperty("reply_markup", { inline_keyboard: [] })
   })
 
+  it("expires the canonical approval before removing an expired Telegram prompt", async () => {
+    const order: string[] = []
+    const onExpire = vi.fn(async (approvalId: string) => { order.push(`expire:${approvalId}`) })
+    const record = { approvalId: "expired", messageId: "99", approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 999_999 }
+    const fixture = approvalFixture({ records: [record], onExpire })
+    const request = fixture.calls
+
+    await fixture.transport.reconcileExpired()
+
+    expect(onExpire).toHaveBeenCalledWith("expired")
+    expect(fixture.records()).toEqual([])
+    expect(request.at(-1)?.method).toBe("editMessageText")
+  })
+
   it("atomically consumes concurrent duplicate callbacks before authority", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
@@ -195,6 +211,25 @@ describe("Telegram Bot API HTTP core", () => {
 })
 
 describe("Telegram durable authorized long poll", () => {
+  it("durably advances the offset before dispatch so a crashed turn cannot replay", async () => {
+    let offset = 0
+    const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
+    const onMessage = vi.fn(async () => {
+      expect(offset).toBe(12)
+      throw new Error("synthetic turn crash")
+    })
+    const api: TelegramBotApi = {
+      stop: vi.fn(),
+      request: vi.fn(async () => [
+        { update_id: 11, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } },
+      ]),
+    }
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage })
+
+    await expect(poll.pollOnce()).rejects.toThrow("synthetic turn crash")
+    expect(offset).toBe(12)
+  })
+
   it("restores offsets, suppresses duplicates, and advances past foreign updates before dispatch", async () => {
     const directory = makeTempDirectory("ouro-telegram-offset-")
     const path = join(directory, "offset.json")
