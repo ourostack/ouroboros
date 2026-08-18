@@ -144,6 +144,9 @@ async function performHostedMailSearchCacheSync(
         `hosted mail authority is ambiguous: ${authority.parseFailureCount} malformed index name(s), ${authority.duplicateIds.length} duplicate message id(s)`,
       )
     }
+    if (authority.records.length === 0) {
+      throw new Error("hosted mail authority is empty and cannot safely drive full convergence")
+    }
     records = authority.records
   } else {
     records = await scopedRecords(input)

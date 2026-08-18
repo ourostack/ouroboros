@@ -406,6 +406,58 @@ describe("hosted mail tools", () => {
     expect(getIndexedMessageById).not.toHaveBeenCalled()
   })
 
+  it("aborts full convergence before local mutation when hosted authority is empty", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const orphanPath = path.join(cacheRoot, "orphan.json")
+    fs.writeFileSync(orphanPath, "preserve me", "utf-8")
+    writeMailSearchCoverageRecord({
+      schemaVersion: 1,
+      agentId: "slugger",
+      storeKind: "azure-blob",
+      indexedAt: "2026-08-17T00:00:00.000Z",
+      visibleMessageCount: 1,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 0,
+      messageIndexFingerprint: "preserve-existing-coverage",
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    }, cacheOptions)
+    const coverageBefore = fs.readdirSync(path.join(cacheRoot, "coverage")).map((fileName) => ({
+      fileName,
+      contents: fs.readFileSync(path.join(cacheRoot, "coverage", fileName)),
+    }))
+    const getIndexedMessageById = vi.fn()
+    const recordAccess = vi.fn()
+
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 0,
+          parsedRecordCount: 0,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records: [],
+          snapshot: canonicalSnapshot([]),
+        })),
+      },
+      store: { getIndexedMessageById, recordAccess } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })).rejects.toThrow("hosted mail authority is empty")
+
+    expect(fs.readFileSync(orphanPath, "utf-8")).toBe("preserve me")
+    expect(fs.readdirSync(path.join(cacheRoot, "coverage"))).toEqual(coverageBefore.map(({ fileName }) => fileName))
+    for (const { fileName, contents } of coverageBefore) {
+      expect(fs.readFileSync(path.join(cacheRoot, "coverage", fileName))).toEqual(contents)
+    }
+    expect(getIndexedMessageById).not.toHaveBeenCalled()
+    expect(recordAccess).not.toHaveBeenCalled()
+  })
+
   it("requires an explicit read-only authority observer for full convergence", async () => {
     await expect(syncHostedMailSearchCache({
       agentId: "slugger",
