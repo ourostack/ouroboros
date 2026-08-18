@@ -26,11 +26,23 @@ export function detectRuntimeMode(
     return "production"
   }
 
+  const isWorktree = rootPath.includes(".claude/worktrees/")
+  const isGitRepo = checkExists(path.join(rootPath, ".git"))
+  if (!isWorktree && !isGitRepo && checkExists(path.join(rootPath, "container-runtime.json"))) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.runtime_mode_detected",
+      message: "detected runtime mode",
+      meta: { rootPath, mode: "production", reason: "container-runtime" },
+    })
+    return "production"
+  }
+
   // 2-4. Everything else is dev: worktrees, git repos, unknown paths
   // (conservative default: assume dev unless proven production)
-  const reason = rootPath.includes(".claude/worktrees/")
+  const reason = isWorktree
     ? "worktree"
-    : checkExists(path.join(rootPath, ".git"))
+    : isGitRepo
       ? "git-repo"
       : "unknown"
 
