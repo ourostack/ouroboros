@@ -296,7 +296,7 @@ describe("test-only Telegram approval adapter", () => {
   it("retries sendMessage without formatting after Telegram rejects HTML with 400", async () => {
     const f = fixture({ responses: [telegramResponse(null, 400), telegramResponse({ message_id: 99, chat: { id: Number(CHAT_ID) } })] })
 
-    await f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "<bad>", expiresAt: "2099-08-17T18:30:00.000Z" })
+    await f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "private-fallback-token-xyz", prompt: "<bad>", expiresAt: "2099-08-17T18:30:00.000Z" })
 
     expect(f.calls).toHaveLength(2)
     const keyboard = { inline_keyboard: [[
@@ -305,7 +305,7 @@ describe("test-only Telegram approval adapter", () => {
     ]] }
     expect(f.calls[0]?.body).toEqual({ chat_id: CHAT_ID, text: "&lt;bad&gt;", parse_mode: "HTML", reply_markup: keyboard })
     expect(f.calls[1]?.body).toEqual({ chat_id: CHAT_ID, text: "<bad>", reply_markup: keyboard })
-    expect(JSON.stringify(f.calls)).not.toContain("secret")
+    expect(JSON.stringify(f.calls)).not.toContain("private-fallback-token-xyz")
     expect(JSON.stringify(f.calls)).not.toContain("approval-1")
   })
 
@@ -313,12 +313,12 @@ describe("test-only Telegram approval adapter", () => {
     const retry = new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 3 } }), { status: 429 })
     const f = fixture({ responses: [retry, telegramResponse({ message_id: 99, chat: { id: Number(CHAT_ID) } })] })
 
-    await f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "safe", expiresAt: "2099-08-17T18:30:00.000Z" })
+    await f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "private-retry-token-xyz", prompt: "safe", expiresAt: "2099-08-17T18:30:00.000Z" })
 
     expect(f.sleep).toHaveBeenCalledWith(3_000)
     expect(f.calls).toHaveLength(2)
     expect(f.calls[1]).toEqual(f.calls[0])
-    expect(JSON.stringify(f.calls)).not.toContain("secret")
+    expect(JSON.stringify(f.calls)).not.toContain("private-retry-token-xyz")
     expect(JSON.stringify(f.calls)).not.toContain("approval-1")
   })
 
