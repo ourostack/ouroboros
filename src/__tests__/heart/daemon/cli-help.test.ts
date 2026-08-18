@@ -356,6 +356,10 @@ describe("getCommandHelp()", () => {
     expect(result).toContain("ouro mail sync-cache [--agent <name>]")
     expect(result).toContain("foreground")
     expect(result).toContain("hosted")
+    expect(result).toContain("three")
+    expect(result).toContain("20")
+    expect(result).toContain("30-second")
+    expect(result).toContain("missing-key receipts")
   })
 })
 
