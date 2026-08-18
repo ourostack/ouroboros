@@ -2,8 +2,8 @@ import * as path from "node:path"
 import { randomBytes, randomUUID } from "node:crypto"
 
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
-import { openApprovalStore } from "../heart/approval-store"
-import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDecision } from "../heart/tool-approval"
+import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
+import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDecision, recoverAttemptedApproval, recoverClaimedApproval } from "../heart/tool-approval"
 import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { saveSession } from "../mind/context"
@@ -21,6 +21,7 @@ import {
 export interface TelegramApprovalRuntime {
   transport: TelegramApprovalTransport
   coordinator(context: { sessionPath: string; baseSessionRevision: string }): ApprovalCoordinator
+  recover(): Promise<void>
   close(): void
 }
 
@@ -85,6 +86,7 @@ export function createTelegramApprovalRuntime(options: {
   const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite") })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
+  const pendingStore = new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json"))
   let transport!: TelegramApprovalTransport
 
   const coordinator = (context: { sessionPath: string; baseSessionRevision: string }): ApprovalCoordinator => ({
@@ -131,11 +133,60 @@ export function createTelegramApprovalRuntime(options: {
     },
   })
 
+  const terminalOutcome = (record: ApprovalRecord): { accepted: boolean; terminalText: string } => {
+    const accepted = record.state === "succeeded"
+    return {
+      accepted,
+      terminalText: accepted
+        ? "✅ Approved — action completed"
+        : record.state === "denied"
+          ? "❌ Denied — no action taken"
+          : record.state === "attempted_indeterminate"
+            ? "⚠️ Action outcome is indeterminate after restart — it was not retried"
+            : "⚠️ Approval did not complete",
+    }
+  }
+
+  const continueTerminalRecord = (record: ApprovalRecord): Promise<{ accepted: boolean; terminalText: string }> => withSessionTurnLease(record.sessionPath, async (lease) => {
+    const checkpoint = checkpoints.read(record.approvalId)
+    if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
+    const continuationOwnerId = `telegram-continuation-${randomUUID()}`
+    let continuationEpoch = 0
+    const continuationCoordinator: ApprovalCoordinator = {
+      propose: (request) => coordinator({
+        sessionPath: record.sessionPath,
+        baseSessionRevision: readSessionTransaction(record.sessionPath, lease).revision,
+      }).propose(request),
+    }
+    await resumeApprovalContinuation({
+      record,
+      checkpoint,
+      currentSessionRevision: readSessionTransaction(record.sessionPath, lease).revision,
+      sessionMessages: checkpoint.preCallMessages,
+      callbacks: {},
+      channel: "telegram",
+      claimContinuation: () => {
+        const claim = store.claimContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId })
+        continuationEpoch = claim.record.continuationEpoch
+        return claim
+      },
+      markContinuationMaterialized: () => { store.markContinuationMaterialized({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
+      markContinuationAttempted: () => { store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
+      completeContinuation: () => { store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
+      runAgent,
+      runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
+      persist: (messages, result) => saveSession(record.sessionPath, messages, result?.usage, undefined, lease),
+      deliver: async (text) => { await sendTelegramText(options.api, options.authorizedChatId, text) },
+    })
+    tokens.remove(record.approvalId)
+    return terminalOutcome(record)
+  })
+
   transport = createTelegramApprovalTransport({
     api: options.api,
     expectedUserId: options.authorizedUserId,
     expectedChatId: options.authorizedChatId,
-    pendingStore: new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json")),
+    pendingStore,
     createOpaqueHandle: () => randomBytes(12).toString("base64url"),
     resolveDecisionToken: async (approvalId) => tokens.get(approvalId) ?? "",
     onExpire: async (approvalId) => {
@@ -145,64 +196,59 @@ export function createTelegramApprovalRuntime(options: {
     onDecision: async (decision) => {
       const existing = store.read(decision.approvalId)
       if (!existing) return { accepted: false, terminalText: "⚠️ Approval is no longer valid" }
-      const ownerId = `telegram-decision-${randomUUID()}`
-      return withSessionTurnLease(existing.sessionPath, async (lease) => {
-        const currentRevision = readSessionTransaction(existing.sessionPath, lease).revision
-        const record = await executeApprovalDecision({
-          approvalStore: store,
-          checkpointStore: checkpoints,
-          decision: {
-            ...decision,
-            transportUserId: options.authorizedUserId,
-            sessionKey: existing.sessionKey,
-          },
-          ownerId,
-          currentSessionRevision: currentRevision,
-          resolveTool: resolveToolDefinition,
-          liveGuard: async () => ({ ok: true }),
-          liveRisk: async () => ({ ok: true }),
-          execute: (name, args) => executeApprovedTelegramTool(
-            name,
-            args,
-            (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
-          ),
-        })
-        const checkpoint = checkpoints.read(record.approvalId)
-        if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
-        let continuationOwnerId = `telegram-continuation-${randomUUID()}`
-        let continuationEpoch = 0
-        const continuationCoordinator: ApprovalCoordinator = {
-          propose: (request) => coordinator({
-            sessionPath: existing.sessionPath,
-            baseSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
-          }).propose(request),
-        }
-        await resumeApprovalContinuation({
-          record,
-          checkpoint,
-          currentSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
-          sessionMessages: checkpoint.preCallMessages,
-          callbacks: {},
-          channel: "telegram",
-          claimContinuation: () => {
-            const claim = store.claimContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId })
-            continuationEpoch = claim.record.continuationEpoch
-            return claim
-          },
-          markContinuationMaterialized: () => { store.markContinuationMaterialized({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-          markContinuationAttempted: () => { store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-          completeContinuation: () => { store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-          runAgent,
-          runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
-          persist: (messages, result) => saveSession(existing.sessionPath, messages, result?.usage, undefined, lease),
-          deliver: async (text) => { await sendTelegramText(options.api, options.authorizedChatId, text) },
-        })
-        tokens.remove(record.approvalId)
-        const accepted = record.state === "succeeded"
-        return { accepted, terminalText: accepted ? "✅ Approved — action completed" : record.state === "denied" ? "❌ Denied — no action taken" : "⚠️ Approval did not complete" }
-      })
+      let record: ApprovalRecord
+      if (existing.state === "claimed") {
+        record = recoverClaimedApproval({ approvalStore: store, approvalId: existing.approvalId, reason: "decision interrupted before action attempt; action was not executed" })
+      } else if (existing.state === "attempted") {
+        record = recoverAttemptedApproval({ approvalStore: store, approvalId: existing.approvalId })
+      } else if (existing.state === "proposed") {
+        const ownerId = `telegram-decision-${randomUUID()}`
+        record = await withSessionTurnLease(existing.sessionPath, async (lease) => executeApprovalDecision({
+            approvalStore: store,
+            checkpointStore: checkpoints,
+            decision: {
+              ...decision,
+              transportUserId: options.authorizedUserId,
+              sessionKey: existing.sessionKey,
+            },
+            ownerId,
+            currentSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
+            resolveTool: resolveToolDefinition,
+            liveGuard: async () => ({ ok: true }),
+            liveRisk: async () => ({ ok: true }),
+            execute: (name, args) => executeApprovedTelegramTool(
+              name,
+              args,
+              (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
+            ),
+          }))
+      } else if (["succeeded", "failed", "attempted_indeterminate", "denied", "expired", "drifted", "session_head_changed", "abandoned_before_attempt"].includes(existing.state)) {
+        record = existing
+      } else {
+        return { accepted: false, terminalText: "⚠️ Approval is not recoverable" }
+      }
+      return continueTerminalRecord(record)
     },
   })
 
-  return { transport, coordinator, close: () => store.close() }
+  const recover = async (): Promise<void> => {
+    for (const pending of pendingStore.load()) {
+      if (pending.terminal) {
+        await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
+        continue
+      }
+      const existing = store.read(pending.approvalId)
+      if (!existing || existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
+      let record = existing
+      if (record.state === "claimed") {
+        record = recoverClaimedApproval({ approvalStore: store, approvalId: record.approvalId, reason: "decision interrupted before action attempt; action was not executed" })
+      } else if (record.state === "attempted") {
+        record = recoverAttemptedApproval({ approvalStore: store, approvalId: record.approvalId })
+      }
+      const outcome = await continueTerminalRecord(record)
+      await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
+    }
+  }
+
+  return { transport, coordinator, recover, close: () => store.close() }
 }

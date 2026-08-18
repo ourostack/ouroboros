@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createTelegramSenseApp } from "../../senses/telegram"
 import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll } from "../../senses/telegram-client"
 
-function fixture(input: { healthSweep?: any } = {}) {
+function fixture(input: { healthSweep?: any; approvalRuntime?: any } = {}) {
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
   const poll: TelegramLongPoll = {
@@ -33,6 +33,7 @@ function fixture(input: { healthSweep?: any } = {}) {
     sendApproval: vi.fn(),
     handleUpdate: vi.fn(async () => ({ handled: true, accepted: true, reason: "accepted" })),
     reconcileExpired: vi.fn(async () => undefined),
+    terminalizeRecovered: vi.fn(async () => undefined),
   }
   const app = createTelegramSenseApp({
     agentName: "butler",
@@ -41,7 +42,8 @@ function fixture(input: { healthSweep?: any } = {}) {
     offsetStore: { load: () => 0, save: vi.fn() },
     createLongPoll,
     runTurn,
-    approvalTransport,
+    approvalTransport: input.approvalRuntime ? undefined : approvalTransport,
+    approvalRuntime: input.approvalRuntime,
     healthSweep: input.healthSweep,
   })
   return { app, api, poll, runTurn, approvalTransport, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
@@ -82,6 +84,27 @@ describe("Telegram sense", () => {
     f.app.stop()
     expect(f.poll.stop).toHaveBeenCalledOnce()
     expect(f.api.stop).toHaveBeenCalledOnce()
+  })
+
+  it("recovers interrupted approval decisions before expiring prompts or polling", async () => {
+    const order: string[] = []
+    const approvalRuntime = {
+      transport: {
+        sendApproval: vi.fn(),
+        handleUpdate: vi.fn(),
+        reconcileExpired: vi.fn(async () => { order.push("reconcile") }),
+        terminalizeRecovered: vi.fn(),
+      },
+      coordinator: vi.fn(),
+      recover: vi.fn(async () => { order.push("recover") }),
+      close: vi.fn(),
+    }
+    const f = fixture({ approvalRuntime })
+    ;(f.poll.run as any).mockImplementation(async () => { order.push("poll") })
+
+    await f.app.run()
+
+    expect(order).toEqual(["recover", "reconcile", "poll"])
   })
 
   it("supports proactive private delivery through the same bounded formatter", async () => {

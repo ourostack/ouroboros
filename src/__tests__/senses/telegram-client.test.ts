@@ -144,6 +144,20 @@ describe("Telegram approval callback transport", () => {
     expect(request.at(-1)?.method).toBe("editMessageText")
   })
 
+  it("terminalizes and removes a recovered approval prompt without replaying its callback", async () => {
+    const record = { approvalId: "recovered", messageId: "99", approveCallbackData: "a:recovered", denyCallbackData: "d:recovered", expiresAt: 1_300_000 }
+    const fixture = approvalFixture({ records: [record] })
+
+    await fixture.transport.terminalizeRecovered("recovered", "⚠️ Recovered safely")
+
+    expect(fixture.records()).toEqual([])
+    expect(fixture.calls.at(-1)).toEqual({
+      method: "editMessageText",
+      body: { chat_id: "10", message_id: 99, text: "⚠️ Recovered safely", parse_mode: "HTML", reply_markup: { inline_keyboard: [] } },
+    })
+    expect(fixture.onDecision).not.toHaveBeenCalled()
+  })
+
   it("atomically consumes concurrent duplicate callbacks before authority", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })

@@ -23,11 +23,16 @@ function readObject<T>(filePath: string): Record<string, T> {
 }
 
 function atomicWrite(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  const directory = path.dirname(filePath)
+  fs.mkdirSync(directory, { recursive: true })
   const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
   fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 })
+  const temporaryHandle = fs.openSync(temporary, "r")
+  try { fs.fsyncSync(temporaryHandle) } finally { fs.closeSync(temporaryHandle) }
   fs.renameSync(temporary, filePath)
   fs.chmodSync(filePath, 0o600)
+  const directoryHandle = fs.openSync(directory, "r")
+  try { fs.fsyncSync(directoryHandle) } finally { fs.closeSync(directoryHandle) }
 }
 
 export class FileApprovalCheckpointStore implements ApprovalSuspensionCheckpointStore {

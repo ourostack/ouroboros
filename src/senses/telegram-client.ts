@@ -343,10 +343,7 @@ export class FileTelegramPendingApprovalStore implements TelegramPendingApproval
   }
 
   save(records: TelegramPersistedPendingApproval[]): void {
-    mkdirSync(dirname(this.path), { recursive: true })
-    const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`
-    writeFileSync(temporaryPath, `${JSON.stringify(records)}\n`, { mode: 0o600 })
-    renameSync(temporaryPath, this.path)
+    durableAtomicWrite(this.path, `${JSON.stringify(records)}\n`)
   }
 }
 
@@ -359,6 +356,7 @@ export interface TelegramApprovalTransport {
   }>
   handleUpdate(update: TelegramUpdate): Promise<{ handled: boolean; accepted: boolean; reason: string }>
   reconcileExpired(): Promise<void>
+  terminalizeRecovered(approvalId: string, terminalText: string): Promise<void>
 }
 
 export interface TelegramApprovalTransportOptions {
@@ -553,6 +551,13 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       }
     },
     reconcileExpired,
+    async terminalizeRecovered(approvalId, terminalText) {
+      const pending = uniquePending().find((record) => record.approvalId === approvalId)
+      if (!pending) return
+      await editTerminal(pending, terminalText)
+      remove(pending)
+      persist()
+    },
   }
 }
 

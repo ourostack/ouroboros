@@ -190,6 +190,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   return {
     async run(signal) {
+      await approvalRuntime?.recover()
       await approvalTransport?.reconcileExpired()
       await runHealthSweep()
       healthTimer ??= setInterval(() => { void runHealthSweep() }, 15 * 60_000)
