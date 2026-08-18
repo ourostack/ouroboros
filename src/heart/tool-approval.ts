@@ -75,6 +75,13 @@ export class ApprovalExecutionIndeterminateError extends Error {
   }
 }
 
+export class ApprovalExecutionFailedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "ApprovalExecutionFailedError"
+  }
+}
+
 export interface ApprovalLiveContext {
   record: ApprovalRecord
   checkpoint: ApprovalSuspensionCheckpoint
@@ -103,6 +110,7 @@ function checkpointMatches(record: ApprovalRecord, checkpoint: ApprovalSuspensio
   return checkpoint.approvalId === record.approvalId
     && checkpoint.checkpointDigest === record.checkpointDigest
     && checkpoint.baseSessionRevision === record.baseSessionRevision
+    && checkpoint.suspendedSessionRevision === record.suspendedSessionRevision
     && checkpoint.argumentDigest === record.argumentDigest
     && checkpoint.schemaDigest === record.schemaDigest
     && checkpoint.toolDigest === record.toolDigest
@@ -114,10 +122,12 @@ function checkpointMatches(record: ApprovalRecord, checkpoint: ApprovalSuspensio
 
 function frozenCallMatches(record: ApprovalRecord, checkpoint: ApprovalSuspensionCheckpoint): boolean {
   const message = checkpoint.frozenAssistantMessage as Record<string, unknown>
+  if (message.role !== "assistant") return false
   if (!Array.isArray(message.tool_calls) || message.tool_calls.length !== 1) return false
   const call = message.tool_calls[0]
   if (!call || typeof call !== "object" || Array.isArray(call)) return false
   const callRecord = call as Record<string, unknown>
+  if (callRecord.type !== "function") return false
   const fn = callRecord.function
   if (!fn || typeof fn !== "object" || Array.isArray(fn)) return false
   const functionRecord = fn as Record<string, unknown>
@@ -368,14 +378,13 @@ export async function executeApprovalDecision(options: ExecuteApprovalDecisionOp
   try {
     result = await options.execute(attempted.toolName, structuredClone(attempted.arguments))
   } catch (error) {
-    if (error instanceof ApprovalExecutionIndeterminateError) throw error
-    const failure = error instanceof Error ? error.message : String(error)
+    if (!(error instanceof ApprovalExecutionFailedError)) throw error
     return options.approvalStore.complete({
       approvalId: attempted.approvalId,
       ownerId: attempted.ownerId!,
       epoch: attempted.epoch,
       state: "failed",
-      result: `error: ${failure}`,
+      result: `error: ${error.message}`,
     })
   }
   await options.hooks?.afterHandler?.()

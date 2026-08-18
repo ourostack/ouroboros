@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { openApprovalStore, type ApprovalStore, type JsonObject, type PrepareApprovalInput } from "../../heart/approval-store"
 import {
   ApprovalExecutionIndeterminateError,
+  ApprovalExecutionFailedError,
   commitApprovalProposal,
   digestApprovalSuspensionCheckpointPayload,
   executeApprovalDecision,
@@ -189,6 +190,18 @@ function expectLiveContext(context: any, fixture: ReturnType<typeof ready>): voi
     },
     arguments: { command: "docker restart calibre-web" },
   })
+}
+
+function resignCheckpointEvidence(fixture: ReturnType<typeof ready>): void {
+  const checkpoint = fixture.checkpoints.records.get(UUID)!
+  checkpoint.checkpointDigest = digestApprovalSuspensionCheckpointPayload(checkpoint)
+  const database = new Database(fixture.databasePath)
+  const row = database.prepare("SELECT record_json FROM approval_actions WHERE approval_id = ?").get(UUID) as { record_json: string }
+  const record = JSON.parse(row.record_json)
+  record.checkpointDigest = checkpoint.checkpointDigest
+  record.frozenAssistantMessage = structuredClone(checkpoint.frozenAssistantMessage)
+  database.prepare("UPDATE approval_actions SET record_json = ? WHERE approval_id = ?").run(JSON.stringify(record), UUID)
+  database.close()
 }
 
 afterEach(() => {
@@ -415,6 +428,18 @@ describe("approval decision and crash-safe execution", () => {
     ["tampered checkpoint digest", (fixture: ReturnType<typeof ready>) => {
       fixture.checkpoints.records.get(UUID)!.checkpointDigest = "0".repeat(64)
     }],
+    ["tampered suspended revision", (fixture: ReturnType<typeof ready>) => {
+      fixture.checkpoints.records.get(UUID)!.suspendedSessionRevision = "0".repeat(64)
+    }],
+    ["non-assistant frozen message", (fixture: ReturnType<typeof ready>) => {
+      fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage.role = "user"
+      resignCheckpointEvidence(fixture)
+    }],
+    ["non-function frozen call", (fixture: ReturnType<typeof ready>) => {
+      const frozen = fixture.checkpoints.records.get(UUID)!.frozenAssistantMessage as any
+      frozen.tool_calls[0].type = "custom"
+      resignCheckpointEvidence(fixture)
+    }],
   ])("terminalizes %s evidence drift before attempted", async (_label, mutate) => {
     const fixture = ready()
     mutate(fixture)
@@ -530,11 +555,26 @@ describe("approval decision and crash-safe execution", () => {
 
   it("records an observable handler failure without retry", async () => {
     const fixture = ready()
-    const execute = vi.fn().mockRejectedValue(new Error("handler failed"))
+    const execute = vi.fn().mockRejectedValue(new ApprovalExecutionFailedError("handler rejected before effect"))
 
     const record = await executeApprovalDecision(executionOptions(fixture, execute) as any)
 
-    expect(record).toMatchObject({ state: "failed", result: expect.stringContaining("handler failed") })
+    expect(record).toMatchObject({ state: "failed", result: expect.stringContaining("handler rejected before effect") })
+    expect(execute).toHaveBeenCalledTimes(1)
+    fixture.approvalStore.close()
+  })
+
+  it("fails closed on an ordinary post-attempt exception and never retries it", async () => {
+    const fixture = ready()
+    const execute = vi.fn().mockRejectedValue(new Error("timeout after external effect may have started"))
+
+    await expect(executeApprovalDecision(executionOptions(fixture, execute) as any))
+      .rejects.toThrow("timeout after external effect may have started")
+    expect(fixture.approvalStore.read(UUID)?.state).toBe("attempted")
+
+    const recovered = recoverAttemptedApproval({ approvalStore: fixture.approvalStore, approvalId: UUID })
+    expect(recovered.state).toBe("attempted_indeterminate")
+    await expect(executeApprovalDecision(executionOptions(fixture, execute) as any)).rejects.toBeTruthy()
     expect(execute).toHaveBeenCalledTimes(1)
     fixture.approvalStore.close()
   })
