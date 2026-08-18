@@ -305,7 +305,26 @@ const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
+function shellContainsAmbiguousAnsiMailCacheSync(command: string): boolean {
+  if (!command.includes("$'")) return false
+  const ansiMarker = "__OURO_ANSI_C_QUOTE__"
+  const tokens = command
+    .replace(/\$'/g, ansiMarker)
+    .replace(/["']/g, "")
+    .split(/[\s;&|()`]+/)
+    .filter(Boolean)
+  const expected = ["ouro", "mail", "sync-cache"]
+  for (let start = 0; start <= tokens.length - expected.length; start += 1) {
+    const candidate = tokens.slice(start, start + expected.length)
+    if (candidate.every((token, index) => token.toLowerCase() === expected[index] || token.includes(ansiMarker))) {
+      return true
+    }
+  }
+  return false
+}
+
 function shellContainsMailCacheSync(command: string): boolean {
+  if (shellContainsAmbiguousAnsiMailCacheSync(command)) return true
   const normalized = command
     .replace(/\\([A-Za-z0-9_-])/g, "$1")
     // Bash/zsh ANSI-C quotes (`$'...'`) and bash locale quotes (`$"..."`)

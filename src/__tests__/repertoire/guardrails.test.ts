@@ -120,6 +120,9 @@ describe("guardInvocation — structural guardrails", () => {
     `ouro mail $'sync-cache' --agent slugger`,
     `ouro mail $"sync-cache" --agent slugger`,
     `ou$'ro' ma$'il' sy$'nc-'cache --agent slugger`,
+    "ouro mail $'sync\\x2dcache' --agent slugger",
+    "ou$'\\x72o' mail sync-cache --agent slugger",
+    "ouro mail $'sync\\055cache' --agent slugger",
     "command ouro mail sync-cache --agent slugger",
     "env ouro mail sync-cache --agent slugger",
     "sh -c 'ouro mail sync-cache --agent slugger'",
@@ -137,6 +140,8 @@ describe("guardInvocation — structural guardrails", () => {
   it("preserves friend access to unrelated Ouro commands", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("shell", { command: "ouro status" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "ouro status $'sync\\x2dcache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "echo $'sync\\x2dcache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
   })
 
   // --- protected paths blocked for writes ---
