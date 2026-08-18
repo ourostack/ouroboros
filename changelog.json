@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.730",
       "changes": [
-        "Add durable human approval suspension and restart-safe continuation."
+        "Add durable human approval suspension and restart-safe continuation.",
+        "Align Mailbox backend typechecking with its ES2023 dependencies and instantiate Stripe v22 through its constructor-compatible module shape."
       ]
     },
     {
