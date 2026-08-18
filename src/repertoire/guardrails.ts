@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { isTrustedLevel, type TrustLevel } from "@ouro.bot/friends"
+import { parse as parseShell, type ControlOperator } from "shell-quote"
 import { emitNervesEvent } from "../nerves/runtime"
 import { validateCommerceAuthority } from "../commerce/store"
 
@@ -352,8 +353,7 @@ function shellContainsAmbiguousAnsiMailCacheSync(command: string): boolean {
     const next = new Set(["0:0"])
     for (const state of current) {
       const [tokenIndex, characterIndex] = state.split(":").map(Number)
-      if (characterIndex === 0) next.add(state)
-      if (characterIndex !== expected[tokenIndex]?.length) continue
+      if (characterIndex !== expected[tokenIndex]!.length) continue
       if (tokenIndex === expected.length - 1) return { matched: true, states: next }
       next.add(`${tokenIndex + 1}:0`)
     }
@@ -365,7 +365,7 @@ function shellContainsAmbiguousAnsiMailCacheSync(command: string): boolean {
       const next = new Set(states)
       for (const state of states) {
         const [tokenIndex, characterIndex] = state.split(":").map(Number)
-        if (characterIndex >= 0 && characterIndex < (expected[tokenIndex]?.length ?? 0)) {
+        if (characterIndex >= 0 && characterIndex < expected[tokenIndex]!.length) {
           next.add(`${tokenIndex}:${characterIndex + 1}`)
         }
       }
@@ -391,18 +391,131 @@ function shellContainsAmbiguousAnsiMailCacheSync(command: string): boolean {
   return crossTokenBoundary(states).matched
 }
 
+const SHELL_COMMAND_BOUNDARIES = new Set<ControlOperator["op"]>(["||", "&&", ";;", "|&", "&", ";", "(", ")", "|", "<("])
+const SHELL_COMMAND_WRAPPERS = new Set(["command", "env", "exec", "nohup"])
+const SHELL_INTERPRETERS = new Set(["sh", "bash", "zsh"])
+const SHELL_PARAMETER_MARKER = "__OURO_SHELL_PARAMETER_"
+
+interface ParsedShellCommand {
+  commands: string[][]
+  parameterNames: ReadonlyMap<string, string>
+}
+
+function parseShellCommands(command: string): ParsedShellCommand {
+  let parameterIndex = 0
+  const parameterNames = new Map<string, string>()
+  const entries = parseShell<string>(command.replace(/\r?\n|`/g, " ; "), (name) => {
+    const marker = `${SHELL_PARAMETER_MARKER}${parameterIndex}__`
+    parameterIndex += 1
+    parameterNames.set(marker, name)
+    return marker
+  })
+  const commands: string[][] = []
+  let current: string[] = []
+  let skipRedirectionTarget = false
+  const flush = () => {
+    if (current.length > 0) commands.push(current)
+    current = []
+    skipRedirectionTarget = false
+  }
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      if (skipRedirectionTarget) skipRedirectionTarget = false
+      else current.push(entry)
+      continue
+    }
+    if ("comment" in entry) break
+    if (entry.op === "glob") {
+      current.push(entry.pattern)
+      continue
+    }
+    if (SHELL_COMMAND_BOUNDARIES.has(entry.op)) {
+      flush()
+      continue
+    }
+    // Every remaining control operator is a redirection. Its next string is
+    // a path or descriptor, not an argv token.
+    skipRedirectionTarget = true
+  }
+  flush()
+  return { commands, parameterNames }
+}
+
+function resolveKnownShellParameters(
+  token: string,
+  knownVariables: ReadonlyMap<string, string>,
+  parameterNames: ReadonlyMap<string, string>,
+): string {
+  let resolved = token
+  for (const [marker, name] of parameterNames) {
+    const known = knownVariables.get(name)
+    if (known !== undefined) resolved = resolved.replaceAll(marker, known)
+  }
+  return resolved
+}
+
+function shellTokenCanEqual(token: string, expected: string): boolean {
+  const escaped = token
+    .split(new RegExp(`${SHELL_PARAMETER_MARKER}\\d+__`, "g"))
+    .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*")
+  return new RegExp(`^${escaped}$`, "i").test(expected)
+}
+
+function shellCommandsContainMailCacheSync(
+  command: string,
+  inheritedVariables: ReadonlyMap<string, string> = new Map(),
+  depth = 0,
+): boolean {
+  // Recursive wrappers always consume argv, but cap adversarial nesting before
+  // it can exhaust the JS stack. An opaque command at the cap fails closed.
+  if (depth >= 32) return true
+  let parsed: ParsedShellCommand
+  try {
+    parsed = parseShellCommands(command)
+  } catch {
+    return false
+  }
+  const knownVariables = new Map(inheritedVariables)
+  for (const rawTokens of parsed.commands) {
+    const tokens = rawTokens.map((token) => resolveKnownShellParameters(token, knownVariables, parsed.parameterNames))
+    const invocationVariables = new Map(knownVariables)
+    let commandIndex = 0
+    while (commandIndex < tokens.length) {
+      const assignment = tokens[commandIndex]!.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s)
+      if (!assignment) break
+      if (assignment[2]!.includes(SHELL_PARAMETER_MARKER) || /\s/.test(assignment[2]!)) invocationVariables.delete(assignment[1]!)
+      else invocationVariables.set(assignment[1]!, assignment[2]!)
+      commandIndex += 1
+    }
+    if (commandIndex === tokens.length) {
+      knownVariables.clear()
+      for (const [name, value] of invocationVariables) knownVariables.set(name, value)
+      continue
+    }
+    while (SHELL_COMMAND_WRAPPERS.has(tokens[commandIndex]?.toLowerCase() ?? "")) {
+      commandIndex += 1
+      while (tokens[commandIndex]?.startsWith("-")) commandIndex += 1
+      while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[commandIndex] ?? "")) commandIndex += 1
+    }
+    const executable = tokens[commandIndex]?.toLowerCase()
+    if (SHELL_INTERPRETERS.has(executable ?? "") && tokens[commandIndex + 1] === "-c") {
+      if (shellCommandsContainMailCacheSync(tokens.slice(commandIndex + 2).join(" "), invocationVariables, depth + 1)) return true
+      continue
+    }
+    if (executable === "eval") {
+      if (shellCommandsContainMailCacheSync(tokens.slice(commandIndex + 1).join(" "), invocationVariables, depth + 1)) return true
+      continue
+    }
+    const protectedArgv = ["ouro", "mail", "sync-cache"]
+    if (protectedArgv.every((expected, offset) => shellTokenCanEqual(tokens[commandIndex + offset] ?? "", expected))) return true
+  }
+  return false
+}
+
 function shellContainsMailCacheSync(command: string): boolean {
   if (shellContainsAmbiguousAnsiMailCacheSync(command)) return true
-  const normalized = command
-    .replace(/\\([A-Za-z0-9_-])/g, "$1")
-    // Bash/zsh ANSI-C quotes (`$'...'`) and bash locale quotes (`$"..."`)
-    // are quote-prefixed token fragments, not literal `$` arguments.
-    .replace(/\$(?=["'])/g, "")
-    // Shell quote boundaries do not separate adjacent token fragments:
-    // `"sync-"cache` is the single argument `sync-cache`.
-    .replace(/["']/g, "")
-    .replace(/\s+/g, " ")
-  return /(?:^|[^A-Za-z0-9_-])ouro\s+mail\s+sync-cache(?:\s|$)/i.test(normalized)
+  return shellCommandsContainMailCacheSync(command)
 }
 
 function mailCacheSyncShellGuardrail(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
