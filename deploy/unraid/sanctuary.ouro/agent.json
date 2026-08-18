@@ -17,8 +17,7 @@
     "mail": { "enabled": false },
     "voice": { "enabled": false },
     "a2a": { "enabled": false },
-    "telegram": { "enabled": true },
-    "workbench": { "enabled": false }
+    "telegram": { "enabled": true }
   },
   "sync": { "enabled": false }
 }

@@ -12,4 +12,10 @@ describe("container runtime policy", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
     expect(dockerfile).toMatch(/apt-get install[^\n]*\bprocps\b/u)
   })
+
+  it("keeps Workbench and duplicate habit scheduling out of the dedicated bundle", () => {
+    const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as { senses: Record<string, unknown> }
+    expect(agent.senses).not.toHaveProperty("workbench")
+    expect(fs.existsSync("deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md")).toBe(false)
+  })
 })
