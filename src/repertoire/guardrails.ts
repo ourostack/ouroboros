@@ -308,7 +308,9 @@ const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 function shellContainsMailCacheSync(command: string): boolean {
   const normalized = command
     .replace(/\\([A-Za-z0-9_-])/g, "$1")
-    .replace(/["']/g, " ")
+    // Shell quote boundaries do not separate adjacent token fragments:
+    // `"sync-"cache` is the single argument `sync-cache`.
+    .replace(/["']/g, "")
     .replace(/\s+/g, " ")
   return /(?:^|[^A-Za-z0-9_-])ouro\s+mail\s+sync-cache(?:\s|$)/i.test(normalized)
 }
