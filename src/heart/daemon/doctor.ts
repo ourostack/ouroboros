@@ -1335,7 +1335,7 @@ async function hostedMailCacheAuthorityCheck(
     return {
       ...base,
       status: "warn",
-      detail: `hosted authority is sound but local skip receipts are unreadable: ${error instanceof Error ? error.message : String(error)}; run \`ouro mail sync-cache --agent ${agentName}\``,
+      detail: `hosted authority is sound but local skip receipts are unreadable: ${String(error)}; run \`ouro mail sync-cache --agent ${agentName}\``,
     }
   }
 

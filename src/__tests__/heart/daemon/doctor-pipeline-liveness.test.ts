@@ -846,6 +846,12 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
       fs.mkdirSync(skippedDir, { recursive: true })
       fs.writeFileSync(path.join(skippedDir, `${Buffer.from(record.id).toString("base64url")}.json`), "{not json", "utf-8")
     }],
+    ["noncanonical receipt filename", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
+      writeHostedSkipReceipt(agentRoot, record)
+      const skippedDir = path.join(agentRoot, "state", "mail-search", "skipped")
+      const [canonicalName] = fs.readdirSync(skippedDir)
+      fs.renameSync(path.join(skippedDir, canonicalName), path.join(skippedDir, "wrong-name.json"))
+    }],
     ["stale record fingerprint", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
       writeHostedSkipReceipt(agentRoot, record, { recordFingerprint: "0".repeat(64) })
     }],
@@ -911,6 +917,23 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(check.status).toBe("warn")
     expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("warns with exact repair guidance when the skip receipt directory is unreadable", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    fs.writeFileSync(path.join(agentRoot, "state", "mail-search", "skipped"), "not a directory")
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("skip receipts are unreadable")
     expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 
