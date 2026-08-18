@@ -99,7 +99,7 @@ function extractLaneFlag(args: string[]): { lane?: ProviderLane; rest: string[] 
 }
 
 export function isAgentProvider(value: unknown): value is AgentProvider {
-  return value === "azure" || value === "anthropic" || value === "minimax" || value === "openai-codex" || value === "github-copilot"
+  return value === "azure" || value === "anthropic" || value === "minimax" || value === "openai-codex" || value === "github-copilot" || value === "openai-compatible" || value === "openai-compatible-gemini"
 }
 
 export function usage(): string {

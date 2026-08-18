@@ -34,6 +34,7 @@ import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
+import { createOpenAICompatibleProviderRuntime } from "./providers/openai-compatible";
 import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
 import {
@@ -64,7 +65,7 @@ import {
 import type { AgentProviderVisibility } from "./provider-visibility";
 import { refreshOpenAICodexProviderCredentials } from "./providers/openai-codex-token";
 
-export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
+export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini";
 
 export type ProviderCapability = "reasoning-effort" | "phase-annotation";
 
@@ -192,6 +193,9 @@ export function createProviderRegistry(): ProviderRegistry {
           return createOpenAICodexProviderRuntime(model, providerConfig as unknown as Parameters<typeof createOpenAICodexProviderRuntime>[1]);
         case "github-copilot":
           return createGithubCopilotProviderRuntime(model, providerConfig as unknown as Parameters<typeof createGithubCopilotProviderRuntime>[1]);
+        case "openai-compatible":
+        case "openai-compatible-gemini":
+          return createOpenAICompatibleProviderRuntime(provider, model, providerConfig as unknown as Parameters<typeof createOpenAICompatibleProviderRuntime>[2]);
       }
     },
   };
@@ -286,6 +290,8 @@ export function getProviderDisplayLabel(facing: Facing = "human"): string {
     "openai-codex": () => `openai codex (${model})`,
     /* v8 ignore next -- branch: tested via display label unit test @preserve */
     "github-copilot": () => `github copilot (${model})`,
+    "openai-compatible": () => `z.ai openai-compatible (${model})`,
+    "openai-compatible-gemini": () => `gemini openai-compatible (${model})`,
   };
   return providerLabelBuilders[provider]();
 }

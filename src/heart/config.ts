@@ -51,6 +51,11 @@ export interface GithubCopilotProviderConfig {
   baseUrl: string
 }
 
+export interface OpenAICompatibleProviderConfig {
+  apiKey: string
+  baseUrl: string
+}
+
 export interface TeamsConfig {
   clientId: string
   clientSecret: string
@@ -360,6 +365,14 @@ export function getGithubCopilotConfig(): GithubCopilotProviderConfig {
   const raw = readProviderConfig("github-copilot")
   return {
     githubToken: typeof raw.githubToken === "string" ? raw.githubToken : "",
+    baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl : "",
+  }
+}
+
+export function getOpenAICompatibleConfig(provider: "openai-compatible" | "openai-compatible-gemini"): OpenAICompatibleProviderConfig {
+  const raw = readProviderConfig(provider)
+  return {
+    apiKey: typeof raw.apiKey === "string" ? raw.apiKey : "",
     baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl : "",
   }
 }

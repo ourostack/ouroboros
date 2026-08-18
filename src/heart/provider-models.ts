@@ -7,6 +7,8 @@ export const DEFAULT_PROVIDER_MODELS: Record<AgentProvider, string> = {
   minimax: "MiniMax-M2.7",
   "openai-codex": "gpt-5.4",
   "github-copilot": "claude-sonnet-4.6",
+  "openai-compatible": "glm-5.2",
+  "openai-compatible-gemini": "gemini-3.6-flash",
 }
 
 const PROVIDER_NAMES: Record<AgentProvider, string> = {
@@ -15,6 +17,8 @@ const PROVIDER_NAMES: Record<AgentProvider, string> = {
   minimax: "MiniMax",
   "openai-codex": "OpenAI Codex",
   "github-copilot": "GitHub Copilot",
+  "openai-compatible": "Z.ai OpenAI-compatible",
+  "openai-compatible-gemini": "Gemini OpenAI-compatible",
 }
 
 function normalized(model: string): string {
@@ -44,6 +48,10 @@ export function isModelClearlyIncompatibleWithProvider(provider: AgentProvider, 
       return value.startsWith("claude-") || value.startsWith("minimax")
     case "github-copilot":
       return false
+    case "openai-compatible":
+      return value !== "glm-5.2" && value !== "glm-5-turbo"
+    case "openai-compatible-gemini":
+      return value !== "gemini-3.6-flash"
   }
 }
 

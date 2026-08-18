@@ -2770,7 +2770,7 @@ const DEFAULT_RUNTIME_APPLY_TIMEOUT_MS = 15_000
 const DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STATUS_TIMEOUT_MS = 4_000
 const DEFAULT_AGENT_RESTART_TIMEOUT_MS = 8_000
-const CONNECT_PROVIDER_CHOICES: AgentProvider[] = ["openai-codex", "anthropic", "minimax", "azure", "github-copilot"]
+const CONNECT_PROVIDER_CHOICES: AgentProvider[] = ["openai-compatible", "openai-compatible-gemini", "openai-codex", "anthropic", "minimax", "azure", "github-copilot"]
 
 function hasRuntimeConfigValue(config: RuntimeCredentialConfig, key: string): boolean {
   return readRuntimeConfigString(config, key) !== null
@@ -6485,6 +6485,7 @@ async function executeAuthRun(
       agentName: command.agent,
       provider,
       promptInput: deps.promptInput,
+      promptSecret: deps.promptSecret,
       onProgress: (message) => progress.updateDetail(message),
     })
   } catch (error) {

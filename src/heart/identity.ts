@@ -4,7 +4,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
 
-export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
+export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini"
 
 /** Single source of truth for per-provider credential field names, env var mappings, and prompt labels. */
 export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
@@ -17,6 +17,8 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   azure:            { required: ["apiKey", "endpoint", "deployment"],   envVars: { AZURE_OPENAI_API_KEY: "apiKey", AZURE_OPENAI_KEY: "apiKey", AZURE_OPENAI_ENDPOINT: "endpoint", AZURE_OPENAI_DEPLOYMENT: "deployment" }, promptLabels: { apiKey: "Azure API key", endpoint: "Azure endpoint", deployment: "Azure deployment" } },
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
   "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
+  "openai-compatible": { required: ["apiKey", "baseUrl"], envVars: {}, promptLabels: { apiKey: "Z.ai API key", baseUrl: "Z.ai canonical base URL" } },
+  "openai-compatible-gemini": { required: ["apiKey", "baseUrl"], envVars: {}, promptLabels: { apiKey: "Gemini API key", baseUrl: "Gemini canonical base URL" } },
 }
 export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "workbench"
 
@@ -370,7 +372,7 @@ export function getAgentToolsRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "tools")
 }
 
-const VALID_PROVIDERS: readonly string[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot"]
+const VALID_PROVIDERS: readonly string[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot", "openai-compatible", "openai-compatible-gemini"]
 
 function isValidProvider(value: unknown): value is AgentProvider {
   return typeof value === "string" && VALID_PROVIDERS.includes(value)

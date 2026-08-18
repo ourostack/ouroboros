@@ -4,6 +4,7 @@ import { isAgentProvider } from "../../heart/daemon/cli-parse"
 import { PROVIDER_CREDENTIALS, type AgentProvider } from "../../heart/identity"
 import { DEFAULT_PROVIDER_MODELS, getProviderDisplayName, isModelClearlyIncompatibleWithProvider } from "../../heart/provider-models"
 import { splitProviderCredentialFields } from "../../heart/provider-credentials"
+import { collectRuntimeAuthCredentials } from "../../heart/auth/auth-flow"
 
 describe("Sanctuary provider identities", () => {
   it("registers distinct GLM and Gemini OpenAI-compatible identities", () => {
@@ -35,5 +36,20 @@ describe("Sanctuary provider identities", () => {
       credentials: { apiKey: "secret" },
       config: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/" },
     })
+  })
+
+  it.each([
+    ["openai-compatible", "Z.ai API key: ", "https://api.z.ai/api/paas/v4/"],
+    ["openai-compatible-gemini", "Gemini API key: ", "https://generativelanguage.googleapis.com/v1beta/openai/"],
+  ] as const)("collects %s keys only through hidden input", async (provider, promptLabel, baseUrl) => {
+    let asked = ""
+    const credentials = await collectRuntimeAuthCredentials({
+      agentName: "butler",
+      provider,
+      promptInput: async () => { throw new Error("visible prompt must not be used") },
+      promptSecret: async (question) => { asked = question; return "private-key" },
+    }, {})
+    expect(asked).toBe(promptLabel)
+    expect(credentials).toEqual({ apiKey: "private-key", baseUrl })
   })
 })
