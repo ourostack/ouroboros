@@ -3,8 +3,8 @@ import { randomBytes, randomUUID } from "node:crypto"
 
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
 import { openApprovalStore } from "../heart/approval-store"
-import { commitApprovalProposal, executeApprovalDecision } from "../heart/tool-approval"
-import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator } from "../heart/core"
+import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDecision } from "../heart/tool-approval"
+import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
@@ -22,6 +22,39 @@ export interface TelegramApprovalRuntime {
   transport: TelegramApprovalTransport
   coordinator(context: { sessionPath: string; baseSessionRevision: string }): ApprovalCoordinator
   close(): void
+}
+
+export function approvalContinuationRunAgentOptions(
+  toolContext: Partial<ToolContext>,
+  approvalCoordinator: ApprovalCoordinator,
+): RunAgentOptions {
+  return { toolContext: toolContext as ToolContext, approvalCoordinator }
+}
+
+export async function executeApprovedTelegramTool(
+  name: string,
+  args: Record<string, unknown>,
+  execute: (name: string, args: Record<string, unknown>) => Promise<string>,
+): Promise<string> {
+  const result = await execute(name, args)
+  if (name !== "unraid_restart_container") return result
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(result)
+  } catch {
+    throw new ApprovalExecutionFailedError("approved restart returned an invalid result")
+  }
+  if (!parsed || typeof parsed !== "object" || !("ok" in parsed)) {
+    throw new ApprovalExecutionFailedError("approved restart returned an invalid result")
+  }
+  if ((parsed as { ok?: unknown }).ok !== true) {
+    const error = (parsed as { error?: unknown }).error
+    const message = error && typeof error === "object" && typeof (error as { message?: unknown }).message === "string"
+      ? (error as { message: string }).message.slice(0, 240)
+      : "approved restart failed"
+    throw new ApprovalExecutionFailedError(message)
+  }
+  return result
 }
 
 export function createTelegramApprovalRuntime(options: {
@@ -107,12 +140,22 @@ export function createTelegramApprovalRuntime(options: {
           resolveTool: resolveToolDefinition,
           liveGuard: async () => ({ ok: true }),
           liveRisk: async () => ({ ok: true }),
-          execute: (name, args) => execTool(name, args as Record<string, string>, options.toolContext as ToolContext),
+          execute: (name, args) => executeApprovedTelegramTool(
+            name,
+            args,
+            (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
+          ),
         })
         const checkpoint = checkpoints.read(record.approvalId)
         if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
         let continuationOwnerId = `telegram-continuation-${randomUUID()}`
         let continuationEpoch = 0
+        const continuationCoordinator: ApprovalCoordinator = {
+          propose: (request) => coordinator({
+            sessionPath: existing.sessionPath,
+            baseSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
+          }).propose(request),
+        }
         await resumeApprovalContinuation({
           record,
           checkpoint,
@@ -129,7 +172,7 @@ export function createTelegramApprovalRuntime(options: {
           markContinuationAttempted: () => { store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
           completeContinuation: () => { store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
           runAgent,
-          runAgentOptions: { toolContext: options.toolContext as ToolContext },
+          runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
           persist: (messages, result) => saveSession(existing.sessionPath, messages, result?.usage, undefined, lease),
           deliver: async (text) => { await sendTelegramText(options.api, options.authorizedChatId, text) },
         })
