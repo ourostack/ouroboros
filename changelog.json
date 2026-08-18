@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.733",
+      "changes": [
+        "Make hosted encrypted-message commits create-once per resolved destination with key-qualified raw payloads.",
+        "Converge the hosted search cache against stable authority with bounded parallelism, progress heartbeats, durable per-message missing-key receipts, and truthful final coverage.",
+        "Make doctor distinguish plaintext cache, current encrypted cache, receipted missing keys, and actionable stale or unreceipted state."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.732",
       "changes": [
         "Doctor distinguishes a completed partial hosted-mail cache sync from stale divergence, preserving repair guidance only for actionable cache faults."

@@ -559,7 +559,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro mail backfill-indexes --agent <agent>",
   },
   "mail sync-cache": {
-    description: "Converge the local decrypted search cache against complete hosted Mailroom authority in the foreground.",
+    description: "Converge the local decrypted search cache against stable hosted Mailroom authority in up to three passes, using 20 bounded body-read workers, foreground settlement progress, a 30-second heartbeat, and durable missing-key receipts.",
     usage: "ouro mail sync-cache [--agent <name>]",
     example: "ouro mail sync-cache --agent <agent>",
   },
