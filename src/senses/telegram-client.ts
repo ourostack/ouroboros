@@ -1,4 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
+import { randomUUID } from "node:crypto"
 
 type TelegramFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -39,6 +42,135 @@ export interface TelegramBotApiOptions {
   fetch?: TelegramFetch
   apiRoot?: string
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>
+}
+
+export interface TelegramOffsetStore {
+  load(): number
+  save(nextUpdateId: number): void
+}
+
+export class FileTelegramOffsetStore implements TelegramOffsetStore {
+  constructor(private readonly path: string) {}
+
+  load(): number {
+    let raw: string
+    try {
+      raw = readFileSync(this.path, "utf8")
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return 0
+      throw error
+    }
+    try {
+      const value = JSON.parse(raw) as { nextUpdateId?: unknown }
+      if (!Number.isSafeInteger(value.nextUpdateId) || (value.nextUpdateId as number) < 0) throw new Error("invalid offset")
+      return value.nextUpdateId as number
+    } catch (cause) {
+      throw new Error("Telegram offset state is corrupt", { cause })
+    }
+  }
+
+  save(nextUpdateId: number): void {
+    if (!Number.isSafeInteger(nextUpdateId) || nextUpdateId < 0) throw new Error("Telegram offset must be a non-negative safe integer")
+    mkdirSync(dirname(this.path), { recursive: true })
+    const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`
+    writeFileSync(temporaryPath, `${JSON.stringify({ nextUpdateId })}\n`, { mode: 0o600 })
+    renameSync(temporaryPath, this.path)
+  }
+}
+
+interface TelegramUpdate {
+  update_id: number
+  message?: {
+    message_id: number
+    from?: { id: number }
+    chat: { id: number; type: string }
+    text?: string
+  }
+  callback_query?: unknown
+}
+
+export interface TelegramInboundMessage {
+  updateId: number
+  messageId: string
+  userId: string
+  chatId: string
+  text: string
+}
+
+export interface TelegramLongPoll {
+  pollOnce(signal?: AbortSignal): Promise<number>
+  run(signal?: AbortSignal): Promise<void>
+  stop(): void
+}
+
+export interface TelegramLongPollOptions {
+  api: TelegramBotApi
+  expectedUserId: string
+  expectedChatId: string
+  offsetStore: TelegramOffsetStore
+  onMessage: (message: TelegramInboundMessage) => Promise<void>
+  onUpdate?: (update: TelegramUpdate) => Promise<boolean>
+}
+
+export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
+  let nextUpdateId = options.offsetStore.load()
+  const shutdown = new AbortController()
+
+  const pollOnce = async (signal?: AbortSignal): Promise<number> => {
+    const requestSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
+    if (requestSignal.aborted) throw new Error("Telegram long poll stopped")
+    const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
+      offset: nextUpdateId,
+      timeout: 50,
+      allowed_updates: ["message", "callback_query"],
+    }, requestSignal)
+    if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
+    for (const update of updates) {
+      if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
+      const next = update.update_id + 1
+      const handled = await options.onUpdate?.(update) ?? false
+      if (!handled) {
+        const message = update.message
+        const userId = message?.from ? String(message.from.id) : ""
+        const chatId = message ? String(message.chat.id) : ""
+        const authorized = message
+          && message.chat.type === "private"
+          && userId === options.expectedUserId
+          && chatId === options.expectedChatId
+          && typeof message.text === "string"
+        if (authorized) {
+          await options.onMessage({
+            updateId: update.update_id,
+            messageId: String(message.message_id),
+            userId,
+            chatId,
+            text: message.text as string,
+          })
+        } else {
+          emitNervesEvent({
+            component: "senses",
+            event: "telegram.update_dropped",
+            message: "Telegram update dropped before dispatch",
+            meta: { updateClass: message ? "message" : "other", reason: "unauthorized_or_unsupported" },
+          })
+        }
+      }
+      nextUpdateId = next
+      options.offsetStore.save(nextUpdateId)
+    }
+    return nextUpdateId
+  }
+
+  return {
+    pollOnce,
+    async run(signal?: AbortSignal) {
+      const runSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
+      while (!runSignal.aborted) await pollOnce(runSignal)
+    },
+    stop() {
+      shutdown.abort(new Error("Telegram long poll stopped"))
+    },
+  }
 }
 
 export interface TelegramChunkOptions {
