@@ -219,6 +219,55 @@ function seedHostedMailRuntime(agent = "slugger", mailroom: Record<string, unkno
   seedMailRuntime(agent, { azureAccountUrl: HOSTED_ACCOUNT_URL, ...mailroom })
 }
 
+function hostedAuthorityRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1 as const,
+    id: "mail_hosted_current",
+    agentId: "slugger",
+    compartmentKind: "native" as const,
+    placement: "imbox" as const,
+    receivedAt: "2026-08-17T19:00:00.000Z",
+    ...overrides,
+  }
+}
+
+function writeConvergedHostedCache(agentRoot: string, record = hostedAuthorityRecord(), overrides: Record<string, unknown> = {}): void {
+  const mirrorDir = path.join(agentRoot, "state", "mail-search")
+  fs.mkdirSync(mirrorDir, { recursive: true })
+  fs.writeFileSync(path.join(mirrorDir, `${record.id}.json`), `${JSON.stringify({
+    schemaVersion: 1,
+    messageId: record.id,
+    agentId: record.agentId,
+    receivedAt: record.receivedAt,
+    placement: record.placement,
+    compartmentKind: record.compartmentKind,
+    from: ["remote@example.com"],
+    subject: "Hosted truth",
+    snippet: "Hosted truth",
+    textExcerpt: "Hosted truth",
+    untrustedContentWarning: "untrusted",
+    searchText: "hosted truth",
+    textProjectionVersion: 2,
+    attachmentCount: 0,
+    decryptionKeyId: "mail_slugger_native",
+    ...overrides,
+  })}\n`, "utf-8")
+}
+
+function soundHostedAuthority(records = [hostedAuthorityRecord()]) {
+  return {
+    ok: true as const,
+    observation: {
+      totalNameCount: records.length,
+      parsedRecordCount: records.length,
+      parseFailureCount: 0,
+      duplicateIds: [],
+      records,
+      snapshot: { visibleMessageCount: records.length, messageIndexFingerprint: "fingerprint" },
+    },
+  }
+}
+
 function findCheck(checks: DoctorCheck[], id: string): DoctorCheck {
   const found = checks.find((check) => check.id === id)
   if (!found) throw new Error(`no check with id ${id} in: ${checks.map((c) => c.label).join(", ")}`)
@@ -475,6 +524,95 @@ describe("checkMailroom mail-ingest liveness", () => {
 // was built for. These pin the mode-aware signal.
 
 describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
+  it("passes only when local cache metadata, projection, and key provenance match sound hosted authority", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("pass")
+    expect(check.detail).toContain("1 authoritative hosted message")
+    expect(check.detail).toContain("local search cache converged")
+  })
+
+  it("warns with exact repair guidance when sound authority and local cache diverge", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, hostedAuthorityRecord(), { placement: "screener", textProjectionVersion: 1 })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("warns without mutation when hosted authority is malformed, duplicated, or transiently unavailable", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+    const ambiguous = soundHostedAuthority()
+    ambiguous.observation.parseFailureCount = 1
+    ambiguous.observation.duplicateIds = ["mail_hosted_current"]
+
+    const ambiguousCheck = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ambiguous),
+    }))).checks, "mail.cache_authority")
+    expect(ambiguousCheck.status).toBe("warn")
+    expect(ambiguousCheck.detail).toContain("authority is ambiguous")
+
+    const transientCheck = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => {
+        throw new Error("network timed out")
+      }),
+    }))).checks, "mail.cache_authority")
+    expect(transientCheck.status).toBe("warn")
+    expect(transientCheck.detail).toContain("network timed out")
+  })
+
+  it("fails on positive hosted authority configuration or authorization faults", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    writeMailroom(writeAgent(bundlesRoot))
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({
+        ok: false,
+        definitive: true,
+        detail: "authorization rejected with 403",
+      })),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("fail")
+    expect(check.detail).toContain("authorization rejected with 403")
+  })
+
+  it("warns when a canonical hosted cache document lacks current key provenance", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, hostedAuthorityRecord(), { decryptionKeyId: "missing_key" })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("key provenance")
+  })
+
   it("passes on the local hosted mirror, and names the hosted store it cannot read", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
