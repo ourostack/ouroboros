@@ -25,7 +25,11 @@ describe("mailroom reader", () => {
         }
 
         getContainerClient() {
-          return {}
+          return {
+            async *listBlobsFlat() {
+              return undefined
+            },
+          }
         }
       },
     }))
@@ -50,6 +54,10 @@ describe("mailroom reader", () => {
     if (!resolved.ok) throw new Error("expected hosted authority resolution")
     expect(Object.keys(resolved.authority)).toEqual(["observeMessageIndexAuthority"])
     expect(resolved).not.toHaveProperty("store")
+    await expect(resolved.authority.observeMessageIndexAuthority("slugger")).resolves.toEqual(expect.objectContaining({
+      totalNameCount: 0,
+      records: [],
+    }))
     expect(serviceUrls).toEqual(["https://mail.blob.core.windows.net"])
     expect(credentialOptions).toEqual([{ managedIdentityClientId: "authority-client" }])
   })

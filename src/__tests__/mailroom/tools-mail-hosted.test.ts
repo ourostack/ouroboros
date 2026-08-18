@@ -209,6 +209,102 @@ describe("hosted mail tools", () => {
     expect(getIndexedMessageById).not.toHaveBeenCalled()
   })
 
+  it("requires an explicit read-only authority observer for full convergence", async () => {
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      store: {} as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions: { cacheDirForAgent: () => tempDir() },
+    })).rejects.toThrow("hosted mail authority observer is unavailable")
+  })
+
+  it("accepts an exact current hosted cache document without fetching its body", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_key_current", "Already current")
+    const currentPrivateKey = Object.values(current.keys)[0]!
+    const { readDecryptedMailMessage } = await import("../../mailroom/core")
+    const decrypted = readDecryptedMailMessage(current.message, { mail_key_current: currentPrivateKey })
+    upsertMailSearchCacheDocument(current.message, decrypted.private, cacheOptions, {
+      decryptionKeyId: "mail_key_current",
+    })
+    const records = [current.message].map((message) => ({
+      schemaVersion: 1 as const,
+      id: message.id,
+      agentId: message.agentId,
+      compartmentKind: message.compartmentKind,
+      placement: message.placement,
+      receivedAt: message.receivedAt,
+    }))
+    const getIndexedMessageById = vi.fn(async () => {
+      throw new Error("current cache must not fetch a hosted body")
+    })
+
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records,
+          snapshot: canonicalSnapshot(records),
+        })),
+      },
+      store: { getIndexedMessageById } as never,
+      privateKeys: { mail_key_current: currentPrivateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 1, removed: 0, skipped: 0 }))
+    expect(getIndexedMessageById).not.toHaveBeenCalled()
+  })
+
+  it("removes a stale canonical projection when its hosted body cannot be fetched", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_fetch_missing", "No hosted body")
+    const legacy = upsertMailSearchCacheDocument(current.message, {
+      from: ["stale@example.com"], to: [], cc: [], subject: "Stale", text: "stale", snippet: "stale", attachments: [], untrustedContentWarning: "untrusted",
+    }, cacheOptions)
+    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({ ...legacy, decryptionKeyId: undefined })}\n`)
+    const records = [{
+      schemaVersion: 1 as const,
+      id: current.message.id,
+      agentId: current.message.agentId,
+      compartmentKind: current.message.compartmentKind,
+      placement: current.message.placement,
+      receivedAt: current.message.receivedAt,
+    }]
+
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records,
+          snapshot: canonicalSnapshot(records),
+        })),
+      },
+      store: { getIndexedMessageById: vi.fn(async () => null) } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 0, removed: 1, skipped: 1 }))
+    expect(fs.readdirSync(cacheRoot)).toEqual(["coverage"])
+  })
+
   it("merges cached and imported search docs newest-first, dedupes ids, and respects the limit", async () => {
     const { mergeCachedMailSearchDocuments } = await import("../../repertoire/tools-mail")
 

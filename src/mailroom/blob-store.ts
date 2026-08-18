@@ -273,11 +273,8 @@ function parseMessageIndexBlobName(name: string): MailMessageIndexRecord | null 
   if (!/^\d{13}$/.test(sortKey)) return null
   if (compartmentKind !== "native" && compartmentKind !== "delegated") return null
   if (!(["imbox", "screener", "discarded", "quarantine", "draft", "sent"] as const).includes(placement as MailPlacement)) return null
-  const parsedSortKey = Number(sortKey)
-  if (!Number.isSafeInteger(parsedSortKey) || parsedSortKey < 0 || parsedSortKey > MESSAGE_INDEX_SORT_MAX_MS) return null
   const decodedSource = decodeSourceToken(sourceToken)
-  if (decodedSource !== undefined && decodedSource.length === 0) return null
-  const receivedAtMs = MESSAGE_INDEX_SORT_MAX_MS - parsedSortKey
+  const receivedAtMs = MESSAGE_INDEX_SORT_MAX_MS - Number(sortKey)
   return {
     schemaVersion: 1,
     id,

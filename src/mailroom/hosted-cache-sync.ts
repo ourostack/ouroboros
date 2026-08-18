@@ -1,6 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   canonicalMailIndexRecordSnapshot,
+  type HostedMailIndexAuthorityReader,
   type HostedMailIndexAuthorityObservation,
 } from "./blob-store"
 import { readDecryptedMailMessage, type MailPlacement, type StoredMailMessage } from "./core"
@@ -26,6 +27,7 @@ export interface HostedMailSearchCacheSyncInput {
   agentId: string
   mode: "full-convergence" | "scoped-upsert"
   store: HostedAuthorityStore
+  authority?: HostedMailIndexAuthorityReader
   privateKeys: Record<string, string>
   storeKind: string
   cacheOptions?: MailSearchCacheOptions
@@ -121,10 +123,11 @@ export async function syncHostedMailSearchCache(
   let authority: HostedMailIndexAuthorityObservation | null = null
   let records: MailMessageIndexRecord[]
   if (input.mode === "full-convergence") {
-    if (!input.store.observeMessageIndexAuthority) {
+    const observer = input.authority ?? input.store
+    if (!observer.observeMessageIndexAuthority) {
       throw new Error("hosted mail authority observer is unavailable")
     }
-    authority = await input.store.observeMessageIndexAuthority(input.agentId)
+    authority = await observer.observeMessageIndexAuthority(input.agentId)
     if (authority.parseFailureCount > 0 || authority.duplicateIds.length > 0) {
       throw new Error(
         `hosted mail authority is ambiguous: ${authority.parseFailureCount} malformed index name(s), ${authority.duplicateIds.length} duplicate message id(s)`,
@@ -144,7 +147,7 @@ export async function syncHostedMailSearchCache(
       const canonicalName = document ? `${document.messageId}.json` : null
       const record = document ? recordsById.get(document.messageId) : undefined
       if (!document || inspected.fileName !== canonicalName || document.agentId !== input.agentId || !record) {
-        removed += removeMailSearchCacheFile(input.agentId, inspected.fileName, input.cacheOptions) ? 1 : 0
+        removed += Number(removeMailSearchCacheFile(input.agentId, inspected.fileName, input.cacheOptions))
         continue
       }
       canonicalDocuments.set(document.messageId, document)

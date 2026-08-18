@@ -10,6 +10,7 @@ import {
 	  readMailSearchCoverageRecord,
 	  reloadMailSearchCache,
 	  removeMailSearchCacheDocument,
+	  removeMailSearchCacheFile,
 	  resetMailSearchCacheForTests,
 	  searchMailSearchCache,
 	  snapshotMailSearchCacheForFilters,
@@ -142,6 +143,42 @@ describe("mail search cache", () => {
       expect.objectContaining({ fileName: "mail_canonical.json", document: expect.objectContaining({ messageId: "mail_canonical" }) }),
       expect.objectContaining({ fileName: "malformed.json", document: null }),
     ])
+  })
+
+  it("treats an absent cache as empty and rejects unsafe or non-file removal targets", () => {
+    const cacheRoot = path.join(tempDir(), "absent")
+    const options = { cacheDirForAgent: () => cacheRoot }
+    expect(inspectMailSearchCacheFiles("slugger", options)).toEqual([])
+    expect(removeMailSearchCacheFile("slugger", "../escape.json", options)).toBe(false)
+    expect(removeMailSearchCacheFile("slugger", "not-json.txt", options)).toBe(false)
+    fs.mkdirSync(path.join(cacheRoot, "directory.json"), { recursive: true })
+    expect(removeMailSearchCacheFile("slugger", "directory.json", options)).toBe(false)
+    expect(removeMailSearchCacheFile("slugger", "missing.json", options)).toBe(false)
+  })
+
+  it("cleans an atomic-write temporary file when replacement fails", () => {
+    const cacheRoot = tempDir()
+    const options = { cacheDirForAgent: () => cacheRoot }
+    fs.mkdirSync(path.join(cacheRoot, "mail_atomic.json"))
+
+    expect(() => upsertMailSearchCacheDocument(
+      message({ id: "mail_atomic" }),
+      privateEnvelope(),
+      options,
+    )).toThrow()
+    expect(fs.readdirSync(cacheRoot)).toEqual(["mail_atomic.json"])
+  })
+
+  it("retains the newest watermark when a later cache file is older", () => {
+    const cacheRoot = tempDir()
+    const options = { cacheDirForAgent: () => cacheRoot }
+    upsertMailSearchCacheDocument(message({ id: "mail_a_new", receivedAt: "2026-08-17T10:00:00.000Z" }), privateEnvelope(), options)
+    upsertMailSearchCacheDocument(message({ id: "mail_b_old", receivedAt: "2026-08-16T10:00:00.000Z" }), privateEnvelope(), options)
+
+    expect(snapshotMailSearchCacheForFilters({ agentId: "slugger" }, options)).toEqual(expect.objectContaining({
+      oldestReceivedAt: "2026-08-16T10:00:00.000Z",
+      newestReceivedAt: "2026-08-17T10:00:00.000Z",
+    }))
   })
 
   it("writes, searches, and filters cached mail summaries locally", () => {
