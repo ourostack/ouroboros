@@ -39,6 +39,83 @@ export interface TelegramBotApiOptions {
   apiRoot?: string
 }
 
+export interface TelegramChunkOptions {
+  targetUnits?: number
+  maxUnits?: number
+}
+
+export function escapeTelegramHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
+function sourceIndexForRenderedLimit(value: string, limit: number): number {
+  let renderedUnits = 0
+  let sourceIndex = 0
+  for (const character of value) {
+    const escaped = escapeTelegramHtml(character)
+    if (renderedUnits + escaped.length > limit) break
+    renderedUnits += escaped.length
+    sourceIndex += character.length
+  }
+  return sourceIndex
+}
+
+function preferredBoundary(value: string, limit: number, minimum: number): number {
+  const paragraph = value.lastIndexOf("\n\n", limit - 1)
+  if (paragraph >= minimum) return paragraph + 2
+  const newline = value.lastIndexOf("\n", limit - 1)
+  if (newline >= minimum) return newline + 1
+  for (let index = limit - 1; index >= minimum; index -= 1) {
+    if (/\s/u.test(value[index])) return index + 1
+  }
+  return limit
+}
+
+export function splitTelegramText(value: string, options: TelegramChunkOptions = {}): string[] {
+  const targetUnits = options.targetUnits ?? 1_200
+  const maxUnits = options.maxUnits ?? 4_000
+  if (!Number.isInteger(targetUnits) || !Number.isInteger(maxUnits) || targetUnits < 1 || maxUnits < targetUnits) {
+    throw new Error("Telegram chunk limits must be positive integers with targetUnits <= maxUnits")
+  }
+  if (!value) return [""]
+
+  const chunks: string[] = []
+  let remaining = value
+  while (escapeTelegramHtml(remaining).length > maxUnits || escapeTelegramHtml(remaining).length > targetUnits) {
+    const targetIndex = sourceIndexForRenderedLimit(remaining, targetUnits)
+    const maxIndex = sourceIndexForRenderedLimit(remaining, maxUnits)
+    const candidate = targetIndex > 0 ? targetIndex : maxIndex
+    if (candidate <= 0) throw new Error("Telegram chunk limit cannot fit one character")
+    const splitAt = preferredBoundary(remaining, candidate, Math.floor(candidate / 2))
+    chunks.push(remaining.slice(0, splitAt))
+    remaining = remaining.slice(splitAt)
+  }
+  chunks.push(remaining)
+  return chunks
+}
+
+export async function sendTelegramText(
+  api: TelegramBotApi,
+  chatId: string,
+  text: string,
+  signal?: AbortSignal,
+): Promise<unknown[]> {
+  const results: unknown[] = []
+  for (const chunk of splitTelegramText(text)) {
+    try {
+      results.push(await api.request("sendMessage", {
+        chat_id: chatId,
+        text: escapeTelegramHtml(chunk),
+        parse_mode: "HTML",
+      }, signal))
+    } catch (error) {
+      if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+      results.push(await api.request("sendMessage", { chat_id: chatId, text: chunk }, signal))
+    }
+  }
+  return results
+}
+
 function safeErrorMessage(message: string, token: string): string {
   return message.split(token).join("[redacted]")
 }
