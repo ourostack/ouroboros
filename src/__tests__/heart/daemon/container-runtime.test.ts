@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import * as fs from "node:fs"
-import { readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
+import { hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 
 describe("container runtime policy", () => {
   it("accepts only the locked scheduler/update policy", () => {
@@ -17,5 +17,13 @@ describe("container runtime policy", () => {
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as { senses: Record<string, unknown> }
     expect(agent.senses).not.toHaveProperty("workbench")
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md")).toBe(false)
+  })
+
+  it("requires exactly one matching managed Telegram process", () => {
+    const telegram = "node /opt/ouro/dist/senses/telegram-entry.js --agent sanctuary"
+    expect(hasManagedTelegramProcess(`node daemon-entry.js\n${telegram}\n`, "sanctuary")).toBe(true)
+    expect(hasManagedTelegramProcess("node daemon-entry.js\n", "sanctuary")).toBe(false)
+    expect(hasManagedTelegramProcess(`${telegram}\n${telegram}\n`, "sanctuary")).toBe(false)
+    expect(hasManagedTelegramProcess("node /opt/ouro/dist/senses/telegram-entry.js --agent other\n", "sanctuary")).toBe(false)
   })
 })

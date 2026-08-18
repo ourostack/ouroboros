@@ -3,6 +3,18 @@ import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface ContainerRuntimePolicy { scheduler: "supercronic"; updates: "disabled" }
 
+export function hasManagedTelegramProcess(processArguments: string, agent: string): boolean {
+  const wanted = agent.trim()
+  if (!wanted) return false
+  const matches = processArguments.split("\n").filter((line) => {
+    const fields = line.trim().split(/\s+/u)
+    const entryIndex = fields.findIndex((field) => field === "/opt/ouro/dist/senses/telegram-entry.js")
+    const agentIndex = fields.findIndex((field) => field === "--agent")
+    return entryIndex >= 0 && agentIndex >= 0 && fields[agentIndex + 1] === wanted
+  })
+  return matches.length === 1
+}
+
 export function readContainerRuntimePolicy(options: { path?: string; readFile?: (path: string) => string } = {}): ContainerRuntimePolicy | null {
   const filePath = options.path ?? "/opt/ouro/container-runtime.json"
   const readFile = options.readFile ?? ((target: string) => fs.readFileSync(target, "utf8"))
