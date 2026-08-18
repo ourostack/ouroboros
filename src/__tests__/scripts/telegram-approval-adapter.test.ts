@@ -22,6 +22,16 @@ function telegramResponse(result: unknown, status = 200): Response {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 function callbackUpdate(input: {
   callbackData: string
   callbackId?: string
@@ -180,6 +190,40 @@ describe("test-only Telegram approval adapter", () => {
     })
   })
 
+  it("atomically consumes a callback before any await so concurrent duplicates reach authority once", async () => {
+    const authority = deferred<{ accepted: boolean; terminalText: string }>()
+    const f = await prompt(fixture({ onDecision: () => authority.promise }))
+    f.fetch.mockResolvedValue(telegramResponse(true))
+    const first = f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle", callbackId: "callback-1" }))
+    const second = f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle", callbackId: "callback-2" }))
+
+    await vi.waitFor(() => {
+      expect(f.onDecision).toHaveBeenCalledTimes(1)
+      expect(f.calls.some((call) => call.body.callback_query_id === "callback-2")).toBe(true)
+    })
+    authority.resolve({ accepted: true, terminalText: "✅ Approved — running" })
+
+    await expect(first).resolves.toEqual({ handled: true, accepted: true, reason: "accepted" })
+    await expect(second).resolves.toEqual({ handled: true, accepted: false, reason: "stale_callback" })
+    expect(f.onDecision).toHaveBeenCalledTimes(1)
+  })
+
+  it("completes callback acknowledgement before awaiting slow decision authority", async () => {
+    const authority = deferred<{ accepted: boolean; terminalText: string }>()
+    const acknowledgement = deferred<Response>()
+    const f = await prompt(fixture({ onDecision: () => authority.promise }))
+    f.fetch.mockImplementationOnce(() => acknowledgement.promise)
+    const pending = f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" }))
+
+    await vi.waitFor(() => expect(f.calls.at(-1)?.url).toMatch(/answerCallbackQuery$/))
+    expect(f.onDecision).not.toHaveBeenCalled()
+    acknowledgement.resolve(telegramResponse(true))
+    await vi.waitFor(() => expect(f.onDecision).toHaveBeenCalledTimes(1))
+    authority.resolve({ accepted: true, terminalText: "✅ Approved — running" })
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+    await pending
+  })
+
   it("keeps buttons removed when the decision authority refuses the callback", async () => {
     const f = await prompt(fixture({ onDecision: async () => ({ accepted: false, terminalText: "⚠️ Approval expired" }) }))
     f.fetch.mockResolvedValue(telegramResponse(true))
@@ -196,6 +240,56 @@ describe("test-only Telegram approval adapter", () => {
       parse_mode: "HTML",
       reply_markup: { inline_keyboard: [] },
     })
+  })
+
+  it("escapes terminal HTML and retries a 400 terminal edit as plain text with empty buttons", async () => {
+    const f = await prompt(fixture({ onDecision: async () => ({ accepted: false, terminalText: "⚠️ <expired> & refused" }) }))
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+    f.fetch.mockResolvedValueOnce(telegramResponse(null, 400))
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+
+    await f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" }))
+
+    expect(f.calls.at(-2)?.body).toEqual({
+      chat_id: CHAT_ID,
+      message_id: 99,
+      text: "⚠️ &lt;expired&gt; &amp; refused",
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: [] },
+    })
+    expect(f.calls.at(-1)?.body).toEqual({
+      chat_id: CHAT_ID,
+      message_id: 99,
+      text: "⚠️ <expired> & refused",
+      reply_markup: { inline_keyboard: [] },
+    })
+  })
+
+  it("honors 429 retry_after for terminal edits and resends the exact empty-button request", async () => {
+    const retry = new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 2 } }), { status: 429 })
+    const f = await prompt()
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+    f.fetch.mockResolvedValueOnce(retry)
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+
+    await f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" }))
+
+    expect(f.sleep).toHaveBeenCalledWith(2_000)
+    expect(f.calls.at(-1)).toEqual(f.calls.at(-2))
+    expect(f.calls.at(-1)?.body).toHaveProperty("reply_markup", { inline_keyboard: [] })
+  })
+
+  it("keeps a handle consumed when terminal editing throws, so retry cannot decide twice", async () => {
+    const f = await prompt()
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+    f.fetch.mockRejectedValueOnce(new Error("telegram unavailable"))
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle", callbackId: "callback-1" })))
+      .rejects.toThrow("telegram unavailable")
+
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle", callbackId: "callback-2" })))
+      .resolves.toEqual({ handled: true, accepted: false, reason: "stale_callback" })
+    expect(f.onDecision).toHaveBeenCalledTimes(1)
   })
 
   it("retries sendMessage without formatting after Telegram rejects HTML with 400", async () => {
