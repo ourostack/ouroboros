@@ -1,5 +1,6 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient, UnraidClientError, type UnraidErrorCode } from "./unraid-client"
+import type { ToolDefinition } from "./tools-base"
 
 export const SANCTUARY_CONTAINERS_QUERY = `query SanctuaryContainers {
   docker { containers(skipCache: true) { id names state status autoStart } }
@@ -234,6 +235,75 @@ export function createUnraidReadTools(client: ReadClient) {
     },
   }
 }
+
+const emptyParameters = { type: "object", properties: {}, additionalProperties: false }
+
+function missingRuntime(): string {
+  return JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } })
+}
+
+function readDefinition(name: string, description: string, method: "listContainers" | "getStorage" | "getDisks" | "getNotifications" | "getSystem"): ToolDefinition {
+  return {
+    tool: { type: "function", function: { name, description, parameters: emptyParameters } },
+    handler: async (_args, ctx) => JSON.stringify(ctx?.sanctuary ? await ctx.sanctuary[method]() : JSON.parse(missingRuntime())),
+    riskProfile: { mutates: "none", risk: "low" },
+  }
+}
+
+export const unraidToolDefinitions: ToolDefinition[] = [
+  readDefinition("unraid_list_containers", "List bounded Sanctuary Docker container status.", "listContainers"),
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "unraid_get_container_logs",
+        description: "Read the recent bounded log suffix for one exact Sanctuary container name.",
+        parameters: {
+          type: "object",
+          properties: {
+            container: { type: "string" },
+            tailLines: { type: "integer", minimum: 1, maximum: 200 },
+          },
+          required: ["container", "tailLines"],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => JSON.stringify(ctx?.sanctuary
+      ? await ctx.sanctuary.getContainerLogs({ container: String(args.container), tailLines: Number(args.tailLines) })
+      : JSON.parse(missingRuntime())),
+    riskProfile: { mutates: "none", risk: "low" },
+  },
+  readDefinition("unraid_get_storage", "Read bounded Sanctuary array and share capacity health.", "getStorage"),
+  readDefinition("unraid_get_disks", "Read bounded Sanctuary disk SMART, temperature, and parity health.", "getDisks"),
+  readDefinition("unraid_get_notifications", "Read bounded unacknowledged Sanctuary notifications.", "getNotifications"),
+  readDefinition("unraid_get_system", "Read bounded Sanctuary system and version health.", "getSystem"),
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "unraid_restart_container",
+        description: "Propose restarting one exact existing allowlisted Sanctuary container. Execution requires human approval.",
+        parameters: {
+          type: "object",
+          properties: { container: { type: "string" } },
+          required: ["container"],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => JSON.stringify(ctx?.sanctuary
+      ? await ctx.sanctuary.restartContainer({ container: String(args.container) })
+      : JSON.parse(missingRuntime())),
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts one existing allowlisted Docker container" },
+    approvalPolicy: () => ({
+      kind: "required",
+      policyId: "sanctuary.unraid.restart.v1",
+      actionClass: "unraid.container.restart",
+      requiresSoleCall: true,
+    }),
+  },
+]
 
 emitNervesEvent({
   component: "repertoire",

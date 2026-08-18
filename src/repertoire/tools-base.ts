@@ -128,6 +128,15 @@ export interface ToolContext {
     checkoutId: string;
     reservationToken: string;
   };
+  sanctuary?: {
+    listContainers(): Promise<unknown>;
+    getContainerLogs(args: { container: string; tailLines: number }): Promise<unknown>;
+    getStorage(): Promise<unknown>;
+    getDisks(): Promise<unknown>;
+    getNotifications(): Promise<unknown>;
+    getSystem(): Promise<unknown>;
+    restartContainer(args: { container: string }): Promise<unknown>;
+  };
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
