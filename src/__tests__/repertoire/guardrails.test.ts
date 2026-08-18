@@ -109,6 +109,30 @@ describe("guardInvocation — structural guardrails", () => {
     expect(result.allowed).toBe(true)
   })
 
+  it.each([
+    "ouro mail sync-cache --agent slugger",
+    "echo ready && ouro mail sync-cache --agent slugger",
+    "echo ready\nouro mail sync-cache --agent slugger",
+    "ouro mail sync\\-cache --agent slugger",
+    "command ouro mail sync-cache --agent slugger",
+    "env ouro mail sync-cache --agent slugger",
+    "sh -c 'ouro mail sync-cache --agent slugger'",
+    "$(ouro mail sync-cache --agent slugger)",
+    "`ouro mail sync-cache --agent slugger`",
+  ])("requires family trust for cache convergence through shell shape %s", async (command) => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    for (const trustLevel of ["stranger", "acquaintance", "friend"] as const) {
+      expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false }))
+    }
+    expect(guardInvocation("shell", { command }, { readPaths: new Set(), trustLevel: "family" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command }, { readPaths: new Set() })).toEqual({ allowed: true })
+  })
+
+  it("preserves friend access to unrelated Ouro commands", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("shell", { command: "ouro status" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+  })
+
   // --- protected paths blocked for writes ---
 
   it("blocks write_file to .git/config", async () => {
