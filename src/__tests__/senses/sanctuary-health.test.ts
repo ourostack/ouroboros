@@ -5,9 +5,9 @@ import { describe, expect, it, vi } from "vitest"
 
 import { createSanctuaryHealthSweep, probeSanctuaryEndpoint } from "../../senses/sanctuary-health"
 
-function context(state: "running" | "exited") {
+function context(state: "running" | "exited", autostart = true) {
   return { sanctuary: {
-    listContainers: vi.fn().mockResolvedValue({ ok: true, data: { containers: [{ id: "Docker:a", name: "calibre-web", autostart: true, state, exitCode: state === "exited" ? 1 : null, degraded: false, status: state === "running" ? "Up 2 hours" : "Exited (1) 2 minutes ago" }], truncated: false } }),
+    listContainers: vi.fn().mockResolvedValue({ ok: true, data: { containers: [{ id: "Docker:a", name: "calibre-web", autostart, state, exitCode: state === "exited" ? 1 : null, degraded: false, status: state === "running" ? "Up 2 hours" : "Exited (1) 2 minutes ago" }], truncated: false } }),
     getStorage: vi.fn().mockResolvedValue({ ok: true, data: { array: { state: "STARTED", usedPercent: 76, degraded: false }, shares: [], truncated: false } }),
     getDisks: vi.fn().mockResolvedValue({ ok: true, data: { disks: [{ id: "Disk:1", name: "disk1", smart: "passed", temperatureC: 35, degraded: false }], parity: { result: "success", ageHours: 10, degraded: false }, truncated: false } }),
     getNotifications: vi.fn().mockResolvedValue({ ok: true, data: { unacknowledged: [], truncated: false } }),
@@ -52,5 +52,17 @@ describe("Sanctuary deterministic health sweep", () => {
     const healthy = createSanctuaryHealthSweep({ toolContext: context("running"), statePath, fetch, now })
     expect((await healthy()).message).toContain("recovered")
     expect((await healthy()).message).toBeNull()
+  })
+
+  it("reports a named mandate container down even when Unraid autostart is disabled", async () => {
+    const statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-")), "state.json")
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("exited", false),
+      statePath,
+      fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
+      now: () => new Date("2026-08-18T18:00:00.000Z"),
+    })
+
+    expect((await sweep()).message).toContain("calibre-web is exited")
   })
 })

@@ -11,6 +11,7 @@ const ENDPOINTS = [
   "https://requests.mendelow.cloud/",
   "https://readarr.mendelow.cloud/",
 ]
+const REQUIRED_CONTAINERS = new Set(["calibre", "calibre-web", "Cloudflare-DDNS"])
 
 interface Incident { id: string; summary: string }
 interface HealthState { incidents: Record<string, Incident>; lastDigestDay: string | null; updatedAt: string }
@@ -86,7 +87,7 @@ export function createSanctuaryHealthSweep(options: {
     const containers = record(containersResult)?.ok ? record(record(containersResult)?.data)?.containers : null
     if (!Array.isArray(containers)) add("containers:unavailable", "container status is unavailable")
     else for (const container of containers) {
-      if (container.autostart === true && container.state !== "running") add(`container:${container.id}:${container.state}:${container.exitCode ?? "none"}`, `${container.name} is ${container.state}`)
+      if ((container.autostart === true || REQUIRED_CONTAINERS.has(container.name)) && container.state !== "running") add(`container:${container.id}:${container.state}:${container.exitCode ?? "none"}`, `${container.name} is ${container.state}`)
       if (container.state === "unknown" || container.degraded === true) add(`container:${container.id}:degraded`, `${container.name} status is degraded`)
     }
     const storage = record(storageResult)?.ok ? record(record(storageResult)?.data) : null
