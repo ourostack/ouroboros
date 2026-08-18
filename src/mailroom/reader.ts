@@ -47,6 +47,20 @@ export type MailroomReaderResolution =
       error: string
     }
 
+export type HostedMailAuthorityResolution =
+  | {
+      ok: true
+      agentName: string
+      store: AzureBlobMailroomStore
+      storeLabel: string
+    }
+  | {
+      ok: false
+      agentName: string
+      reason: "auth-required" | "misconfigured"
+      error: string
+    }
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
 }
@@ -235,6 +249,68 @@ export function resolveMailroomReader(agentName: string = getAgentName()): Mailr
     event: "senses.mail_reader_resolved",
     message: "mailroom reader resolved",
     meta: { agentName, status: "ready", mailboxAddress: config.mailboxAddress, storeKind: store.storeKind },
+  })
+  return result
+}
+
+export function resolveHostedMailAuthority(agentName: string = getAgentName()): HostedMailAuthorityResolution {
+  const runtime = readRuntimeCredentialConfig(agentName)
+  if (!runtime.ok) {
+    const result: HostedMailAuthorityResolution = {
+      ok: false,
+      agentName,
+      reason: "auth-required",
+      error: `AUTH_REQUIRED:mailroom -- Hosted mail authority is unavailable because ${runtime.itemPath} is ${runtime.reason}.`,
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_hosted_authority_resolved",
+      message: "hosted mail authority resolved",
+      meta: { agentName, status: result.reason },
+    })
+    return result
+  }
+
+  const mailroom = isRecord(runtime.config.mailroom) ? runtime.config.mailroom : null
+  const azureAccountUrl = mailroom ? textField(mailroom, "azureAccountUrl") : undefined
+  if (!mailroom || !azureAccountUrl) {
+    const result: HostedMailAuthorityResolution = {
+      ok: false,
+      agentName,
+      reason: "misconfigured",
+      error: `Hosted mail authority for ${agentName} is missing mailroom.azureAccountUrl in vault runtime/config.`,
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_hosted_authority_resolved",
+      message: "hosted mail authority resolved",
+      meta: { agentName, status: result.reason },
+    })
+    return result
+  }
+
+  const azureContainer = textField(mailroom, "azureContainer") ?? "mailroom"
+  const azureManagedIdentityClientId = textField(mailroom, "azureManagedIdentityClientId")
+  const store = new AzureBlobMailroomStore({
+    serviceClient: new BlobServiceClient(
+      azureAccountUrl,
+      azureManagedIdentityClientId
+        ? new DefaultAzureCredential({ managedIdentityClientId: azureManagedIdentityClientId })
+        : new DefaultAzureCredential(),
+    ),
+    containerName: azureContainer,
+  })
+  const result: HostedMailAuthorityResolution = {
+    ok: true,
+    agentName,
+    store,
+    storeLabel: `${azureAccountUrl}/${azureContainer}`,
+  }
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_hosted_authority_resolved",
+    message: "hosted mail authority resolved",
+    meta: { agentName, status: "ready" },
   })
   return result
 }
