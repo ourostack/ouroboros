@@ -13,6 +13,15 @@ describe("container runtime policy", () => {
     expect(dockerfile).toMatch(/apt-get install[^\n]*\bprocps\b/u)
   })
 
+  it("ships a released-package Docker build context", () => {
+    const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
+    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[] }
+
+    expect(packageJson.files).toContain("deploy/unraid/")
+    expect(dockerfile).toContain("COPY package.json ./")
+    expect(dockerfile).not.toContain("package-lock.json")
+  })
+
   it("keeps Workbench and duplicate habit scheduling out of the dedicated bundle", () => {
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as { senses: Record<string, unknown> }
     expect(agent.senses).not.toHaveProperty("workbench")

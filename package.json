@@ -16,6 +16,7 @@
     "RepairGuide.ouro/",
     "skills/",
     "assets/",
+    "deploy/unraid/",
     "changelog.json"
   ],
   "exports": {
@@ -104,17 +105,5 @@
       "@types/react": "$@types/react"
     },
     "shell-quote": "^1.8.4"
-  },
-  "description": "If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.",
-  "directories": {
-    "doc": "docs",
-    "test": "tests"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/ourostack/ouroboros/issues"
-  },
-  "homepage": "https://github.com/ourostack/ouroboros#readme"
+  }
 }
