@@ -251,6 +251,15 @@ export function createTelegramApprovalRuntime(options: {
         await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
         continue
       }
+      if (existing.state === "awaiting_prompt_binding" && deliveryState === "bound" && pending.messageId) {
+        store.bindPrompt({
+          approvalId: existing.approvalId,
+          transport: "telegram",
+          transportChatId: options.authorizedChatId,
+          transportMessageId: pending.messageId,
+        })
+        continue
+      }
       if (existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
       let record = existing
       if (record.state === "claimed") {

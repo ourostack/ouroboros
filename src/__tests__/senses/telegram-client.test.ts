@@ -177,6 +177,25 @@ describe("Telegram approval callback transport", () => {
     expect(fixture.onDecision).not.toHaveBeenCalled()
   })
 
+  it("cleans an expired terminal tombstone without re-expiring its canonical journal", async () => {
+    const onExpire = vi.fn()
+    const record = {
+      approvalId: "indeterminate",
+      messageId: null,
+      deliveryState: "delivery_indeterminate" as const,
+      approveCallbackData: "a:indeterminate",
+      denyCallbackData: "d:indeterminate",
+      expiresAt: 999_999,
+      terminal: { accepted: false, terminalText: "not executed" },
+    }
+    const fixture = approvalFixture({ records: [record], onExpire })
+
+    await fixture.transport.reconcileExpired()
+
+    expect(onExpire).not.toHaveBeenCalled()
+    expect(fixture.records()).toEqual([])
+  })
+
   it("atomically consumes concurrent duplicate callbacks before authority", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })

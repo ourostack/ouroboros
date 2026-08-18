@@ -448,6 +448,12 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const reconcileExpired = async (): Promise<void> => {
     for (const pending of uniquePending()) {
       if (now() < pending.expiresAt) continue
+      if (pending.terminal) {
+        await editTerminal(pending, pending.terminal.terminalText)
+        remove(pending)
+        persist()
+        continue
+      }
       await options.onExpire?.(pending.approvalId)
       await editTerminal(pending, "⚠️ Approval expired")
       remove(pending)
