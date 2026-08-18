@@ -400,6 +400,24 @@ describe("checkAgents", () => {
     expect(cat.checks[0].detail).toContain("unparseable")
   })
 
+  it("keeps a present but unreadable agent.json diagnosable", () => {
+    const configPath = "/tmp/bundles/test.ouro/agent.json"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", configPath]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: (target) => {
+        if (target === configPath) throw new Error("EACCES")
+        return "{}"
+      },
+    })
+
+    expect(checkAgents(deps).checks).toEqual([expect.objectContaining({
+      label: "test.ouro/agent.json",
+      status: "fail",
+      detail: "unparseable JSON",
+    })])
+  })
+
   it("ignores task-only .ouro directories without agent.json", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),

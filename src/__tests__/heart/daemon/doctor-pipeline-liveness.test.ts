@@ -662,6 +662,40 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     expect(check.detail).toContain("bluebubbles inbound delivery 30 minutes ago")
   })
 
+  it("warns when BlueBubbles inbound evidence is future-dated", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": -2 * DAY_MS })
+    seedBlueBubblesRuntime()
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("warn")
+    expect(inbound.detail).toContain("in the future")
+    expect(inbound.detail).toContain("clock skew")
+  })
+
+  it("fails closed when every BlueBubbles inbound log is unreadable", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    const inboundDir = writeInbound(agentRoot, { "chat_a.ndjson": DAY_MS })
+    seedBlueBubblesRuntime()
+    const unreadableLog = path.join(inboundDir, "chat_a.ndjson")
+    const deps = depsFor(bundlesRoot, {
+      statSync: (target) => {
+        if (target === unreadableLog) throw new Error("EACCES")
+        return fs.statSync(target)
+      },
+    })
+
+    const inbound = findCheck((await checkSenses(deps)).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("none of the 1 log(s)")
+    expect(inbound.detail).toContain("EACCES")
+    expect(inbound.detail).toContain("unverified, not healthy")
+  })
+
   it("REGRESSION: fails on dead inbound delivery even while the upstream probe is green", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
