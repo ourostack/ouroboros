@@ -646,7 +646,7 @@ export class HabitScheduler {
         taskId: habit.name,
         schedule: cronSchedule,
         lastRun: habit.lastRun,
-        command: `${this.deps.ouroPath} poke ${this.agent} --habit ${habit.name} --trigger launchd`,
+        command: `${this.deps.ouroPath} poke ${this.agent} --habit ${habit.name} --trigger ${this.platform === "darwin" ? "launchd" : "cron"}`,
         taskPath: path.join(this.habitsDir, `${habit.name}.md`),
       })
     }

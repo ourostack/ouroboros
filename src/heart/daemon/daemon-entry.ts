@@ -29,6 +29,8 @@ import { AwaitScheduler } from "../awaiting/await-scheduler"
 import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
+import { readContainerRuntimePolicy } from "./container-runtime"
+import { SupercronicSupervisor } from "./supercronic-supervisor"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
@@ -258,6 +260,17 @@ const taskScheduler = new TaskDrivenScheduler({
 
 const habitSchedulers: HabitScheduler[] = []
 const awaitSchedulers: AwaitScheduler[] = []
+const containerRuntimePolicy = readContainerRuntimePolicy()
+const supercronicSupervisor = containerRuntimePolicy?.scheduler === "supercronic"
+  ? new SupercronicSupervisor({
+      binaryPath: "/usr/local/bin/supercronic",
+      crontabPath: path.join(getAgentBundlesRoot(), "..", ".ouro-cli", "scheduler", "sanctuary.crontab"),
+      onFatal: (error) => {
+        emitNervesEvent({ level: "error", component: "daemon", event: "daemon.supercronic_state", message: "Supercronic restart budget exhausted", meta: { error: error.message } })
+        process.exit(1)
+      },
+    })
+  : null
 
 function habitCronLabelOwner(agent: string): (label: string) => boolean {
   const agentPrefix = `bot.ouro.${agent}.`
@@ -363,6 +376,7 @@ function stopEntryRuntime(): void {
   stopHealthHeartbeat()
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
+  void supercronicSupervisor?.stop()
   healthMonitor.stopPeriodicChecks()
 }
 
@@ -651,9 +665,12 @@ function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Pro
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void daemon.start().then(async () => {
+  supercronicSupervisor?.start()
   const providerPreload = startProviderCredentialPoolPreload()
   const bundlesRoot = getAgentBundlesRoot()
-  const ouroPath = resolveOuroBinaryPath()
+  const ouroPath = supercronicSupervisor
+    ? "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js"
+    : resolveOuroBinaryPath()
   const osCronDeps = createRealOsCronDeps()
 
   for (const agent of managedAgents) {
@@ -666,7 +683,9 @@ void daemon.start().then(async () => {
       // Migrate old tasks/habits/ to habits/ at bundle root
       migrateHabitsFromTaskSystem(bundleRoot)
 
-      const osCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
+      const osCronManager = supercronicSupervisor
+        ? supercronicSupervisor.namespace(`habit:${agent}`)
+        : new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
       const scheduler = new HabitScheduler({
         agent,
         habitsDir,
@@ -718,7 +737,8 @@ void daemon.start().then(async () => {
           ouroPath,
           watch: (dir, cb) => fs.watch(dir, cb),
         },
-        execForVerify: verifyOsCron,
+        execForVerify: supercronicSupervisor ? () => supercronicSupervisor.verificationOutput() : verifyOsCron,
+        platform: supercronicSupervisor ? "linux" : undefined,
       })
 
       try {
@@ -760,7 +780,9 @@ void daemon.start().then(async () => {
     const awaitsDir = path.join(bundleRoot, "awaiting")
     const awaitDegradedComponent = `awaits:${agent}`
     try {
-      const awaitOsCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
+      const awaitOsCronManager = supercronicSupervisor
+        ? supercronicSupervisor.namespace(`await:${agent}`)
+        : new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
       const awaitScheduler = new AwaitScheduler({
         agent,
         awaitsDir,
@@ -823,7 +845,8 @@ void daemon.start().then(async () => {
           ouroPath,
           watch: (dir, cb) => fs.watch(dir, cb),
         },
-        execForVerify: verifyOsCron,
+        execForVerify: supercronicSupervisor ? () => supercronicSupervisor.verificationOutput() : verifyOsCron,
+        platform: supercronicSupervisor ? "linux" : undefined,
       })
       try {
         awaitScheduler.start()

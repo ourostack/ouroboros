@@ -25,10 +25,12 @@ describe("container runtime policy", () => {
     expect(dockerfile).not.toContain("npm install")
   })
 
-  it("keeps Workbench and duplicate habit scheduling out of the dedicated bundle", () => {
+  it("keeps Workbench out and ships the Supercronic-owned health habit", () => {
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as { senses: Record<string, unknown> }
     expect(agent.senses).not.toHaveProperty("workbench")
-    expect(fs.existsSync("deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md")).toBe(false)
+    const habit = fs.readFileSync("deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md", "utf8")
+    expect(habit).toContain("cadence: 15m")
+    expect(habit).toContain("status: active")
   })
 
   it("requires exactly one matching managed Telegram process", () => {
