@@ -12,7 +12,7 @@ RUN apt-get update \
 
 WORKDIR /opt/ouro
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --workspaces=false
 COPY dist ./dist
 COPY assets ./assets
 COPY skills ./skills
