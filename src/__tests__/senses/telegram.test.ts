@@ -110,4 +110,18 @@ describe("Telegram sense", () => {
 
     expect(order).toEqual(["attempting", "send", "delivered"])
   })
+
+  it("leaves an attempted health delivery unreceipted when Telegram send fails", async () => {
+    const healthSweep = Object.assign(
+      vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
+      { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
+    )
+    const f = fixture({ healthSweep })
+    ;(f.api.request as any).mockRejectedValue(new Error("offline"))
+
+    await f.app.run()
+
+    expect(healthSweep.markDeliveryAttempting).toHaveBeenCalledWith("delivery-1")
+    expect(healthSweep.markDelivered).not.toHaveBeenCalled()
+  })
 })

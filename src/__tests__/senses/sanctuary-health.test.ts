@@ -44,7 +44,8 @@ describe("Sanctuary deterministic health sweep", () => {
   it("alerts once on transition, suppresses unchanged, and emits one recovery", async () => {
     const statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-")), "state.json")
     const fetch = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }))
-    const now = () => new Date("2026-08-18T18:00:00.000Z")
+    let clock = new Date("2026-08-18T18:00:00.000Z")
+    const now = () => clock
     const broken = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now })
     const opened = await broken()
     expect(opened.message).toContain("calibre-web")
@@ -52,8 +53,12 @@ describe("Sanctuary deterministic health sweep", () => {
     expect((await broken())).toMatchObject({ message: opened.message, deliveryId: opened.deliveryId })
     broken.markDeliveryAttempting(opened.deliveryId!)
     const restarted = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now })
-    expect((await restarted())).toMatchObject({ message: opened.message, deliveryId: opened.deliveryId })
-    restarted.markDelivered(opened.deliveryId!)
+    expect((await restarted()).message).toBeNull()
+    clock = new Date("2026-08-19T18:00:00.000Z")
+    const nextDigest = await restarted()
+    expect(nextDigest.deliveryId).not.toBe(opened.deliveryId)
+    expect(nextDigest.message).toContain("prior Telegram delivery was indeterminate")
+    restarted.markDelivered(nextDigest.deliveryId!)
     expect((await broken()).message).toBeNull()
 
     const healthy = createSanctuaryHealthSweep({ toolContext: context("running"), statePath, fetch, now })
