@@ -68,4 +68,16 @@ describe("Unraid typed read tools", () => {
     await expect(tools.getNotifications()).resolves.toMatchObject({ ok: true, data: { unacknowledged: [{ id: "n1", createdAt: "2026-08-18T00:00:00.000Z", severity: "warning", title: "Disk warm", summary: "disk1\n38C", degraded: false }] } })
     await expect(tools.getSystem()).resolves.toEqual({ ok: true, data: { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", uptimeSeconds: 1234, degraded: false } })
   })
+
+  it("fails closed when the parity completion timestamp is in the future", async () => {
+    const read = vi.fn(async () => ({
+      disks: [],
+      array: { parityCheckStatus: { status: "COMPLETED", date: "2099-01-01T00:00:00Z", errors: 0, running: false } },
+    }))
+
+    await expect(createUnraidReadTools({ read } as any).getDisks()).resolves.toMatchObject({
+      ok: true,
+      data: { parity: { result: "success", completedAt: "2099-01-01T00:00:00.000Z", ageHours: null, degraded: true } },
+    })
+  })
 })

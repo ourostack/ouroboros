@@ -204,8 +204,9 @@ export function createUnraidReadTools(client: ReadClient) {
         const completedAt = validTimestamp(parityRaw.date)
         const errors = numberOrNull(parityRaw.errors)
         const result = errors === 0 && typeof parityRaw.status === "string" && /complete|success/i.test(parityRaw.status) ? "success" : errors !== null && errors > 0 ? "failed" : "unknown"
-        const ageHours = completedAt ? Math.max(0, (Date.now() - Date.parse(completedAt)) / 3_600_000) : null
-        return { ok: true, data: { disks, parity: { result, completedAt, ageHours, degraded: result === "unknown" || completedAt === null }, truncated } }
+        const elapsedMs = completedAt ? Date.now() - Date.parse(completedAt) : null
+        const ageHours = elapsedMs !== null && elapsedMs >= 0 ? elapsedMs / 3_600_000 : null
+        return { ok: true, data: { disks, parity: { result, completedAt, ageHours, degraded: result === "unknown" || completedAt === null || ageHours === null }, truncated } }
       } catch (error) { return fail(error) }
     },
     async getNotifications(): Promise<ToolResult<Record<string, unknown>>> {
