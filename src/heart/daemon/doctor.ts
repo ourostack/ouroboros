@@ -1261,14 +1261,12 @@ async function hostedMailCacheAuthorityCheck(
   const recordsById = new Map<string, MailMessageIndexRecord>(observation.records.map((record) => [record.id, record]))
   const documentsById = new Map<string, MailSearchCacheDocument>()
   let malformedOrNoncanonical = 0
-  let duplicateLocalIds = 0
   for (const fileName of fileNames) {
     const document = parseCacheDocument(deps, `${cacheDir}/${fileName}`)
     if (!document || document.agentId !== agentName || fileName !== `${document.messageId}.json` || !recordsById.has(document.messageId)) {
       malformedOrNoncanonical += 1
       continue
     }
-    if (documentsById.has(document.messageId)) duplicateLocalIds += 1
     documentsById.set(document.messageId, document)
   }
 
@@ -1285,11 +1283,11 @@ async function hostedMailCacheAuthorityCheck(
     }
   }
 
-  if (malformedOrNoncanonical > 0 || duplicateLocalIds > 0 || mismatched > 0 || invalidKeyProvenance > 0) {
+  if (malformedOrNoncanonical > 0 || mismatched > 0 || invalidKeyProvenance > 0) {
     return {
       ...base,
       status: "warn",
-      detail: `hosted authority is sound but cache diverges: ${mismatched} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical file(s), ${duplicateLocalIds} duplicate local id(s), ${invalidKeyProvenance} invalid key provenance document(s); run \`ouro mail sync-cache --agent ${agentName}\``,
+      detail: `hosted authority is sound but cache diverges: ${mismatched} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical/duplicate file(s), ${invalidKeyProvenance} invalid key provenance document(s); run \`ouro mail sync-cache --agent ${agentName}\``,
     }
   }
   const count = observation.records.length

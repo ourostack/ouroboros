@@ -579,6 +579,66 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     }))).checks, "mail.cache_authority")
     expect(transientCheck.status).toBe("warn")
     expect(transientCheck.detail).toContain("network timed out")
+
+    const nonErrorTransient = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => {
+        throw "offline as string"
+      }),
+    }))).checks, "mail.cache_authority")
+    expect(nonErrorTransient.detail).toContain("offline as string")
+
+    const unavailableCheck = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({ ok: false, definitive: false, detail: "service unavailable" })),
+    }))).checks, "mail.cache_authority")
+    expect(unavailableCheck.status).toBe("warn")
+    expect(unavailableCheck.detail).toContain("service unavailable")
+  })
+
+  it("warns on unreadable or malformed local cache state after sound authority", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    const mirrorDir = path.join(agentRoot, "state", "mail-search")
+    fs.mkdirSync(mirrorDir, { recursive: true })
+    fs.writeFileSync(path.join(mirrorDir, "malformed.json"), "{not json")
+    seedHostedMailRuntime()
+
+    const malformed = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+    expect(malformed.status).toBe("warn")
+    expect(malformed.detail).toContain("malformed/orphan/noncanonical/duplicate")
+
+    const unreadable = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+      readdirSync: (target) => {
+        if (target === mirrorDir) throw "cache offline"
+        return fs.readdirSync(target)
+      },
+    }))).checks, "mail.cache_authority")
+    expect(unreadable.status).toBe("warn")
+    expect(unreadable.detail).toContain("cache offline")
+
+    const unreadableError = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+      readdirSync: (target) => {
+        if (target === mirrorDir) throw new Error("cache denied")
+        return fs.readdirSync(target)
+      },
+    }))).checks, "mail.cache_authority")
+    expect(unreadableError.detail).toContain("cache denied")
+  })
+
+  it("passes an empty local cache only when sound hosted authority is also empty", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    writeMailroom(writeAgent(bundlesRoot))
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([])),
+    }))).checks, "mail.cache_authority")
+    expect(check.status).toBe("pass")
+    expect(check.detail).toContain("0 authoritative hosted messages")
   })
 
   it("fails on positive hosted authority configuration or authorization faults", async () => {
@@ -611,6 +671,12 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(check.status).toBe("warn")
     expect(check.detail).toContain("key provenance")
+
+    seedHostedMailRuntime("slugger", { privateKeys: null })
+    const absentKeyMap = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+    expect(absentKeyMap.status).toBe("warn")
   })
 
   it("passes on the local hosted mirror, and names the hosted store it cannot read", async () => {

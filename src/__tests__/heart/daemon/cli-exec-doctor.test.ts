@@ -12,6 +12,14 @@ vi.mock("../../../heart/daemon/cli-render-doctor", () => ({
   formatDoctorOutput: vi.fn(),
 }))
 
+const mailAuthorityMocks = vi.hoisted(() => ({
+  resolve: vi.fn(),
+}))
+vi.mock("../../../mailroom/reader", async () => {
+  const actual = await vi.importActual<typeof import("../../../mailroom/reader")>("../../../mailroom/reader")
+  return { ...actual, resolveHostedMailAuthority: mailAuthorityMocks.resolve }
+})
+
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { runDoctorChecks } from "../../../heart/daemon/doctor"
 import { formatDoctorOutput } from "../../../heart/daemon/cli-render-doctor"
@@ -41,6 +49,7 @@ describe("ouro doctor CLI execution", () => {
     vi.clearAllMocks()
     vi.mocked(runDoctorChecks).mockResolvedValue(MOCK_RESULT)
     vi.mocked(formatDoctorOutput).mockReturnValue("formatted output")
+    mailAuthorityMocks.resolve.mockReturnValue({ ok: false, error: "authority not configured" })
   })
 
   it("calls runDoctorChecks and formatDoctorOutput", async () => {
@@ -57,6 +66,36 @@ describe("ouro doctor CLI execution", () => {
     await runOuroCli(["doctor"], deps)
 
     expect(runDoctorChecks).toHaveBeenCalledWith(expect.objectContaining({ fetchImpl }))
+  })
+
+  it("injects a mutation-free hosted authority observer with definitive and transient error classification", async () => {
+    const deps = createMinimalDeps()
+    await runOuroCli(["doctor"], deps)
+    const doctorDeps = vi.mocked(runDoctorChecks).mock.calls[0]![0]
+
+    await expect(doctorDeps.observeHostedMailAuthority!("slugger")).resolves.toEqual({
+      ok: false,
+      definitive: true,
+      detail: "authority not configured",
+    })
+
+    const observe = vi.fn()
+    mailAuthorityMocks.resolve.mockReturnValue({ ok: true, authority: { observeMessageIndexAuthority: observe } })
+    observe.mockRejectedValueOnce(Object.assign(new Error("forbidden"), { statusCode: 403 }))
+    await expect(doctorDeps.observeHostedMailAuthority!("slugger")).resolves.toEqual({
+      ok: false,
+      definitive: true,
+      detail: "forbidden",
+    })
+    observe.mockRejectedValueOnce("offline")
+    await expect(doctorDeps.observeHostedMailAuthority!("slugger")).resolves.toEqual({
+      ok: false,
+      definitive: false,
+      detail: "offline",
+    })
+    const observation = { records: [], parseFailureCount: 0, duplicateIds: [] }
+    observe.mockResolvedValueOnce(observation)
+    await expect(doctorDeps.observeHostedMailAuthority!("slugger")).resolves.toEqual({ ok: true, observation })
   })
 
   it("passes daemon log diagnostics through the injected homeDir", async () => {
