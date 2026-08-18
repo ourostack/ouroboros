@@ -2585,25 +2585,25 @@ describe("checkDisk", () => {
     expect(detail).not.toContain("ouro logs prune")
   })
 
-  it("does not offer a prune command when a managed log entry is not a regular file", () => {
+  it("does not offer a prune command when a managed log entry stat omits isFile", () => {
     const bigSize = 150 * 1024 * 1024
     const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json", logsDir]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["big.log"] }),
       statSync: statFor({ [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize } }),
       lstatSync: vi.fn((filePath: string) => ({
         isDirectory: () => filePath === "/tmp/bundles/test.ouro" || filePath === logsDir,
         isSymbolicLink: () => false,
-        isFile: () => false,
       })),
       realpathSync: vi.fn((filePath: string) => filePath),
     } as Partial<DoctorDeps> & {
-      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean; isFile: () => boolean }
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
       realpathSync: (filePath: string) => string
     })
 
     const detail = checkDisk(deps).checks.find((c) => c.label.includes("log size"))?.detail
+    expect(deps.lstatSync).toHaveBeenCalledWith(`${logsDir}/big.log`)
     expect(detail).not.toContain("ouro logs prune")
   })
 
