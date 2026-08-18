@@ -1303,7 +1303,19 @@ async function hostedMailCacheAuthorityCheck(
   const documentsById = new Map<string, MailSearchCacheDocument>()
   let malformedOrNoncanonical = 0
   for (const fileName of fileNames) {
-    const document = parseCacheDocument(deps, `${cacheDir}/${fileName}`)
+    const filePath = `${cacheDir}/${fileName}`
+    let regularFile = false
+    try {
+      const fileStat = deps.lstatSync?.(filePath)
+      regularFile = fileStat?.isFile?.() === true && !fileStat.isSymbolicLink()
+    } catch {
+      // A disappearing or unreadable entry is not usable cache evidence.
+    }
+    if (!regularFile) {
+      malformedOrNoncanonical += 1
+      continue
+    }
+    const document = parseCacheDocument(deps, filePath)
     if (!document || document.agentId !== agentName || fileName !== `${document.messageId}.json` || !recordsById.has(document.messageId)) {
       malformedOrNoncanonical += 1
       continue

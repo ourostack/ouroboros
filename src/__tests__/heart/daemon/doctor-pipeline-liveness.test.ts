@@ -166,6 +166,7 @@ function depsFor(bundlesRoot: string, overrides: Partial<DoctorDeps> = {}): Doct
     readFileSync: (p) => fs.readFileSync(p, "utf-8"),
     readdirSync: (p) => fs.readdirSync(p),
     statSync: (p) => fs.statSync(p),
+    lstatSync: (p) => fs.lstatSync(p),
     checkSocketAlive: vi.fn(async () => true),
     socketPath: "/tmp/ouro.sock",
     bundlesRoot,
@@ -957,6 +958,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
       skippedMessageCount: 1,
       newestReceivedAt: skippedRecord.receivedAt,
     })
+    writeHostedSkipReceipt(agentRoot, skippedRecord)
     seedHostedMailRuntime()
 
     const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
@@ -965,6 +967,46 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(check.status).toBe("warn")
     expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it.each([
+    ["legacy provenance-free", { bodyForm: undefined, decryptionKeyId: undefined }],
+    ["encrypted without a key id", { bodyForm: "encrypted", decryptionKeyId: undefined }],
+  ])("keeps exact repair guidance for a %s canonical cache document", async (_label, overrides) => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, hostedAuthorityRecord(), overrides)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("rejects a canonical-looking symlink that the real cache reader ignores", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const record = hostedAuthorityRecord()
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, record)
+    const cachePath = path.join(agentRoot, "state", "mail-search", `${record.id}.json`)
+    const targetPath = path.join(agentRoot, "state", "symlink-target.json")
+    fs.renameSync(cachePath, targetPath)
+    fs.symlinkSync(targetPath, cachePath)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("noncanonical")
     expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 
