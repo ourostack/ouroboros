@@ -7456,7 +7456,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "mail.sync-cache") {
     const { runHostedMailCacheSync } = await import("../../mailroom/cache-sync-cli")
-    const text = await runHostedMailCacheSync(command.agent)
+    const text = await runHostedMailCacheSync(command.agent, deps.writeStdout)
     deps.writeStdout(text)
     return text
   }

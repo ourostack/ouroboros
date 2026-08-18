@@ -41,6 +41,14 @@ export interface HostedMailSearchCacheSyncInput {
   placement?: MailPlacement
   scope?: "native" | "delegated"
   source?: string
+  onProgress?: (progress: HostedMailSearchCacheSyncProgress) => void
+}
+
+export interface HostedMailSearchCacheSyncProgress {
+  phase: "pass-start" | "settled" | "pass-complete" | "heartbeat"
+  pass: number
+  settled: number
+  total: number
 }
 
 export interface HostedMailSearchCacheSyncResult {
@@ -129,35 +137,48 @@ function recordFingerprint(record: MailMessageIndexRecord): string {
   return canonicalMailIndexRecordSnapshot([record]).messageIndexFingerprint
 }
 
-/**
- * Converge a local decrypted cache against hosted index authority, or perform
- * the legacy bounded upsert used by the in-agent refresh tool. This core never
- * writes remote mail state and never records access; adapters own audit policy.
- */
-async function performHostedMailSearchCacheSync(
-  input: HostedMailSearchCacheSyncInput,
-): Promise<HostedMailSearchCacheSyncResult> {
-  let authority: HostedMailIndexAuthorityObservation | null = null
-  let records: MailMessageIndexRecord[]
-  if (input.mode === "full-convergence") {
-    const observer = input.authority ?? input.store
-    if (!observer.observeMessageIndexAuthority) {
-      throw new Error("hosted mail authority observer is unavailable")
-    }
-    authority = await observer.observeMessageIndexAuthority(input.agentId)
-    if (authority.parseFailureCount > 0 || authority.duplicateIds.length > 0) {
-      throw new Error(
-        `hosted mail authority is ambiguous: ${authority.parseFailureCount} malformed index name(s), ${authority.duplicateIds.length} duplicate message id(s)`,
-      )
-    }
-    if (authority.records.length === 0) {
-      throw new Error("hosted mail authority is empty and cannot safely drive full convergence")
-    }
-    records = authority.records
-  } else {
-    records = await scopedRecords(input)
-  }
+const FULL_CONVERGENCE_MAX_PASSES = 3
+const FULL_CONVERGENCE_CONCURRENCY = 20
+const PROGRESS_SETTLEMENT_INTERVAL = 250
+const PROGRESS_HEARTBEAT_MS = 30_000
 
+interface ReconciliationResult {
+  fetched: number
+  alreadyCached: number
+  removed: number
+  skipped: number
+}
+
+function safeProgress(
+  input: HostedMailSearchCacheSyncInput,
+  progress: HostedMailSearchCacheSyncProgress,
+): void {
+  try {
+    input.onProgress?.(progress)
+  } catch {
+    // Progress is advisory terminal UX. A broken sink must not alter convergence.
+  }
+}
+
+function validateAuthorityObservation(
+  authority: HostedMailIndexAuthorityObservation,
+): HostedMailIndexAuthorityObservation {
+  if (authority.parseFailureCount > 0 || authority.duplicateIds.length > 0) {
+    throw new Error(
+      `hosted mail authority is ambiguous: ${authority.parseFailureCount} malformed index name(s), ${authority.duplicateIds.length} duplicate message id(s)`,
+    )
+  }
+  if (authority.records.length === 0) {
+    throw new Error("hosted mail authority is empty and cannot safely drive full convergence")
+  }
+  return authority
+}
+
+async function reconcileRecords(
+  input: HostedMailSearchCacheSyncInput,
+  records: MailMessageIndexRecord[],
+  pass: number,
+): Promise<ReconciliationResult> {
   const recordsById = new Map(records.map((record) => [record.id, record]))
   const canonicalDocuments = new Map<string, MailSearchCacheDocument>()
   let removed = 0
@@ -192,8 +213,15 @@ async function performHostedMailSearchCacheSync(
   let fetched = 0
   let alreadyCached = 0
   let skipped = 0
+  let settled = 0
+  let nextRecord = 0
   const failures: Array<{ id: string; error: string }> = []
-  for (const record of records) {
+  safeProgress(input, { phase: "pass-start", pass, settled, total: records.length })
+  const heartbeat = setInterval(() => {
+    safeProgress(input, { phase: "heartbeat", pass, settled, total: records.length })
+  }, PROGRESS_HEARTBEAT_MS)
+
+  async function processRecord(record: MailMessageIndexRecord): Promise<void> {
     const cached = canonicalDocuments.get(record.id)
     const cachedEncryptedKeyMissing = input.mode === "full-convergence" &&
       cached?.bodyForm === "encrypted" &&
@@ -206,7 +234,7 @@ async function performHostedMailSearchCacheSync(
         removeMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
       }
       alreadyCached += 1
-      continue
+      return
     }
     if (input.mode === "full-convergence") {
       const receipt = readMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
@@ -215,7 +243,7 @@ async function performHostedMailSearchCacheSync(
         !input.privateKeys[receipt.missingKeyId]) {
         removed += removeCanonicalIfPresent(input.agentId, record.id, input.cacheOptions)
         skipped += 1
-        continue
+        return
       }
       if (receipt) removeMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
     }
@@ -255,19 +283,50 @@ async function performHostedMailSearchCacheSync(
     }
   }
 
+  async function worker(): Promise<void> {
+    while (true) {
+      const recordIndex = nextRecord
+      nextRecord += 1
+      if (recordIndex >= records.length) return
+      try {
+        await processRecord(records[recordIndex]!)
+      } finally {
+        settled += 1
+        if (settled % PROGRESS_SETTLEMENT_INTERVAL === 0) {
+          safeProgress(input, { phase: "settled", pass, settled, total: records.length })
+        }
+      }
+    }
+  }
+
+  try {
+    const workerCount = Math.min(FULL_CONVERGENCE_CONCURRENCY, records.length)
+    await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  } finally {
+    clearInterval(heartbeat)
+    safeProgress(input, { phase: "pass-complete", pass, settled, total: records.length })
+  }
+
   if (failures.length > 0) {
     const sample = failures.slice(0, 3).map((entry) => `${entry.id}: ${entry.error}`).join("; ")
     throw new Error(`mail search index refresh incomplete; ${failures.length} fetch failed. first failure(s): ${sample}`)
   }
+  return { fetched, alreadyCached, removed, skipped }
+}
 
+function writeCoverage(
+  input: HostedMailSearchCacheSyncInput,
+  records: MailMessageIndexRecord[],
+  snapshot: HostedMailIndexAuthorityObservation["snapshot"],
+): MailSearchCoverageRecord {
+  const recordsById = new Map(records.map((record) => [record.id, record]))
   const cachedIds = new Set(searchMailSearchCache({
     agentId: input.agentId,
     placement: input.placement,
     compartmentKind: input.scope,
     source: input.source,
   }, input.cacheOptions).filter((document) => recordsById.has(document.messageId)).map((document) => document.messageId))
-  const snapshot = authority?.snapshot ?? canonicalMailIndexRecordSnapshot(records)
-  const coverage = writeMailSearchCoverageRecord({
+  return writeMailSearchCoverageRecord({
     schemaVersion: 1,
     agentId: input.agentId,
     storeKind: input.storeKind,
@@ -278,12 +337,64 @@ async function performHostedMailSearchCacheSync(
     visibleMessageCount: records.length,
     cachedMessageCount: cachedIds.size,
     decryptableMessageCount: cachedIds.size,
-    skippedMessageCount: skipped,
+    skippedMessageCount: records.length - cachedIds.size,
     messageIndexFingerprint: snapshot.messageIndexFingerprint,
     textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
     ...(snapshot.oldestReceivedAt ? { oldestReceivedAt: snapshot.oldestReceivedAt } : {}),
     ...(snapshot.newestReceivedAt ? { newestReceivedAt: snapshot.newestReceivedAt } : {}),
   }, input.cacheOptions)
+}
+
+/**
+ * Converge a local decrypted cache against hosted index authority, or perform
+ * the legacy bounded upsert used by the in-agent refresh tool. This core never
+ * writes remote mail state and never records access; adapters own audit policy.
+ */
+async function performHostedMailSearchCacheSync(
+  input: HostedMailSearchCacheSyncInput,
+): Promise<HostedMailSearchCacheSyncResult> {
+  let finalRecords: MailMessageIndexRecord[]
+  let finalSnapshot: HostedMailIndexAuthorityObservation["snapshot"]
+  let fetched = 0
+  let removed = 0
+  let alreadyCached = 0
+
+  if (input.mode === "full-convergence") {
+    const observer = input.authority ?? input.store
+    if (!observer.observeMessageIndexAuthority) {
+      throw new Error("hosted mail authority observer is unavailable")
+    }
+    let authority = validateAuthorityObservation(await observer.observeMessageIndexAuthority(input.agentId))
+    let stable = false
+    for (let pass = 1; pass <= FULL_CONVERGENCE_MAX_PASSES; pass += 1) {
+      const reconciliation = await reconcileRecords(input, authority.records, pass)
+      fetched += reconciliation.fetched
+      removed += reconciliation.removed
+      alreadyCached = reconciliation.alreadyCached
+      const followup = validateAuthorityObservation(await observer.observeMessageIndexAuthority(input.agentId))
+      if (followup.snapshot.messageIndexFingerprint === authority.snapshot.messageIndexFingerprint) {
+        authority = followup
+        stable = true
+        break
+      }
+      authority = followup
+    }
+    if (!stable) {
+      throw new Error(`hosted mail authority did not stabilize after ${FULL_CONVERGENCE_MAX_PASSES} passes`)
+    }
+    finalRecords = authority.records
+    finalSnapshot = authority.snapshot
+  } else {
+    finalRecords = await scopedRecords(input)
+    const reconciliation = await reconcileRecords(input, finalRecords, 1)
+    fetched = reconciliation.fetched
+    removed = reconciliation.removed
+    alreadyCached = reconciliation.alreadyCached
+    finalSnapshot = canonicalMailIndexRecordSnapshot(finalRecords)
+  }
+
+  const coverage = writeCoverage(input, finalRecords, finalSnapshot)
+  const skipped = coverage.skippedMessageCount
   emitNervesEvent({
     component: "senses",
     event: "senses.mail_search_cache_synced",
@@ -291,7 +402,7 @@ async function performHostedMailSearchCacheSync(
     meta: {
       agentId: input.agentId,
       mode: input.mode,
-      visible: records.length,
+      visible: finalRecords.length,
       fetched,
       alreadyCached,
       removed,
