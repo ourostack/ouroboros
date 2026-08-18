@@ -1151,9 +1151,27 @@ export async function checkMailroom(deps: DoctorDeps): Promise<DoctorCategory> {
     })
     /* v8 ignore stop */
     const store = await resolveMailStore(agentDir)
-    checks.push(mailIngestLivenessCheck(deps, agentDir, mailroomRoot, messagesDir, listing, store))
-    if (store.hosted && deps.observeHostedMailAuthority) {
-      checks.push(await hostedMailCacheAuthorityCheck(deps, agentDir, store))
+    if (store.hosted === null) {
+      checks.push({
+        id: "mail.ingest_liveness",
+        label: `${agentDir} mail ingest liveness`,
+        status: store.status,
+        detail: `mail store mode is unverified because fresh runtime credentials are unavailable: ${store.detail}; local-file and hosted liveness were not inferred from stale cached configuration`,
+      })
+      checks.push({
+        id: "mail.cache_authority",
+        label: `${agentDir} hosted mail cache authority`,
+        status: store.status,
+        detail: `fresh runtime credentials are unavailable: ${store.detail}; hosted authority was not probed from stale cached coordinates`,
+      })
+      continue
+    }
+    const authorityCheck = store.hosted && deps.observeHostedMailAuthority
+      ? await hostedMailCacheAuthorityCheck(deps, agentDir, store)
+      : undefined
+    checks.push(mailIngestLivenessCheck(deps, agentDir, mailroomRoot, messagesDir, listing, store, authorityCheck))
+    if (authorityCheck) {
+      checks.push(authorityCheck)
     }
   }
 
@@ -1190,14 +1208,18 @@ function listJsonDocuments(deps: DoctorDeps, dir: string): JsonDocumentListing {
 type MailStoreResolution =
   | { hosted: false }
   | { hosted: true; label: string; privateKeyIds: ReadonlySet<string> }
+  | { hosted: null; status: "warn" | "fail"; detail: string }
 
 async function resolveMailStore(agentDir: string): Promise<MailStoreResolution> {
   const agentName = agentDir.replace(/\.ouro$/, "")
-  // An unreadable vault means the mode is unknown, so this falls back to the
-  // reader's own default — the local file store. `mail config` in checkSenses
-  // is where an unavailable runtime config is reported, and it fails hard.
-  const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true })
-  if (!runtimeConfig.ok) return { hosted: false }
+  const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: false })
+  if (!runtimeConfig.ok) {
+    return {
+      hosted: null,
+      status: runtimeConfig.reason === "unavailable" ? "warn" : "fail",
+      detail: `${runtimeConfig.error} (${runtimeConfig.itemPath})`,
+    }
+  }
   const mailroom = asRecord(runtimeConfig.config.mailroom)
   const azureAccountUrl = textField(mailroom, "azureAccountUrl")
   if (!azureAccountUrl) return { hosted: false }
@@ -1407,9 +1429,26 @@ function mailIngestLivenessCheck(
   mailroomRoot: string,
   messagesDir: string,
   listing: JsonDocumentListing,
-  store: MailStoreResolution,
+  store: Exclude<MailStoreResolution, { hosted: null }>,
+  authorityCheck?: DoctorCheck,
 ): DoctorCheck {
   const hosted = store.hosted ? store : null
+  if (hosted && authorityCheck) {
+    if (authorityCheck.status === "pass") {
+      return {
+        id: "mail.ingest_liveness",
+        label: `${agentDir} mail ingest liveness`,
+        status: "pass",
+        detail: `hosted authority and local search cache are converged; this is healthy quiet even when the local mirror mtime is old or unchanged (${hosted.label}); mirror age is not treated as hosted-ingest authority`,
+      }
+    }
+    return {
+      id: "mail.ingest_liveness",
+      label: `${agentDir} mail ingest liveness`,
+      status: authorityCheck.status,
+      detail: `hosted ingest liveness follows the available authority result rather than local mirror age: ${authorityCheck.detail}`,
+    }
+  }
   const probe = hosted
     ? hostedMailMirrorProbe(deps, agentDir, hosted.label)
     : localMailStoreProbe(deps, messagesDir, listing)

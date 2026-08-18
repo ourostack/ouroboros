@@ -40,6 +40,7 @@ import {
   checkDisk,
   checkLifecycle,
 } from "../../../heart/daemon/doctor"
+import { refreshRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
 import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
 function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
@@ -2006,6 +2007,35 @@ describe("checkMailroom", () => {
     expect(cat.checks[0].detail).toContain("1 mailbox")
     expect(cat.checks[0].detail).toContain("1 source grant")
     expect(cat.checks[0].detail).toContain("3 messages")
+  })
+
+  it("resolves the mail store from a fail-closed fresh runtime credential refresh", async () => {
+    seedRuntimeConfig("test", {
+      workSubstrate: { mode: "local" },
+      mailroom: { storePath: "/tmp/bundles/test.ouro/state/mailroom" },
+    })
+    const refresh = vi.mocked(refreshRuntimeCredentialConfig)
+    refresh.mockClear()
+    const registryPath = "/tmp/bundles/test.ouro/state/mailroom/registry.json"
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        registryPath,
+        "/tmp/bundles/test.ouro/state/mailroom/messages",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/state/mailroom/messages": ["mail_a.json"],
+      }),
+      readFileSync: readFileFor({ [registryPath]: registryJson() }),
+    })
+
+    const category = await checkMailroom(deps)
+
+    expect(category.checks.find((check) => check.id === "mail.ingest_liveness")?.detail)
+      .toContain("state/mailroom/messages")
+    expect(refresh).toHaveBeenCalledWith("test", { preserveCachedOnFailure: false })
   })
 })
 

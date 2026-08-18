@@ -14,20 +14,26 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
 const mockRuntimeConfigs = vi.hoisted(() => new Map<string, any>())
+const mockRuntimeRefreshFailures = vi.hoisted(() => new Map<string, any>())
 const mockMachineRuntimeConfigs = vi.hoisted(() => new Map<string, any>())
 vi.mock("../../../heart/runtime-credentials", () => ({
-  refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => mockRuntimeConfigs.get(agentName) ?? {
-    ok: false,
-    reason: "missing",
-    itemPath: `vault:${agentName}:runtime/config`,
-    error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+  refreshRuntimeCredentialConfig: vi.fn(async (agentName: string, options?: { preserveCachedOnFailure?: boolean }) => {
+    const cached = mockRuntimeConfigs.get(agentName)
+    const failure = mockRuntimeRefreshFailures.get(agentName)
+    if (failure) return options?.preserveCachedOnFailure && cached?.ok ? cached : failure
+    return cached ?? {
+      ok: false,
+      reason: "missing",
+      itemPath: `vault:${agentName}:runtime/config`,
+      error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+    }
   }),
   refreshMachineRuntimeCredentialConfig: vi.fn(async (agentName: string, machineId: string) => mockMachineRuntimeConfigs.get(agentName) ?? {
     ok: false,
@@ -340,6 +346,7 @@ function blueBubblesFetch(
 
 afterEach(() => {
   mockRuntimeConfigs.clear()
+  mockRuntimeRefreshFailures.clear()
   mockMachineRuntimeConfigs.clear()
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true })
@@ -349,6 +356,10 @@ afterEach(() => {
 // ── Mail ingest liveness ──
 
 describe("checkMailroom mail-ingest liveness", () => {
+  beforeEach(() => {
+    seedMailRuntime("slugger", { storePath: "state/mailroom" }, "local")
+  })
+
   it("passes when mail was ingested recently", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot), { lastIngestAgoMs: 20 * 60 * 1000 })
@@ -562,6 +573,84 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.status).toBe("pass")
     expect(check.detail).toContain("1 authoritative hosted message")
     expect(check.detail).toContain("local search cache converged")
+  })
+
+  it("treats matching non-empty hosted authority/cache/coverage as healthy quiet despite an old local mirror mtime", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot, { lastIngestAgoMs: 77 * DAY_MS })
+    writeConvergedHostedCache(agentRoot)
+    setMtime(path.join(agentRoot, "state", "mail-search"), Date.now() - 9 * DAY_MS)
+    seedHostedMailRuntime()
+
+    const checks = (await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks
+    const authority = findCheck(checks, "mail.cache_authority")
+    const liveness = findCheck(checks, "mail.ingest_liveness")
+
+    expect(authority.status).toBe("pass")
+    expect(liveness.status).toBe("pass")
+    expect(liveness.detail).toContain("healthy quiet")
+    expect(liveness.detail).not.toContain("no hosted mail observed locally")
+  })
+
+  it("derives hosted liveness severity from transient and definitive authority results instead of stale mirror age", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeHostedMirror(agentRoot, { lastObservedAgoMs: 9 * DAY_MS })
+    seedHostedMailRuntime()
+
+    const transientChecks = (await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({
+        ok: false,
+        definitive: false,
+        detail: "authority request timed out",
+      })),
+    }))).checks
+    const transientAuthority = findCheck(transientChecks, "mail.cache_authority")
+    const transientLiveness = findCheck(transientChecks, "mail.ingest_liveness")
+    expect(transientAuthority.status).toBe("warn")
+    expect(transientLiveness.status).toBe("warn")
+    expect(transientLiveness.detail).toContain("authority request timed out")
+    expect(transientLiveness.detail).not.toContain("no hosted mail observed locally")
+
+    const definitiveChecks = (await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => ({
+        ok: false,
+        definitive: true,
+        detail: "authorization rejected with 403",
+      })),
+    }))).checks
+    expect(findCheck(definitiveChecks, "mail.cache_authority").status).toBe("fail")
+    expect(findCheck(definitiveChecks, "mail.ingest_liveness").status).toBe("fail")
+  })
+
+  it("does not use stale cached hosted credentials after a fresh vault refresh fails", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+    mockRuntimeRefreshFailures.set("slugger", {
+      ok: false,
+      reason: "unavailable",
+      itemPath: "vault:slugger:runtime/config",
+      error: "vault is locked",
+    })
+    const observeHostedMailAuthority = vi.fn(async () => soundHostedAuthority())
+
+    const checks = (await checkMailroom(depsFor(bundlesRoot, { observeHostedMailAuthority }))).checks
+    const authority = findCheck(checks, "mail.cache_authority")
+    const liveness = findCheck(checks, "mail.ingest_liveness")
+
+    expect(authority.status).toBe("warn")
+    expect(authority.detail).toContain("fresh runtime credentials are unavailable")
+    expect(authority.detail).toContain("vault is locked")
+    expect(liveness.status).toBe("warn")
+    expect(liveness.detail).toContain("store mode is unverified")
+    expect(observeHostedMailAuthority).not.toHaveBeenCalled()
   })
 
   it("warns when all-scope coverage is absent, malformed, or disagrees with hosted authority and cache counts", async () => {
