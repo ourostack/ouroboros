@@ -1,8 +1,9 @@
 Sanctuary Ouro Butler operator runbook
 
 The production container is ouro-butler. It runs as UID/GID 10001, publishes no
-ports, mounts only the runtime and sanctuary.ouro bundle paths from the Unraid
-template, and uses restart policy unless-stopped.
+ports, uses host networking only so its loopback-only Unraid GraphQL client can
+reach 127.0.0.1, mounts only the runtime and sanctuary.ouro bundle paths from
+the Unraid template, and uses restart policy unless-stopped.
 
 Start/stop:
   docker start ouro-butler

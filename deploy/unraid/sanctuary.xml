@@ -3,7 +3,7 @@
   <Name>ouro-butler</Name>
   <Repository>ouro-butler:0.1.0-alpha.733</Repository>
   <Registry/>
-  <Network>bridge</Network>
+  <Network>host</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
   <Support/>
@@ -13,7 +13,7 @@
   <WebUI/>
   <TemplateURL/>
   <Icon/>
-  <ExtraParams>--restart=unless-stopped --user=10001:10001 --dns=1.1.1.1</ExtraParams>
+  <ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled>0</DateInstalled>
