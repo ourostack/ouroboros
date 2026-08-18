@@ -478,8 +478,9 @@ function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, 
   providerCredentialRecords?: ProviderCredentialRecord[]
 } | null {
   const runtime = readRuntimeCredentialConfig(agent)
-  const machineId = sense === "bluebubbles" || sense === "voice" || sense === "a2a" ? currentMachineId() : undefined
-  const machine = sense === "bluebubbles" || sense === "voice" || sense === "a2a" ? readMachineRuntimeCredentialConfig(agent) : null
+  const usesMachineConfig = sense === "bluebubbles" || sense === "voice" || sense === "a2a" || sense === "telegram"
+  const machineId = usesMachineConfig ? currentMachineId() : undefined
+  const machine = usesMachineConfig ? readMachineRuntimeCredentialConfig(agent) : null
   const providerPool = readProviderCredentialPool(agent)
   const providerCredentialRecords = providerPool.ok
     ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)

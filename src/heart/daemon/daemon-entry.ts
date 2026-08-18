@@ -12,6 +12,7 @@ import {
   DaemonHealthWriter,
   createHealthNervesSink,
   getDefaultHealthPath,
+  startDaemonHealthHeartbeat,
   type DaemonHealthState,
   type DegradedComponent,
 } from "./daemon-health"
@@ -352,10 +353,12 @@ const healthMonitor = new HealthMonitor({
 
 let entryRuntimeStopping = false
 let stopCommandExitScheduled = false
+let stopHealthHeartbeat = (): void => undefined
 
 function stopEntryRuntime(): void {
   if (entryRuntimeStopping) return
   entryRuntimeStopping = true
+  stopHealthHeartbeat()
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
   for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
   healthMonitor.stopPeriodicChecks()
@@ -521,6 +524,7 @@ function emitAwaitSetupError(agent: string, error: unknown): void {
 const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
 const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
 registerGlobalLogSink(healthSink)
+stopHealthHeartbeat = startDaemonHealthHeartbeat(healthWriter, buildDaemonHealthState)
 /* v8 ignore stop */
 
 function writeStopCommandHealthState(): void {

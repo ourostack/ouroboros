@@ -107,6 +107,19 @@ export class DaemonHealthWriter {
   }
 }
 
+export function startDaemonHealthHeartbeat(
+  writer: Pick<DaemonHealthWriter, "writeHealth">,
+  getState: () => DaemonHealthState,
+  intervalMs = 30_000,
+): () => void {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) throw new Error("health heartbeat interval must be positive")
+  const write = (): void => writer.writeHealth(getState())
+  write()
+  const timer = setInterval(write, intervalMs)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
+
 export function getDefaultHealthPath(): string {
   return path.join(os.homedir(), ".ouro-cli", "daemon-health.json")
 }

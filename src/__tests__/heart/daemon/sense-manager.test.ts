@@ -2580,6 +2580,7 @@ describe("daemon sense manager", () => {
         teams: { enabled: true },
         bluebubbles: { enabled: true },
         mail: { enabled: true },
+        telegram: { enabled: true },
         a2a: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
@@ -2619,6 +2620,9 @@ describe("daemon sense manager", () => {
         path: "agent-a2a",
         publicUrl: "https://agent.example",
       },
+      unraidGraphqlUrl: "http://sanctuary/graphql",
+      unraidReadApiKey: "read-key",
+      unraidWriteApiKey: "write-key",
     })
     await cacheProviderCredentials("slugger")
 
@@ -2660,12 +2664,16 @@ describe("daemon sense manager", () => {
             entry: "senses/a2a-entry.js",
             args: ["--port", "19991", "--host", "127.0.0.1", "--path", "/agent-a2a", "--base-url", "https://agent.example"],
           }),
+          expect.objectContaining({ name: "slugger:telegram", agentArg: "slugger", entry: "senses/telegram-entry.js" }),
         ],
       }),
     )
     const bluebubblesAgent = (processManagerCtor.mock.calls[0]?.[0] as {
       agents: Array<{ name: string; getRuntimeCredentialBootstrap?: () => unknown }>
     }).agents.find((agent) => agent.name === "slugger:bluebubbles")
+    const telegramAgent = (processManagerCtor.mock.calls[0]?.[0] as {
+      agents: Array<{ name: string; getRuntimeCredentialBootstrap?: () => unknown }>
+    }).agents.find((agent) => agent.name === "slugger:telegram")
     expect(bluebubblesAgent?.getRuntimeCredentialBootstrap?.()).toEqual({
       agentName: "slugger",
       runtimeConfig: {
@@ -2692,6 +2700,9 @@ describe("daemon sense manager", () => {
           path: "agent-a2a",
           publicUrl: "https://agent.example",
         },
+        unraidGraphqlUrl: "http://sanctuary/graphql",
+        unraidReadApiKey: "read-key",
+        unraidWriteApiKey: "write-key",
       },
       machineId: expect.stringMatching(/^machine_/),
       providerCredentialRecords: [
@@ -2703,6 +2714,14 @@ describe("daemon sense manager", () => {
         }),
       ],
     })
+    expect(telegramAgent?.getRuntimeCredentialBootstrap?.()).toEqual(expect.objectContaining({
+      machineRuntimeConfig: expect.objectContaining({
+        unraidGraphqlUrl: "http://sanctuary/graphql",
+        unraidReadApiKey: "read-key",
+        unraidWriteApiKey: "write-key",
+      }),
+      machineId: expect.stringMatching(/^machine_/),
+    }))
     expect(manager.listSenseRows().find((row) => row.agent === "ouroboros" && row.sense === "teams")).toEqual(
       expect.objectContaining({ status: "disabled" }),
     )
