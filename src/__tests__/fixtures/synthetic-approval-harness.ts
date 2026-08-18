@@ -153,6 +153,30 @@ require.extensions[".ts"] = (module, filename) => {
   const source = require("fs").readFileSync(filename, "utf8")
   module._compile(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true }, fileName: filename }).outputText, filename)
 }
+const workerFs = require("fs")
+const workerModule = require("module")
+const workerFixture = JSON.parse(workerFs.readFileSync(process.argv[6], "utf8"))
+const workerStream = chunks => ({ [Symbol.asyncIterator]: async function* () { for (const chunk of chunks) yield chunk } })
+class WorkerMockOpenAI {
+  chat = { completions: { create: async request => {
+    workerFs.appendFileSync(workerFixture.traceLogPath, JSON.stringify({ sequence: Date.now(), pid: process.pid, atMs: workerFixture.decisionAtMs, type: "continuation_provider_start" }) + "\n")
+    workerFs.appendFileSync(workerFixture.providerLogPath, JSON.stringify({ pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId: workerFixture.approvalId, messages: structuredClone(request.messages) }) + "\n")
+    const text = workerFixture.decision.decision === "deny" ? "I did not restart calibre-web." : workerFixture.handlerMode === "observable_failure" ? "calibre-web restart failed safely." : "calibre-web is back up"
+    return workerStream([{ choices: [{ delta: { content: text } }] }])
+  } } }
+  responses = { create: async () => { throw new Error("responses API is not expected") } }
+}
+const workerOriginalLoad = workerModule._load
+workerModule._load = function(request, parent, isMain) {
+  if (request === "openai") return { __esModule: true, default: WorkerMockOpenAI, AzureOpenAI: WorkerMockOpenAI }
+  if (request === "@anthropic-ai/sdk") return { __esModule: true, default: class {} }
+  if (request === "./identity" && parent && parent.filename.includes("/heart/")) return {
+    loadAgentConfig: () => ({ name: "synthetic", humanFacing: { provider: "minimax", model: "minimax-text-01" }, agentFacing: { provider: "minimax", model: "minimax-text-01" } }),
+    DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 }, getAgentName: () => "synthetic",
+    getAgentRoot: () => workerFixture.root, getRepoRoot: () => workerFixture.root, resetIdentity: () => {},
+  }
+  return workerOriginalLoad.call(this, request, parent, isMain)
+}
 `
 }
 
@@ -269,6 +293,7 @@ const storeModule = require(process.argv[3])
 const argsModule = require(process.argv[4])
 const shellModule = require(process.argv[5])
 const fixture = JSON.parse(fs.readFileSync(process.argv[6], "utf8"))
+require(process.argv[8]).patchRuntimeConfig({ providers: { minimax: { apiKey: "synthetic-test-key", model: "minimax-text-01" } } })
 const append = (file, value) => fs.appendFileSync(file, JSON.stringify(value) + "\n")
 const readCheckpoints = () => JSON.parse(fs.readFileSync(fixture.checkpointPath, "utf8"))
 const checkpoints = { read: id => readCheckpoints()[id] || null, list: () => Object.values(readCheckpoints()), write: () => { throw new Error("worker cannot write checkpoint") }, remove: () => {} }
@@ -307,14 +332,12 @@ async function resume(record) {
     },
     markContinuationAttempted: () => store.markContinuationAttempted({ approvalId: fixture.approvalId, ownerId: "continuation-" + process.pid, epoch: continuationClaim.record.continuationEpoch }),
     completeContinuation: () => store.completeContinuation({ approvalId: fixture.approvalId, ownerId: "continuation-" + process.pid, epoch: continuationClaim.record.continuationEpoch }),
-    runAgent: async (messages, callbacks) => {
+    runAgent: fixture.crashAt === "after_continuation_attempt" ? async (messages) => {
       trace("continuation_provider_start")
-      const providerMessages = [...fixture.originProviderMessages.slice(0, -fixture.preCallMessages.length), ...structuredClone(messages)]
-      append(fixture.providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId: fixture.approvalId, messages: providerMessages })
-      if (fixture.crashAt === "after_continuation_attempt") throw new Error("synthetic_crash")
-      const text = record.state === "denied" ? "I did not restart calibre-web." : record.state === "failed" ? "calibre-web restart failed safely." : "calibre-web is back up"
-      callbacks.onTextChunk(text); messages.push({ role: "assistant", content: text }); return { outcome: "settled" }
-    },
+      append(fixture.providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId: fixture.approvalId, messages: structuredClone(messages), evidenceKind: "seam_input_before_simulated_process_death" })
+      throw new Error("synthetic_crash")
+    } : core.runAgent,
+    runAgentOptions: { toolChoiceRequired: false, tools: [], execTool: async () => { throw new Error("continuation provider unexpectedly called a tool") }, toolContext: { signin: async () => undefined }, daemonRunning: false, senseStatusLines: [], bundleMeta: null, daemonHealth: null, skipKeptNotes: true },
     persist,
     deliver: text => append(fixture.deliveryLogPath, { pid: process.pid, kind: text.includes("indeterminate") ? "indeterminate" : (record.state === "succeeded" || record.state === "failed" || record.state === "denied") ? "provider" : "direct", text }),
   })
@@ -362,7 +385,7 @@ function runWorker(fixturePath: string): Promise<{ pid: number; accepted: boolea
     const child = spawn(process.execPath, ["-e", workerScript() + workerScriptTail(),
       path.resolve("src/heart/tool-approval.ts"), path.resolve("src/heart/core.ts"), path.resolve("src/heart/approval-store.ts"),
       path.resolve("src/repertoire/tool-arguments.ts"), path.resolve("src/repertoire/tools-shell.ts"), fixturePath,
-      path.resolve("src/heart/session-events.ts"),
+      path.resolve("src/heart/session-events.ts"), path.resolve("src/heart/config.ts"),
     ], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""; let stderr = ""
     child.stdout.on("data", (chunk) => { stdout += String(chunk) })
@@ -488,10 +511,9 @@ export async function runSyntheticApprovalScenario(scenario: SyntheticApprovalSc
   const decisionNow = new Date(Date.parse(RECORDED_AT) + decisionAtMs).toISOString()
   if (scenario.restartBeforeDecision && originPid === process.pid) throw new Error("restart scenario did not exit the origin process")
   const committedPreCallMessages = checkpoints.read(approvalId)?.preCallMessages ?? preCallMessages
-  const originProviderMessages = fs.readFileSync(providerLogPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((entry) => entry.kind === "origin")?.messages ?? committedPreCallMessages
   const fixturePath = path.join(root, "worker.json")
   fs.writeFileSync(fixturePath, JSON.stringify({ approvalId, databasePath: approvalDatabasePath, checkpointPath, sessionPath, effectsLogPath, providerLogPath, deliveryLogPath, traceLogPath,
-    preCallMessages: committedPreCallMessages, originProviderMessages, decisionNow, currentRevision: scenario.advanceSessionHeadBeforeDecision ? "a".repeat(64) : SUSPENDED_REVISION,
+    preCallMessages: committedPreCallMessages, decisionNow, currentRevision: scenario.advanceSessionHeadBeforeDecision ? "a".repeat(64) : SUSPENDED_REVISION,
     decisionAtMs, liveSchemaMutation: scenario.liveSchemaMutation, crashAt: scenario.crashAt, handlerMode: scenario.handlerMode,
     decision: { approvalId, decisionToken, decision: scenario.decision ?? "approve", requesterId: "friend-ari", transport: "telegram", transportUserId: "42", transportChatId: "7", transportMessageId: "99", sessionKey: "telegram:chat-7" } }))
   const workerCount = scenario.concurrentDecisionProcesses ?? 1
@@ -549,8 +571,7 @@ export async function runSyntheticApprovalScenario(scenario: SyntheticApprovalSc
       completeContinuation: () => recoveryStore.completeContinuation({ approvalId, ownerId: `terminal-recovery-${process.pid}`, epoch: continuationClaim.record.continuationEpoch }),
       runAgent: async (messages, callbacks) => {
         append(traceLogPath, { sequence: 99, pid: process.pid, atMs: decisionAtMs + 2, type: "continuation_provider_start" })
-        const providerMessages = [...originProviderMessages.slice(0, -committedPreCallMessages.length), ...structuredClone(messages)]
-        append(providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId, messages: providerMessages })
+        append(providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId, messages: structuredClone(messages), evidenceKind: "seam_input_during_recovery" })
         const text = record!.state === "failed" ? "calibre-web restart failed safely." : "calibre-web is back up"
         callbacks.onTextChunk(text)
         messages.push({ role: "assistant", content: text })
