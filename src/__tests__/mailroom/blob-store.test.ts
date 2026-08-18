@@ -206,7 +206,10 @@ describe("AzureBlobMailroomStore", () => {
       "message-index/slugger/8235587199999__native__imbox__~__mail_new.json",
       "message-index/slugger/8395932799999__delegated__screener__hey__mail_dup.json",
       "message-index/slugger/8295932799999__delegated__imbox__hey__mail_dup.json",
+      "message-index/slugger/8195932799999__native__imbox__~__mail_dup_two.json",
+      "message-index/slugger/8095932799999__native__screener__~__mail_dup_two.json",
       "message-index/slugger/not-a-valid-index.json",
+      "message-index/slugger/7995932799999__delegated__imbox__%ZZ__mail_bad_source.json",
     ]
     for (const name of names) {
       serviceClient.container.blobs.set(name, { data: Buffer.from("unused"), downloads: 0, uploads: 0, deletes: 0 })
@@ -216,17 +219,17 @@ describe("AzureBlobMailroomStore", () => {
     const observed = await store.observeMessageIndexAuthority("slugger")
 
     expect(observed).toEqual(expect.objectContaining({
-      totalNameCount: 4,
-      parsedRecordCount: 3,
-      parseFailureCount: 1,
-      duplicateIds: ["mail_dup"],
+      totalNameCount: 7,
+      parsedRecordCount: 5,
+      parseFailureCount: 2,
+      duplicateIds: ["mail_dup", "mail_dup_two"],
       records: expect.arrayContaining([
         expect.objectContaining({ id: "mail_new" }),
         expect.objectContaining({ id: "mail_dup", placement: "screener" }),
         expect.objectContaining({ id: "mail_dup", placement: "imbox" }),
       ]),
     }))
-    expect(observed.snapshot.visibleMessageCount).toBe(3)
+    expect(observed.snapshot.visibleMessageCount).toBe(5)
     expect(serviceClient.container.createCalls).toBe(0)
     expect(totalDownloads(serviceClient.container, "messages/")).toBe(0)
     expect(totalDownloads(serviceClient.container, "message-index/")).toBe(0)
@@ -261,6 +264,24 @@ describe("AzureBlobMailroomStore", () => {
     })
 
     await expect(store.observeMessageIndexAuthority("slugger")).rejects.toBe(rejection)
+    expect(serviceClient.container.createCalls).toBe(0)
+  })
+
+  it("preserves non-Error hosted index unavailability evidence", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    serviceClient.container.listError = "offline"
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+
+    let rejection: unknown
+    try {
+      await store.observeMessageIndexAuthority("slugger")
+    } catch (error) {
+      rejection = error
+    }
+    expect(rejection).toBe("offline")
     expect(serviceClient.container.createCalls).toBe(0)
   })
 
