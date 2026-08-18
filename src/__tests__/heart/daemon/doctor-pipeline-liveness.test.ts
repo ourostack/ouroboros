@@ -422,7 +422,7 @@ describe("checkMailroom mail-ingest liveness", () => {
     expect(check.detail).toContain("no mail ingested in 3 hours")
   })
 
-  it("falls back to defaults when agent.json is missing or unparseable", async () => {
+  it("falls back to defaults for a present unparseable agent.json and skips a task-only directory once it is removed", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
     writeMailroom(agentRoot, { lastIngestAgoMs: 30 * HOUR_MS })
@@ -431,7 +431,12 @@ describe("checkMailroom mail-ingest liveness", () => {
     expect(findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness").status).toBe("warn")
 
     fs.rmSync(path.join(agentRoot, "agent.json"))
-    expect(findCheck((await checkMailroom(depsFor(bundlesRoot))).checks, "mail.ingest_liveness").status).toBe("warn")
+    const category = await checkMailroom(depsFor(bundlesRoot))
+    expect(category.checks).toEqual([{
+      label: "mailroom",
+      status: "warn",
+      detail: "no agent bundles found",
+    }])
   })
 
   it("uses 24h/72h defaults, so a quiet weekend warns before it fails", () => {
