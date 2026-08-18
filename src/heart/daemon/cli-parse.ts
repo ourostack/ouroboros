@@ -1096,8 +1096,15 @@ function parseMailCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
   const usageText = "Usage: ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]\n       ouro mail sync-cache [--agent <name>]"
   if (sub === "sync-cache") {
+    const agentFlagCount = subArgs.filter((token) => token === "--agent").length
     const { agent, rest } = extractAgentFlag(subArgs)
-    if (rest.length > 0) throw new Error("Usage: ouro mail sync-cache [--agent <name>]")
+    if (
+      agentFlagCount > 1 ||
+      rest.length > 0 ||
+      (agentFlagCount === 1 && (!agent || agent.trim().length === 0 || agent.trim().startsWith("--")))
+    ) {
+      throw new Error("Usage: ouro mail sync-cache [--agent <name>]")
+    }
     return { kind: "mail.sync-cache", ...(agent ? { agent } : {}) }
   }
   if (sub === "backfill-indexes") {

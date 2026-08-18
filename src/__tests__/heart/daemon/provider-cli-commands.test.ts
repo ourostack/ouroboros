@@ -1382,6 +1382,18 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["mail", "backfill-indexes", "extra"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "sync-cache", "--foreground"])).toThrow("ouro mail sync-cache")
     expect(() => parseOuroCommand(["mail", "sync-cache", "leftover"])).toThrow("ouro mail sync-cache")
+    for (const malformedArgs of [
+      ["--agent"],
+      ["--agent", ""],
+      ["--agent", "   "],
+      ["--agent", "--agent"],
+      ["--agent", "--json"],
+      ["--agent", "  --json"],
+      ["--agent", "Slugger", "--agent", "Rach"],
+      ["--agent", "Slugger", "--json"],
+    ]) {
+      expect(() => parseOuroCommand(["mail", "sync-cache", ...malformedArgs])).toThrow("ouro mail sync-cache")
+    }
     expect(() => parseOuroCommand(["account"])).toThrow("ouro account ensure")
     expect(() => parseOuroCommand(["account", "reset"])).toThrow("ouro account ensure")
     expect(() => parseOuroCommand(["account", "ensure", "extra"])).toThrow("ouro account ensure")
