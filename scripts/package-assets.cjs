@@ -19,6 +19,7 @@ const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
 
 const PACKAGE_PAYLOAD_PATH_PREFIXES = [
   "assets/",
+  "deploy/unraid/",
   "dist/",
   "RepairGuide.ouro/",
   "SerpentGuide.ouro/",
@@ -27,6 +28,7 @@ const PACKAGE_PAYLOAD_PATH_PREFIXES = [
 
 const PACKAGE_PAYLOAD_FILE_PATHS = [
   "changelog.json",
+  "npm-shrinkwrap.json",
   "package.json",
 ]
 
