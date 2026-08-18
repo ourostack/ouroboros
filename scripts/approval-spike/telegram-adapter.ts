@@ -31,11 +31,19 @@ interface TelegramApiEnvelope {
 
 interface PendingApproval {
   approvalId: string
-  decisionToken: string
+  decisionToken?: string
   messageId: string
   approveCallbackData: string
   denyCallbackData: string
   expiresAt: string
+  terminal?: { accepted: boolean; terminalText: string }
+}
+
+export type TelegramPersistedPendingApproval = Omit<PendingApproval, "decisionToken">
+
+export interface TelegramPendingApprovalStore {
+  load(): TelegramPersistedPendingApproval[]
+  save(records: TelegramPersistedPendingApproval[]): void
 }
 
 export interface TelegramApprovalAdapterOptions {
@@ -46,6 +54,8 @@ export interface TelegramApprovalAdapterOptions {
   sleep: (milliseconds: number) => Promise<void>
   createOpaqueHandle: () => string
   onDecision: (decision: TelegramApprovalDecision) => Promise<{ accepted: boolean; terminalText: string }>
+  pendingStore?: TelegramPendingApprovalStore
+  resolveDecisionToken?: (approvalId: string) => Promise<string>
 }
 
 export interface TelegramApprovalAdapter {
@@ -75,6 +85,31 @@ function parseEnvelope(value: unknown): TelegramApiEnvelope {
 export function createTelegramApprovalAdapter(options: TelegramApprovalAdapterOptions): TelegramApprovalAdapter {
   const pendingByCallback = new Map<string, PendingApproval>()
   const apiRoot = `https://api.telegram.org/bot${options.botToken}`
+
+  const persistPending = (): void => {
+    if (!options.pendingStore) return
+    const unique = [...new Set(pendingByCallback.values())]
+    options.pendingStore.save(unique.map(({ decisionToken: _decisionToken, ...record }) => record))
+  }
+
+  const addPending = (pending: PendingApproval): void => {
+    pendingByCallback.set(pending.approveCallbackData, pending)
+    pendingByCallback.set(pending.denyCallbackData, pending)
+  }
+
+  const removePending = (pending: PendingApproval): void => {
+    pendingByCallback.delete(pending.approveCallbackData)
+    pendingByCallback.delete(pending.denyCallbackData)
+  }
+
+  for (const pending of options.pendingStore?.load() ?? []) {
+    assertCallbackData(pending.approveCallbackData)
+    assertCallbackData(pending.denyCallbackData)
+    if (pendingByCallback.has(pending.approveCallbackData) || pendingByCallback.has(pending.denyCallbackData)) {
+      throw new Error("Telegram persisted approval callback handle collision")
+    }
+    addPending(pending)
+  }
 
   const request = async (method: string, body: Record<string, unknown>): Promise<TelegramApiEnvelope> => {
     for (;;) {
@@ -110,12 +145,42 @@ export function createTelegramApprovalAdapter(options: TelegramApprovalAdapterOp
     }
   }
 
-  const acknowledgeInvalid = async (callbackQueryId: string): Promise<void> => {
-    await request("answerCallbackQuery", {
-      callback_query_id: callbackQueryId,
-      text: "This approval is no longer valid.",
-      show_alert: true,
-    })
+  const isMessageNotModified = (error: unknown): boolean => error instanceof Error
+    && "status" in error
+    && error.status === 400
+    && /message is not modified/i.test(error.message)
+
+  const editTerminalMessage = async (
+    htmlBody: Record<string, unknown>,
+    plainBody: Record<string, unknown>,
+  ): Promise<void> => {
+    try {
+      await request("editMessageText", htmlBody)
+    } catch (error) {
+      if (isMessageNotModified(error)) return
+      if (!error || typeof error !== "object" || !("status" in error) || error.status !== 400) throw error
+      try {
+        await request("editMessageText", plainBody)
+      } catch (fallbackError) {
+        if (!isMessageNotModified(fallbackError)) throw fallbackError
+      }
+    }
+  }
+
+  const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<void> => {
+    try {
+      await request("answerCallbackQuery", invalid ? {
+        callback_query_id: callbackQueryId,
+        text: "This approval is no longer valid.",
+        show_alert: true,
+      } : { callback_query_id: callbackQueryId })
+    } catch (error) {
+      const staleQuery = error instanceof Error
+        && "status" in error
+        && error.status === 400
+        && /query is too old|query ID is invalid/i.test(error.message)
+      if (!staleQuery) throw error
+    }
   }
 
   return {
@@ -158,8 +223,13 @@ export function createTelegramApprovalAdapter(options: TelegramApprovalAdapterOp
         denyCallbackData,
         expiresAt: input.expiresAt,
       }
-      pendingByCallback.set(approveCallbackData, pending)
-      pendingByCallback.set(denyCallbackData, pending)
+      addPending(pending)
+      try {
+        persistPending()
+      } catch (error) {
+        removePending(pending)
+        throw error
+      }
       return { messageId, approveCallbackData, denyCallbackData }
     },
 
@@ -177,25 +247,37 @@ export function createTelegramApprovalAdapter(options: TelegramApprovalAdapterOp
       else if (callbackChatId !== options.expectedChatId) invalidReason = "foreign_chat"
       else if (callbackMessageId !== pending.messageId) invalidReason = "foreign_message"
       if (invalidReason) {
-        await acknowledgeInvalid(callback.id)
+        await acknowledge(callback.id, true)
         return { handled: true, accepted: false, reason: invalidReason }
       }
 
-      pendingByCallback.delete(pending!.approveCallbackData)
-      pendingByCallback.delete(pending!.denyCallbackData)
-      await request("answerCallbackQuery", { callback_query_id: callback.id })
-      const decision = callbackData === pending!.approveCallbackData ? "approve" : "deny"
-      const outcome = await options.onDecision({
-        approvalId: pending!.approvalId,
-        decisionToken: pending!.decisionToken,
-        decision,
-        requesterId: options.expectedUserId,
-        transport: "telegram",
-        transportChatId: options.expectedChatId,
-        transportMessageId: pending!.messageId,
-      })
+      removePending(pending!)
+      await acknowledge(callback.id, false)
+      let outcome = pending!.terminal
+      try {
+        if (!outcome) {
+          const decisionToken = pending!.decisionToken ?? await options.resolveDecisionToken?.(pending!.approvalId)
+          if (!decisionToken) throw new Error("Telegram approval restart requires a decision token resolver")
+          const decision = callbackData === pending!.approveCallbackData ? "approve" : "deny"
+          outcome = await options.onDecision({
+            approvalId: pending!.approvalId,
+            decisionToken,
+            decision,
+            requesterId: options.expectedUserId,
+            transport: "telegram",
+            transportChatId: options.expectedChatId,
+            transportMessageId: pending!.messageId,
+          })
+          pending!.terminal = outcome
+        }
+        addPending(pending!)
+        persistPending()
+      } catch (error) {
+        addPending(pending!)
+        throw error
+      }
       const emptyMarkup = { inline_keyboard: [] as never[] }
-      await requestWithHtmlFallback("editMessageText", {
+      await editTerminalMessage({
         chat_id: options.expectedChatId,
         message_id: Number(pending!.messageId),
         text: escapeTelegramHtml(outcome.terminalText),
@@ -207,6 +289,8 @@ export function createTelegramApprovalAdapter(options: TelegramApprovalAdapterOp
         text: outcome.terminalText,
         reply_markup: emptyMarkup,
       })
+      removePending(pending!)
+      persistPending()
       return {
         handled: true,
         accepted: outcome.accepted,

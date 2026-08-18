@@ -4,6 +4,7 @@ import {
   createTelegramApprovalAdapter,
   escapeTelegramHtml,
   type TelegramApprovalDecision,
+  type TelegramPersistedPendingApproval,
   type TelegramApprovalUpdate,
 } from "../../../scripts/approval-spike/telegram-adapter"
 
@@ -57,6 +58,11 @@ function fixture(overrides: {
   responses?: Response[]
   onDecision?: (decision: TelegramApprovalDecision) => Promise<{ accepted: boolean; terminalText: string }>
   handles?: string[]
+  pendingStore?: {
+    load: () => TelegramPersistedPendingApproval[]
+    save: (records: TelegramPersistedPendingApproval[]) => void
+  }
+  resolveDecisionToken?: (approvalId: string) => Promise<string>
 } = {}) {
   const calls: FetchCall[] = []
   const responses = [...(overrides.responses ?? [])]
@@ -79,6 +85,8 @@ function fixture(overrides: {
     sleep,
     createOpaqueHandle: () => handles.shift() ?? "unused-handle",
     onDecision,
+    pendingStore: overrides.pendingStore,
+    resolveDecisionToken: overrides.resolveDecisionToken,
   })
   return { adapter, calls, fetch, respond, sleep, onDecision }
 }
@@ -257,6 +265,49 @@ describe("test-only Telegram approval adapter", () => {
     }])
   })
 
+  it("treats Telegram's expired-query acknowledgement error as a stale callback", async () => {
+    const f = await prompt()
+    f.respond.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false,
+      error_code: 400,
+      description: "Bad Request: query is too old and response timeout expired or query ID is invalid",
+    }), { status: 400, headers: { "content-type": "application/json" } }))
+
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:unknown" }))).resolves.toEqual({
+      handled: true,
+      accepted: false,
+      reason: "stale_callback",
+    })
+    expect(f.onDecision).not.toHaveBeenCalled()
+  })
+
+  it("surfaces a non-expiry acknowledgement failure", async () => {
+    const f = await prompt()
+    f.respond.mockResolvedValueOnce(telegramResponse(false, 500))
+
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:unknown" })))
+      .rejects.toThrow("synthetic error")
+    expect(f.onDecision).not.toHaveBeenCalled()
+  })
+
+  it("continues an authenticated decision when Telegram says its acknowledgement expired", async () => {
+    const f = await prompt()
+    f.respond
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        error_code: 400,
+        description: "Bad Request: query is too old and response timeout expired or query ID is invalid",
+      }), { status: 400, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(telegramResponse(true))
+
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "d:deny-handle" }))).resolves.toEqual({
+      handled: true,
+      accepted: true,
+      reason: "accepted",
+    })
+    expect(f.onDecision).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     ["missing callback data", callbackUpdate({ callbackData: "a:approve-handle" }), "stale_callback"],
     ["missing callback message", callbackUpdate({ callbackData: "a:approve-handle" }), "foreign_chat"],
@@ -286,6 +337,125 @@ describe("test-only Telegram approval adapter", () => {
       url: `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`,
       body: { callback_query_id: "callback-2", text: "This approval is no longer valid.", show_alert: true },
     })
+  })
+
+  it("restores opaque callback bindings after restart without persisting the decision token", async () => {
+    let durableRecords: TelegramPersistedPendingApproval[] = []
+    const pendingStore = {
+      load: vi.fn(() => structuredClone(durableRecords)),
+      save: vi.fn((records: TelegramPersistedPendingApproval[]) => { durableRecords = structuredClone(records) }),
+    }
+    const first = await prompt(fixture({ pendingStore }))
+
+    expect(JSON.stringify(durableRecords)).not.toContain("server-side-decision-token")
+    expect(durableRecords).toEqual([{
+      approvalId: "approval-1",
+      messageId: "99",
+      approveCallbackData: "a:approve-handle",
+      denyCallbackData: "d:deny-handle",
+      expiresAt: "2099-08-17T18:30:00.000Z",
+    }])
+
+    const resolveDecisionToken = vi.fn(async () => "server-side-decision-token")
+    const restarted = fixture({ pendingStore, resolveDecisionToken })
+    restarted.respond.mockResolvedValue(telegramResponse(true))
+    const outcome = await restarted.adapter.handleUpdate(callbackUpdate({ callbackData: first.sent.approveCallbackData }))
+
+    expect(outcome).toEqual({ handled: true, accepted: true, reason: "accepted" })
+    expect(resolveDecisionToken).toHaveBeenCalledWith("approval-1")
+    expect(restarted.onDecision).toHaveBeenCalledWith(expect.objectContaining({
+      approvalId: "approval-1",
+      decisionToken: "server-side-decision-token",
+    }))
+    expect(durableRecords).toEqual([])
+  })
+
+  it("durably records the terminal outcome before removing restored handles", async () => {
+    let durableRecords: TelegramPersistedPendingApproval[] = [{
+      approvalId: "approval-1",
+      messageId: "99",
+      approveCallbackData: "a:approve-handle",
+      denyCallbackData: "d:deny-handle",
+      expiresAt: "2099-08-17T18:30:00.000Z",
+    }]
+    const events: string[] = []
+    const pendingStore = {
+      load: () => structuredClone(durableRecords),
+      save: (records: TelegramPersistedPendingApproval[]) => {
+        durableRecords = structuredClone(records)
+        events.push(records.length === 0 ? "persisted-consumed" : "persisted-terminal")
+      },
+    }
+    const f = fixture({
+      pendingStore,
+      resolveDecisionToken: async () => { events.push("resolved-token"); return "server-side-decision-token" },
+    })
+    f.respond.mockImplementation(async () => { events.push("telegram-request"); return telegramResponse(true) })
+
+    await f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" }))
+
+    expect(events).toEqual([
+      "telegram-request",
+      "resolved-token",
+      "persisted-terminal",
+      "telegram-request",
+      "persisted-consumed",
+    ])
+    expect(durableRecords).toEqual([])
+  })
+
+  it("fails closed after restart when no durable token resolver is configured", async () => {
+    const pendingStore = {
+      load: () => [{
+        approvalId: "approval-1",
+        messageId: "99",
+        approveCallbackData: "a:approve-handle",
+        denyCallbackData: "d:deny-handle",
+        expiresAt: "2099-08-17T18:30:00.000Z",
+      }],
+      save: vi.fn(),
+    }
+    const f = fixture({ pendingStore })
+    f.respond.mockResolvedValue(telegramResponse(true))
+
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" })))
+      .rejects.toThrow("decision token resolver")
+    expect(f.onDecision).not.toHaveBeenCalled()
+    expect(pendingStore.save).not.toHaveBeenCalled()
+  })
+
+  it("rejects colliding persisted callback bindings during startup", () => {
+    const first: TelegramPersistedPendingApproval = {
+      approvalId: "approval-1",
+      messageId: "99",
+      approveCallbackData: "a:duplicate",
+      denyCallbackData: "d:first",
+      expiresAt: "2099-08-17T18:30:00.000Z",
+    }
+    const second = { ...first, approvalId: "approval-2", messageId: "100", denyCallbackData: "d:second" }
+
+    expect(() => fixture({ pendingStore: { load: () => [first, second], save: vi.fn() } }))
+      .toThrow("persisted approval callback handle collision")
+  })
+
+  it("removes in-memory handles and fails before authority when durable prompt persistence fails", async () => {
+    const pendingStore = {
+      load: () => [],
+      save: vi.fn(() => { throw new Error("pending store unavailable") }),
+    }
+    const f = fixture({ pendingStore })
+    f.respond.mockResolvedValueOnce(telegramResponse({ message_id: 99 }))
+
+    await expect(f.adapter.sendApproval({
+      approvalId: "approval-1",
+      decisionToken: "private-persistence-error-token",
+      prompt: "safe",
+      expiresAt: "2099-08-17T18:30:00.000Z",
+    })).rejects.toThrow("pending store unavailable")
+    f.respond.mockResolvedValueOnce(telegramResponse(true))
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" })))
+      .resolves.toEqual({ handled: true, accepted: false, reason: "stale_callback" })
+    expect(f.onDecision).not.toHaveBeenCalled()
   })
 
   it("atomically consumes a callback before any await so concurrent duplicates reach authority once", async () => {
@@ -377,7 +547,7 @@ describe("test-only Telegram approval adapter", () => {
     expect(f.calls.at(-1)?.body).toHaveProperty("reply_markup", { inline_keyboard: [] })
   })
 
-  it("keeps a handle consumed when terminal editing throws, so retry cannot decide twice", async () => {
+  it("retains a terminal handle when editing throws, so retry finishes without deciding twice", async () => {
     const f = await prompt()
     f.respond.mockResolvedValueOnce(telegramResponse(true))
     f.respond.mockRejectedValueOnce(new Error("telegram unavailable"))
@@ -386,7 +556,89 @@ describe("test-only Telegram approval adapter", () => {
 
     f.respond.mockResolvedValueOnce(telegramResponse(true))
     await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle", callbackId: "callback-2" })))
-      .resolves.toEqual({ handled: true, accepted: false, reason: "stale_callback" })
+      .resolves.toEqual({ handled: true, accepted: true, reason: "accepted" })
+    expect(f.onDecision).toHaveBeenCalledTimes(1)
+  })
+
+  it("restarts after a terminal-edit crash without resolving the token or deciding again", async () => {
+    let durableRecords: TelegramPersistedPendingApproval[] = []
+    const pendingStore = {
+      load: vi.fn(() => structuredClone(durableRecords)),
+      save: vi.fn((records: TelegramPersistedPendingApproval[]) => { durableRecords = structuredClone(records) }),
+    }
+    const first = await prompt(fixture({ pendingStore }))
+    first.respond.mockResolvedValueOnce(telegramResponse(true))
+    first.respond.mockRejectedValueOnce(new Error("telegram unavailable"))
+
+    await expect(first.adapter.handleUpdate(callbackUpdate({ callbackData: first.sent.approveCallbackData })))
+      .rejects.toThrow("telegram unavailable")
+    expect(first.onDecision).toHaveBeenCalledTimes(1)
+    expect(durableRecords).toEqual([expect.objectContaining({
+      approvalId: "approval-1",
+      terminal: { accepted: true, terminalText: "✅ Approved — running" },
+    })])
+    expect(JSON.stringify(durableRecords)).not.toContain("server-side-decision-token")
+
+    const resolveDecisionToken = vi.fn(async () => "must-not-be-used")
+    const restarted = fixture({ pendingStore, resolveDecisionToken })
+    restarted.respond.mockResolvedValue(telegramResponse(true))
+
+    await expect(restarted.adapter.handleUpdate(callbackUpdate({ callbackData: first.sent.approveCallbackData })))
+      .resolves.toEqual({ handled: true, accepted: true, reason: "accepted" })
+    expect(resolveDecisionToken).not.toHaveBeenCalled()
+    expect(restarted.onDecision).not.toHaveBeenCalled()
+    expect(durableRecords).toEqual([])
+  })
+
+  it("clears restarted terminal state when Telegram says the edit was already applied", async () => {
+    let durableRecords: TelegramPersistedPendingApproval[] = [{
+      approvalId: "approval-1",
+      messageId: "99",
+      approveCallbackData: "a:approve-handle",
+      denyCallbackData: "d:deny-handle",
+      expiresAt: "2099-08-17T18:30:00.000Z",
+      terminal: { accepted: true, terminalText: "✅ Approved — running" },
+    }]
+    const pendingStore = {
+      load: vi.fn(() => structuredClone(durableRecords)),
+      save: vi.fn((records: TelegramPersistedPendingApproval[]) => { durableRecords = structuredClone(records) }),
+    }
+    const f = fixture({ pendingStore, resolveDecisionToken: vi.fn(async () => "must-not-be-used") })
+    f.respond.mockResolvedValueOnce(telegramResponse(true))
+    f.respond.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false,
+      error_code: 400,
+      description: "Bad Request: message is not modified",
+    }), { status: 400, headers: { "content-type": "application/json" } }))
+
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" })))
+      .resolves.toEqual({ handled: true, accepted: true, reason: "accepted" })
+    expect(f.onDecision).not.toHaveBeenCalled()
+    expect(durableRecords).toEqual([])
+  })
+
+  it("accepts an already-applied plain fallback terminal edit", async () => {
+    const f = await prompt()
+    f.respond.mockResolvedValueOnce(telegramResponse(true))
+    f.respond.mockResolvedValueOnce(telegramResponse(null, 400))
+    f.respond.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false,
+      error_code: 400,
+      description: "Bad Request: message is not modified",
+    }), { status: 400, headers: { "content-type": "application/json" } }))
+
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" })))
+      .resolves.toEqual({ handled: true, accepted: true, reason: "accepted" })
+  })
+
+  it("surfaces a non-idempotent plain fallback terminal-edit failure", async () => {
+    const f = await prompt()
+    f.respond.mockResolvedValueOnce(telegramResponse(true))
+    f.respond.mockResolvedValueOnce(telegramResponse(null, 400))
+    f.respond.mockResolvedValueOnce(telegramResponse(null, 500))
+
+    await expect(f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" })))
+      .rejects.toThrow("synthetic error")
     expect(f.onDecision).toHaveBeenCalledTimes(1)
   })
 
