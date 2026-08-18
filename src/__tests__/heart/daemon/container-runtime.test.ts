@@ -33,6 +33,16 @@ describe("container runtime policy", () => {
     expect(habit).toContain("status: active")
   })
 
+  it("ships Sanctuary on the locked GLM provider instead of MiniMax", () => {
+    const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
+      humanFacing: { provider: string; model: string }
+      agentFacing: { provider: string; model: string }
+    }
+
+    expect(agent.humanFacing).toEqual({ provider: "openai-compatible", model: "glm-5.2" })
+    expect(agent.agentFacing).toEqual({ provider: "openai-compatible", model: "glm-5.2" })
+  })
+
   it("requires exactly one matching managed Telegram process", () => {
     const telegram = "node /opt/ouro/dist/senses/telegram-entry.js --agent sanctuary"
     expect(hasManagedTelegramProcess(`node daemon-entry.js\n${telegram}\n`, "sanctuary")).toBe(true)
