@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
   TelegramApiError,
@@ -6,10 +9,23 @@ import {
   escapeTelegramHtml,
   sendTelegramText,
   splitTelegramText,
+  FileTelegramOffsetStore,
+  createTelegramLongPoll,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
 
 const token = "123456:super-secret-token"
+const tempDirectories: string[] = []
+
+afterEach(() => {
+  for (const directory of tempDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
+function makeTempDirectory(prefix: string): string {
+  const directory = mkdtempSync(join(tmpdir(), prefix))
+  tempDirectories.push(directory)
+  return directory
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -54,6 +70,77 @@ describe("Telegram Bot API HTTP core", () => {
 
     expect(error).toBeInstanceOf(TelegramApiError)
     expect(String(error)).not.toContain(token)
+  })
+})
+
+describe("Telegram durable authorized long poll", () => {
+  it("restores offsets, suppresses duplicates, and advances past foreign updates before dispatch", async () => {
+    const directory = makeTempDirectory("ouro-telegram-offset-")
+    const path = join(directory, "offset.json")
+    writeFileSync(path, JSON.stringify({ nextUpdateId: 5 }))
+    const store = new FileTelegramOffsetStore(path)
+    const onMessage = vi.fn(async () => undefined)
+    const request = vi.fn(async () => [
+      { update_id: 4, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "duplicate" } },
+      { update_id: 5, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "hello" } },
+      { update_id: 6, message: { message_id: 3, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } },
+    ])
+    const api: TelegramBotApi = { request, stop: vi.fn() }
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore: store, onMessage })
+
+    await expect(poll.pollOnce()).resolves.toBe(7)
+    expect(request).toHaveBeenCalledWith("getUpdates", { offset: 5, timeout: 50, allowed_updates: ["message", "callback_query"] }, expect.any(AbortSignal))
+    expect(onMessage).toHaveBeenCalledTimes(1)
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 5, userId: "10", chatId: "10", text: "hello" }))
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ nextUpdateId: 7 })
+
+    const restartedRequest = vi.fn(async () => [])
+    const restarted = createTelegramLongPoll({
+      api: { request: restartedRequest, stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: new FileTelegramOffsetStore(path),
+      onMessage,
+    })
+    await restarted.pollOnce()
+    expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
+  })
+
+  it("drops malformed, non-private, foreign-chat, and message-less updates with zero dispatch", async () => {
+    let offset = 0
+    const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
+    const onMessage = vi.fn(async () => undefined)
+    const api: TelegramBotApi = {
+      stop: vi.fn(),
+      request: vi.fn(async () => [
+        { update_id: 0 },
+        { update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "group" }, text: "group" } },
+        { update_id: 2, message: { message_id: 2, from: { id: 10 }, chat: { id: 11, type: "private" }, text: "other chat" } },
+        { update_id: 3, message: { message_id: 3, chat: { id: 10, type: "private" }, text: "no sender" } },
+      ]),
+    }
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage })
+    await poll.pollOnce()
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(offset).toBe(4)
+  })
+
+  it("fails closed on corrupt offset state and stops an active poll", async () => {
+    const directory = makeTempDirectory("ouro-telegram-corrupt-")
+    const path = join(directory, "offset.json")
+    writeFileSync(path, "not json")
+    expect(() => new FileTelegramOffsetStore(path).load()).toThrow("Telegram offset state is corrupt")
+
+    const api: TelegramBotApi = { request: vi.fn(async () => []), stop: vi.fn() }
+    const poll = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+    })
+    poll.stop()
+    await expect(poll.pollOnce()).rejects.toThrow("stopped")
   })
 })
 
