@@ -233,6 +233,35 @@ describe("runAgent tool loop guard", () => {
     expect(innerToolNames).toContain("rest")
   })
 
+  it("rejects a fabricated tool call outside the active Telegram profile before any handler runs", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: "call_fabricated_shell",
+      function: { name: "shell", arguments: JSON.stringify({ command: "docker restart calibre-web" }) },
+    }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: "call_settle_after_rejection",
+      function: { name: "settle", arguments: JSON.stringify({ answer: "rejected" }) },
+    }])]))
+    const execTool = vi.fn().mockResolvedValue("must not execute")
+    const messages: any[] = [{ role: "user", content: "restart it" }]
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(messages, makeCallbacks(), "telegram", undefined, {
+      tools: [],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_fabricated_shell",
+      content: expect.stringContaining("was not advertised"),
+    }))
+  })
+
   it("reports the generated assistant/tool tail independently of prompt-budget prefix replacement", async () => {
     mockCreate.mockImplementation(() => makeStream([
       makeChunk(undefined, [{
