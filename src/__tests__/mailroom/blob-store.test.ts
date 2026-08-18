@@ -882,7 +882,7 @@ describe("AzureBlobMailroomStore", () => {
     ])
   })
 
-  it("treats unreadable existing message blobs as duplicates during import reruns", async () => {
+  it("fails closed when an existing committed message remains unreadable", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const store = new AzureBlobMailroomStore({
       serviceClient: serviceClient as unknown as BlobServiceClient,
@@ -914,7 +914,7 @@ describe("AzureBlobMailroomStore", () => {
     duplicateState.downloadFailuresRemaining = 4
     duplicateState.downloadFailureMessage = "download messages/existing.json timed out after 60000ms"
 
-    const duplicate = await store.putRawMessage({
+    await expect(store.putRawMessage({
       resolved,
       envelope: {
         mailFrom: "ari@mendelow.me",
@@ -922,10 +922,7 @@ describe("AzureBlobMailroomStore", () => {
       },
       rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
-    })
-
-    expect(duplicate.created).toBe(false)
-    expect(duplicate.message.id).toBe(created.message.id)
+    })).rejects.toThrow(/committed message .* could not be read/i)
     expect(duplicateState.downloads).toBe(2)
     expect([...serviceClient.container.blobs.keys()].some((name) => {
       return name.startsWith("message-index/slugger/") && name.endsWith(`__${created.message.id}.json`)
