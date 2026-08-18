@@ -75,7 +75,10 @@ interface DownloadBlobClientLike {
 
 interface UploadBlobClientLike {
   name?: string
-  uploadData(data: Buffer, options?: { abortSignal?: AbortSignal }): Promise<unknown>
+  uploadData(data: Buffer, options?: {
+    abortSignal?: AbortSignal
+    conditions?: { ifNoneMatch?: string }
+  }): Promise<unknown>
 }
 
 function compareNewestFirst(left: StoredMailMessage, right: StoredMailMessage): number {
@@ -158,6 +161,12 @@ function isBlobNotFoundError(error: unknown): boolean {
   return message.includes("blobnotfound") ||
     message.includes("the specified blob does not exist") ||
     message.includes("missing blob")
+}
+
+function messageDestinationMatches(message: StoredMailMessage, resolved: ResolvedMailAddress): boolean {
+  return message.agentId === resolved.agentId &&
+    message.mailboxId === resolved.mailboxId &&
+    message.recipient.toLowerCase() === resolved.address.toLowerCase()
 }
 
 async function downloadJson<T>(blob: DownloadBlobClientLike, timeoutMs: number): Promise<T | null> {
@@ -597,23 +606,15 @@ export class AzureBlobMailroomStore implements MailroomStore {
     try {
       existing = await downloadJson<StoredMailMessage>(messageBlob, this.blobOperationTimeoutMs)
     } catch (error) {
-      if (isRetryableBlobDownloadError(error) && await messageBlob.exists().catch(() => false)) {
-        emitNervesEvent({
-          level: "warn",
-          component: "senses",
-          event: "senses.mail_blob_store_dedupe_degraded",
-          message: "azure blob mailroom store treated an unreadable existing message as a duplicate",
-          meta: {
-            id: message.id,
-            agentId: message.agentId,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        })
-        return { created: false, message }
-      }
-      throw error
+      throw new Error(
+        `committed message ${message.id} could not be read: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      )
     }
     if (existing) {
+      if (!messageDestinationMatches(existing, input.resolved)) {
+        throw new Error(`committed message ${message.id} belongs to a different resolved destination`)
+      }
       this.upsertMailSearchCache(existing, privateEnvelope)
       await this.putMessageIndex(existing)
       emitNervesEvent({
@@ -625,7 +626,51 @@ export class AzureBlobMailroomStore implements MailroomStore {
       return { created: false, message: existing }
     }
     await this.rawBlob(message.rawObject).uploadData(blobText(rawPayload))
-    await this.messageBlob(message.id).uploadData(blobText(message))
+    try {
+      await messageBlob.uploadData(blobText(message), { conditions: { ifNoneMatch: "*" } })
+    } catch (error) {
+      if ((error as { statusCode?: unknown } | null)?.statusCode !== 412) throw error
+      let winner: StoredMailMessage | null
+      try {
+        winner = await downloadJson<StoredMailMessage>(messageBlob, this.blobOperationTimeoutMs)
+      } catch (winnerError) {
+        throw new Error(
+          `committed winner ${message.id} could not be read: ${winnerError instanceof Error ? winnerError.message : String(winnerError)}`,
+          { cause: winnerError },
+        )
+      }
+      if (!winner) throw new Error(`committed winner ${message.id} could not be read: message blob is absent`)
+      if (winner.rawObject !== message.rawObject) {
+        try {
+          await this.rawBlob(message.rawObject).deleteIfExists()
+        } catch (cleanupError) {
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.mail_blob_store_loser_raw_cleanup_failed",
+            message: "azure blob mailroom store could not clean up a losing encrypted raw object",
+            meta: {
+              id: message.id,
+              agentId: message.agentId,
+              rawObject: message.rawObject,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            },
+          })
+        }
+      }
+      if (!messageDestinationMatches(winner, input.resolved)) {
+        throw new Error(`committed winner ${message.id} belongs to a different resolved destination`)
+      }
+      this.upsertMailSearchCache(winner, privateEnvelope)
+      await this.putMessageIndex(winner)
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_blob_store_dedupe",
+        message: "azure blob mailroom store deduped existing message",
+        meta: { id: winner.id, agentId: winner.agentId },
+      })
+      return { created: false, message: winner }
+    }
     await this.putMessageIndex(message)
     this.upsertMailSearchCache(message, privateEnvelope)
     if (candidate) {

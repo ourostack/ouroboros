@@ -25,6 +25,7 @@ interface FakeBlobState {
   deletes: number
   uploadOptions?: Array<{ conditions?: { ifNoneMatch?: string } } | undefined>
   existsFalseRemaining?: number
+  existsFailureError?: unknown
   uploadFailureError?: unknown
   stall?: boolean
   downloadDelayMs?: number
@@ -50,6 +51,7 @@ class FakeBlockBlobClient {
       state.existsFalseRemaining -= 1
       return false
     }
+    if (state.existsFailureError !== undefined) throw state.existsFailureError
     return state.data !== undefined
   }
 
@@ -502,6 +504,55 @@ describe("AzureBlobMailroomStore", () => {
     expect(results[0]?.message).toEqual(results[1]?.message)
   })
 
+  it("keeps the committed winner when loser cleanup reports a non-Error failure", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    serviceClient.container.messageUploadBarrierSize = 2
+    serviceClient.container.rawDeleteFailureError = "synthetic string cleanup failure"
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const firstProvision = provisionMailboxRegistry({ agentId: "slugger" })
+    const secondProvision = provisionMailboxRegistry({ agentId: "slugger" })
+    const first = resolveMailAddress(firstProvision.registry, "slugger@ouro.bot")
+    const second = resolveMailAddress(secondProvision.registry, "slugger@ouro.bot")
+    if (!first || !second) throw new Error("expected slugger mailboxes")
+    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: String cleanup proof\r\n\r\nHello.\r\n")
+
+    const results = await Promise.all([
+      store.putRawMessage({ resolved: first, envelope, rawMime }),
+      store.putRawMessage({ resolved: second, envelope, rawMime }),
+    ])
+
+    expect(results.map((result) => result.created).sort()).toEqual([false, true])
+  })
+
+  it("does not delete a shared winner raw path for concurrent identical-key ingests", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    serviceClient.container.messageUploadBarrierSize = 2
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const provision = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(provision.registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Shared raw proof\r\n\r\nHello.\r\n")
+
+    const results = await Promise.all([
+      store.putRawMessage({ resolved, envelope, rawMime }),
+      store.putRawMessage({ resolved, envelope, rawMime }),
+    ])
+
+    expect(results.map((result) => result.created).sort()).toEqual([false, true])
+    const winner = results[0]?.message
+    if (!winner) throw new Error("expected winner")
+    expect(serviceClient.container.blobs.get(winner.rawObject)?.deletes).toBe(0)
+    expect((await store.readRawMime(winner, provision.keys))?.toString("utf-8")).toContain("Shared raw proof")
+  })
+
   it("stores one destination-owned record per valid recipient of a shared SMTP envelope", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const store = new AzureBlobMailroomStore({
@@ -558,6 +609,19 @@ describe("AzureBlobMailroomStore", () => {
 
     await expect(store.putRawMessage({ resolved, envelope, rawMime })).rejects.toThrow(/different resolved destination/i)
     expect([...serviceClient.container.blobs.keys()].some((name) => name.startsWith("message-index/other/"))).toBe(false)
+
+    const sequentialService = new FakeBlobServiceClient()
+    const sequentialStore = new AzureBlobMailroomStore({
+      serviceClient: sequentialService as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    sequentialService.container.blobs.set(`messages/${target.message.id}.json`, {
+      data: Buffer.from(`${JSON.stringify({ ...foreign.message, id: target.message.id })}\n`),
+      downloads: 0,
+      uploads: 0,
+      deletes: 0,
+    })
+    await expect(sequentialStore.putRawMessage({ resolved, envelope, rawMime })).rejects.toThrow(/different resolved destination/i)
   })
 
   it("fails when a conditional-create winner cannot be read and propagates non-412 upload errors", async () => {
@@ -583,6 +647,51 @@ describe("AzureBlobMailroomStore", () => {
     })
 
     await expect(unreadableStore.putRawMessage({ resolved, envelope, rawMime })).rejects.toThrow(/committed winner/i)
+
+    const stringFailureService = new FakeBlobServiceClient()
+    const stringFailureStore = new AzureBlobMailroomStore({
+      serviceClient: stringFailureService as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    stringFailureService.container.blobs.set(`messages/${built.message.id}.json`, {
+      data: Buffer.from(`${JSON.stringify(built.message)}\n`),
+      downloads: 0,
+      uploads: 0,
+      deletes: 0,
+      existsFalseRemaining: 1,
+      downloadFailuresRemaining: 2,
+      downloadFailureError: "socket closed early",
+    })
+    await expect(stringFailureStore.putRawMessage({ resolved, envelope, rawMime })).rejects.toThrow(/committed winner/i)
+
+    const existenceFailureService = new FakeBlobServiceClient()
+    const existenceFailureStore = new AzureBlobMailroomStore({
+      serviceClient: existenceFailureService as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    existenceFailureService.container.blobs.set(`messages/${built.message.id}.json`, {
+      data: Buffer.from(`${JSON.stringify(built.message)}\n`),
+      downloads: 0,
+      uploads: 0,
+      deletes: 0,
+      existsFalseRemaining: 1,
+      existsFailureError: "winner existence probe exploded",
+    })
+    await expect(existenceFailureStore.putRawMessage({ resolved, envelope, rawMime }))
+      .rejects.toThrow(/committed winner .* winner existence probe exploded/i)
+
+    const absentService = new FakeBlobServiceClient()
+    const absentStore = new AzureBlobMailroomStore({
+      serviceClient: absentService as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    absentService.container.blobs.set(`messages/${built.message.id}.json`, {
+      downloads: 0,
+      uploads: 0,
+      deletes: 0,
+      uploadFailureError: { statusCode: 412 },
+    })
+    await expect(absentStore.putRawMessage({ resolved, envelope, rawMime })).rejects.toThrow(/message blob is absent/i)
 
     const failedService = new FakeBlobServiceClient()
     const failedStore = new AzureBlobMailroomStore({
@@ -995,7 +1104,7 @@ describe("AzureBlobMailroomStore", () => {
     expect(duplicateState.downloads).toBe(1)
   })
 
-  it("treats retryable raw existence failures as degraded duplicates when the blob is confirmed on retry", async () => {
+  it("fails closed when the initial committed-message existence probe is unreadable", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const store = new AzureBlobMailroomStore({
       serviceClient: serviceClient as unknown as BlobServiceClient,
@@ -1032,7 +1141,7 @@ describe("AzureBlobMailroomStore", () => {
       }
     }) as typeof serviceClient.container.getBlockBlobClient
 
-    const duplicate = await store.putRawMessage({
+    await expect(store.putRawMessage({
       resolved,
       envelope: {
         mailFrom: "ari@mendelow.me",
@@ -1040,11 +1149,8 @@ describe("AzureBlobMailroomStore", () => {
       },
       rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
-    })
-
-    expect(duplicate.created).toBe(false)
-    expect(duplicate.message.id).toBe(created.message.id)
-    expect(existsCalls).toBe(2)
+    })).rejects.toThrow(/committed message .* could not be read: socket closed early/i)
+    expect(existsCalls).toBe(1)
   })
 
   it("still throws retryable duplicate read errors when confirming blob existence also fails", async () => {
@@ -1095,7 +1201,7 @@ describe("AzureBlobMailroomStore", () => {
       rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
       receivedAt: new Date("2024-01-01T00:00:00Z"),
     })).rejects.toThrow("socket closed early")
-    expect(existsCalls).toBe(2)
+    expect(existsCalls).toBe(1)
   })
 
   it("lists recent hosted mail by walking message indexes instead of downloading the whole mailbox", async () => {

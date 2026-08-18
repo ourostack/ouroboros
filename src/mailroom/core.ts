@@ -733,14 +733,27 @@ function snippet(text: string): string {
   return compact.length > SNIPPET_LIMIT ? `${compact.slice(0, SNIPPET_LIMIT - 3)}...` : compact
 }
 
-function messageStorageId(envelope: MailEnvelopeInput, raw: Buffer): string {
+function messageStorageId(
+  envelope: MailEnvelopeInput,
+  raw: Buffer,
+  destination?: Pick<ResolvedMailAddress, "agentId" | "mailboxId" | "address">,
+): string {
   const digest = crypto
     .createHash("sha256")
     .update(stableJson(envelope))
     .update("\n")
     .update(raw)
-    .digest("hex")
-  return `mail_${digest.slice(0, 32)}`
+  if (destination) {
+    digest
+      .update("\n")
+      .update(stableJson({
+        agentId: destination.agentId,
+        mailboxId: destination.mailboxId,
+        recipient: normalizeMailAddress(destination.address),
+      }))
+  }
+  const value = digest.digest("hex")
+  return `mail_${value.slice(0, 32)}`
 }
 
 function candidateSender(input: { parsedFrom: string[]; envelope: MailEnvelopeInput }): { email: string; display: string } {
@@ -858,9 +871,16 @@ async function parsePrivateMailEnvelope(rawMime: Buffer): Promise<PrivateMailEnv
   }
 }
 
-export async function buildStoredMailMessageMetadata(input: BuildStoredMailMessageInput): Promise<StoredMailMessageMetadata> {
+export async function buildStoredMailMessageMetadata(
+  input: BuildStoredMailMessageInput,
+  options: { domainByResolvedDestination?: boolean } = {},
+): Promise<StoredMailMessageMetadata> {
   const privateEnvelope = await parsePrivateMailEnvelope(input.rawMime)
-  const id = messageStorageId(input.envelope, input.rawMime)
+  const id = messageStorageId(
+    input.envelope,
+    input.rawMime,
+    options.domainByResolvedDestination ? input.resolved : undefined,
+  )
   const rawSha256 = crypto.createHash("sha256").update(input.rawMime).digest("hex")
   const placement = input.classification?.placement ?? input.resolved.defaultPlacement
   const trustReason = input.classification?.trustReason ?? (input.resolved.compartmentKind === "delegated"
@@ -944,13 +964,19 @@ export async function buildEncryptedStoredMailMessage(input: BuildStoredMailMess
   privateEnvelope: PrivateMailEnvelope
   candidate?: MailScreenerCandidate
 }> {
-  const { id, privateEnvelope, metadata, candidate } = await buildStoredMailMessageMetadata(input)
+  const { id, privateEnvelope, metadata, candidate } = await buildStoredMailMessageMetadata(input, {
+    domainByResolvedDestination: true,
+  })
   const { rawObjectStem, ...rest } = metadata
+  const keyTupleFingerprint = crypto
+    .createHash("sha256")
+    .update(stableJson({ keyId: input.resolved.keyId, publicKeyPem: input.resolved.publicKeyPem }))
+    .digest("hex")
   const rawPayload = encryptForMailKey(input.rawMime, input.resolved.publicKeyPem, input.resolved.keyId)
   const privatePayload = encryptJsonForMailKey(privateEnvelope, input.resolved.publicKeyPem, input.resolved.keyId)
   const message: StoredMailMessageEncrypted = {
     ...rest,
-    rawObject: `${rawObjectStem}.json`,
+    rawObject: `${rawObjectStem}.${keyTupleFingerprint}.json`,
     bodyForm: "encrypted",
     privateEnvelope: privatePayload,
   }
