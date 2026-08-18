@@ -156,6 +156,19 @@ describe("mail search cache", () => {
     expect(removeMailSearchCacheFile("slugger", "missing.json", options)).toBe(false)
   })
 
+  it("surfaces local deletion failures instead of reporting convergence", () => {
+    const cacheRoot = tempDir()
+    const options = { cacheDirForAgent: () => cacheRoot }
+    upsertMailSearchCacheDocument(message({ id: "mail_delete_failure" }), privateEnvelope(), options)
+    fs.chmodSync(cacheRoot, 0o500)
+    try {
+      expect(() => removeMailSearchCacheDocument("slugger", "mail_delete_failure", options)).toThrow()
+    } finally {
+      fs.chmodSync(cacheRoot, 0o700)
+    }
+    expect(fs.existsSync(path.join(cacheRoot, "mail_delete_failure.json"))).toBe(true)
+  })
+
   it("cleans an atomic-write temporary file when replacement fails", () => {
     const cacheRoot = tempDir()
     const options = { cacheDirForAgent: () => cacheRoot }

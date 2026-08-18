@@ -305,6 +305,45 @@ describe("hosted mail tools", () => {
     expect(fs.readdirSync(cacheRoot)).toEqual(["coverage"])
   })
 
+  it("does not cache a fetched body whose metadata disagrees with authority", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_metadata_mismatch", "Wrong body")
+    const currentPrivateKey = Object.values(current.keys)[0]!
+    const authoritativeId = "mail_authoritative"
+    const records = [{
+      schemaVersion: 1 as const,
+      id: authoritativeId,
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: current.message.receivedAt,
+    }]
+
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records,
+          snapshot: canonicalSnapshot(records),
+        })),
+      },
+      store: { getIndexedMessageById: vi.fn(async () => current.message) } as never,
+      privateKeys: { mail_metadata_mismatch: currentPrivateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ fetched: 1, alreadyCached: 0, skipped: 1 }))
+    expect(fs.readdirSync(cacheRoot)).toEqual(["coverage"])
+    expect(searchMailCacheIds(cacheOptions)).toEqual([])
+  })
+
   it("merges cached and imported search docs newest-first, dedupes ids, and respects the limit", async () => {
     const { mergeCachedMailSearchDocuments } = await import("../../repertoire/tools-mail")
 

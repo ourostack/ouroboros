@@ -254,6 +254,24 @@ describe("AzureBlobMailroomStore", () => {
     expect(serviceClient.container.createCalls).toBe(0)
   })
 
+  it("reads a body selected by authoritative index without a create-if-missing operation", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    serviceClient.container.blobs.set("messages/mail_indexed.json", {
+      data: Buffer.from(JSON.stringify({ id: "mail_indexed" })),
+      downloads: 0,
+      uploads: 0,
+      deletes: 0,
+    })
+
+    await expect(store.getIndexedMessageById("mail_indexed")).resolves.toEqual(expect.objectContaining({ id: "mail_indexed" }))
+    await expect(store.getIndexedMessageById("mail_missing")).resolves.toBeNull()
+    expect(serviceClient.container.createCalls).toBe(0)
+  })
+
   it("counts partially numeric sort keys, invalid placements, and empty ids as malformed authority", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const store = new AzureBlobMailroomStore({
