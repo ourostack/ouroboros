@@ -75,7 +75,7 @@ vi.mock("../../../heart/daemon/agentic-repair", () => mockAgenticRepair)
 import {
   createDefaultOuroCliDeps,
   parseOuroCommand,
-  runOuroCli,
+  runOuroCli as runOuroCliImpl,
   summarizeDaemonStartupFailure,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
@@ -98,6 +98,16 @@ import {
   writeSyntheticBridgeEvidence,
   writeSyntheticHabitDefinition,
 } from "../../fixtures/habits/habit-cancel-evidence"
+
+const runBootSyncProbeImpl: NonNullable<OuroCliDeps["runBootSyncProbeImpl"]> = vi.fn(async () => ({
+  findings: [],
+  durationMs: 0,
+}))
+
+const runOuroCli: typeof runOuroCliImpl = (args, deps) => {
+  deps.runBootSyncProbeImpl ??= runBootSyncProbeImpl
+  return runOuroCliImpl(args, deps)
+}
 
 const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
