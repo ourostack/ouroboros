@@ -7,6 +7,16 @@ import type { InboundTurnResult } from "../../senses/pipeline"
 // ── Mocks ──────────────────────────────────────────────────────
 
 const mockHandleInboundTurn = vi.fn()
+const mockWithSessionTurnLease = vi.fn(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
+  sessionPath: "/tmp/session.json",
+  ownerId: "owner-a",
+  ownerToken: "token-a",
+  release: vi.fn(),
+}))
+
+vi.mock("../../mind/session-transaction", () => ({
+  withSessionTurnLease: (...args: any[]) => mockWithSessionTurnLease(...args),
+}))
 
 vi.mock("../../senses/pipeline", async () => {
   const actual = await vi.importActual<typeof import("../../senses/pipeline")>("../../senses/pipeline")
@@ -293,6 +303,58 @@ describe("runSenseTurn", () => {
     mockLoadSession.mockReturnValue(null)
     setupSettledTurn()
     mockFriendResolve.mockResolvedValue(makeResolvedContext())
+    mockWithSessionTurnLease.mockReset().mockImplementation(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
+      sessionPath: "/tmp/session.json",
+      ownerId: "owner-a",
+      ownerToken: "token-a",
+      release: vi.fn(),
+    }))
+  })
+
+  it("behaviorally holds the session lease before load through persistence and accepted delivery", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const order: string[] = []
+    mockWithSessionTurnLease.mockImplementationOnce(async (_sessionPath: string, work: (lease: any) => Promise<any>) => {
+      order.push("lease:acquired")
+      entered.resolve()
+      await release.promise
+      const result = await work({ sessionPath: "/tmp/session.json", ownerId: "owner-a", ownerToken: "token-a", release: vi.fn() })
+      order.push("lease:released")
+      return result
+    })
+    mockLoadSession.mockImplementation(() => { order.push("session:load"); return null })
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      order.push("provider:start")
+      input.callbacks.onTextChunk("delivered")
+      await input.postTurn([], "/tmp/session.json")
+      order.push("session:persist")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const running = runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      deliverySink: { onDelivery: () => { order.push("outward:delivered") } },
+    })
+    await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("lease was not acquired")), 100))])
+    expect(mockLoadSession).not.toHaveBeenCalled()
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    release.resolve()
+    await running
+
+    expect(order).toEqual([
+      "lease:acquired",
+      "session:load",
+      "provider:start",
+      "session:persist",
+      "outward:delivered",
+      "lease:released",
+    ])
   })
 
   it("returns response text from a settled turn", async () => {

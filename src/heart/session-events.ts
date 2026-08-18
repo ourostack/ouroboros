@@ -1,5 +1,8 @@
 import * as fs from "fs"
+import { createHash } from "node:crypto"
 import type OpenAI from "openai"
+import type { ApprovalRecord } from "./approval-store"
+import type { ApprovalSuspensionCheckpoint } from "./tool-approval"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   extractStructuredOutputsFromEvents,
@@ -89,6 +92,212 @@ export interface SessionEnvelope {
   structuredOutputs?: StructuredOutput[]
   lastUsage: SessionUsageData | null
   state: SessionContinuitySnapshot
+  approvalSuspensions?: SessionApprovalSuspensionCheckpoint[]
+}
+
+export interface SessionApprovalSuspensionCheckpoint {
+  approvalId: string
+  checkpointDigest: string
+  baseSessionRevision: string
+  suspendedSessionRevision: string
+  argumentDigest: string
+  schemaDigest: string
+  toolDigest: string
+  policyDigest: string
+  preCallDigest: string
+  preCallMessages: OpenAI.ChatCompletionMessageParam[]
+  frozenAssistantMessage: Record<string, unknown>
+}
+
+export interface MaterializedApprovalTerminal {
+  messages: OpenAI.ChatCompletionMessageParam[]
+  materialized: boolean
+  resumeProvider: boolean
+  directNotice?: string
+  severity?: "high"
+  revision: string
+}
+
+const APPROVAL_TERMINAL_TEXT: Partial<Record<ApprovalRecord["state"], string>> = {
+  denied: "approval denied by requester; the protected action was not executed",
+  expired: "approval expired before execution; the protected action was not executed",
+  drifted: "approval became invalid before execution; the protected action was not executed",
+  abandoned_before_attempt: "approval was abandoned before execution; the protected action was not executed; request a fresh approval",
+  attempted_indeterminate: "execution may have occurred; do not retry automatically",
+}
+
+function messagesRevision(messages: OpenAI.ChatCompletionMessageParam[]): string {
+  return createHash("sha256").update(JSON.stringify(messages), "utf8").digest("hex")
+}
+
+function hasExactMaterializedApprovalPair(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  checkpoint: ApprovalSuspensionCheckpoint,
+  toolCallId: string,
+  content: string,
+): boolean {
+  if (messages.length < 2) return false
+  const assistant = messages.at(-2)!
+  const tool = messages.at(-1)!
+  const expectedTool: OpenAI.ChatCompletionToolMessageParam = {
+    role: "tool",
+    tool_call_id: toolCallId,
+    content,
+  }
+  return assistant.role === "assistant"
+    && tool.role === "tool"
+    && messageFingerprint(assistant) === messageFingerprint(
+      checkpoint.frozenAssistantMessage as unknown as OpenAI.ChatCompletionAssistantMessageParam,
+    )
+    && messageFingerprint(tool) === messageFingerprint(expectedTool)
+}
+
+export function materializeApprovalTerminal(input: {
+  messages: OpenAI.ChatCompletionMessageParam[]
+  checkpoint: ApprovalSuspensionCheckpoint
+  record: ApprovalRecord
+  currentSessionRevision: string
+  materializedApprovalIds?: string[]
+}): MaterializedApprovalTerminal {
+  const messages = structuredClone(input.messages)
+  if (input.record.state === "session_head_changed") {
+    return {
+      messages,
+      materialized: false,
+      resumeProvider: false,
+      directNotice: "the session changed before this approval could be applied; the protected action was not executed",
+      revision: messagesRevision(messages),
+    }
+  }
+  const content = input.record.state === "succeeded" || input.record.state === "failed"
+    ? input.record.result
+    : APPROVAL_TERMINAL_TEXT[input.record.state]
+  if (!content) throw new Error(`approval state ${input.record.state} cannot be materialized`)
+  const resumeProvider = input.record.state === "succeeded" || input.record.state === "failed" || input.record.state === "denied"
+  const exactPair = hasExactMaterializedApprovalPair(messages, input.checkpoint, input.record.toolCallId, content)
+  if (exactPair) {
+    return {
+      messages,
+      materialized: false,
+      resumeProvider,
+      ...(resumeProvider ? {} : { directNotice: content }),
+      ...(input.record.state === "attempted_indeterminate" ? { severity: "high" as const } : {}),
+      revision: messagesRevision(messages),
+    }
+  }
+  const advanced = input.currentSessionRevision !== input.checkpoint.suspendedSessionRevision
+  if (advanced) {
+    return {
+      messages,
+      materialized: false,
+      resumeProvider: false,
+      directNotice: "the session changed before this approval could be applied; the protected action was not executed",
+      revision: messagesRevision(messages),
+    }
+  }
+  if (input.materializedApprovalIds?.includes(input.record.approvalId)) {
+    return {
+      messages,
+      materialized: false,
+      resumeProvider,
+      ...(resumeProvider ? {} : { directNotice: content }),
+      ...(input.record.state === "attempted_indeterminate" ? { severity: "high" as const } : {}),
+      revision: messagesRevision(messages),
+    }
+  }
+  const frozen = structuredClone(input.checkpoint.frozenAssistantMessage) as unknown as OpenAI.ChatCompletionAssistantMessageParam
+  messages.push(frozen, { role: "tool", tool_call_id: input.record.toolCallId, content })
+  const directNotice = resumeProvider ? undefined : content
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.approval_terminal_materialized",
+    message: "materialized approval terminal transcript pair",
+    meta: { approvalId: input.record.approvalId, state: input.record.state, resumeProvider },
+  })
+  return {
+    messages,
+    materialized: true,
+    resumeProvider,
+    ...(directNotice ? { directNotice } : {}),
+    ...(input.record.state === "attempted_indeterminate" ? { severity: "high" as const } : {}),
+    revision: messagesRevision(messages),
+  }
+}
+
+const APPROVAL_HASH = /^[a-f0-9]{64}$/
+
+function normalizeApprovalSuspensions(value: unknown): SessionApprovalSuspensionCheckpoint[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return []
+    const record = item as Record<string, unknown>
+    if (
+      typeof record.approvalId !== "string"
+      || typeof record.checkpointDigest !== "string"
+      || !APPROVAL_HASH.test(record.checkpointDigest)
+      || typeof record.baseSessionRevision !== "string"
+      || !APPROVAL_HASH.test(record.baseSessionRevision)
+      || typeof record.suspendedSessionRevision !== "string"
+      || !APPROVAL_HASH.test(record.suspendedSessionRevision)
+      || typeof record.argumentDigest !== "string"
+      || !APPROVAL_HASH.test(record.argumentDigest)
+      || typeof record.schemaDigest !== "string"
+      || !APPROVAL_HASH.test(record.schemaDigest)
+      || typeof record.toolDigest !== "string"
+      || !APPROVAL_HASH.test(record.toolDigest)
+      || typeof record.policyDigest !== "string"
+      || !APPROVAL_HASH.test(record.policyDigest)
+      || typeof record.preCallDigest !== "string"
+      || !APPROVAL_HASH.test(record.preCallDigest)
+      || !Array.isArray(record.preCallMessages)
+      || !record.frozenAssistantMessage
+      || typeof record.frozenAssistantMessage !== "object"
+      || Array.isArray(record.frozenAssistantMessage)
+    ) return []
+    return [{
+      approvalId: record.approvalId,
+      checkpointDigest: record.checkpointDigest,
+      baseSessionRevision: record.baseSessionRevision,
+      suspendedSessionRevision: record.suspendedSessionRevision,
+      argumentDigest: record.argumentDigest,
+      schemaDigest: record.schemaDigest,
+      toolDigest: record.toolDigest,
+      policyDigest: record.policyDigest,
+      preCallDigest: record.preCallDigest,
+      preCallMessages: structuredClone(record.preCallMessages) as OpenAI.ChatCompletionMessageParam[],
+      frozenAssistantMessage: structuredClone(record.frozenAssistantMessage) as Record<string, unknown>,
+    }]
+  })
+}
+
+export function attachApprovalSuspensionCheckpoint(
+  envelope: SessionEnvelope,
+  checkpoint: SessionApprovalSuspensionCheckpoint,
+): SessionEnvelope {
+  const existing = envelope.approvalSuspensions ?? []
+  const retained = existing.filter((item) => item.approvalId !== checkpoint.approvalId)
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.approval_checkpoint_attached",
+    message: "approval suspension checkpoint attached outside provider projection",
+    meta: { approvalId: checkpoint.approvalId },
+  })
+  return { ...envelope, approvalSuspensions: [...retained, structuredClone(checkpoint)] }
+}
+
+export function listApprovalSuspensionCheckpoints(envelope: SessionEnvelope): SessionApprovalSuspensionCheckpoint[] {
+  return structuredClone(envelope.approvalSuspensions ?? [])
+}
+
+export function removeApprovalSuspensionCheckpoint(envelope: SessionEnvelope, approvalId: string): SessionEnvelope {
+  const approvalSuspensions = (envelope.approvalSuspensions ?? []).filter((item) => item.approvalId !== approvalId)
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.approval_checkpoint_removed",
+    message: "approval suspension checkpoint removed",
+    meta: { approvalId },
+  })
+  return { ...envelope, approvalSuspensions }
 }
 
 interface SessionEnvelopeV1 {
@@ -1180,6 +1389,7 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       : normalizeStructuredOutputs(record.structuredOutputs),
     lastUsage: normalizeUsage(record.lastUsage),
     state: normalizeContinuityState(record.state),
+    approvalSuspensions: normalizeApprovalSuspensions(record.approvalSuspensions),
   }
 }
 
@@ -1345,6 +1555,7 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
       structuredOutputs: extractStructuredOutputsFromEvents(prunedEvents),
       lastUsage: normalizeUsage(options.lastUsage),
       state: normalizeContinuityState(options.state),
+      approvalSuspensions: structuredClone(options.existing?.approvalSuspensions ?? []),
     },
     evictedEvents,
   }

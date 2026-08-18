@@ -23,6 +23,7 @@ import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pe
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { withSessionTurnLease, type SessionTurnLease } from "../../mind/session-transaction"
 import {
   buildOrientationFrame,
   type OrientationConversationKind,
@@ -395,6 +396,7 @@ interface RuntimeDeps {
   getOwnHandles: () => readonly string[]
   promoteFailoverState: (sessionKey: string, state: FailoverState) => void
   recordProcessed: typeof recordProcessedBlueBubblesMessage
+  withSessionTurnLease: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
 }
 
 export interface BlueBubblesReplyTargetController {
@@ -440,6 +442,7 @@ const defaultDeps: RuntimeDeps = {
     bbFailoverStates.set(sessionKey, structuredClone(state))
   },
   recordProcessed: recordProcessedBlueBubblesMessage,
+  withSessionTurnLease,
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
@@ -1847,6 +1850,7 @@ async function handleBlueBubblesNormalizedEvent(
       const replyTarget = createReplyTargetController(event)
       const friendId = context.friend.id
       const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
+      return await resolvedDeps.withSessionTurnLease(sessPath, async (sessionTurnLease) => {
       try {
         findObsoleteBlueBubblesThreadSessions(sessPath)
       } catch (error) {
@@ -2042,6 +2046,7 @@ async function handleBlueBubblesNormalizedEvent(
     let timeoutPromise!: Promise<BlueBubblesHandleResult>
     let resolveTimeout: ((result: BlueBubblesHandleResult) => void) | undefined
     let recoveryTimedOut = false
+    let activeRunTurn: Promise<BlueBubblesHandleResult> | null = null
 
     // BB-specific tool context wrappers
     const summarize = createSummarize("human")
@@ -2262,6 +2267,7 @@ async function handleBlueBubblesNormalizedEvent(
           },
         },
         callbacks: failoverAwareCallbacks,
+        sessionTurnLease,
         failoverState: turnStage.failoverState,
       })
       /* v8 ignore start -- detached late-rejection telemetry is asserted in timeout tests, but V8 does not reliably attribute Promise.catch callbacks @preserve */
@@ -2406,6 +2412,7 @@ async function handleBlueBubblesNormalizedEvent(
           kind: event.kind,
         }
       })()
+      activeRunTurn = runTurn
       /* v8 ignore start -- detached post-timeout suppression telemetry @preserve */
       void runTurn.catch((error) => {
         if (!recoveryTimedOut) return
@@ -2425,6 +2432,9 @@ async function handleBlueBubblesNormalizedEvent(
       /* v8 ignore stop */
       return await Promise.race([runTurn, timeoutPromise, supersessionPromise, lifecyclePromise])
     } finally {
+      // A timed-out/superseded provider may ignore abort briefly. Never release
+      // the cross-process session lease until that work has actually quiesced.
+      if (activeRunTurn) await activeRunTurn.catch(() => undefined)
       // If a terminal error was buffered and never replayed (e.g., handleInboundTurn threw),
       // replay it now so the user still sees the error.
       /* v8 ignore start -- error replay on throw: tested via BB error test @preserve */
@@ -2440,6 +2450,7 @@ async function handleBlueBubblesNormalizedEvent(
       activeTurnId = null
       await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
     }
+    })
     })
   } finally {
     if (activeTurnId) finishBlueBubblesActiveTurn(agentName, activeTurnId)

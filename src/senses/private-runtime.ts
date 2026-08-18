@@ -25,6 +25,7 @@ import { getChannelCapabilities, accumulateFriendTokens } from "@ouro.bot/friend
 import type { FriendRecord, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
+import { withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readCachedProviderCredentialRecord } from "../heart/provider-credentials"
@@ -90,6 +91,7 @@ export interface RunPrivateRuntimeTurnOptions {
   preparedHabit?: PreparedHabitContext
   privateTurnDecision?: PrivateTurnDecision
   noSend?: true
+  _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
 }
 
 export interface PreparedHabitContext {
@@ -966,6 +968,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     startedAt: now().toISOString(),
   })
 
+  const runWithLease = options?._withSessionTurnLease ?? withSessionTurnLease
+  return await runWithLease(sessionFilePath, async (sessionTurnLease) => {
   try {
   const loaded = loadSession(sessionFilePath)
   const existingMessages = loaded?.messages ? [...loaded.messages] : []
@@ -1229,6 +1233,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     messages: [userMessage],
     continuityIngressTexts: [],
     callbacks,
+    sessionTurnLease,
     friendResolver: { resolve: () => Promise.resolve(selfContext) },
     sessionLoader,
     pendingDir,
@@ -1324,4 +1329,5 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       lastCompletedAt: now().toISOString(),
     })
   }
+  })
 }

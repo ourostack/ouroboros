@@ -25,8 +25,21 @@ export const shellToolDefinitions: ToolDefinition[] = [
             },
           },
           required: ["command"],
+          additionalProperties: false,
         },
       },
+    },
+    approvalPolicy: (args) => {
+      const command = typeof args.command === "string" ? args.command.trim().split(/\s+/) : []
+      if (command[0] === "docker" && command[1] === "restart" && command.length > 2) {
+        return {
+          kind: "required",
+          policyId: "shell.docker-lifecycle.v1",
+          actionClass: "service-control",
+          requiresSoleCall: true,
+        }
+      }
+      return { kind: "not_required" }
     },
     handler: (a) => {
       // Destructive pattern detection (friction, not a block)

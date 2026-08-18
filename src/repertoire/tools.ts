@@ -1,6 +1,6 @@
 import type OpenAI from "openai";
 import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
-import type { ToolContext, ToolDefinition } from "./tools-base";
+import type { ToolApprovalPolicy, ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
@@ -147,6 +147,10 @@ export function resolveToolDefinition(toolName: string): ToolDefinition | undefi
   return baseToolDefinitions.find((d) => d.tool.function.name === toolName)
     ?? allDefinitions.find((d) => d.tool.function.name === toolName)
     ?? mcpDefinitions.find((d) => d.tool.function.name === toolName)
+}
+
+export function approvalPolicyForToolName(name: string, args: Record<string, unknown>): ToolApprovalPolicy {
+  return resolveToolDefinition(name)?.approvalPolicy?.(args) ?? { kind: "not_required" }
 }
 
 const findDefinition = resolveToolDefinition

@@ -140,6 +140,17 @@ export type ToolRiskProfile =
 
 export type ToolRiskProfileResolver = (args: Record<string, string>) => ToolRiskProfile
 
+export type ToolApprovalPolicy =
+  | { kind: "not_required" }
+  | {
+      kind: "required"
+      policyId: string
+      actionClass: string
+      requiresSoleCall: true
+    }
+
+export type ToolApprovalPolicyResolver = (args: Record<string, unknown>) => ToolApprovalPolicy
+
 export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;
   handler: ToolHandler;
@@ -147,6 +158,7 @@ export interface ToolDefinition {
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
   riskProfile?: ToolRiskProfile | ToolRiskProfileResolver;
+  approvalPolicy?: ToolApprovalPolicyResolver;
   terminalProjection?: {
     mode: "verbatim";
     requiresSoleCall: true;
