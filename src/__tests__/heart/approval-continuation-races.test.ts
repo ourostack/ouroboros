@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-async function subject(): Promise<any> {
-  return import("../../heart/approval-continuation")
-}
+import * as toolApproval from "../../heart/tool-approval"
 
 function gate() {
   const entered = Promise.withResolvers<void>()
@@ -21,7 +19,10 @@ function terminal(state: string) {
 
 describe("approval continuation race contract", () => {
   it("returns retryable busy before claim when another process owns the session turn", async () => {
-    const { coordinateApprovalDecision, SessionTurnBusyError } = await subject()
+    const coordinateApprovalDecision = (toolApproval as any).coordinateApprovalDecision
+    class SessionTurnBusyError extends Error {
+      retryable = true
+    }
     const decideAndExecute = vi.fn()
     const resume = vi.fn()
 
@@ -35,7 +36,7 @@ describe("approval continuation race contract", () => {
   })
 
   it("new inbound persistence winning before claim makes approval head-changed with zero handler calls", async () => {
-    const { coordinateApprovalDecision } = await subject()
+    const coordinateApprovalDecision = (toolApproval as any).coordinateApprovalDecision
     const handler = vi.fn()
     const resume = vi.fn()
     const notices: string[] = []
@@ -60,7 +61,7 @@ describe("approval continuation race contract", () => {
   })
 
   it("approval winning the lease holds inbound load/provider/persist until continuation delivery completes", async () => {
-    const { coordinateApprovalDecision } = await subject()
+    const coordinateApprovalDecision = (toolApproval as any).coordinateApprovalDecision
     const approval = gate()
     const order: string[] = []
     let locked = false
@@ -106,7 +107,7 @@ describe("approval continuation race contract", () => {
   })
 
   it("head drift discovered after a bound decision but before attempted terminalizes without execution", async () => {
-    const { coordinateApprovalDecision } = await subject()
+    const coordinateApprovalDecision = (toolApproval as any).coordinateApprovalDecision
     const handler = vi.fn()
     const resume = vi.fn()
     const decideAndExecute = vi.fn(async ({ hooks }: any) => {
@@ -134,10 +135,12 @@ describe("approval continuation race contract", () => {
   it.each(["denied", "expired", "drifted", "attempted_indeterminate", "session_head_changed"])(
     "never invokes a protected handler while projecting terminal %s",
     async (state) => {
-      const { coordinateApprovalDecision } = await subject()
+      const coordinateApprovalDecision = (toolApproval as any).coordinateApprovalDecision
       const handler = vi.fn()
-      const resume = vi.fn()
-      const directNotice = vi.fn()
+      const order: string[] = []
+      const resume = vi.fn(() => { order.push("resume") })
+      const persist = vi.fn(() => { order.push("persist") })
+      const directNotice = vi.fn(() => { order.push("notice") })
 
       await coordinateApprovalDecision({
         withSessionLease: async (work: any) => work({ ownerId: "approval-owner", ownerToken: "token" }),
@@ -146,13 +149,20 @@ describe("approval continuation race contract", () => {
         decideAndExecute: vi.fn(async () => terminal(state)),
         execute: handler,
         resume,
+        persist,
         directNotice,
       })
 
       expect(handler).not.toHaveBeenCalled()
-      if (state === "denied") expect(resume).toHaveBeenCalledTimes(1)
-      else expect(resume).not.toHaveBeenCalled()
-      if (state !== "denied") expect(directNotice).toHaveBeenCalledTimes(1)
+      expect(persist).toHaveBeenCalledTimes(1)
+      if (state === "denied") {
+        expect(resume).toHaveBeenCalledTimes(1)
+        expect(order).toEqual(["persist", "resume"])
+      } else {
+        expect(resume).not.toHaveBeenCalled()
+        expect(directNotice).toHaveBeenCalledTimes(1)
+        expect(order).toEqual(["persist", "notice"])
+      }
     },
   )
 })

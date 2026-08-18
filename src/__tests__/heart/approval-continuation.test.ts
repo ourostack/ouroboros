@@ -2,13 +2,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { ApprovalRecord, ApprovalState } from "../../heart/approval-store"
 import type { ApprovalSuspensionCheckpoint } from "../../heart/tool-approval"
+import * as core from "../../heart/core"
+import * as sessionEvents from "../../heart/session-events"
 
 const APPROVAL_ID = "11111111-1111-4111-8111-111111111111"
 const REVISION = "f".repeat(64)
-
-async function subject(): Promise<any> {
-  return import("../../heart/approval-continuation")
-}
 
 function assistantMessage() {
   return {
@@ -82,7 +80,7 @@ describe("approval terminal transcript projection", () => {
     ["failed", "error: restart refused", "error: restart refused", true],
     ["denied", null, "approval denied by requester; the protected action was not executed", true],
   ] as const)("materializes one exact correlated pair for %s and marks provider resume eligibility", async (state, result, expected, resumeProvider) => {
-    const { materializeApprovalTerminal } = await subject()
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
 
     const materialized = materializeApprovalTerminal({
       messages: checkpoint().preCallMessages,
@@ -102,7 +100,7 @@ describe("approval terminal transcript projection", () => {
   })
 
   it("is idempotent by approval id and never inserts a duplicate assistant/tool pair", async () => {
-    const { materializeApprovalTerminal } = await subject()
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
     const first = materializeApprovalTerminal({
       messages: checkpoint().preCallMessages,
       checkpoint: checkpoint(),
@@ -128,7 +126,7 @@ describe("approval terminal transcript projection", () => {
     ["abandoned_before_attempt", false, "approval was abandoned before execution"],
     ["attempted_indeterminate", false, "may have executed; do not retry"],
   ] as const)("projects %s without provider resume and with a safe direct notice", async (state, resumeProvider, notice) => {
-    const { materializeApprovalTerminal } = await subject()
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
     const projected = materializeApprovalTerminal({
       messages: checkpoint().preCallMessages,
       checkpoint: checkpoint(),
@@ -139,6 +137,12 @@ describe("approval terminal transcript projection", () => {
     expect(projected.resumeProvider).toBe(resumeProvider)
     expect(projected.directNotice).toContain(notice)
     expect(projected.directNotice).not.toContain("decisionToken")
+    expect(projected.materialized).toBe(true)
+    expect(projected.messages).toEqual([
+      ...checkpoint().preCallMessages,
+      assistantMessage(),
+      expect.objectContaining({ role: "tool", tool_call_id: "call_restart" }),
+    ])
     if (state === "attempted_indeterminate") {
       expect(projected.messages.at(-1)).toEqual(expect.objectContaining({
         role: "tool",
@@ -150,7 +154,7 @@ describe("approval terminal transcript projection", () => {
   })
 
   it("never inserts the frozen call into an advanced transcript for session-head-changed", async () => {
-    const { materializeApprovalTerminal } = await subject()
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
     const advanced = [...checkpoint().preCallMessages, { role: "user" as const, content: "actually, stop" }]
     const projected = materializeApprovalTerminal({
       messages: advanced,
@@ -168,7 +172,7 @@ describe("approval terminal transcript projection", () => {
 
 describe("same-loop approval continuation", () => {
   it("restores the frozen call after delay, resumes runAgent from its tool result, persists, then delivers", async () => {
-    const { resumeApprovalContinuation } = await subject()
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
     const runAgent = vi.fn(async (messages: any[], callbacks: any) => {
       expect(messages).toEqual([
         ...checkpoint().preCallMessages,
@@ -205,7 +209,7 @@ describe("same-loop approval continuation", () => {
   })
 
   it("restarts from durable checkpoint state without replaying the originating provider work or handler", async () => {
-    const { resumeApprovalContinuation } = await subject()
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
     const execute = vi.fn()
     const runAgent = vi.fn(async (messages: any[]) => {
       expect(messages.filter((message: any) => message.role === "user" && message.content === "restart calibre-web")).toHaveLength(1)
@@ -231,7 +235,7 @@ describe("same-loop approval continuation", () => {
   })
 
   it("does not resume the provider twice when continuation eligibility was already consumed", async () => {
-    const { resumeApprovalContinuation } = await subject()
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
     const runAgent = vi.fn()
     const result = await resumeApprovalContinuation({
       record: record("succeeded", "restarted"),
@@ -251,7 +255,7 @@ describe("same-loop approval continuation", () => {
   })
 
   it("does not route a suspended checkpoint through ordinary orphan repair", async () => {
-    const { resumeApprovalContinuation } = await subject()
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
     const repairOrphans = vi.fn(() => { throw new Error("ordinary orphan repair must not run") })
 
     await expect(resumeApprovalContinuation({

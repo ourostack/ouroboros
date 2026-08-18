@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { spawn } from "node:child_process"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -16,6 +17,64 @@ function makeSession(): string {
 
 async function subject(): Promise<any> {
   return import("../../mind/session-transaction")
+}
+
+function childScript(): string {
+  return String.raw`
+const ts = require("typescript")
+require.extensions[".ts"] = (module, filename) => {
+  const source = require("fs").readFileSync(filename, "utf8")
+  const output = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    fileName: filename,
+  }).outputText
+  module._compile(output, filename)
+}
+const runtime = require(process.argv[1])
+const sessionPath = process.argv[2]
+const mode = process.argv[3]
+;(async () => {
+  const lease = await runtime.acquireSessionTurnLease(sessionPath, {
+    ownerId: "child-owner",
+    timeoutMs: 1000,
+    pollIntervalMs: 1,
+  })
+  if (mode === "hold") {
+    process.stdout.write("READY\n")
+    process.stdin.resume()
+    process.stdin.once("end", async () => {
+      await lease.release()
+      process.stdout.write("RELEASED\n")
+    })
+    return
+  }
+  try {
+    runtime.writeSessionTransaction(sessionPath, { version: 2, marker: "child-stale" }, {
+      lease,
+      expectedRevision: process.argv[4],
+    })
+    process.stdout.write("WROTE\n")
+  } catch (error) {
+    process.stdout.write("STALE:" + error.name + "\n")
+  } finally {
+    await lease.release()
+  }
+})().catch((error) => { process.stderr.write(String(error.stack || error)); process.exitCode = 1 })
+`
+}
+
+function waitForOutput(child: ReturnType<typeof spawn>, needle: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = ""
+    child.stdout!.on("data", (chunk) => {
+      output += String(chunk)
+      if (output.includes(needle)) resolve(output)
+    })
+    child.stderr!.on("data", (chunk) => reject(new Error(String(chunk))))
+    child.once("exit", (code) => {
+      if (!output.includes(needle)) reject(new Error(`child exited ${code}: ${output}`))
+    })
+  })
 }
 
 afterEach(() => {
@@ -162,5 +221,35 @@ describe("cross-process session turn transaction contract", () => {
     expect(JSON.parse(fs.readFileSync(sessionPath, "utf8"))).toMatchObject({ marker: "base" })
     expect(fs.readdirSync(path.dirname(sessionPath)).filter((name) => name.includes(".tmp-"))).toEqual([])
     await lease.release()
+  })
+
+  it("excludes a real child process, then rejects its stale cross-process revision", async () => {
+    const { acquireSessionTurnLease, readSessionTransaction, writeSessionTransaction } = await subject()
+    const sessionPath = makeSession()
+    const modulePath = path.resolve(__dirname, "../../mind/session-transaction.ts")
+    const child = spawn(process.execPath, ["-e", childScript(), modulePath, sessionPath, "hold"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    await waitForOutput(child, "READY")
+
+    await expect(acquireSessionTurnLease(sessionPath, {
+      ownerId: "parent-owner",
+      timeoutMs: 10,
+      pollIntervalMs: 1,
+    })).rejects.toMatchObject({ name: "SessionTurnBusyError" })
+    child.stdin!.end()
+    await waitForOutput(child, "RELEASED")
+
+    const parentLease = await acquireSessionTurnLease(sessionPath, { ownerId: "parent-owner", timeoutMs: 100, pollIntervalMs: 1 })
+    const base = readSessionTransaction(sessionPath, parentLease)
+    writeSessionTransaction(sessionPath, { version: 2, marker: "parent" }, { lease: parentLease, expectedRevision: base.revision })
+    await parentLease.release()
+
+    const staleChild = spawn(process.execPath, ["-e", childScript(), modulePath, sessionPath, "stale-write", base.revision], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const staleOutput = await waitForOutput(staleChild, "STALE:")
+    expect(staleOutput).toContain("STALE:")
+    expect(JSON.parse(fs.readFileSync(sessionPath, "utf8"))).toMatchObject({ marker: "parent" })
   })
 })
