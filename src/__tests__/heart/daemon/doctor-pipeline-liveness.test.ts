@@ -237,7 +237,10 @@ function seedBlueBubblesRuntime(agent = "slugger"): void {
   })
 }
 
-function blueBubblesFetch(webhook: "exact" | "missing" = "exact"): ReturnType<typeof vi.fn> {
+function blueBubblesFetch(
+  webhook: "exact" | "missing" | "drifted" = "exact",
+  upstreamStatus = 200,
+): ReturnType<typeof vi.fn> {
   const desired = buildBlueBubblesWebhookCallbackUrl({
     serverUrl: "http://bluebubbles.local",
     password: "pw",
@@ -251,10 +254,13 @@ function blueBubblesFetch(webhook: "exact" | "missing" = "exact"): ReturnType<ty
   return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     expect(init?.method).toBe("GET")
     if (String(url).includes("/api/v1/message/count")) {
-      return new Response("{}", { status: 200 })
+      return new Response("{}", { status: upstreamStatus })
     }
+    const hooks = webhook === "missing"
+      ? []
+      : [{ id: 1, url: webhook === "exact" ? desired : desired.replace(":18790", ":18791"), events: ["*"] }]
     return new Response(JSON.stringify({
-      data: webhook === "exact" ? [{ id: 1, url: desired, events: ["*"] }] : [],
+      data: hooks,
     }), { status: 200 })
   })
 }
@@ -735,6 +741,38 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
 
     expect(inbound.status).toBe("fail")
     expect(inbound.detail).toContain("missing owned webhook corroborates the silence")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails when a drifted owned webhook corroborates stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("drifted")
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("drifted owned-webhook evidence corroborates the silence")
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails when a definitive upstream auth fault corroborates stale inbound", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
+    writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
+    seedBlueBubblesRuntime()
+    const fetchImpl = blueBubblesFetch("exact", 401)
+
+    const inbound = findCheck((await checkSenses(depsFor(bundlesRoot, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }))).checks, "senses.bluebubbles.inbound_liveness")
+
+    expect(inbound.status).toBe("fail")
+    expect(inbound.detail).toContain("a definitive upstream fault corroborates the silence")
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 

@@ -294,9 +294,24 @@ type BlueBubblesInfrastructureEvidence = {
   webhook: BlueBubblesWebhookRegistrationState | null
 }
 
+const DEFINITIVE_BLUEBUBBLES_FAILURES: ReadonlySet<BlueBubblesHealthProbeResult["classification"]> = new Set([
+  "auth-failure",
+  "rate-limit",
+  "server-error",
+  "usage-limit",
+])
+
+const DEFINITIVE_BLUEBUBBLES_WEBHOOK_STATES: ReadonlySet<BlueBubblesWebhookRegistrationState | null> = new Set([
+  "missing",
+  "drifted",
+  "auth-failed",
+  "malformed",
+  "listener-not-ready",
+])
+
 function blueBubblesUpstreamEvidence(probe: BlueBubblesHealthProbeResult): BlueBubblesInfrastructureEvidence["upstream"] {
   if (probe.ok) return "healthy"
-  if (probe.classification === "auth-failure" || probe.classification === "rate-limit" || probe.classification === "server-error" || probe.classification === "usage-limit") {
+  if (DEFINITIVE_BLUEBUBBLES_FAILURES.has(probe.classification)) {
     return "definitive-fault"
   }
   return "unavailable"
@@ -315,15 +330,11 @@ function blueBubblesInboundDeliveryCheck(
     return { ...base, status: result.status, detail: result.detail }
   }
 
-  const webhookDefinitive = evidence.webhook === "missing"
-    || evidence.webhook === "drifted"
-    || evidence.webhook === "auth-failed"
-    || evidence.webhook === "malformed"
-    || evidence.webhook === "listener-not-ready"
+  const webhookDefinitive = DEFINITIVE_BLUEBUBBLES_WEBHOOK_STATES.has(evidence.webhook)
   if (evidence.upstream === "definitive-fault" || webhookDefinitive) {
     const corroboration = evidence.webhook === "missing"
       ? "missing owned webhook corroborates the silence"
-      : evidence.webhook && webhookDefinitive
+      : webhookDefinitive
         ? `${evidence.webhook} owned-webhook evidence corroborates the silence`
         : "a definitive upstream fault corroborates the silence"
     return { ...base, status: "fail", detail: `${corroboration}; ${result.detail}` }
@@ -359,11 +370,6 @@ export function checkAgents(deps: DoctorDeps): DoctorCategory {
   for (const agentDir of agents) {
     const agentPath = `${deps.bundlesRoot}/${agentDir}`
     const configPath = `${agentPath}/agent.json`
-
-    if (!deps.existsSync(configPath)) {
-      checks.push({ label: `${agentDir}/agent.json`, status: "fail", detail: "missing" })
-      continue
-    }
 
     let config: Record<string, unknown>
     try {
