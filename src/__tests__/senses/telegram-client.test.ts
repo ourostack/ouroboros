@@ -103,3 +103,62 @@ describe("Telegram HTML rendering and chunking", () => {
     expect(always400.request).toHaveBeenCalledTimes(2)
   })
 })
+
+describe("Telegram rate limiting and shutdown", () => {
+  it("retries at most three 429 responses with exact 1..30 second clamping", async () => {
+    const retryAfter = [0, 31, 1]
+    const fetch = vi.fn(async () => {
+      const next = retryAfter.shift()
+      return next === undefined
+        ? jsonResponse({ ok: true, result: "done" })
+        : jsonResponse({ ok: false, error_code: 429, description: "slow", parameters: { retry_after: next } }, 429)
+    })
+    const sleep = vi.fn(async () => undefined)
+    const api = createTelegramBotApi({ token, fetch, sleep })
+
+    await expect(api.request("sendMessage", {})).resolves.toBe("done")
+    expect(fetch).toHaveBeenCalledTimes(4)
+    expect(sleep.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([1_000, 30_000, 1_000])
+  })
+
+  it("fails on the fourth 429 and on malformed retry metadata", async () => {
+    const sleep = vi.fn(async () => undefined)
+    const repeated = createTelegramBotApi({
+      token,
+      sleep,
+      fetch: vi.fn(async () => jsonResponse({ ok: false, error_code: 429, parameters: { retry_after: 2 } }, 429)),
+    })
+    await expect(repeated.request("sendMessage", {})).rejects.toMatchObject({ status: 429 })
+    expect(sleep).toHaveBeenCalledTimes(3)
+
+    const malformedSleep = vi.fn(async () => undefined)
+    const malformed = createTelegramBotApi({
+      token,
+      sleep: malformedSleep,
+      fetch: vi.fn(async () => jsonResponse({ ok: false, error_code: 429, parameters: { retry_after: 1.5 } }, 429)),
+    })
+    await expect(malformed.request("sendMessage", {})).rejects.toMatchObject({ status: 429 })
+    expect(malformedSleep).not.toHaveBeenCalled()
+  })
+
+  it("aborts during backoff and shutdown without a post-abort retry", async () => {
+    const controller = new AbortController()
+    const fetch = vi.fn(async () => jsonResponse({ ok: false, error_code: 429, parameters: { retry_after: 2 } }, 429))
+    const sleep = vi.fn(async (_milliseconds: number, signal: AbortSignal) => {
+      controller.abort()
+      signal.throwIfAborted()
+    })
+    const api = createTelegramBotApi({ token, fetch, sleep })
+    await expect(api.request("sendMessage", {}, controller.signal)).rejects.toThrow()
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    const blockingFetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
+    }))
+    const stoppable = createTelegramBotApi({ token, fetch: blockingFetch })
+    const pending = stoppable.request("getUpdates", {})
+    stoppable.stop()
+    await expect(pending).rejects.toThrow()
+    expect(blockingFetch).toHaveBeenCalledTimes(1)
+  })
+})
