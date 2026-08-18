@@ -786,6 +786,46 @@ describe("private runtime", () => {
   // ── Pipeline integration tests ──────────────────────────────────
 
   describe("private-runtime provider boundary", () => {
+    it("behaviorally holds the session lease before load/provider through persistence and returned result", async () => {
+      const entered = Promise.withResolvers<void>()
+      const allowTurn = Promise.withResolvers<void>()
+      const order: string[] = []
+      const withSessionTurnLease = vi.fn(async (_path: string, work: (lease: any) => Promise<any>) => {
+        order.push("lease:acquired")
+        entered.resolve()
+        await allowTurn.promise
+        const result = await work({ sessionPath: sessionFile, ownerId: "owner-a", ownerToken: "token-a" })
+        order.push("turn:returned")
+        order.push("lease:released")
+        return result
+      })
+      mockLoadSession.mockImplementation(() => { order.push("session:load"); return null })
+      mockRunAgent.mockImplementation(async () => { order.push("provider:run"); return { outcome: "settled" } })
+      mockDeferPostTurnPersist.mockImplementation(async () => { order.push("session:persist"); return [] })
+
+      const running = runApprovedPrivateRuntimeTurn({
+        reason: "instinct",
+        instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+        now: () => new Date("2026-03-06T12:00:00.000Z"),
+        _withSessionTurnLease: withSessionTurnLease,
+      } as any)
+      await Promise.race([entered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("lease was not acquired")), 100))])
+      expect(mockLoadSession).not.toHaveBeenCalled()
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      expect(mockRunAgent).not.toHaveBeenCalled()
+      allowTurn.resolve()
+      await running
+
+      expect(order).toEqual([
+        "lease:acquired",
+        "session:load",
+        "provider:run",
+        "session:persist",
+        "turn:returned",
+        "lease:released",
+      ])
+    })
+
     it("fails closed before the pipeline when no approved private-turn decision is supplied", async () => {
       await expect(runPrivateRuntimeTurn({
         reason: "instinct",

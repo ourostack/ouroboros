@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
       maxMessageLength: Infinity,
     },
   }),
+  loadSession: vi.fn().mockReturnValue(null),
 }))
 
 vi.mock("../../heart/versioning/update-hooks", () => ({
@@ -70,7 +71,7 @@ vi.mock("../../mind/prompt", () => ({
   flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 vi.mock("../../mind/context", () => ({
-  loadSession: vi.fn().mockReturnValue(null),
+  loadSession: (...a: any[]) => mocks.loadSession(...a),
   saveSession: vi.fn(),
   deleteSession: vi.fn(),
   postTurn: vi.fn(),
@@ -188,6 +189,34 @@ describe("CLI main(): applyPendingUpdates wiring", () => {
     vi.spyOn(process.stdout, "write").mockImplementation(() => true)
     vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     vi.spyOn(console, "log").mockImplementation(() => {})
+  })
+
+  it("behaviorally acquires the turn lease before load and releases after the CLI session returns", async () => {
+    const acquired = Promise.withResolvers<void>()
+    const allowTurn = Promise.withResolvers<void>()
+    const order: string[] = []
+    mocks.loadSession.mockImplementation(() => { order.push("session:load"); return null })
+    const withSessionTurnLease = vi.fn(async (_path: string, work: (lease: any) => Promise<any>) => {
+      order.push("lease:acquired")
+      acquired.resolve()
+      await allowTurn.promise
+      const result = await work({ sessionPath: "/tmp/test-session.json", ownerId: "owner-a", ownerToken: "token-a" })
+      order.push("lease:released")
+      return result
+    })
+
+    const { main } = await import("../../senses/cli")
+    const running = main("testagent", {
+      pasteDebounceMs: 0,
+      _testInputSource: (async function*() {})(),
+      _withSessionTurnLease: withSessionTurnLease,
+    } as any)
+    await Promise.race([acquired.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("lease was not acquired")), 100))])
+    expect(mocks.loadSession).not.toHaveBeenCalled()
+    allowTurn.resolve()
+    await running
+
+    expect(order).toEqual(["lease:acquired", "session:load", "lease:released"])
   })
 
   afterEach(() => {

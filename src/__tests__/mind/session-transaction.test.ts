@@ -77,6 +77,13 @@ function waitForOutput(child: ReturnType<typeof spawn>, needle: string): Promise
   })
 }
 
+function waitForCleanExit(child: ReturnType<typeof spawn>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject)
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`child exited ${code}`)))
+  })
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
@@ -237,8 +244,11 @@ describe("cross-process session turn transaction contract", () => {
       timeoutMs: 10,
       pollIntervalMs: 1,
     })).rejects.toMatchObject({ name: "SessionTurnBusyError" })
+    const released = waitForOutput(child, "RELEASED")
+    const childExit = waitForCleanExit(child)
     child.stdin!.end()
-    await waitForOutput(child, "RELEASED")
+    await released
+    await childExit
 
     const parentLease = await acquireSessionTurnLease(sessionPath, { ownerId: "parent-owner", timeoutMs: 100, pollIntervalMs: 1 })
     const base = readSessionTransaction(sessionPath, parentLease)
@@ -248,7 +258,9 @@ describe("cross-process session turn transaction contract", () => {
     const staleChild = spawn(process.execPath, ["-e", childScript(), modulePath, sessionPath, "stale-write", base.revision], {
       stdio: ["ignore", "pipe", "pipe"],
     })
+    const staleExit = waitForCleanExit(staleChild)
     const staleOutput = await waitForOutput(staleChild, "STALE:")
+    await staleExit
     expect(staleOutput).toContain("STALE:")
     expect(JSON.parse(fs.readFileSync(sessionPath, "utf8"))).toMatchObject({ marker: "parent" })
   })

@@ -121,11 +121,11 @@ describe("approval terminal transcript projection", () => {
   })
 
   it.each([
-    ["expired", false, "expired before execution"],
-    ["drifted", false, "approval became invalid before execution"],
-    ["abandoned_before_attempt", false, "approval was abandoned before execution"],
-    ["attempted_indeterminate", false, "may have executed; do not retry"],
-  ] as const)("projects %s without provider resume and with a safe direct notice", async (state, resumeProvider, notice) => {
+    ["expired", false, "approval expired before execution; the protected action was not executed"],
+    ["drifted", false, "approval became invalid before execution; the protected action was not executed"],
+    ["abandoned_before_attempt", false, "approval was abandoned before execution; the protected action was not executed; request a fresh approval"],
+    ["attempted_indeterminate", false, "execution may have occurred; do not retry automatically"],
+  ] as const)("projects %s without provider resume and with a safe direct notice", async (state, resumeProvider, canonicalResult) => {
     const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
     const projected = materializeApprovalTerminal({
       messages: checkpoint().preCallMessages,
@@ -135,19 +135,19 @@ describe("approval terminal transcript projection", () => {
     })
 
     expect(projected.resumeProvider).toBe(resumeProvider)
-    expect(projected.directNotice).toContain(notice)
+    expect(projected.directNotice).toBe(canonicalResult)
     expect(projected.directNotice).not.toContain("decisionToken")
     expect(projected.materialized).toBe(true)
     expect(projected.messages).toEqual([
       ...checkpoint().preCallMessages,
       assistantMessage(),
-      expect.objectContaining({ role: "tool", tool_call_id: "call_restart" }),
+      { role: "tool", tool_call_id: "call_restart", content: canonicalResult },
     ])
     if (state === "attempted_indeterminate") {
       expect(projected.messages.at(-1)).toEqual(expect.objectContaining({
         role: "tool",
         tool_call_id: "call_restart",
-        content: expect.stringContaining("do not retry"),
+        content: "execution may have occurred; do not retry automatically",
       }))
       expect(projected.severity).toBe("high")
     }

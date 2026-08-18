@@ -11160,6 +11160,16 @@ describe("BlueBubbles sense runtime", () => {
 
   it("persists the exact inbound user event before inference and commits generated state only after accepted delivery", async () => {
     const callOrder: string[] = []
+    const leaseEntered = createDeferred<void>()
+    const allowLeaseWork = createDeferred<void>()
+    const withSessionTurnLease = vi.fn(async (_path: string, work: (lease: any) => Promise<any>) => {
+      callOrder.push("lease-acquired")
+      leaseEntered.resolve()
+      await allowLeaseWork.promise
+      const result = await work({ sessionPath: "/tmp/bluebubbles-session.json", ownerId: "owner-a", ownerToken: "token-a" })
+      callOrder.push("lease-released")
+      return result
+    })
     const existingMessages = [
       { role: "system" as const, content: "system prompt" },
       { role: "assistant" as const, content: "confirmed visible predecessor" },
@@ -11218,14 +11228,22 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    await expect(bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload, {
+    const running = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload, {
       promoteFailoverState: () => callOrder.push("promote-failover"),
       recordProcessed: () => callOrder.push("promote-processed"),
-    })).resolves.toEqual(
+      withSessionTurnLease,
+    } as any)
+    await Promise.race([leaseEntered.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("lease was not acquired")), 100))])
+    expect(mocks.loadSession).not.toHaveBeenCalled()
+    expect(mocks.saveSession).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    allowLeaseWork.resolve()
+    await expect(running).resolves.toEqual(
       expect.objectContaining({ handled: true, notifiedAgent: true }),
     )
 
     expect(callOrder).toEqual([
+      "lease-acquired",
       "save-inbound",
       "inference",
       "accepted-delivery",
@@ -11234,6 +11252,7 @@ describe("BlueBubbles sense runtime", () => {
       "promote-failover",
       "promote-tokens",
       "promote-processed",
+      "lease-released",
     ])
     expect(mocks.deferPostTurnPersist).not.toHaveBeenCalled()
   })
