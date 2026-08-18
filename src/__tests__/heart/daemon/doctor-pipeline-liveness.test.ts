@@ -734,6 +734,66 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 
+  it("distinguishes a completed partial convergence receipt from stale cache divergence", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const cachedRecord = hostedAuthorityRecord()
+    const skippedRecord = hostedAuthorityRecord({
+      id: "mail_hosted_skipped",
+      receivedAt: "2026-08-17T19:00:30.000Z",
+    })
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, cachedRecord)
+    writeHostedCoverage(agentRoot, {
+      visibleMessageCount: 2,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 1,
+      newestReceivedAt: skippedRecord.receivedAt,
+    })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([cachedRecord, skippedRecord])),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("last completed sync skipped 1 hosted message")
+    expect(check.detail).not.toContain("cache diverges")
+    expect(check.detail).not.toContain("ouro mail sync-cache")
+  })
+
+  it.each([
+    ["stale cached metadata", { placement: "screener" }],
+    ["invalid key provenance", { decryptionKeyId: "mail_slugger_retired" }],
+  ])("retains repair guidance for %s alongside a matching partial receipt", async (_label, cacheOverrides) => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const cachedRecord = hostedAuthorityRecord()
+    const skippedRecord = hostedAuthorityRecord({
+      id: "mail_hosted_skipped",
+      receivedAt: "2026-08-17T19:00:30.000Z",
+    })
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, cachedRecord, cacheOverrides)
+    writeHostedCoverage(agentRoot, {
+      visibleMessageCount: 2,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 1,
+      newestReceivedAt: skippedRecord.receivedAt,
+    })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([cachedRecord, skippedRecord])),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
   it("warns when hosted authority is sound but no local cache directory exists", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
