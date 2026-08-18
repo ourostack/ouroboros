@@ -65,10 +65,20 @@ describe("context mutation transaction routing", () => {
     const messages = [{ role: "user" as const, content: "base" }, { role: "assistant" as const, content: "answer" }]
     const prepared = postTurnTrim(messages)
 
-    ;(postTurnPersist as any)(file, prepared, undefined, undefined, lease)
+    const baseBytes = fs.readFileSync(file, "utf8")
+    expect(() => (postTurnPersist as any)(file, prepared, undefined, undefined, {
+      ...lease,
+      ownerToken: "forged",
+    }, before)).toThrow(/owner|token/i)
+    expect(fs.readFileSync(file, "utf8")).toBe(baseBytes)
+
+    ;(postTurnPersist as any)(file, prepared, undefined, undefined, lease, before)
     const after = readSessionTransaction(file, lease).revision
     expect(after).not.toBe(before)
     expect(loadSession(file)?.messages.at(-1)).toEqual(expect.objectContaining({ role: "assistant", content: "answer" }))
+    const committedBytes = fs.readFileSync(file, "utf8")
+    expect(() => (postTurnPersist as any)(file, prepared, undefined, undefined, lease, before)).toThrow(/revision/i)
+    expect(fs.readFileSync(file, "utf8")).toBe(committedBytes)
     await lease.release()
   })
 

@@ -31,6 +31,9 @@ const mocks = vi.hoisted(() => ({
     },
   }),
   loadSession: vi.fn().mockReturnValue(null),
+  runAgent: vi.fn(),
+  postTurnTrim: vi.fn((messages: any[]) => ({ currentMessages: messages, trimmedMessages: messages, currentIngressTimes: messages.map(() => null), maxTokens: 128000, contextMargin: 0 })),
+  deferPostTurnPersist: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock("../../heart/versioning/update-hooks", () => ({
@@ -57,7 +60,7 @@ vi.mock("../../mind/bundle-manifest", () => ({
   createBundleMeta: vi.fn(),
 }))
 vi.mock("../../heart/core", () => ({
-  runAgent: vi.fn().mockResolvedValue({ usage: undefined }),
+  runAgent: (...a: any[]) => mocks.runAgent(...a),
   getProvider: () => "azure",
   createSummarize: () => vi.fn(),
   repairOrphanedToolCalls: vi.fn(),
@@ -75,6 +78,9 @@ vi.mock("../../mind/context", () => ({
   saveSession: vi.fn(),
   deleteSession: vi.fn(),
   postTurn: vi.fn(),
+  postTurnTrim: (...a: any[]) => mocks.postTurnTrim(...a),
+  postTurnPersist: vi.fn().mockReturnValue([]),
+  deferPostTurnPersist: (...a: any[]) => mocks.deferPostTurnPersist(...a),
 }))
 vi.mock("../../mind/pending", () => ({
   getPendingDir: vi.fn(() => "/mock/pending"),
@@ -196,6 +202,16 @@ describe("CLI main(): applyPendingUpdates wiring", () => {
     const allowTurn = Promise.withResolvers<void>()
     const order: string[] = []
     mocks.loadSession.mockImplementation(() => { order.push("session:load"); return null })
+    mocks.runAgent.mockImplementation(async (_messages: any[], callbacks: any) => {
+      order.push("provider:run")
+      callbacks.onTextChunk("lease-visible-answer")
+      return { outcome: "settled" }
+    })
+    mocks.deferPostTurnPersist.mockImplementation(async () => { order.push("session:persist"); return [] })
+    ;(process.stdout.write as any).mockImplementation((chunk: unknown) => {
+      if (String(chunk).includes("lease-visible-answer")) order.push("outward:delivered")
+      return true
+    })
     const withSessionTurnLease = vi.fn(async (_path: string, work: (lease: any) => Promise<any>) => {
       order.push("lease:acquired")
       acquired.resolve()
@@ -208,7 +224,7 @@ describe("CLI main(): applyPendingUpdates wiring", () => {
     const { main } = await import("../../senses/cli")
     const running = main("testagent", {
       pasteDebounceMs: 0,
-      _testInputSource: (async function*() {})(),
+      _testInputSource: (async function*() { yield "hello" })(),
       _withSessionTurnLease: withSessionTurnLease,
     } as any)
     await Promise.race([acquired.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("lease was not acquired")), 100))])
@@ -216,7 +232,14 @@ describe("CLI main(): applyPendingUpdates wiring", () => {
     allowTurn.resolve()
     await running
 
-    expect(order).toEqual(["lease:acquired", "session:load", "lease:released"])
+    expect(order).toEqual([
+      "lease:acquired",
+      "session:load",
+      "provider:run",
+      "outward:delivered",
+      "session:persist",
+      "lease:released",
+    ])
   })
 
   afterEach(() => {
