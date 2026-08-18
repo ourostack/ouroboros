@@ -50,6 +50,10 @@ import {
   runDoctorChecks,
   senseInboundDeliveryCheck,
 } from "../../../heart/daemon/doctor"
+import {
+  MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+  writeMailSearchCoverageRecord,
+} from "../../../mailroom/search-cache"
 import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
 
 const HOUR_MS = 60 * 60 * 1000
@@ -231,6 +235,25 @@ function hostedAuthorityRecord(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function writeHostedCoverage(agentRoot: string, overrides: Record<string, unknown> = {}): void {
+  const mirrorDir = path.join(agentRoot, "state", "mail-search")
+  writeMailSearchCoverageRecord({
+    schemaVersion: 1,
+    agentId: "slugger",
+    storeKind: "azure-blob",
+    indexedAt: "2026-08-17T19:01:00.000Z",
+    visibleMessageCount: 1,
+    cachedMessageCount: 1,
+    decryptableMessageCount: 1,
+    skippedMessageCount: 0,
+    messageIndexFingerprint: "fingerprint",
+    textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    oldestReceivedAt: "2026-08-17T19:00:00.000Z",
+    newestReceivedAt: "2026-08-17T19:00:00.000Z",
+    ...overrides,
+  }, { cacheDirForAgent: () => mirrorDir })
+}
+
 function writeConvergedHostedCache(agentRoot: string, record = hostedAuthorityRecord(), overrides: Record<string, unknown> = {}): void {
   const mirrorDir = path.join(agentRoot, "state", "mail-search")
   fs.mkdirSync(mirrorDir, { recursive: true })
@@ -252,6 +275,7 @@ function writeConvergedHostedCache(agentRoot: string, record = hostedAuthorityRe
     decryptionKeyId: "mail_slugger_native",
     ...overrides,
   })}\n`, "utf-8")
+  writeHostedCoverage(agentRoot)
 }
 
 function soundHostedAuthority(records = [hostedAuthorityRecord()]) {
@@ -540,6 +564,43 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.detail).toContain("local search cache converged")
   })
 
+  it("warns when all-scope coverage is absent, malformed, or disagrees with hosted authority and cache counts", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    seedHostedMailRuntime()
+    const coverageDir = path.join(agentRoot, "state", "mail-search", "coverage")
+
+    const check = async (): Promise<DoctorCheck> => findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    fs.rmSync(coverageDir, { recursive: true })
+    expect((await check()).status).toBe("warn")
+
+    writeHostedCoverage(agentRoot)
+    const [coverageFile] = fs.readdirSync(coverageDir)
+    fs.writeFileSync(path.join(coverageDir, coverageFile), "{not json", "utf-8")
+    expect((await check()).status).toBe("warn")
+
+    const mismatches = [
+      { textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION - 1 },
+      { messageIndexFingerprint: "stale-fingerprint" },
+      { visibleMessageCount: 2 },
+      { cachedMessageCount: 0 },
+      { decryptableMessageCount: 0 },
+      { skippedMessageCount: 1 },
+    ]
+    for (const mismatch of mismatches) {
+      writeHostedCoverage(agentRoot, mismatch)
+      const result = await check()
+      expect(result.status).toBe("warn")
+      expect(result.detail).toContain("coverage")
+      expect(result.detail).toContain("ouro mail sync-cache --agent slugger")
+    }
+  })
+
   it("warns with exact repair guidance when sound authority and local cache diverge", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
@@ -629,7 +690,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(unreadableError.detail).toContain("cache denied")
   })
 
-  it("passes an empty local cache only when sound hosted authority is also empty", async () => {
+  it("treats empty hosted authority as unverified even when the local cache is empty", async () => {
     const bundlesRoot = makeBundlesRoot()
     writeMailroom(writeAgent(bundlesRoot))
     seedHostedMailRuntime()
@@ -637,8 +698,9 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
       observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([])),
     }))).checks, "mail.cache_authority")
-    expect(check.status).toBe("pass")
-    expect(check.detail).toContain("0 authoritative hosted messages")
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("empty")
+    expect(check.detail).toContain("unverified")
   })
 
   it("fails on positive hosted authority configuration or authorization faults", async () => {

@@ -41,7 +41,11 @@ import { checkRsvpCutover, type RsvpCutoverChecks } from "../../rsvp/cutover"
 import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/diagnostics"
 import type { MailMessageIndexRecord } from "../../mailroom/file-store"
 import { mailSearchCacheDocumentMatchesRecord } from "../../mailroom/hosted-cache-sync"
-import type { MailSearchCacheDocument } from "../../mailroom/search-cache"
+import {
+  MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+  readMailSearchCoverageRecord,
+  type MailSearchCacheDocument,
+} from "../../mailroom/search-cache"
 import {
   resolvePrunableAgentBundle,
   validatePrunableLogsTarget,
@@ -1249,6 +1253,13 @@ async function hostedMailCacheAuthorityCheck(
       detail: `hosted authority is ambiguous (${observation.parseFailureCount} malformed index name(s), ${observation.duplicateIds.length} duplicate id(s)); no local cache mutation was attempted`,
     }
   }
+  if (observation.records.length === 0) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "hosted authority is empty and remains unverified because an empty index namespace cannot prove the mailbox is empty; no local cache mutation was attempted",
+    }
+  }
 
   const cacheDir = `${deps.bundlesRoot}/${agentDir}/state/mail-search`
   let fileNames: string[] = []
@@ -1289,11 +1300,24 @@ async function hostedMailCacheAuthorityCheck(
     }
   }
 
-  if (malformedOrNoncanonical > 0 || mismatched > 0 || invalidKeyProvenance > 0) {
+  const coverage = readMailSearchCoverageRecord({
+    agentId: agentName,
+    storeKind: "azure-blob",
+  }, { cacheDirForAgent: () => cacheDir })
+  const expectedCachedCount = documentsById.size
+  const coverageMatches = coverage !== null
+    && coverage.textProjectionVersion === MAIL_SEARCH_TEXT_PROJECTION_VERSION
+    && coverage.messageIndexFingerprint === observation.snapshot.messageIndexFingerprint
+    && coverage.visibleMessageCount === observation.snapshot.visibleMessageCount
+    && coverage.cachedMessageCount === expectedCachedCount
+    && coverage.decryptableMessageCount === expectedCachedCount
+    && coverage.skippedMessageCount === observation.snapshot.visibleMessageCount - expectedCachedCount
+
+  if (malformedOrNoncanonical > 0 || mismatched > 0 || invalidKeyProvenance > 0 || !coverageMatches) {
     return {
       ...base,
       status: "warn",
-      detail: `hosted authority is sound but cache diverges: ${mismatched} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical/duplicate file(s), ${invalidKeyProvenance} invalid key provenance document(s); run \`ouro mail sync-cache --agent ${agentName}\``,
+      detail: `hosted authority is sound but cache diverges: ${mismatched} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical/duplicate file(s), ${invalidKeyProvenance} invalid key provenance document(s), all-scope coverage ${coverageMatches ? "matches" : "missing/malformed/stale"}; run \`ouro mail sync-cache --agent ${agentName}\``,
     }
   }
   const count = observation.records.length
