@@ -47,13 +47,23 @@ describe("container credential bootstrap", () => {
     expect(fs.existsSync(`${file}.consuming`)).toBe(false)
   })
 
+  it("claims and deletes a malformed import before parsing it", () => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "container-bootstrap-malformed-"))
+    const file = path.join(directory, "credentials.json")
+    fs.writeFileSync(file, "not-json", { mode: 0o600 })
+
+    expect(() => loadContainerCredentialBootstrap(["sanctuary"], { path: file, apply: () => true })).toThrow()
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.existsSync(`${file}.consuming`)).toBe(false)
+  })
+
   it("rejects group-readable, symlinked, oversized, duplicate, or unknown-agent bootstrap files", () => {
     const message = { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} }
     const file = fixture(message)
     fs.chmodSync(file, 0o640)
     expect(() => loadContainerCredentialBootstrap(["sanctuary"], { path: file, apply: () => true })).toThrow("0600")
 
-    fs.chmodSync(file, 0o600)
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, credentials: [message] }), { mode: 0o600 })
     const link = path.join(directory, "link.json")
     fs.symlinkSync(file, link)
     expect(() => loadContainerCredentialBootstrap(["sanctuary"], { path: link, apply: () => true })).toThrow("regular file")

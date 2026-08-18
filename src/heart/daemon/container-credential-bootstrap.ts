@@ -66,26 +66,37 @@ export function loadContainerCredentialBootstrap(
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return []
     throw error
   }
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("container credential bootstrap must be a regular file")
-  if ((stat.mode & 0o077) !== 0) throw new Error("container credential bootstrap must have mode 0600")
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-    throw new Error("container credential bootstrap must be owned by the runtime user")
-  }
-  if (stat.size > MAX_BOOTSTRAP_BYTES) throw new Error("container credential bootstrap is too large")
-
-  const envelope = parseEnvelope(fs.readFileSync(filePath, "utf8"))
-  const allowed = new Set(enabledAgents)
-  const loaded = new Set<string>()
-  for (const message of envelope.credentials) {
-    if (!isRecord(message) || typeof message.agentName !== "string" || !allowed.has(message.agentName)) {
-      throw new Error("container credential bootstrap agent is not enabled")
-    }
-    if (loaded.has(message.agentName)) throw new Error("container credential bootstrap contains a duplicate agent")
-    loaded.add(message.agentName)
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    deleteDurably(filePath)
+    throw new Error("container credential bootstrap must be a regular file")
   }
   fs.renameSync(filePath, consumingPath)
   fsyncDirectory(path.dirname(filePath))
-  deleteDurably(consumingPath)
+
+  let envelope: ContainerBootstrapEnvelope
+  let loaded: Set<string>
+  try {
+    if ((stat.mode & 0o077) !== 0) throw new Error("container credential bootstrap must have mode 0600")
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new Error("container credential bootstrap must be owned by the runtime user")
+    }
+    if (stat.size > MAX_BOOTSTRAP_BYTES) throw new Error("container credential bootstrap is too large")
+
+    envelope = parseEnvelope(fs.readFileSync(consumingPath, "utf8"))
+    const allowed = new Set(enabledAgents)
+    loaded = new Set<string>()
+    for (const message of envelope.credentials) {
+      if (!isRecord(message) || typeof message.agentName !== "string" || !allowed.has(message.agentName)) {
+        throw new Error("container credential bootstrap agent is not enabled")
+      }
+      if (loaded.has(message.agentName)) throw new Error("container credential bootstrap contains a duplicate agent")
+      loaded.add(message.agentName)
+    }
+  } finally {
+    try { deleteDurably(consumingPath) } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error
+    }
+  }
 
   const apply = options.apply ?? applyRuntimeCredentialBootstrapMessage
   for (const message of envelope.credentials) {
