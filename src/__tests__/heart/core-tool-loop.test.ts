@@ -148,6 +148,7 @@ describe("runAgent tool loop guard", () => {
     expect(isChatStyleChannel("teams")).toBe(true)
     expect(isChatStyleChannel("bluebubbles")).toBe(false)
     expect(isChatStyleChannel("voice")).toBe(true)
+    expect(isChatStyleChannel("telegram")).toBe(true)
     expect(isChatStyleChannel("inner")).toBe(false)
     expect(isChatStyleChannel("mcp")).toBe(false)
     expect(isChatStyleChannel("mail")).toBe(false)
