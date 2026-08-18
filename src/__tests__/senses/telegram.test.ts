@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createTelegramSenseApp } from "../../senses/telegram"
 import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll } from "../../senses/telegram-client"
 
-function fixture() {
+function fixture(input: { healthSweep?: any } = {}) {
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
   const poll: TelegramLongPoll = {
@@ -42,6 +42,7 @@ function fixture() {
     createLongPoll,
     runTurn,
     approvalTransport,
+    healthSweep: input.healthSweep,
   })
   return { app, api, poll, runTurn, approvalTransport, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
 }
@@ -91,5 +92,22 @@ describe("Telegram sense", () => {
       text: "Array recovered",
       parse_mode: "HTML",
     }, undefined)
+  })
+
+  it("persists health delivery intent before Telegram send and receipts it afterward", async () => {
+    const order: string[] = []
+    const healthSweep = Object.assign(
+      vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
+      {
+        markDeliveryAttempting: vi.fn(() => { order.push("attempting") }),
+        markDelivered: vi.fn(() => { order.push("delivered") }),
+      },
+    )
+    const f = fixture({ healthSweep })
+    ;(f.api.request as any).mockImplementation(async () => { order.push("send"); return { message_id: 71 } })
+
+    await f.app.run()
+
+    expect(order).toEqual(["attempting", "send", "delivered"])
   })
 })

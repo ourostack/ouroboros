@@ -21,7 +21,7 @@ import {
 } from "./telegram-client"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
-import { createSanctuaryHealthSweep } from "./sanctuary-health"
+import { createSanctuaryHealthSweep, type SanctuaryHealthSweepResult } from "./sanctuary-health"
 
 export interface TelegramSenseCredentials {
   botToken: string
@@ -48,7 +48,10 @@ export interface CreateTelegramSenseAppOptions {
   runTurn?: TelegramTurnRunner
   approvalTransport?: TelegramApprovalTransport
   approvalRuntime?: TelegramApprovalRuntime
-  healthSweep?: () => Promise<{ message: string | null }>
+  healthSweep?: (() => Promise<SanctuaryHealthSweepResult>) & {
+    markDeliveryAttempting?: (deliveryId: string) => void
+    markDelivered?: (deliveryId: string) => void
+  }
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -101,7 +104,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     if (!healthSweep) return
     try {
       const result = await healthSweep()
-      if (result.message) await deliver(result.message)
+      if (result.message) {
+        if (result.deliveryId) healthSweep.markDeliveryAttempting?.(result.deliveryId)
+        await deliver(result.message)
+        if (result.deliveryId) healthSweep.markDelivered?.(result.deliveryId)
+      }
     } catch (error) {
       emitNervesEvent({
         level: "error",
