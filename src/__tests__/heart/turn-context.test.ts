@@ -572,6 +572,7 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: ready",
       "- A2A: ready",
+      "- Telegram: disabled",
       "- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)",
     ])
   })
@@ -652,6 +653,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -693,6 +695,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -723,6 +726,7 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -753,6 +757,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -771,6 +776,7 @@ describe("buildTurnContext", () => {
       "- Mail: needs_config",
       "- Voice: needs_config",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -786,6 +792,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })

@@ -13,6 +13,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "mail", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "voice", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "a2a", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
@@ -33,6 +34,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "mail", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "voice", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "a2a", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
@@ -139,6 +141,7 @@ describe("sense truth model", () => {
     const inventory = getSenseInventory({
       senses: {
         cli: { enabled: true },
+        telegram: { enabled: false },
         workbench: { enabled: true },
       },
     })
@@ -153,6 +156,7 @@ describe("sense truth model", () => {
       {
         senses: {
           cli: { enabled: true },
+          telegram: { enabled: false },
           workbench: { enabled: true },
         },
       },

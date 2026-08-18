@@ -215,6 +215,7 @@ describe("buildDefaultAgentTemplate", () => {
         mail: { enabled: false },
         voice: { enabled: false },
         a2a: { enabled: false },
+        telegram: { enabled: false },
         workbench: { enabled: false },
       },
     })
@@ -368,6 +369,7 @@ describe("loadAgentConfig", () => {
       mail: { enabled: false },
       voice: { enabled: false },
       a2a: { enabled: false },
+      telegram: { enabled: false },
       workbench: { enabled: false },
     })
   })
@@ -394,6 +396,7 @@ describe("loadAgentConfig", () => {
       mail: { enabled: false },
       voice: { enabled: false },
       a2a: { enabled: false },
+      telegram: { enabled: false },
       workbench: { enabled: false },
     })
   })
@@ -423,6 +426,7 @@ describe("loadAgentConfig", () => {
       mail: { enabled: false },
       voice: { enabled: false },
       a2a: { enabled: false },
+      telegram: { enabled: false },
       workbench: { enabled: false },
     })
   })

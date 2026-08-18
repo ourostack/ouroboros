@@ -63,6 +63,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ agent: "slugger", sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
 
@@ -194,6 +195,7 @@ describe("daemon sense manager", () => {
         mail: { enabled: false },
         voice: { enabled: false },
         a2a: { enabled: false },
+        telegram: { enabled: false },
         workbench: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
@@ -232,6 +234,7 @@ describe("daemon sense manager", () => {
         mail: { enabled: false },
         voice: { enabled: false },
         a2a: { enabled: false },
+        telegram: { enabled: false },
         workbench: { enabled: false },
       },
       mcpServers: {
@@ -1250,6 +1253,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "mail", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
       expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -1392,6 +1396,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "mail", status: "ready", detail: "slugger@ouro.bot" }),
       expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -1441,6 +1446,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "voice", status: "running", detail: "local Whisper.cpp STT + ElevenLabs TTS" }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -1799,6 +1805,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -1876,6 +1883,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -1952,6 +1960,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -2029,6 +2038,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -2244,6 +2254,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -2321,6 +2332,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -2396,6 +2408,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -2472,6 +2485,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -2549,6 +2563,7 @@ describe("daemon sense manager", () => {
         detail: "not enabled in agent.json",
       }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -3541,6 +3556,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
     expect(manager.listSenseRows().filter((row) => row.agent === "ouroboros")).toEqual([
@@ -3550,6 +3566,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })
@@ -3776,6 +3793,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
       expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "telegram", status: "disabled" }),
       expect.objectContaining({ sense: "workbench", status: "disabled", detail: "runtime-injected by Workbench app; no agent.json entry required" }),
     ])
   })

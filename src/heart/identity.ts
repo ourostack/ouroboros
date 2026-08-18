@@ -18,7 +18,7 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
   "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
 }
-export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "workbench"
+export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "workbench"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
@@ -33,6 +33,7 @@ export interface AgentSensesConfig {
   mail: AgentSenseConfig
   voice: AgentSenseConfig
   a2a: AgentSenseConfig
+  telegram: AgentSenseConfig
   workbench: AgentSenseConfig
 }
 
@@ -180,6 +181,7 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   mail: { enabled: false },
   voice: { enabled: false },
   a2a: { enabled: false },
+  telegram: { enabled: false },
   workbench: { enabled: false },
 }
 
@@ -191,6 +193,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     mail: { ...DEFAULT_AGENT_SENSES.mail },
     voice: { ...DEFAULT_AGENT_SENSES.voice },
     a2a: { ...DEFAULT_AGENT_SENSES.a2a },
+    telegram: { ...DEFAULT_AGENT_SENSES.telegram },
     workbench: { ...DEFAULT_AGENT_SENSES.workbench },
   }
 
@@ -209,7 +212,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   const raw = value as Record<string, unknown>
-  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "workbench"]
+  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench"]
   for (const senseName of senseNames) {
     const rawSense = raw[senseName]
     if (rawSense === undefined) {
@@ -256,6 +259,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       mail: { ...DEFAULT_AGENT_SENSES.mail },
       voice: { ...DEFAULT_AGENT_SENSES.voice },
       a2a: { ...DEFAULT_AGENT_SENSES.a2a },
+      telegram: { ...DEFAULT_AGENT_SENSES.telegram },
       workbench: { ...DEFAULT_AGENT_SENSES.workbench },
     },
     phrases: {

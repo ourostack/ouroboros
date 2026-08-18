@@ -99,6 +99,7 @@ describe("readAgentConfigForAgent structural contract", () => {
         mail: { enabled: false },
         voice: { enabled: false },
         a2a: { enabled: false },
+        telegram: { enabled: false },
         workbench: { enabled: false },
       })
     } finally {

@@ -108,6 +108,7 @@ export function parseOrphanPidsFromPs(psOutput: string, selfPid: number): number
       && !line.includes("mail-entry.js")
       && !line.includes("teams-entry.js")
       && !line.includes("a2a-entry.js")
+      && !line.includes("telegram-entry.js")
       && !line.includes("voice-entry.js")
     ) continue
     // Parse `<pid> <ppid> <command...>`. ps pads these with leading spaces.

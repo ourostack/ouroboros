@@ -48,6 +48,7 @@ export const FULL_AGENT_JSON = {
     mail: { enabled: false },
     voice: { enabled: false },
     a2a: { enabled: false },
+    telegram: { enabled: false },
     workbench: { enabled: true },
   },
   mcpServers: {
