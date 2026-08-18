@@ -722,7 +722,7 @@ export type RunAgentOutcome =
  *  BlueBubbles is final-only: its adapter owns one accepted visibility boundary.
  *  The private runtime has `ponder`; MCP returns synchronously; mail is batch. */
 export function isChatStyleChannel(channel: string): boolean {
-  return channel === "cli" || channel === "teams" || channel === "voice";
+  return getChannelCapabilities(channel).chatStyle;
 }
 
 function bindCurrentIngressEvidenceLocator(
