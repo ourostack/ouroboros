@@ -10,7 +10,10 @@ import type { MailCompartmentKind, MailPlacement, PrivateMailEnvelope, StoredMai
  * encrypted form. Typed against the shared base so plaintext stored messages
  * and decrypted reader views both flow through naturally.
  */
-type SearchCacheMessageView = Pick<StoredMailMessageBase, "id" | "agentId" | "receivedAt" | "placement" | "compartmentKind" | "ownerEmail" | "source">
+type SearchCacheMessageView = Pick<StoredMailMessageBase, "id" | "agentId" | "receivedAt" | "placement" | "compartmentKind" | "ownerEmail" | "source"> & {
+  bodyForm?: "plaintext" | "encrypted"
+  privateEnvelope?: { keyId: string }
+}
 import { privateMailEnvelopeReadableText } from "./core"
 import { compareByRelevanceThenRecency, scoreMailSearchDocument } from "./search-relevance"
 
@@ -36,6 +39,8 @@ export interface MailSearchCacheDocument {
   // Optional fields populated on cache write but absent on docs cached before
   // these fields were introduced. Always treat as may-be-undefined on read.
   attachmentCount?: number
+  /** Key that decrypted an encrypted hosted message when this projection was written. */
+  decryptionKeyId?: string
 }
 
 export interface MailSearchCacheFilters {
@@ -130,6 +135,16 @@ function readJsonDocument(filePath: string): MailSearchCacheDocument | null {
   }
 }
 
+function writeJsonAtomically(filePath: string, value: unknown): void {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(value)}\n`, "utf-8")
+    fs.renameSync(tempPath, filePath)
+  } finally {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath)
+  }
+}
+
 function cacheState(agentId: string, options?: MailSearchCacheOptions): MailSearchCacheState {
   const key = `${agentId}:${cacheDir(agentId, options)}`
   let state = cacheStates.get(key)
@@ -154,8 +169,14 @@ function loadCache(agentId: string, options?: MailSearchCacheOptions): Map<strin
   return state.docs
 }
 
-export function buildMailSearchCacheDocument(message: SearchCacheMessageView, privateEnvelope: PrivateMailEnvelope): MailSearchCacheDocument {
+export function buildMailSearchCacheDocument(
+  message: SearchCacheMessageView,
+  privateEnvelope: PrivateMailEnvelope,
+  provenance: { decryptionKeyId?: string } = {},
+): MailSearchCacheDocument {
   const readableText = privateMailEnvelopeReadableText(privateEnvelope)
+  const decryptionKeyId = provenance.decryptionKeyId
+    ?? (message.bodyForm === "encrypted" ? message.privateEnvelope?.keyId : undefined)
   return {
     schemaVersion: 1,
     messageId: message.id,
@@ -173,6 +194,7 @@ export function buildMailSearchCacheDocument(message: SearchCacheMessageView, pr
     searchText: normalizeSearchText(privateEnvelope),
     textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
     attachmentCount: privateEnvelope.attachments.length,
+    ...(decryptionKeyId ? { decryptionKeyId } : {}),
   }
 }
 
@@ -180,11 +202,12 @@ export function upsertMailSearchCacheDocument(
   message: SearchCacheMessageView,
   privateEnvelope: PrivateMailEnvelope,
   options?: MailSearchCacheOptions,
+  provenance?: { decryptionKeyId?: string },
 ): MailSearchCacheDocument {
-  const document = buildMailSearchCacheDocument(message, privateEnvelope)
+  const document = buildMailSearchCacheDocument(message, privateEnvelope, provenance)
   const dir = cacheDir(message.agentId, options)
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(cachePath(message.agentId, message.id, options), `${JSON.stringify(document)}\n`, "utf-8")
+  writeJsonAtomically(cachePath(message.agentId, message.id, options), document)
   const state = cacheState(message.agentId, options)
   if (state.loaded) state.docs.set(document.messageId, document)
   emitNervesEvent({
@@ -201,6 +224,59 @@ export function upsertMailSearchCacheDocument(
   return document
 }
 
+export interface MailSearchCacheFileInspection {
+  fileName: string
+  filePath: string
+  document: MailSearchCacheDocument | null
+}
+
+export function inspectMailSearchCacheFiles(agentId: string, options?: MailSearchCacheOptions): MailSearchCacheFileInspection[] {
+  const dir = cacheDir(agentId, options)
+  if (!fs.existsSync(dir)) return []
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => {
+      const filePath = path.join(dir, entry.name)
+      return { fileName: entry.name, filePath, document: readJsonDocument(filePath) }
+    })
+    .sort((left, right) => left.fileName.localeCompare(right.fileName))
+}
+
+export function reloadMailSearchCache(agentId: string, options?: MailSearchCacheOptions): void {
+  const state = cacheState(agentId, options)
+  state.loaded = false
+  state.docs.clear()
+}
+
+export function removeMailSearchCacheDocument(agentId: string, messageId: string, options?: MailSearchCacheOptions): boolean {
+  const filePath = cachePath(agentId, messageId, options)
+  let removed = false
+  try {
+    if (fs.lstatSync(filePath).isFile()) {
+      fs.unlinkSync(filePath)
+      removed = true
+    }
+  } catch {
+    removed = false
+  }
+  const state = cacheState(agentId, options)
+  if (state.loaded) state.docs.delete(messageId)
+  return removed
+}
+
+export function removeMailSearchCacheFile(agentId: string, fileName: string, options?: MailSearchCacheOptions): boolean {
+  if (path.basename(fileName) !== fileName || !fileName.endsWith(".json")) return false
+  const filePath = path.join(cacheDir(agentId, options), fileName)
+  try {
+    if (!fs.lstatSync(filePath).isFile()) return false
+    fs.unlinkSync(filePath)
+    reloadMailSearchCache(agentId, options)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function syncMailSearchCacheMetadata(message: SearchCacheMessageView, options?: MailSearchCacheOptions): void {
   const existing = readJsonDocument(cachePath(message.agentId, message.id, options))
   if (!existing) return
@@ -212,7 +288,7 @@ export function syncMailSearchCacheMetadata(message: SearchCacheMessageView, opt
     ...(message.ownerEmail ? { ownerEmail: message.ownerEmail } : {}),
     ...(message.source ? { source: message.source } : {}),
   }
-  fs.writeFileSync(cachePath(message.agentId, message.id, options), `${JSON.stringify(updated)}\n`, "utf-8")
+  writeJsonAtomically(cachePath(message.agentId, message.id, options), updated)
   const state = cacheState(message.agentId, options)
   if (state.loaded) state.docs.set(updated.messageId, updated)
 }
@@ -373,7 +449,7 @@ export function writeMailSearchCoverageRecord(
     ...(record.newestReceivedAt ? { newestReceivedAt: record.newestReceivedAt } : {}),
   }
   fs.mkdirSync(coverageDir(document.agentId, options), { recursive: true })
-  fs.writeFileSync(coveragePath(document, options), `${JSON.stringify(document)}\n`, "utf-8")
+  writeJsonAtomically(coveragePath(document, options), document)
   emitNervesEvent({
     component: "senses",
     event: "senses.mail_search_coverage_written",
