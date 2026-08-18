@@ -305,22 +305,90 @@ const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
+type AnsiShellAtom = string | null
+
+function opaqueAnsiShellAtoms(command: string): AnsiShellAtom[] {
+  const atoms: AnsiShellAtom[] = []
+  let inAnsiQuote = false
+  for (let index = 0; index < command.length;) {
+    if (!inAnsiQuote && command.startsWith("$'", index)) {
+      inAnsiQuote = true
+      index += 2
+      continue
+    }
+    const character = command[index]!
+    if (inAnsiQuote && character === "'") {
+      inAnsiQuote = false
+      index += 1
+      continue
+    }
+    if (inAnsiQuote && character === "\\") {
+      const escape = command.slice(index).match(/^\\(?:x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|c.|.)?/s)![0]
+      atoms.push(null)
+      index += escape.length
+      continue
+    }
+    if (!inAnsiQuote && (character === "'" || character === '"')) {
+      index += 1
+      continue
+    }
+    if (!inAnsiQuote && character === "\\" && index + 1 < command.length) {
+      atoms.push(command[index + 1]!)
+      index += 2
+      continue
+    }
+    atoms.push(character)
+    index += 1
+  }
+  return atoms
+}
+
 function shellContainsAmbiguousAnsiMailCacheSync(command: string): boolean {
   if (!command.includes("$'")) return false
-  const ansiMarker = "__OURO_ANSI_C_QUOTE__"
-  const tokens = command
-    .replace(/\$'/g, ansiMarker)
-    .replace(/["']/g, "")
-    .split(/[\s;&|()`]+/)
-    .filter(Boolean)
   const expected = ["ouro", "mail", "sync-cache"]
-  for (let start = 0; start <= tokens.length - expected.length; start += 1) {
-    const candidate = tokens.slice(start, start + expected.length)
-    if (candidate.every((token, index) => token.toLowerCase() === expected[index] || token.includes(ansiMarker))) {
-      return true
+  let states = new Set(["0:0"])
+
+  const crossTokenBoundary = (current: ReadonlySet<string>): { matched: boolean; states: Set<string> } => {
+    const next = new Set(["0:0"])
+    for (const state of current) {
+      const [tokenIndex, characterIndex] = state.split(":").map(Number)
+      if (characterIndex === 0) next.add(state)
+      if (characterIndex !== expected[tokenIndex]?.length) continue
+      if (tokenIndex === expected.length - 1) return { matched: true, states: next }
+      next.add(`${tokenIndex + 1}:0`)
     }
+    return { matched: false, states: next }
   }
-  return false
+
+  for (const atom of opaqueAnsiShellAtoms(command)) {
+    if (atom === null) {
+      const next = new Set(states)
+      for (const state of states) {
+        const [tokenIndex, characterIndex] = state.split(":").map(Number)
+        if (characterIndex >= 0 && characterIndex < (expected[tokenIndex]?.length ?? 0)) {
+          next.add(`${tokenIndex}:${characterIndex + 1}`)
+        }
+      }
+      const boundary = crossTokenBoundary(states)
+      if (boundary.matched) return true
+      states = new Set([...next, ...boundary.states])
+      continue
+    }
+    if (/\s|[;&|()`]/.test(atom)) {
+      const boundary = crossTokenBoundary(states)
+      if (boundary.matched) return true
+      states = boundary.states
+      continue
+    }
+    const next = new Set<string>()
+    for (const state of states) {
+      const [tokenIndex, characterIndex] = state.split(":").map(Number)
+      const wanted = expected[tokenIndex]?.[characterIndex]
+      next.add(wanted?.toLowerCase() === atom.toLowerCase() ? `${tokenIndex}:${characterIndex + 1}` : `${tokenIndex}:-1`)
+    }
+    states = next
+  }
+  return crossTokenBoundary(states).matched
 }
 
 function shellContainsMailCacheSync(command: string): boolean {

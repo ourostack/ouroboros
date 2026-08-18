@@ -123,6 +123,11 @@ describe("guardInvocation — structural guardrails", () => {
     "ouro mail $'sync\\x2dcache' --agent slugger",
     "ou$'\\x72o' mail sync-cache --agent slugger",
     "ouro mail $'sync\\055cache' --agent slugger",
+    "sh -c $'ouro\\x20mail\\x20sync-cache --agent slugger'",
+    "sh -c $'ouro\\040mail\\040sync-cache --agent slugger'",
+    "eval ouro$'\\x20'mail$'\\x20'sync-cache --agent slugger",
+    "bash -c $'ou\\x72o\\x20mail\\x20sync\\x2dcache --agent slugger'",
+    "command zsh -c $'ouro\\x20mail\\040sync-cache --agent slugger'",
     "command ouro mail sync-cache --agent slugger",
     "env ouro mail sync-cache --agent slugger",
     "sh -c 'ouro mail sync-cache --agent slugger'",
@@ -142,6 +147,7 @@ describe("guardInvocation — structural guardrails", () => {
     expect(guardInvocation("shell", { command: "ouro status" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: "ouro status $'sync\\x2dcache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: "echo $'sync\\x2dcache'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", { command: "ouro mail $'recent'" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
   })
 
   // --- protected paths blocked for writes ---
