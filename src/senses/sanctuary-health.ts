@@ -6,10 +6,10 @@ import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 
 const ENDPOINTS = [
-  "https://media.mendelow.cloud",
-  "https://books.mendelow.cloud",
-  "https://requests.mendelow.cloud",
-  "https://readarr.mendelow.cloud",
+  "https://media.mendelow.cloud/",
+  "https://books.mendelow.cloud/",
+  "https://requests.mendelow.cloud/",
+  "https://readarr.mendelow.cloud/",
 ]
 
 interface Incident { id: string; summary: string }
@@ -34,6 +34,37 @@ function record(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null
 }
 
+export async function probeSanctuaryEndpoint(url: string, fetchImpl: typeof fetch = fetch): Promise<{
+  url: string
+  ok: boolean
+  status: number
+}> {
+  const configured = new URL(url)
+  if (configured.protocol !== "https:" || configured.username || configured.password) return { url, ok: false, status: 0 }
+  let current = configured
+  try {
+    for (let redirects = 0; redirects <= 5; redirects += 1) {
+      const response = await fetchImpl(current.href, { signal: AbortSignal.timeout(10_000), redirect: "manual" })
+      const redirect = response.status >= 300 && response.status < 400
+      if (!redirect) {
+        await response.body?.cancel().catch(() => undefined)
+        return { url, ok: response.status >= 200 && response.status < 400, status: response.status }
+      }
+      const location = response.headers.get("location")
+      await response.body?.cancel().catch(() => undefined)
+      if (!location || redirects === 5) return { url, ok: false, status: 0 }
+      const target = new URL(location, current)
+      if (target.protocol !== "https:" || target.origin !== configured.origin || target.username || target.password) {
+        return { url, ok: false, status: 0 }
+      }
+      current = target
+    }
+  } catch {
+    return { url, ok: false, status: 0 }
+  }
+  return { url, ok: false, status: 0 }
+}
+
 export function createSanctuaryHealthSweep(options: {
   toolContext: Pick<ToolContext, "sanctuary">
   statePath: string
@@ -48,12 +79,7 @@ export function createSanctuaryHealthSweep(options: {
     if (!runtime) throw new Error("Sanctuary health runtime is unavailable")
     const [containersResult, storageResult, disksResult, notificationsResult, endpoints] = await Promise.all([
       runtime.listContainers(), runtime.getStorage(), runtime.getDisks(), runtime.getNotifications(),
-      Promise.all(ENDPOINTS.map(async (url) => {
-        try {
-          const response = await fetchImpl(url, { signal: AbortSignal.timeout(10_000), redirect: "follow" })
-          return { url, ok: response.status >= 200 && response.status < 400, status: response.status }
-        } catch { return { url, ok: false, status: 0 } }
-      })),
+      Promise.all(ENDPOINTS.map((url) => probeSanctuaryEndpoint(url, fetchImpl))),
     ])
     const incidents = new Map<string, Incident>()
     const add = (id: string, summary: string) => incidents.set(id, { id, summary })

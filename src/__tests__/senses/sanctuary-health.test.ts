@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { createSanctuaryHealthSweep } from "../../senses/sanctuary-health"
+import { createSanctuaryHealthSweep, probeSanctuaryEndpoint } from "../../senses/sanctuary-health"
 
 function context(state: "running" | "exited") {
   return { sanctuary: {
@@ -16,6 +16,31 @@ function context(state: "running" | "exited") {
 }
 
 describe("Sanctuary deterministic health sweep", () => {
+  it("follows only bounded same-origin HTTPS redirects with manual redirect control", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "/ready" } }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch)).resolves.toEqual({
+      url: "https://books.mendelow.cloud/",
+      ok: true,
+      status: 200,
+    })
+    expect(fetch).toHaveBeenNthCalledWith(1, "https://books.mendelow.cloud/", expect.objectContaining({ redirect: "manual" }))
+    expect(fetch).toHaveBeenNthCalledWith(2, "https://books.mendelow.cloud/ready", expect.objectContaining({ redirect: "manual" }))
+  })
+
+  it("rejects redirects that change origin without contacting the target", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 302, headers: { location: "https://attacker.example/" } }))
+
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch)).resolves.toEqual({
+      url: "https://books.mendelow.cloud/",
+      ok: false,
+      status: 0,
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it("alerts once on transition, suppresses unchanged, and emits one recovery", async () => {
     const statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-")), "state.json")
     const fetch = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }))
