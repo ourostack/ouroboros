@@ -6,7 +6,8 @@ import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { resetIdentity, setAgentName } from "../../heart/identity"
-import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, searchMailSearchCache, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord } from "../../mailroom/search-cache"
+import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, searchMailSearchCache, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord, writeMailSearchSkipReceipt } from "../../mailroom/search-cache"
+import * as searchCacheApi from "../../mailroom/search-cache"
 import { syncHostedMailSearchCache } from "../../mailroom/hosted-cache-sync"
 import { canonicalMailIndexRecordSnapshot as canonicalSnapshot } from "../../mailroom/blob-store"
 import type { ToolContext } from "../../repertoire/tools-base"
@@ -338,7 +339,8 @@ describe("hosted mail tools", () => {
 
     const getIndexedMessageById = vi.fn(async (id: string) => {
       if (id === current.message.id) return current.message
-      throw new Error(`missing-key record ${id} must not be fetched while its cached provenance proves the key is absent`)
+      if (id === missingKey.message.id) return missingKey.message
+      throw new Error(`unexpected record ${id}`)
     })
     const recordAccess = vi.fn()
     const result = await syncHostedMailSearchCache({
@@ -355,12 +357,12 @@ describe("hosted mail tools", () => {
     })
 
     expect(result).toEqual(expect.objectContaining({
-      fetched: 1,
+      fetched: 2,
       alreadyCached: 0,
       removed: 5,
       skipped: 1,
     }))
-    expect(fs.readdirSync(cacheRoot).sort()).toEqual(["coverage", `${current.message.id}.json`].sort())
+    expect(fs.readdirSync(cacheRoot).sort()).toEqual(["coverage", "skipped", `${current.message.id}.json`].sort())
     expect(JSON.parse(fs.readFileSync(path.join(cacheRoot, `${current.message.id}.json`), "utf-8"))).toEqual(expect.objectContaining({
       messageId: current.message.id,
       subject: "Current hosted truth",
@@ -369,8 +371,75 @@ describe("hosted mail tools", () => {
       textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
     }))
     expect(searchMailCacheIds(cacheOptions)).toEqual([current.message.id])
-    expect(getIndexedMessageById).toHaveBeenCalledTimes(1)
+    expect(getIndexedMessageById).toHaveBeenCalledTimes(2)
+    expect((searchCacheApi as any).readMailSearchSkipReceipt("slugger", missingKey.message.id, cacheOptions)).toEqual(expect.objectContaining({
+      agentId: "slugger",
+      messageId: missingKey.message.id,
+      missingKeyId: "mail_key_missing",
+      reason: "missing-private-key",
+      recordFingerprint: canonicalSnapshot([records[1]!]).messageIndexFingerprint,
+    }))
     expect(recordAccess).not.toHaveBeenCalled()
+  })
+
+  it("reuses only current missing-key receipts, retries changed records, and removes receipts when the key appears", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const missing = await buildEncryptedMessageForKey("mail_key_missing", "Receipt lifecycle")
+    const privateKey = Object.values(missing.keys)[0]!
+    let message = missing.message
+    let record = {
+      schemaVersion: 1 as const,
+      id: message.id,
+      agentId: message.agentId,
+      compartmentKind: message.compartmentKind,
+      placement: message.placement,
+      receivedAt: message.receivedAt,
+    }
+    const observeMessageIndexAuthority = vi.fn(async () => ({
+      totalNameCount: 1,
+      parsedRecordCount: 1,
+      parseFailureCount: 0,
+      duplicateIds: [],
+      records: [record],
+      snapshot: canonicalSnapshot([record]),
+    }))
+    const getIndexedMessageById = vi.fn(async () => message)
+    const base = {
+      agentId: "slugger",
+      mode: "full-convergence" as const,
+      authority: { observeMessageIndexAuthority },
+      store: { getIndexedMessageById } as never,
+      storeKind: "azure-blob",
+      cacheOptions,
+    }
+
+    const first = await syncHostedMailSearchCache({ ...base, privateKeys: {} })
+    expect(first).toEqual(expect.objectContaining({ skipped: 1, fetched: 1 }))
+    const firstReceipt = (searchCacheApi as any).readMailSearchSkipReceipt("slugger", message.id, cacheOptions)
+    expect(firstReceipt).toEqual(expect.objectContaining({ missingKeyId: "mail_key_missing" }))
+
+    const second = await syncHostedMailSearchCache({ ...base, privateKeys: {} })
+    expect(second).toEqual(expect.objectContaining({ skipped: 1, fetched: 0 }))
+    expect(getIndexedMessageById).toHaveBeenCalledTimes(1)
+
+    message = { ...message, placement: "imbox" }
+    record = { ...record, placement: "imbox" }
+    const changed = await syncHostedMailSearchCache({ ...base, privateKeys: {} })
+    expect(changed).toEqual(expect.objectContaining({ skipped: 1, fetched: 1 }))
+    expect(getIndexedMessageById).toHaveBeenCalledTimes(2)
+    const changedReceipt = (searchCacheApi as any).readMailSearchSkipReceipt("slugger", message.id, cacheOptions)
+    expect(changedReceipt.recordFingerprint).not.toBe(firstReceipt.recordFingerprint)
+
+    const recovered = await syncHostedMailSearchCache({
+      ...base,
+      privateKeys: { mail_key_missing: privateKey },
+    })
+    expect(recovered).toEqual(expect.objectContaining({ skipped: 0, fetched: 1 }))
+    expect((searchCacheApi as any).readMailSearchSkipReceipt("slugger", message.id, cacheOptions)).toBeNull()
+    expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)).toEqual([
+      expect.objectContaining({ messageId: message.id, bodyForm: "encrypted", decryptionKeyId: "mail_key_missing" }),
+    ])
   })
 
   it.each([
@@ -514,14 +583,254 @@ describe("hosted mail tools", () => {
     expect(getIndexedMessageById).not.toHaveBeenCalled()
   })
 
-  it("removes a stale canonical projection when its hosted body cannot be fetched", async () => {
+  it("accepts an explicit plaintext cache document without decryption-key provenance", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const plaintext: StoredMailMessage = {
+      schemaVersion: 1,
+      id: "mail_plaintext_current",
+      agentId: "slugger",
+      mailboxId: "mailbox_slugger",
+      compartmentKind: "native",
+      compartmentId: "mailbox_slugger",
+      recipient: "slugger@ouro.bot",
+      envelope: { mailFrom: "ari@example.com", rcptTo: ["slugger@ouro.bot"] },
+      placement: "imbox",
+      trustReason: "plaintext cache proof",
+      rawObject: "raw/mail_plaintext_current.eml",
+      rawSha256: "sha",
+      rawSize: 10,
+      bodyForm: "plaintext",
+      private: {
+        from: ["ari@example.com"], to: ["slugger@ouro.bot"], cc: [], subject: "Plaintext current", text: "hello", snippet: "hello", attachments: [], untrustedContentWarning: "untrusted",
+      },
+      ingest: { schemaVersion: 1, kind: "mbox-import" },
+      receivedAt: "2026-08-18T00:00:00.000Z",
+    }
+    upsertMailSearchCacheDocument(plaintext, plaintext.private, cacheOptions)
+    const record = {
+      schemaVersion: 1 as const,
+      id: plaintext.id,
+      agentId: plaintext.agentId,
+      compartmentKind: plaintext.compartmentKind,
+      placement: plaintext.placement,
+      receivedAt: plaintext.receivedAt,
+    }
+    const getIndexedMessageById = vi.fn(async () => { throw new Error("plaintext current cache must not fetch") })
+
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: { observeMessageIndexAuthority: vi.fn(async () => ({
+        totalNameCount: 1,
+        parsedRecordCount: 1,
+        parseFailureCount: 0,
+        duplicateIds: [],
+        records: [record],
+        snapshot: canonicalSnapshot([record]),
+      })) },
+      store: { getIndexedMessageById } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 1, skipped: 0 }))
+    expect(getIndexedMessageById).not.toHaveBeenCalled()
+    expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)[0]).toEqual(expect.objectContaining({
+      bodyForm: "plaintext",
+    }))
+    expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)[0]).not.toHaveProperty("decryptionKeyId")
+  })
+
+  it("prefers current plaintext and encrypted cache documents over conflicting stale-key receipts", async () => {
+    const cases: Array<{
+      label: string
+      message: StoredMailMessage
+      privateKeys: Record<string, string>
+      envelope: PrivateMailEnvelope
+      provenance?: { decryptionKeyId: string }
+    }> = []
+    const plaintext = {
+      ...((await buildEncryptedMessageForKey("unused", "coexist plaintext")).message),
+      bodyForm: "plaintext" as const,
+      rawObject: "raw/coexist-plaintext.eml",
+      private: {
+        from: ["ari@example.com"], to: ["slugger@ouro.bot"], cc: [], subject: "coexist plaintext", text: "hello", snippet: "hello", attachments: [], untrustedContentWarning: "untrusted",
+      },
+    }
+    const { privateEnvelope: _encryptedEnvelope, ...plaintextMessage } = plaintext
+    cases.push({
+      label: "plaintext",
+      message: plaintextMessage,
+      privateKeys: {},
+      envelope: plaintextMessage.private,
+    })
+    const encrypted = await buildEncryptedMessageForKey("mail_key_current", "coexist encrypted")
+    const encryptedPrivateKey = Object.values(encrypted.keys)[0]!
+    const { readDecryptedMailMessage } = await import("../../mailroom/core")
+    const decrypted = readDecryptedMailMessage(encrypted.message, { mail_key_current: encryptedPrivateKey })
+    cases.push({
+      label: "encrypted",
+      message: encrypted.message,
+      privateKeys: { mail_key_current: encryptedPrivateKey },
+      envelope: decrypted.private,
+      provenance: { decryptionKeyId: "mail_key_current" },
+    })
+
+    for (const current of cases) {
+      const cacheRoot = tempDir()
+      const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+      upsertMailSearchCacheDocument(current.message, current.envelope, cacheOptions, current.provenance)
+      const record = {
+        schemaVersion: 1 as const,
+        id: current.message.id,
+        agentId: current.message.agentId,
+        compartmentKind: current.message.compartmentKind,
+        placement: current.message.placement,
+        ...(current.message.source ? { source: current.message.source } : {}),
+        receivedAt: current.message.receivedAt,
+      }
+      writeMailSearchSkipReceipt({
+        schemaVersion: 1,
+        agentId: "slugger",
+        messageId: current.message.id,
+        recordFingerprint: canonicalSnapshot([record]).messageIndexFingerprint,
+        missingKeyId: "mail_key_stale_receipt",
+        reason: "missing-private-key",
+        observedAt: "2026-08-18T00:00:00.000Z",
+      }, cacheOptions)
+      const getIndexedMessageById = vi.fn(async () => { throw new Error(`${current.label} current cache must not fetch`) })
+
+      const result = await syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: { observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records: [record],
+          snapshot: canonicalSnapshot([record]),
+        })) },
+        store: { getIndexedMessageById } as never,
+        privateKeys: current.privateKeys,
+        storeKind: "azure-blob",
+        cacheOptions,
+      })
+
+      expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 1, skipped: 0 }))
+      expect(getIndexedMessageById).not.toHaveBeenCalled()
+      expect((searchCacheApi as any).readMailSearchSkipReceipt("slugger", current.message.id, cacheOptions)).toBeNull()
+      expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)).toHaveLength(1)
+    }
+  })
+
+  it("refreshes a legacy body-form-free cache document exactly once", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_key_current", "Legacy body form")
+    const privateKey = Object.values(current.keys)[0]!
+    const { readDecryptedMailMessage } = await import("../../mailroom/core")
+    const decrypted = readDecryptedMailMessage(current.message, { mail_key_current: privateKey })
+    const legacy = upsertMailSearchCacheDocument(current.message, decrypted.private, cacheOptions, {
+      decryptionKeyId: "mail_key_current",
+    })
+    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({ ...legacy, bodyForm: undefined })}\n`)
+    const record = {
+      schemaVersion: 1 as const,
+      id: current.message.id,
+      agentId: current.message.agentId,
+      compartmentKind: current.message.compartmentKind,
+      placement: current.message.placement,
+      receivedAt: current.message.receivedAt,
+    }
+    const observeMessageIndexAuthority = vi.fn(async () => ({
+      totalNameCount: 1,
+      parsedRecordCount: 1,
+      parseFailureCount: 0,
+      duplicateIds: [],
+      records: [record],
+      snapshot: canonicalSnapshot([record]),
+    }))
+    const getIndexedMessageById = vi.fn(async () => current.message)
+    const input = {
+      agentId: "slugger",
+      mode: "full-convergence" as const,
+      authority: { observeMessageIndexAuthority },
+      store: { getIndexedMessageById } as never,
+      privateKeys: { mail_key_current: privateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    }
+
+    expect(await syncHostedMailSearchCache(input)).toEqual(expect.objectContaining({ fetched: 1, alreadyCached: 0 }))
+    expect(await syncHostedMailSearchCache(input)).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 1 }))
+    expect(getIndexedMessageById).toHaveBeenCalledTimes(1)
+    expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)[0]).toEqual(expect.objectContaining({
+      bodyForm: "encrypted",
+      decryptionKeyId: "mail_key_current",
+    }))
+  })
+
+  it("removes malformed and orphan missing-key receipts during full convergence", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_key_current", "Receipt cleanup")
+    const privateKey = Object.values(current.keys)[0]!
+    const record = {
+      schemaVersion: 1 as const,
+      id: current.message.id,
+      agentId: current.message.agentId,
+      compartmentKind: current.message.compartmentKind,
+      placement: current.message.placement,
+      receivedAt: current.message.receivedAt,
+    }
+    const skippedDir = path.join(cacheRoot, "skipped")
+    fs.mkdirSync(skippedDir, { recursive: true })
+    fs.writeFileSync(path.join(skippedDir, "malformed.json"), "{not json")
+    fs.writeFileSync(path.join(skippedDir, `${Buffer.from("mail_orphan").toString("base64url")}.json`), `${JSON.stringify({
+      schemaVersion: 1,
+      agentId: "slugger",
+      messageId: "mail_orphan",
+      recordFingerprint: "b".repeat(64),
+      missingKeyId: "mail_key_missing",
+      reason: "missing-private-key",
+      observedAt: "2026-08-18T00:00:00.000Z",
+    })}\n`)
+
+    await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: { observeMessageIndexAuthority: vi.fn(async () => ({
+        totalNameCount: 1,
+        parsedRecordCount: 1,
+        parseFailureCount: 0,
+        duplicateIds: [],
+        records: [record],
+        snapshot: canonicalSnapshot([record]),
+      })) },
+      store: { getIndexedMessageById: vi.fn(async () => current.message) } as never,
+      privateKeys: { mail_key_current: privateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(fs.readdirSync(skippedDir)).toEqual([])
+  })
+
+  it("preserves a stale canonical projection and refuses coverage when its hosted body cannot be fetched", async () => {
     const cacheRoot = tempDir()
     const cacheOptions = { cacheDirForAgent: () => cacheRoot }
     const current = await buildEncryptedMessageForKey("mail_fetch_missing", "No hosted body")
     const legacy = upsertMailSearchCacheDocument(current.message, {
       from: ["stale@example.com"], to: [], cc: [], subject: "Stale", text: "stale", snippet: "stale", attachments: [], untrustedContentWarning: "untrusted",
     }, cacheOptions)
-    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({ ...legacy, decryptionKeyId: undefined })}\n`)
+    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({
+      ...legacy,
+      bodyForm: undefined,
+      decryptionKeyId: undefined,
+    })}\n`)
     const records = [{
       schemaVersion: 1 as const,
       id: current.message.id,
@@ -531,7 +840,7 @@ describe("hosted mail tools", () => {
       receivedAt: current.message.receivedAt,
     }]
 
-    const result = await syncHostedMailSearchCache({
+    await expect(syncHostedMailSearchCache({
       agentId: "slugger",
       mode: "full-convergence",
       authority: {
@@ -548,10 +857,10 @@ describe("hosted mail tools", () => {
       privateKeys: {},
       storeKind: "azure-blob",
       cacheOptions,
-    })
+    })).rejects.toThrow(/indexed message was not retrievable/i)
 
-    expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 0, removed: 1, skipped: 1 }))
-    expect(fs.readdirSync(cacheRoot)).toEqual(["coverage"])
+    expect(fs.readdirSync(cacheRoot)).toEqual([`${current.message.id}.json`])
+    expect(searchMailCacheIds(cacheOptions)).toEqual([current.message.id])
   })
 
   it("does not cache a fetched body whose metadata disagrees with authority", async () => {
@@ -569,7 +878,7 @@ describe("hosted mail tools", () => {
       receivedAt: current.message.receivedAt,
     }]
 
-    const result = await syncHostedMailSearchCache({
+    await expect(syncHostedMailSearchCache({
       agentId: "slugger",
       mode: "full-convergence",
       authority: {
@@ -586,11 +895,64 @@ describe("hosted mail tools", () => {
       privateKeys: { mail_metadata_mismatch: currentPrivateKey },
       storeKind: "azure-blob",
       cacheOptions,
-    })
+    })).rejects.toThrow(/metadata did not match authority/i)
 
-    expect(result).toEqual(expect.objectContaining({ fetched: 1, alreadyCached: 0, skipped: 1 }))
-    expect(fs.readdirSync(cacheRoot)).toEqual(["coverage"])
+    expect(fs.existsSync(path.join(cacheRoot, "coverage"))).toBe(false)
+    expect(fs.existsSync(path.join(cacheRoot, "skipped"))).toBe(false)
     expect(searchMailCacheIds(cacheOptions)).toEqual([])
+  })
+
+  it("does not convert generic body-read failures into receipts or replacement coverage", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_network_failure", "Preserve current cache")
+    const stale = upsertMailSearchCacheDocument(current.message, {
+      from: ["stale@example.com"], to: [], cc: [], subject: "Stale but valid", text: "stale", snippet: "stale", attachments: [], untrustedContentWarning: "untrusted",
+    }, cacheOptions)
+    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({ ...stale, placement: "imbox" })}\n`)
+    const record = {
+      schemaVersion: 1 as const,
+      id: current.message.id,
+      agentId: current.message.agentId,
+      compartmentKind: current.message.compartmentKind,
+      placement: current.message.placement,
+      receivedAt: current.message.receivedAt,
+    }
+    const priorCoverage = writeMailSearchCoverageRecord({
+      schemaVersion: 1,
+      agentId: "slugger",
+      storeKind: "azure-blob",
+      indexedAt: "2026-08-17T00:00:00.000Z",
+      visibleMessageCount: 99,
+      cachedMessageCount: 99,
+      decryptableMessageCount: 99,
+      skippedMessageCount: 0,
+      messageIndexFingerprint: "prior-coverage",
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    }, cacheOptions)
+
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      authority: { observeMessageIndexAuthority: vi.fn(async () => ({
+        totalNameCount: 1,
+        parsedRecordCount: 1,
+        parseFailureCount: 0,
+        duplicateIds: [],
+        records: [record],
+        snapshot: canonicalSnapshot([record]),
+      })) },
+      store: { getIndexedMessageById: vi.fn(async () => { throw new Error("network timeout") }) } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })).rejects.toThrow(/network timeout/i)
+
+    expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)).toEqual([
+      expect.objectContaining({ messageId: current.message.id, subject: "Stale but valid" }),
+    ])
+    expect((searchCacheApi as any).inspectMailSearchSkipReceipts("slugger", cacheOptions)).toEqual([])
+    expect(readMailSearchCoverageRecord({ agentId: "slugger", storeKind: "azure-blob" }, cacheOptions)).toEqual(priorCoverage)
   })
 
   it("merges cached and imported search docs newest-first, dedupes ids, and respects the limit", async () => {

@@ -57,7 +57,11 @@ import {
   senseInboundDeliveryCheck,
 } from "../../../heart/daemon/doctor"
 import {
+  canonicalMailIndexRecordSnapshot,
+} from "../../../mailroom/blob-store"
+import {
   MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+  writeMailSearchSkipReceipt,
   writeMailSearchCoverageRecord,
 } from "../../../mailroom/search-cache"
 import { buildBlueBubblesWebhookCallbackUrl } from "../../../senses/bluebubbles/webhook-registration"
@@ -162,6 +166,7 @@ function depsFor(bundlesRoot: string, overrides: Partial<DoctorDeps> = {}): Doct
     readFileSync: (p) => fs.readFileSync(p, "utf-8"),
     readdirSync: (p) => fs.readdirSync(p),
     statSync: (p) => fs.statSync(p),
+    lstatSync: (p) => fs.lstatSync(p),
     checkSocketAlive: vi.fn(async () => true),
     socketPath: "/tmp/ouro.sock",
     bundlesRoot,
@@ -278,10 +283,29 @@ function writeConvergedHostedCache(agentRoot: string, record = hostedAuthorityRe
     searchText: "hosted truth",
     textProjectionVersion: 2,
     attachmentCount: 0,
+    bodyForm: "encrypted",
     decryptionKeyId: "mail_slugger_native",
     ...overrides,
   })}\n`, "utf-8")
   writeHostedCoverage(agentRoot)
+}
+
+function writeHostedSkipReceipt(
+  agentRoot: string,
+  record = hostedAuthorityRecord(),
+  overrides: Record<string, unknown> = {},
+): void {
+  const mirrorDir = path.join(agentRoot, "state", "mail-search")
+  writeMailSearchSkipReceipt({
+    schemaVersion: 1,
+    agentId: "slugger",
+    messageId: record.id,
+    recordFingerprint: canonicalMailIndexRecordSnapshot([record]).messageIndexFingerprint,
+    missingKeyId: "mail_slugger_missing",
+    reason: "missing-private-key",
+    observedAt: "2026-08-17T19:01:00.000Z",
+    ...overrides,
+  }, { cacheDirForAgent: () => mirrorDir })
 }
 
 function soundHostedAuthority(records = [hostedAuthorityRecord()]) {
@@ -751,6 +775,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
       skippedMessageCount: 1,
       newestReceivedAt: skippedRecord.receivedAt,
     })
+    writeHostedSkipReceipt(agentRoot, skippedRecord)
     seedHostedMailRuntime()
 
     const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
@@ -761,6 +786,156 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.detail).toContain("last completed sync skipped 1 hosted message")
     expect(check.detail).not.toContain("cache diverges")
     expect(check.detail).not.toContain("ouro mail sync-cache")
+  })
+
+  it("accepts explicit plaintext cache provenance without requiring a decryption key", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, hostedAuthorityRecord(), {
+      bodyForm: "plaintext",
+      decryptionKeyId: undefined,
+    })
+    seedHostedMailRuntime("slugger", { privateKeys: null })
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("pass")
+    expect(check.detail).toContain("local search cache converged")
+    expect(check.detail).not.toContain("invalid key provenance")
+  })
+
+  it("requires a canonical current receipt for every absent authoritative record", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const cachedRecord = hostedAuthorityRecord()
+    const receiptedRecord = hostedAuthorityRecord({ id: "mail_hosted_receipted", receivedAt: "2026-08-17T19:00:30.000Z" })
+    const unreceiptedRecord = hostedAuthorityRecord({ id: "mail_hosted_unreceipted", receivedAt: "2026-08-17T19:01:00.000Z" })
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, cachedRecord)
+    writeHostedCoverage(agentRoot, {
+      visibleMessageCount: 3,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 2,
+      newestReceivedAt: unreceiptedRecord.receivedAt,
+    })
+    writeHostedSkipReceipt(agentRoot, receiptedRecord)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([
+        cachedRecord,
+        receiptedRecord,
+        unreceiptedRecord,
+      ])),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it.each([
+    ["aggregate-only coverage", (agentRoot: string, _record: ReturnType<typeof hostedAuthorityRecord>) => {
+      fs.rmSync(path.join(agentRoot, "state", "mail-search", "skipped"), { recursive: true, force: true })
+    }],
+    ["malformed receipt", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
+      const skippedDir = path.join(agentRoot, "state", "mail-search", "skipped")
+      fs.mkdirSync(skippedDir, { recursive: true })
+      fs.writeFileSync(path.join(skippedDir, `${Buffer.from(record.id).toString("base64url")}.json`), "{not json", "utf-8")
+    }],
+    ["noncanonical receipt filename", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
+      writeHostedSkipReceipt(agentRoot, record)
+      const skippedDir = path.join(agentRoot, "state", "mail-search", "skipped")
+      const [canonicalName] = fs.readdirSync(skippedDir)
+      fs.renameSync(path.join(skippedDir, canonicalName), path.join(skippedDir, "wrong-name.json"))
+    }],
+    ["stale record fingerprint", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
+      writeHostedSkipReceipt(agentRoot, record, { recordFingerprint: "0".repeat(64) })
+    }],
+    ["orphan receipt", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
+      writeHostedSkipReceipt(agentRoot, record)
+      writeHostedSkipReceipt(agentRoot, hostedAuthorityRecord({ id: "mail_hosted_orphan" }))
+    }],
+    ["receipt coexisting with a current cache document", (agentRoot: string, record: ReturnType<typeof hostedAuthorityRecord>) => {
+      writeHostedSkipReceipt(agentRoot, record)
+      writeHostedSkipReceipt(agentRoot, hostedAuthorityRecord())
+    }],
+  ])("keeps exact repair guidance for %s despite matching aggregate coverage", async (_label, arrangeReceipt) => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const cachedRecord = hostedAuthorityRecord()
+    const skippedRecord = hostedAuthorityRecord({ id: "mail_hosted_skipped", receivedAt: "2026-08-17T19:00:30.000Z" })
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, cachedRecord)
+    writeHostedCoverage(agentRoot, {
+      visibleMessageCount: 2,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 1,
+      newestReceivedAt: skippedRecord.receivedAt,
+    })
+    arrangeReceipt(agentRoot, skippedRecord)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([cachedRecord, skippedRecord])),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("keeps exact repair guidance when a receipted missing key is now available", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const cachedRecord = hostedAuthorityRecord()
+    const skippedRecord = hostedAuthorityRecord({ id: "mail_hosted_skipped", receivedAt: "2026-08-17T19:00:30.000Z" })
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, cachedRecord)
+    writeHostedCoverage(agentRoot, {
+      visibleMessageCount: 2,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 1,
+      newestReceivedAt: skippedRecord.receivedAt,
+    })
+    writeHostedSkipReceipt(agentRoot, skippedRecord)
+    seedHostedMailRuntime("slugger", {
+      privateKeys: {
+        mail_slugger_native: "private",
+        mail_slugger_missing: "newly available",
+      },
+    })
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([cachedRecord, skippedRecord])),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("warns with exact repair guidance when the skip receipt directory is unreadable", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot)
+    fs.writeFileSync(path.join(agentRoot, "state", "mail-search", "skipped"), "not a directory")
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("skip receipts are unreadable")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 
   it.each([
@@ -783,6 +958,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
       skippedMessageCount: 1,
       newestReceivedAt: skippedRecord.receivedAt,
     })
+    writeHostedSkipReceipt(agentRoot, skippedRecord)
     seedHostedMailRuntime()
 
     const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
@@ -791,6 +967,46 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(check.status).toBe("warn")
     expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it.each([
+    ["legacy provenance-free", { bodyForm: undefined, decryptionKeyId: undefined }],
+    ["encrypted without a key id", { bodyForm: "encrypted", decryptionKeyId: undefined }],
+  ])("keeps exact repair guidance for a %s canonical cache document", async (_label, overrides) => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, hostedAuthorityRecord(), overrides)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("cache diverges")
+    expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
+  })
+
+  it("rejects a canonical-looking symlink that the real cache reader ignores", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const record = hostedAuthorityRecord()
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, record)
+    const cachePath = path.join(agentRoot, "state", "mail-search", `${record.id}.json`)
+    const targetPath = path.join(agentRoot, "state", "symlink-target.json")
+    fs.renameSync(cachePath, targetPath)
+    fs.symlinkSync(targetPath, cachePath)
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority()),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("noncanonical")
     expect(check.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 

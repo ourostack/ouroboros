@@ -1,9 +1,17 @@
 import { refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 import { syncHostedMailSearchCache } from "./hosted-cache-sync"
+import type { HostedMailSearchCacheSyncProgress } from "./hosted-cache-sync"
 import { resolveHostedMailAuthority, resolveMailroomReader } from "./reader"
 
-export async function runHostedMailCacheSync(agentName: string): Promise<string> {
+function renderProgress(progress: HostedMailSearchCacheSyncProgress): string {
+  return `mail cache sync pass ${progress.pass}: ${progress.settled}/${progress.total} settled (${progress.phase})`
+}
+
+export async function runHostedMailCacheSync(
+  agentName: string,
+  writeProgress?: (line: string) => void,
+): Promise<string> {
   const freshRuntime = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: false })
   if (!freshRuntime.ok) {
     throw new Error(`mail cache sync for ${agentName} requires fresh ${freshRuntime.itemPath}: ${freshRuntime.error}`)
@@ -25,6 +33,7 @@ export async function runHostedMailCacheSync(agentName: string): Promise<string>
     privateKeys: reader.config.privateKeys,
     storeKind: reader.storeKind,
     cacheOptions: reader.store.mailSearchCacheOptions?.(),
+    ...(writeProgress ? { onProgress: (progress: HostedMailSearchCacheSyncProgress) => writeProgress(renderProgress(progress)) } : {}),
   })
   const text = [
     `hosted mail cache converged for ${agentName}.`,

@@ -240,7 +240,7 @@ When BlueBubbles runs in another logged-in macOS account, standard setup install
 
 ### Bounded doctor repairs
 
-Doctor may recommend two local, agent-qualified repairs. `ouro mail sync-cache --agent <name>` compares read-only hosted authority with the reconstructible local cache, then rebuilds only that cache; it does not mutate hosted mail. `ouro logs prune --agent <name>` rotates only the validated agent bundle's regular log streams. Ouro offers the prune command only for a canonical direct `<name>.ouro` bundle with a present `agent.json`; task-only `.ouro` work directories are not agents.
+Doctor may recommend two local, agent-qualified repairs. `ouro mail sync-cache --agent <name>` compares read-only hosted authority with the reconstructible local cache, then rebuilds only that cache; it does not mutate hosted mail. Full convergence is capped at three authority passes, uses at most 20 concurrent body reads, and prints settlement progress plus a 30-second heartbeat while work is stalled. The command writes durable per-message missing-key receipts to explain intentionally unavailable encrypted records and prevent unchanged reruns from downloading the same unavailable bodies again. `ouro logs prune --agent <name>` rotates only the validated agent bundle's regular log streams. Ouro offers the prune command only for a canonical direct `<name>.ouro` bundle with a present `agent.json`; task-only `.ouro` work directories are not agents.
 
 ## Setting Up On Another Machine
 

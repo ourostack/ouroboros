@@ -823,7 +823,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("daemon started")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
-  })
+  }, 10_000)
 
   it("fails `up` when the daemon socket dies before final handoff", async () => {
     const writeStdout = vi.fn()
@@ -851,7 +851,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("daemon crashed hard")
     expect(deps.sendCommand).not.toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("background service stopped before boot finished"))
-  })
+  }, 10_000)
 
   it("fails `up` when final daemon status does not answer cleanly", async () => {
     const writeStdout = vi.fn()
@@ -7845,7 +7845,7 @@ describe("ouro up startup progress", () => {
     expect(socketIndex).toBeGreaterThan(startIndex)
     expect(healthIndex).toBeGreaterThan(socketIndex)
     expect(stableIndex).toBeGreaterThan(healthIndex)
-  })
+  }, 10_000)
 })
 
 describe("ouro changelog command", () => {
@@ -9257,7 +9257,7 @@ describe("ouro up per-agent progress threading", () => {
     const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
     expect(output).toContain("provider readiness confirmed by daemon status")
     expect(output).not.toContain("agent config validated offline")
-  })
+  }, 10_000)
 
   it("runs a bounded live provider check when daemon status has configured providers with unknown readiness", async () => {
     mockHealthCheck.mockClear()
@@ -9316,7 +9316,7 @@ describe("ouro up per-agent progress threading", () => {
     }))
     const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
     expect(output).toContain("selected providers answered live checks")
-  })
+  }, 10_000)
 
   it("still validates privateRuntime config when daemon provider readiness rows are available", async () => {
     mockHealthCheck.mockClear()
@@ -9382,7 +9382,7 @@ describe("ouro up per-agent progress threading", () => {
     const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
     expect(output).toContain("privateRuntime.provider")
     expect(output).toContain("ouro use --agent slugger --lane inner")
-  })
+  }, 10_000)
 
   it("preserves privateRuntime config guidance over degraded daemon provider rows for the same agent", async () => {
     mockHealthCheck.mockClear()

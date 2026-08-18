@@ -40,8 +40,10 @@ import { readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig, type Rsvp
 import { checkRsvpCutover, type RsvpCutoverChecks } from "../../rsvp/cutover"
 import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/diagnostics"
 import type { MailMessageIndexRecord } from "../../mailroom/file-store"
+import { canonicalMailIndexRecordSnapshot } from "../../mailroom/blob-store"
 import { mailSearchCacheDocumentMatchesRecord } from "../../mailroom/hosted-cache-sync"
 import {
+  inspectMailSearchSkipReceipts,
   MAIL_SEARCH_TEXT_PROJECTION_VERSION,
   readMailSearchCoverageRecord,
   type MailSearchCacheDocument,
@@ -1301,7 +1303,19 @@ async function hostedMailCacheAuthorityCheck(
   const documentsById = new Map<string, MailSearchCacheDocument>()
   let malformedOrNoncanonical = 0
   for (const fileName of fileNames) {
-    const document = parseCacheDocument(deps, `${cacheDir}/${fileName}`)
+    const filePath = `${cacheDir}/${fileName}`
+    let regularFile = false
+    try {
+      const fileStat = deps.lstatSync?.(filePath)
+      regularFile = fileStat?.isFile?.() === true && !fileStat.isSymbolicLink()
+    } catch {
+      // A disappearing or unreadable entry is not usable cache evidence.
+    }
+    if (!regularFile) {
+      malformedOrNoncanonical += 1
+      continue
+    }
+    const document = parseCacheDocument(deps, filePath)
     if (!document || document.agentId !== agentName || fileName !== `${document.messageId}.json` || !recordsById.has(document.messageId)) {
       malformedOrNoncanonical += 1
       continue
@@ -1309,20 +1323,51 @@ async function hostedMailCacheAuthorityCheck(
     documentsById.set(document.messageId, document)
   }
 
+  const receiptsById = new Map<string, string>()
+  let invalidReceipts = 0
+  try {
+    for (const inspected of inspectMailSearchSkipReceipts(agentName, { cacheDirForAgent: () => cacheDir })) {
+      const receipt = inspected.receipt
+      const record = receipt ? recordsById.get(receipt.messageId) : undefined
+      const currentFingerprint = record
+        ? canonicalMailIndexRecordSnapshot([record]).messageIndexFingerprint
+        : null
+      if (!receipt ||
+        !inspected.canonical ||
+        !record ||
+        documentsById.has(receipt.messageId) ||
+        receipt.recordFingerprint !== currentFingerprint ||
+        store.privateKeyIds.has(receipt.missingKeyId)) {
+        invalidReceipts += 1
+        continue
+      }
+      receiptsById.set(receipt.messageId, receipt.missingKeyId)
+    }
+  } catch (error) {
+    return {
+      ...base,
+      status: "warn",
+      detail: `hosted authority is sound but local skip receipts are unreadable: ${String(error)}; run \`ouro mail sync-cache --agent ${agentName}\``,
+    }
+  }
+
   let missing = 0
+  let receiptedMissing = 0
   let stale = 0
   let invalidKeyProvenance = 0
   for (const record of observation.records) {
     const document = documentsById.get(record.id)
     if (!document) {
-      missing += 1
+      if (receiptsById.has(record.id)) receiptedMissing += 1
+      else missing += 1
       continue
     }
     if (!mailSearchCacheDocumentMatchesRecord(document, record, true)) {
       stale += 1
       continue
     }
-    if (!document.decryptionKeyId || !store.privateKeyIds.has(document.decryptionKeyId)) {
+    if (document.bodyForm === "encrypted" &&
+      (!document.decryptionKeyId || !store.privateKeyIds.has(document.decryptionKeyId))) {
       invalidKeyProvenance += 1
     }
   }
@@ -1343,23 +1388,25 @@ async function hostedMailCacheAuthorityCheck(
   if (
     coverageMatches
     && coverage.skippedMessageCount > 0
-    && missing === coverage.skippedMessageCount
+    && receiptedMissing === coverage.skippedMessageCount
+    && missing === 0
     && stale === 0
     && malformedOrNoncanonical === 0
+    && invalidReceipts === 0
     && invalidKeyProvenance === 0
   ) {
     return {
       ...base,
       status: "warn",
-      detail: `hosted authority is sound; the last completed sync skipped ${missing} hosted message(s), so local search remains incomplete; retry only if conditions have changed since that sync`,
+      detail: `hosted authority is sound; the last completed sync skipped ${receiptedMissing} hosted message(s) with current per-message missing-key receipts, so local search remains incomplete; retry only if conditions have changed since that sync`,
     }
   }
 
-  if (malformedOrNoncanonical > 0 || missing > 0 || stale > 0 || invalidKeyProvenance > 0 || !coverageMatches) {
+  if (malformedOrNoncanonical > 0 || missing > 0 || stale > 0 || invalidReceipts > 0 || invalidKeyProvenance > 0 || !coverageMatches) {
     return {
       ...base,
       status: "warn",
-      detail: `hosted authority is sound but cache diverges: ${missing + stale} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical/duplicate file(s), ${invalidKeyProvenance} invalid key provenance document(s), all-scope coverage ${coverageMatches ? "matches" : "missing/malformed/stale"}; run \`ouro mail sync-cache --agent ${agentName}\``,
+      detail: `hosted authority is sound but cache diverges: ${missing + stale} unreceipted-missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical/duplicate cache file(s), ${invalidReceipts} malformed/orphan/stale/recoverable skip receipt(s), ${invalidKeyProvenance} invalid key provenance document(s), all-scope coverage ${coverageMatches ? "matches" : "missing/malformed/stale"}; run \`ouro mail sync-cache --agent ${agentName}\``,
     }
   }
   const count = observation.records.length

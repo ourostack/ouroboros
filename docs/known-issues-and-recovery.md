@@ -23,7 +23,7 @@ Do not send a synthetic iMessage just to make the diagnostic green. A real new i
 
 **Detection**: the Mailroom category compares a bounded, read-only hosted index authority snapshot with local search-cache metadata, projection, and key provenance. A mismatch means the reconstructible local cache is stale, malformed, or incomplete; it does not mean hosted mail is missing.
 
-**Recovery**: run `ouro mail sync-cache --agent <name>`. The command refreshes credentials, re-observes complete hosted authority, reads only the bodies required for convergence, and atomically repairs the local cache. It does not mutate hosted mail. Definitive auth/config faults must be repaired first; transient or ambiguous authority does not authorize local deletion.
+**Recovery**: run `ouro mail sync-cache --agent <name>`. The command refreshes credentials, re-observes complete hosted authority, and accepts convergence only after consecutive equal fingerprints within at most three authority passes. Body work uses at most 20 concurrent body reads; foreground output reports settlement and emits a 30-second heartbeat during stalls. Durable per-message missing-key receipts let unchanged unavailable encrypted records remain explained without repeated body downloads. The command atomically repairs only the local cache and does not mutate hosted mail. Definitive auth/config faults must be repaired first; transient or ambiguous authority does not authorize local deletion.
 
 ## Doctor identifies an oversized agent log stream
 

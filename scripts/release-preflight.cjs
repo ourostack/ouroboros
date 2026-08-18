@@ -7,6 +7,7 @@ const fs = require("fs")
 const { validateChangelog } = require("./changelog-gate.cjs")
 const { validatePackageAssets } = require("./package-assets.cjs")
 const { validateTrustedPublisherLocalContract } = require("./npm-trusted-publishers.cjs")
+const { validateIntentionalDebtFile } = require("./intentional-debt-gate.cjs")
 
 function splitLines(output) {
   return output
@@ -317,6 +318,7 @@ function runReleasePreflight(options = {}, deps = {}) {
   const wrapperPackageJsonPath =
     deps.wrapperPackageJsonPath ?? path.resolve(__dirname, "../packages/ouro.bot/package.json")
   const changelogPath = deps.changelogPath ?? path.resolve(__dirname, "../changelog.json")
+  const intentionalDebtPath = deps.intentionalDebtPath ?? path.resolve(__dirname, "../docs/intentional-debt.json")
 
   const changedFiles = collectChangedFiles(baseRef, execSyncImpl)
   const releasableChanged = versionBumpRequired(changedFiles)
@@ -376,6 +378,17 @@ function runReleasePreflight(options = {}, deps = {}) {
 
   const operationalContracts = summarizeOperationalContractChanges(changedFiles)
   messages.push(...formatOperationalContractMessages(operationalContracts))
+
+  try {
+    const intentionalDebtResult = validateIntentionalDebtFile(intentionalDebtPath, deps.now?.() ?? new Date())
+    if (!intentionalDebtResult.ok) {
+      errors.push(intentionalDebtResult.message, ...intentionalDebtResult.errors)
+    } else {
+      messages.push(intentionalDebtResult.message)
+    }
+  } catch (error) {
+    errors.push(`intentional debt gate: fail (${error instanceof Error ? error.message : String(error)})`)
+  }
 
   const auditResult = runRootDependencyAudit(packageRoot, execSyncImpl)
   if (!auditResult.ok) {

@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core"
+import * as searchCacheApi from "../../mailroom/search-cache"
 import {
 	  MAIL_SEARCH_TEXT_PROJECTION_VERSION,
 	  buildMailSearchCacheDocument,
@@ -105,9 +106,95 @@ describe("mail search cache", () => {
 
     expect(buildMailSearchCacheDocument(encrypted, privateEnvelope())).toEqual(expect.objectContaining({
       messageId: encrypted.id,
+      bodyForm: "encrypted",
       decryptionKeyId: "mail_key_current",
     }))
+    expect(buildMailSearchCacheDocument(message(), privateEnvelope())).toEqual(expect.objectContaining({
+      bodyForm: "plaintext",
+    }))
     expect(buildMailSearchCacheDocument(message(), privateEnvelope())).not.toHaveProperty("decryptionKeyId")
+    expect(buildMailSearchCacheDocument({ ...message(), bodyForm: undefined } as never, privateEnvelope(), {
+      decryptionKeyId: "legacy-key",
+    })).toEqual(expect.objectContaining({ bodyForm: "encrypted", decryptionKeyId: "legacy-key" }))
+    expect(buildMailSearchCacheDocument({ ...message(), bodyForm: undefined } as never, privateEnvelope())).toEqual(
+      expect.objectContaining({ bodyForm: "plaintext" }),
+    )
+  })
+
+  it("persists encoded, body-free missing-key receipts and supports inspection and removal", () => {
+    const cacheRoot = tempDir()
+    const options = { cacheDirForAgent: () => cacheRoot }
+    const api = searchCacheApi as typeof searchCacheApi & {
+      writeMailSearchSkipReceipt(receipt: unknown, options: unknown): unknown
+      readMailSearchSkipReceipt(agentId: string, messageId: string, options: unknown): unknown
+      inspectMailSearchSkipReceipts(agentId: string, options: unknown): Array<{ fileName: string; receipt: unknown }>
+      removeMailSearchSkipReceipt(agentId: string, messageId: string, options: unknown): boolean
+      removeMailSearchSkipReceiptFile(agentId: string, fileName: string, options: unknown): boolean
+    }
+    const receipt = {
+      schemaVersion: 1,
+      agentId: "slugger",
+      messageId: "mail/../../unsafe",
+      recordFingerprint: "a".repeat(64),
+      missingKeyId: "mail_key_missing",
+      reason: "missing-private-key",
+      observedAt: "2026-08-18T00:00:00.000Z",
+    }
+
+    expect(api.writeMailSearchSkipReceipt(receipt, options)).toEqual(receipt)
+    expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toEqual(receipt)
+    const inspected = api.inspectMailSearchSkipReceipts("slugger", options)
+    expect(inspected).toEqual([expect.objectContaining({ receipt })])
+    expect(inspected[0]?.fileName).toMatch(/^[A-Za-z0-9_-]+\.json$/)
+    expect(inspected[0]?.fileName).not.toContain("unsafe")
+    const serialized = JSON.stringify(receipt)
+    expect(serialized).not.toContain("BEGIN PRIVATE KEY")
+    expect(serialized).not.toContain("ciphertext")
+    expect(api.removeMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBe(true)
+    expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBeNull()
+    expect(api.removeMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBe(false)
+
+    const skippedDir = path.join(cacheRoot, "skipped")
+    const receiptPath = path.join(skippedDir, `${Buffer.from(receipt.messageId).toString("base64url")}.json`)
+    fs.mkdirSync(receiptPath)
+    expect(api.removeMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBe(false)
+    fs.rmdirSync(receiptPath)
+    const invalidReceipts: unknown[] = [
+      null,
+      {},
+      { ...receipt, schemaVersion: 2 },
+      { ...receipt, agentId: 1 },
+      { ...receipt, agentId: "" },
+      { ...receipt, messageId: 1 },
+      { ...receipt, messageId: "" },
+      { ...receipt, recordFingerprint: 1 },
+      { ...receipt, recordFingerprint: "not-a-fingerprint" },
+      { ...receipt, missingKeyId: 1 },
+      { ...receipt, missingKeyId: "" },
+      { ...receipt, reason: "network-error" },
+      { ...receipt, observedAt: 1 },
+      { ...receipt, observedAt: "not-a-date" },
+    ]
+    for (const invalid of invalidReceipts) {
+      fs.writeFileSync(receiptPath, `${JSON.stringify(invalid)}\n`)
+      expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBeNull()
+    }
+    fs.writeFileSync(receiptPath, "{not json")
+    expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBeNull()
+
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "../unsafe.json", options)).toBe(false)
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "not-json.txt", options)).toBe(false)
+    fs.mkdirSync(path.join(skippedDir, "directory.json"))
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "directory.json", options)).toBe(false)
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "missing.json", options)).toBe(false)
+    fs.chmodSync(skippedDir, 0o000)
+    try {
+      expect(() => api.readMailSearchSkipReceipt("slugger", "denied", options)).toThrow()
+      expect(() => api.removeMailSearchSkipReceiptFile("slugger", "denied.json", options)).toThrow()
+      expect(() => api.removeMailSearchSkipReceipt("slugger", "denied", options)).toThrow()
+    } finally {
+      fs.chmodSync(skippedDir, 0o700)
+    }
   })
 
   it("removes and reloads cache documents in an already-loaded process", () => {
@@ -300,6 +387,9 @@ describe("mail search cache", () => {
 	      placement: "imbox",
 	      receivedAt: "2026-04-24T21:00:00.000Z",
 	    })
+
+      const { ownerEmail: _ownerEmail, source: _source, ...withoutOptionalMetadata } = stored
+      syncMailSearchCacheMetadata({ ...withoutOptionalMetadata, placement: "imbox" })
 	  })
 
   it("loads cache defensively from disk and tolerates missing metadata updates", () => {
