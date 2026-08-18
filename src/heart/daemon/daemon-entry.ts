@@ -47,6 +47,7 @@ import {
 } from "../provider-credentials"
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import { readAgentConfigForAgent } from "../auth/auth-flow"
 import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
@@ -86,6 +87,7 @@ if (mode === "dev") {
 }
 
 const managedAgents = listEnabledBundleAgents()
+loadContainerCredentialBootstrap(managedAgents)
 const managedPrivateRuntimes = managedAgents.map((agent) => ({
   agent,
   config: readPrivateRuntimeConfig(agent),
