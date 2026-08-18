@@ -2284,7 +2284,7 @@ export class OuroDaemon {
         })
         if (this.nativeHabitRunner && this.nativeHabitMatch?.(command.agent, command.habitName)) {
           const occurrenceId = resolution.occurrenceId ?? `${trigger}:${command.agent}:${command.habitName}`
-          const claimKey = `${command.agent}:${command.habitName}:${occurrenceId}`
+          const claimKey = `${command.agent}:${command.habitName}`
           if (this.nativeHabitClaims.has(claimKey)) {
             return { ok: true, message: `skipped overlapping native habit occurrence ${occurrenceId}` }
           }

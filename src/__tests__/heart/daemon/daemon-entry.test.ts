@@ -431,9 +431,11 @@ describe("daemon entrypoint", () => {
   async function importDaemonEntryWithHabitDispatch(options: {
     socketPath: string
     sendDaemonCommand?: ReturnType<typeof vi.fn>
+    agent?: string
   }) {
     vi.resetModules()
-    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    const agent = options.agent ?? "slugger"
+    listEnabledBundleAgentsMock.mockReturnValue([agent])
 
     const start = vi.fn(async () => undefined)
     const stop = vi.fn(async () => undefined)
@@ -456,7 +458,7 @@ describe("daemon entrypoint", () => {
     vi.doMock("../../../heart/daemon/process-manager", () => ({
       DaemonProcessManager: class MockProcessManager {
         listAgentSnapshots = vi.fn(() => [{
-          name: "slugger",
+          name: agent,
           channel: "private-runtime",
           autoStart: false,
           status: "running",
@@ -697,18 +699,19 @@ describe("daemon entrypoint", () => {
     const forcedExitTimers: Array<ReturnType<typeof setTimeout>> = []
     vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: any, timeout?: any, ...args: any[]) => {
       const timer = originalSetTimeout(handler, timeout, ...args)
-      if (timeout === 5_000) forcedExitTimers.push(timer)
+      if (timeout === 12_000) forcedExitTimers.push(timer)
       return timer
     }) as typeof setTimeout)
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
     onHandlers.SIGINT?.()
-    await Promise.resolve()
-    expect(stop).toHaveBeenCalled()
+    await vi.waitFor(() => expect(stop).toHaveBeenCalled())
     // HabitScheduler should be stopped on SIGINT
     expect(habitSchedulerStopMock).toHaveBeenCalled()
-    expect(exitSpy).toHaveBeenCalledWith(0)
     expect(forcedExitTimers).toHaveLength(1)
-    expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    await vi.waitFor(() => {
+      expect(exitSpy).toHaveBeenCalledWith(0)
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    })
     // Tombstone is now written on SIGINT (regression: previous behavior was
     // to set _gracefulShutdown=true and skip the tombstone, leaving signal-driven
     // shutdowns invisible in the death log)
@@ -718,10 +721,11 @@ describe("daemon entrypoint", () => {
     clearTimeoutSpy.mockClear()
     forcedExitTimers.splice(0)
     onHandlers.SIGTERM?.()
-    await Promise.resolve()
-    expect(exitSpy).toHaveBeenCalledWith(0)
     expect(forcedExitTimers).toHaveLength(1)
-    expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    await vi.waitFor(() => {
+      expect(exitSpy).toHaveBeenCalledWith(0)
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    })
     // Same fix for SIGTERM — was the more common silent-death cause because
     // killOrphanProcesses, launchd policies, and the OOM killer all use SIGTERM
     expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigterm", expect.any(Error))
@@ -1356,6 +1360,24 @@ describe("daemon entrypoint", () => {
     expect(processManagerSendToAgent).not.toHaveBeenCalled()
   })
 
+  it("routes every Sanctuary health scheduler source through the native habit command", async () => {
+    const { schedulerOptions, sendDaemonCommand } = await importDaemonEntryWithHabitDispatch({
+      socketPath: "/tmp/ouro-sanctuary-health-poke.sock",
+      agent: "sanctuary",
+    })
+
+    schedulerOptions.onHabitFire("sanctuary-health", "overdue", { occurrenceId: "overdue:first-run:15m" })
+
+    expect(sendDaemonCommand).toHaveBeenCalledWith("/tmp/ouro-sanctuary-health-poke.sock", {
+      kind: "habit.poke",
+      agent: "sanctuary",
+      habitName: "sanctuary-health",
+      trigger: "overdue",
+      occurrenceId: "overdue:first-run:15m",
+    })
+    expect(sendDaemonCommand).not.toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ kind: "private.wake" }))
+  })
+
   it("lets privateRuntime explicitly allow autonomous private-runtime startup", async () => {
     const { processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: true, source: "privateRuntime" })
@@ -1433,12 +1455,11 @@ describe("daemon entrypoint", () => {
       await Promise.resolve()
 
       const daemonOptions = daemonCtor.mock.calls[0]?.[0] as {
-        onStopCommandComplete: () => void
+        onStopCommandComplete: () => Promise<void>
       }
       expect(typeof daemonOptions.onStopCommandComplete).toBe("function")
 
-      daemonOptions.onStopCommandComplete()
-      daemonOptions.onStopCommandComplete()
+      await Promise.all([daemonOptions.onStopCommandComplete(), daemonOptions.onStopCommandComplete()])
 
       expect(habitSchedulerStopWatchMock).toHaveBeenCalledTimes(1)
       expect(habitSchedulerStopMock).toHaveBeenCalledTimes(1)

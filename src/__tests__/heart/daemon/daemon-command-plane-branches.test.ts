@@ -1380,7 +1380,10 @@ describe("daemon command plane branches", () => {
 
     const first = daemon.handleCommand(command)
     await vi.waitFor(() => expect(nativeHabitRunner).toHaveBeenCalledOnce())
-    await expect(daemon.handleCommand(command)).resolves.toEqual({ ok: true, message: "skipped overlapping native habit occurrence cron:slot-1" })
+    await expect(daemon.handleCommand({ ...command, trigger: "overdue", occurrenceId: "overdue:slot-1" })).resolves.toEqual({
+      ok: true,
+      message: "skipped overlapping native habit occurrence overdue:slot-1",
+    })
     deferred.resolve({ ok: true, message: "health sweep complete" })
     await expect(first).resolves.toEqual({ ok: true, message: "health sweep complete" })
 

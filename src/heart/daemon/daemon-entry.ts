@@ -699,7 +699,7 @@ void daemon.start().then(async () => {
         habitsDir,
         osCronManager,
         onHabitFire: (habitName, trigger, context) => {
-          if (isRsvpHabitName(habitName)) {
+          if (isRsvpHabitName(habitName) || (agent === "sanctuary" && habitName === "sanctuary-health")) {
             sendDaemonCommand(socketPath, {
               kind: "habit.poke",
               agent,
