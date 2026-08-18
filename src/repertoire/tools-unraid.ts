@@ -47,8 +47,8 @@ function display(value: unknown, maxBytes: number): { value: string; truncated: 
   return { value: `${prefix}...`, truncated: true }
 }
 
-const DURATION = "(?:Less than a second|About a (?:minute|hour)|(?:[1-9][0-9]*) (?:seconds?|minutes?|hours?|days?|weeks?|months?|years?))"
-const RUNNING = new RegExp(`^Up ${DURATION}(?: \\(healthy\\)| \\(unhealthy\\))?$`, "u")
+const DURATION = "(?:Less than a second|About a (?:minute|hour|day|week|month|year)|(?:[1-9][0-9]*) (?:seconds?|minutes?|hours?|days?|weeks?|months?|years?))"
+const RUNNING = new RegExp(`^Up ${DURATION}(?: \\((?:healthy|unhealthy|health: starting)\\))?$`, "u")
 const EXITED = new RegExp(`^Exited \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")
 const RESTARTING = new RegExp(`^Restarting \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")
 
@@ -64,14 +64,15 @@ export function normalizeDockerStatus(structuredState: unknown, status: unknown)
   degraded: boolean
 } {
   if (typeof status !== "string") return { state: "unknown", exitCode: null, degraded: true }
-  if (structuredState === "RUNNING" && RUNNING.test(status)) return { state: "running", exitCode: null, degraded: false }
+  const state = typeof structuredState === "string" ? structuredState.toUpperCase() : ""
+  if (state === "RUNNING" && RUNNING.test(status)) return { state: "running", exitCode: null, degraded: false }
   const exited = status.match(EXITED)
-  if (structuredState === "EXITED" && exited) {
+  if (state === "EXITED" && exited) {
     const code = exitCode(exited)
     return code === null ? { state: "unknown", exitCode: null, degraded: true } : { state: "exited", exitCode: code, degraded: false }
   }
   const restarting = status.match(RESTARTING)
-  if ((structuredState === "RUNNING" || structuredState === "EXITED") && restarting) {
+  if ((state === "RUNNING" || state === "EXITED") && restarting) {
     const code = exitCode(restarting)
     return code === null ? { state: "unknown", exitCode: null, degraded: true } : { state: "restarting", exitCode: code, degraded: false }
   }

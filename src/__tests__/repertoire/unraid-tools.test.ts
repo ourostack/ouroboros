@@ -6,6 +6,9 @@ describe("Unraid typed read tools", () => {
   it("normalizes only canonical Docker state/status pairs", () => {
     expect(normalizeDockerStatus("RUNNING", "Up 2 months")).toEqual({ state: "running", exitCode: null, degraded: false })
     expect(normalizeDockerStatus("RUNNING", "Up 2 seconds (healthy)")).toEqual({ state: "running", exitCode: null, degraded: false })
+    expect(normalizeDockerStatus("running", "Up About a day (health: starting)")).toEqual({ state: "running", exitCode: null, degraded: false })
+    expect(normalizeDockerStatus("Exited", "Exited (0) About a year ago")).toEqual({ state: "exited", exitCode: 0, degraded: false })
+    expect(normalizeDockerStatus("exited", "Restarting (7) About a week ago")).toEqual({ state: "restarting", exitCode: 7, degraded: false })
     expect(normalizeDockerStatus("EXITED", "Exited (255) 2 months ago")).toEqual({ state: "exited", exitCode: 255, degraded: false })
     expect(normalizeDockerStatus("RUNNING", "Restarting (1) 3 days ago")).toEqual({ state: "restarting", exitCode: 1, degraded: false })
     expect(normalizeDockerStatus("RUNNING", "up 2 hours")).toEqual({ state: "unknown", exitCode: null, degraded: true })
