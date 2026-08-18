@@ -1,5 +1,5 @@
 import { emitNervesEvent } from "../nerves/runtime"
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { randomUUID } from "node:crypto"
 
@@ -49,6 +49,18 @@ export interface TelegramOffsetStore {
   save(nextUpdateId: number): void
 }
 
+function durableAtomicWrite(path: string, contents: string): void {
+  const directory = dirname(path)
+  mkdirSync(directory, { recursive: true })
+  const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`
+  writeFileSync(temporaryPath, contents, { mode: 0o600 })
+  const temporary = openSync(temporaryPath, "r")
+  try { fsyncSync(temporary) } finally { closeSync(temporary) }
+  renameSync(temporaryPath, path)
+  const directoryHandle = openSync(directory, "r")
+  try { fsyncSync(directoryHandle) } finally { closeSync(directoryHandle) }
+}
+
 export class FileTelegramOffsetStore implements TelegramOffsetStore {
   constructor(private readonly path: string) {}
 
@@ -71,10 +83,7 @@ export class FileTelegramOffsetStore implements TelegramOffsetStore {
 
   save(nextUpdateId: number): void {
     if (!Number.isSafeInteger(nextUpdateId) || nextUpdateId < 0) throw new Error("Telegram offset must be a non-negative safe integer")
-    mkdirSync(dirname(this.path), { recursive: true })
-    const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`
-    writeFileSync(temporaryPath, `${JSON.stringify({ nextUpdateId })}\n`, { mode: 0o600 })
-    renameSync(temporaryPath, this.path)
+    durableAtomicWrite(this.path, `${JSON.stringify({ nextUpdateId })}\n`)
   }
 }
 
@@ -102,6 +111,72 @@ export interface TelegramInboundMessage {
   text: string
 }
 
+export interface TelegramUpdateInboxStore {
+  load(): TelegramUpdate[]
+  capture(update: TelegramUpdate): boolean
+  complete(updateId: number): void
+  discardCompletedBefore(nextUpdateId: number): void
+}
+
+interface TelegramUpdateInboxState {
+  pending: TelegramUpdate[]
+  completedUpdateIds: number[]
+}
+
+export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
+  constructor(private readonly path: string) {}
+
+  private read(): TelegramUpdateInboxState {
+    try {
+      const value = JSON.parse(readFileSync(this.path, "utf8")) as Partial<TelegramUpdateInboxState>
+      if (!Array.isArray(value.pending) || !Array.isArray(value.completedUpdateIds)) throw new Error("invalid inbox shape")
+      if (!value.pending.every((update) => update && Number.isSafeInteger(update.update_id) && update.update_id >= 0)) throw new Error("invalid pending update")
+      if (!value.completedUpdateIds.every((id) => Number.isSafeInteger(id) && id >= 0)) throw new Error("invalid completed update")
+      return { pending: structuredClone(value.pending), completedUpdateIds: [...value.completedUpdateIds] }
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { pending: [], completedUpdateIds: [] }
+      throw new Error("Telegram update inbox state is corrupt", { cause: error })
+    }
+  }
+
+  private write(state: TelegramUpdateInboxState): void {
+    durableAtomicWrite(this.path, `${JSON.stringify(state)}\n`)
+  }
+
+  load(): TelegramUpdate[] {
+    return this.read().pending
+  }
+
+  capture(update: TelegramUpdate): boolean {
+    const state = this.read()
+    const existing = state.pending.find((candidate) => candidate.update_id === update.update_id)
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(update)) throw new Error(`Telegram update inbox has conflicting update ${update.update_id}`)
+      return false
+    }
+    if (state.completedUpdateIds.includes(update.update_id)) return false
+    state.pending.push(structuredClone(update))
+    state.pending.sort((left, right) => left.update_id - right.update_id)
+    this.write(state)
+    return true
+  }
+
+  complete(updateId: number): void {
+    const state = this.read()
+    state.pending = state.pending.filter((update) => update.update_id !== updateId)
+    if (!state.completedUpdateIds.includes(updateId)) state.completedUpdateIds.push(updateId)
+    this.write(state)
+  }
+
+  discardCompletedBefore(nextUpdateId: number): void {
+    const state = this.read()
+    const remaining = state.completedUpdateIds.filter((updateId) => updateId >= nextUpdateId)
+    if (remaining.length === state.completedUpdateIds.length) return
+    state.completedUpdateIds = remaining
+    this.write(state)
+  }
+}
+
 export interface TelegramLongPoll {
   pollOnce(signal?: AbortSignal): Promise<number>
   run(signal?: AbortSignal): Promise<void>
@@ -113,6 +188,7 @@ export interface TelegramLongPollOptions {
   expectedUserId: string
   expectedChatId: string
   offsetStore: TelegramOffsetStore
+  inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
 }
@@ -121,9 +197,37 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   let nextUpdateId = options.offsetStore.load()
   const shutdown = new AbortController()
 
+  const authorizedMessage = (update: TelegramUpdate): TelegramInboundMessage | null => {
+    const message = update.message
+    const userId = message?.from ? String(message.from.id) : ""
+    const chatId = message ? String(message.chat.id) : ""
+    if (!message || message.chat.type !== "private" || userId !== options.expectedUserId || chatId !== options.expectedChatId || typeof message.text !== "string") return null
+    return { updateId: update.update_id, messageId: String(message.message_id), userId, chatId, text: message.text }
+  }
+
+  const dispatch = async (update: TelegramUpdate): Promise<void> => {
+    const handled = await options.onUpdate?.(update) ?? false
+    if (handled) return
+    const message = authorizedMessage(update)
+    if (message) {
+      await options.onMessage(message)
+      return
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "telegram.update_dropped",
+      message: "Telegram update dropped before dispatch",
+      meta: { updateClass: update.message ? "message" : "other", reason: "unauthorized_or_unsupported" },
+    })
+  }
+
   const pollOnce = async (signal?: AbortSignal): Promise<number> => {
     const requestSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
     if (requestSignal.aborted) throw new Error("Telegram long poll stopped")
+    for (const pending of options.inboxStore?.load() ?? []) {
+      await dispatch(pending)
+      options.inboxStore?.complete(pending.update_id)
+    }
     const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
       offset: nextUpdateId,
       timeout: 50,
@@ -133,35 +237,15 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     for (const update of updates) {
       if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
       const next = update.update_id + 1
+      const requiresDurableDispatch = Boolean(update.callback_query || authorizedMessage(update))
+      const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
+      options.offsetStore.save(next)
       nextUpdateId = next
-      options.offsetStore.save(nextUpdateId)
-      const handled = await options.onUpdate?.(update) ?? false
-      if (!handled) {
-        const message = update.message
-        const userId = message?.from ? String(message.from.id) : ""
-        const chatId = message ? String(message.chat.id) : ""
-        const authorized = message
-          && message.chat.type === "private"
-          && userId === options.expectedUserId
-          && chatId === options.expectedChatId
-          && typeof message.text === "string"
-        if (authorized) {
-          await options.onMessage({
-            updateId: update.update_id,
-            messageId: String(message.message_id),
-            userId,
-            chatId,
-            text: message.text as string,
-          })
-        } else {
-          emitNervesEvent({
-            component: "senses",
-            event: "telegram.update_dropped",
-            message: "Telegram update dropped before dispatch",
-            meta: { updateClass: message ? "message" : "other", reason: "unauthorized_or_unsupported" },
-          })
-        }
+      if (newlyCaptured) {
+        await dispatch(update)
+        if (requiresDurableDispatch) options.inboxStore?.complete(update.update_id)
       }
+      options.inboxStore?.discardCompletedBefore(nextUpdateId)
     }
     return nextUpdateId
   }

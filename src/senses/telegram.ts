@@ -8,6 +8,7 @@ import {
   createTelegramBotApi,
   createTelegramLongPoll,
   FileTelegramOffsetStore,
+  FileTelegramUpdateInboxStore,
   sendTelegramText,
   type TelegramApprovalTransport,
   type TelegramBotApi,
@@ -15,6 +16,7 @@ import {
   type TelegramLongPoll,
   type TelegramLongPollOptions,
   type TelegramOffsetStore,
+  type TelegramUpdateInboxStore,
   type TelegramUpdate,
 } from "./telegram-client"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
@@ -41,6 +43,7 @@ export interface CreateTelegramSenseAppOptions {
   credentials: TelegramSenseCredentials
   api?: TelegramBotApi
   offsetStore?: TelegramOffsetStore
+  inboxStore?: TelegramUpdateInboxStore
   createLongPoll?: TelegramLongPollFactory
   runTurn?: TelegramTurnRunner
   approvalTransport?: TelegramApprovalTransport
@@ -74,6 +77,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const api = options.api ?? createTelegramBotApi({ token: botToken })
   const offsetStore = options.offsetStore ?? new FileTelegramOffsetStore(
     path.join(getAgentRoot(options.agentName), "state", "senses", "telegram", "offset.json"),
+  )
+  const inboxStore = options.inboxStore ?? new FileTelegramUpdateInboxStore(
+    path.join(getAgentRoot(options.agentName), "state", "senses", "telegram", "inbox.json"),
   )
   const runTurn = options.runTurn ?? runSenseTurn
   const toolContext = options.runTurn ? undefined : createSanctuaryToolContext(options.agentName)
@@ -170,6 +176,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     expectedUserId: authorizedUserId,
     expectedChatId: authorizedChatId,
     offsetStore,
+    inboxStore,
     onMessage,
     onUpdate,
   })

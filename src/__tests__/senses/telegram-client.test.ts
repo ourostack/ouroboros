@@ -10,6 +10,7 @@ import {
   sendTelegramText,
   splitTelegramText,
   FileTelegramOffsetStore,
+  FileTelegramUpdateInboxStore,
   createTelegramLongPoll,
   createTelegramApprovalTransport,
   type TelegramPendingApprovalStore,
@@ -211,10 +212,14 @@ describe("Telegram Bot API HTTP core", () => {
 })
 
 describe("Telegram durable authorized long poll", () => {
-  it("durably advances the offset before dispatch so a crashed turn cannot replay", async () => {
+  it("captures an authorized update before advancing its offset and replays it after a crashed turn", async () => {
+    const directory = makeTempDirectory("ouro-telegram-inbox-")
+    const inboxPath = join(directory, "inbox.json")
+    const inboxStore = new FileTelegramUpdateInboxStore(inboxPath)
     let offset = 0
     const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
     const onMessage = vi.fn(async () => {
+      expect(inboxStore.load()).toHaveLength(1)
       expect(offset).toBe(12)
       throw new Error("synthetic turn crash")
     })
@@ -224,10 +229,32 @@ describe("Telegram durable authorized long poll", () => {
         { update_id: 11, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } },
       ]),
     }
-    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage })
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, inboxStore, onMessage })
 
     await expect(poll.pollOnce()).rejects.toThrow("synthetic turn crash")
     expect(offset).toBe(12)
+    expect(inboxStore.load()).toHaveLength(1)
+
+    const recoveredMessage = vi.fn(async () => undefined)
+    const recoveredApi: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => []) }
+    const recovered = createTelegramLongPoll({
+      api: recoveredApi,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      inboxStore: new FileTelegramUpdateInboxStore(inboxPath),
+      onMessage: recoveredMessage,
+    })
+    await recovered.pollOnce()
+    expect(recoveredMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 11, text: "restart" }))
+    expect(inboxStore.load()).toEqual([])
+  })
+
+  it("rejects a conflicting durable update with the same update id", () => {
+    const directory = makeTempDirectory("ouro-telegram-inbox-conflict-")
+    const store = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    store.capture({ update_id: 7, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "one" } })
+    expect(() => store.capture({ update_id: 7, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "two" } })).toThrow("conflicting")
   })
 
   it("restores offsets, suppresses duplicates, and advances past foreign updates before dispatch", async () => {
