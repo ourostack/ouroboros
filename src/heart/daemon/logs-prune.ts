@@ -73,22 +73,28 @@ function isActiveLogStream(name: string): boolean {
 }
 
 export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaemonLogsResult {
-  const resolved = resolveLogsTarget(options)
-  const { logsDir } = resolved
   const maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
   const maxGenerations = options.maxGenerations ?? DEFAULT_MAX_GENERATIONS
   const traceId = randomUUID()
+  let logsDir = options.logsDir ?? "unresolved"
 
   emitNervesEvent({
     component: "nerves",
     event: "nerves.logs_prune_start",
     trace_id: traceId,
     message: "pruning daemon logs",
-    meta: { logsDir, maxSizeBytes, maxGenerations },
+    meta: {
+      logsDir: options.logsDir ?? null,
+      agentName: options.agentName ?? null,
+      maxSizeBytes,
+      maxGenerations,
+    },
   })
 
   let completed = false
   try {
+    const resolved = resolveLogsTarget(options)
+    logsDir = resolved.logsDir
     if (!existsSync(logsDir)) {
       completed = true
       emitNervesEvent({

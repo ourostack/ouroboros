@@ -10,6 +10,7 @@ import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, rese
 import { syncHostedMailSearchCache } from "../../mailroom/hosted-cache-sync"
 import { canonicalMailIndexRecordSnapshot as canonicalSnapshot } from "../../mailroom/blob-store"
 import type { ToolContext } from "../../repertoire/tools-base"
+import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 
 const tempRoots: string[] = []
 const originalHome = process.env.HOME
@@ -18,6 +19,35 @@ function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-mail-hosted-tools-"))
   tempRoots.push(dir)
   return dir
+}
+
+function captureMailSyncNervesEvents(): { events: LogEvent[]; unregister: () => void } {
+  const events: LogEvent[] = []
+  const names = new Set([
+    "senses.mail_search_cache_sync_start",
+    "senses.mail_search_cache_sync_end",
+    "senses.mail_search_cache_sync_error",
+    "senses.mail_search_cache_synced",
+  ])
+  const unregister = registerGlobalLogSink((event) => {
+    if (names.has(event.event)) events.push(event)
+  })
+  return { events, unregister }
+}
+
+function expectPairedMailSyncFailure(events: LogEvent[]): void {
+  const start = events.find((event) => event.event === "senses.mail_search_cache_sync_start")
+  const end = events.find((event) => event.event === "senses.mail_search_cache_sync_end")
+  const error = events.find((event) => event.event === "senses.mail_search_cache_sync_error")
+  expect(start).toBeDefined()
+  expect(end).toBeUndefined()
+  expect(error).toBeDefined()
+  expect(start?.trace_id).toBe(error?.trace_id)
+  expect(error?.level).toBe("error")
+  expect(error?.meta).toEqual(expect.objectContaining({
+    agentId: "slugger",
+    error: expect.stringMatching(/\S/),
+  }))
 }
 
 function searchMailCacheIds(cacheOptions: { cacheDirForAgent(agentId: string): string }): string[] {
@@ -93,6 +123,173 @@ afterEach(() => {
 })
 
 describe("hosted mail tools", () => {
+  it("emits paired start/end nerves events while preserving the existing success event", async () => {
+    const cacheRoot = tempDir()
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "scoped-upsert",
+        store: { listMessageIndexRecords: vi.fn(async () => []) } as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      })
+    } finally {
+      unregister()
+    }
+
+    const start = events.find((event) => event.event === "senses.mail_search_cache_sync_start")
+    const end = events.find((event) => event.event === "senses.mail_search_cache_sync_end")
+    expect(start).toBeDefined()
+    expect(end).toBeDefined()
+    expect(start?.trace_id).toBe(end?.trace_id)
+    expect(events.some((event) => event.event === "senses.mail_search_cache_synced")).toBe(true)
+    expect(events.some((event) => event.event === "senses.mail_search_cache_sync_error")).toBe(false)
+  })
+
+  it("emits paired start/error nerves events when hosted authority observation fails", async () => {
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: {
+          observeMessageIndexAuthority: vi.fn(async () => { throw new Error("authority offline") }),
+        },
+        store: {} as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => tempDir() },
+      })).rejects.toThrow("authority offline")
+    } finally {
+      unregister()
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
+  it("emits paired start/error nerves events when a scoped hosted body fetch fails", async () => {
+    const record = {
+      schemaVersion: 1 as const,
+      id: "mail_fetch_failure",
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: "2026-08-17T00:00:00.000Z",
+    }
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "scoped-upsert",
+        store: {
+          listMessageIndexRecords: vi.fn(async () => [record]),
+          getIndexedMessageById: vi.fn(async () => { throw new Error("body fetch failed") }),
+        } as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => tempDir() },
+      })).rejects.toThrow("body fetch failed")
+    } finally {
+      unregister()
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
+  it("emits paired start/error nerves events when stale cache deletion fails", async () => {
+    const cacheRoot = tempDir()
+    const record = {
+      schemaVersion: 1 as const,
+      id: "mail_delete_failure",
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: "2026-08-17T00:00:00.000Z",
+    }
+    fs.writeFileSync(path.join(cacheRoot, "orphan.json"), "{}\n", "utf-8")
+    fs.chmodSync(cacheRoot, 0o500)
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: {
+          observeMessageIndexAuthority: vi.fn(async () => ({
+            totalNameCount: 1,
+            parsedRecordCount: 1,
+            parseFailureCount: 0,
+            duplicateIds: [],
+            records: [record],
+            snapshot: canonicalSnapshot([record]),
+          })),
+        },
+        store: {} as never,
+        privateKeys: {},
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      })).rejects.toThrow()
+    } finally {
+      unregister()
+      fs.chmodSync(cacheRoot, 0o700)
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
+  it("emits paired start/error nerves events when coverage persistence fails", async () => {
+    const cacheRoot = tempDir()
+    const record = {
+      schemaVersion: 1 as const,
+      id: "mail_coverage_failure",
+      agentId: "slugger",
+      compartmentKind: "native" as const,
+      placement: "imbox" as const,
+      receivedAt: "2026-08-17T00:00:00.000Z",
+    }
+    fs.writeFileSync(path.join(cacheRoot, `${record.id}.json`), `${JSON.stringify({
+      schemaVersion: 1,
+      messageId: record.id,
+      agentId: record.agentId,
+      receivedAt: record.receivedAt,
+      placement: record.placement,
+      compartmentKind: record.compartmentKind,
+      from: [],
+      subject: "current",
+      snippet: "current",
+      textExcerpt: "current",
+      untrustedContentWarning: "untrusted",
+      searchText: "current",
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+      attachmentCount: 0,
+      decryptionKeyId: "mail_current",
+    })}\n`, "utf-8")
+    fs.chmodSync(cacheRoot, 0o500)
+    const { events, unregister } = captureMailSyncNervesEvents()
+    try {
+      await expect(syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: {
+          observeMessageIndexAuthority: vi.fn(async () => ({
+            totalNameCount: 1,
+            parsedRecordCount: 1,
+            parseFailureCount: 0,
+            duplicateIds: [],
+            records: [record],
+            snapshot: canonicalSnapshot([record]),
+          })),
+        },
+        store: {} as never,
+        privateKeys: { mail_current: "private-key" },
+        storeKind: "azure-blob",
+        cacheOptions: { cacheDirForAgent: () => cacheRoot },
+      })).rejects.toThrow()
+    } finally {
+      unregister()
+      fs.chmodSync(cacheRoot, 0o700)
+    }
+    expectPairedMailSyncFailure(events)
+  })
+
   it("fully converges stale, malformed, duplicate, orphaned, moved, and missing-key local cache state", async () => {
     const cacheRoot = tempDir()
     const cacheOptions = { cacheDirForAgent: () => cacheRoot }

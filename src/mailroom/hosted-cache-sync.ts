@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   canonicalMailIndexRecordSnapshot,
@@ -126,7 +128,7 @@ function missingPrivateKeyId(error: unknown): string | null {
  * the legacy bounded upsert used by the in-agent refresh tool. This core never
  * writes remote mail state and never records access; adapters own audit policy.
  */
-export async function syncHostedMailSearchCache(
+async function performHostedMailSearchCacheSync(
   input: HostedMailSearchCacheSyncInput,
 ): Promise<HostedMailSearchCacheSyncResult> {
   let authority: HostedMailIndexAuthorityObservation | null = null
@@ -253,4 +255,52 @@ export async function syncHostedMailSearchCache(
     },
   })
   return { coverage, fetched, alreadyCached, removed, skipped }
+}
+
+export async function syncHostedMailSearchCache(
+  input: HostedMailSearchCacheSyncInput,
+): Promise<HostedMailSearchCacheSyncResult> {
+  const traceId = randomUUID()
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_search_cache_sync_start",
+    trace_id: traceId,
+    message: "synchronizing hosted mail search cache",
+    meta: { agentId: input.agentId, mode: input.mode, storeKind: input.storeKind },
+  })
+  try {
+    const result = await performHostedMailSearchCacheSync(input)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_search_cache_sync_end",
+      trace_id: traceId,
+      message: "hosted mail search cache synchronization completed",
+      meta: {
+        agentId: input.agentId,
+        mode: input.mode,
+        storeKind: input.storeKind,
+        visible: result.coverage.visibleMessageCount,
+        fetched: result.fetched,
+        alreadyCached: result.alreadyCached,
+        removed: result.removed,
+        skipped: result.skipped,
+      },
+    })
+    return result
+  } catch (error) {
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_search_cache_sync_error",
+      trace_id: traceId,
+      level: "error",
+      message: "hosted mail search cache synchronization failed",
+      meta: {
+        agentId: input.agentId,
+        mode: input.mode,
+        storeKind: input.storeKind,
+        error: String(error),
+      },
+    })
+    throw error
+  }
 }

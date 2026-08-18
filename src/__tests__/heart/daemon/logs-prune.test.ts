@@ -200,6 +200,38 @@ describe("pruneDaemonLogs", () => {
     expect(() => pruneDaemonLogs()).toThrow("requires an explicit agent")
   })
 
+  it.each([
+    {
+      label: "missing agent",
+      run: () => pruneDaemonLogs(),
+      expectedError: "requires an explicit agent",
+    },
+    {
+      label: "unsafe agent name",
+      run: () => pruneDaemonLogs({ bundlesRoot: dir, agentName: "../outside" }),
+      expectedError: "not a prunable agent bundle",
+    },
+  ])("emits paired start/error nerves events for $label target rejection", ({ run, expectedError }) => {
+    const { events, unregister } = captureNervesEvents(
+      (event) => event.event === "nerves.logs_prune_start" || event.event === "nerves.logs_prune_error",
+    )
+    try {
+      expect(run).toThrow(expectedError)
+    } finally {
+      unregister()
+    }
+
+    const start = events.find((event) => event.event === "nerves.logs_prune_start")
+    const error = events.find((event) => event.event === "nerves.logs_prune_error")
+    expect(start).toBeDefined()
+    expect(error).toBeDefined()
+    expect(start?.trace_id).toBe(error?.trace_id)
+    expect(error?.level).toBe("error")
+    expect(error?.meta).toEqual(expect.objectContaining({
+      error: expect.stringMatching(/\S/),
+    }))
+  })
+
   it("coerces non-Error throws to a string in the _error meta", () => {
     // Sabotage so the inner rotation throws, AND arrange for a non-Error
     // value to bubble up. rotateIfNeeded rethrows whatever err it caught,
