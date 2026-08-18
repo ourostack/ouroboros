@@ -53,6 +53,7 @@ import { loadContainerCredentialBootstrap } from "./container-credential-bootstr
 import { readAgentConfigForAgent } from "../auth/auth-flow"
 import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
+import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -397,6 +398,10 @@ const daemon = new OuroDaemon({
   scheduler,
   healthMonitor,
   router,
+  nativeHabitRunner: async ({ agent, habitName }) => {
+    if (agent !== "sanctuary" || habitName !== "sanctuary-health") return null
+    return runSanctuaryHealthHabit(agent)
+  },
   mode,
   onStopCommandComplete: () => {
     stopEntryRuntime()
@@ -738,6 +743,7 @@ void daemon.start().then(async () => {
           watch: (dir, cb) => fs.watch(dir, cb),
         },
         execForVerify: supercronicSupervisor ? () => supercronicSupervisor.verificationOutput() : verifyOsCron,
+        verifyJobs: supercronicSupervisor ? (jobs) => supercronicSupervisor.verifyNamespace(`habit:${agent}`, jobs) : undefined,
         platform: supercronicSupervisor ? "linux" : undefined,
       })
 
@@ -846,6 +852,7 @@ void daemon.start().then(async () => {
           watch: (dir, cb) => fs.watch(dir, cb),
         },
         execForVerify: supercronicSupervisor ? () => supercronicSupervisor.verificationOutput() : verifyOsCron,
+        verifyJobs: supercronicSupervisor ? (jobs) => supercronicSupervisor.verifyNamespace(`await:${agent}`, jobs) : undefined,
         platform: supercronicSupervisor ? "linux" : undefined,
       })
       try {

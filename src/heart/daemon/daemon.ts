@@ -575,6 +575,7 @@ export interface OuroDaemonOptions {
   externalEventRoot?: string
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string }) => Promise<DaemonResponse | null>
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
@@ -857,6 +858,7 @@ export class OuroDaemon {
   private readonly onStopCommandComplete: (() => void) | null
   private readonly externalEventRoot: string | null
   private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  private readonly nativeHabitRunner?: OuroDaemonOptions["nativeHabitRunner"]
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
 
   constructor(options: OuroDaemonOptions) {
@@ -873,6 +875,7 @@ export class OuroDaemon {
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
     this.rsvpHabitRunner = options.rsvpHabitRunner
+    this.nativeHabitRunner = options.nativeHabitRunner
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
   }
 
@@ -2273,6 +2276,13 @@ export class OuroDaemon {
           trigger,
           resolution,
         })
+        const nativeResult = await this.nativeHabitRunner?.({
+          agent: command.agent,
+          habitName: command.habitName,
+          trigger,
+          ...(resolution.occurrenceId ? { occurrenceId: resolution.occurrenceId } : {}),
+        })
+        if (nativeResult) return nativeResult
         if (isRsvpHabitName(command.habitName)) {
           return this.runNativeRsvpHabit(command, trigger, resolution.occurrenceId)
         }

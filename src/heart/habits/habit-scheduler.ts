@@ -29,6 +29,7 @@ export interface HabitSchedulerOptions {
   onHabitFire: (habitName: string, trigger: HabitRunTrigger, context?: HabitFireContext) => void
   deps: HabitSchedulerDeps
   execForVerify?: (cmd: string) => string
+  verifyJobs?: (jobs: ScheduledTaskJob[]) => boolean
   platform?: string
 }
 
@@ -77,6 +78,7 @@ export class HabitScheduler {
   private readonly onHabitFire: (habitName: string, trigger: HabitRunTrigger, context?: HabitFireContext) => void
   private readonly deps: HabitSchedulerDeps
   private readonly execForVerify?: (cmd: string) => string
+  private readonly verifyJobs?: (jobs: ScheduledTaskJob[]) => boolean
   private readonly platform: string
   private watcher: FsWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -94,6 +96,7 @@ export class HabitScheduler {
     this.onHabitFire = options.onHabitFire
     this.deps = options.deps
     this.execForVerify = options.execForVerify
+    this.verifyJobs = options.verifyJobs
     this.platform = options.platform ?? process.platform
   }
 
@@ -317,11 +320,13 @@ export class HabitScheduler {
   }
 
   private verifyCronAndCreateFallbacks(state: SchedulerState): SchedulerState | null {
-    if (!this.execForVerify || state.jobs.length === 0) return state
+    if ((!this.execForVerify && !this.verifyJobs) || state.jobs.length === 0) return state
 
     let currentState = state
     for (let attempt = 1; attempt <= MAX_CRON_VERIFICATION_ATTEMPTS; attempt += 1) {
-      const verifiedLabels = this.verifyCronEntries()
+      const verifiedLabels = this.verifyJobs?.(currentState.jobs)
+        ? new Set(currentState.jobs.map((job) => this.platform === "darwin" ? `bot.ouro.${job.agent}.${job.taskId}` : job.taskId))
+        : this.execForVerify ? this.verifyCronEntries() : new Set<string>()
       const revalidatedState = this.revalidateAndCorrectJobs(currentState)
       if (revalidatedState === null) return null
       if (!this.jobsEqual(currentState.jobs, revalidatedState.jobs)) {

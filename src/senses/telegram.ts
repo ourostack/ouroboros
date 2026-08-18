@@ -21,7 +21,7 @@ import {
 } from "./telegram-client"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
-import { createSanctuaryHealthSweep, type SanctuaryHealthSweepResult } from "./sanctuary-health"
+import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 
 export interface TelegramSenseCredentials {
   botToken: string
@@ -94,11 +94,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     toolContext: toolContext ?? {},
   }))
   const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
-  const healthSweep = options.healthSweep ?? (toolContext ? createSanctuaryHealthSweep({
-    toolContext,
-    statePath: path.join(getAgentRoot(options.agentName), "state", "health", "sanctuary-health.json"),
-  }) : undefined)
-  let healthTimer: ReturnType<typeof setInterval> | null = null
+  const healthSweep = options.healthSweep
 
   const runHealthSweep = async (): Promise<void> => {
     if (!healthSweep) return
@@ -193,7 +189,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       await approvalRuntime?.recover()
       await approvalTransport?.reconcileExpired()
       await runHealthSweep()
-      healthTimer ??= setInterval(() => { void runHealthSweep() }, 15 * 60_000)
       emitNervesEvent({
         component: "senses",
         event: "senses.telegram_poll_start",
@@ -207,8 +202,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     },
     stop() {
       poll.stop()
-      if (healthTimer) clearInterval(healthTimer)
-      healthTimer = null
       api.stop()
       approvalRuntime?.close()
       emitNervesEvent({
