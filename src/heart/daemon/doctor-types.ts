@@ -6,6 +6,11 @@
  */
 
 import type { RsvpCutoverDeps } from "../../rsvp/cutover"
+import type { HostedMailIndexAuthorityObservation } from "../../mailroom/blob-store"
+
+export type HostedMailAuthorityProbeResult =
+  | { ok: true; observation: HostedMailIndexAuthorityObservation }
+  | { ok: false; definitive: boolean; detail: string }
 
 /** Result status for a single health check. */
 export type DoctorCheckStatus = "pass" | "warn" | "fail"
@@ -75,4 +80,6 @@ export interface DoctorDeps {
   rsvpCutoverLegacyRoot?: string
   /** Optional injection for side-effect-free legacy RSVP cutover probes. */
   rsvpCutoverDeps?: RsvpCutoverDeps
+  /** Optional mutation-free hosted index authority probe used by Mailroom diagnostics. */
+  observeHostedMailAuthority?: (agentName: string) => Promise<HostedMailAuthorityProbeResult>
 }

@@ -69,7 +69,7 @@ function sameOptionalText(left: string | undefined, right: string | undefined): 
   return (left ?? "").toLowerCase() === (right ?? "").toLowerCase()
 }
 
-function documentMatchesRecord(
+export function mailSearchCacheDocumentMatchesRecord(
   document: MailSearchCacheDocument,
   record: MailMessageIndexRecord,
   requireKeyProvenance: boolean,
@@ -183,7 +183,7 @@ export async function syncHostedMailSearchCache(
       skipped += 1
       continue
     }
-    if (cached && documentMatchesRecord(cached, record, input.mode === "full-convergence")) {
+    if (cached && mailSearchCacheDocumentMatchesRecord(cached, record, input.mode === "full-convergence")) {
       alreadyCached += 1
       continue
     }

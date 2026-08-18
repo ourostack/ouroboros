@@ -73,7 +73,7 @@ import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versi
 import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
 import { importMboxFileToStore } from "../../mailroom/mbox-import"
-import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader, type MailroomRuntimeConfig } from "../../mailroom/reader"
+import { parseMailroomConfig, readMailroomRegistry, resolveHostedMailAuthority, resolveMailroomReader, type MailroomRuntimeConfig } from "../../mailroom/reader"
 import { queuePendingMessage } from "../../mind/pending"
 import {
   completeBackgroundOperation,
@@ -9511,6 +9511,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
       platform: process.platform,
+      observeHostedMailAuthority: async (agentName: string) => {
+        const resolved = resolveHostedMailAuthority(agentName)
+        if (!resolved.ok) return { ok: false as const, definitive: true, detail: resolved.error }
+        try {
+          return { ok: true as const, observation: await resolved.authority.observeMessageIndexAuthority(agentName) }
+        } catch (error) {
+          const statusCode = typeof error === "object" && error !== null && "statusCode" in error
+            ? (error as { statusCode?: unknown }).statusCode
+            : undefined
+          return {
+            ok: false as const,
+            definitive: statusCode === 401 || statusCode === 403 || statusCode === 404,
+            detail: error instanceof Error ? error.message : String(error),
+          }
+        }
+      },
     }
     const doctorResult = command.category
       ? await runDoctorChecks(doctorDeps, { category: command.category })

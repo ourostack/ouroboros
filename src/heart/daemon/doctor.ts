@@ -39,6 +39,9 @@ import { DEFAULT_MAX_LOG_SIZE_BYTES } from "../../nerves"
 import { readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig, type RsvpReadinessCheck } from "../../rsvp/config"
 import { checkRsvpCutover, type RsvpCutoverChecks } from "../../rsvp/cutover"
 import { collectRsvpDiagnostics, type RsvpDiagnosticStatus } from "../../rsvp/diagnostics"
+import type { MailMessageIndexRecord } from "../../mailroom/file-store"
+import { mailSearchCacheDocumentMatchesRecord } from "../../mailroom/hosted-cache-sync"
+import type { MailSearchCacheDocument } from "../../mailroom/search-cache"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_BLUEBUBBLES_PORT = 18_790
@@ -1137,7 +1140,11 @@ export async function checkMailroom(deps: DoctorDeps): Promise<DoctorCategory> {
       detail: `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}, ${sourceGrants.length} source grant${sourceGrants.length === 1 ? "" : "s"}, ${listing.count} message${listing.count === 1 ? "" : "s"} stored (cumulative — not a liveness signal)`,
     })
     /* v8 ignore stop */
-    checks.push(mailIngestLivenessCheck(deps, agentDir, mailroomRoot, messagesDir, listing, await resolveMailStore(agentDir)))
+    const store = await resolveMailStore(agentDir)
+    checks.push(mailIngestLivenessCheck(deps, agentDir, mailroomRoot, messagesDir, listing, store))
+    if (store.hosted && deps.observeHostedMailAuthority) {
+      checks.push(await hostedMailCacheAuthorityCheck(deps, agentDir, store))
+    }
   }
 
   return { name: "Mailroom", checks }
@@ -1172,7 +1179,7 @@ function listJsonDocuments(deps: DoctorDeps, dir: string): JsonDocumentListing {
  */
 type MailStoreResolution =
   | { hosted: false }
-  | { hosted: true; label: string }
+  | { hosted: true; label: string; privateKeyIds: ReadonlySet<string> }
 
 async function resolveMailStore(agentDir: string): Promise<MailStoreResolution> {
   const agentName = agentDir.replace(/\.ouro$/, "")
@@ -1185,7 +1192,112 @@ async function resolveMailStore(agentDir: string): Promise<MailStoreResolution> 
   const azureAccountUrl = textField(mailroom, "azureAccountUrl")
   if (!azureAccountUrl) return { hosted: false }
   const azureContainer = textField(mailroom, "azureContainer") || "mailroom"
-  return { hosted: true, label: `hosted azure-blob ${azureAccountUrl}/${azureContainer}` }
+  const privateKeys = asRecord(mailroom?.privateKeys)
+  return {
+    hosted: true,
+    label: `hosted azure-blob ${azureAccountUrl}/${azureContainer}`,
+    privateKeyIds: new Set(Object.entries(privateKeys ?? {})
+      .filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+      .map(([keyId]) => keyId)),
+  }
+}
+
+function parseCacheDocument(deps: DoctorDeps, filePath: string): MailSearchCacheDocument | null {
+  try {
+    const parsed = JSON.parse(deps.readFileSync(filePath)) as unknown
+    return asRecord(parsed) as unknown as MailSearchCacheDocument | null
+  } catch {
+    return null
+  }
+}
+
+async function hostedMailCacheAuthorityCheck(
+  deps: DoctorDeps,
+  agentDir: string,
+  store: Extract<MailStoreResolution, { hosted: true }>,
+): Promise<DoctorCheck> {
+  const agentName = agentDir.replace(/\.ouro$/, "")
+  const base = { id: "mail.cache_authority", label: `${agentDir} hosted mail cache authority` }
+  let probe: Awaited<ReturnType<NonNullable<DoctorDeps["observeHostedMailAuthority"]>>>
+  try {
+    probe = await deps.observeHostedMailAuthority!(agentName)
+  } catch (error) {
+    return {
+      ...base,
+      status: "warn",
+      detail: `hosted authority is temporarily unverified: ${error instanceof Error ? error.message : String(error)}; no local cache mutation was attempted`,
+    }
+  }
+  if (!probe.ok) {
+    return {
+      ...base,
+      status: probe.definitive ? "fail" : "warn",
+      detail: `hosted authority unavailable: ${probe.detail}; no local cache mutation was attempted`,
+    }
+  }
+  const { observation } = probe
+  if (observation.parseFailureCount > 0 || observation.duplicateIds.length > 0) {
+    return {
+      ...base,
+      status: "warn",
+      detail: `hosted authority is ambiguous (${observation.parseFailureCount} malformed index name(s), ${observation.duplicateIds.length} duplicate id(s)); no local cache mutation was attempted`,
+    }
+  }
+
+  const cacheDir = `${deps.bundlesRoot}/${agentDir}/state/mail-search`
+  let fileNames: string[] = []
+  if (deps.existsSync(cacheDir)) {
+    try {
+      fileNames = deps.readdirSync(cacheDir).filter((name) => name.endsWith(".json"))
+    } catch (error) {
+      return {
+        ...base,
+        status: "warn",
+        detail: `hosted authority is sound but local cache is unreadable: ${error instanceof Error ? error.message : String(error)}; run \`ouro mail sync-cache --agent ${agentName}\``,
+      }
+    }
+  }
+
+  const recordsById = new Map<string, MailMessageIndexRecord>(observation.records.map((record) => [record.id, record]))
+  const documentsById = new Map<string, MailSearchCacheDocument>()
+  let malformedOrNoncanonical = 0
+  let duplicateLocalIds = 0
+  for (const fileName of fileNames) {
+    const document = parseCacheDocument(deps, `${cacheDir}/${fileName}`)
+    if (!document || document.agentId !== agentName || fileName !== `${document.messageId}.json` || !recordsById.has(document.messageId)) {
+      malformedOrNoncanonical += 1
+      continue
+    }
+    if (documentsById.has(document.messageId)) duplicateLocalIds += 1
+    documentsById.set(document.messageId, document)
+  }
+
+  let mismatched = 0
+  let invalidKeyProvenance = 0
+  for (const record of observation.records) {
+    const document = documentsById.get(record.id)
+    if (!document || !mailSearchCacheDocumentMatchesRecord(document, record, true)) {
+      mismatched += 1
+      continue
+    }
+    if (!document.decryptionKeyId || !store.privateKeyIds.has(document.decryptionKeyId)) {
+      invalidKeyProvenance += 1
+    }
+  }
+
+  if (malformedOrNoncanonical > 0 || duplicateLocalIds > 0 || mismatched > 0 || invalidKeyProvenance > 0) {
+    return {
+      ...base,
+      status: "warn",
+      detail: `hosted authority is sound but cache diverges: ${mismatched} missing/stale canonical document(s), ${malformedOrNoncanonical} malformed/orphan/noncanonical file(s), ${duplicateLocalIds} duplicate local id(s), ${invalidKeyProvenance} invalid key provenance document(s); run \`ouro mail sync-cache --agent ${agentName}\``,
+    }
+  }
+  const count = observation.records.length
+  return {
+    ...base,
+    status: "pass",
+    detail: `${count} authoritative hosted message${count === 1 ? "" : "s"}; local search cache converged with current metadata, projection, and key provenance`,
+  }
 }
 
 /**
@@ -1242,7 +1354,11 @@ function hostedMailMirrorProbe(deps: DoctorDeps, agentDir: string, storeLabel: s
       provenance: `attempted directory listing of ${mirrorDir}`,
     }
   }
-  return observeMirroredStore(mirrorDir, deps, { hasEntries: listing.count > 0, remote: storeLabel })
+  return observeMirroredStore(mirrorDir, deps, {
+    hasEntries: listing.count > 0,
+    remote: storeLabel,
+    authorityReadNote: "which the separate hosted cache authority check reads without mutation; this liveness check does not use remote data for recency",
+  })
 }
 
 /**
@@ -1281,7 +1397,7 @@ function mailIngestLivenessCheck(
       senseFreshnessOverride(deps, agentDir, "mail"),
     ),
     remediation: hosted
-      ? `doctor measures hosted mail only through this machine's local mirror and makes no network calls — confirm the container itself by listing \`messages/\` blobs in ${hosted.label} by Last-Modified, or read the mailbox directly (\`ouro mailbox\`, or the agent's \`mail_recent\` tool); if the mirror is empty or stale while the container is current, the hosted reader on this machine is not running`
+      ? `this liveness check measures recency only through this machine's local mirror; the separate hosted cache authority check reads index names without mutation — if the mirror is empty or stale while authority is current, run \`ouro mail sync-cache --agent ${agentDir.replace(/\.ouro$/, "")}\` and verify the hosted reader on this machine`
       : "mail is configured but nothing is arriving — re-check the mailbox grant and keyIds against the vault (a server-side key rotation silently orphans ingestion), run `ouro connect mail --agent <agent>`, and inspect the mailroom ingress logs",
     configuredSinceMs: pathMtimeMs(deps, `${mailroomRoot}/registry.json`),
     context: hosted ? `mailbox configured; ${hosted.label}` : "mailbox configured",

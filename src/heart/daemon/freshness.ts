@@ -317,6 +317,8 @@ export interface MirroredStoreOptions {
   hasEntries: boolean
   /** Where the authoritative store actually lives, named in every message. */
   remote: string
+  /** Optional clarification when another doctor check reads remote authority. */
+  authorityReadNote?: string
 }
 
 /**
@@ -342,13 +344,15 @@ export function observeMirroredStore(
   deps: FreshnessFsDeps,
   options: MirroredStoreOptions,
 ): FreshnessProbe {
-  const provenance = `derived from the local mirror at ${dir} (directory mtime, O(1), no per-entry scan); the authoritative store is ${options.remote}, which doctor does not read`
+  const provenanceReadNote = options.authorityReadNote ?? "which doctor does not read"
+  const unknownReadNote = options.authorityReadNote ?? "is not read by doctor (no network calls, no credentials)"
+  const provenance = `derived from the local mirror at ${dir} (directory mtime, O(1), no per-entry scan); the authoritative store is ${options.remote}, ${provenanceReadNote}`
   const exists = deps.existsSync(dir)
   if (!exists || !options.hasEntries) {
     return {
       observation: {
         kind: "unknown",
-        reason: `the local mirror at ${dir} is ${exists ? "empty" : "absent"}, and ${options.remote} is not read by doctor (no network calls, no credentials), so recency cannot be measured on this machine`,
+        reason: `the local mirror at ${dir} is ${exists ? "empty" : "absent"}, and ${options.remote} ${unknownReadNote}, so recency cannot be measured on this machine`,
       },
       provenance,
     }

@@ -627,7 +627,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.detail).toContain("hosted mail observed locally 20 minutes ago")
     expect(check.detail).toContain(HOSTED_STORE_LABEL)
     expect(check.detail).toContain("state/mail-search")
-    expect(check.detail).toContain("which doctor does not read")
+    expect(check.detail).toContain("separate hosted cache authority check reads without mutation")
     expect(check.detail).not.toContain("fix:")
   })
 
@@ -676,7 +676,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(warned.status).toBe("warn")
     expect(warned.detail).toContain("no hosted mail observed locally in 30 hours")
-    expect(warned.detail).toContain("fix: doctor measures hosted mail only through this machine's local mirror")
+    expect(warned.detail).toContain("fix: this liveness check measures recency only through this machine's local mirror")
 
     const failRoot = makeBundlesRoot()
     const failAgentRoot = writeAgent(failRoot)
@@ -687,7 +687,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
 
     expect(failed.status).toBe("fail")
     expect(failed.detail).toContain("no hosted mail observed locally in 9 days")
-    expect(failed.detail).toContain(`listing \`messages/\` blobs in ${HOSTED_STORE_LABEL} by Last-Modified`)
+    expect(failed.detail).toContain("ouro mail sync-cache --agent slugger")
   })
 
   it("reports the unverified 'unknown' state — not pass, not a fake outage — when no hosted mirror exists", async () => {
@@ -700,7 +700,7 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.status).toBe("fail")
     expect(check.detail).toContain("last-activity time could not be determined")
     expect(check.detail).toContain("is absent")
-    expect(check.detail).toContain("not read by doctor (no network calls, no credentials)")
+    expect(check.detail).toContain("separate hosted cache authority check reads without mutation")
     expect(check.detail).toContain("unverified, not healthy")
     // Neither of the two wrong answers: a confident pass, or the local store's
     // frozen mtime dressed up as a hosted outage.
