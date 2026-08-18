@@ -315,4 +315,63 @@ describe("pruneDaemonLogs", () => {
       fs.rmdirSync(plain1)
     } catch { /* best effort */ }
   })
+
+  it("resolves and prunes an agent-qualified canonical logs directory", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const logsDir = path.join(bundleDir, "state", "daemon", "logs")
+    fs.mkdirSync(logsDir, { recursive: true })
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(logsDir, "daemon.ndjson"), "x".repeat(200), "utf8")
+
+    expect(pruneDaemonLogs({
+      bundlesRoot: dir,
+      agentName: "Slugger",
+      maxSizeBytes: 100,
+      maxGenerations: 3,
+    })).toEqual({ filesCompacted: 1, bytesFreed: 200 })
+  })
+
+  it("rejects a symlinked logs directory before touching its target", () => {
+    const bundleDir = path.join(dir, "Slugger.ouro")
+    const externalLogs = fs.mkdtempSync(path.join(os.tmpdir(), "external-agent-logs-"))
+    fs.mkdirSync(path.join(bundleDir, "state", "daemon"), { recursive: true })
+    fs.writeFileSync(path.join(bundleDir, "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(externalLogs, "daemon.ndjson"), "x".repeat(200), "utf8")
+    fs.symlinkSync(externalLogs, path.join(bundleDir, "state", "daemon", "logs"))
+    try {
+      expect(() => pruneDaemonLogs({
+        bundlesRoot: dir,
+        agentName: "Slugger",
+        maxSizeBytes: 100,
+      })).toThrow("logs directory")
+      expect(fs.existsSync(path.join(externalLogs, "daemon.ndjson"))).toBe(true)
+    } finally {
+      fs.rmSync(externalLogs, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects symlinked and non-regular active streams before rotation", () => {
+    const externalFile = path.join(dir, "external.ndjson")
+    fs.writeFileSync(externalFile, "x".repeat(200), "utf8")
+    const linked = path.join(dir, "linked.ndjson")
+    fs.symlinkSync(externalFile, linked)
+    expect(() => pruneDaemonLogs({ logsDir: dir, maxSizeBytes: 100 })).toThrow("regular non-symlink")
+    expect(fs.existsSync(externalFile)).toBe(true)
+
+    fs.unlinkSync(linked)
+    fs.mkdirSync(path.join(dir, "directory.log"))
+    expect(() => pruneDaemonLogs({ logsDir: dir, maxSizeBytes: 100 })).toThrow("regular non-symlink")
+  })
+
+  it("rejects symlinked generation entries before rotating an active stream", () => {
+    const active = path.join(dir, "daemon.ndjson")
+    const external = path.join(dir, "external-generation.gz")
+    fs.writeFileSync(active, "x".repeat(200), "utf8")
+    fs.writeFileSync(external, "outside", "utf8")
+    fs.symlinkSync(external, path.join(dir, "daemon.1.ndjson.gz"))
+
+    expect(() => pruneDaemonLogs({ logsDir: dir, maxSizeBytes: 100, maxGenerations: 3 }))
+      .toThrow("regular non-symlink")
+    expect(fs.readFileSync(external, "utf8")).toBe("outside")
+  })
 })

@@ -2498,10 +2498,35 @@ describe("checkDisk", () => {
       statSync: statFor({
         [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize },
       }),
+      lstatSync: vi.fn(() => ({ isDirectory: () => true, isSymbolicLink: () => false })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("warn")
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.detail).toContain("prune")
+    const check = cat.checks.find((c) => c.label.includes("log size"))
+    expect(check?.status).toBe("warn")
+    expect(check?.detail).toContain("ouro logs prune --agent test")
+    expect(check?.detail).not.toContain("`ouro logs prune`")
+  })
+
+  it("does not offer a prune command for a symlinked bundle", () => {
+    const bigSize = 150 * 1024 * 1024
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["big.log"] }),
+      statSync: statFor({ [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize } }),
+      lstatSync: vi.fn(() => ({ isDirectory: () => true, isSymbolicLink: () => true })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
+    })
+
+    const detail = checkDisk(deps).checks.find((c) => c.label.includes("log size"))?.detail
+    expect(detail).not.toContain("ouro logs prune")
   })
 
   it("passes when compressed generations push total over 100MB but active streams are under threshold", () => {
@@ -2549,10 +2574,17 @@ describe("checkDisk", () => {
       statSync: statFor({
         [`${logsDir}/huge.log`]: { mode: 0o644, size: hugeSize },
       }),
+      lstatSync: vi.fn(() => ({ isDirectory: () => true, isSymbolicLink: () => false })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("fail")
-    expect(cat.checks.find((c) => c.label.includes("log size"))?.detail).toContain("500MB")
+    const check = cat.checks.find((c) => c.label.includes("log size"))
+    expect(check?.status).toBe("fail")
+    expect(check?.detail).toContain("500MB")
+    expect(check?.detail).toContain("ouro logs prune --agent test")
   })
 
   it("warns when bundles root missing", () => {
