@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.734",
       "changes": [
-        "Ship the Sanctuary Telegram butler with an authorized durable inbox, restart-safe human approvals, scoped Unraid read/restart tools, and transition-based proactive health alerts.",
+        "Ship the Sanctuary Telegram butler with an authorized durable inbox, restart-safe durable approvals, scoped Unraid read/restart tools, and transition-based proactive health alerts.",
         "Fence ambiguous Telegram update, approval-prompt, approved-action, and alert-delivery crash windows so protected effects are never blindly replayed.",
         "Route every packaged deterministic Sanctuary health source through one native daemon-owned Supercronic lifecycle with namespace-isolated manifests, exact readiness verification, durable occurrence receipts/cursors, habit-wide overlap rejection, coordinated shutdown, no model turn, and no verified-schedule timer fallback.",
         "Package a reproducible non-root Unraid image and template, pin production dependencies, reject stale or ambiguous server state, and atomically claim then durably delete one-time container credential migration imports before parsing or runtime use."
