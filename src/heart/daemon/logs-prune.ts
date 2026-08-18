@@ -8,7 +8,6 @@ import {
   rotateIfNeeded,
 } from "../../nerves"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentDaemonLogsDir } from "../identity"
 import { getAgentBundlesRoot } from "../identity"
 import { resolvePrunableAgentBundle } from "./prunable-bundle"
 
@@ -46,6 +45,16 @@ export interface PruneDaemonLogsResult {
   bytesFreed: number
 }
 
+function resolveLogsDir(options: PruneDaemonLogsOptions): string {
+  if (options.logsDir) return options.logsDir
+  if (!options.agentName) {
+    throw new Error("daemon logs prune requires an explicit agent or an internal logs directory")
+  }
+  /* v8 ignore next -- production default; CLI execution always passes its resolved bundles root @preserve */
+  const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
+  return resolvePrunableAgentBundle({ bundlesRoot, agentName: options.agentName }).logsDir
+}
+
 function isActiveLogStream(name: string): boolean {
   if (name.endsWith(".ndjson")) {
     return !/\.\d+\.ndjson$/.test(name)
@@ -76,19 +85,14 @@ function validateManagedLogEntry(filePath: string, logsReal: string): void {
   if (stat.isSymbolicLink() || !stat.isFile()) {
     throw new Error(`daemon log entry must be a regular non-symlink file: ${filePath}`)
   }
+  /* v8 ignore next 3 -- defensive: a real direct-child file cannot escape after lstat absent a same-user path swap @preserve */
   if (dirname(realpathSync(filePath)) !== logsReal) {
     throw new Error(`daemon log entry escapes the canonical logs directory: ${filePath}`)
   }
 }
 
 export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaemonLogsResult {
-  const logsDir = options.logsDir ?? (options.agentName
-    ? resolvePrunableAgentBundle({
-      bundlesRoot: options.bundlesRoot ?? getAgentBundlesRoot(),
-      agentName: options.agentName,
-    }).logsDir
-    /* v8 ignore next -- compatibility fallback; the user-facing command always supplies an agent @preserve */
-    : getAgentDaemonLogsDir())
+  const logsDir = resolveLogsDir(options)
   const maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_LOG_SIZE_BYTES
   const maxGenerations = options.maxGenerations ?? DEFAULT_MAX_GENERATIONS
   const traceId = randomUUID()

@@ -8,6 +8,7 @@ import {
   isSafePrunableAgentName,
   listPrunableAgentBundles,
   resolvePrunableAgentBundle,
+  type PrunableBundleFs,
 } from "../../../heart/daemon/prunable-bundle"
 
 describe("prunable bundle resolution", () => {
@@ -101,6 +102,59 @@ describe("prunable bundle resolution", () => {
       .toThrow("agent.json")
   })
 
+  it("rejects unsafe names and a missing bundles root during resolution", () => {
+    expect(() => resolvePrunableAgentBundle({ bundlesRoot: root, agentName: "../Slugger" }))
+      .toThrow("name must match")
+    expect(() => resolvePrunableAgentBundle({ bundlesRoot: path.join(root, "missing"), agentName: "Slugger" }))
+      .toThrow("bundles root does not exist")
+    expect(listPrunableAgentBundles({ bundlesRoot: path.join(root, "missing") })).toEqual([])
+  })
+
+  it("rejects unresolvable and non-direct canonical bundle paths", () => {
+    const bundlePath = bundle("Slugger")
+    const rootReal = fs.realpathSync(root)
+    const actualFs: PrunableBundleFs = {
+      existsSync: fs.existsSync,
+      lstatSync: fs.lstatSync,
+      readdirSync: fs.readdirSync,
+      realpathSync: fs.realpathSync,
+    }
+
+    expect(() => resolvePrunableAgentBundle({
+      bundlesRoot: root,
+      agentName: "Slugger",
+      fs: {
+        ...actualFs,
+        realpathSync: (filePath) => {
+          if (filePath === bundlePath) throw new Error("unresolvable")
+          return fs.realpathSync(filePath)
+        },
+      },
+    })).toThrow("bundle cannot be resolved")
+
+    expect(() => resolvePrunableAgentBundle({
+      bundlesRoot: root,
+      agentName: "Slugger",
+      fs: {
+        ...actualFs,
+        realpathSync: (filePath) => filePath === bundlePath
+          ? path.join(rootReal, "nested", "Slugger.ouro")
+          : fs.realpathSync(filePath),
+      },
+    })).toThrow("direct child")
+
+    expect(() => resolvePrunableAgentBundle({
+      bundlesRoot: root,
+      agentName: "Slugger",
+      fs: {
+        ...actualFs,
+        realpathSync: (filePath) => filePath === bundlePath
+          ? path.join(rootReal, "Other.ouro")
+          : fs.realpathSync(filePath),
+      },
+    })).toThrow("direct child")
+  })
+
   it("rejects unknown bundles, non-directories, and symlinked bundles", () => {
     expect(() => resolvePrunableAgentBundle({ bundlesRoot: root, agentName: "Missing" }))
       .toThrow("not a prunable agent bundle")
@@ -123,6 +177,7 @@ describe("prunable bundle resolution", () => {
     fs.symlinkSync(real, path.join(root, "Alias.ouro"))
     fs.mkdirSync(path.join(root, "bad name.ouro"))
     fs.writeFileSync(path.join(root, "bad name.ouro", "agent.json"), "{}", "utf8")
+    fs.writeFileSync(path.join(root, "README.txt"), "ignore me", "utf8")
 
     expect(listPrunableAgentBundles({ bundlesRoot: root })).toEqual(["Good", "Real"])
   })

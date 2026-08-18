@@ -196,6 +196,10 @@ describe("pruneDaemonLogs", () => {
     expect(result).toEqual({ filesCompacted: 0, bytesFreed: 0 })
   })
 
+  it("rejects an implicit process-selected target", () => {
+    expect(() => pruneDaemonLogs()).toThrow("requires an explicit agent")
+  })
+
   it("coerces non-Error throws to a string in the _error meta", () => {
     // Sabotage so the inner rotation throws, AND arrange for a non-Error
     // value to bubble up. rotateIfNeeded rethrows whatever err it caught,
