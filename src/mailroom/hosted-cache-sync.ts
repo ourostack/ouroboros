@@ -195,6 +195,19 @@ async function performHostedMailSearchCacheSync(
   const failures: Array<{ id: string; error: string }> = []
   for (const record of records) {
     const cached = canonicalDocuments.get(record.id)
+    const cachedEncryptedKeyMissing = input.mode === "full-convergence" &&
+      cached?.bodyForm === "encrypted" &&
+      typeof cached.decryptionKeyId === "string" &&
+      !input.privateKeys[cached.decryptionKeyId]
+    if (cached &&
+      !cachedEncryptedKeyMissing &&
+      mailSearchCacheDocumentMatchesRecord(cached, record, input.mode === "full-convergence")) {
+      if (input.mode === "full-convergence") {
+        removeMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
+      }
+      alreadyCached += 1
+      continue
+    }
     if (input.mode === "full-convergence") {
       const receipt = readMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
       if (receipt &&
@@ -205,16 +218,6 @@ async function performHostedMailSearchCacheSync(
         continue
       }
       if (receipt) removeMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
-    }
-    const cachedEncryptedKeyMissing = input.mode === "full-convergence" &&
-      cached?.bodyForm === "encrypted" &&
-      typeof cached.decryptionKeyId === "string" &&
-      !input.privateKeys[cached.decryptionKeyId]
-    if (cached &&
-      !cachedEncryptedKeyMissing &&
-      mailSearchCacheDocumentMatchesRecord(cached, record, input.mode === "full-convergence")) {
-      alreadyCached += 1
-      continue
     }
 
     try {

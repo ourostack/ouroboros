@@ -6,7 +6,7 @@ import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { resetIdentity, setAgentName } from "../../heart/identity"
-import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, searchMailSearchCache, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord } from "../../mailroom/search-cache"
+import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, searchMailSearchCache, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord, writeMailSearchSkipReceipt } from "../../mailroom/search-cache"
 import * as searchCacheApi from "../../mailroom/search-cache"
 import { syncHostedMailSearchCache } from "../../mailroom/hosted-cache-sync"
 import { canonicalMailIndexRecordSnapshot as canonicalSnapshot } from "../../mailroom/blob-store"
@@ -641,6 +641,89 @@ describe("hosted mail tools", () => {
       bodyForm: "plaintext",
     }))
     expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)[0]).not.toHaveProperty("decryptionKeyId")
+  })
+
+  it("prefers current plaintext and encrypted cache documents over conflicting stale-key receipts", async () => {
+    const cases: Array<{
+      label: string
+      message: StoredMailMessage
+      privateKeys: Record<string, string>
+      envelope: PrivateMailEnvelope
+      provenance?: { decryptionKeyId: string }
+    }> = []
+    const plaintext = {
+      ...((await buildEncryptedMessageForKey("unused", "coexist plaintext")).message),
+      bodyForm: "plaintext" as const,
+      rawObject: "raw/coexist-plaintext.eml",
+      private: {
+        from: ["ari@example.com"], to: ["slugger@ouro.bot"], cc: [], subject: "coexist plaintext", text: "hello", snippet: "hello", attachments: [], untrustedContentWarning: "untrusted",
+      },
+    }
+    const { privateEnvelope: _encryptedEnvelope, ...plaintextMessage } = plaintext
+    cases.push({
+      label: "plaintext",
+      message: plaintextMessage,
+      privateKeys: {},
+      envelope: plaintextMessage.private,
+    })
+    const encrypted = await buildEncryptedMessageForKey("mail_key_current", "coexist encrypted")
+    const encryptedPrivateKey = Object.values(encrypted.keys)[0]!
+    const { readDecryptedMailMessage } = await import("../../mailroom/core")
+    const decrypted = readDecryptedMailMessage(encrypted.message, { mail_key_current: encryptedPrivateKey })
+    cases.push({
+      label: "encrypted",
+      message: encrypted.message,
+      privateKeys: { mail_key_current: encryptedPrivateKey },
+      envelope: decrypted.private,
+      provenance: { decryptionKeyId: "mail_key_current" },
+    })
+
+    for (const current of cases) {
+      const cacheRoot = tempDir()
+      const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+      upsertMailSearchCacheDocument(current.message, current.envelope, cacheOptions, current.provenance)
+      const record = {
+        schemaVersion: 1 as const,
+        id: current.message.id,
+        agentId: current.message.agentId,
+        compartmentKind: current.message.compartmentKind,
+        placement: current.message.placement,
+        ...(current.message.source ? { source: current.message.source } : {}),
+        receivedAt: current.message.receivedAt,
+      }
+      writeMailSearchSkipReceipt({
+        schemaVersion: 1,
+        agentId: "slugger",
+        messageId: current.message.id,
+        recordFingerprint: canonicalSnapshot([record]).messageIndexFingerprint,
+        missingKeyId: "mail_key_stale_receipt",
+        reason: "missing-private-key",
+        observedAt: "2026-08-18T00:00:00.000Z",
+      }, cacheOptions)
+      const getIndexedMessageById = vi.fn(async () => { throw new Error(`${current.label} current cache must not fetch`) })
+
+      const result = await syncHostedMailSearchCache({
+        agentId: "slugger",
+        mode: "full-convergence",
+        authority: { observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 1,
+          parseFailureCount: 0,
+          duplicateIds: [],
+          records: [record],
+          snapshot: canonicalSnapshot([record]),
+        })) },
+        store: { getIndexedMessageById } as never,
+        privateKeys: current.privateKeys,
+        storeKind: "azure-blob",
+        cacheOptions,
+      })
+
+      expect(result).toEqual(expect.objectContaining({ fetched: 0, alreadyCached: 1, skipped: 0 }))
+      expect(getIndexedMessageById).not.toHaveBeenCalled()
+      expect((searchCacheApi as any).readMailSearchSkipReceipt("slugger", current.message.id, cacheOptions)).toBeNull()
+      expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)).toHaveLength(1)
+    }
   })
 
   it("refreshes a legacy body-form-free cache document exactly once", async () => {
