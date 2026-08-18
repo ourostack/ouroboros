@@ -108,6 +108,13 @@ export interface ApprovalStore {
   }): ApprovalRecord
   expire(input: { approvalId: string }): ApprovalRecord
   markAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord
+  terminalizeBeforeAttempt(input: {
+    approvalId: string
+    ownerId: string
+    epoch: number
+    state: "drifted" | "session_head_changed"
+    reason: string
+  }): ApprovalRecord
   abandonBeforeAttempt(input: { approvalId: string; ownerId: string; epoch: number; reason: string }): ApprovalRecord
   complete(input: {
     approvalId: string
@@ -402,6 +409,17 @@ function observeMarkAttempted<T>(operation: () => T): T {
   }
 }
 
+function observeTerminalizeBeforeAttempt<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_terminalize_before_attempt", message: "approval pre-attempt terminalization completed", meta: { operation: "terminalize_before_attempt", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_terminalize_before_attempt", message: "approval pre-attempt terminalization failed", meta: operationErrorMeta("terminalize_before_attempt", error) })
+    throw error
+  }
+}
+
 function observeAbandonBeforeAttempt<T>(operation: () => T): T {
   try {
     const result = operation()
@@ -616,6 +634,17 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         if (previous.state !== "claimed" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch) fail("attempt_not_eligible")
         options.hooks?.beforeAttemptCas?.()
         return cas(previous, { ...previous, state: "attempted", attemptedAt: timestamp(), updatedAt: timestamp() })
+      })
+    },
+
+    terminalizeBeforeAttempt(input) {
+      return observeTerminalizeBeforeAttempt(() => {
+        const previous = requireRecord(input.approvalId)
+        if (previous.state !== "claimed" || previous.ownerId !== input.ownerId || previous.epoch !== input.epoch
+          || (input.state !== "drifted" && input.state !== "session_head_changed") || !isNonEmpty(input.reason)) {
+          fail("pre_attempt_terminalization_not_eligible")
+        }
+        return cas(previous, { ...previous, state: input.state, reason: input.reason, updatedAt: timestamp() })
       })
     },
 

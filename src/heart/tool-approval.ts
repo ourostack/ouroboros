@@ -11,6 +11,8 @@ import {
   type PrepareApprovalInput,
 } from "./approval-store"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { ToolDefinition } from "../repertoire/tools-base"
+import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments"
 
 export interface ApprovalSuspensionCheckpoint {
   approvalId: string
@@ -66,6 +68,37 @@ export interface CommittedApprovalProposal {
   decisionToken: string
 }
 
+export class ApprovalExecutionIndeterminateError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "ApprovalExecutionIndeterminateError"
+  }
+}
+
+export interface ApprovalLiveContext {
+  record: ApprovalRecord
+  checkpoint: ApprovalSuspensionCheckpoint
+  definition: ToolDefinition
+  arguments: JsonObject
+}
+
+export interface ExecuteApprovalDecisionOptions {
+  approvalStore: ApprovalStore
+  checkpointStore: ApprovalSuspensionCheckpointStore
+  decision: Omit<Parameters<ApprovalStore["decide"]>[0], "ownerId">
+  ownerId: string
+  currentSessionRevision: string
+  resolveTool(toolName: string): ToolDefinition | undefined
+  liveGuard(context: ApprovalLiveContext): { ok: true } | { ok: false; reason: string } | Promise<{ ok: true } | { ok: false; reason: string }>
+  liveRisk(context: ApprovalLiveContext): { ok: true } | { ok: false; reason: string } | Promise<{ ok: true } | { ok: false; reason: string }>
+  execute(toolName: string, argumentsValue: JsonObject): Promise<string>
+  hooks?: {
+    afterClaim?: () => void | Promise<void>
+    afterAttempt?: () => void | Promise<void>
+    afterHandler?: () => void | Promise<void>
+  }
+}
+
 function checkpointMatches(record: ApprovalRecord, checkpoint: ApprovalSuspensionCheckpoint): boolean {
   return checkpoint.approvalId === record.approvalId
     && checkpoint.checkpointDigest === record.checkpointDigest
@@ -77,6 +110,24 @@ function checkpointMatches(record: ApprovalRecord, checkpoint: ApprovalSuspensio
     && checkpoint.preCallDigest === digestTranscript(checkpoint.preCallMessages)
     && record.checkpointDigest === digestApprovalSuspensionCheckpointPayload(checkpoint)
     && JSON.stringify(checkpoint.frozenAssistantMessage) === JSON.stringify(record.frozenAssistantMessage)
+}
+
+function frozenCallMatches(record: ApprovalRecord, checkpoint: ApprovalSuspensionCheckpoint): boolean {
+  const message = checkpoint.frozenAssistantMessage as Record<string, unknown>
+  if (!Array.isArray(message.tool_calls) || message.tool_calls.length !== 1) return false
+  const call = message.tool_calls[0]
+  if (!call || typeof call !== "object" || Array.isArray(call)) return false
+  const callRecord = call as Record<string, unknown>
+  const fn = callRecord.function
+  if (!fn || typeof fn !== "object" || Array.isArray(fn)) return false
+  const functionRecord = fn as Record<string, unknown>
+  if (callRecord.id !== record.toolCallId || functionRecord.name !== record.toolName || typeof functionRecord.arguments !== "string") return false
+  try {
+    const parsed = JSON.parse(functionRecord.arguments)
+    return JSON.stringify(parsed) === JSON.stringify(record.arguments)
+  } catch {
+    return false
+  }
 }
 
 function digestTranscript(messages: OpenAI.ChatCompletionMessageParam[]): string {
@@ -233,4 +284,136 @@ export function recoverApprovalProposals(options: {
     meta: { recoveredCount: recovered.length },
   })
   return recovered
+}
+
+function terminalizeClaimed(
+  store: ApprovalStore,
+  claimed: ApprovalRecord,
+  state: "drifted" | "session_head_changed",
+  reason: string,
+): ApprovalRecord {
+  emitNervesEvent({
+    level: "warn",
+    component: "engine",
+    event: "engine.approval_pre_attempt_terminalized",
+    message: "approval stopped during live revalidation",
+    meta: { approvalId: claimed.approvalId, state, reason },
+  })
+  return store.terminalizeBeforeAttempt({
+    approvalId: claimed.approvalId,
+    ownerId: claimed.ownerId!,
+    epoch: claimed.epoch,
+    state,
+    reason,
+  })
+}
+
+export async function executeApprovalDecision(options: ExecuteApprovalDecisionOptions): Promise<ApprovalRecord> {
+  const decided = options.approvalStore.decide({ ...options.decision, ownerId: options.ownerId })
+  if (decided.state !== "claimed") return decided
+  await options.hooks?.afterClaim?.()
+
+  if (options.currentSessionRevision !== decided.suspendedSessionRevision) {
+    return terminalizeClaimed(options.approvalStore, decided, "session_head_changed", "suspended session revision changed")
+  }
+
+  const checkpoint = options.checkpointStore.read(decided.approvalId)
+  if (!checkpoint || !checkpointMatches(decided, checkpoint) || !frozenCallMatches(decided, checkpoint)) {
+    return terminalizeClaimed(options.approvalStore, decided, "drifted", "checkpoint evidence drift")
+  }
+
+  const definition = options.resolveTool(decided.toolName)
+  if (!definition || definition.tool.function.name !== decided.toolName) {
+    return terminalizeClaimed(options.approvalStore, decided, "drifted", "tool identity drift")
+  }
+  const schema = definition.tool.function.parameters
+  if (!schema || typeof schema !== "object") {
+    return terminalizeClaimed(options.approvalStore, decided, "drifted", "advertised schema missing")
+  }
+  const validated = validateAdvertisedToolArguments(JSON.stringify(decided.arguments), schema)
+  if (!validated.ok || validated.value.argumentDigest !== decided.argumentDigest
+    || validated.value.schemaDigest !== decided.schemaDigest) {
+    return terminalizeClaimed(options.approvalStore, decided, "drifted", "tool arguments or schema drift")
+  }
+
+  const policy = definition.approvalPolicy?.(validated.value.arguments) ?? { kind: "not_required" as const }
+  if (policy.kind !== "required") {
+    return terminalizeClaimed(options.approvalStore, decided, "drifted", "approval policy no longer requires approval")
+  }
+  const toolDigest = digestJson({ name: decided.toolName, schemaDigest: validated.value.schemaDigest, policyId: policy.policyId })
+  const policyDigest = digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" })
+  if (policy.policyId !== decided.policyId || toolDigest !== decided.toolDigest || policyDigest !== decided.policyDigest) {
+    return terminalizeClaimed(options.approvalStore, decided, "drifted", "approval policy or tool digest drift")
+  }
+
+  const context: ApprovalLiveContext = {
+    record: structuredClone(decided),
+    checkpoint: structuredClone(checkpoint),
+    definition,
+    arguments: structuredClone(validated.value.arguments),
+  }
+  const guard = await options.liveGuard(context)
+  if (!guard.ok) return terminalizeClaimed(options.approvalStore, decided, "drifted", guard.reason)
+  const risk = await options.liveRisk(context)
+  if (!risk.ok) return terminalizeClaimed(options.approvalStore, decided, "drifted", risk.reason)
+
+  const attempted = options.approvalStore.markAttempted({
+    approvalId: decided.approvalId,
+    ownerId: decided.ownerId!,
+    epoch: decided.epoch,
+  })
+  await options.hooks?.afterAttempt?.()
+
+  let result: string
+  try {
+    result = await options.execute(attempted.toolName, structuredClone(attempted.arguments))
+  } catch (error) {
+    if (error instanceof ApprovalExecutionIndeterminateError) throw error
+    const failure = error instanceof Error ? error.message : String(error)
+    return options.approvalStore.complete({
+      approvalId: attempted.approvalId,
+      ownerId: attempted.ownerId!,
+      epoch: attempted.epoch,
+      state: "failed",
+      result: `error: ${failure}`,
+    })
+  }
+  await options.hooks?.afterHandler?.()
+  return options.approvalStore.complete({
+    approvalId: attempted.approvalId,
+    ownerId: attempted.ownerId!,
+    epoch: attempted.epoch,
+    state: "succeeded",
+    result,
+  })
+}
+
+export function recoverClaimedApproval(options: {
+  approvalStore: ApprovalStore
+  approvalId: string
+  reason: string
+}): ApprovalRecord {
+  const record = options.approvalStore.read(options.approvalId)
+  if (!record || record.state !== "claimed" || !record.ownerId) throw new ApprovalStoreError("claimed_recovery_not_eligible")
+  return options.approvalStore.abandonBeforeAttempt({
+    approvalId: record.approvalId,
+    ownerId: record.ownerId,
+    epoch: record.epoch,
+    reason: options.reason,
+  })
+}
+
+export function recoverAttemptedApproval(options: {
+  approvalStore: ApprovalStore
+  approvalId: string
+}): ApprovalRecord {
+  const record = options.approvalStore.read(options.approvalId)
+  if (!record || record.state !== "attempted" || !record.ownerId) throw new ApprovalStoreError("attempted_recovery_not_eligible")
+  return options.approvalStore.complete({
+    approvalId: record.approvalId,
+    ownerId: record.ownerId,
+    epoch: record.epoch,
+    state: "attempted_indeterminate",
+    result: "execution outcome is indeterminate after restart; action was not retried",
+  })
 }
