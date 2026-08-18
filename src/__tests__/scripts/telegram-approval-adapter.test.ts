@@ -1,0 +1,237 @@
+import { describe, expect, it, vi } from "vitest"
+
+import {
+  createTelegramApprovalAdapter,
+  escapeTelegramHtml,
+  type TelegramApprovalDecision,
+  type TelegramApprovalUpdate,
+} from "../../../scripts/approval-spike/telegram-adapter"
+
+const BOT_TOKEN = "unit-test-token-not-a-secret"
+const CHAT_ID = "7001"
+const USER_ID = "42"
+
+type FetchCall = { url: string; body: Record<string, unknown> }
+
+function telegramResponse(result: unknown, status = 200): Response {
+  return new Response(JSON.stringify(status >= 400
+    ? { ok: false, error_code: status, description: "synthetic error" }
+    : { ok: true, result }), {
+    status,
+    headers: { "content-type": "application/json" },
+  })
+}
+
+function callbackUpdate(input: {
+  callbackData: string
+  callbackId?: string
+  userId?: string
+  chatId?: string
+  messageId?: number
+}): TelegramApprovalUpdate {
+  return {
+    update_id: 101,
+    callback_query: {
+      id: input.callbackId ?? "callback-1",
+      from: { id: Number(input.userId ?? USER_ID) },
+      data: input.callbackData,
+      message: {
+        message_id: input.messageId ?? 99,
+        chat: { id: Number(input.chatId ?? CHAT_ID) },
+      },
+    },
+  }
+}
+
+function fixture(overrides: {
+  responses?: Response[]
+  onDecision?: (decision: TelegramApprovalDecision) => Promise<{ accepted: boolean; terminalText: string }>
+  handles?: string[]
+} = {}) {
+  const calls: FetchCall[] = []
+  const responses = [...(overrides.responses ?? [])]
+  const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) })
+    return responses.shift() ?? telegramResponse(true)
+  })
+  const sleep = vi.fn(async (_milliseconds: number) => undefined)
+  const onDecision = vi.fn(overrides.onDecision ?? (async (decision: TelegramApprovalDecision) => ({
+    accepted: true,
+    terminalText: decision.decision === "approve" ? "✅ Approved — running" : "❌ Denied",
+  })))
+  const handles = [...(overrides.handles ?? ["approve-handle", "deny-handle"])]
+  const adapter = createTelegramApprovalAdapter({
+    botToken: BOT_TOKEN,
+    expectedUserId: USER_ID,
+    expectedChatId: CHAT_ID,
+    fetch,
+    sleep,
+    createOpaqueHandle: () => handles.shift() ?? "unused-handle",
+    onDecision,
+  })
+  return { adapter, calls, fetch, sleep, onDecision }
+}
+
+async function prompt(f = fixture()) {
+  f.fetch.mockResolvedValueOnce(telegramResponse({ message_id: 99, chat: { id: Number(CHAT_ID) } }))
+  const sent = await f.adapter.sendApproval({
+    approvalId: "approval-1",
+    decisionToken: "server-side-decision-token",
+    prompt: "Restart <calibre-web> & verify?",
+    expiresAt: "2099-08-17T18:30:00.000Z",
+  })
+  return { ...f, sent }
+}
+
+describe("test-only Telegram approval adapter", () => {
+  it("escapes the complete Telegram HTML special-character set", () => {
+    expect(escapeTelegramHtml("<restart> & done")).toBe("&lt;restart&gt; &amp; done")
+  })
+
+  it("sends one HTML approval prompt with byte-bounded opaque callbacks and no decision token", async () => {
+    const f = await prompt()
+
+    expect(f.sent).toEqual({ messageId: "99", approveCallbackData: "a:approve-handle", denyCallbackData: "d:deny-handle" })
+    expect(f.calls).toHaveLength(1)
+    expect(f.calls[0]).toEqual({
+      url: `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+      body: {
+        chat_id: CHAT_ID,
+        text: "Restart &lt;calibre-web&gt; &amp; verify?",
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "Approve", callback_data: "a:approve-handle" },
+            { text: "Deny", callback_data: "d:deny-handle" },
+          ]],
+        },
+      },
+    })
+    expect(Buffer.byteLength(f.sent.approveCallbackData, "utf8")).toBeLessThanOrEqual(64)
+    expect(JSON.stringify(f.calls)).not.toContain("server-side-decision-token")
+    expect(JSON.stringify(f.calls)).not.toContain("approval-1")
+  })
+
+  it.each([
+    ["approve", "a:approve-handle", "✅ Approved — running"],
+    ["deny", "d:deny-handle", "❌ Denied"],
+  ] as const)("acknowledges, binds, and terminalizes a valid %s callback", async (decision, callbackData, terminalText) => {
+    const f = await prompt()
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+
+    const outcome = await f.adapter.handleUpdate(callbackUpdate({ callbackData }))
+
+    expect(outcome).toEqual({ handled: true, accepted: true, reason: "accepted" })
+    expect(f.onDecision).toHaveBeenCalledWith({
+      approvalId: "approval-1",
+      decisionToken: "server-side-decision-token",
+      decision,
+      requesterId: USER_ID,
+      transport: "telegram",
+      transportChatId: CHAT_ID,
+      transportMessageId: "99",
+    })
+    expect(f.calls.slice(1)).toEqual([
+      {
+        url: `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`,
+        body: { callback_query_id: "callback-1" },
+      },
+      {
+        url: `https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`,
+        body: { chat_id: CHAT_ID, message_id: 99, text: terminalText, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } },
+      },
+    ])
+  })
+
+  it.each([
+    ["foreign user", { userId: "43" }, "foreign_user"],
+    ["foreign chat", { chatId: "7002" }, "foreign_chat"],
+    ["foreign message", { messageId: 100 }, "foreign_message"],
+    ["unknown handle", { callbackData: "a:unknown" }, "stale_callback"],
+  ])("acknowledges but refuses a %s callback without deciding or editing", async (_label, change, reason) => {
+    const f = await prompt()
+    f.fetch.mockResolvedValueOnce(telegramResponse(true))
+    const update = callbackUpdate({ callbackData: "a:approve-handle", ...change })
+
+    expect(await f.adapter.handleUpdate(update)).toEqual({ handled: true, accepted: false, reason })
+    expect(f.onDecision).not.toHaveBeenCalled()
+    expect(f.calls.slice(1)).toEqual([{
+      url: `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`,
+      body: { callback_query_id: "callback-1", text: "This approval is no longer valid.", show_alert: true },
+    }])
+  })
+
+  it("makes a successful callback terminal and refuses duplicate/stale reuse", async () => {
+    const f = await prompt()
+    f.fetch.mockResolvedValue(telegramResponse(true))
+    const update = callbackUpdate({ callbackData: "a:approve-handle" })
+
+    expect(await f.adapter.handleUpdate(update)).toMatchObject({ accepted: true })
+    expect(await f.adapter.handleUpdate({ ...update, callback_query: { ...update.callback_query!, id: "callback-2" } })).toEqual({
+      handled: true,
+      accepted: false,
+      reason: "stale_callback",
+    })
+    expect(f.onDecision).toHaveBeenCalledTimes(1)
+    expect(f.calls.at(-1)).toEqual({
+      url: `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`,
+      body: { callback_query_id: "callback-2", text: "This approval is no longer valid.", show_alert: true },
+    })
+  })
+
+  it("keeps buttons removed when the decision authority refuses the callback", async () => {
+    const f = await prompt(fixture({ onDecision: async () => ({ accepted: false, terminalText: "⚠️ Approval expired" }) }))
+    f.fetch.mockResolvedValue(telegramResponse(true))
+
+    expect(await f.adapter.handleUpdate(callbackUpdate({ callbackData: "a:approve-handle" }))).toEqual({
+      handled: true,
+      accepted: false,
+      reason: "decision_refused",
+    })
+    expect(f.calls.at(-1)?.body).toEqual({
+      chat_id: CHAT_ID,
+      message_id: 99,
+      text: "⚠️ Approval expired",
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: [] },
+    })
+  })
+
+  it("retries sendMessage without formatting after Telegram rejects HTML with 400", async () => {
+    const f = fixture({ responses: [telegramResponse(null, 400), telegramResponse({ message_id: 99, chat: { id: Number(CHAT_ID) } })] })
+
+    await f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "<bad>", expiresAt: "2099-08-17T18:30:00.000Z" })
+
+    expect(f.calls).toHaveLength(2)
+    expect(f.calls[0]?.body).toMatchObject({ text: "&lt;bad&gt;", parse_mode: "HTML" })
+    expect(f.calls[1]?.body).toMatchObject({ text: "<bad>" })
+    expect(f.calls[1]?.body).not.toHaveProperty("parse_mode")
+    expect(f.calls[1]?.body).toHaveProperty("reply_markup")
+  })
+
+  it("honors Telegram 429 retry_after before resending the exact request", async () => {
+    const retry = new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 3 } }), { status: 429 })
+    const f = fixture({ responses: [retry, telegramResponse({ message_id: 99, chat: { id: Number(CHAT_ID) } })] })
+
+    await f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "safe", expiresAt: "2099-08-17T18:30:00.000Z" })
+
+    expect(f.sleep).toHaveBeenCalledWith(3_000)
+    expect(f.calls).toHaveLength(2)
+    expect(f.calls[1]).toEqual(f.calls[0])
+  })
+
+  it("ignores non-callback updates without network or decision activity", async () => {
+    const f = fixture()
+    expect(await f.adapter.handleUpdate({ update_id: 102 })).toEqual({ handled: false, accepted: false, reason: "not_callback" })
+    expect(f.fetch).not.toHaveBeenCalled()
+    expect(f.onDecision).not.toHaveBeenCalled()
+  })
+
+  it("rejects callback handles that exceed Telegram's 64-byte limit before sending", async () => {
+    const f = fixture({ handles: ["🙂".repeat(16), "deny"] })
+    await expect(f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "safe", expiresAt: "2099-08-17T18:30:00.000Z" }))
+      .rejects.toThrow(/64 bytes/i)
+    expect(f.fetch).not.toHaveBeenCalled()
+  })
+})
