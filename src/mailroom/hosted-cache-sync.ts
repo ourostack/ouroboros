@@ -215,7 +215,7 @@ async function reconcileRecords(
   let skipped = 0
   let settled = 0
   let nextRecord = 0
-  const failures: Array<{ id: string; error: string }> = []
+  const failures: Array<{ index: number; id: string; error: string }> = []
   safeProgress(input, { phase: "pass-start", pass, settled, total: records.length })
   const heartbeat = setInterval(() => {
     safeProgress(input, { phase: "heartbeat", pass, settled, total: records.length })
@@ -278,7 +278,7 @@ async function reconcileRecords(
           }, input.cacheOptions)
         }
       } else {
-        failures.push({ id: record.id, error: error instanceof Error ? error.message : String(error) })
+        throw error
       }
     }
   }
@@ -290,6 +290,12 @@ async function reconcileRecords(
       if (recordIndex >= records.length) return
       try {
         await processRecord(records[recordIndex]!)
+      } catch (error) {
+        failures.push({
+          index: recordIndex,
+          id: records[recordIndex]!.id,
+          error: error instanceof Error ? error.message : String(error),
+        })
       } finally {
         settled += 1
         if (settled % PROGRESS_SETTLEMENT_INTERVAL === 0) {
@@ -301,15 +307,16 @@ async function reconcileRecords(
 
   try {
     const workerCount = Math.min(FULL_CONVERGENCE_CONCURRENCY, records.length)
-    await Promise.all(Array.from({ length: workerCount }, () => worker()))
+    await Promise.allSettled(Array.from({ length: workerCount }, () => worker()))
   } finally {
     clearInterval(heartbeat)
     safeProgress(input, { phase: "pass-complete", pass, settled, total: records.length })
   }
 
   if (failures.length > 0) {
+    failures.sort((left, right) => left.index - right.index)
     const sample = failures.slice(0, 3).map((entry) => `${entry.id}: ${entry.error}`).join("; ")
-    throw new Error(`mail search index refresh incomplete; ${failures.length} fetch failed. first failure(s): ${sample}`)
+    throw new Error(`mail search index refresh incomplete; ${failures.length} record operation(s) failed. first failure(s): ${sample}`)
   }
   return { fetched, alreadyCached, removed, skipped }
 }
