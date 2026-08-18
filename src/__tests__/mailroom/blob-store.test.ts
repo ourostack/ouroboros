@@ -100,6 +100,9 @@ class FakeBlockBlobClient {
   async deleteIfExists(): Promise<boolean> {
     const state = this.state()
     state.deletes += 1
+    if (this.name.startsWith("raw/") && this.container.rawDeleteFailureError !== undefined) {
+      throw this.container.rawDeleteFailureError
+    }
     const existed = state.data !== undefined
     this.container.blobs.delete(this.name)
     return existed
@@ -113,6 +116,7 @@ class FakeContainerClient {
   createCalls = 0
   listError: unknown = null
   stallListing = false
+  rawDeleteFailureError: unknown = undefined
   messageUploadBarrierSize = 0
   private messageUploadArrivals = 0
   private messageUploadWaiters: Array<() => void> = []
@@ -471,6 +475,31 @@ describe("AzureBlobMailroomStore", () => {
       .filter(([name, state]) => name.startsWith(`raw/${winner.id}`) && state.data)
       .map(([name]) => name)
     expect(liveRawObjects).toEqual([winner.rawObject])
+  })
+
+  it("keeps the committed winner when best-effort loser raw cleanup fails", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    serviceClient.container.messageUploadBarrierSize = 2
+    serviceClient.container.rawDeleteFailureError = new Error("synthetic raw cleanup failure")
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const firstProvision = provisionMailboxRegistry({ agentId: "slugger" })
+    const secondProvision = provisionMailboxRegistry({ agentId: "slugger" })
+    const first = resolveMailAddress(firstProvision.registry, "slugger@ouro.bot")
+    const second = resolveMailAddress(secondProvision.registry, "slugger@ouro.bot")
+    if (!first || !second) throw new Error("expected slugger mailboxes")
+    const envelope = { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] }
+    const rawMime = Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Cleanup proof\r\n\r\nHello.\r\n")
+
+    const results = await Promise.all([
+      store.putRawMessage({ resolved: first, envelope, rawMime }),
+      store.putRawMessage({ resolved: second, envelope, rawMime }),
+    ])
+
+    expect(results.map((result) => result.created).sort()).toEqual([false, true])
+    expect(results[0]?.message).toEqual(results[1]?.message)
   })
 
   it("stores one destination-owned record per valid recipient of a shared SMTP envelope", async () => {
