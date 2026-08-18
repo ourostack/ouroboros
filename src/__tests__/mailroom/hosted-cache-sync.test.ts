@@ -372,7 +372,8 @@ describe("hosted cache stable-tail convergence", () => {
   it("settles other workers when receipt persistence itself fails", async () => {
     const cacheRoot = tempDir()
     const cacheOptions = { cacheDirForAgent: () => cacheRoot }
-    fs.writeFileSync(path.join(cacheRoot, "skipped"), "blocks receipt directory")
+    const skippedDir = path.join(cacheRoot, "skipped")
+    fs.mkdirSync(skippedDir)
     const missing = missingKeyMessage("mail_receipt_failure", "2026-08-18T00:00:00.000Z")
     const slow = plaintextMessage("mail_slow_settlement")
     let slowCompleted = false
@@ -394,6 +395,11 @@ describe("hosted cache stable-tail convergence", () => {
       privateKeys: {},
       storeKind: "azure-blob",
       cacheOptions,
+      onProgress: (progress) => {
+        if (progress.phase !== "pass-start") return
+        fs.rmSync(skippedDir, { recursive: true })
+        fs.writeFileSync(skippedDir, "blocks receipt directory")
+      },
     })).rejects.toThrow(/mail_receipt_failure/i)
 
     expect(slowCompleted).toBe(true)
