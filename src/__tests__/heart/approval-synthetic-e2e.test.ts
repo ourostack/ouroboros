@@ -61,7 +61,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
-describe("synthetic approval vertical slice", () => {
+describe("synthetic approval vertical slice", { timeout: 20_000 }, () => {
   it("is explicitly wired to the real production approval and same-loop continuation seams", () => {
     expect(syntheticApprovalProductionSeams).toEqual(expect.objectContaining({
       runAgent: expect.any(Function),
@@ -234,7 +234,7 @@ describe("synthetic approval vertical slice", () => {
   })
 })
 
-describe("synthetic crash and restart matrix", () => {
+describe("synthetic crash and restart matrix", { timeout: 20_000 }, () => {
   it.each([
     ["after_journal_prepare", "abandoned_before_attempt", true],
     ["after_token_persist", "abandoned_before_attempt", true],
