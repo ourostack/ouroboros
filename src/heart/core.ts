@@ -7,7 +7,9 @@ import { approvalPolicyForToolName, execTool, summarizeArgs, buildToolResultSumm
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
-import type { JsonObject } from "./approval-store";
+import type { ApprovalContinuationClaim, ApprovalRecord, JsonObject } from "./approval-store";
+import { materializeApprovalTerminal } from "./session-events";
+import type { ApprovalSuspensionCheckpoint } from "./tool-approval";
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
@@ -470,6 +472,123 @@ export interface ApprovalSuspensionResult {
   toolCallId: string
   checkpointDigest: string
   suspendedSessionRevision: string
+}
+
+export interface ResumeApprovalContinuationOptions {
+  record: ApprovalRecord
+  checkpoint: ApprovalSuspensionCheckpoint
+  currentSessionRevision: string
+  sessionMessages: OpenAI.ChatCompletionMessageParam[]
+  callbacks: Partial<ChannelCallbacks>
+  channel?: Channel
+  runAgent: (
+    messages: OpenAI.ChatCompletionMessageParam[],
+    callbacks: ChannelCallbacks,
+    channel?: Channel,
+    signal?: AbortSignal,
+    options?: RunAgentOptions,
+  ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult }>
+  persist: (messages: OpenAI.ChatCompletionMessageParam[], result?: { usage?: UsageData; outcome: RunAgentOutcome }) => void | Promise<void>
+  deliver: (text: string) => void | Promise<void>
+  claimContinuation: () => ApprovalContinuationClaim
+  markContinuationMaterialized: () => void | Promise<void>
+  markContinuationAttempted: () => void | Promise<void>
+  completeContinuation: () => void | Promise<void>
+  runAgentOptions?: RunAgentOptions
+  signal?: AbortSignal
+  materializedApprovalIds?: string[]
+  repairOrphans?: (messages: OpenAI.ChatCompletionMessageParam[]) => void
+  execute?: (...args: unknown[]) => unknown
+}
+
+function continuationCallbacks(callbacks: Partial<ChannelCallbacks>, text: { value: string }): ChannelCallbacks {
+  const noop = () => undefined
+  return {
+    onModelStart: callbacks.onModelStart ?? noop,
+    onModelStreamStart: callbacks.onModelStreamStart ?? noop,
+    onTextChunk: (chunk) => {
+      text.value += chunk
+      callbacks.onTextChunk?.(chunk)
+    },
+    onReasoningChunk: callbacks.onReasoningChunk ?? noop,
+    onToolStart: callbacks.onToolStart ?? noop,
+    onToolEnd: callbacks.onToolEnd ?? noop,
+    onError: callbacks.onError ?? noop,
+    ...(callbacks.onClearText ? { onClearText: callbacks.onClearText } : {}),
+    ...(callbacks.flushNow ? { flushNow: callbacks.flushNow } : {}),
+    ...(callbacks.settleOutputMode ? { settleOutputMode: callbacks.settleOutputMode } : {}),
+  }
+}
+
+export async function resumeApprovalContinuation(options: ResumeApprovalContinuationOptions): Promise<{
+  outcome: RunAgentOutcome | "already_continued" | "terminal_notice"
+  messages: OpenAI.ChatCompletionMessageParam[]
+  suspension?: ApprovalSuspensionResult
+}> {
+  const claim = options.claimContinuation()
+  if (!claim.claimed) {
+    if (claim.interruptedAfterAttempt) {
+      const notice = "the approval continuation was interrupted after provider work began; its outcome is indeterminate and it will not be retried automatically"
+      await options.deliver(notice)
+      emitNervesEvent({
+        level: "error",
+        component: "engine",
+        event: "engine.approval_continuation_indeterminate",
+        message: "approval continuation interrupted after provider attempt",
+        meta: { approvalId: options.record.approvalId, continuationState: claim.record.continuationState },
+      })
+      return { outcome: "terminal_notice", messages: structuredClone(options.sessionMessages) }
+    }
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.approval_continuation_duplicate",
+      message: "approval continuation was already consumed",
+      meta: { approvalId: options.record.approvalId },
+    })
+    return { outcome: "already_continued", messages: structuredClone(options.sessionMessages) }
+  }
+  const materialized = materializeApprovalTerminal({
+    messages: options.sessionMessages,
+    checkpoint: options.checkpoint,
+    record: options.record,
+    currentSessionRevision: options.currentSessionRevision,
+    materializedApprovalIds: options.materializedApprovalIds,
+  })
+  const recoveredMaterialization = claim.record.continuationState === "materialized"
+  if (!recoveredMaterialization) {
+    await options.persist(materialized.messages)
+    await options.markContinuationMaterialized()
+  }
+  if (!materialized.resumeProvider) {
+    if (materialized.directNotice) await options.deliver(materialized.directNotice)
+    await options.completeContinuation()
+    return { outcome: "terminal_notice", messages: materialized.messages }
+  }
+
+  const outward = { value: "" }
+  const callbacks = continuationCallbacks(options.callbacks, outward)
+  await options.markContinuationAttempted()
+  const result = await options.runAgent(
+    materialized.messages,
+    callbacks,
+    options.channel,
+    options.signal,
+    options.runAgentOptions,
+  )
+  if (result.outcome === "suspended") {
+    await options.completeContinuation()
+    return { outcome: result.outcome, messages: materialized.messages, suspension: result.suspension }
+  }
+  await options.persist(materialized.messages, result)
+  if (outward.value) await options.deliver(outward.value)
+  await options.completeContinuation()
+  emitNervesEvent({
+    component: "engine",
+    event: "engine.approval_continuation_completed",
+    message: "approval continuation completed through existing provider loop",
+    meta: { approvalId: options.record.approvalId, outcome: result.outcome },
+  })
+  return { outcome: result.outcome, messages: materialized.messages }
 }
 
 /**

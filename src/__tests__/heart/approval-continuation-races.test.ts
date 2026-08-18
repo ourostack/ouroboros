@@ -22,6 +22,7 @@ describe("approval continuation race contract", () => {
     const coordinateApprovalDecision = (toolApproval as any).coordinateApprovalDecision
     class SessionTurnBusyError extends Error {
       retryable = true
+      name = "SessionTurnBusyError"
     }
     const decideAndExecute = vi.fn()
     const resume = vi.fn()
@@ -56,8 +57,8 @@ describe("approval continuation race contract", () => {
 
     expect(result.record.state).toBe("session_head_changed")
     expect(handler).not.toHaveBeenCalled()
-    expect(resume).not.toHaveBeenCalled()
-    expect(notices.join(" ")).toContain("session changed")
+    expect(resume).toHaveBeenCalledTimes(1)
+    expect(notices).toEqual([])
   })
 
   it("approval winning the lease holds inbound load/provider/persist until continuation delivery completes", async () => {
@@ -129,10 +130,10 @@ describe("approval continuation race contract", () => {
 
     expect(result.record.state).toBe("session_head_changed")
     expect(handler).not.toHaveBeenCalled()
-    expect(resume).not.toHaveBeenCalled()
+    expect(resume).toHaveBeenCalledTimes(1)
   })
 
-  it.each(["denied", "expired", "drifted", "attempted_indeterminate", "session_head_changed"])(
+  it.each(["denied", "expired", "drifted", "abandoned_before_attempt", "attempted_indeterminate", "session_head_changed", "preparing"])(
     "never invokes a protected handler while projecting terminal %s",
     async (state) => {
       const coordinateApprovalDecision = (toolApproval as any).coordinateApprovalDecision
@@ -155,14 +156,9 @@ describe("approval continuation race contract", () => {
 
       expect(handler).not.toHaveBeenCalled()
       expect(persist).toHaveBeenCalledTimes(1)
-      if (state === "denied") {
-        expect(resume).toHaveBeenCalledTimes(1)
-        expect(order).toEqual(["persist", "resume"])
-      } else {
-        expect(resume).not.toHaveBeenCalled()
-        expect(directNotice).toHaveBeenCalledTimes(1)
-        expect(order).toEqual(["persist", "notice"])
-      }
+      expect(resume).toHaveBeenCalledTimes(1)
+      expect(directNotice).not.toHaveBeenCalled()
+      expect(order).toEqual(["persist", "resume"])
     },
   )
 })

@@ -39,6 +39,22 @@ function checkpoint(): ApprovalSuspensionCheckpoint {
   }
 }
 
+function continuationLifecycle() {
+  return {
+    markContinuationMaterialized: vi.fn(),
+    markContinuationAttempted: vi.fn(),
+    completeContinuation: vi.fn(),
+  }
+}
+
+function continuationClaim(
+  claimed: boolean,
+  continuationState: "claimed" | "materialized" | "attempted" | "completed" = "claimed",
+  interruptedAfterAttempt = false,
+) {
+  return { claimed, interruptedAfterAttempt, record: { continuationState } as any }
+}
+
 function record(state: ApprovalState, result: string | null = null): ApprovalRecord {
   return {
     approvalId: APPROVAL_ID,
@@ -120,6 +136,24 @@ describe("approval terminal transcript projection", () => {
     expect(second.messages.filter((message: any) => message.role === "tool" && message.tool_call_id === "call_restart")).toHaveLength(1)
   })
 
+  it("honors a durable approval-id marker without requiring a projected pair in the current view", async () => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const projected = materializeApprovalTerminal({
+      messages: checkpoint().preCallMessages,
+      checkpoint: checkpoint(),
+      record: record("expired"),
+      currentSessionRevision: REVISION,
+      materializedApprovalIds: [APPROVAL_ID],
+    })
+
+    expect(projected).toMatchObject({
+      materialized: false,
+      resumeProvider: false,
+      directNotice: "approval expired before execution; the protected action was not executed",
+    })
+    expect(projected.messages).toEqual(checkpoint().preCallMessages)
+  })
+
   it.each([
     ["expired", false, "approval expired before execution; the protected action was not executed"],
     ["drifted", false, "approval became invalid before execution; the protected action was not executed"],
@@ -168,6 +202,88 @@ describe("approval terminal transcript projection", () => {
     expect(projected.messages).toEqual(advanced)
     expect(projected.directNotice).toContain("session changed")
   })
+
+  it("authenticates and reuses the exact frozen pair after a crash advanced the persisted revision", async () => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const persistedPair = [
+      ...checkpoint().preCallMessages,
+      assistantMessage(),
+      { role: "tool" as const, tool_call_id: "call_restart", content: "restarted" },
+    ]
+
+    const projected = materializeApprovalTerminal({
+      messages: persistedPair,
+      checkpoint: checkpoint(),
+      record: record("succeeded", "restarted"),
+      currentSessionRevision: "0".repeat(64),
+    })
+
+    expect(projected).toMatchObject({ materialized: false, resumeProvider: true, messages: persistedPair })
+    expect(projected.messages.filter((message: any) => message.role === "tool" && message.tool_call_id === "call_restart")).toHaveLength(1)
+  })
+
+  it("authenticates the canonical persisted tail when private reasoning fields and absent content were normalized", async () => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const frozen = assistantMessage() as any
+    delete frozen.content
+    frozen._inline_reasoning = "private reasoning"
+    frozen._reasoning_items = [{ type: "reasoning", id: "reason-1" }]
+    frozen._thinking_blocks = [{ type: "thinking", thinking: "private" }]
+    frozen.phase = "commentary"
+    const canonicalPersistedPair = [
+      ...checkpoint().preCallMessages,
+      assistantMessage(),
+      { role: "tool" as const, tool_call_id: "call_restart", content: "restarted" },
+    ]
+
+    const projected = materializeApprovalTerminal({
+      messages: canonicalPersistedPair,
+      checkpoint: { ...checkpoint(), frozenAssistantMessage: frozen },
+      record: record("succeeded", "restarted"),
+      currentSessionRevision: "0".repeat(64),
+    })
+
+    expect(projected).toMatchObject({ materialized: false, resumeProvider: true, messages: canonicalPersistedPair })
+  })
+
+  it("rejects an exact historical pair when a newer user turn advanced the terminal tail", async () => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const advanced = [
+      ...checkpoint().preCallMessages,
+      assistantMessage(),
+      { role: "tool" as const, tool_call_id: "call_restart", content: "restarted" },
+      { role: "user" as const, content: "actually, do something else" },
+    ]
+
+    const projected = materializeApprovalTerminal({
+      messages: advanced,
+      checkpoint: checkpoint(),
+      record: record("succeeded", "restarted"),
+      currentSessionRevision: "0".repeat(64),
+    })
+
+    expect(projected).toMatchObject({ materialized: false, resumeProvider: false, messages: advanced })
+    expect(projected.directNotice).toContain("session changed")
+  })
+
+  it("rejects a forged or mismatched pair when the persisted revision advanced", async () => {
+    const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
+    const forgedPair = [
+      ...checkpoint().preCallMessages,
+      { ...assistantMessage(), content: "forged" },
+      { role: "tool" as const, tool_call_id: "call_restart", content: "different result" },
+    ]
+
+    const projected = materializeApprovalTerminal({
+      messages: forgedPair,
+      checkpoint: checkpoint(),
+      record: record("succeeded", "restarted"),
+      currentSessionRevision: "0".repeat(64),
+    })
+
+    expect(projected).toMatchObject({ materialized: false, resumeProvider: false, messages: forgedPair })
+    expect(projected.directNotice).toContain("session changed")
+  })
 })
 
 describe("same-loop approval continuation", () => {
@@ -197,12 +313,14 @@ describe("same-loop approval continuation", () => {
       runAgent,
       persist,
       deliver,
-      claimContinuation: vi.fn(() => true),
+      claimContinuation: vi.fn(() => continuationClaim(true)),
+      ...continuationLifecycle(),
     })
 
     expect(runAgent).toHaveBeenCalledTimes(1)
     expect(runAgent.mock.calls[0]![0].filter((message: any) => message.role === "user")).toHaveLength(1)
-    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist).toHaveBeenCalledTimes(2)
+    expect(persist.mock.invocationCallOrder[0]).toBeLessThan(runAgent.mock.invocationCallOrder[0]!)
     expect(deliver).toHaveBeenCalledWith("calibre-web is back up")
     expect(persist.mock.invocationCallOrder[0]).toBeLessThan(deliver.mock.invocationCallOrder[0]!)
     expect(result.outcome).toBe("settled")
@@ -227,11 +345,74 @@ describe("same-loop approval continuation", () => {
       execute,
       persist: vi.fn(),
       deliver: vi.fn(),
-      claimContinuation: vi.fn(() => true),
+      claimContinuation: vi.fn(() => continuationClaim(true)),
+      ...continuationLifecycle(),
     })
 
     expect(execute).not.toHaveBeenCalled()
     expect(runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("recovers a durably materialized pre-attempt continuation without duplicating its pair", async () => {
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
+    const lifecycle = continuationLifecycle()
+    const persistedPair = [
+      ...checkpoint().preCallMessages,
+      checkpoint().frozenAssistantMessage,
+      { role: "tool" as const, tool_call_id: "call_restart", content: "restarted" },
+    ]
+    const persist = vi.fn()
+    const runAgent = vi.fn(async (messages: any[]) => {
+      expect(messages.filter((message) => message.role === "tool" && message.tool_call_id === "call_restart")).toHaveLength(1)
+      return { outcome: "settled" as const }
+    })
+
+    await resumeApprovalContinuation({
+      record: record("succeeded", "restarted"),
+      checkpoint: checkpoint(),
+      currentSessionRevision: REVISION,
+      sessionMessages: persistedPair,
+      callbacks: {},
+      runAgent,
+      persist,
+      deliver: vi.fn(),
+      claimContinuation: () => continuationClaim(true, "materialized"),
+      ...lifecycle,
+    })
+
+    expect(lifecycle.markContinuationMaterialized).not.toHaveBeenCalled()
+    expect(lifecycle.markContinuationAttempted).toHaveBeenCalledTimes(1)
+    expect(persist).toHaveBeenCalledTimes(1)
+  })
+
+  it("recovers a claimed continuation after its exact pair persisted but its phase marker did not", async () => {
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
+    const lifecycle = continuationLifecycle()
+    const persistedPair = [
+      ...checkpoint().preCallMessages,
+      assistantMessage(),
+      { role: "tool" as const, tool_call_id: "call_restart", content: "restarted" },
+    ]
+    const runAgent = vi.fn(async () => ({ outcome: "settled" as const }))
+    const persist = vi.fn()
+
+    const result = await resumeApprovalContinuation({
+      record: record("succeeded", "restarted"),
+      checkpoint: checkpoint(),
+      currentSessionRevision: "0".repeat(64),
+      sessionMessages: persistedPair,
+      callbacks: {},
+      runAgent,
+      persist,
+      deliver: vi.fn(),
+      claimContinuation: () => continuationClaim(true, "claimed"),
+      ...lifecycle,
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(runAgent).toHaveBeenCalledTimes(1)
+    expect(runAgent.mock.calls[0]![0].filter((message: any) => message.role === "tool" && message.tool_call_id === "call_restart")).toHaveLength(1)
+    expect(lifecycle.markContinuationMaterialized).toHaveBeenCalledTimes(1)
   })
 
   it("does not resume the provider twice when continuation eligibility was already consumed", async () => {
@@ -247,11 +428,37 @@ describe("same-loop approval continuation", () => {
       runAgent,
       persist: vi.fn(),
       deliver: vi.fn(),
-      claimContinuation: vi.fn(() => false),
+      claimContinuation: vi.fn(() => continuationClaim(false)),
+      ...continuationLifecycle(),
     })
 
     expect(runAgent).not.toHaveBeenCalled()
     expect(result.outcome).toBe("already_continued")
+  })
+
+  it("surfaces an atomically terminalized dead-owner post-attempt continuation without retrying provider work", async () => {
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
+    const runAgent = vi.fn()
+    const persist = vi.fn()
+    const deliver = vi.fn()
+
+    const result = await resumeApprovalContinuation({
+      record: record("succeeded", "restarted"),
+      checkpoint: checkpoint(),
+      currentSessionRevision: "0".repeat(64),
+      sessionMessages: checkpoint().preCallMessages,
+      callbacks: {},
+      runAgent,
+      persist,
+      deliver,
+      claimContinuation: () => continuationClaim(false, "completed", true),
+      ...continuationLifecycle(),
+    })
+
+    expect(result.outcome).toBe("terminal_notice")
+    expect(runAgent).not.toHaveBeenCalled()
+    expect(persist).not.toHaveBeenCalled()
+    expect(deliver).toHaveBeenCalledWith("the approval continuation was interrupted after provider work began; its outcome is indeterminate and it will not be retried automatically")
   })
 
   it("does not route a suspended checkpoint through ordinary orphan repair", async () => {
@@ -269,8 +476,33 @@ describe("same-loop approval continuation", () => {
       persist: vi.fn(),
       deliver: vi.fn(),
       repairOrphans,
-      claimContinuation: vi.fn(() => true),
+      claimContinuation: vi.fn(() => continuationClaim(true)),
+      ...continuationLifecycle(),
     })).resolves.toMatchObject({ outcome: "settled" })
     expect(repairOrphans).not.toHaveBeenCalled()
+  })
+
+  it("does not ordinary-persist or deliver when the resumed provider suspends again", async () => {
+    const resumeApprovalContinuation = (core as any).resumeApprovalContinuation
+    const persist = vi.fn(async () => undefined)
+    const deliver = vi.fn(async () => undefined)
+    const suspension = { approvalId: "22222222-2222-4222-8222-222222222222" } as any
+
+    const result = await resumeApprovalContinuation({
+      record: record("succeeded", "restarted"),
+      checkpoint: checkpoint(),
+      currentSessionRevision: REVISION,
+      sessionMessages: checkpoint().preCallMessages,
+      callbacks: {},
+      runAgent: vi.fn(async () => ({ outcome: "suspended" as const, suspension })),
+      persist,
+      deliver,
+      claimContinuation: () => continuationClaim(true),
+      ...continuationLifecycle(),
+    })
+
+    expect(result).toMatchObject({ outcome: "suspended", suspension })
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(deliver).not.toHaveBeenCalled()
   })
 })

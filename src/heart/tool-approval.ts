@@ -89,6 +89,44 @@ export interface ApprovalLiveContext {
   arguments: JsonObject
 }
 
+export interface CoordinateApprovalDecisionOptions {
+  withSessionLease<T>(work: (lease: { ownerId: string; ownerToken: string }) => Promise<T>): Promise<T>
+  readCurrentRevision(): string
+  suspendedSessionRevision?: string
+  decideAndExecute(input: {
+    currentSessionRevision: string
+    lease: { ownerId: string; ownerToken: string }
+    hooks: { afterClaim(): Promise<void> }
+  }): Promise<ApprovalRecord>
+  resume(record: ApprovalRecord): void | Promise<void>
+  persist?: (record: ApprovalRecord) => void | Promise<void>
+  execute?: (...args: unknown[]) => unknown
+}
+
+export async function coordinateApprovalDecision(options: CoordinateApprovalDecisionOptions): Promise<{ record: ApprovalRecord }> {
+  return options.withSessionLease(async (lease) => {
+    let currentSessionRevision = options.readCurrentRevision()
+    const record = await options.decideAndExecute({
+      currentSessionRevision,
+      lease,
+      hooks: {
+        afterClaim: async () => {
+          currentSessionRevision = options.readCurrentRevision()
+        },
+      },
+    })
+    await options.persist?.(record)
+    await options.resume(record)
+    emitNervesEvent({
+      component: "engine",
+      event: "engine.approval_decision_coordinated",
+      message: "approval decision coordinated under session turn lease",
+      meta: { approvalId: record.approvalId, state: record.state },
+    })
+    return { record }
+  })
+}
+
 export interface ExecuteApprovalDecisionOptions {
   approvalStore: ApprovalStore
   checkpointStore: ApprovalSuspensionCheckpointStore

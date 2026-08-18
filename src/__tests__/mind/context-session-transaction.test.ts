@@ -9,7 +9,6 @@ import {
   deleteSession,
   loadSession,
   postTurnPersist,
-  postTurnTrim,
   saveSession,
 } from "../../mind/context"
 
@@ -30,6 +29,18 @@ afterEach(() => {
 })
 
 describe("context mutation transaction routing", () => {
+  it("reuses the async-context lease when callers omit the explicit capability", async () => {
+    const { withSessionTurnLease } = await transaction()
+    const file = sessionPath()
+
+    await withSessionTurnLease(file, async () => {
+      saveSession(file, [{ role: "user", content: "context-owned" }])
+      expect(loadSession(file)?.messages).toEqual([
+        expect.objectContaining({ role: "user", content: "context-owned" }),
+      ])
+    }, { ownerId: "context-owner", ownerToken: "context-token" })
+  })
+
   it("routes saveSession through the caller-owned canonical lease", async () => {
     const { acquireSessionTurnLease } = await transaction()
     const file = sessionPath()
@@ -63,7 +74,13 @@ describe("context mutation transaction routing", () => {
     ;(saveSession as any)(file, [{ role: "user", content: "base" }], undefined, undefined, lease)
     const before = readSessionTransaction(file, lease).revision
     const messages = [{ role: "user" as const, content: "base" }, { role: "assistant" as const, content: "answer" }]
-    const prepared = postTurnTrim(messages)
+    const prepared = {
+      currentMessages: messages,
+      trimmedMessages: messages,
+      currentIngressTimes: [null, null],
+      maxTokens: 128_000,
+      contextMargin: 20,
+    }
 
     const baseBytes = fs.readFileSync(file, "utf8")
     expect(() => (postTurnPersist as any)(file, prepared, undefined, undefined, {

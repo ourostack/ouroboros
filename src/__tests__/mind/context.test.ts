@@ -10,6 +10,48 @@ vi.mock("fs", () => ({
   existsSync: vi.fn(),
 }))
 
+// Context behavior is tested here with a deliberately tiny mocked filesystem.
+// The transaction primitive has its own real-filesystem suite; keep this suite
+// focused by adapting that boundary back onto the existing fs spies.
+vi.mock("../../mind/session-transaction", async () => {
+  const mockedFs = await import("fs")
+  const path = await import("path")
+  const leaseFor = (sessionPath: string) => ({
+    sessionPath,
+    ownerId: "context-test",
+    ownerToken: "context-test-token",
+  })
+  return {
+    assertSessionTurnLease: vi.fn(),
+    currentSessionTurnLease: () => null,
+    withImmediateSessionTurnLease: (sessionPath: string, work: (lease: any) => unknown) => work(leaseFor(sessionPath)),
+    readSessionTransaction: (sessionPath: string) => {
+      try {
+        const bytes = mockedFs.readFileSync(sessionPath, "utf8")
+        if (typeof bytes !== "string") return { exists: false, value: null, revision: null }
+        return { exists: true, value: JSON.parse(bytes), revision: `test-revision:${bytes}` }
+      } catch {
+        return { exists: false, value: null, revision: null }
+      }
+    },
+    writeSessionTransaction: (sessionPath: string, value: unknown) => {
+      const bytes = JSON.stringify(value, null, 2)
+      mockedFs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+      mockedFs.writeFileSync(sessionPath, bytes)
+      return `test-revision:${bytes}`
+    },
+    deleteSessionTransaction: (sessionPath: string) => {
+      try {
+        mockedFs.unlinkSync(sessionPath)
+        return true
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+        throw error
+      }
+    },
+  }
+})
+
 // Mock config for postTurn tests
 vi.mock("../../heart/config", () => ({
   getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),

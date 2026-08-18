@@ -253,6 +253,7 @@ describe("teams stranger gate integration (pipeline-based)", () => {
       "conv-lease",
       { signin: vi.fn(async () => undefined), aadObjectId: "aad-user-1", tenantId: "tenant-1", displayName: "Unknown" },
       undefined,
+      undefined,
       { _withSessionTurnLease: withSessionTurnLease } as any,
     )
 
@@ -269,6 +270,28 @@ describe("teams stranger gate integration (pipeline-based)", () => {
     expect(order.indexOf("session:persist")).toBeGreaterThan(order.indexOf("provider:run"))
     expect(order.indexOf("lease:released")).toBeGreaterThan(order.indexOf("session:persist"))
     expect(order.indexOf("lease:released")).toBeGreaterThan(order.lastIndexOf("outward:delivered"))
+  })
+
+  it("emits no thinking activity before a busy lease decision and returns a retryable notice", async () => {
+    const busy = new Error("busy")
+    busy.name = "SessionTurnBusyError"
+    const stream = { update: vi.fn(), emit: vi.fn(), close: vi.fn() }
+    const { handleTeamsMessage } = await import("../../senses/teams")
+
+    await handleTeamsMessage(
+      "hello",
+      stream as any,
+      "conv-busy",
+      { signin: vi.fn(async () => undefined), aadObjectId: "aad-user-1", tenantId: "tenant-1", displayName: "Unknown" },
+      undefined,
+      undefined,
+      { _withSessionTurnLease: vi.fn(async () => { throw busy }) } as any,
+    )
+
+    expect(stream.update).not.toHaveBeenCalled()
+    expect(mockLoadSession).not.toHaveBeenCalled()
+    expect(mockRunAgent).not.toHaveBeenCalled()
+    expect(stream.emit).toHaveBeenCalledWith(expect.stringContaining("busy"))
   })
 
   it("sends auto-reply via stream when pipeline gate rejects with stranger_first_reply", async () => {

@@ -84,6 +84,7 @@ const effectsPath = process.argv[5]
 const ownerId = process.argv[6]
 const store = storeModule.openApprovalStore({ databasePath })
 const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"))
+let continuationClaim
 process.stdout.write("READY\n")
 process.stdin.once("data", async () => {
   try {
@@ -94,7 +95,19 @@ process.stdin.once("data", async () => {
       sessionMessages: fixture.checkpoint.preCallMessages,
       callbacks: { onTextChunk: () => {} },
       channel: "telegram",
-      claimContinuation: () => store.claimContinuation({ approvalId: fixture.approvalId, ownerId }),
+      claimContinuation: () => {
+        continuationClaim = store.claimContinuation({ approvalId: fixture.approvalId, ownerId })
+        return continuationClaim
+      },
+      markContinuationMaterialized: () => store.markContinuationMaterialized({
+        approvalId: fixture.approvalId, ownerId, epoch: continuationClaim.record.continuationEpoch,
+      }),
+      markContinuationAttempted: () => store.markContinuationAttempted({
+        approvalId: fixture.approvalId, ownerId, epoch: continuationClaim.record.continuationEpoch,
+      }),
+      completeContinuation: () => store.completeContinuation({
+        approvalId: fixture.approvalId, ownerId, epoch: continuationClaim.record.continuationEpoch,
+      }),
       runAgent: async (messages, callbacks) => {
         fs.appendFileSync(effectsPath, "provider\n")
         callbacks.onTextChunk("calibre-web is back up")
@@ -138,6 +151,42 @@ afterEach(() => {
 })
 
 describe("durable continuation claim", () => {
+  it("rejects invalid owners and non-terminal approval states", () => {
+    const invalidOwnerFixture = makeStorePair()
+    makeSucceeded(invalidOwnerFixture.first)
+    expect(() => invalidOwnerFixture.first.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "" })).toThrow(/invalid_continuation_owner/)
+    invalidOwnerFixture.first.close()
+    invalidOwnerFixture.second.close()
+
+    const proposedFixture = makeStorePair()
+    proposedFixture.first.prepare({
+      toolCallId: "call_pending",
+      toolName: "shell",
+      arguments: { command: "true" },
+      schemaDigest: "a".repeat(64),
+      toolDigest: "b".repeat(64),
+      policyDigest: "c".repeat(64),
+      policyId: "shell.test.v1",
+      sessionKey: "telegram:chat-7",
+      sessionPath: "/tmp/disposable/session.json",
+      baseSessionRevision: "d".repeat(64),
+      checkpointDigest: "e".repeat(64),
+      requesterId: "friend-ari",
+      transport: "telegram",
+      transportUserId: "42",
+      transportChatId: "7",
+      expiresAt: "2026-08-17T18:30:00.000Z",
+      frozenAssistantMessage: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_pending", type: "function", function: { name: "shell", arguments: "{\"command\":\"true\"}" } }],
+      },
+    })
+    expect(() => proposedFixture.first.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "continuation-a" })).toThrow(/continuation_not_eligible/)
+    proposedFixture.first.close()
+    proposedFixture.second.close()
+  })
+
   it("allows exactly one SQLite CAS winner to enter the provider continuation", () => {
     const fixture = makeStorePair()
     makeSucceeded(fixture.first)
@@ -173,6 +222,11 @@ describe("durable continuation claim", () => {
     const fixture = makeStorePair()
     makeSucceeded(fixture.first)
     const claim = (fixture.first as any).claimContinuation({ approvalId: APPROVAL_ID, ownerId: "continuation-a" })
+    ;(fixture.first as any).markContinuationMaterialized({
+      approvalId: APPROVAL_ID,
+      ownerId: "continuation-a",
+      epoch: claim.record.continuationEpoch,
+    })
 
     expect(() => (fixture.second as any).completeContinuation({
       approvalId: APPROVAL_ID,
@@ -185,6 +239,68 @@ describe("durable continuation claim", () => {
       epoch: claim.record.continuationEpoch,
     })
     expect(completed.continuedAt).toBe("2026-08-17T17:30:00.000Z")
+    fixture.first.close()
+    fixture.second.close()
+  })
+
+  it("fails closed and observes invalid continuation phase transitions", () => {
+    const fixture = makeStorePair()
+    makeSucceeded(fixture.first)
+    const claim = fixture.first.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "continuation-a" })
+    const phase = { approvalId: APPROVAL_ID, ownerId: "continuation-a", epoch: claim.record.continuationEpoch }
+
+    expect(() => fixture.first.markContinuationAttempted(phase)).toThrow(/continuation_attempted_not_eligible/)
+    fixture.first.markContinuationMaterialized(phase)
+    expect(() => fixture.first.markContinuationMaterialized(phase)).toThrow(/continuation_materialized_not_eligible/)
+    fixture.first.close()
+    fixture.second.close()
+  })
+
+  it("reclaims only pre-attempt continuation work from a dead process and fences attempted work", () => {
+    const fixture = makeStorePair()
+    makeSucceeded(fixture.first)
+    const dead = fixture.first.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "dead-owner", ownerPid: 999_999_999 })
+    fixture.first.markContinuationMaterialized({
+      approvalId: APPROVAL_ID,
+      ownerId: "dead-owner",
+      epoch: dead.record.continuationEpoch,
+    })
+
+    const reclaimed = fixture.second.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "recovery-owner" })
+    expect(reclaimed).toMatchObject({ claimed: true, record: { continuationState: "materialized", continuationEpoch: 2 } })
+    fixture.second.markContinuationAttempted({
+      approvalId: APPROVAL_ID,
+      ownerId: "recovery-owner",
+      epoch: reclaimed.record.continuationEpoch,
+    })
+    expect(fixture.first.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "after-attempt", ownerPid: 999_999_998 }).claimed).toBe(false)
+    fixture.first.close()
+    fixture.second.close()
+  })
+
+  it("atomically terminalizes a dead-owner attempted continuation as indeterminate without reclaiming it", () => {
+    const fixture = makeStorePair()
+    makeSucceeded(fixture.first)
+    const dead = fixture.first.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "dead-owner", ownerPid: 999_999_999 })
+    fixture.first.markContinuationMaterialized({
+      approvalId: APPROVAL_ID,
+      ownerId: "dead-owner",
+      epoch: dead.record.continuationEpoch,
+    })
+    fixture.first.markContinuationAttempted({
+      approvalId: APPROVAL_ID,
+      ownerId: "dead-owner",
+      epoch: dead.record.continuationEpoch,
+    })
+
+    const recovered = fixture.second.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "recovery-owner" })
+    expect(recovered).toMatchObject({
+      claimed: false,
+      interruptedAfterAttempt: true,
+      record: { continuationState: "completed", continuationOwnerId: "recovery-owner", continuationEpoch: 2 },
+    })
+    const duplicate = fixture.first.claimContinuation({ approvalId: APPROVAL_ID, ownerId: "later-owner" })
+    expect(duplicate).toMatchObject({ claimed: false, interruptedAfterAttempt: false, record: { continuationState: "completed" } })
     fixture.first.close()
     fixture.second.close()
   })
@@ -230,9 +346,10 @@ describe("durable continuation claim", () => {
 
     const effects = fs.readFileSync(effectsPath, "utf8").trim().split("\n")
     expect(effects.filter((line) => line === "provider")).toHaveLength(1)
-    expect(effects.filter((line) => line.startsWith("persist:"))).toHaveLength(1)
+    expect(effects.filter((line) => line.startsWith("persist:"))).toHaveLength(2)
     expect(effects.filter((line) => line === "deliver:calibre-web is back up")).toHaveLength(1)
-    const persisted = JSON.parse(effects.find((line) => line.startsWith("persist:"))!.slice("persist:".length))
+    const persistedLine = effects.filter((line) => line.startsWith("persist:")).at(-1)!
+    const persisted = JSON.parse(persistedLine.slice("persist:".length))
     expect(persisted.slice(1, 3)).toEqual([
       checkpoint.frozenAssistantMessage,
       { role: "tool", tool_call_id: "call_restart", content: "restarted" },

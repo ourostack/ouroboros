@@ -3479,6 +3479,11 @@ describe("private runtime", () => {
       reason: "boot",
       instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
       now: () => new Date("2026-03-06T12:00:00.000Z"),
+      _withSessionTurnLease: async (sessionPath: string, work: (lease: any) => Promise<any>) => work({
+        sessionPath,
+        ownerId: "runtime-state-warning-test",
+        ownerToken: "runtime-state-warning-token",
+      }),
     })
 
     const warnings = mockEmitNervesEvent.mock.calls

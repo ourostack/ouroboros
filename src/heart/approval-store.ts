@@ -90,6 +90,23 @@ export interface ApprovalStoreOptions {
   }
 }
 
+export interface ApprovalContinuationRecord {
+  continuationOwnerId: string
+  continuationOwnerPid: number
+  continuationEpoch: number
+  continuationState: "claimed" | "materialized" | "attempted" | "completed"
+  continuationClaimedAt: string
+  continuationMaterializedAt: string | null
+  continuationAttemptedAt: string | null
+  continuedAt: string | null
+}
+
+export interface ApprovalContinuationClaim {
+  claimed: boolean
+  interruptedAfterAttempt: boolean
+  record: ApprovalRecord & ApprovalContinuationRecord
+}
+
 export interface ApprovalStore {
   prepare(input: PrepareApprovalInput): { record: ApprovalRecord; decisionToken: string }
   activate(input: { approvalId: string; checkpointDigest: string; suspendedSessionRevision: string }): ApprovalRecord
@@ -129,6 +146,10 @@ export interface ApprovalStore {
     state: "abandoned_before_attempt" | "drifted"
     reason: string
   }): ApprovalRecord
+  claimContinuation(input: { approvalId: string; ownerId: string; ownerPid?: number }): ApprovalContinuationClaim
+  markContinuationMaterialized(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
+  markContinuationAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
+  completeContinuation(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
   read(approvalId: string): ApprovalRecord | null
   close(): void
 }
@@ -172,6 +193,15 @@ function isTimestamp(value: unknown): value is string {
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function assertJsonValue(value: unknown): asserts value is JsonValue {
@@ -442,6 +472,50 @@ function observeComplete<T>(operation: () => T): T {
   }
 }
 
+function observeClaimContinuation<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_claim_continuation", message: "approval continuation claim completed", meta: { operation: "claim_continuation", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_claim_continuation", message: "approval continuation claim failed", meta: operationErrorMeta("claim_continuation", error) })
+    throw error
+  }
+}
+
+function observeCompleteContinuation<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_complete_continuation", message: "approval continuation completion completed", meta: { operation: "complete_continuation", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_complete_continuation", message: "approval continuation completion failed", meta: operationErrorMeta("complete_continuation", error) })
+    throw error
+  }
+}
+
+function observeMaterializeContinuation<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_materialize_continuation", message: "approval continuation materialization completed", meta: { operation: "materialize_continuation", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_materialize_continuation", message: "approval continuation materialization failed", meta: operationErrorMeta("materialize_continuation", error) })
+    throw error
+  }
+}
+
+function observeAttemptContinuation<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_attempt_continuation", message: "approval continuation attempt completed", meta: { operation: "attempt_continuation", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_attempt_continuation", message: "approval continuation attempt failed", meta: operationErrorMeta("attempt_continuation", error) })
+    throw error
+  }
+}
+
 function observeRead<T>(operation: () => T): T {
   try {
     const result = operation()
@@ -498,6 +572,18 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
       epoch INTEGER NOT NULL,
       record_json TEXT NOT NULL
     )
+    ;
+    CREATE TABLE IF NOT EXISTS approval_continuations (
+      approval_id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      owner_pid INTEGER NOT NULL,
+      epoch INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      materialized_at TEXT,
+      attempted_at TEXT,
+      continued_at TEXT
+    )
   `)
   const now = options.now ?? (() => new Date())
   const randomUUID = options.randomUUID ?? createRandomUUID
@@ -531,6 +617,45 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
 
   const requireRecord = (approvalId: string): ApprovalRecord => rawRead(approvalId) ?? fail("approval_not_found")
   const timestamp = (): string => now().toISOString()
+  type ContinuationRow = {
+    owner_id: string
+    owner_pid: number
+    epoch: number
+    state: ApprovalContinuationRecord["continuationState"]
+    claimed_at: string
+    materialized_at: string | null
+    attempted_at: string | null
+    continued_at: string | null
+  }
+  const readContinuationRow = (approvalId: string): ContinuationRow => database.prepare(`
+    SELECT owner_id, owner_pid, epoch, state, claimed_at, materialized_at, attempted_at, continued_at
+    FROM approval_continuations WHERE approval_id = ?
+  `).get(approvalId) as ContinuationRow
+  const combineContinuation = (approval: ApprovalRecord, row: ContinuationRow): ApprovalRecord & ApprovalContinuationRecord => ({
+    ...approval,
+    continuationOwnerId: row.owner_id,
+    continuationOwnerPid: row.owner_pid,
+    continuationEpoch: row.epoch,
+    continuationState: row.state,
+    continuationClaimedAt: row.claimed_at,
+    continuationMaterializedAt: row.materialized_at,
+    continuationAttemptedAt: row.attempted_at,
+    continuedAt: row.continued_at,
+  })
+  const transitionContinuation = (
+    input: { approvalId: string; ownerId: string; epoch: number },
+    from: ApprovalContinuationRecord["continuationState"],
+    to: ApprovalContinuationRecord["continuationState"],
+    timestampColumn: "materialized_at" | "attempted_at",
+  ): ApprovalRecord & ApprovalContinuationRecord => {
+    const approval = requireRecord(input.approvalId)
+    const changed = database.prepare(`
+      UPDATE approval_continuations SET state = ?, ${timestampColumn} = ?
+      WHERE approval_id = ? AND owner_id = ? AND epoch = ? AND state = ?
+    `).run(to, timestamp(), input.approvalId, input.ownerId, input.epoch, from)
+    if (changed.changes !== 1) fail(`continuation_${to}_not_eligible`)
+    return combineContinuation(approval, readContinuationRow(input.approvalId))
+  }
 
   return {
     prepare(input) {
@@ -696,6 +821,71 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
           && previous.attemptedAt === null && previous.reason === input.reason) return previous
         if (previous.state !== "preparing") fail("recovery_not_eligible")
         return cas(previous, { ...previous, state: input.state, reason: input.reason, updatedAt: timestamp() })
+      })
+    },
+
+    claimContinuation(input) {
+      return observeClaimContinuation(() => {
+        if (!isNonEmpty(input.ownerId)) fail("invalid_continuation_owner")
+        const approval = requireRecord(input.approvalId)
+        if (!["succeeded", "failed", "denied", "expired", "drifted", "session_head_changed", "abandoned_before_attempt", "attempted_indeterminate"].includes(approval.state)) {
+          fail("continuation_not_eligible")
+        }
+        const ownerPid = input.ownerPid ?? process.pid
+        const claimedAt = timestamp()
+        const inserted = database.prepare(`
+          INSERT OR IGNORE INTO approval_continuations
+            (approval_id, owner_id, owner_pid, epoch, state, claimed_at, materialized_at, attempted_at, continued_at)
+          VALUES (?, ?, ?, 1, 'claimed', ?, NULL, NULL, NULL)
+        `).run(input.approvalId, input.ownerId, ownerPid, claimedAt)
+        let row = readContinuationRow(input.approvalId)
+        let claimed = inserted.changes === 1
+        let interruptedAfterAttempt = false
+        if (!claimed && (row.state === "claimed" || row.state === "materialized") && !processIsAlive(row.owner_pid)) {
+          const reclaimed = database.prepare(`
+            UPDATE approval_continuations
+            SET owner_id = ?, owner_pid = ?, epoch = epoch + 1, claimed_at = ?
+            WHERE approval_id = ? AND owner_id = ? AND owner_pid = ? AND epoch = ? AND state = ?
+          `).run(input.ownerId, ownerPid, claimedAt, input.approvalId, row.owner_id, row.owner_pid, row.epoch, row.state)
+          claimed = reclaimed.changes === 1
+          if (claimed) row = readContinuationRow(input.approvalId)
+        }
+        if (!claimed && row.state === "attempted" && !processIsAlive(row.owner_pid)) {
+          const terminalized = database.prepare(`
+            UPDATE approval_continuations
+            SET owner_id = ?, owner_pid = ?, epoch = epoch + 1, state = 'completed', claimed_at = ?, continued_at = ?
+            WHERE approval_id = ? AND owner_id = ? AND owner_pid = ? AND epoch = ? AND state = 'attempted'
+          `).run(input.ownerId, ownerPid, claimedAt, claimedAt, input.approvalId, row.owner_id, row.owner_pid, row.epoch)
+          interruptedAfterAttempt = terminalized.changes === 1
+          row = readContinuationRow(input.approvalId)
+        }
+        return {
+          claimed,
+          interruptedAfterAttempt,
+          record: combineContinuation(approval, row),
+        }
+      })
+    },
+
+    markContinuationMaterialized(input) {
+      return observeMaterializeContinuation(() => transitionContinuation(input, "claimed", "materialized", "materialized_at"))
+    },
+
+    markContinuationAttempted(input) {
+      return observeAttemptContinuation(() => transitionContinuation(input, "materialized", "attempted", "attempted_at"))
+    },
+
+    completeContinuation(input) {
+      return observeCompleteContinuation(() => {
+        const approval = requireRecord(input.approvalId)
+        const completedAt = timestamp()
+        const changed = database.prepare(`
+          UPDATE approval_continuations SET state = 'completed', continued_at = ?
+          WHERE approval_id = ? AND owner_id = ? AND epoch = ?
+            AND state IN ('materialized', 'attempted') AND continued_at IS NULL
+        `).run(completedAt, input.approvalId, input.ownerId, input.epoch)
+        if (changed.changes !== 1) fail("continuation_completion_not_eligible")
+        return combineContinuation(approval, readContinuationRow(input.approvalId))
       })
     },
 

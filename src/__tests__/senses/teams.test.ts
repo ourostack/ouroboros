@@ -3878,7 +3878,7 @@ describe("Teams adapter - session persistence", () => {
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
-      sessionPath: vi.fn().mockReturnValue("/tmp/teams-session.json"),
+      sessionPath: vi.fn((_friendId: string, _channel: string, sessionKey: string) => path.join(mockIdentityPaths.agentRoot, `${sessionKey}.json`)),
       getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
       getTeamsConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "" }),
       getTeamsSecondaryConfig: vi.fn().mockReturnValue({ clientId: "", clientSecret: "", tenantId: "", managedIdentityClientId: "" }),
