@@ -60,7 +60,7 @@ describe("friend flow through the @ouro.bot/friends dependency", () => {
       readFileSync(join(process.cwd(), "node_modules", "@ouro.bot", "friends", "package.json"), "utf8"),
     ) as { version: string }
 
-    expect(packageJson.version).toBe("0.1.0-alpha.8")
+    expect(packageJson.version).toBe("0.1.0-alpha.9")
     expect(getChannelCapabilities("telegram")).toMatchObject({
       channel: "telegram",
       senseType: "open",
@@ -71,6 +71,9 @@ describe("friend flow through the @ouro.bot/friends dependency", () => {
     })
     expect(getAlwaysOnSenseNames()).toContain("telegram")
     expect(isIdentityProvider("telegram-user")).toBe(true)
+    for (const channel of ["cli", "teams", "voice"]) {
+      expect(getChannelCapabilities(channel).chatStyle, channel).toBe(true)
+    }
   })
 
   it("resolves a first-imprint friend as trusted and persists it to disk", async () => {
