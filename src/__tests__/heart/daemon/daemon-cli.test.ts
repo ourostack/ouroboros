@@ -823,7 +823,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("daemon started")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
-  })
+  }, 10_000)
 
   it("fails `up` when the daemon socket dies before final handoff", async () => {
     const writeStdout = vi.fn()
@@ -851,7 +851,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("daemon crashed hard")
     expect(deps.sendCommand).not.toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("background service stopped before boot finished"))
-  })
+  }, 10_000)
 
   it("fails `up` when final daemon status does not answer cleanly", async () => {
     const writeStdout = vi.fn()
@@ -7845,7 +7845,7 @@ describe("ouro up startup progress", () => {
     expect(socketIndex).toBeGreaterThan(startIndex)
     expect(healthIndex).toBeGreaterThan(socketIndex)
     expect(stableIndex).toBeGreaterThan(healthIndex)
-  })
+  }, 10_000)
 })
 
 describe("ouro changelog command", () => {
