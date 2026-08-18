@@ -1272,6 +1272,11 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "voice",
     })
+    expect(parseOuroCommand(["connect", "telegram", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "telegram",
+    })
     expect(parseOuroCommand(["connect", "audio", "--agent", "Slugger"])).toEqual({
       kind: "connect",
       agent: "Slugger",
@@ -10062,6 +10067,49 @@ describe("provider CLI command execution", () => {
     expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
       teams: { enabled: true },
     })
+  })
+
+  it("connects Telegram with hidden token entry and canonical private ids", async () => {
+    emitTestEvent("provider cli connect telegram")
+    const bundlesRoot = makeTempDir("provider-cli-connect-telegram-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-telegram-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const answers = ["424242", "424242"]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async (question) => {
+        expect(question).toBe("Telegram bot token: ")
+        return "123456:private-bot-token"
+      },
+    })
+
+    const result = await runOuroCli(["connect", "telegram", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("Telegram connected for Slugger")
+    expect(result).not.toContain("private-bot-token")
+    expect(output).not.toContain("private-bot-token")
+    expect(readRuntimeSecret("Slugger").config).toMatchObject({
+      telegramBotToken: "123456:private-bot-token",
+      telegramAuthorizedUserId: "424242",
+      telegramAuthorizedChatId: "424242",
+    })
+    expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({ telegram: { enabled: true } })
+  })
+
+  it("rejects non-canonical Telegram ids before storing runtime config", async () => {
+    emitTestEvent("provider cli connect telegram invalid ids")
+    const bundlesRoot = makeTempDir("provider-cli-connect-telegram-invalid-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-telegram-invalid-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const answers = ["0042", "42"]
+
+    await expect(runOuroCli(["connect", "telegram", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "123456:private-bot-token",
+    }))).rejects.toThrow("canonical positive decimal")
+    expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
   })
 
   it("renders a richer TTY onboarding board and shared completion board for Teams", async () => {
