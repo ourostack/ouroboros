@@ -768,7 +768,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     expect(check.detail).toContain("upstream probe not run in this pass")
   })
 
-  it("reports the failing upstream probe as context when the upstream is also down", async () => {
+  it("keeps network-unreachable upstream evidence unverified instead of inventing corroboration", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot, "slugger", { bluebubbles: { enabled: true } })
     writeInbound(agentRoot, { "chat_a.ndjson": 9 * DAY_MS })
@@ -778,8 +778,8 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     const category = await checkSenses(depsFor(bundlesRoot, { fetchImpl: fetchImpl as unknown as typeof fetch }))
     const check = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
 
-    expect(check.status).toBe("fail")
-    expect(check.detail).toContain("upstream probe failing")
+    expect(check.status).toBe("warn")
+    expect(check.detail).toContain("infrastructure probes were unavailable")
   })
 
   it("flags a sense that has been attached for a while but never delivered anything", async () => {
@@ -792,7 +792,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     const category = await checkSenses(depsFor(bundlesRoot))
     const check = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
 
-    expect(check.status).toBe("fail")
+    expect(check.status).toBe("warn")
     expect(check.detail).toContain("no bluebubbles inbound delivery ever")
     expect(check.detail).toContain("has been configured for 30 days")
   })
@@ -808,7 +808,7 @@ describe("checkSenses bluebubbles inbound-delivery liveness", () => {
     const category = await checkSenses(depsFor(bundlesRoot))
     const check = findCheck(category.checks, "senses.bluebubbles.inbound_liveness")
 
-    expect(check.status).toBe("fail")
+    expect(check.status).toBe("warn")
   })
 
   it("uses 72h/7d defaults, so bursty human chat traffic does not cry wolf", () => {

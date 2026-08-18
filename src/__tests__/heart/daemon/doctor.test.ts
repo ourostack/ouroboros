@@ -61,7 +61,12 @@ function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
 // ── Helper: build an existsSync that returns true only for specified paths ──
 function existsFor(paths: string[]): (p: string) => boolean {
   const set = new Set(paths)
-  return (p: string) => set.has(p)
+  return (p: string) => {
+    if (set.has(p)) return true
+    if (!p.endsWith(".ouro/agent.json")) return false
+    const bundleRoot = p.slice(0, -"/agent.json".length)
+    return paths.some((candidate) => candidate.startsWith(`${bundleRoot}/`))
+  }
 }
 
 // ── Helper: build a readdirSync that returns entries for specified dirs ──
@@ -320,7 +325,7 @@ describe("checkAgents", () => {
     })
     const cat = checkAgents(deps)
     expect(cat.checks[0].status).toBe("warn")
-    expect(cat.checks[0].detail).toContain("no *.ouro")
+    expect(cat.checks[0].detail).toContain("no agent bundles")
   })
 
   it("passes for agent with valid agent.json", () => {
@@ -450,7 +455,7 @@ describe("checkAgents", () => {
     expect(cat.checks[0].status).toBe("warn")
   })
 
-  it("handles multiple agents with mixed health", () => {
+  it("keeps a valid agent and ignores a second task-only directory", () => {
     const validConfig = JSON.stringify({
       version: 2,
       humanFacing: { provider: "anthropic", model: "claude-4" },
@@ -466,9 +471,8 @@ describe("checkAgents", () => {
       readFileSync: readFileFor({ "/tmp/bundles/good.ouro/agent.json": validConfig }),
     })
     const cat = checkAgents(deps)
-    expect(cat.checks).toHaveLength(2)
+    expect(cat.checks).toHaveLength(1)
     expect(cat.checks[0].status).toBe("pass")
-    expect(cat.checks[1].status).toBe("fail")
   })
 })
 
@@ -511,7 +515,7 @@ describe("checkSenses", () => {
     expect(cat.checks[4]).toEqual(expect.objectContaining({
       id: "senses.bluebubbles.inbound_liveness",
       label: "test.ouro bluebubbles inbound delivery",
-      status: "fail",
+      status: "warn",
     }))
   })
 
@@ -1289,7 +1293,7 @@ describe("checkHabits", () => {
 
   it("warns when habits dir is missing", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkHabits(deps)
@@ -1634,7 +1638,7 @@ describe("checkTrips", () => {
 
   it("passes when an agent has no trip ledger directory yet (optional feature)", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkTrips(deps)
@@ -1911,7 +1915,7 @@ describe("checkMailroom", () => {
 
   it("passes when no mailroom dir (mail not connected)", async () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = await checkMailroom(deps)
@@ -2011,7 +2015,7 @@ describe("checkFriends", () => {
 
   it("passes when no friends directory (no friends recorded)", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkFriends(deps)
@@ -2459,7 +2463,7 @@ describe("checkDisk", () => {
 
   it("warns when log directory is missing", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkDisk(deps)
