@@ -217,7 +217,7 @@ const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}
     const messages = [{ role: "user", content: "restart calibre-web" }]
     const result = await core.runAgent(messages, callbacks, "telegram", undefined, {
       tools: fixture.batch ? fixture.batch.map(call => require(process.argv[9]).resolveToolDefinition(call.name).tool) : [shellModule.shellToolDefinitions[0].tool],
-      execTool: async () => { throw new Error("protected handler ran before approval") },
+      execTool: async () => { append(fixture.traceLogPath, { sequence: 3, pid: process.pid, atMs: 0, type: "handler_start" }); throw new Error("protected handler ran before approval") },
       toolContext: { signin: async () => undefined }, daemonRunning: false, senseStatusLines: [], bundleMeta: null, daemonHealth: null,
       approvalCoordinator: { propose: async request => {
         const policy = require(process.argv[9]).approvalPolicyForToolName("shell", request.arguments)
@@ -231,6 +231,8 @@ const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}
     })
     if (fixture.expectRejected) {
       if (result.suspension) throw new Error("rejected origin unexpectedly suspended")
+      const rejectionObserved = messages.some(message => message.role === "tool" && typeof message.content === "string" && (message.content.includes("rejected:") || message.content.includes("invalid tool arguments")))
+      if (!rejectionObserved) throw new Error("runAgent settled without an explicit pre-handler rejection result: " + JSON.stringify(messages))
       process.stdout.write(JSON.stringify({ pid: process.pid, rejected: true }) + "\n")
       return
     }
@@ -238,7 +240,7 @@ const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}
     const checkpoint = checkpoints.read(result.suspension.approvalId)
     const envelope = events.buildCanonicalSessionEnvelope({ existing: null, previousMessages: [], currentMessages: checkpoint.preCallMessages, trimmedMessages: checkpoint.preCallMessages, recordedAt: fixture.originNow, projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null } }).envelope
     fs.writeFileSync(fixture.sessionPath, JSON.stringify(envelope))
-    append(fixture.providerLogPath, { pid: process.pid, kind: "origin", invokedBy: "runAgent", approvalId: null, messages: checkpoint.preCallMessages })
+    append(fixture.providerLogPath, { pid: process.pid, kind: "origin", invokedBy: "runAgent", approvalId: null, messages: providerRequest.messages })
     append(fixture.traceLogPath, { sequence: 2, pid: process.pid, atMs: 0, type: "proposal_suspended" })
     process.stdout.write(JSON.stringify({ pid: process.pid, approvalId: result.suspension.approvalId }) + "\n")
   } catch (error) { process.stdout.write(JSON.stringify({ pid: process.pid, error: String(error && error.stack || error) }) + "\n") }
@@ -307,7 +309,8 @@ async function resume(record) {
     completeContinuation: () => store.completeContinuation({ approvalId: fixture.approvalId, ownerId: "continuation-" + process.pid, epoch: continuationClaim.record.continuationEpoch }),
     runAgent: async (messages, callbacks) => {
       trace("continuation_provider_start")
-      append(fixture.providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId: fixture.approvalId, messages: structuredClone(messages) })
+      const providerMessages = [...fixture.originProviderMessages.slice(0, -fixture.preCallMessages.length), ...structuredClone(messages)]
+      append(fixture.providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId: fixture.approvalId, messages: providerMessages })
       if (fixture.crashAt === "after_continuation_attempt") throw new Error("synthetic_crash")
       const text = record.state === "denied" ? "I did not restart calibre-web." : record.state === "failed" ? "calibre-web restart failed safely." : "calibre-web is back up"
       callbacks.onTextChunk(text); messages.push({ role: "assistant", content: text }); return { outcome: "settled" }
@@ -485,9 +488,10 @@ export async function runSyntheticApprovalScenario(scenario: SyntheticApprovalSc
   const decisionNow = new Date(Date.parse(RECORDED_AT) + decisionAtMs).toISOString()
   if (scenario.restartBeforeDecision && originPid === process.pid) throw new Error("restart scenario did not exit the origin process")
   const committedPreCallMessages = checkpoints.read(approvalId)?.preCallMessages ?? preCallMessages
+  const originProviderMessages = fs.readFileSync(providerLogPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((entry) => entry.kind === "origin")?.messages ?? committedPreCallMessages
   const fixturePath = path.join(root, "worker.json")
   fs.writeFileSync(fixturePath, JSON.stringify({ approvalId, databasePath: approvalDatabasePath, checkpointPath, sessionPath, effectsLogPath, providerLogPath, deliveryLogPath, traceLogPath,
-    preCallMessages: committedPreCallMessages, decisionNow, currentRevision: scenario.advanceSessionHeadBeforeDecision ? "a".repeat(64) : SUSPENDED_REVISION,
+    preCallMessages: committedPreCallMessages, originProviderMessages, decisionNow, currentRevision: scenario.advanceSessionHeadBeforeDecision ? "a".repeat(64) : SUSPENDED_REVISION,
     decisionAtMs, liveSchemaMutation: scenario.liveSchemaMutation, crashAt: scenario.crashAt, handlerMode: scenario.handlerMode,
     decision: { approvalId, decisionToken, decision: scenario.decision ?? "approve", requesterId: "friend-ari", transport: "telegram", transportUserId: "42", transportChatId: "7", transportMessageId: "99", sessionKey: "telegram:chat-7" } }))
   const workerCount = scenario.concurrentDecisionProcesses ?? 1
@@ -545,7 +549,8 @@ export async function runSyntheticApprovalScenario(scenario: SyntheticApprovalSc
       completeContinuation: () => recoveryStore.completeContinuation({ approvalId, ownerId: `terminal-recovery-${process.pid}`, epoch: continuationClaim.record.continuationEpoch }),
       runAgent: async (messages, callbacks) => {
         append(traceLogPath, { sequence: 99, pid: process.pid, atMs: decisionAtMs + 2, type: "continuation_provider_start" })
-        append(providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId, messages: structuredClone(messages) })
+        const providerMessages = [...originProviderMessages.slice(0, -committedPreCallMessages.length), ...structuredClone(messages)]
+        append(providerLogPath, { pid: process.pid, kind: "continuation", invokedBy: "resumeApprovalContinuation", approvalId, messages: providerMessages })
         const text = record!.state === "failed" ? "calibre-web restart failed safely." : "calibre-web is back up"
         callbacks.onTextChunk(text)
         messages.push({ role: "assistant", content: text })
