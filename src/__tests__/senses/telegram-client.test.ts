@@ -30,18 +30,20 @@ describe("Telegram approval callback transport", () => {
     records?: ReturnType<TelegramPendingApprovalStore["load"]>
     onDecision?: ReturnType<typeof vi.fn>
     onExpire?: ReturnType<typeof vi.fn>
+    apiRequest?: (method: string, body: Record<string, unknown>) => Promise<unknown>
   } = {}) {
     let records = structuredClone(input.records ?? [])
+    const saves: ReturnType<TelegramPendingApprovalStore["load"]>[] = []
     const store: TelegramPendingApprovalStore = {
       load: () => structuredClone(records),
-      save: (next) => { records = structuredClone(next) },
+      save: (next) => { records = structuredClone(next); saves.push(structuredClone(next)) },
     }
     const calls: Array<{ method: string; body: Record<string, unknown> }> = []
     const api: TelegramBotApi = {
       stop: vi.fn(),
       request: vi.fn(async (method: string, body: Record<string, unknown>) => {
         calls.push({ method, body })
-        return method === "sendMessage" ? { message_id: 99 } : true
+        return input.apiRequest ? input.apiRequest(method, body) : method === "sendMessage" ? { message_id: 99 } : true
       }),
     }
     const onDecision = input.onDecision ?? vi.fn(async (decision) => ({
@@ -59,7 +61,7 @@ describe("Telegram approval callback transport", () => {
       resolveDecisionToken: async () => "restored-secret-token",
       now: input.now ?? (() => 1_000_000),
     })
-    return { transport, calls, onDecision, records: () => records }
+    return { transport, calls, onDecision, records: () => records, saves }
   }
 
   function approvalCallback(data: string, overrides: { userId?: number; chatId?: number; messageId?: number; id?: string } = {}) {
@@ -92,6 +94,23 @@ describe("Telegram approval callback transport", () => {
       },
     })
     expect(JSON.stringify(fixture.records())).not.toContain("secret-token")
+    expect(fixture.saves.slice(0, 3).map((save) => save[0]?.deliveryState)).toEqual(["pending", "send_attempting", "bound"])
+    expect(fixture.saves[0]?.[0]?.messageId).toBeNull()
+  })
+
+  it("persists an indeterminate prompt delivery when sendMessage may have escaped", async () => {
+    const fixture = approvalFixture({ apiRequest: async () => { throw new Error("connection reset after write") } })
+
+    await expect(fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?" }))
+      .rejects.toThrow("connection reset after write")
+
+    expect(fixture.records()).toEqual([expect.objectContaining({
+      approvalId: "approval-1",
+      messageId: null,
+      deliveryState: "delivery_indeterminate",
+    })])
+    expect(fixture.saves.map((save) => save[0]?.deliveryState)).toEqual(["pending", "send_attempting", "delivery_indeterminate"])
+    expect(fixture.onDecision).not.toHaveBeenCalled()
   })
 
   it("acknowledges, decides once, terminalizes, removes buttons, and refuses replay", async () => {
@@ -118,7 +137,7 @@ describe("Telegram approval callback transport", () => {
   })
 
   it("restores pending callbacks, resolves the secret server-side, and reconciles startup expiry", async () => {
-    const liveRecord = { approvalId: "live", messageId: "99", approveCallbackData: "a:live", denyCallbackData: "d:live", expiresAt: 1_300_000 }
+    const liveRecord = { approvalId: "live", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:live", denyCallbackData: "d:live", expiresAt: 1_300_000 }
     const restored = approvalFixture({ records: [liveRecord] })
     await restored.transport.handleUpdate(approvalCallback("a:live"))
     expect(restored.onDecision).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "live", decisionToken: "restored-secret-token" }))
@@ -133,7 +152,7 @@ describe("Telegram approval callback transport", () => {
   it("expires the canonical approval before removing an expired Telegram prompt", async () => {
     const order: string[] = []
     const onExpire = vi.fn(async (approvalId: string) => { order.push(`expire:${approvalId}`) })
-    const record = { approvalId: "expired", messageId: "99", approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 999_999 }
+    const record = { approvalId: "expired", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 999_999 }
     const fixture = approvalFixture({ records: [record], onExpire })
     const request = fixture.calls
 
@@ -145,7 +164,7 @@ describe("Telegram approval callback transport", () => {
   })
 
   it("terminalizes and removes a recovered approval prompt without replaying its callback", async () => {
-    const record = { approvalId: "recovered", messageId: "99", approveCallbackData: "a:recovered", denyCallbackData: "d:recovered", expiresAt: 1_300_000 }
+    const record = { approvalId: "recovered", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:recovered", denyCallbackData: "d:recovered", expiresAt: 1_300_000 }
     const fixture = approvalFixture({ records: [record] })
 
     await fixture.transport.terminalizeRecovered("recovered", "⚠️ Recovered safely")

@@ -232,13 +232,26 @@ export function createTelegramApprovalRuntime(options: {
   })
 
   const recover = async (): Promise<void> => {
-    for (const pending of pendingStore.load()) {
+    for (const pending of transport.listPendingDeliveries()) {
       if (pending.terminal) {
         await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
         continue
       }
       const existing = store.read(pending.approvalId)
-      if (!existing || existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
+      if (!existing) continue
+      const deliveryState = pending.deliveryState ?? "bound"
+      if (existing.state === "awaiting_prompt_binding" && deliveryState !== "bound") {
+        const record = store.abandonPromptBinding({
+          approvalId: existing.approvalId,
+          reason: deliveryState === "pending"
+            ? "approval prompt was interrupted before delivery; action was not executed"
+            : "approval prompt delivery was indeterminate; action was not executed",
+        })
+        const outcome = await continueTerminalRecord(record)
+        await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
+        continue
+      }
+      if (existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
       let record = existing
       if (record.state === "claimed") {
         record = recoverClaimedApproval({ approvalStore: store, approvalId: record.approvalId, reason: "decision interrupted before action attempt; action was not executed" })

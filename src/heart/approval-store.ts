@@ -111,6 +111,7 @@ export interface ApprovalStore {
   prepare(input: PrepareApprovalInput): { record: ApprovalRecord; decisionToken: string }
   activate(input: { approvalId: string; checkpointDigest: string; suspendedSessionRevision: string }): ApprovalRecord
   bindPrompt(input: { approvalId: string; transport: string; transportChatId: string; transportMessageId: string }): ApprovalRecord
+  abandonPromptBinding(input: { approvalId: string; reason: string }): ApprovalRecord
   decide(input: {
     approvalId: string
     decisionToken: string
@@ -719,6 +720,21 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         if (previous.state !== "awaiting_prompt_binding" || input.transport !== previous.transport
           || input.transportChatId !== previous.transportChatId || !isNonEmpty(input.transportMessageId)) fail("invalid_prompt_binding")
         return cas(previous, { ...previous, state: "proposed", transportMessageId: input.transportMessageId, updatedAt: timestamp() })
+      })
+    },
+
+    abandonPromptBinding(input) {
+      return observeAbandonBeforeAttempt(() => {
+        const previous = requireRecord(input.approvalId)
+        if (previous.state === "abandoned_before_attempt" && previous.ownerId === null
+          && previous.epoch === 0 && previous.reason === input.reason) return previous
+        if (previous.state !== "awaiting_prompt_binding" || !isNonEmpty(input.reason)) fail("prompt_abandon_not_eligible")
+        return cas(previous, {
+          ...previous,
+          state: "abandoned_before_attempt",
+          reason: input.reason,
+          updatedAt: timestamp(),
+        })
       })
     },
 

@@ -371,6 +371,29 @@ describe("approval store", () => {
     store.close()
   })
 
+  it("abandons an approval whose prompt delivery became indeterminate before binding", () => {
+    const store = open()
+    const prepared = store.prepare(proposalInput())
+    store.activate({
+      approvalId: prepared.record.approvalId,
+      checkpointDigest: prepared.record.checkpointDigest,
+      suspendedSessionRevision: "f".repeat(64),
+    })
+
+    const abandoned = store.abandonPromptBinding({
+      approvalId: prepared.record.approvalId,
+      reason: "approval prompt delivery was indeterminate; action was not executed",
+    })
+
+    expect(abandoned).toMatchObject({
+      state: "abandoned_before_attempt",
+      reason: "approval prompt delivery was indeterminate; action was not executed",
+    })
+    expect(() => store.abandonPromptBinding({ approvalId: prepared.record.approvalId, reason: "different" }))
+      .toThrowError(ApprovalStoreError)
+    store.close()
+  })
+
   it.each([
     ["token", { decisionToken: "wrong" }],
     ["requester", { requesterId: "friend-eve" }],
