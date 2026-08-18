@@ -6,7 +6,10 @@ import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core
 import {
 	  MAIL_SEARCH_TEXT_PROJECTION_VERSION,
 	  buildMailSearchCacheDocument,
+	  inspectMailSearchCacheFiles,
 	  readMailSearchCoverageRecord,
+	  reloadMailSearchCache,
+	  removeMailSearchCacheDocument,
 	  resetMailSearchCacheForTests,
 	  searchMailSearchCache,
 	  snapshotMailSearchCacheForFilters,
@@ -84,6 +87,63 @@ afterEach(() => {
 })
 
 describe("mail search cache", () => {
+  it("records encrypted-message decryption-key provenance in cache documents", () => {
+    const { private: _private, ...base } = message()
+    const encrypted: StoredMailMessage = {
+      ...base,
+      bodyForm: "encrypted",
+      privateEnvelope: {
+        algorithm: "RSA-OAEP-SHA256+A256GCM",
+        keyId: "mail_key_current",
+        wrappedKey: "wrapped",
+        iv: "iv",
+        authTag: "tag",
+        ciphertext: "ciphertext",
+      },
+    }
+
+    expect(buildMailSearchCacheDocument(encrypted, privateEnvelope())).toEqual(expect.objectContaining({
+      messageId: encrypted.id,
+      decryptionKeyId: "mail_key_current",
+    }))
+    expect(buildMailSearchCacheDocument(message(), privateEnvelope())).not.toHaveProperty("decryptionKeyId")
+  })
+
+  it("removes and reloads cache documents in an already-loaded process", () => {
+    const cacheRoot = tempDir()
+    const options = { cacheDirForAgent: () => cacheRoot }
+    upsertMailSearchCacheDocument(message(), privateEnvelope(), options)
+    expect(searchMailSearchCache({ agentId: "slugger" }, options)).toHaveLength(1)
+
+    expect(removeMailSearchCacheDocument("slugger", "mail_trip_1", options)).toBe(true)
+    expect(searchMailSearchCache({ agentId: "slugger" }, options)).toEqual([])
+
+    upsertMailSearchCacheDocument(message({ id: "mail_reload" }), privateEnvelope({ subject: "before" }), options)
+    expect(searchMailSearchCache({ agentId: "slugger" }, options)[0]?.subject).toBe("before")
+    const replacement = buildMailSearchCacheDocument(message({ id: "mail_reload" }), privateEnvelope({ subject: "after" }))
+    fs.writeFileSync(path.join(cacheRoot, "mail_reload.json"), `${JSON.stringify(replacement)}\n`, "utf-8")
+    reloadMailSearchCache("slugger", options)
+    expect(searchMailSearchCache({ agentId: "slugger" }, options)[0]?.subject).toBe("after")
+  })
+
+  it("inspects every regular root cache json without collapsing malformed or duplicate declarations", () => {
+    const cacheRoot = tempDir()
+    const options = { cacheDirForAgent: () => cacheRoot }
+    upsertMailSearchCacheDocument(message({ id: "mail_canonical" }), privateEnvelope(), options)
+    const duplicate = buildMailSearchCacheDocument(message({ id: "mail_canonical" }), privateEnvelope({ subject: "duplicate" }))
+    fs.writeFileSync(path.join(cacheRoot, "duplicate-slot.json"), `${JSON.stringify(duplicate)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "malformed.json"), "{not json", "utf-8")
+    fs.mkdirSync(path.join(cacheRoot, "coverage"), { recursive: true })
+    fs.writeFileSync(path.join(cacheRoot, "coverage", "ignored.json"), "{}", "utf-8")
+    fs.symlinkSync(path.join(cacheRoot, "mail_canonical.json"), path.join(cacheRoot, "symlink.json"))
+
+    expect(inspectMailSearchCacheFiles("slugger", options)).toEqual([
+      expect.objectContaining({ fileName: "duplicate-slot.json", document: expect.objectContaining({ messageId: "mail_canonical" }) }),
+      expect.objectContaining({ fileName: "mail_canonical.json", document: expect.objectContaining({ messageId: "mail_canonical" }) }),
+      expect.objectContaining({ fileName: "malformed.json", document: null }),
+    ])
+  })
+
   it("writes, searches, and filters cached mail summaries locally", () => {
     process.env.HOME = tempDir()
     upsertMailSearchCacheDocument(message(), privateEnvelope())

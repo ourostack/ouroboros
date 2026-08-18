@@ -6,7 +6,9 @@ import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { resetIdentity, setAgentName } from "../../heart/identity"
-import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord } from "../../mailroom/search-cache"
+import { MAIL_SEARCH_TEXT_PROJECTION_VERSION, readMailSearchCoverageRecord, resetMailSearchCacheForTests, searchMailSearchCache, upsertMailSearchCacheDocument, writeMailSearchCoverageRecord } from "../../mailroom/search-cache"
+import { syncHostedMailSearchCache } from "../../mailroom/hosted-cache-sync"
+import { canonicalMailIndexRecordSnapshot as canonicalSnapshot } from "../../mailroom/blob-store"
 import type { ToolContext } from "../../repertoire/tools-base"
 
 const tempRoots: string[] = []
@@ -16,6 +18,10 @@ function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-mail-hosted-tools-"))
   tempRoots.push(dir)
   return dir
+}
+
+function searchMailCacheIds(cacheOptions: { cacheDirForAgent(agentId: string): string }): string[] {
+  return searchMailSearchCache({ agentId: "slugger" }, cacheOptions).map((document) => document.messageId)
 }
 
 function trustedContext(): ToolContext {
@@ -87,6 +93,122 @@ afterEach(() => {
 })
 
 describe("hosted mail tools", () => {
+  it("fully converges stale, malformed, duplicate, orphaned, moved, and missing-key local cache state", async () => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    const current = await buildEncryptedMessageForKey("mail_key_current", "Current hosted truth")
+    const missingKey = await buildEncryptedMessageForKey("mail_key_missing", "Unavailable hosted truth")
+    const currentPrivateKey = Object.values(current.keys)[0]!
+    const records = [current.message, missingKey.message].map((message) => ({
+      schemaVersion: 1 as const,
+      id: message.id,
+      agentId: message.agentId,
+      compartmentKind: message.compartmentKind,
+      placement: message.placement,
+      ...(message.source ? { source: message.source } : {}),
+      receivedAt: message.receivedAt,
+    }))
+    const authority = {
+      totalNameCount: records.length,
+      parsedRecordCount: records.length,
+      parseFailureCount: 0,
+      duplicateIds: [],
+      records,
+      snapshot: canonicalSnapshot(records),
+    }
+
+    const legacy = upsertMailSearchCacheDocument(current.message, {
+      from: ["stale@example.com"], to: ["slugger@ouro.bot"], cc: [], subject: "Legacy stale subject", text: "", snippet: "", attachments: [], untrustedContentWarning: "untrusted",
+    }, cacheOptions)
+    fs.writeFileSync(path.join(cacheRoot, `${current.message.id}.json`), `${JSON.stringify({
+      ...legacy,
+      placement: "screener",
+      textProjectionVersion: 1,
+      textExcerpt: "",
+    })}\n`, "utf-8")
+    const missingDocument = upsertMailSearchCacheDocument(missingKey.message, {
+      from: ["missing@example.com"], to: ["slugger@ouro.bot"], cc: [], subject: "Stale missing-key subject", text: "stale", snippet: "stale", attachments: [], untrustedContentWarning: "untrusted",
+    }, cacheOptions)
+    fs.writeFileSync(path.join(cacheRoot, `${missingKey.message.id}.json`), `${JSON.stringify({
+      ...missingDocument,
+      decryptionKeyId: "mail_key_missing",
+    })}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "orphan.json"), `${JSON.stringify({ ...legacy, messageId: "mail_orphan" })}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "duplicate-current.json"), `${JSON.stringify(legacy)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "malformed.json"), "{not json", "utf-8")
+    fs.writeFileSync(path.join(cacheRoot, "wrong-filename.json"), `${JSON.stringify({ ...legacy, messageId: current.message.id })}\n`, "utf-8")
+    expect(searchMailCacheIds(cacheOptions)).toContain("mail_orphan")
+
+    const getIndexedMessageById = vi.fn(async (id: string) => {
+      if (id === current.message.id) return current.message
+      throw new Error(`missing-key record ${id} must not be fetched while its cached provenance proves the key is absent`)
+    })
+    const recordAccess = vi.fn()
+    const result = await syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      store: {
+        observeMessageIndexAuthority: vi.fn(async () => authority),
+        getIndexedMessageById,
+        recordAccess,
+      } as never,
+      privateKeys: { mail_key_current: currentPrivateKey },
+      storeKind: "azure-blob",
+      cacheOptions,
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      fetched: 1,
+      alreadyCached: 0,
+      removed: 5,
+      skipped: 1,
+    }))
+    expect(fs.readdirSync(cacheRoot).sort()).toEqual(["coverage", `${current.message.id}.json`].sort())
+    expect(JSON.parse(fs.readFileSync(path.join(cacheRoot, `${current.message.id}.json`), "utf-8"))).toEqual(expect.objectContaining({
+      messageId: current.message.id,
+      subject: "Current hosted truth",
+      placement: current.message.placement,
+      decryptionKeyId: "mail_key_current",
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    }))
+    expect(searchMailCacheIds(cacheOptions)).toEqual([current.message.id])
+    expect(getIndexedMessageById).toHaveBeenCalledTimes(1)
+    expect(recordAccess).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { parseFailureCount: 1, duplicateIds: [] as string[], label: "malformed names" },
+    { parseFailureCount: 0, duplicateIds: ["mail_duplicate"], label: "duplicate ids" },
+  ])("aborts full convergence before local mutation when authority has $label", async ({ parseFailureCount, duplicateIds }) => {
+    const cacheRoot = tempDir()
+    const cacheOptions = { cacheDirForAgent: () => cacheRoot }
+    fs.writeFileSync(path.join(cacheRoot, "orphan.json"), "preserve me", "utf-8")
+    const before = fs.readFileSync(path.join(cacheRoot, "orphan.json"))
+    const getIndexedMessageById = vi.fn()
+
+    await expect(syncHostedMailSearchCache({
+      agentId: "slugger",
+      mode: "full-convergence",
+      store: {
+        observeMessageIndexAuthority: vi.fn(async () => ({
+          totalNameCount: 1,
+          parsedRecordCount: 0,
+          parseFailureCount,
+          duplicateIds,
+          records: [],
+          snapshot: canonicalSnapshot([]),
+        })),
+        getIndexedMessageById,
+      } as never,
+      privateKeys: {},
+      storeKind: "azure-blob",
+      cacheOptions,
+    })).rejects.toThrow("hosted mail authority is ambiguous")
+
+    expect(fs.readFileSync(path.join(cacheRoot, "orphan.json"))).toEqual(before)
+    expect(getIndexedMessageById).not.toHaveBeenCalled()
+  })
+
   it("merges cached and imported search docs newest-first, dedupes ids, and respects the limit", async () => {
     const { mergeCachedMailSearchDocuments } = await import("../../repertoire/tools-mail")
 
@@ -1087,7 +1209,7 @@ describe("hosted mail tools", () => {
       `${JSON.stringify({ ...staleVisible, textProjectionVersion: 1, textExcerpt: "" })}\n`,
       "utf-8",
     )
-    upsertMailSearchCacheDocument({
+    const scopedOrphan = upsertMailSearchCacheDocument({
       ...firstVisible,
       id: "mail_orphan_cached_not_in_visible_index",
       receivedAt: "2026-04-24T17:00:00.000Z",
@@ -1097,6 +1219,8 @@ describe("hosted mail tools", () => {
       text: "This cached document is not in the current visible hosted index.",
       snippet: "Cached orphan",
     })
+    const scopedOrphanPath = path.join(process.env.HOME!, "AgentBundles", "slugger.ouro", "state", "mail-search", `${scopedOrphan.messageId}.json`)
+    const scopedOrphanBytes = fs.readFileSync(scopedOrphanPath)
     const listMessages = vi.fn(async () => {
       throw new Error("hosted full scan should not run after index records are available")
     })
@@ -1156,6 +1280,7 @@ describe("hosted mail tools", () => {
     expect(refresh).toContain("mail search index refreshed.")
     expect(refresh).toContain("visible messages: 2")
     expect(refresh).toContain("fetched this run: 1")
+    expect(fs.readFileSync(scopedOrphanPath)).toEqual(scopedOrphanBytes)
 
     const hit = await searchTool!.handler({
       query: "REBOOK42",
