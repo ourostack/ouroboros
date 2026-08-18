@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 ARG SUPERCRONIC_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl python3 make g++ \
+  && apt-get install -y --no-install-recommends ca-certificates curl procps python3 make g++ \
   && rm -rf /var/lib/apt/lists/* \
   && curl -fsSLo /usr/local/bin/supercronic https://github.com/aptible/supercronic/releases/download/v0.2.46/supercronic-linux-amd64 \
   && echo "${SUPERCRONIC_SHA256}  /usr/local/bin/supercronic" | sha256sum -c - \
