@@ -6,15 +6,20 @@ import {
   type HostedMailIndexAuthorityReader,
   type HostedMailIndexAuthorityObservation,
 } from "./blob-store"
-import { readDecryptedMailMessage, type MailPlacement, type StoredMailMessage } from "./core"
+import { MissingPrivateMailKeyError, readDecryptedMailMessage, type MailPlacement, type StoredMailMessage } from "./core"
 import type { MailListFilters, MailMessageIndexRecord, MailroomStore } from "./file-store"
 import {
   inspectMailSearchCacheFiles,
+  inspectMailSearchSkipReceipts,
   MAIL_SEARCH_TEXT_PROJECTION_VERSION,
   removeMailSearchCacheDocument,
   removeMailSearchCacheFile,
+  removeMailSearchSkipReceipt,
+  removeMailSearchSkipReceiptFile,
+  readMailSearchSkipReceipt,
   searchMailSearchCache,
   upsertMailSearchCacheDocument,
+  writeMailSearchSkipReceipt,
   writeMailSearchCoverageRecord,
   type MailSearchCacheDocument,
   type MailSearchCacheOptions,
@@ -76,6 +81,9 @@ export function mailSearchCacheDocumentMatchesRecord(
   record: MailMessageIndexRecord,
   requireKeyProvenance: boolean,
 ): boolean {
+  const bodyProvenanceMatches = !requireKeyProvenance ||
+    (document.bodyForm === "plaintext" && document.decryptionKeyId === undefined) ||
+    (document.bodyForm === "encrypted" && typeof document.decryptionKeyId === "string")
   return document.schemaVersion === 1
     && document.agentId === record.agentId
     && document.messageId === record.id
@@ -84,7 +92,7 @@ export function mailSearchCacheDocumentMatchesRecord(
     && document.compartmentKind === record.compartmentKind
     && sameOptionalText(document.source, record.source)
     && document.textProjectionVersion === MAIL_SEARCH_TEXT_PROJECTION_VERSION
-    && (!requireKeyProvenance || typeof document.decryptionKeyId === "string")
+    && bodyProvenanceMatches
 }
 
 function messageMatchesRecord(message: StoredMailMessage, record: MailMessageIndexRecord): boolean {
@@ -117,10 +125,8 @@ function removeCanonicalIfPresent(
   return removeMailSearchCacheDocument(agentId, messageId, options) ? 1 : 0
 }
 
-function missingPrivateKeyId(error: unknown): string | null {
-  if (!(error instanceof Error)) return null
-  const keyId = (error as Error & { keyId?: unknown }).keyId
-  return typeof keyId === "string" && keyId.length > 0 ? keyId : null
+function recordFingerprint(record: MailMessageIndexRecord): string {
+  return canonicalMailIndexRecordSnapshot([record]).messageIndexFingerprint
 }
 
 /**
@@ -166,6 +172,12 @@ async function performHostedMailSearchCacheSync(
       }
       canonicalDocuments.set(document.messageId, document)
     }
+    for (const inspected of inspectMailSearchSkipReceipts(input.agentId, input.cacheOptions)) {
+      const receipt = inspected.receipt
+      if (!receipt || !inspected.canonical || !recordsById.has(receipt.messageId)) {
+        removeMailSearchSkipReceiptFile(input.agentId, inspected.fileName, input.cacheOptions)
+      }
+    }
   } else {
     for (const document of searchMailSearchCache({
       agentId: input.agentId,
@@ -183,12 +195,24 @@ async function performHostedMailSearchCacheSync(
   const failures: Array<{ id: string; error: string }> = []
   for (const record of records) {
     const cached = canonicalDocuments.get(record.id)
-    if (cached && input.mode === "full-convergence" && cached.decryptionKeyId && !input.privateKeys[cached.decryptionKeyId]) {
-      removed += removeCanonicalIfPresent(input.agentId, record.id, input.cacheOptions)
-      skipped += 1
-      continue
+    if (input.mode === "full-convergence") {
+      const receipt = readMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
+      if (receipt &&
+        receipt.recordFingerprint === recordFingerprint(record) &&
+        !input.privateKeys[receipt.missingKeyId]) {
+        removed += removeCanonicalIfPresent(input.agentId, record.id, input.cacheOptions)
+        skipped += 1
+        continue
+      }
+      if (receipt) removeMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
     }
-    if (cached && mailSearchCacheDocumentMatchesRecord(cached, record, input.mode === "full-convergence")) {
+    const cachedEncryptedKeyMissing = input.mode === "full-convergence" &&
+      cached?.bodyForm === "encrypted" &&
+      typeof cached.decryptionKeyId === "string" &&
+      !input.privateKeys[cached.decryptionKeyId]
+    if (cached &&
+      !cachedEncryptedKeyMissing &&
+      mailSearchCacheDocumentMatchesRecord(cached, record, input.mode === "full-convergence")) {
       alreadyCached += 1
       continue
     }
@@ -204,10 +228,24 @@ async function performHostedMailSearchCacheSync(
       upsertMailSearchCacheDocument(message, decrypted.private, input.cacheOptions, {
         ...(message.bodyForm === "encrypted" ? { decryptionKeyId: message.privateEnvelope.keyId } : {}),
       })
+      if (input.mode === "full-convergence") {
+        removeMailSearchSkipReceipt(input.agentId, record.id, input.cacheOptions)
+      }
     } catch (error) {
-      if (input.mode === "full-convergence" || missingPrivateKeyId(error)) {
+      if (error instanceof MissingPrivateMailKeyError) {
         removed += removeCanonicalIfPresent(input.agentId, record.id, input.cacheOptions)
         skipped += 1
+        if (input.mode === "full-convergence") {
+          writeMailSearchSkipReceipt({
+            schemaVersion: 1,
+            agentId: input.agentId,
+            messageId: record.id,
+            recordFingerprint: recordFingerprint(record),
+            missingKeyId: error.keyId,
+            reason: "missing-private-key",
+            observedAt: new Date().toISOString(),
+          }, input.cacheOptions)
+        }
       } else {
         failures.push({ id: record.id, error: error instanceof Error ? error.message : String(error) })
       }

@@ -36,6 +36,8 @@ export interface MailSearchCacheDocument {
   untrustedContentWarning: string
   searchText: string
   textProjectionVersion?: number
+  /** Explicit provenance for newly written projections; absent only on legacy documents. */
+  bodyForm?: "plaintext" | "encrypted"
   // Optional fields populated on cache write but absent on docs cached before
   // these fields were introduced. Always treat as may-be-undefined on read.
   attachmentCount?: number
@@ -73,6 +75,23 @@ export interface MailSearchCoverageRecord extends MailSearchCoverageKey {
   newestReceivedAt?: string
 }
 
+export interface MailSearchSkipReceipt {
+  schemaVersion: 1
+  agentId: string
+  messageId: string
+  recordFingerprint: string
+  missingKeyId: string
+  reason: "missing-private-key"
+  observedAt: string
+}
+
+export interface MailSearchSkipReceiptInspection {
+  fileName: string
+  filePath: string
+  receipt: MailSearchSkipReceipt | null
+  canonical: boolean
+}
+
 interface MailSearchCacheState {
   loaded: boolean
   docs: Map<string, MailSearchCacheDocument>
@@ -99,6 +118,15 @@ function cachePath(agentId: string, messageId: string, options?: MailSearchCache
 
 function coverageDir(agentId: string, options?: MailSearchCacheOptions): string {
   return path.join(cacheDir(agentId, options), "coverage")
+}
+
+function skippedDir(agentId: string, options?: MailSearchCacheOptions): string {
+  return path.join(cacheDir(agentId, options), "skipped")
+}
+
+function skipReceiptPath(agentId: string, messageId: string, options?: MailSearchCacheOptions): string {
+  const encoded = Buffer.from(messageId).toString("base64url")
+  return path.join(skippedDir(agentId, options), `${encoded}.json`)
 }
 
 function normalizedCoverageKey(key: MailSearchCoverageKey): MailSearchCoverageKey {
@@ -133,6 +161,27 @@ function readJsonDocument(filePath: string): MailSearchCacheDocument | null {
   } catch {
     return null
   }
+}
+
+function readSkipReceipt(filePath: string): MailSearchSkipReceipt | null {
+  let value: unknown
+  try {
+    value = JSON.parse(fs.readFileSync(filePath, "utf-8"))
+  } catch {
+    return null
+  }
+  if (typeof value !== "object" || value === null) return null
+  const receipt = value as Partial<MailSearchSkipReceipt>
+  if (receipt.schemaVersion !== 1 ||
+    typeof receipt.agentId !== "string" || receipt.agentId.length === 0 ||
+    typeof receipt.messageId !== "string" || receipt.messageId.length === 0 ||
+    typeof receipt.recordFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(receipt.recordFingerprint) ||
+    typeof receipt.missingKeyId !== "string" || receipt.missingKeyId.length === 0 ||
+    receipt.reason !== "missing-private-key" ||
+    typeof receipt.observedAt !== "string" || !Number.isFinite(Date.parse(receipt.observedAt))) {
+    return null
+  }
+  return receipt as MailSearchSkipReceipt
 }
 
 function writeJsonAtomically(filePath: string, value: unknown): void {
@@ -193,8 +242,82 @@ export function buildMailSearchCacheDocument(
     untrustedContentWarning: privateEnvelope.untrustedContentWarning,
     searchText: normalizeSearchText(privateEnvelope),
     textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    bodyForm: message.bodyForm ?? (decryptionKeyId ? "encrypted" : "plaintext"),
     attachmentCount: privateEnvelope.attachments.length,
     ...(decryptionKeyId ? { decryptionKeyId } : {}),
+  }
+}
+
+export function writeMailSearchSkipReceipt(
+  receipt: MailSearchSkipReceipt,
+  options?: MailSearchCacheOptions,
+): MailSearchSkipReceipt {
+  const dir = skippedDir(receipt.agentId, options)
+  fs.mkdirSync(dir, { recursive: true })
+  writeJsonAtomically(skipReceiptPath(receipt.agentId, receipt.messageId, options), receipt)
+  return receipt
+}
+
+export function readMailSearchSkipReceipt(
+  agentId: string,
+  messageId: string,
+  options?: MailSearchCacheOptions,
+): MailSearchSkipReceipt | null {
+  const receipt = readSkipReceipt(skipReceiptPath(agentId, messageId, options))
+  return receipt?.agentId === agentId && receipt.messageId === messageId ? receipt : null
+}
+
+export function inspectMailSearchSkipReceipts(
+  agentId: string,
+  options?: MailSearchCacheOptions,
+): MailSearchSkipReceiptInspection[] {
+  const dir = skippedDir(agentId, options)
+  if (!fs.existsSync(dir)) return []
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => {
+      const filePath = path.join(dir, entry.name)
+      const receipt = readSkipReceipt(filePath)
+      return {
+        fileName: entry.name,
+        filePath,
+        receipt: receipt?.agentId === agentId ? receipt : null,
+        canonical: receipt?.agentId === agentId && entry.name === path.basename(skipReceiptPath(agentId, receipt.messageId, options)),
+      }
+    })
+    .sort((left, right) => left.fileName.localeCompare(right.fileName))
+}
+
+export function removeMailSearchSkipReceipt(
+  agentId: string,
+  messageId: string,
+  options?: MailSearchCacheOptions,
+): boolean {
+  const filePath = skipReceiptPath(agentId, messageId, options)
+  try {
+    if (!fs.lstatSync(filePath).isFile()) return false
+    fs.unlinkSync(filePath)
+    return true
+  } catch (error) {
+    if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) throw error
+    return false
+  }
+}
+
+export function removeMailSearchSkipReceiptFile(
+  agentId: string,
+  fileName: string,
+  options?: MailSearchCacheOptions,
+): boolean {
+  if (path.basename(fileName) !== fileName || !fileName.endsWith(".json")) return false
+  const filePath = path.join(skippedDir(agentId, options), fileName)
+  try {
+    if (!fs.lstatSync(filePath).isFile()) return false
+    fs.unlinkSync(filePath)
+    return true
+  } catch (error) {
+    if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) throw error
+    return false
   }
 }
 

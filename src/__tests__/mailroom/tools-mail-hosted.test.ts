@@ -357,7 +357,7 @@ describe("hosted mail tools", () => {
     })
 
     expect(result).toEqual(expect.objectContaining({
-      fetched: 1,
+      fetched: 2,
       alreadyCached: 0,
       removed: 5,
       skipped: 1,

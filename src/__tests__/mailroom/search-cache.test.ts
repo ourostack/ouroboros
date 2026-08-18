@@ -113,6 +113,12 @@ describe("mail search cache", () => {
       bodyForm: "plaintext",
     }))
     expect(buildMailSearchCacheDocument(message(), privateEnvelope())).not.toHaveProperty("decryptionKeyId")
+    expect(buildMailSearchCacheDocument({ ...message(), bodyForm: undefined } as never, privateEnvelope(), {
+      decryptionKeyId: "legacy-key",
+    })).toEqual(expect.objectContaining({ bodyForm: "encrypted", decryptionKeyId: "legacy-key" }))
+    expect(buildMailSearchCacheDocument({ ...message(), bodyForm: undefined } as never, privateEnvelope())).toEqual(
+      expect.objectContaining({ bodyForm: "plaintext" }),
+    )
   })
 
   it("persists encoded, body-free missing-key receipts and supports inspection and removal", () => {
@@ -123,6 +129,7 @@ describe("mail search cache", () => {
       readMailSearchSkipReceipt(agentId: string, messageId: string, options: unknown): unknown
       inspectMailSearchSkipReceipts(agentId: string, options: unknown): Array<{ fileName: string; receipt: unknown }>
       removeMailSearchSkipReceipt(agentId: string, messageId: string, options: unknown): boolean
+      removeMailSearchSkipReceiptFile(agentId: string, fileName: string, options: unknown): boolean
     }
     const receipt = {
       schemaVersion: 1,
@@ -145,6 +152,48 @@ describe("mail search cache", () => {
     expect(serialized).not.toContain("ciphertext")
     expect(api.removeMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBe(true)
     expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBeNull()
+    expect(api.removeMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBe(false)
+
+    const skippedDir = path.join(cacheRoot, "skipped")
+    const receiptPath = path.join(skippedDir, `${Buffer.from(receipt.messageId).toString("base64url")}.json`)
+    fs.mkdirSync(receiptPath)
+    expect(api.removeMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBe(false)
+    fs.rmdirSync(receiptPath)
+    const invalidReceipts: unknown[] = [
+      null,
+      {},
+      { ...receipt, schemaVersion: 2 },
+      { ...receipt, agentId: 1 },
+      { ...receipt, agentId: "" },
+      { ...receipt, messageId: 1 },
+      { ...receipt, messageId: "" },
+      { ...receipt, recordFingerprint: 1 },
+      { ...receipt, recordFingerprint: "not-a-fingerprint" },
+      { ...receipt, missingKeyId: 1 },
+      { ...receipt, missingKeyId: "" },
+      { ...receipt, reason: "network-error" },
+      { ...receipt, observedAt: 1 },
+      { ...receipt, observedAt: "not-a-date" },
+    ]
+    for (const invalid of invalidReceipts) {
+      fs.writeFileSync(receiptPath, `${JSON.stringify(invalid)}\n`)
+      expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBeNull()
+    }
+    fs.writeFileSync(receiptPath, "{not json")
+    expect(api.readMailSearchSkipReceipt("slugger", receipt.messageId, options)).toBeNull()
+
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "../unsafe.json", options)).toBe(false)
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "not-json.txt", options)).toBe(false)
+    fs.mkdirSync(path.join(skippedDir, "directory.json"))
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "directory.json", options)).toBe(false)
+    expect(api.removeMailSearchSkipReceiptFile("slugger", "missing.json", options)).toBe(false)
+    fs.chmodSync(skippedDir, 0o000)
+    try {
+      expect(() => api.removeMailSearchSkipReceiptFile("slugger", "denied.json", options)).toThrow()
+      expect(() => api.removeMailSearchSkipReceipt("slugger", "denied", options)).toThrow()
+    } finally {
+      fs.chmodSync(skippedDir, 0o700)
+    }
   })
 
   it("removes and reloads cache documents in an already-loaded process", () => {
@@ -337,6 +386,9 @@ describe("mail search cache", () => {
 	      placement: "imbox",
 	      receivedAt: "2026-04-24T21:00:00.000Z",
 	    })
+
+      const { ownerEmail: _ownerEmail, source: _source, ...withoutOptionalMetadata } = stored
+      syncMailSearchCacheMetadata({ ...withoutOptionalMetadata, placement: "imbox" })
 	  })
 
   it("loads cache defensively from disk and tolerates missing metadata updates", () => {
