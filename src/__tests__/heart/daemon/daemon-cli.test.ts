@@ -229,6 +229,10 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["status", "--json"])).toEqual({ kind: "daemon.status", json: true })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
     expect(parseOuroCommand(["logs", "prune"])).toEqual({ kind: "daemon.logs.prune" })
+    expect(parseOuroCommand(["logs", "prune", "--agent", "Slugger"])).toEqual({
+      kind: "daemon.logs.prune",
+      agent: "Slugger",
+    })
     expect(parseOuroCommand(["mailbox"])).toEqual({ kind: "mailbox" })
     expect(parseOuroCommand(["mailbox", "--json"])).toEqual({ kind: "mailbox", json: true })
     expect(parseOuroCommand(["outlook"])).toEqual({ kind: "mailbox" })
@@ -5881,9 +5885,10 @@ describe("ensureDaemonRunning", () => {
       pruneDaemonLogs,
     }
 
-    const result = await runOuroCli(["logs", "prune"], deps)
+    const result = await runOuroCli(["logs", "prune", "--agent", "Slugger"], deps)
 
     expect(pruneDaemonLogs).toHaveBeenCalledTimes(1)
+    expect(pruneDaemonLogs).toHaveBeenCalledWith(expect.objectContaining({ agentName: "Slugger" }))
     expect(deps.sendCommand).not.toHaveBeenCalled()
     expect(result).toBe("compacted 3 files, freed 123456 bytes")
     expect(writeStdout).toHaveBeenCalledWith("compacted 3 files, freed 123456 bytes")
@@ -5902,7 +5907,7 @@ describe("ensureDaemonRunning", () => {
       pruneDaemonLogs,
     }
 
-    const result = await runOuroCli(["logs", "prune"], deps)
+    const result = await runOuroCli(["logs", "prune", "--agent", "Slugger"], deps)
     expect(result).toBe("compacted 1 file, freed 42 bytes")
   })
 
@@ -5918,9 +5923,38 @@ describe("ensureDaemonRunning", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     }
 
-    const result = await runOuroCli(["logs", "prune"], deps)
+    const result = await runOuroCli(["logs", "prune", "--agent", "Slugger"], deps)
     expect(result).toBe("logs prune unavailable (dep not wired)")
     expect(writeStdout).toHaveBeenCalledWith("logs prune unavailable (dep not wired)")
+  })
+
+  it.each([
+    ["missing value", ["logs", "prune", "--agent"]],
+    ["duplicate flag", ["logs", "prune", "--agent", "Slugger", "--agent", "Rach"]],
+    ["leftover flag", ["logs", "prune", "--agent", "Slugger", "--json"]],
+    ["leftover positional", ["logs", "prune", "Slugger"]],
+    ["traversal", ["logs", "prune", "--agent", "../Slugger"]],
+    ["separator", ["logs", "prune", "--agent", "Slugger/Rach"]],
+    ["shell syntax", ["logs", "prune", "--agent", "Slugger$(id)"]],
+  ])("rejects %s for ouro logs prune", (_label, argv) => {
+    expect(() => parseOuroCommand(argv)).toThrow("Usage: ouro logs prune [--agent <name>]")
+  })
+
+  it("uses the runtime agent for a bare prune command", async () => {
+    const pruneDaemonLogs = vi.fn(() => ({ filesCompacted: 0, bytesFreed: 0 }))
+    await runOuroCli(["logs", "prune"], {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      whoamiInfo: () => ({ agentName: "Slugger", homePath: "/tmp", bonesVersion: "test" }),
+      pruneDaemonLogs,
+    })
+
+    expect(pruneDaemonLogs).toHaveBeenCalledWith(expect.objectContaining({ agentName: "Slugger" }))
   })
 })
 

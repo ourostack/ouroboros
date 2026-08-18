@@ -16,6 +16,10 @@ import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 // ── Unit 0a: Command metadata registry ──
 
 describe("COMMAND_REGISTRY", () => {
+  it("documents agent-qualified daemon log pruning", () => {
+    expect(COMMAND_REGISTRY.logs.usage).toContain("prune --agent <name>")
+  })
+
   it("exports a registry object", () => {
     emitNervesEvent({ component: "daemon", event: "cli_help_test_start", message: "testing registry export" })
     expect(COMMAND_REGISTRY).toBeDefined()
