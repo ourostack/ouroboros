@@ -28,7 +28,7 @@ describe("Telegram Bot API HTTP core", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ probe: true }),
-      signal: undefined,
+      signal: expect.any(AbortSignal),
     })
   })
 
@@ -80,6 +80,7 @@ describe("Telegram HTML rendering and chunking", () => {
   it("sends canonical HTML and retries exactly once as identical plaintext on HTTP 400", async () => {
     const calls: Array<{ method: string; body: Record<string, unknown> }> = []
     const api: TelegramBotApi = {
+      stop: vi.fn(),
       request: vi.fn(async (method: string, body: Record<string, unknown>) => {
         calls.push({ method, body })
         if (calls.length === 1) throw new TelegramApiError("bad html", { status: 400 })
@@ -94,11 +95,11 @@ describe("Telegram HTML rendering and chunking", () => {
   })
 
   it("does not retry non-400 failures or retry a failed plaintext fallback", async () => {
-    const non400: TelegramBotApi = { request: vi.fn(async () => { throw new TelegramApiError("down", { status: 500 }) }) }
+    const non400: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => { throw new TelegramApiError("down", { status: 500 }) }) }
     await expect(sendTelegramText(non400, "42", "hello")).rejects.toThrow("down")
     expect(non400.request).toHaveBeenCalledTimes(1)
 
-    const always400: TelegramBotApi = { request: vi.fn(async () => { throw new TelegramApiError("bad", { status: 400 }) }) }
+    const always400: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => { throw new TelegramApiError("bad", { status: 400 }) }) }
     await expect(sendTelegramText(always400, "42", "hello")).rejects.toThrow("bad")
     expect(always400.request).toHaveBeenCalledTimes(2)
   })

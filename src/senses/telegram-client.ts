@@ -31,12 +31,14 @@ export class TelegramApiError extends Error {
 
 export interface TelegramBotApi {
   request<T>(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T>
+  stop(): void
 }
 
 export interface TelegramBotApiOptions {
   token: string
   fetch?: TelegramFetch
   apiRoot?: string
+  sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>
 }
 
 export interface TelegramChunkOptions {
@@ -148,6 +150,14 @@ export function createTelegramBotApi(options: TelegramBotApiOptions): TelegramBo
   const fetchImpl = options.fetch ?? globalThis.fetch
   const apiRoot = options.apiRoot ?? "https://api.telegram.org"
   const baseUrl = `${apiRoot.replace(/\/$/, "")}/bot${options.token}`
+  const shutdown = new AbortController()
+  const sleep = options.sleep ?? ((milliseconds: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, milliseconds)
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }, { once: true })
+  }))
 
   return {
     async request<T>(method: string, body: Record<string, unknown>, signal?: AbortSignal) {
@@ -158,23 +168,42 @@ export function createTelegramBotApi(options: TelegramBotApiOptions): TelegramBo
         meta: { method },
       })
       try {
-        const response = await fetchImpl(`${baseUrl}/${method}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-          signal,
-        })
-        const envelope = parseEnvelope<T>(await response.text(), response.status, options.token)
-        if (!response.ok) {
-          throw new TelegramApiError(`Telegram request failed (HTTP ${response.status})`, { status: response.status })
+        const requestSignal = signal
+          ? AbortSignal.any([shutdown.signal, signal])
+          : shutdown.signal
+        let retries = 0
+        for (;;) {
+          requestSignal.throwIfAborted()
+          try {
+            const response = await fetchImpl(`${baseUrl}/${method}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body),
+              signal: requestSignal,
+            })
+            const envelope = parseEnvelope<T>(await response.text(), response.status, options.token)
+            if (!response.ok) {
+              throw new TelegramApiError(`Telegram request failed (HTTP ${response.status})`, { status: response.status })
+            }
+            emitNervesEvent({
+              component: "senses",
+              event: "telegram.request_end",
+              message: "Telegram Bot API request completed",
+              meta: { method, status: response.status },
+            })
+            return envelope.result as T
+          } catch (caught) {
+            const retryAfter = caught instanceof TelegramApiError ? caught.retryAfterSeconds : null
+            const canRetry = caught instanceof TelegramApiError
+              && caught.status === 429
+              && Number.isInteger(retryAfter)
+              && retries < 3
+            if (!canRetry) throw caught
+            retries += 1
+            const boundedSeconds = Math.min(Math.max(retryAfter as number, 1), 30)
+            await sleep(boundedSeconds * 1_000, requestSignal)
+          }
         }
-        emitNervesEvent({
-          component: "senses",
-          event: "telegram.request_end",
-          message: "Telegram Bot API request completed",
-          meta: { method, status: response.status },
-        })
-        return envelope.result as T
       } catch (caught) {
         const error = caught instanceof TelegramApiError
           ? caught
@@ -188,6 +217,9 @@ export function createTelegramBotApi(options: TelegramBotApiOptions): TelegramBo
         })
         throw error
       }
+    },
+    stop() {
+      shutdown.abort(new Error("Telegram Bot API client stopped"))
     },
   }
 }
