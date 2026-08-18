@@ -6,7 +6,8 @@
       "changes": [
         "Keep doctor grounded: ignore task-only bundle directories and distinguish quiet BlueBubbles activity from verified transport faults.",
         "Add read-only hosted-mail authority comparison and a fail-closed foreground command that reconstructs only the local search cache.",
-        "Make daemon log pruning explicitly agent-scoped, shell-safe, and fail closed on unknown, symlinked, or non-regular targets.",
+        "Make daemon log pruning explicitly agent-scoped, shell-safe, and fail closed on unknown, symlinked, non-regular, or containment-escaping targets.",
+        "Keep doctor repair guidance on the same canonical target preflight enforced by log execution.",
         "Document BlueBubbles, mail-cache, and targeted-log recovery as standard Ouro setup and diagnostic behavior."
       ]
     },
