@@ -14,8 +14,14 @@ import {
 const DOCKER_RESTART = "docker restart calibre-web"
 const roots: string[] = []
 
-type TraceEntry = { sequence: number; pid: number; type: string; detail?: string }
-type ProviderEntry = { pid: number; kind: "origin" | "continuation"; messages: unknown[] }
+type TraceEntry = { sequence: number; pid: number; atMs: number; type: string; detail?: string }
+type ProviderEntry = {
+  pid: number
+  kind: "origin" | "continuation"
+  invokedBy: "runAgent" | "resumeApprovalContinuation"
+  approvalId: string | null
+  messages: any[]
+}
 type DeliveryEntry = { pid: number; kind: "provider" | "direct" | "indeterminate"; text: string }
 
 function remember(artifacts: SyntheticApprovalArtifacts): SyntheticApprovalArtifacts {
@@ -150,12 +156,25 @@ describe("synthetic approval vertical slice", () => {
     expect(effects).toHaveLength(1)
     expect(trace.findIndex((entry) => entry.type === "attempted_committed"))
       .toBeLessThan(trace.findIndex((entry) => entry.type === "handler_start"))
-    expect(providers.filter((entry) => entry.kind === "origin")).toHaveLength(1)
-    expect(providers.filter((entry) => entry.kind === "continuation")).toHaveLength(1)
+    const origin = providers.filter((entry) => entry.kind === "origin")
+    const continuation = providers.filter((entry) => entry.kind === "continuation")
+    expect(origin).toHaveLength(1)
+    expect(continuation).toHaveLength(1)
+    expect(origin[0]).toMatchObject({ invokedBy: "runAgent", approvalId: null })
+    expect(continuation[0]).toMatchObject({ invokedBy: "resumeApprovalContinuation", approvalId: artifacts.approvalId })
+    expect(continuation[0]!.messages.slice(0, origin[0]!.messages.length)).toEqual(origin[0]!.messages)
+    expect(continuation[0]!.messages.filter((message: any) => message.role === "user" && message.content === "restart calibre-web")).toHaveLength(1)
+    expect(continuation[0]!.messages.slice(-2)).toEqual([
+      expect.objectContaining({ role: "assistant", tool_calls: [expect.objectContaining({ id: "call_restart" })] }),
+      expect.objectContaining({ role: "tool", tool_call_id: "call_restart", content: "restarted" }),
+    ])
     expect(messages.filter((message: any) => message.role === "user" && message.content === "restart calibre-web")).toHaveLength(1)
     expect(countTerminalPairs(messages)).toBe(1)
     expect(trace.some((entry) => entry.type === "ordinary_orphan_repair" || entry.type === "attempt_retry")).toBe(false)
     expect(deliveries).toEqual([expect.objectContaining({ kind: "provider", text: "calibre-web is back up" })])
+    const suspendedAt = trace.find((entry) => entry.type === "proposal_suspended")!.atMs
+    const decidedAt = trace.find((entry) => entry.type === "decision_received")!.atMs
+    expect(decidedAt - suspendedAt).toBeGreaterThanOrEqual(60_000)
   })
 
   it("denies after restart with zero execution and one coherent correlated continuation", async () => {
@@ -166,6 +185,9 @@ describe("synthetic approval vertical slice", () => {
     expect(readNdjson(artifacts.effectsLogPath)).toEqual([])
     expect(readNdjson<ProviderEntry>(artifacts.providerLogPath).filter((entry) => entry.kind === "continuation")).toHaveLength(1)
     expect(countTerminalPairs(messages)).toBe(1)
+    expect(readNdjson<DeliveryEntry>(artifacts.deliveryLogPath)).toEqual([
+      expect.objectContaining({ kind: "provider", text: "I did not restart calibre-web." }),
+    ])
   })
 
   it("materializes an observable handler failure once and continues the provider with its correlated error", async () => {
@@ -177,6 +199,9 @@ describe("synthetic approval vertical slice", () => {
     expect(readNdjson<ProviderEntry>(artifacts.providerLogPath).filter((entry) => entry.kind === "continuation")).toHaveLength(1)
     expect(countTerminalPairs(messages)).toBe(1)
     expect(messages.at(-2)).toEqual(expect.objectContaining({ role: "tool", content: expect.stringContaining("error:") }))
+    expect(readNdjson<DeliveryEntry>(artifacts.deliveryLogPath)).toEqual([
+      expect.objectContaining({ kind: "provider", text: "calibre-web restart failed safely." }),
+    ])
   })
 
   it("requires two distinct decision claimant processes and permits exactly one winner", async () => {
@@ -242,6 +267,10 @@ describe("synthetic crash and restart matrix", () => {
     expect(readJournal(artifacts)?.state).toBe("attempted_indeterminate")
     expect(readNdjson<TraceEntry>(artifacts.traceLogPath).filter((entry) => entry.type === "handler_start")).toHaveLength(0)
     expect(readNdjson(artifacts.effectsLogPath)).toEqual([])
+    expect(readNdjson<ProviderEntry>(artifacts.providerLogPath).filter((entry) => entry.kind === "continuation")).toHaveLength(0)
+    const messages = readProviderMessages(artifacts)
+    expect(countTerminalPairs(messages)).toBe(1)
+    expect(messages.filter((message: any) => message.role === "user" && message.content === "restart calibre-web")).toHaveLength(1)
     expect(readNdjson<DeliveryEntry>(artifacts.deliveryLogPath)).toEqual([
       expect.objectContaining({ kind: "indeterminate", text: expect.stringContaining("do not retry") }),
     ])
@@ -257,6 +286,10 @@ describe("synthetic crash and restart matrix", () => {
     expect(trace.filter((entry) => entry.type === "handler_start")).toHaveLength(1)
     expect(readNdjson(artifacts.effectsLogPath)).toHaveLength(1)
     expect(trace.some((entry) => entry.type === "attempt_retry")).toBe(false)
+    expect(readNdjson<ProviderEntry>(artifacts.providerLogPath).filter((entry) => entry.kind === "continuation")).toHaveLength(0)
+    const messages = readProviderMessages(artifacts)
+    expect(countTerminalPairs(messages)).toBe(1)
+    expect(messages.filter((message: any) => message.role === "user" && message.content === "restart calibre-web")).toHaveLength(1)
     expect(readNdjson<DeliveryEntry>(artifacts.deliveryLogPath)).toEqual([
       expect.objectContaining({ kind: "indeterminate", text: expect.stringContaining("do not retry") }),
     ])
