@@ -315,6 +315,9 @@ describe("guardInvocation — structural guardrails", () => {
     expect(guardInvocation("shell", { command: "cmd=(); \"${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: "cmd=(); \"prefix${cmd[@]}suffix\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); \"${cmd[@]}" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", { command: "cmd=(\"*\"); ouro mail ${cmd[@]} sync-cache" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", { command: "cmd=(echo); \"$(unterminated${cmd[@]}\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
+    expect(guardInvocation("shell", { command: "cmd=(echo); \"${cmd[@]}suffix\\\\x\"" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: "cmd=(ouro mail sync-cache); printf '%s\\n' ${cmd[@]}" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
     expect(guardInvocation("shell", { command: `printf '%s\\n' "'" '\"'` }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
   })
@@ -332,6 +335,7 @@ describe("guardInvocation — structural guardrails", () => {
         ...actual,
         parse: (value: string, ...args: Parameters<typeof actual.parse> extends [string, ...infer Rest] ? Rest : never) => {
           if (value.includes("__THROW__")) throw new Error("synthetic parser rejection")
+          if (value.includes("__EMPTY__")) return []
           return actual.parse(value, ...args)
         },
       }
@@ -344,6 +348,9 @@ describe("guardInvocation — structural guardrails", () => {
     }, { readPaths: new Set(), trustLevel: "friend" })).toEqual(expect.objectContaining({ allowed: false }))
     expect(guardInvocation("shell", {
       command: "cmd=(echo); \"__THROW__${cmd[@]}\"",
+    }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
+    expect(guardInvocation("shell", {
+      command: "cmd=(echo); \"__EMPTY__${cmd[@]}\"",
     }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })
 
     vi.doUnmock("shell-quote")

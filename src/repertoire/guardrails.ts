@@ -629,7 +629,7 @@ function transformOrderedShellVariables(command: string): string {
             index = closing
             continue
           }
-        } else if (quote === "double") result.push(mode === "*" ? elements.join(" ") : SHELL_ARRAY_EXPANSION)
+        } else if (quote === "double") result.push(elements.join(" "))
         else result.push(shellUnquotedFields(elements))
         index += arrayExpansion[0].length - 1
         continue
