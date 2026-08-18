@@ -187,6 +187,8 @@ ouro dev --repo-path /path       # start from a specific repo checkout
 ouro dev --clone                 # clone repo to ~/Projects/ouroboros, build, start
 ouro status
 ouro logs
+ouro logs prune --agent <name>
+ouro mail sync-cache --agent <name>
 ouro stop
 ouro vault unlock --agent <name>
 ouro vault status --agent <name>
@@ -232,7 +234,13 @@ The generic secret primitive is a vault item / credential in the owning agent va
 
 `ouro connect bluebubbles --agent <name>` is the standard local-Mac setup path. Besides saving the machine-scoped attachment, it installs or verifies the native-compatible BlueBubbles LaunchAgent for a same-user bridge and reconciles one Ouro-owned `[*]` webhook after the listener is bound. The daemon repairs that owned callback every 180 seconds, preserves unrelated callbacks, and creates the desired callback before removing a stale owned one. If the listener or BlueBubbles API is unavailable, connect says the attachment was saved but setup is incomplete; `ouro doctor` and `ouro bluebubbles host status --json` separate app, service, process, HTTP, and webhook failures.
 
+Doctor keeps transport proof separate from conversation activity. When the BlueBubbles upstream and exact owned webhook are healthy but no recent inbound event exists, the result is quiet/unverified: quiet is not delivery-failure proof, and Ouro does not invent a message to test it. Standard recovery remains `ouro connect bluebubbles --agent <name>` when host or webhook evidence is unhealthy.
+
 When BlueBubbles runs in another logged-in macOS account, standard setup installs a generic helper and returns one nonce-bound `human-required` Terminal command for that account plus `ouro bluebubbles host collect --request-id <id>`. Ouro never asks for or stores the other account's login password. The receipt proves that one handoff and reports launchd only as point-in-time evidence; current process and HTTP health are checked separately.
+
+### Bounded doctor repairs
+
+Doctor may recommend two local, agent-qualified repairs. `ouro mail sync-cache --agent <name>` compares read-only hosted authority with the reconstructible local cache, then rebuilds only that cache; it does not mutate hosted mail. `ouro logs prune --agent <name>` rotates only the validated agent bundle's regular log streams. Ouro offers the prune command only for a canonical direct `<name>.ouro` bundle with a present `agent.json`; task-only `.ouro` work directories are not agents.
 
 ## Setting Up On Another Machine
 
