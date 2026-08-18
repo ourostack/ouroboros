@@ -1421,7 +1421,9 @@ describe("provider CLI command execution", () => {
     const sentinel = path.join(cacheRoot, "preserve.json")
     fs.writeFileSync(sentinel, "preserve stale cache")
 
-    await expect(runOuroCli(["mail", "sync-cache"], makeCliDeps(homeDir, bundlesRoot)))
+    await expect(runOuroCli(["mail", "sync-cache"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => ["Slugger"],
+    })))
       .rejects.toThrow(/Slugger.*runtime\/config|runtime\/config.*Slugger/i)
     expect(fs.readFileSync(sentinel, "utf-8")).toBe("preserve stale cache")
   })

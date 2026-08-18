@@ -305,6 +305,20 @@ const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
+function shellContainsMailCacheSync(command: string): boolean {
+  const normalized = command
+    .replace(/\\([A-Za-z0-9_-])/g, "$1")
+    .replace(/["']/g, " ")
+    .replace(/\s+/g, " ")
+  return /(?:^|[^A-Za-z0-9_-])ouro\s+mail\s+sync-cache(?:\s|$)/i.test(normalized)
+}
+
+function mailCacheSyncShellGuardrail(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
+  if (toolName !== "shell" || !shellContainsMailCacheSync(args.command ?? "")) return allow
+  if (context.trustLevel === undefined || context.trustLevel === "family") return allow
+  return deny("hosted mail cache convergence requires family trust.")
+}
+
 function mailTrustGuardrail(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
   if (MAIL_FAMILY_TOOLS.has(toolName)) {
     if (context.trustLevel === undefined || context.trustLevel === "family") return allow
@@ -362,6 +376,9 @@ function checkFirstClassMcpTrust(context: GuardContext): GuardResult {
 }
 
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
+  const cacheSyncResult = mailCacheSyncShellGuardrail(toolName, args, context)
+  if (!cacheSyncResult.allowed) return cacheSyncResult
+
   const mailResult = mailTrustGuardrail(toolName, args, context)
   if (!mailResult.allowed) return mailResult
 

@@ -618,6 +618,7 @@ type MissingAgentResolvableKind =
   | "account.ensure"
   | "mail.import-mbox"
   | "mail.backfill-indexes"
+  | "mail.sync-cache"
   | "auth.run"
   | "auth.verify"
   | "auth.switch"
@@ -739,6 +740,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "connect":
     case "account.ensure":
     case "mail.import-mbox":
+    case "mail.sync-cache":
     case "auth.run":
     case "auth.verify":
     case "auth.switch":
@@ -1891,7 +1893,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -7440,6 +7442,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "mail.backfill-indexes") {
     return executeMailBackfillIndexes(command, deps)
+  }
+
+  if (command.kind === "mail.sync-cache") {
+    const { runHostedMailCacheSync } = await import("../../mailroom/cache-sync-cli")
+    const text = await runHostedMailCacheSync(command.agent)
+    deps.writeStdout(text)
+    return text
   }
 
   if (command.kind === "daemon.up") {
