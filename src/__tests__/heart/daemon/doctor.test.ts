@@ -2182,6 +2182,25 @@ describe("checkLifecycle", () => {
     expect(activity?.detail).toContain("daemon.command_received")
   })
 
+  it("reads a lifecycle log once when machine-local and bundle-local paths coincide", () => {
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const logsDir = "/tmp/bundles/slugger.ouro/state/daemon/logs"
+    const logPath = `${logsDir}/daemon.ndjson`
+    const readFileSync = vi.fn(readFileFor({ [logPath]: ndjsonLine(recentTs, "daemon.command_received") }))
+    const deps = createMockDeps({
+      daemonLogsDir: logsDir,
+      existsSync: existsFor(["/tmp/bundles", logPath]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync,
+    })
+
+    const cat = checkLifecycle(deps)
+
+    expect(cat.checks.find((c) => c.label === "recent daemon activity")?.status).toBe("pass")
+    expect(readFileSync).toHaveBeenCalledTimes(1)
+    expect(readFileSync).toHaveBeenCalledWith(logPath)
+  })
+
   it("warns when last activity is older than 5 minutes", () => {
     const staleTs = new Date(Date.now() - 10 * 60 * 1000).toISOString()
     const log = ndjsonLine(staleTs, "senses.shared_turn_end")
@@ -2510,13 +2529,24 @@ describe("checkDisk", () => {
   })
 
   it("warns when log directory is missing", () => {
+    const bundleDir = "/tmp/bundles/test.ouro"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),
+      existsSync: existsFor(["/tmp/bundles", `${bundleDir}/agent.json`]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      lstatSync: vi.fn(() => ({
+        isDirectory: () => true,
+        isFile: () => false,
+        isSymbolicLink: () => false,
+      })),
+      realpathSync: vi.fn((filePath: string) => filePath),
+    } as Partial<DoctorDeps> & {
+      lstatSync: (filePath: string) => { isDirectory: () => boolean; isFile: () => boolean; isSymbolicLink: () => boolean }
+      realpathSync: (filePath: string) => string
     })
     const cat = checkDisk(deps)
     expect(cat.checks.find((c) => c.label.includes("logs dir"))?.status).toBe("warn")
     expect(cat.checks.find((c) => c.label.includes("logs dir"))?.detail).toContain("/tmp/bundles/test.ouro/state/daemon/logs")
+    expect(deps.lstatSync).toHaveBeenCalledWith(bundleDir)
   })
 
   it("warns when an active log stream is over the rotation threshold", () => {

@@ -306,6 +306,10 @@ describe("ouro CLI parsing", () => {
     )
   })
 
+  it("rejects unsupported logs subcommands", () => {
+    expect(() => parseOuroCommand(["logs", "tail"])).toThrow("Usage: ouro logs prune [--agent <name>]")
+  })
+
   it("parses hook command with event name and agent", () => {
     expect(parseOuroCommand(["hook", "session-start", "--agent", "slugger"])).toEqual({ kind: "hook", event: "session-start", agent: "slugger" })
     expect(parseOuroCommand(["hook", "stop", "--agent", "slugger"])).toEqual({ kind: "hook", event: "stop", agent: "slugger" })

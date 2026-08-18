@@ -575,6 +575,34 @@ describe("checkMailroom mail-ingest liveness on the hosted Mailroom", () => {
     expect(check.detail).toContain("local search cache converged")
   })
 
+  it("reports the plural hosted-message count when multiple authoritative records converge", async () => {
+    const bundlesRoot = makeBundlesRoot()
+    const agentRoot = writeAgent(bundlesRoot)
+    const firstRecord = hostedAuthorityRecord()
+    const secondRecord = hostedAuthorityRecord({
+      id: "mail_hosted_second",
+      receivedAt: "2026-08-17T19:00:30.000Z",
+    })
+    writeMailroom(agentRoot)
+    writeConvergedHostedCache(agentRoot, firstRecord)
+    writeConvergedHostedCache(agentRoot, secondRecord)
+    writeHostedCoverage(agentRoot, {
+      visibleMessageCount: 2,
+      cachedMessageCount: 2,
+      decryptableMessageCount: 2,
+      newestReceivedAt: secondRecord.receivedAt,
+    })
+    seedHostedMailRuntime()
+
+    const check = findCheck((await checkMailroom(depsFor(bundlesRoot, {
+      observeHostedMailAuthority: vi.fn(async () => soundHostedAuthority([firstRecord, secondRecord])),
+    }))).checks, "mail.cache_authority")
+
+    expect(check.status).toBe("pass")
+    expect(check.detail).toContain("2 authoritative hosted messages")
+    expect(check.detail).toContain("local search cache converged")
+  })
+
   it("treats matching non-empty hosted authority/cache/coverage as healthy quiet despite an old local mirror mtime", async () => {
     const bundlesRoot = makeBundlesRoot()
     const agentRoot = writeAgent(bundlesRoot)
