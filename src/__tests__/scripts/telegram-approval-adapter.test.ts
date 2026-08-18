@@ -118,6 +118,7 @@ describe("test-only Telegram approval adapter", () => {
       },
     })
     expect(Buffer.byteLength(f.sent.approveCallbackData, "utf8")).toBeLessThanOrEqual(64)
+    expect(Buffer.byteLength(f.sent.denyCallbackData, "utf8")).toBeLessThanOrEqual(64)
     expect(JSON.stringify(f.calls)).not.toContain("server-side-decision-token")
     expect(JSON.stringify(f.calls)).not.toContain("approval-1")
   })
@@ -298,10 +299,14 @@ describe("test-only Telegram approval adapter", () => {
     await f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "<bad>", expiresAt: "2099-08-17T18:30:00.000Z" })
 
     expect(f.calls).toHaveLength(2)
-    expect(f.calls[0]?.body).toMatchObject({ text: "&lt;bad&gt;", parse_mode: "HTML" })
-    expect(f.calls[1]?.body).toMatchObject({ text: "<bad>" })
-    expect(f.calls[1]?.body).not.toHaveProperty("parse_mode")
-    expect(f.calls[1]?.body).toHaveProperty("reply_markup")
+    const keyboard = { inline_keyboard: [[
+      { text: "Approve", callback_data: "a:approve-handle" },
+      { text: "Deny", callback_data: "d:deny-handle" },
+    ]] }
+    expect(f.calls[0]?.body).toEqual({ chat_id: CHAT_ID, text: "&lt;bad&gt;", parse_mode: "HTML", reply_markup: keyboard })
+    expect(f.calls[1]?.body).toEqual({ chat_id: CHAT_ID, text: "<bad>", reply_markup: keyboard })
+    expect(JSON.stringify(f.calls)).not.toContain("secret")
+    expect(JSON.stringify(f.calls)).not.toContain("approval-1")
   })
 
   it("honors Telegram 429 retry_after before resending the exact request", async () => {
@@ -313,6 +318,8 @@ describe("test-only Telegram approval adapter", () => {
     expect(f.sleep).toHaveBeenCalledWith(3_000)
     expect(f.calls).toHaveLength(2)
     expect(f.calls[1]).toEqual(f.calls[0])
+    expect(JSON.stringify(f.calls)).not.toContain("secret")
+    expect(JSON.stringify(f.calls)).not.toContain("approval-1")
   })
 
   it("ignores non-callback updates without network or decision activity", async () => {
@@ -322,8 +329,11 @@ describe("test-only Telegram approval adapter", () => {
     expect(f.onDecision).not.toHaveBeenCalled()
   })
 
-  it("rejects callback handles that exceed Telegram's 64-byte limit before sending", async () => {
-    const f = fixture({ handles: ["🙂".repeat(16), "deny"] })
+  it.each([
+    ["approve", ["🙂".repeat(16), "deny"]],
+    ["deny", ["approve", "🙂".repeat(16)]],
+  ] as const)("rejects an oversized %s callback handle before sending", async (_label, handles) => {
+    const f = fixture({ handles: [...handles] })
     await expect(f.adapter.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "safe", expiresAt: "2099-08-17T18:30:00.000Z" }))
       .rejects.toThrow(/64 bytes/i)
     expect(f.fetch).not.toHaveBeenCalled()
