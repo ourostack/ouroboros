@@ -90,46 +90,78 @@ describe("container runtime policy", () => {
     })
   })
 
-  it("propagates autostart helper faults from conditional function contexts", () => {
+  it("changes autostart only through bounded authenticated WebGUI requests", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-autostart-helper-"))
     const autostartFile = path.join(testRoot, "unraid-autostart")
+    const csrfFile = path.join(testRoot, "var.ini")
+    const callLog = path.join(testRoot, "calls.log")
+    const bodyLog = path.join(testRoot, "bodies.log")
     const stubs = String.raw`
-FAIL_KEY=$1
-maybe_fail() { if [ "$FAIL_KEY" = "$1" ]; then return 23; fi; }
-test() { maybe_fail test || return $?; command test "$@"; }
-stat() { maybe_fail stat || return $?; command printf '0:0 644\n'; }
-mktemp() { maybe_fail mktemp || return $?; command mktemp "$@"; }
 awk() {
-  case "$*" in *'END { printf'*) KEY=awk-read ;; *) KEY=awk-write ;; esac
-  maybe_fail "$KEY" || return $?
-  command awk "$@"
+  case "$*" in *'END { printf'*) command printf '%s' "$EXPECTED_COUNTS" ;; *) command awk "$@" ;; esac
 }
-printf() { maybe_fail printf || return $?; command printf "$@"; }
-chown() { maybe_fail chown || return $?; }
-chmod() { maybe_fail chmod || return $?; command chmod "$@"; }
-sync() { maybe_fail sync || return $?; }
-mv() { maybe_fail mv || return $?; command mv "$@"; }
+curl() {
+  command printf '%s\n' "$*" >>"$CALL_LOG"
+  command cat >>"$BODY_LOG"
+  command printf '\n' >>"$BODY_LOG"
+  if [ "$FAIL_CURL" = yes ]; then return 23; fi
+}
 `
     try {
-      for (const [name, initial, expected, failures] of [
-        ["disable_butler_autostart", "ouro-butler 15\nother 9\nouro-butler-staging 30\nouro-butler-rollback 45\nouro-butler-legacy-evidence 60\n", "other 9\n", ["test", "stat", "mktemp", "awk-write", "chown", "chmod", "sync", "mv", "awk-read"]],
-        ["enable_butler_autostart", "ouro-butler 15\nother 9\nouro-butler-staging 30\nouro-butler-rollback 45\nouro-butler-legacy-evidence 60\n", "other 9\nouro-butler\n", ["test", "stat", "mktemp", "awk-write", "printf", "chown", "chmod", "sync", "mv", "awk-read"]],
+      fs.writeFileSync(autostartFile, "other 9\n", { mode: 0o644 })
+      fs.writeFileSync(csrfFile, 'csrf_token="redacted-test-csrf"\n', { mode: 0o600 })
+      for (const [name, expectedCounts, expectedAutos] of [
+        ["disable_butler_autostart", "0 0 0 0", ["false", "false", "false", "false"]],
+        ["enable_butler_autostart", "1 0 0 0", ["false", "false", "false", "true"]],
       ] as const) {
-        const helper = extractRunbookFunction(runbook, name).replace("AUTOSTART_FILE=/var/lib/docker/unraid-autostart", "AUTOSTART_FILE=$AUTOSTART_TEST_FILE")
-        for (const failKey of failures) {
-          fs.writeFileSync(autostartFile, initial, { mode: 0o644 })
-          const result = runConditionalHelper(`set -u\n${stubs}\n${helper}\nif ${name}; then command printf 'TRANSITION\\n'; else STATUS=$?; set -- "$AUTOSTART_TEST_ROOT"/*.tmp.*; if [ -e "$1" ]; then command printf 'LEAK\\n'; fi; command printf 'FAILED:%s\\n' "$STATUS"; exit "$STATUS"; fi`, failKey, { AUTOSTART_TEST_FILE: autostartFile, AUTOSTART_TEST_ROOT: testRoot })
-          expect(result.status, `${name}:${failKey}\n${result.stderr}`).toBe(23)
-          expect(result.stdout).not.toContain("TRANSITION")
-          expect(result.stdout).not.toContain("LEAK")
-          expect(fs.readdirSync(testRoot).filter((entry) => entry.includes(".tmp.")).length, `${name}:${failKey} leaked a temp file`).toBe(0)
+        fs.writeFileSync(callLog, "")
+        fs.writeFileSync(bodyLog, "")
+        const helpers = ["set_butler_autostart", "verify_butler_autostart", name]
+          .map((helperName) => extractRunbookFunction(runbook, helperName))
+          .join("\n")
+          .replaceAll("/var/local/emhttp/var.ini", "$AUTOSTART_CSRF_FILE")
+          .replaceAll("/var/lib/docker/unraid-autostart", "$AUTOSTART_TEST_FILE")
+        const script = `set -u\n${stubs}\n${helpers}\n${name}`
+        const result = runConditionalHelper(script, "unused", {
+          AUTOSTART_CSRF_FILE: csrfFile,
+          AUTOSTART_TEST_FILE: autostartFile,
+          BODY_LOG: bodyLog,
+          CALL_LOG: callLog,
+          EXPECTED_COUNTS: expectedCounts,
+          FAIL_CURL: "no",
+        })
+        expect(result.status, `${name}\n${result.stderr}`).toBe(0)
+        expect(result.stdout).not.toContain("redacted-test-csrf")
+        expect(result.stderr).not.toContain("redacted-test-csrf")
+        const calls = fs.readFileSync(callLog, "utf8").trim().split("\n")
+        expect(calls).toHaveLength(4)
+        for (const call of calls) {
+          expect(call).toContain("--request POST")
+          expect(call).toContain("--connect-timeout 5")
+          expect(call).toContain("--max-time 15")
+          expect(call).toContain("--header Content-Type: application/x-www-form-urlencoded")
+          expect(call).toContain("--data-binary @-")
+          expect(call).toContain("http://127.0.0.1/plugins/dynamix.docker.manager/include/UpdateConfig.php")
+          expect(call).not.toContain("redacted-test-csrf")
         }
-        fs.writeFileSync(autostartFile, initial, { mode: 0o644 })
-        const success = runConditionalHelper(`set -u\n${stubs}\n${helper}\nif ${name}; then command printf 'TRANSITION\\n'; else exit $?; fi`, "none", { AUTOSTART_TEST_FILE: autostartFile })
-        expect(success.status, `${name}:success\n${success.stderr}`).toBe(0)
-        expect(success.stdout).toContain("TRANSITION")
-        expect(fs.readFileSync(autostartFile, "utf8")).toBe(expected)
+        const bodies = fs.readFileSync(bodyLog, "utf8").trim().split("\n")
+        expect(bodies).toEqual([
+          `action=autostart&container=ouro-butler-staging&auto=${expectedAutos[0]}&wait=0&csrf_token=redacted-test-csrf`,
+          `action=autostart&container=ouro-butler-rollback&auto=${expectedAutos[1]}&wait=0&csrf_token=redacted-test-csrf`,
+          `action=autostart&container=ouro-butler-legacy-evidence&auto=${expectedAutos[2]}&wait=0&csrf_token=redacted-test-csrf`,
+          `action=autostart&container=ouro-butler&auto=${expectedAutos[3]}&wait=0&csrf_token=redacted-test-csrf`,
+        ])
+
+        const failure = runConditionalHelper(script, "unused", {
+          AUTOSTART_CSRF_FILE: csrfFile,
+          AUTOSTART_TEST_FILE: autostartFile,
+          BODY_LOG: bodyLog,
+          CALL_LOG: callLog,
+          EXPECTED_COUNTS: expectedCounts,
+          FAIL_CURL: "yes",
+        })
+        expect(failure.status).toBe(23)
       }
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
@@ -490,6 +522,7 @@ docker() {
       if command grep -q 'ouro-entry.js vault \(create\|unlock\) --agent sanctuary --store plaintext-file' "$CALL_LOG"; then
         command printf 'vault locator: agent.json\nlocal unlock: available\n'
       elif [ "$SCENARIO" = absent ]; then command printf 'vault locator: not configured in agent.json\nlocal unlock: not checked\n'
+      elif [ "$SCENARIO" = available ]; then command printf 'vault locator: agent.json\nlocal unlock: available\n'
       else command printf 'vault locator: agent.json\nlocal unlock: missing\n'; fi ;;
     *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js check --agent sanctuary --lane outward"*) return 0 ;;
     *) return 23 ;;
@@ -502,11 +535,18 @@ bootstrap_sanctuary_vault "$IMAGE_ID"`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-vault-bootstrap-"))
     const image = `sha256:${"7".repeat(64)}`
     try {
-      for (const scenario of ["absent", "existing"]) {
+      for (const scenario of ["absent", "existing", "available"]) {
         const callLog = path.join(testRoot, `${scenario}.log`)
         const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, IMAGE_ID: image })
         expect(result.status, `${scenario}\n${result.stderr}`).toBe(0)
         const calls = fs.readFileSync(callLog, "utf8")
+        if (scenario === "available") {
+          expect(calls).not.toMatch(/ouro-entry\.js vault (?:create|unlock)/u)
+          expect(calls).not.toContain("run --rm -it")
+          expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane outward")
+          expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane inner")
+          continue
+        }
         const action = scenario === "absent" ? "create" : "unlock"
         const opposite = scenario === "absent" ? "unlock" : "create"
         const actionCall = calls.split("\n").find((line) => line.includes(`ouro-entry.js vault ${action} --agent sanctuary --store plaintext-file`))
@@ -930,9 +970,11 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$LEGACY_ID"`
     expect(runbook).toContain('"$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"')
     const updateRunbook = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     expect(runbook).toContain("AUTOSTART_FILE=/var/lib/docker/unraid-autostart")
-    expect(runbook).toContain("AUTOSTART_METADATA=$(stat -c '%u:%g %a' \"$AUTOSTART_FILE\") || return $?")
-    expect(runbook).toContain('test "$AUTOSTART_METADATA" = "0:0 644" || return $?')
-    expect(runbook).toContain('$1 != "ouro-butler" && $1 != "ouro-butler-staging" && $1 != "ouro-butler-rollback"')
+    expect(runbook).toContain("/plugins/dynamix.docker.manager/include/UpdateConfig.php")
+    expect(runbook).toContain("--connect-timeout 5")
+    expect(runbook).toContain("--max-time 15")
+    expect(runbook).toContain("--data-binary @-")
+    expect(runbook).not.toContain('mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE"')
     expect(runbook).toContain('test "$AUTOSTART_COUNTS" = "0 0 0 0" || return $?')
     expect(runbook).toContain('test "$AUTOSTART_COUNTS" = "1 0 0 0" || return $?')
     expect(updateRunbook).toContain('docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \\')
