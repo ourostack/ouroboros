@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { describe, expect, it, vi } from "vitest"
 
 import { auditSanctuaryContainerSpec, auditSanctuaryStagedFiles } from "../../../heart/daemon/container-spec-auditor"
 import { runContainerSpecAuditorCli } from "../../../heart/daemon/container-spec-auditor-main"
@@ -77,6 +80,21 @@ describe("Sanctuary pre-activation container auditor", () => {
     expect(result.violations.length).toBeGreaterThan(0)
   })
 
+  it("fails closed across malformed optional inspect fields", () => {
+    const mutations: Array<(spec: any) => void> = [
+      (spec) => { spec.Config.Env = ["HOME=/home/ouro", 7] },
+      (spec) => { spec.HostConfig.Binds = [7] },
+      (spec) => { spec.Mounts = "not-an-array" },
+      (spec) => { spec.Mounts[0] = null },
+      (spec) => { spec.Config.ExposedPorts = [] },
+    ]
+    for (const mutate of mutations) {
+      const spec = validInspect()
+      mutate(spec)
+      expect(auditSanctuaryContainerSpec(spec, { expectedImage: "mutable" }).ok).toBe(false)
+    }
+  })
+
   it.each([null, [], {}, "not-json"])("fails closed for malformed inspect shape %#", (spec) => {
     expect(auditSanctuaryContainerSpec(spec, { expectedImage: "ouro-butler@sha256:" + "a".repeat(64) }).ok).toBe(false)
   })
@@ -95,6 +113,15 @@ describe("Sanctuary pre-activation container auditor", () => {
     expect(exitCode).toBe(0)
     expect(output.join("")).toContain('"ok":true')
     expect(output.join("")).not.toContain("/mnt/user")
+
+    expect(runContainerSpecAuditorCli([
+      "--template", "/tmp/template.xml",
+      "--runtime-policy", "/tmp/runtime.json",
+      "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+    ], {
+      readFile: (filePath) => filePath.endsWith(".xml") ? "<Container />" : "{}",
+      write: () => undefined,
+    })).toBe(1)
   })
 
   it("fails closed for missing arguments and unreadable JSON", () => {
@@ -104,6 +131,31 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--runtime-policy", "/tmp/runtime.json",
       "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
     ], { readFile: () => { throw new Error("missing") }, write: () => undefined })).toBe(2)
+    expect(runContainerSpecAuditorCli([
+      "--template", "/tmp/template.xml",
+      "--runtime-policy", "/tmp/runtime.json",
+      "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+    ], { readFile: () => { throw "missing" }, write: () => undefined })).toBe(2)
+  })
+
+  it("uses filesystem/stdout adapters when dependencies are omitted", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-staged-audit-"))
+    const templatePath = path.join(directory, "template.xml")
+    const policyPath = path.join(directory, "runtime.json")
+    fs.writeFileSync(templatePath, stagedTemplate())
+    fs.writeFileSync(policyPath, JSON.stringify({ scheduler: "supercronic", updates: "disabled" }))
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+    try {
+      expect(runContainerSpecAuditorCli([
+        "--template", templatePath,
+        "--runtime-policy", policyPath,
+        "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+      ])).toBe(0)
+      expect(write).toHaveBeenCalled()
+    } finally {
+      write.mockRestore()
+      fs.rmSync(directory, { recursive: true })
+    }
   })
 
   it("audits staged template equality and updater-off policy before creation", () => {
@@ -121,6 +173,11 @@ describe("Sanctuary pre-activation container auditor", () => {
     expect(auditSanctuaryStagedFiles({
       templateXml: stagedTemplate().replace("Type=\"Path\"", "Type=\"Port\""),
       runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage,
+    }).ok).toBe(false)
+    expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace('Target="/home/ouro/.ouro-cli" ', ""),
+      runtimePolicyText: "not-json",
       expectedImage,
     }).ok).toBe(false)
   })

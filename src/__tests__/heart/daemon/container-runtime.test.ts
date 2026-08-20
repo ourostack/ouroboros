@@ -6,6 +6,15 @@ describe("container runtime policy", () => {
   it("accepts only the locked scheduler/update policy", () => {
     expect(readContainerRuntimePolicy({ readFile: () => JSON.stringify({ scheduler: "supercronic", updates: "disabled" }) })).toEqual({ scheduler: "supercronic", updates: "disabled" })
     expect(() => readContainerRuntimePolicy({ readFile: () => JSON.stringify({ scheduler: "cron", updates: "disabled" }) })).toThrow()
+    expect(() => readContainerRuntimePolicy({ readFile: () => JSON.stringify({ scheduler: "supercronic", updates: "disabled", extra: true }) })).toThrow()
+  })
+
+  it("uses the packaged default path and distinguishes a missing policy from read failures", () => {
+    expect(readContainerRuntimePolicy()).toBeNull()
+    for (const error of [null, "denied", {}, { code: "EACCES" }]) {
+      expect(() => readContainerRuntimePolicy({ readFile: () => { throw error } })).toThrow()
+    }
+    expect(readContainerRuntimePolicy({ readFile: () => { throw { code: "ENOENT" } } })).toBeNull()
   })
 
   it("packages the process inspector required by fail-fast orphan cleanup", () => {
@@ -94,6 +103,9 @@ describe("container runtime policy", () => {
     expect(hasManagedTelegramProcess("node daemon-entry.js\n", "sanctuary")).toBe(false)
     expect(hasManagedTelegramProcess(`${telegram}\n${telegram}\n`, "sanctuary")).toBe(false)
     expect(hasManagedTelegramProcess("node /opt/ouro/dist/senses/telegram-entry.js --agent other\n", "sanctuary")).toBe(false)
+    expect(hasManagedTelegramProcess(telegram, "   ")).toBe(false)
+    expect(hasManagedTelegramProcess("node --agent sanctuary\n", "sanctuary")).toBe(false)
+    expect(hasManagedTelegramProcess("node /opt/ouro/dist/senses/telegram-entry.js\n", "sanctuary")).toBe(false)
   })
 
   it("requires exactly one matching owned Supercronic child", () => {
