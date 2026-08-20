@@ -663,6 +663,8 @@ fi`
     expect(validateMarker).toContain('marker.machineId !== "sanctuary"')
     expect(validateMarker).toContain("sha256")
     expect(recordMarker).toContain('machineId: "sanctuary"')
+    expect(recordMarker).toContain('flag: "w"')
+    expect(recordMarker).not.toContain('flag: "wx"')
     expect(bootstrap.indexOf("legacy-credentials-imported.json")).toBeLessThan(bootstrap.lastIndexOf("ouro-butler-provider-readiness"))
   })
 
