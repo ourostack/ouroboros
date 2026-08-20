@@ -519,6 +519,50 @@ describe("Telegram Bot API HTTP core", () => {
 })
 
 describe("Telegram durable authorized long poll", () => {
+  it("persists only opaque update receipts and migrates legacy raw inbox rows to tombstones", () => {
+    const directory = makeTempDirectory("ouro-telegram-inbox-privacy-")
+    const inboxPath = join(directory, "inbox.json")
+    const store = new FileTelegramUpdateInboxStore(inboxPath)
+    const update = {
+      update_id: 918273645,
+      callback_query: {
+        id: "raw-callback-query-id",
+        from: { id: 817263540 },
+        data: "a:raw-callback-data",
+        message: { message_id: 716253401, chat: { id: 615243019 } },
+      },
+    }
+    store.capture(update)
+    let persisted = readFileSync(inboxPath, "utf8")
+    for (const raw of ["918273645", "raw-callback-query-id", "817263540", "a:raw-callback-data", "716253401", "615243019"]) {
+      expect(persisted).not.toContain(raw)
+    }
+    expect(persisted).toMatch(/tgu_[A-Za-z0-9_-]{43}/u)
+
+    writeFileSync(inboxPath, JSON.stringify({ pending: [update], dispatching: [update], completedUpdateIds: [update.update_id] }))
+    expect(store.loadIndeterminate()).toHaveLength(1)
+    persisted = readFileSync(inboxPath, "utf8")
+    for (const raw of ["918273645", "raw-callback-query-id", "817263540", "a:raw-callback-data", "716253401", "615243019"]) {
+      expect(persisted).not.toContain(raw)
+    }
+  })
+
+  it("does not durably capture unauthorized callback identities or data", async () => {
+    const inboxStore = {
+      loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      capture: vi.fn(() => true), claim: vi.fn(() => true), complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
+    }
+    const callback = { update_id: 7, callback_query: { id: "foreign-query", from: { id: 99 }, data: "a:foreign", message: { message_id: 8, chat: { id: 99 } } } }
+    const onUpdate = vi.fn(async () => true)
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [callback]) }, expectedUserId: "10", expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() }, inboxStore, onMessage: vi.fn(), onUpdate,
+    })
+    await poll.pollOnce()
+    expect(inboxStore.capture).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledWith(callback)
+  })
+
   it("captures before offset and quarantines a turn whose dispatch may have begun", async () => {
     const directory = makeTempDirectory("ouro-telegram-inbox-")
     const inboxPath = join(directory, "inbox.json")
@@ -541,6 +585,8 @@ describe("Telegram durable authorized long poll", () => {
     await expect(poll.pollOnce()).rejects.toThrow("synthetic turn crash")
     expect(offset).toBe(12)
     expect(inboxStore.loadIndeterminate()).toHaveLength(1)
+    const persisted = readFileSync(inboxPath, "utf8")
+    for (const raw of ["11", "2", "10", "restart"]) expect(persisted).not.toContain(raw)
 
     const recoveredMessage = vi.fn(async () => undefined)
     const recoveredApi: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => []) }

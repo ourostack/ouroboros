@@ -466,6 +466,32 @@ describe("Telegram approval runtime orchestration", () => {
     expect(runtimeMocks.transport.terminalizeRecovered).toHaveBeenCalledTimes(3)
   })
 
+  it("isolates every startup recovery record and surfaces one sanitized aggregate after processing later work", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([
+      { approvalId: "first", terminal: { terminalText: "first terminal" } },
+      { approvalId: "second", terminal: { terminalText: "second terminal" } },
+      { approvalId: "bound", deliveryState: "bound", messageId: "101" },
+    ])
+    runtimeMocks.store.read.mockImplementation((approvalId) => approvalId === "bound"
+      ? { ...baseRecord, approvalId, state: "awaiting_prompt_binding" }
+      : undefined)
+    runtimeMocks.transport.terminalizeRecovered
+      .mockRejectedValueOnce(new Error("private upstream detail"))
+      .mockResolvedValue(undefined)
+
+    await expect(runtime.recover()).resolves.toBeUndefined()
+
+    expect(runtimeMocks.transport.terminalizeRecovered).toHaveBeenCalledTimes(2)
+    expect(runtimeMocks.store.bindPrompt).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "bound" }))
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.telegram_approval_recovery_error",
+      meta: { failureCount: 1 },
+    }))
+    expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain("private upstream detail")
+  })
+
   it("rebinds delivered prompts and leaves nonterminal proposal phases pending", async () => {
     const runtime = makeRuntime()
     runtimeMocks.transport.listPendingDeliveries.mockReturnValue([
