@@ -42,6 +42,7 @@ function stagedTemplate(): string {
     "<Network>host</Network>",
     "<Privileged>false</Privileged>",
     "<ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>",
+    "<PostArgs></PostArgs>",
     '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>',
     '<Config Target="/home/ouro/AgentBundles/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>',
     "</Container>",
@@ -227,6 +228,40 @@ describe("Sanctuary pre-activation container auditor", () => {
     expect(result).toEqual(expect.objectContaining({
       ok: false,
       violations: expect.arrayContaining(["template ExtraParams must equal the canonical user and restart flags"]),
+    }))
+  })
+
+  it.each([
+    ["environment variable", '<Config Target="NODE_OPTIONS" Mode="" Type="Variable">--require=/home/ouro/AgentBundles/sanctuary.ouro/state/injected.js</Config>'],
+    ["unknown Config type", '<Config Target="com.example.label" Mode="" Type="Label">unsafe</Config>'],
+    ["untyped Config", '<Config Target="NODE_OPTIONS" Mode="">--inspect=0.0.0.0:9229</Config>'],
+  ])("rejects staged %s inputs instead of synthesizing a safe environment", (_label, config) => {
+    const result = auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace("</Container>", `${config}\n</Container>`),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "sha256:" + "a".repeat(64),
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      violations: expect.arrayContaining(["template Config entries must equal the canonical two path binds"]),
+    }))
+  })
+
+  it.each([
+    ["post arguments", "<PostArgs>--inspect=0.0.0.0:9229</PostArgs>"],
+    ["missing post arguments", ""],
+    ["duplicate post arguments", "<PostArgs></PostArgs>\n<PostArgs></PostArgs>"],
+  ])("rejects %s", (_label, postArgs) => {
+    const result = auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace("<PostArgs></PostArgs>", postArgs),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "sha256:" + "a".repeat(64),
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      violations: expect.arrayContaining(["template PostArgs must be present exactly once and empty"]),
     }))
   })
 })
