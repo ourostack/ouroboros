@@ -737,7 +737,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     }
   })
 
-  it("revokes only an exact legacy key after unambiguous vault-backed verification", () => {
+  it("revokes the exact compromised key set after unambiguous vault-backed verification", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const helper = extractRunbookFunction(runbook, "retire_legacy_unraid_key")
     const script = String.raw`set -u
@@ -751,21 +751,21 @@ inventory_unraid_key_ids() {
   if command grep -q '^revoke ' "$CALL_LOG"; then
     command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n' "$READ_ID" "$WRITE_ID"
   elif [ "$SCENARIO" = duplicate ]; then
-    command printf '%s\tread-only\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\n' "$READ_ID" "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+    command printf '%s\tread-only\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n' "$READ_ID" "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
   elif [ "$SCENARIO" = unknown-class ]; then
-    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\nrogue\tadmin-write\tnone\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\nrogue\tadmin-write\tnone\n' "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
   elif [ "$SCENARIO" = unexpected-role ]; then
-    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\nrogue\tread-only\tadmin\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\nrogue\tread-only\tadmin\n' "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
   else
-    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n' "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
   fi
 }
 revoke_unraid_key_exact() { command printf 'revoke %s\n' "$1" >>"$CALL_LOG"; }
 verify_revoked_unraid_key_rejected() { command printf 'rejected %s\n' "$1" >>"$CALL_LOG"; }
 ${helper}
-retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$LEGACY_ID"`
+retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-key-retirement-"))
-    const ids = { READ_ID: "key-ro-123", WRITE_ID: "key-rw-456", LEGACY_ID: "key-old-789" }
+    const ids = { READ_ID: "key-ro-new", WRITE_ID: "key-rw-new", OLD_READ_ID: "key-ro-compromised", OLD_WRITE_ID: "key-rw-compromised" }
     try {
       for (const scenario of ["verify-failure", "duplicate", "unknown-class", "unexpected-role"]) {
         const callLog = path.join(testRoot, `${scenario}.log`)
@@ -779,8 +779,11 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$LEGACY_ID"`
       const calls = fs.readFileSync(callLog, "utf8")
       expect(calls).toContain(`verify ${ids.READ_ID} read-only`)
       expect(calls).toContain(`verify ${ids.WRITE_ID} bounded-write`)
-      expect(calls).toContain(`revoke ${ids.LEGACY_ID}`)
-      expect(calls).toContain(`rejected ${ids.LEGACY_ID}`)
+      expect(calls).toContain(`revoke ${ids.OLD_READ_ID}`)
+      expect(calls).toContain(`revoke ${ids.OLD_WRITE_ID}`)
+      expect(calls).toContain(`rejected ${ids.OLD_READ_ID}`)
+      expect(calls).toContain(`rejected ${ids.OLD_WRITE_ID}`)
+      expect(calls.match(/^revoke /gmu)).toHaveLength(2)
       expect(calls.match(/^inventory$/gmu)).toHaveLength(2)
       expect(calls.match(new RegExp(`^verify ${ids.READ_ID} read-only$`, "gmu"))).toHaveLength(2)
       expect(calls.match(new RegExp(`^verify ${ids.WRITE_ID} bounded-write$`, "gmu"))).toHaveLength(2)
