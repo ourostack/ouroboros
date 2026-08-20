@@ -51,6 +51,8 @@ describe("Sanctuary deterministic health sweep", () => {
     expect(opened.message).toContain("calibre-web")
     expect(opened.deliveryId).toBeTypeOf("string")
     expect((await broken())).toMatchObject({ message: opened.message, deliveryId: opened.deliveryId })
+    await broken.cacheDeliveryPayload(opened.deliveryId!, "cached private summary")
+    expect(await broken()).toMatchObject({ deliveryId: opened.deliveryId, cachedMessage: "cached private summary" })
     await broken.markDeliveryAttempting(opened.deliveryId!)
     const restarted = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now })
     expect((await restarted()).message).toBeNull()

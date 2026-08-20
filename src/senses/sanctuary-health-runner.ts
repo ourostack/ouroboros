@@ -2,7 +2,7 @@ import * as path from "node:path"
 
 import { getAgentRoot } from "../heart/identity"
 import { runAgent, type ChannelCallbacks } from "../heart/core"
-import { recordAutonomyFailure, reserveAutonomyBudget, resolveAutonomyBudgetPolicy } from "../heart/autonomy-budget"
+import { reserveAutonomyBudget, resolveAutonomyBudgetPolicy } from "../heart/autonomy-budget"
 import { emitNervesEvent } from "../nerves/runtime"
 import { resolveToolDefinition } from "../repertoire/tools"
 import { createTelegramBotApi, sendTelegramText, type TelegramBotApi } from "./telegram-client"
@@ -19,6 +19,7 @@ export interface SanctuaryHealthHabitResult {
 export interface SanctuaryHealthHabitRunnerOptions {
   createSweep?: (agentName: string) => (() => Promise<SanctuaryHealthSweepResult>) & {
     markDeliveryAttempting?: (deliveryId: string) => void | Promise<void>
+    cacheDeliveryPayload?: (deliveryId: string, message: string) => void | Promise<void>
     markDelivered?: (deliveryId: string, messageIds: number[]) => void | Promise<void>
   }
   createApi?: (token: string) => TelegramBotApi
@@ -53,7 +54,7 @@ export async function runSanctuaryHealthPrivateTurn(input: SanctuaryHealthPrivat
     target: budgetTarget,
     idempotencyKey: `sanctuary-health:${input.eventId}`,
   }, resolveAutonomyBudgetPolicy(agentRoot, input.agentName))
-  if (!budget.allowed) throw new Error(`Sanctuary health private turn blocked: ${budget.reason}`)
+  if (!budget.allowed && budget.status !== "duplicate") throw new Error(`Sanctuary health private turn blocked: ${budget.reason}`)
   let delivered = false
   const result = await runAgent([
     {
@@ -81,18 +82,6 @@ export async function runSanctuaryHealthPrivateTurn(input: SanctuaryHealthPrivat
     },
   })
   if (result.outcome === "errored") {
-    recordAutonomyFailure(agentRoot, {
-      agent: input.agentName,
-      triggerType: "habit",
-      sourceKind: "private-runtime",
-      senseOrHabit: "sanctuary-health",
-      provider: "configured-provider",
-      target: budgetTarget,
-      normalizedErrorName: result.error?.name ?? "ProviderError",
-      normalizedErrorCode: result.errorClassification ?? "unknown",
-      codeLocation: "sanctuary-health-private-turn",
-      idempotencyBucket: input.eventId,
-    }, resolveAutonomyBudgetPolicy(agentRoot, input.agentName))
     throw result.error ?? new Error("Sanctuary health private turn failed")
   }
   return { delivered }
@@ -115,18 +104,22 @@ export async function runSanctuaryHealthHabit(
   const api = (options.createApi ?? ((token) => createTelegramBotApi({ token })))(credentials.botToken)
   let attempted = false
   try {
-    const privateResult = await (options.runPrivateTurn ?? runSanctuaryHealthPrivateTurn)({
-      agentName,
-      eventId: result.deliveryId,
-      payload: result.message,
-      deliver: async (content) => {
+    const deliver = async (content: string): Promise<void> => {
         if (attempted) throw new Error("Sanctuary health Telegram delivery was already attempted")
         attempted = true
+        await sweep.cacheDeliveryPayload?.(result.deliveryId!, content)
         await sweep.markDeliveryAttempting?.(result.deliveryId!)
         const messageIds = await sendTelegramText(api, credentials.authorizedChatId, content)
         await sweep.markDelivered?.(result.deliveryId!, messageIds)
-      },
-    })
+      }
+    const privateResult = result.cachedMessage
+      ? (await deliver(result.cachedMessage), { delivered: true })
+      : await (options.runPrivateTurn ?? runSanctuaryHealthPrivateTurn)({
+          agentName,
+          eventId: result.deliveryId,
+          payload: result.message,
+          deliver,
+        })
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_habit", message: "Sanctuary native health habit completed", meta: { agentName, incidentCount: result.incidents.length, delivered: privateResult.delivered } })
     return { ok: true, message: privateResult.delivered ? "health sweep completed and delivered" : "health event remains pending", data: { incidentCount: result.incidents.length, delivered: privateResult.delivered } }
   } finally {

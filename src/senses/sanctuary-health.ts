@@ -19,6 +19,7 @@ interface HealthDelivery {
   message: string
   status: "pending" | "attempting"
   createdAt: string
+  summarizedMessage?: string
 }
 interface HealthState {
   incidents: Record<string, Incident>
@@ -33,11 +34,13 @@ export interface SanctuaryHealthSweepResult {
   message: string | null
   incidents: Incident[]
   deliveryId?: string
+  cachedMessage?: string
 }
 
 export interface SanctuaryHealthSweep {
   (): Promise<SanctuaryHealthSweepResult>
   markDeliveryAttempting(deliveryId: string): Promise<void>
+  cacheDeliveryPayload(deliveryId: string, message: string): Promise<void>
   markDelivered(deliveryId: string, messageIds: number[]): Promise<void>
 }
 
@@ -65,7 +68,8 @@ function load(filePath: string): HealthState {
       && typeof (delivery as HealthDelivery).id === "string"
       && typeof (delivery as HealthDelivery).message === "string"
       && ["pending", "attempting"].includes((delivery as HealthDelivery).status)
-      && typeof (delivery as HealthDelivery).createdAt === "string",
+      && typeof (delivery as HealthDelivery).createdAt === "string"
+      && ((delivery as HealthDelivery).summarizedMessage === undefined || typeof (delivery as HealthDelivery).summarizedMessage === "string"),
     )
     if (!value.incidents || typeof value.incidents !== "object" || Array.isArray(value.incidents)) throw new Error("invalid incidents")
     if (value.lastDigestDay !== null && typeof value.lastDigestDay !== "string") throw new Error("invalid digest day")
@@ -153,7 +157,12 @@ export function createSanctuaryHealthSweep(options: {
     const pendingState = load(options.statePath)
     if (pendingState.outbox?.status === "pending") {
       emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status } })
-      return { message: pendingState.outbox.message, incidents: Object.values(pendingState.incidents), deliveryId: pendingState.outbox.id }
+      return {
+        message: pendingState.outbox.message,
+        incidents: Object.values(pendingState.incidents),
+        deliveryId: pendingState.outbox.id,
+        ...(pendingState.outbox.summarizedMessage ? { cachedMessage: pendingState.outbox.summarizedMessage } : {}),
+      }
     }
     if (pendingState.outbox?.status === "attempting") {
       pendingState.indeterminateDeliveries.push(pendingState.outbox)
@@ -235,6 +244,15 @@ export function createSanctuaryHealthSweep(options: {
     const state = load(options.statePath)
     if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
     state.outbox.status = "attempting"
+    state.updatedAt = now().toISOString()
+    save(options.statePath, state)
+  })
+
+  sweep.cacheDeliveryPayload = (deliveryId: string, message: string): Promise<void> => withHealthLock(options.statePath, () => {
+    if (typeof message !== "string" || message.trim().length === 0) throw new Error("Sanctuary health cached delivery payload must be nonempty")
+    const state = load(options.statePath)
+    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
+    state.outbox.summarizedMessage = message
     state.updatedAt = now().toISOString()
     save(options.statePath, state)
   })

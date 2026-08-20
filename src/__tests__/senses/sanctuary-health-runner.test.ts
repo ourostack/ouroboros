@@ -8,6 +8,7 @@ describe("native Sanctuary health habit", () => {
     const sweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", incidents: [{ id: "array", summary: "degraded" }], deliveryId: "delivery-1" })),
       {
+        cacheDeliveryPayload: vi.fn(async () => { order.push("cached") }),
         markDeliveryAttempting: vi.fn(async () => { order.push("attempting") }),
         markDelivered: vi.fn(async (_id: string, ids: number[]) => { order.push(`delivered:${ids.join(",")}`) }),
       },
@@ -28,7 +29,7 @@ describe("native Sanctuary health habit", () => {
       }),
     })).resolves.toMatchObject({ ok: true, data: { incidentCount: 1, delivered: true } })
 
-    expect(order).toEqual(["private:delivery-1:Array degraded", "attempting", "send", "delivered:71"])
+    expect(order).toEqual(["private:delivery-1:Array degraded", "cached", "attempting", "send", "delivered:71"])
     expect(api.stop).toHaveBeenCalledOnce()
   })
 
@@ -72,5 +73,29 @@ describe("native Sanctuary health habit", () => {
     })).resolves.toMatchObject({ ok: true, data: { delivered: true } })
 
     expect(api.request).toHaveBeenCalledOnce()
+  })
+
+  it("resumes a cached private-turn payload after a crash without another provider turn", async () => {
+    const order: string[] = []
+    const sweep = Object.assign(
+      vi.fn(async () => ({ message: "raw", cachedMessage: "cached summary", incidents: [], deliveryId: "delivery-3" })),
+      {
+        cacheDeliveryPayload: vi.fn(async () => { order.push("cache-confirmed") }),
+        markDeliveryAttempting: vi.fn(async () => { order.push("attempting") }),
+        markDelivered: vi.fn(async () => { order.push("delivered") }),
+      },
+    )
+    const api = { request: vi.fn(async () => { order.push("send"); return { message_id: 73 } }), stop: vi.fn() }
+    const runPrivateTurn = vi.fn()
+
+    await runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => sweep,
+      createApi: () => api,
+      credentials: () => ({ botToken: "token", authorizedChatId: "42" }),
+      runPrivateTurn,
+    })
+
+    expect(runPrivateTurn).not.toHaveBeenCalled()
+    expect(order).toEqual(["cache-confirmed", "attempting", "send", "delivered"])
   })
 })
