@@ -12,6 +12,7 @@ import {
   type AcceptanceHarnessDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-harness"
 import {
+  createSanctuaryAcceptanceAdapterDependencies,
   executeSanctuaryAcceptanceAdapter,
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
@@ -237,7 +238,7 @@ describe("Sanctuary acceptance harness", () => {
     ]
     const adapterDeps: SanctuaryAcceptanceAdapterDependencies = {
       readKeyFiles: () => keyFiles,
-      readDescriptor: () => "revoked-secret",
+      readDescriptor: () => JSON.stringify({ keyId: "legacy-id", descriptor: "revoked-secret" }),
       execFile: async (executable, args) => {
         calls.push({ executable, args })
         return args.includes("--delete")
@@ -268,7 +269,7 @@ describe("Sanctuary acceptance harness", () => {
 
     expect(calls).toContainEqual({
       executable: "/usr/bin/docker",
-      args: ["exec", "ouro-butler-staging", "node", "/opt/ouro/dist/heart/daemon/sanctuary-acceptance-adapter.js", "vault-probe", "read-id", "read-only"],
+      args: ["exec", "-i", "ouro-butler-staging", "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh", "vault-probe", "read-id", "read-only"],
     })
     expect(calls).toContainEqual({
       executable: "/usr/local/sbin/unraid-api",
@@ -298,6 +299,12 @@ describe("Sanctuary acceptance harness", () => {
         readKeyFiles: () => [{ id: "bad", name: "Bad", permissions, roles: [] }],
       })).rejects.toThrow(/permission/u)
     }
+
+    const unsafeDirectory = path.join(root(), "keys")
+    fs.mkdirSync(unsafeDirectory, { mode: 0o700 })
+    fs.symlinkSync("missing.json", path.join(unsafeDirectory, "unexpected.json"))
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" },
+      createSanctuaryAcceptanceAdapterDependencies(3, { keyDirectory: unsafeDirectory }))).rejects.toThrow(/unexpected key directory entry/u)
   })
 
   it("performs a Telegram identity/nonce/vault/offset transaction without persisting secrets", async () => {
