@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { readFileSync, readdirSync } from "node:fs"
+import { createConnection } from "node:net"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
@@ -42,6 +43,7 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   refreshMachine?(agentName: string, machineId: string): Promise<RuntimeCredentialConfigReadResult>
   mergeMachine?(agentName: string, machineId: string, patch: JsonObject): Promise<RuntimeCredentialConfigReadResult>
   callbackProbe?(update: JsonObject, replay: boolean): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }>
+  hostRequest?(payload: JsonObject): Promise<unknown>
 }
 
 export interface SanctuaryAcceptanceVaultProbeDependencies {
@@ -63,9 +65,12 @@ const TELEGRAM_AUDIT = "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs
 const IMAGE_DIGEST_FILE = "/run/ouro-acceptance/image-digest"
 const CONTAINER_DIGEST_FILE = "/run/ouro-acceptance/container-digest"
 const POSTBOOT_HEALTH_FILE = "/run/ouro-acceptance/postboot-health.json"
-const BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id"
+const BOOT_ID_FILE = "/run/ouro-acceptance/boot-id"
+const TELEGRAM_POLLER_COUNT_FILE = "/run/ouro-acceptance/telegram-poller-count.json"
 const CONTRACT_FILE = "/opt/ouro/deploy/unraid/sanctuary-acceptance-contract.json"
 const CLOSED_INVENTORY_FILE = "/run/ouro-acceptance/closed-inventory.json"
+const HOST_BROKER_SOCKET = "/run/ouro-host-acceptance/adapter.sock"
+const MAX_BROKER_RESPONSE = 256 * 1024
 const TARGET_SERVER_ID = "sanctuary-unraid"
 const TARGET_ID = "sanctuary"
 const SHA256 = /^[0-9a-f]{64}$/u
@@ -146,12 +151,47 @@ async function defaultExecFile(executable: string, args: string[], timeoutMs: nu
   return { status: result.status, stdout: result.stdout }
 }
 
+async function defaultHostRequest(payload: JsonObject, socketPath: string, timeoutMs: number): Promise<unknown> {
+  return await new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath)
+    let response = ""
+    let settled = false
+    const fail = () => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      reject(new Error("Sanctuary host acceptance operation failed"))
+    }
+    socket.setEncoding("utf8")
+    socket.setTimeout(timeoutMs, fail)
+    socket.on("error", fail)
+    socket.on("data", (chunk) => {
+      response += chunk
+      if (Buffer.byteLength(response) > MAX_BROKER_RESPONSE) fail()
+    })
+    socket.on("end", () => {
+      if (settled) return
+      try {
+        const envelope = object(JSON.parse(response) as unknown, "host broker response")
+        if (JSON.stringify(Object.keys(envelope).sort()) !== JSON.stringify(envelope.ok === true ? ["ok", "result"] : ["error", "ok"])) fail()
+        else if (envelope.ok !== true) fail()
+        else {
+          settled = true
+          resolve(envelope.result)
+        }
+      } catch { fail() }
+    })
+    socket.end(`${JSON.stringify(payload)}\n`)
+  })
+}
+
 export function createSanctuaryAcceptanceAdapterDependencies(
   secretFd = 3,
-  options: { keyDirectory?: string; adapterTimeoutMs?: number } = {},
+  options: { keyDirectory?: string; adapterTimeoutMs?: number; hostBrokerSocket?: string } = {},
 ): SanctuaryAcceptanceAdapterDependencies {
   const keyDirectory = options.keyDirectory ?? KEY_DIRECTORY
   const adapterTimeoutMs = options.adapterTimeoutMs ?? ADAPTER_TIMEOUT_MS
+  const hostBrokerSocket = options.hostBrokerSocket ?? HOST_BROKER_SOCKET
   return {
     readKeyFiles: () => readKeyDirectory(keyDirectory),
     readKeyRecords: () => readKeyRecords(keyDirectory),
@@ -164,6 +204,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     refreshMachine: refreshMachineRuntimeCredentialConfig,
     mergeMachine: mergeMachineRuntimeCredentialConfig,
     callbackProbe: executeSanctuaryAcceptanceCallbackProbe,
+    hostRequest: (payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs),
   }
 }
 
@@ -312,26 +353,6 @@ async function runtimeConfig(
   return result.config
 }
 
-async function sendTelegramNonce(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
-  const nonce = text(payload.nonce, "nonce")
-  if (!/^[0-9a-f]{32}$/u.test(nonce)) throw new Error("nonce is invalid")
-  const config = await runtimeConfig(deps.refreshRuntime, "Sanctuary runtime config", TARGET_ID)
-  const token = text(config.telegramBotToken, "Telegram bot credential")
-  const chatId = positiveDecimal(config.telegramAuthorizedChatId, "Telegram authorized chat")
-  let response: Response
-  try {
-    response = await deps.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: `Reply with this one-time acceptance nonce: ${nonce}` }),
-      signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
-    })
-  } catch { throw new Error("Telegram nonce delivery failed") }
-  const envelope = object(await response.json(), "Telegram nonce response")
-  if (!response.ok || envelope.ok !== true) throw new Error("Telegram nonce delivery failed")
-  return { sent: true }
-}
-
 async function storeTelegramBootstrap(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   const patch = {
     telegramBotToken: text(payload.botToken, "Telegram bot credential"),
@@ -353,6 +374,16 @@ function cursorSnapshot(deps: SanctuaryAcceptanceAdapterDependencies): { offsetD
     offsetDigest: sha256(JSON.stringify({ nextUpdateId: offset.nextUpdateId })),
     auditCursorDigest: sha256(fixedFile(deps, TELEGRAM_AUDIT)),
   }
+}
+
+function telegramPollerQuiescence(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+  if (payload.expectedState !== "stopped" || JSON.stringify(Object.keys(payload).sort()) !== JSON.stringify(["expectedState", "operation"])) {
+    throw new Error("Telegram poller quiescence request is invalid")
+  }
+  const fact = object(JSON.parse(fixedFile(deps, TELEGRAM_POLLER_COUNT_FILE)) as unknown, "Telegram poller count")
+  exactKeys(fact, ["activePollers", "productionContainerStopped"], "Telegram poller count")
+  if (fact.activePollers !== 0 || fact.productionContainerStopped !== true) throw new Error("Telegram poller is not quiescent")
+  return { quiesced: true, activePollers: 0 }
 }
 
 function callbackUpdate(value: unknown): JsonObject {
@@ -383,9 +414,17 @@ function flattenedPermissions(record: SanctuaryAcceptanceKeyMetadata): string[] 
   return record.permissions.flatMap((permission) => permission.actions.map((action) => `${permission.resource}:${action}`)).sort()
 }
 
-function keyInventory(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+async function keyInventory(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   requireTargetServer(payload)
-  return { keys: inventory(deps).map((record) => ({
+  const response = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
+    operation: "inventory_keys", targetServerId: TARGET_SERVER_ID,
+  }), "host key inventory")
+  if (!Array.isArray(response.keys)) throw new Error("host key inventory is invalid")
+  const keys = response.keys.map(normalizeKey)
+  if (new Set(keys.map(({ id }) => id)).size !== keys.length || new Set(keys.map(({ name }) => name)).size !== keys.length) {
+    throw new Error("host key inventory is ambiguous")
+  }
+  return { keys: keys.map((record) => ({
     id: record.id, name: record.name, permissions: flattenedPermissions(record), roles: [...record.roles].sort(),
   })).sort((left, right) => left.id.localeCompare(right.id)) }
 }
@@ -402,17 +441,19 @@ function permissionStrings(value: unknown): string[] {
 async function createKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   requireTargetServer(payload)
   const name = text(payload.name, "Unraid key name")
-  if (!/^Butler (?:RO|RW)(?: [A-Za-z0-9._-]{1,48})?$/u.test(name)) throw new Error("Unraid key name is invalid")
+  if (!/^Butler (?:RO|RW)(?: Rotation [0-9a-f]{16})?$/u.test(name)) throw new Error("Unraid key name is invalid")
   const permissions = permissionStrings(payload.permissions)
   const field = name.startsWith("Butler RO") ? "unraidReadApiKey" : "unraidWriteApiKey"
   const expected = field === "unraidReadApiKey" ? RO_PERMISSIONS : [...RO_PERMISSIONS, "DOCKER:UPDATE_ANY"].sort()
   if (JSON.stringify(permissions) !== JSON.stringify(expected)) throw new Error("Unraid key scope is invalid")
-  const result = await deps.execFile("/usr/local/sbin/unraid-api", ["apikey", "--name", name, "--create", "--permissions", permissions.join(","), "--json"])
-  const created = object(JSON.parse(result.stdout) as unknown, "created Unraid key")
-  const id = keyId(created.id)
-  const key = text(created.key, "created Unraid key credential")
-  if (created.name !== name || JSON.stringify(permissionStrings(created.permissions)) !== JSON.stringify(permissions)
-    || !Array.isArray(created.roles) || created.roles.length !== 0) throw new Error("created Unraid key scope mismatch")
+  const raw = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
+    operation: "create_key", targetServerId: TARGET_SERVER_ID, name, permissions,
+  }), "created Unraid key")
+  const created = normalizeKey(raw)
+  const id = created.id
+  const key = text(raw.key, "created Unraid key credential")
+  if (created.name !== name || JSON.stringify(flattenedPermissions(created)) !== JSON.stringify(permissions)
+    || created.roles.length !== 0) throw new Error("created Unraid key scope mismatch")
   const stored = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, {
     [field]: key,
     sanctuaryAcceptanceKeyHandles: { [id]: key },
@@ -458,23 +499,27 @@ async function probeKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
   return { valid: true }
 }
 
-function keyRecords(deps: SanctuaryAcceptanceAdapterDependencies): SanctuaryAcceptanceKeyRecord[] {
-  return dependency(deps.readKeyRecords, "Unraid key record reader")().map((record) => ({ ...normalizeKey(record), key: text(record.key, "Unraid key credential") }))
-}
-
 async function readOldKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   requireTargetServer(payload)
   const id = keyId(payload.id)
-  const matches = keyRecords(deps).filter((record) => record.id === id)
-  if (matches.length !== 1) throw new Error("old Unraid key ID is absent or ambiguous")
-  const stored = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, { sanctuaryAcceptanceKeyHandles: { [id]: matches[0]!.key } })
+  const raw = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
+    operation: "read_key_record", targetServerId: TARGET_SERVER_ID, keyId: id,
+  }), "old Unraid key record")
+  const record = { ...normalizeKey(raw), key: text(raw.key, "old Unraid key credential") }
+  if (record.id !== id) throw new Error("old Unraid key ID does not match the host record")
+  const stored = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, { sanctuaryAcceptanceKeyHandles: { [id]: record.key } })
   if (!stored.ok) throw new Error("old Unraid key recovery storage failed")
   return { key: `unraid-key:${id}:legacy` }
 }
 
 async function revokeKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   requireTargetServer(payload)
-  return exactIdRevoke({ keyId: payload.id }, deps)
+  const id = keyId(payload.id)
+  const response = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
+    operation: "revoke_key", targetServerId: TARGET_SERVER_ID, keyId: id,
+  }), "host key revoke")
+  if (response.revoked !== true || response.id !== id) throw new Error("host key revoke did not attest the exact ID")
+  return { revoked: true, id }
 }
 
 async function probeRevokedKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
@@ -482,15 +527,12 @@ async function probeRevokedKey(payload: JsonObject, deps: SanctuaryAcceptanceAda
   const id = keyId(payload.id)
   const handle = text(payload.key, "revoked Unraid key handle")
   if (handle !== `unraid-key:${id}:legacy` && !handle.startsWith(`unraid-key:${id}:unraid`)) throw new Error("revoked Unraid key handle is invalid")
-  const config = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", TARGET_ID, TARGET_ID)
-  const handles = object(config.sanctuaryAcceptanceKeyHandles, "vault-backed acceptance key handles")
-  const key = text(handles[id], "revoked Unraid key credential")
-  const endpoint = exactLoopbackGraphqlEndpoint(config.unraidGraphqlUrl)
-  const response = await deps.fetch(endpoint.href, {
-    method: "POST", headers: { "content-type": "application/json", "x-api-key": key },
-    body: JSON.stringify({ query: AUTH_PROBE, variables: {} }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
-  })
-  if (response.status !== 401 && response.status !== 403) throw new Error("revoked Unraid key still authenticates")
+  const response = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
+    operation: "probe_revoked_key", targetServerId: TARGET_SERVER_ID, keyId: id,
+  }), "revoked key host proof")
+  if (response.valid !== false || response.id !== id || (response.status !== 401 && response.status !== 403)) {
+    throw new Error("revoked Unraid key still authenticates")
+  }
   const cleared = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, { sanctuaryAcceptanceKeyHandles: { [id]: "" } })
   if (!cleared.ok) throw new Error("revoked Unraid key recovery cleanup failed")
   return { valid: false, status: response.status, id }
@@ -525,9 +567,14 @@ async function requestReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapt
   if (text(payload.targetId, "targetId") !== TARGET_ID) throw new Error("targetId is invalid")
   const idempotencyKey = text(payload.idempotencyKey, "idempotencyKey")
   if (!/^[0-9a-f]{32}$/u.test(idempotencyKey)) throw new Error("idempotencyKey is invalid")
-  const prebootId = bootId(deps)
-  await deps.execFile("/sbin/reboot", [])
-  return { accepted: true, targetId: TARGET_ID, requestId: sha256(`sanctuary-reboot\0${idempotencyKey}`), prebootId }
+  const response = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
+    operation: "request_reboot", targetId: TARGET_ID, idempotencyKey,
+  }), "host reboot staging")
+  const requestId = text(response.requestId, "host reboot requestId")
+  const prebootId = text(response.prebootId, "host reboot prebootId")
+  if (response.accepted !== true || response.staged !== true || response.targetId !== TARGET_ID
+    || requestId !== sha256(`sanctuary-reboot\0${idempotencyKey}`)) throw new Error("host reboot staging attestation is invalid")
+  return { accepted: true, targetId: TARGET_ID, requestId, prebootId }
 }
 
 function pollReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
@@ -578,12 +625,12 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "closed-inventory": result = closedInventory(deps); break
       case "exact-id-revoke": result = await exactIdRevoke(payload, deps); break
       case "revoked-key-auth-rejection": result = await revokedKeyAuthRejection(payload, deps); break
-      case "send_telegram_nonce": result = await sendTelegramNonce(payload, deps); break
       case "store_telegram_bootstrap": result = await storeTelegramBootstrap(payload, deps); break
+      case "quiesce_telegram_poller": result = telegramPollerQuiescence(payload, deps); break
       case "snapshot": result = cursorSnapshot(deps); break
       case "inject_callbacks_concurrently": result = await concurrentCallbackProbe(payload, deps); break
       case "inject_callback_replay": result = await callbackReplay(payload, deps); break
-      case "inventory_keys": result = keyInventory(payload, deps); break
+      case "inventory_keys": result = await keyInventory(payload, deps); break
       case "create_key": result = await createKey(payload, deps); break
       case "store_key": result = await storeKey(payload, deps); break
       case "probe_new_key": result = await probeKey(payload, deps); break

@@ -1,4 +1,7 @@
 import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { createServer } from "node:net"
 
 import { describe, expect, it, vi } from "vitest"
 
@@ -33,13 +36,49 @@ function refreshed(config: Record<string, unknown>) {
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it("uses one bounded redacted request over the private host broker socket", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unit16-broker-client-"))
+    const invoke = async (reply: string | null, timeoutMs = 200): Promise<unknown> => {
+      const socketPath = path.join(root, `broker-${Math.random().toString(16).slice(2)}.sock`)
+      const server = createServer((connection) => {
+        let request = ""
+        connection.setEncoding("utf8")
+        connection.on("error", () => {})
+        connection.on("data", (chunk) => { request += chunk })
+        connection.on("end", () => {
+          expect(JSON.parse(request)).toEqual({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" })
+          if (reply !== null) connection.end(reply)
+        })
+      })
+      await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+      try {
+        const deps = createSanctuaryAcceptanceAdapterDependencies(3, { hostBrokerSocket: socketPath, adapterTimeoutMs: timeoutMs })
+        return await deps.hostRequest!({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" })
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+    }
+    try {
+      await expect(invoke('{"ok":true,"result":{"keys":[]}}\n')).resolves.toEqual({ keys: [] })
+      await expect(invoke('{"ok":false,"error":"host operation failed"}\n')).rejects.toThrow(/host acceptance operation failed/u)
+      await expect(invoke('{"ok":true,"result":{},"extra":true}\n')).rejects.toThrow(/host acceptance operation failed/u)
+      await expect(invoke("not-json\n")).rejects.toThrow(/host acceptance operation failed/u)
+      await expect(invoke(JSON.stringify({ ok: true, result: "x".repeat(300_000) }), 500)).rejects.toThrow(/host acceptance operation failed/u)
+      await expect(invoke(null, 20)).rejects.toThrow(/host acceptance operation failed/u)
+      const missing = createSanctuaryAcceptanceAdapterDependencies(3, { hostBrokerSocket: path.join(root, "missing.sock"), adapterTimeoutMs: 20 })
+      await expect(missing.hostRequest!({ operation: "inventory_keys" })).rejects.toThrow(/host acceptance operation failed/u)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("packages every Unit 16 harness operation with a fixed operator-only authority", () => {
     const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as any
     expect(Object.keys(contract.adapters).sort()).toEqual([
       "callback-inject", "callback-live", "capture-evidence-provenance", "closed-inventory", "config-materializer", "cursor-snapshot",
       "evidence-snapshot", "exact-id-revoke", "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
-      "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "telegram-nonce", "telegram-vault-store",
-      "unraid-key-rotate", "vault-backed-capability-verify",
+      "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture",
+      "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",
     ])
     expect(Object.values(contract.adapters)).toEqual(expect.arrayContaining([
       expect.objectContaining({ modelReachable: false, timeoutMs: 15_000 }),
@@ -58,22 +97,21 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(JSON.stringify(contract)).not.toMatch(/(?:botToken|authorizedUserId|authorizedChatId|descriptor|rawKey)/u)
   })
 
-  it("executes Telegram nonce delivery and exact vault storage without returning private coordinates", async () => {
+  it("proves Telegram poller quiescence and stores bootstrap coordinates without returning them", async () => {
     const calls: unknown[] = []
     const deps = unit16Deps({
-      refreshRuntime: async () => refreshed({ telegramBotToken: "123:secret", telegramAuthorizedUserId: "111", telegramAuthorizedChatId: "222" }),
+      readFixedFile: (file) => file.endsWith("telegram-poller-count.json")
+        ? '{"activePollers":0,"productionContainerStopped":true}'
+        : "",
       mergeRuntime: async (_agent, patch) => { calls.push(patch); return refreshed(patch) },
-      fetch: vi.fn(async (input, init) => {
-        calls.push({ input: String(input), body: JSON.parse(String(init?.body)) })
-        return jsonResponse({ ok: true, result: { message_id: 1 } })
-      }) as typeof fetch,
     })
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "send_telegram_nonce", nonce: "a".repeat(32) }, deps)).resolves.toEqual({ sent: true })
-    await expect(executeSanctuaryAcceptanceAdapter({
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, deps)).resolves.toEqual({ quiesced: true, activePollers: 0 })
+    const stored = await executeSanctuaryAcceptanceAdapter({
       operation: "store_telegram_bootstrap", botToken: "456:rotated", authorizedUserId: "333", authorizedChatId: "444",
-    }, deps)).resolves.toEqual({ stored: true })
+    }, deps)
+    expect(stored).toEqual({ stored: true })
     expect(calls).toContainEqual({ telegramBotToken: "456:rotated", telegramAuthorizedUserId: "333", telegramAuthorizedChatId: "444" })
-    expect(JSON.stringify(await executeSanctuaryAcceptanceAdapter({ operation: "send_telegram_nonce", nonce: "b".repeat(32) }, deps))).not.toMatch(/123:secret|222/u)
+    expect(JSON.stringify(stored)).not.toMatch(/333|444|456:rotated/u)
   })
 
   it("snapshots fixed cursor state and runs bounded concurrent callback plus replay probes", async () => {
@@ -98,31 +136,35 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   })
 
   it("executes exact Unraid create/store/probe/read/revoke lifecycle operations", async () => {
-    const calls: Array<{ executable: string; args: string[] }> = []
+    const calls: Array<Record<string, unknown>> = []
     const read = READ_PERMISSIONS.map((permission) => `${permission.resource}:READ_ANY`)
     const oldRecord = { id: "old-id", name: "Old", permissions: READ_PERMISSIONS, roles: [], key: "old-secret" }
     let machine = { unraidGraphqlUrl: "http://127.0.0.1:2378/graphql" } as Record<string, unknown>
     const deps = unit16Deps({
-      readKeyFiles: () => [oldRecord, { ...oldRecord, id: "z-id", name: "Zed" }],
-      readKeyRecords: () => [oldRecord],
       refreshMachine: async () => refreshed(machine),
       mergeMachine: async (_agent, _machine, patch) => { machine = { ...machine, ...patch }; return refreshed(machine) },
-      execFile: async (executable, args) => {
-        calls.push({ executable, args })
-        if (args.includes("--create")) return { status: 0, stdout: JSON.stringify({ id: "new-id", name: args[args.indexOf("--name") + 1], key: "new-secret", permissions: read, roles: [] }) }
-        return { status: 0, stdout: JSON.stringify({ deleted: 1, keys: [{ id: "old-id", name: "Old" }] }) }
+      hostRequest: async (payload) => {
+        calls.push(payload)
+        if (payload.operation === "inventory_keys") return { keys: [oldRecord, { ...oldRecord, id: "z-id", name: "Zed" }] }
+        if (payload.operation === "create_key") return { id: "new-id", name: payload.name, key: "new-secret", permissions: READ_PERMISSIONS, roles: [] }
+        if (payload.operation === "read_key_record") return oldRecord
+        if (payload.operation === "revoke_key") return { revoked: true, id: "old-id" }
+        if (payload.operation === "probe_revoked_key") return { valid: false, status: 401, id: "old-id" }
+        throw new Error("unexpected host request")
       },
       fetch: vi.fn(async () => jsonResponse({ data: { info: { os: { hostname: "sanctuary" } } } })) as typeof fetch,
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" }, deps)).resolves.toMatchObject({ keys: [{ id: "old-id", name: "Old" }, { id: "z-id", name: "Zed" }] })
-    const created = await executeSanctuaryAcceptanceAdapter({ operation: "create_key", targetServerId: "sanctuary-unraid", name: "Butler RO rotate-a1", permissions: read }, deps) as any
+    const created = await executeSanctuaryAcceptanceAdapter({ operation: "create_key", targetServerId: "sanctuary-unraid", name: "Butler RO Rotation a1a1a1a1a1a1a1a1", permissions: read }, deps) as any
     expect(created).toMatchObject({ id: "new-id", key: "unraid-key:new-id:unraidReadApiKey" })
     expect(JSON.stringify(created)).not.toContain("new-secret")
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "unraidReadApiKey", keyId: "new-id", key: created.key }, deps)).resolves.toEqual({ stored: true, keyId: "new-id" })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "probe_new_key", targetServerId: "sanctuary-unraid", id: "new-id", key: created.key }, deps)).resolves.toEqual({ valid: true })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "read_old_key", targetServerId: "sanctuary-unraid", id: "old-id" }, deps)).resolves.toEqual({ key: "unraid-key:old-id:legacy" })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "revoke_key", targetServerId: "sanctuary-unraid", id: "old-id" }, deps)).resolves.toEqual({ revoked: true, id: "old-id" })
-    expect(calls.every((call) => call.executable === "/usr/local/sbin/unraid-api")).toBe(true)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "probe_revoked_key", targetServerId: "sanctuary-unraid", id: "old-id", key: "unraid-key:old-id:legacy" }, deps)).resolves.toEqual({ valid: false, status: 401, id: "old-id" })
+    expect(calls.map((call) => call.operation)).toEqual(["inventory_keys", "create_key", "read_key_record", "revoke_key", "probe_revoked_key"])
+    expect(JSON.stringify(calls)).not.toContain("old-secret")
   })
 
   it("captures fixed evidence provenance and bounded reboot request/poll state", async () => {
@@ -132,10 +174,23 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":4}\n',
       "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson": "event\n",
       "/run/ouro-acceptance/postboot-health.json": JSON.stringify({ healthy: true }),
-      "/proc/sys/kernel/random/boot_id": "boot-after\n",
+      "/run/ouro-acceptance/boot-id": "boot-after\n",
     }
     const calls: unknown[] = []
-    const deps = unit16Deps({ readFixedFile: (file) => files[file]!, execFile: async (executable, args) => { calls.push({ executable, args }); return { status: 0, stdout: "" } } })
+    const deps = unit16Deps({
+      readFixedFile: (file) => files[file]!,
+      hostRequest: async (payload) => {
+        calls.push(payload)
+        const requestId = payload.idempotencyKey === "c".repeat(32)
+          ? "0601926a228a699dfc43ce0bde272b874aea53e6b894c0bd85118bddd7bb7884"
+          : "697764ef46c1e7073061a38e3c37eb7c7f7f2f37c9391dd7c603058fbce91d8e"
+        return {
+          accepted: true, staged: true, targetId: "sanctuary",
+          requestId,
+          prebootId: "boot-after",
+        }
+      },
+    })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "capture_evidence_provenance", schema: "sanctuary-unit-16-provenance-v1" }, deps)).resolves.toEqual({
       imageDigest: "a".repeat(64), containerDigest: "b".repeat(64), cursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
@@ -143,7 +198,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32) }, deps)).resolves.toMatchObject({ accepted: true, targetId: "sanctuary", prebootId: "boot-after" })
     const requested = await executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "d".repeat(32) }, deps) as any
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "poll_reboot", targetId: "sanctuary", requestId: requested.requestId }, deps)).resolves.toEqual({ targetId: "sanctuary", requestId: requested.requestId, state: "ready", bootId: "boot-after" })
-    expect(calls).toContainEqual({ executable: "/sbin/reboot", args: [] })
+    expect(calls).toContainEqual({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32) })
   })
 
   it("materializes executable configs from only fixed live state", async () => {
@@ -156,7 +211,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     } })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "telegram-bootstrap" }, deps)).resolves.toMatchObject({
       expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 91,
-      nonceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+      pollerAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "cursor-snapshot", phase: "before" }, deps)).resolves.toMatchObject({ evidencePath: "/evidence/cursor-before.json" })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "unraid-key-rotate" }, deps)).resolves.toMatchObject({
@@ -175,11 +230,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
 
   it("refuses invalid Unit 16 adapter inputs and failed bounded dependencies", async () => {
     const reject = (payload: Record<string, unknown>, deps = unit16Deps()) => expect(executeSanctuaryAcceptanceAdapter(payload, deps)).rejects.toThrow()
-    await reject({ operation: "send_telegram_nonce", nonce: "bad" })
-    await reject({ operation: "send_telegram_nonce", nonce: "a".repeat(32) }, unit16Deps({ refreshRuntime: async () => ({ ok: false, reason: "missing", itemPath: "x", error: "x" }) }))
-    await reject({ operation: "send_telegram_nonce", nonce: "a".repeat(32) }, unit16Deps({ refreshRuntime: async () => refreshed({ telegramBotToken: "x", telegramAuthorizedChatId: "0" }) }))
-    await reject({ operation: "send_telegram_nonce", nonce: "a".repeat(32) }, unit16Deps({ refreshRuntime: async () => refreshed({ telegramBotToken: "x", telegramAuthorizedChatId: "1" }), fetch: async () => { throw new Error("private") } }))
-    await reject({ operation: "send_telegram_nonce", nonce: "a".repeat(32) }, unit16Deps({ refreshRuntime: async () => refreshed({ telegramBotToken: "x", telegramAuthorizedChatId: "1" }), fetch: async () => jsonResponse({ ok: false }, 400) }))
+    await reject({ operation: "quiesce_telegram_poller", expectedState: "running" })
+    await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped", extra: true })
+    await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, unit16Deps({ readFixedFile: () => "{}" }))
+    await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, unit16Deps({ readFixedFile: () => '{"activePollers":1,"productionContainerStopped":true}' }))
+    await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, unit16Deps({ readFixedFile: () => '{"activePollers":0,"productionContainerStopped":false}' }))
     await reject({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "1", authorizedChatId: "2" }, unit16Deps({ mergeRuntime: async () => ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" }) }))
     await reject({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "1", authorizedChatId: "2" }, unit16Deps({ mergeRuntime: async () => refreshed({ telegramBotToken: "other" }) }))
     await reject({ operation: "snapshot", schema: "telegram-cursor-v1" }, unit16Deps({ readFixedFile: () => '{"nextUpdateId":-1}' }))
@@ -194,10 +249,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const read = READ_PERMISSIONS.map((permission) => `${permission.resource}:READ_ANY`)
     const write = [...read, "DOCKER:UPDATE_ANY"]
     const createDeps = (created: unknown, mergeMachine = async (_agent: string, _machine: string, patch: Record<string, unknown>) => refreshed(patch)) => unit16Deps({
-      execFile: async () => ({ status: 0, stdout: JSON.stringify(created) }), mergeMachine,
+      hostRequest: async () => created, mergeMachine,
     })
-    await reject({ operation: "create_key", targetServerId: "sanctuary-unraid", name: "Butler RO", permissions: read }, createDeps({ id: "id", name: "wrong", key: "k", permissions: read, roles: [] }))
-    await reject({ operation: "create_key", targetServerId: "sanctuary-unraid", name: "Butler RW temp", permissions: write }, createDeps({ id: "id", name: "Butler RW temp", key: "k", permissions: write, roles: [] }, async () => ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" })))
+    await reject({ operation: "create_key", targetServerId: "sanctuary-unraid", name: "Butler RO", permissions: read }, createDeps({ id: "id", name: "wrong", key: "k", permissions: READ_PERMISSIONS, roles: [] }))
+    await reject({ operation: "create_key", targetServerId: "sanctuary-unraid", name: "Butler RW Rotation a1a1a1a1a1a1a1a1", permissions: write }, createDeps({ id: "id", name: "Butler RW Rotation a1a1a1a1a1a1a1a1", key: "k", permissions: [...READ_PERMISSIONS, { resource: "DOCKER", actions: ["UPDATE_ANY"] }], roles: [] }, async () => ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" })))
     await reject({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "other", keyId: "id", key: "x" })
     await reject({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "unraidReadApiKey", keyId: "id", key: "wrong" })
     await reject({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "unraidReadApiKey", keyId: "id", key: "unraid-key:id:unraidReadApiKey" }, unit16Deps({ refreshMachine: async () => refreshed({ unraidReadApiKey: "x", sanctuaryAcceptanceKeyHandles: { id: "y" } }) }))
@@ -206,9 +261,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await reject({ operation: "probe_new_key", targetServerId: "sanctuary-unraid", id: "id", key: "unraid-key:id:unraidReadApiKey" }, unit16Deps({ refreshMachine: async () => refreshed(probeConfig), fetch: async () => { throw new Error("x") } }))
     await reject({ operation: "probe_new_key", targetServerId: "sanctuary-unraid", id: "id", key: "unraid-key:id:unraidReadApiKey" }, unit16Deps({ refreshMachine: async () => refreshed(probeConfig), fetch: async () => jsonResponse({ errors: [{}] }, 403) }))
     await reject({ operation: "read_old_key", targetServerId: "sanctuary-unraid", id: "id" })
-    await reject({ operation: "read_old_key", targetServerId: "sanctuary-unraid", id: "id" }, unit16Deps({ readKeyRecords: () => [{ id: "id", name: "Old", permissions: READ_PERMISSIONS, roles: [], key: "k" }], mergeMachine: async () => ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" }) }))
+    await reject({ operation: "read_old_key", targetServerId: "sanctuary-unraid", id: "id" }, unit16Deps({ hostRequest: async () => ({ id: "id", name: "Old", permissions: READ_PERMISSIONS, roles: [], key: "k" }), mergeMachine: async () => ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" }) }))
     await reject({ operation: "probe_revoked_key", targetServerId: "sanctuary-unraid", id: "id", key: "bad" })
-    const revokedDeps = (status: number, ok = true) => unit16Deps({ refreshMachine: async () => refreshed({ unraidGraphqlUrl: "http://127.0.0.1/graphql", sanctuaryAcceptanceKeyHandles: { id: "k" } }), fetch: async () => jsonResponse({}, status), mergeMachine: async () => ok ? refreshed({}) : ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" }) })
+    const revokedDeps = (status: number, ok = true) => unit16Deps({ hostRequest: async () => ({ valid: false, status, id: "id" }), mergeMachine: async () => ok ? refreshed({}) : ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" }) })
     await reject({ operation: "probe_revoked_key", targetServerId: "sanctuary-unraid", id: "id", key: "unraid-key:id:legacy" }, revokedDeps(200))
     await reject({ operation: "probe_revoked_key", targetServerId: "sanctuary-unraid", id: "id", key: "unraid-key:id:legacy" }, revokedDeps(401, false))
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "probe_revoked_key", targetServerId: "sanctuary-unraid", id: "id", key: "unraid-key:id:legacy" }, revokedDeps(403))).resolves.toMatchObject({ valid: false, status: 403 })
@@ -220,7 +275,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await reject({ operation: "evidence_snapshot", schema: "postboot-health-v1" }, unit16Deps({ readFixedFile: (file) => file.endsWith("health.json") ? '{"healthy":true}' : "bad" }))
     await reject({ operation: "request_reboot", targetId: "other", idempotencyKey: "a".repeat(32) })
     await reject({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "bad" })
-    await reject({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "a".repeat(32) }, unit16Deps({ readFixedFile: () => "!" }))
+    await reject({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "a".repeat(32) }, unit16Deps({ hostRequest: async () => ({ accepted: true, staged: false }) }))
     await reject({ operation: "poll_reboot", targetId: "other", requestId: "a".repeat(64) })
     await reject({ operation: "poll_reboot", targetId: "sanctuary", requestId: "bad" })
   })
@@ -420,6 +475,7 @@ function unit16Deps(overrides: Partial<SanctuaryAcceptanceAdapterDependencies> =
     refreshMachine: async () => refreshed({}),
     mergeMachine: async (_agent, _machine, patch) => refreshed(patch),
     callbackProbe: async () => ({ settled: true, claimed: false, mutated: false }),
+    hostRequest: async () => ({}),
     ...overrides,
   }
 }
