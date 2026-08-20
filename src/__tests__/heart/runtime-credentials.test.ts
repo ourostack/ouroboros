@@ -8,6 +8,7 @@ const mockCredentialStore = vi.hoisted(() => {
   let rawFailureCall: number | null = null
   let rawCallCount = 0
   let storeFailureDomain: string | null = null
+  let droppedStoreDomain: string | null = null
   return {
     items,
     setRawFailure(error: unknown) {
@@ -26,6 +27,10 @@ const mockCredentialStore = vi.hoisted(() => {
     },
     clearStoreFailure() {
       storeFailureDomain = null
+      droppedStoreDomain = null
+    },
+    dropNextStoreFor(domain: string) {
+      droppedStoreDomain = domain
     },
     store: {
       get: vi.fn(async (domain: string) => {
@@ -45,6 +50,10 @@ const mockCredentialStore = vi.hoisted(() => {
         if (storeFailureDomain === domain) {
           storeFailureDomain = null
           throw new Error(`vault write unavailable for ${domain}`)
+        }
+        if (droppedStoreDomain === domain) {
+          droppedStoreDomain = null
+          return
         }
         items.set(domain, { ...data, createdAt: "2026-04-14T00:00:00.000Z" })
       }),
@@ -274,6 +283,7 @@ describe("runtime credentials vault config", () => {
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", telegramBotToken: "top-level-secret" },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary" },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provider: "arbitrary-provider" }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provider: "constructor" }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, typo: true }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, revision: 42 }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, revision: "not-a-revision" }] },
@@ -518,6 +528,45 @@ describe("runtime credentials vault config", () => {
         provenance: { source: "auth-flow" },
       })],
     }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot read back providerCredentialRecords")
+  })
+
+  it("rejects stale successful readback when a vault write silently fails to land", async () => {
+    emitTestEvent("runtime credentials readback attestation")
+    await upsertRuntimeCredentialConfig("sanctuary", { existing: "runtime" })
+    await upsertMachineRuntimeCredentialConfig("sanctuary", "machine_sanctuary", { existing: "machine" })
+    await upsertProviderCredential({
+      agentName: "sanctuary",
+      provider: "openai-compatible",
+      credentials: { apiKey: "canonical-provider" },
+      config: {},
+      provenance: { source: "manual" },
+    })
+
+    mockCredentialStore.dropNextStoreFor("runtime/config")
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      runtimeConfig: { added: "runtime-bootstrap" },
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("runtimeConfig.added")
+
+    mockCredentialStore.dropNextStoreFor("runtime/machines/machine_sanctuary/config")
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineRuntimeConfig: { added: "machine-bootstrap" },
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("machineRuntimeConfig.added")
+
+    mockCredentialStore.dropNextStoreFor("providers/openai-compatible")
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      providerCredentialRecords: [createProviderCredentialRecord({
+        provider: "openai-compatible",
+        credentials: { apiKey: "canonical-provider" },
+        config: { baseUrl: "https://bootstrap.example" },
+        provenance: { source: "auth-flow" },
+      })],
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("providerCredentialRecords.openai-compatible.config.baseUrl")
   })
 
   it("uses a matching explicit message machine id and rejects invalid bootstrap without vault writes", async () => {
