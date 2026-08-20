@@ -2,7 +2,11 @@ import * as crypto from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "../repertoire/credential-access"
 import { getAgentName } from "./identity"
-import { cacheProviderCredentialRecords, type ProviderCredentialRecord } from "./provider-credentials"
+import {
+  cacheProviderCredentialRecords,
+  upsertProviderCredential,
+  type ProviderCredentialRecord,
+} from "./provider-credentials"
 
 export type RuntimeCredentialConfig = Record<string, unknown>
 
@@ -226,6 +230,48 @@ export function applyRuntimeCredentialBootstrapMessage(message: unknown): boolea
     component: "config/identity",
     event: "config.runtime_credentials_bootstrapped",
     message: "loaded runtime credentials from daemon bootstrap",
+    meta: {
+      agentName,
+      runtimeConfig: !!message.runtimeConfig,
+      machineRuntimeConfig: !!message.machineRuntimeConfig,
+      providerCredentialRecords: message.providerCredentialRecords?.length ?? 0,
+    },
+  })
+  return true
+}
+
+export async function persistRuntimeCredentialBootstrapMessage(
+  message: unknown,
+  options: { machineId: string; now?: Date },
+): Promise<boolean> {
+  if (!isRuntimeCredentialBootstrapMessage(message)) return false
+  const agentName = message.agentName.trim()
+  const now = options.now ?? new Date()
+  if (message.runtimeConfig) {
+    await upsertRuntimeCredentialConfig(agentName, message.runtimeConfig, now)
+  }
+  if (message.machineRuntimeConfig) {
+    await upsertMachineRuntimeCredentialConfig(
+      agentName,
+      message.machineId ?? options.machineId,
+      message.machineRuntimeConfig,
+      now,
+    )
+  }
+  for (const record of message.providerCredentialRecords ?? []) {
+    await upsertProviderCredential({
+      agentName,
+      provider: record.provider,
+      credentials: record.credentials,
+      config: record.config,
+      provenance: { source: record.provenance.source },
+      now: new Date(record.updatedAt),
+    })
+  }
+  emitNervesEvent({
+    component: "config/identity",
+    event: "config.runtime_credentials_bootstrap_persisted",
+    message: "persisted container credential bootstrap in the agent vault",
     meta: {
       agentName,
       runtimeConfig: !!message.runtimeConfig,

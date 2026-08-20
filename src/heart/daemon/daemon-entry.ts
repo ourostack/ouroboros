@@ -90,7 +90,6 @@ if (mode === "dev") {
 }
 
 const managedAgents = listEnabledBundleAgents()
-loadContainerCredentialBootstrap(managedAgents)
 const managedPrivateRuntimes = managedAgents.map((agent) => ({
   agent,
   config: readPrivateRuntimeConfig(agent),
@@ -672,7 +671,7 @@ function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Pro
 }
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
-void daemon.start().then(async () => {
+void loadContainerCredentialBootstrap(managedAgents).then(() => daemon.start()).then(async () => {
   supercronicSupervisor?.start()
   const providerPreload = startProviderCredentialPoolPreload()
   const bundlesRoot = getAgentBundlesRoot()

@@ -250,6 +250,16 @@ describe("runtime credentials vault config", () => {
     expect(mockCredentialStore.items.has("runtime/machines/machine_from_envelope/config")).toBe(true)
 
     mockCredentialStore.items.clear()
+    mockCredentialStore.store.store.mockClear()
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      runtimeConfig: { telegramAuthorizedUserId: "123" },
+    }, { machineId: "machine_fallback" })).resolves.toBe(true)
+    expect(mockCredentialStore.items.has("runtime/config")).toBe(true)
+
+    mockCredentialStore.items.clear()
+    mockCredentialStore.store.store.mockClear()
     await expect(persistRuntimeCredentialBootstrapMessage({
       type: "ouro.runtimeCredentialBootstrap",
       agentName: "",
