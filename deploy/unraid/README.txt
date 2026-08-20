@@ -67,9 +67,12 @@ Credential recovery:
   container-credentials.json.consuming for the next startup to reconcile.
   Restore or create/unlock the configured agent vault, then restart the same
   reviewed image and let it retry the preserved claim. If both the source and
-  claimed envelope exist, stop: their relationship is ambiguous and startup
-  intentionally refuses to choose one.
-  Do not rename, copy, delete, or recreate either envelope during reconciliation.
+  claimed envelope exist and they are safe regular 0600 files owned by the
+  runtime user, startup resumes automatically only when they are byte-for-byte identical:
+  it durably removes the redundant unclaimed source and continues the existing claim.
+  If they differ, the repair is human-required: stop the Butler, securely compare and quarantine
+  the two envelopes, then restore exactly one reviewed envelope at the source path.
+  Never print either envelope's contents or place them in logs or command arguments.
   After successful import, both files
   are absent and the vault is the only credential source of truth.
   Never print or place credential values in logs, templates, command arguments,

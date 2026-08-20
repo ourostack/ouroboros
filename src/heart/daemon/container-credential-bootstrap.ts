@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import {
-  applyRuntimeCredentialBootstrapMessage,
+  isRuntimeCredentialBootstrapMessage,
   persistRuntimeCredentialBootstrapMessage,
 } from "../runtime-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -47,6 +47,17 @@ function deleteDurably(filePath: string): void {
   fsyncDirectory(path.dirname(filePath))
 }
 
+function assertSafeBootstrapFile(stat: fs.Stats, label: "bootstrap" | "consuming state"): void {
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`container credential ${label} must be a regular file`)
+  }
+  if ((stat.mode & 0o077) !== 0) throw new Error("container credential bootstrap must have mode 0600")
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error("container credential bootstrap must be owned by the runtime user")
+  }
+  if (stat.size > MAX_BOOTSTRAP_BYTES) throw new Error("container credential bootstrap is too large")
+}
+
 export function getDefaultContainerCredentialBootstrapPath(): string {
   return path.join(os.homedir(), ".ouro-cli", "container-credentials.json")
 }
@@ -66,15 +77,23 @@ export async function loadContainerCredentialBootstrap(
 ): Promise<string[]> {
   const filePath = options.path ?? getDefaultContainerCredentialBootstrapPath()
   const consumingPath = `${filePath}.consuming`
-  const sourceStat = optionalStat(filePath)
+  let sourceStat = optionalStat(filePath)
   const claimedStat = optionalStat(consumingPath)
   if (sourceStat && claimedStat) {
-    throw new Error("container credential bootstrap has both source and claimed envelopes; reconcile them before retrying")
+    assertSafeBootstrapFile(sourceStat, "bootstrap")
+    assertSafeBootstrapFile(claimedStat, "consuming state")
+    const sourceBytes = fs.readFileSync(filePath)
+    const claimedBytes = fs.readFileSync(consumingPath)
+    if (!sourceBytes.equals(claimedBytes)) {
+      throw new Error(
+        "human-required: container credential source and claim differ; securely compare and quarantine them without printing their contents",
+      )
+    }
+    deleteDurably(filePath)
+    sourceStat = null
   }
   if (!sourceStat && !claimedStat) return []
-  if (claimedStat && (!claimedStat.isFile() || claimedStat.isSymbolicLink())) {
-    throw new Error("container credential consuming state must be a regular file")
-  }
+  if (claimedStat) assertSafeBootstrapFile(claimedStat, "consuming state")
   let stat = claimedStat
   if (sourceStat) {
     if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
@@ -86,12 +105,7 @@ export async function loadContainerCredentialBootstrap(
   }
   /* v8 ignore next -- source/claimed absence returns above, so a stat always exists here @preserve */
   if (!stat) throw new Error("container credential bootstrap claim is unavailable")
-
-  if ((stat.mode & 0o077) !== 0) throw new Error("container credential bootstrap must have mode 0600")
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-    throw new Error("container credential bootstrap must be owned by the runtime user")
-  }
-  if (stat.size > MAX_BOOTSTRAP_BYTES) throw new Error("container credential bootstrap is too large")
+  assertSafeBootstrapFile(stat, claimedStat ? "consuming state" : "bootstrap")
 
   const envelope = parseEnvelope(fs.readFileSync(consumingPath, "utf8"))
   const allowed = new Set(enabledAgents)
@@ -101,11 +115,19 @@ export async function loadContainerCredentialBootstrap(
       throw new Error("container credential bootstrap agent is not enabled")
     }
     if (loaded.has(message.agentName)) throw new Error("container credential bootstrap contains a duplicate agent")
+    if (!isRuntimeCredentialBootstrapMessage(message)) throw new Error("container credential bootstrap message is invalid")
     loaded.add(message.agentName)
   }
 
+  const machineId = loadOrCreateMachineIdentity().machineId
+  for (const message of envelope.credentials) {
+    if (isRecord(message) && typeof message.machineId === "string" && message.machineId.trim() !== machineId) {
+      throw new Error("container credential bootstrap machineId does not match this machine")
+    }
+  }
+
   const persist = options.persist ?? ((message: unknown) => persistRuntimeCredentialBootstrapMessage(message, {
-    machineId: loadOrCreateMachineIdentity().machineId,
+    machineId,
   }))
   try {
     for (const message of envelope.credentials) {
@@ -122,9 +144,10 @@ export async function loadContainerCredentialBootstrap(
     throw new Error("container credential bootstrap persistence failed; recoverable claim retained for reconciliation")
   }
 
-  const apply = options.apply ?? applyRuntimeCredentialBootstrapMessage
-  for (const message of envelope.credentials) {
-    if (!apply(message)) throw new Error("container credential bootstrap message is invalid")
+  if (options.apply) {
+    for (const message of envelope.credentials) {
+      if (!options.apply(message)) throw new Error("container credential bootstrap message is invalid")
+    }
   }
   deleteDurably(consumingPath)
   emitNervesEvent({

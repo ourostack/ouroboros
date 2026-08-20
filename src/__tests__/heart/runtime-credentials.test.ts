@@ -5,6 +5,8 @@ import * as path from "path"
 const mockCredentialStore = vi.hoisted(() => {
   const items = new Map<string, { username?: string; password: string; notes?: string; createdAt: string }>()
   let rawFailure: unknown = null
+  let rawFailureCall: number | null = null
+  let rawCallCount = 0
   let storeFailureDomain: string | null = null
   return {
     items,
@@ -13,6 +15,11 @@ const mockCredentialStore = vi.hoisted(() => {
     },
     clearRawFailure() {
       rawFailure = null
+      rawFailureCall = null
+      rawCallCount = 0
+    },
+    failRawOnCall(call: number) {
+      rawFailureCall = call
     },
     failNextStoreFor(domain: string) {
       storeFailureDomain = domain
@@ -26,6 +33,8 @@ const mockCredentialStore = vi.hoisted(() => {
         return item ? { domain, username: item.username, notes: item.notes, createdAt: item.createdAt } : null
       }),
       getRawSecret: vi.fn(async (domain: string, field: string) => {
+        rawCallCount += 1
+        if (rawFailureCall === rawCallCount) throw new Error("vault readback unavailable")
         if (rawFailure) throw rawFailure
         if (field !== "password") throw new Error(`unexpected field ${field}`)
         const item = items.get(domain)
@@ -183,7 +192,7 @@ describe("runtime credentials vault config", () => {
       provider: "openai-codex",
       credentials: { oauthAccessToken: "codex-token", expiresAt: 123 },
       config: { retryBudget: 1 },
-      provenance: { source: "auth-flow" },
+      provenance: { source: "manual" },
       now: new Date("2026-04-14T12:00:00.000Z"),
     })
 
@@ -266,11 +275,24 @@ describe("runtime credentials vault config", () => {
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary" },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provider: "arbitrary-provider" }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, typo: true }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, revision: 42 }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, revision: "not-a-revision" }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, updatedAt: 42 }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, updatedAt: "yesterday" }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, credentials: [] }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, config: [] }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provenance: null }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provenance: { ...validProvider.provenance, typo: true } }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provenance: { ...validProvider.provenance, updatedAt: 42 } }] },
       {
         type: "ouro.runtimeCredentialBootstrap",
         agentName: "sanctuary",
         providerCredentialRecords: [{ ...validProvider, provenance: { ...validProvider.provenance, updatedAt: "2026-04-14T12:00:01.000Z" } }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "sanctuary",
+        providerCredentialRecords: [validProvider, validProvider],
       },
     ]
 
@@ -426,6 +448,78 @@ describe("runtime credentials vault config", () => {
     expect(mockCredentialStore.items.has("providers/openai-compatible")).toBe(true)
   })
 
+  it("fails closed on machine mismatch and invalid canonical machine or provider state", async () => {
+    emitTestEvent("runtime credentials machine and provider reconciliation failures")
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "machine_other",
+      machineRuntimeConfig: { unraidReadApiKey: "secret" },
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("machineId does not match this machine")
+
+    mockCredentialStore.items.set("runtime/machines/machine_sanctuary/config", {
+      username: "runtime/machines/machine_sanctuary/config",
+      password: JSON.stringify({ schemaVersion: 1, kind: "wrong", updatedAt: "2026-04-14T12:00:00.000Z", config: {} }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineRuntimeConfig: { unraidReadApiKey: "secret" },
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot reconcile machineRuntimeConfig")
+
+    mockCredentialStore.items.set("providers/openai-compatible", {
+      username: "openai-compatible",
+      password: JSON.stringify({ schemaVersion: 1, kind: "wrong" }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      providerCredentialRecords: [createProviderCredentialRecord({
+        provider: "openai-compatible",
+        credentials: { apiKey: "secret" },
+        config: {},
+        provenance: { source: "auth-flow" },
+      })],
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot reconcile providerCredentialRecords.openai-compatible")
+  })
+
+  it("requires canonical runtime, machine, and provider readback after writes", async () => {
+    emitTestEvent("runtime credentials canonical readback failures")
+    mockCredentialStore.failRawOnCall(2)
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      runtimeConfig: { telegramBotToken: "secret" },
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot read back runtimeConfig")
+
+    mockCredentialStore.items.clear()
+    mockCredentialStore.clearRawFailure()
+    resetRuntimeCredentialConfigCache()
+    mockCredentialStore.failRawOnCall(2)
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineRuntimeConfig: { unraidReadApiKey: "secret" },
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot read back machineRuntimeConfig")
+
+    mockCredentialStore.items.clear()
+    mockCredentialStore.clearRawFailure()
+    resetProviderCredentialCache()
+    mockCredentialStore.failRawOnCall(3)
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      providerCredentialRecords: [createProviderCredentialRecord({
+        provider: "azure",
+        credentials: { apiKey: "secret" },
+        config: { endpoint: "https://azure.example" },
+        provenance: { source: "auth-flow" },
+      })],
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot read back providerCredentialRecords")
+  })
+
   it("uses a matching explicit message machine id and rejects invalid bootstrap without vault writes", async () => {
     emitTestEvent("runtime credentials durable bootstrap validation")
 
@@ -476,7 +570,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "",
           credentials: {},
           config: {},
@@ -488,7 +582,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "2026-04-14T12:00:00.000Z",
           credentials: "bad",
           config: {},
@@ -500,7 +594,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "2026-04-14T12:00:00.000Z",
           credentials: { oauthAccessToken: false },
           config: {},
@@ -512,7 +606,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "2026-04-14T12:00:00.000Z",
           credentials: {},
           config: "bad",
@@ -524,7 +618,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "2026-04-14T12:00:00.000Z",
           credentials: {},
           config: { retryBudget: false },
@@ -536,7 +630,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "2026-04-14T12:00:00.000Z",
           credentials: {},
           config: {},
@@ -548,7 +642,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "2026-04-14T12:00:00.000Z",
           credentials: {},
           config: {},
@@ -560,7 +654,7 @@ describe("runtime credentials vault config", () => {
         agentName: "slugger",
         providerCredentialRecords: [{
           provider: "openai-codex",
-          revision: "vault_test",
+          revision: "vault_0123456789abcdef",
           updatedAt: "2026-04-14T12:00:00.000Z",
           credentials: {},
           config: {},
