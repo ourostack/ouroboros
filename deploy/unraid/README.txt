@@ -40,50 +40,43 @@ Effective-spec audit helper:
       trap - EXIT || return $?
       )
     }
-  Define these helpers in the same root shell. Each autostart change refuses an
-  unexpected file, atomically replaces it through a same-directory temporary
-  file, fsyncs the replacement and directory, and reads back the exact result:
-    disable_butler_autostart() {
+  Define these helpers in the same root shell. Each autostart change uses
+  Unraid's authenticated loopback WebGUI endpoint with the live root-session
+  CSRF token supplied only on request stdin. Requests have hard connection and
+  total timeouts, discard response bodies, and read back the durable array
+  autostart state without writing its backing file directly:
+    set_butler_autostart() {
       (
-      AUTOSTART_FILE=/var/lib/docker/unraid-autostart
-      test -f "$AUTOSTART_FILE" || return $?
-      AUTOSTART_METADATA=$(stat -c '%u:%g %a' "$AUTOSTART_FILE") || return $?
-      test "$AUTOSTART_METADATA" = "0:0 644" || return $?
-      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX") || return $?
-      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT || return $?
-      awk '$1 != "ouro-butler" && $1 != "ouro-butler-staging" && $1 != "ouro-butler-rollback" && $1 != "ouro-butler-legacy-evidence"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP" || return $?
-      chown 0:0 "$AUTOSTART_TMP" || return $?
-      chmod 0644 "$AUTOSTART_TMP" || return $?
-      sync -f "$AUTOSTART_TMP" || return $?
-      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE" || return $?
-      sync -f /var/lib/docker || return $?
-      trap - EXIT || return $?
-      AUTOSTART_COUNTS=$(awk '
-        $1 == "ouro-butler" { production++ }
-        $1 == "ouro-butler-staging" { staging++ }
-        $1 == "ouro-butler-rollback" { rollback++ }
-        $1 == "ouro-butler-legacy-evidence" { legacy++ }
-        END { printf "%d %d %d %d", production + 0, staging + 0, rollback + 0, legacy + 0 }
-      ' "$AUTOSTART_FILE") || return $?
-      test "$AUTOSTART_COUNTS" = "0 0 0 0" || return $?
+      AUTOSTART_CONTAINER=$1
+      AUTOSTART_ENABLED=$2
+      case "$AUTOSTART_CONTAINER" in
+        ouro-butler|ouro-butler-staging|ouro-butler-rollback|ouro-butler-legacy-evidence) ;;
+        *) return 1 ;;
+      esac
+      case "$AUTOSTART_ENABLED" in true|false) ;; *) return 1 ;; esac
+      AUTOSTART_CSRF_FILE=/var/local/emhttp/var.ini
+      test -f "$AUTOSTART_CSRF_FILE" || return $?
+      AUTOSTART_CSRF_TOKEN=$(awk -F= '$1 == "csrf_token" {
+        value = $2
+        sub(/^"/, "", value)
+        sub(/"$/, "", value)
+        print value
+      }' "$AUTOSTART_CSRF_FILE") || return $?
+      test -n "$AUTOSTART_CSRF_TOKEN" || return $?
+      case "$AUTOSTART_CSRF_TOKEN" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+      printf '%s' "action=autostart&container=$AUTOSTART_CONTAINER&auto=$AUTOSTART_ENABLED&wait=0&csrf_token=$AUTOSTART_CSRF_TOKEN" | \
+        curl --silent --show-error --fail --request POST \
+          --connect-timeout 5 --max-time 15 \
+          --header 'Content-Type: application/x-www-form-urlencoded' \
+          --data-binary @- --output /dev/null \
+          http://127.0.0.1/plugins/dynamix.docker.manager/include/UpdateConfig.php || return $?
       )
     }
-    enable_butler_autostart() {
+    verify_butler_autostart() {
       (
+      EXPECTED_AUTOSTART_COUNTS=$1
       AUTOSTART_FILE=/var/lib/docker/unraid-autostart
       test -f "$AUTOSTART_FILE" || return $?
-      AUTOSTART_METADATA=$(stat -c '%u:%g %a' "$AUTOSTART_FILE") || return $?
-      test "$AUTOSTART_METADATA" = "0:0 644" || return $?
-      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX") || return $?
-      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT || return $?
-      awk '$1 != "ouro-butler" && $1 != "ouro-butler-staging" && $1 != "ouro-butler-rollback" && $1 != "ouro-butler-legacy-evidence"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP" || return $?
-      printf '%s\n' ouro-butler >>"$AUTOSTART_TMP" || return $?
-      chown 0:0 "$AUTOSTART_TMP" || return $?
-      chmod 0644 "$AUTOSTART_TMP" || return $?
-      sync -f "$AUTOSTART_TMP" || return $?
-      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE" || return $?
-      sync -f /var/lib/docker || return $?
-      trap - EXIT || return $?
       AUTOSTART_COUNTS=$(awk '
         $1 == "ouro-butler" { production++ }
         $1 == "ouro-butler-staging" { staging++ }
@@ -91,8 +84,22 @@ Effective-spec audit helper:
         $1 == "ouro-butler-legacy-evidence" { legacy++ }
         END { printf "%d %d %d %d", production + 0, staging + 0, rollback + 0, legacy + 0 }
       ' "$AUTOSTART_FILE") || return $?
-      test "$AUTOSTART_COUNTS" = "1 0 0 0" || return $?
+      test "$AUTOSTART_COUNTS" = "$EXPECTED_AUTOSTART_COUNTS" || return $?
       )
+    }
+    disable_butler_autostart() {
+      set_butler_autostart ouro-butler-staging false || return $?
+      set_butler_autostart ouro-butler-rollback false || return $?
+      set_butler_autostart ouro-butler-legacy-evidence false || return $?
+      set_butler_autostart ouro-butler false || return $?
+      verify_butler_autostart "0 0 0 0" || return $?
+    }
+    enable_butler_autostart() {
+      set_butler_autostart ouro-butler-staging false || return $?
+      set_butler_autostart ouro-butler-rollback false || return $?
+      set_butler_autostart ouro-butler-legacy-evidence false || return $?
+      set_butler_autostart ouro-butler true || return $?
+      verify_butler_autostart "1 0 0 0" || return $?
     }
   This bounded wait accepts only Docker's healthy state. The image healthcheck
   verifies fresh daemon state plus exactly one managed Telegram process and one
@@ -406,15 +413,29 @@ vault locator: not configured in agent.json
 "*) VAULT_ACTION=create ;;
         *"
 vault locator: agent.json
+"*)
+          case "
+$VAULT_STATUS
+" in
+            *"
+local unlock: available
+"*) VAULT_ACTION=none ;;
+            *"
+local unlock: missing
 "*) VAULT_ACTION=unlock ;;
+            *) return 1 ;;
+          esac
+          ;;
         *) return 1 ;;
       esac
-      docker run --rm -it --pull=never --network host --name ouro-butler-vault-bootstrap --user 10001:10001 \
-        --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-        --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
-        vault "$VAULT_ACTION" --agent sanctuary --store plaintext-file || return $?
-      ! docker container inspect ouro-butler-vault-bootstrap >/dev/null 2>&1 || return 1
+      if test "$VAULT_ACTION" != none; then
+        docker run --rm -it --pull=never --network host --name ouro-butler-vault-bootstrap --user 10001:10001 \
+          --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+          --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
+          vault "$VAULT_ACTION" --agent sanctuary --store plaintext-file || return $?
+        ! docker container inspect ouro-butler-vault-bootstrap >/dev/null 2>&1 || return 1
+      fi
       VERIFIED_VAULT_STATUS=$(docker run --rm --pull=never --network host --name ouro-butler-vault-status --user 10001:10001 \
         --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
         --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
@@ -805,10 +826,12 @@ Credential recovery:
   credentials. It uses only fresh `--rm` containers from that exact image as
   UID/GID 10001 with the canonical two binds; create/unlock is the sole `-it`
   action so the master secret remains on the hidden terminal prompt.
-  Its first read-only `vault status` is authoritative: it runs `vault create`
-  only when the locator is absent, runs `vault unlock` only when the locator
-  already exists, then requires the configured locator, available local unlock,
-  and successful auth verification. Never guess from a failed status command.
+   Its first read-only `vault status` is authoritative: it runs `vault create`
+   only when the locator is absent, runs `vault unlock` only when the locator
+   exists but local unlock is missing, and does not prompt when local unlock is
+   already available. It then requires the configured locator, available local
+   unlock, and successful auth verification. Never guess from a failed status
+   command.
   Restore or unlock the Sanctuary agent vault, then run provider refresh.
   /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/container-credentials.json
   exists only for a one-time migration: if
