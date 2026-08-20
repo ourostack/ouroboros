@@ -141,6 +141,26 @@ describe("container credential bootstrap", () => {
     expect(fs.existsSync(`${file}.consuming`)).toBe(true)
   })
 
+  it("rejects an empty credential envelope without deleting its recoverable claim", async () => {
+    const file = envelopeFixture([])
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    let failure: unknown
+    try {
+      await loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist, apply })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe("container credential bootstrap must contain at least one credential")
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.existsSync(`${file}.consuming`)).toBe(true)
+    expect(persist).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+  })
+
   it("rejects unsafe, oversized, duplicate, and unknown-agent bootstrap files without applying them", async () => {
     const message = { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} }
     const file = fixture(message)
