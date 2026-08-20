@@ -7,6 +7,7 @@ const mockCredentialStore = vi.hoisted(() => {
   let rawFailure: unknown = null
   let rawFailureCall: number | null = null
   let rawCallCount = 0
+  let rawMutation: { call: number; mutate: () => void } | null = null
   let storeFailureDomain: string | null = null
   let droppedStoreDomain: string | null = null
   return {
@@ -18,9 +19,13 @@ const mockCredentialStore = vi.hoisted(() => {
       rawFailure = null
       rawFailureCall = null
       rawCallCount = 0
+      rawMutation = null
     },
     failRawOnCall(call: number) {
       rawFailureCall = call
+    },
+    mutateRawOnCall(call: number, mutate: () => void) {
+      rawMutation = { call, mutate }
     },
     failNextStoreFor(domain: string) {
       storeFailureDomain = domain
@@ -39,6 +44,10 @@ const mockCredentialStore = vi.hoisted(() => {
       }),
       getRawSecret: vi.fn(async (domain: string, field: string) => {
         rawCallCount += 1
+        if (rawMutation?.call === rawCallCount) {
+          rawMutation.mutate()
+          rawMutation = null
+        }
         if (rawFailureCall === rawCallCount) throw new Error("vault readback unavailable")
         if (rawFailure) throw rawFailure
         if (field !== "password") throw new Error(`unexpected field ${field}`)
@@ -274,7 +283,7 @@ describe("runtime credentials vault config", () => {
     const validProvider = createProviderCredentialRecord({
       provider: "openai-compatible",
       credentials: { apiKey: "provider-secret" },
-      config: {},
+      config: { baseUrl: "https://api.example" },
       provenance: { source: "auth-flow" },
       now: new Date("2026-04-14T12:00:00.000Z"),
     })
@@ -282,6 +291,19 @@ describe("runtime credentials vault config", () => {
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfg: { telegramBotToken: "secret" } },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", telegramBotToken: "top-level-secret" },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary" },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", machineRuntimeConfig: {} },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: { telegramBotToken: "secret" }, providerCredentialRecords: [] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, credentials: {} }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, config: {} }] },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "sanctuary",
+        providerCredentialRecords: [{ ...validProvider, credentials: { baseUrl: "https://api.example" }, config: { apiKey: "secret" } }],
+      },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, credentials: { apiKey: "   " } }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, credentials: { apiKey: 0 } }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, credentials: { apiKey: Number.NaN } }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provider: "arbitrary-provider" }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provider: "constructor" }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, typo: true }] },
@@ -292,6 +314,7 @@ describe("runtime credentials vault config", () => {
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, credentials: [] }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, config: [] }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provenance: null }] },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provenance: { ...validProvider.provenance, source: "other" } }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provenance: { ...validProvider.provenance, typo: true } }] },
       { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", providerCredentialRecords: [{ ...validProvider, provenance: { ...validProvider.provenance, updatedAt: 42 } }] },
       {
@@ -310,6 +333,19 @@ describe("runtime credentials vault config", () => {
       await expect(persistRuntimeCredentialBootstrapMessage(message, { machineId: "machine_sanctuary" })).resolves.toBe(false)
       expect(applyRuntimeCredentialBootstrapMessage(message)).toBe(false)
     }
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      providerCredentialRecords: [
+        { ...validProvider, provenance: { ...validProvider.provenance, source: "manual" } },
+        createProviderCredentialRecord({
+          provider: "minimax",
+          credentials: { apiKey: 1 },
+          config: {},
+          provenance: { source: "auth-flow" },
+        }),
+      ],
+    })).toBe(true)
     expect(mockCredentialStore.store.store).not.toHaveBeenCalled()
   })
 
@@ -368,7 +404,7 @@ describe("runtime credentials vault config", () => {
     })
   })
 
-  it("treats an empty bootstrap partial as idempotent and rejects conflicts with field-name-only diagnostics", async () => {
+  it("rejects empty bootstrap classes and conflicts without replacing canonical secrets", async () => {
     emitTestEvent("runtime credentials empty and conflicting bootstrap reconciliation")
     await upsertRuntimeCredentialConfig("sanctuary", { telegramBotToken: "canonical-secret" })
     await upsertMachineRuntimeCredentialConfig("sanctuary", "machine_sanctuary", { unraidReadApiKey: "canonical-read" })
@@ -385,7 +421,12 @@ describe("runtime credentials vault config", () => {
       type: "ouro.runtimeCredentialBootstrap",
       agentName: "sanctuary",
       runtimeConfig: {},
-    }, { machineId: "machine_sanctuary" })).resolves.toBe(true)
+    }, { machineId: "machine_sanctuary" })).resolves.toBe(false)
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineRuntimeConfig: {},
+    })).toBe(false)
     expect(mockCredentialStore.store.store).not.toHaveBeenCalled()
     expect(readRuntimeCredentialConfig("sanctuary")).toMatchObject({ ok: true, config: { telegramBotToken: "canonical-secret" } })
 
@@ -417,7 +458,7 @@ describe("runtime credentials vault config", () => {
       providerCredentialRecords: [createProviderCredentialRecord({
         provider: "openai-compatible",
         credentials: { apiKey: "different-provider" },
-        config: {},
+        config: { baseUrl: "https://api.example" },
         provenance: { source: "auth-flow" },
       })],
     }, { machineId: "machine_sanctuary" })).rejects.toThrow("providerCredentialRecords.openai-compatible.credentials.apiKey")
@@ -444,7 +485,7 @@ describe("runtime credentials vault config", () => {
       providerCredentialRecords: [createProviderCredentialRecord({
         provider: "openai-compatible" as const,
         credentials: { apiKey: "provider-secret" },
-        config: {},
+        config: { baseUrl: "https://api.example" },
         provenance: { source: "auth-flow" as const },
         now: new Date("2026-04-14T12:00:00.000Z"),
       })],
@@ -489,7 +530,7 @@ describe("runtime credentials vault config", () => {
       providerCredentialRecords: [createProviderCredentialRecord({
         provider: "openai-compatible",
         credentials: { apiKey: "secret" },
-        config: {},
+        config: { baseUrl: "https://api.example" },
         provenance: { source: "auth-flow" },
       })],
     }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot reconcile providerCredentialRecords.openai-compatible")
@@ -524,7 +565,7 @@ describe("runtime credentials vault config", () => {
       providerCredentialRecords: [createProviderCredentialRecord({
         provider: "azure",
         credentials: { apiKey: "secret" },
-        config: { endpoint: "https://azure.example" },
+        config: { endpoint: "https://azure.example", deployment: "deployment" },
         provenance: { source: "auth-flow" },
       })],
     }, { machineId: "machine_sanctuary" })).rejects.toThrow("cannot read back providerCredentialRecords")
@@ -567,6 +608,39 @@ describe("runtime credentials vault config", () => {
         provenance: { source: "auth-flow" },
       })],
     }, { machineId: "machine_sanctuary" })).rejects.toThrow("providerCredentialRecords.openai-compatible.config.baseUrl")
+  })
+
+  it("rejects mismatched or missing canonical readback after an apparently successful write", async () => {
+    emitTestEvent("runtime credentials exact readback attestation")
+    mockCredentialStore.mutateRawOnCall(2, () => {
+      mockCredentialStore.items.set("runtime/config", {
+        username: "runtime/config",
+        password: runtimePayload({ telegramBotToken: "tampered" }),
+        createdAt: "2026-04-14T00:00:00.000Z",
+      })
+    })
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      runtimeConfig: { telegramBotToken: "bootstrap-secret" },
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("runtimeConfig.telegramBotToken")
+
+    mockCredentialStore.items.clear()
+    mockCredentialStore.clearRawFailure()
+    resetProviderCredentialCache()
+    mockCredentialStore.mutateRawOnCall(3, () => {
+      mockCredentialStore.items.delete("providers/openai-compatible")
+    })
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      providerCredentialRecords: [createProviderCredentialRecord({
+        provider: "openai-compatible",
+        credentials: { apiKey: "provider-secret" },
+        config: { baseUrl: "https://api.example" },
+        provenance: { source: "auth-flow" },
+      })],
+    }, { machineId: "machine_sanctuary" })).rejects.toThrow("providerCredentialRecords.openai-compatible")
   })
 
   it("uses a matching explicit message machine id and rejects invalid bootstrap without vault writes", async () => {
