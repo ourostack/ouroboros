@@ -10,10 +10,18 @@ IMAGE_ID=${1:-}
 MODE=${2:-}
 BROKER_PID=
 PRIVATE_ROOT=
+PRODUCTION_STOPPED=no
+HOST_REBOOT_COMMITTED=no
 
 cleanup_unit16() {
+  CLEANUP_STATUS=$?
   if test -n "$BROKER_PID"; then kill "$BROKER_PID" 2>/dev/null || true; wait "$BROKER_PID" 2>/dev/null || true; fi
+  if test "$PRODUCTION_STOPPED" = yes && test "$HOST_REBOOT_COMMITTED" = no; then
+    if ! restore_production_container; then CLEANUP_STATUS=1; fi
+    PRODUCTION_STOPPED=no
+  fi
   if test -n "$PRIVATE_ROOT" && test -d "$PRIVATE_ROOT"; then rm -rf -- "$PRIVATE_ROOT"; fi
+  return "$CLEANUP_STATUS"
 }
 trap cleanup_unit16 EXIT HUP INT TERM
 
@@ -55,13 +63,15 @@ BROKER_PROGRAM=$PRIVATE_ROOT/sanctuary-unit16-host-broker.mjs
 IMAGE_FACT=$PRIVATE_ROOT/image-digest
 CONTAINER_FACT=$PRIVATE_ROOT/container-digest
 HEALTH_FACT=$PRIVATE_ROOT/postboot-health.json
+POLLER_FACT=$PRIVATE_ROOT/telegram-poller-count.json
+CONTAINER_INSPECT_FACT=$PRIVATE_ROOT/container-inspect.json
 
 start_broker() {
   /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
     --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit16-host-broker.mjs >"$BROKER_PROGRAM"
   chmod 0500 "$BROKER_PROGRAM"
   chown 0:0 "$BROKER_PROGRAM"
-  /usr/local/bin/node "$BROKER_PROGRAM" "$BROKER_SOCKET" "$CLOSED_INVENTORY" </dev/null >/dev/null 2>&1 &
+  /usr/local/bin/node "$BROKER_PROGRAM" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" </dev/null >/dev/null 2>&1 &
   BROKER_PID=$!
   ATTEMPT=0
   while test "$ATTEMPT" -lt 50 && { test ! -S "$BROKER_SOCKET" || test ! -f "$CLOSED_INVENTORY"; }; do
@@ -85,8 +95,70 @@ prepare_live_facts() {
   printf '%s\n' "$IMAGE_DIGEST" >"$IMAGE_FACT"
   printf '%s\n' "$CONTAINER_DIGEST" >"$CONTAINER_FACT"
   printf '{"healthy":%s}\n' "$HEALTH_JSON" >"$HEALTH_FACT"
-  chmod 0444 "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT"
-  chown 0:0 "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT"
+  /usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format \
+    '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}}}' \
+    "$PRODUCTION_CONTAINER" | /usr/local/bin/node -e '
+      const crypto = require("node:crypto");
+      let input = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", chunk => { input += chunk; });
+      process.stdin.on("end", () => {
+        const value = JSON.parse(input);
+        const ports = value.ports ?? {};
+        const publishedPortCount = Object.values(ports).reduce((count, bindings) => count + (Array.isArray(bindings) ? bindings.length : 0), 0);
+        const mounts = Array.isArray(value.mounts) ? value.mounts.map(mount => ({
+          destination: mount.Destination, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type,
+        })).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : [];
+        if (!Number.isSafeInteger(value.restartCount) || value.restartCount < 0) process.exit(1);
+        const snapshot = {
+          schemaVersion: 1,
+          containerId: value.containerId,
+          imageId: value.imageId,
+          running: value.running === true,
+          health: value.health ?? "missing",
+          user: value.user ?? "",
+          readOnlyRoot: value.readOnlyRoot === true,
+          mountCount: mounts.length,
+          mountsDigest: crypto.createHash("sha256").update(JSON.stringify(mounts)).digest("hex"),
+          publishedPortCount,
+          networkMode: value.networkMode ?? "",
+          restartPolicy: value.restartPolicy ?? "",
+          restartCount: value.restartCount,
+        };
+        process.stdout.write(`${JSON.stringify(snapshot)}\n`);
+      });
+    ' >"$CONTAINER_INSPECT_FACT"
+  chmod 0444 "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT" "$CONTAINER_INSPECT_FACT"
+  chown 0:0 "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT" "$CONTAINER_INSPECT_FACT"
+}
+
+restore_production_container() {
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
+  /usr/bin/timeout -s KILL 30 /usr/bin/docker start "$PRODUCTION_CONTAINER" >/dev/null || return 1
+  RESTORE_ATTEMPT=0
+  while test "$RESTORE_ATTEMPT" -lt 120; do
+    test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
+    RESTORE_RUNNING=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER") || return 1
+    RESTORE_HEALTH=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$PRODUCTION_CONTAINER") || return 1
+    if test "$RESTORE_RUNNING" = true && test "$RESTORE_HEALTH" = healthy; then return 0; fi
+    RESTORE_ATTEMPT=$((RESTORE_ATTEMPT + 1))
+    sleep 1
+  done
+  return 1
+}
+
+quiesce_production_telegram_poller() {
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = true || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$PRODUCTION_CONTAINER")" = healthy || return 1
+  /usr/bin/timeout -s KILL 45 /usr/bin/docker stop --time 30 "$PRODUCTION_CONTAINER" >/dev/null
+  PRODUCTION_STOPPED=yes
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = false || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Pid}}' "$PRODUCTION_CONTAINER")" = 0 || return 1
+  printf '%s\n' '{"activePollers":0,"productionContainerStopped":true}' >"$POLLER_FACT"
+  chmod 0444 "$POLLER_FACT"
+  chown 0:0 "$POLLER_FACT"
 }
 
 materialize_config() {
@@ -149,7 +221,7 @@ CONFIG_PATH=$CONFIG_ROOT/$CONFIG_NAME
 test -f "$CONFIG_PATH" && test ! -L "$CONFIG_PATH" || exit 1
 test "$(stat -c '%u:%g %a' "$CONFIG_PATH")" = "10001:10001 600" || exit 1
 
-case "$COMMAND" in unraid-key-rotate|reboot-request) start_broker ;; esac
+case "$COMMAND" in unraid-key-rotate|evidence-snapshot|reboot-request) start_broker ;; esac
 EXPECTED_CONFIG=$PRIVATE_ROOT/expected-config.json
 SNAPSHOT_PHASE=
 if test "$COMMAND" = cursor-snapshot; then
@@ -163,12 +235,13 @@ fi
 materialize_config "$EXPECTED_CONFIG" "$SNAPSHOT_PHASE"
 cmp -s "$EXPECTED_CONFIG" "$CONFIG_PATH" || exit 1
 prepare_live_facts
+if test "$COMMAND" = telegram-bootstrap; then quiesce_production_telegram_poller; fi
 
 case "$COMMAND" in
   telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=yes; BUNDLE_MODE=readonly; BROKER=no ;;
   callback-inject) TIME_LIMIT=120; NETWORK=host; INPUT=yes; BUNDLE_MODE=rw; BROKER=no ;;
   unraid-key-rotate) TIME_LIMIT=600; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
-  evidence-snapshot) TIME_LIMIT=1860; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
+  evidence-snapshot) TIME_LIMIT=1860; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   reboot-request) TIME_LIMIT=120; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   reboot-resume) TIME_LIMIT=660; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
   *) TIME_LIMIT=120; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
@@ -177,7 +250,23 @@ esac
 run_harness() {
   INTERACTIVE=$1
   if test "$BUNDLE_MODE" = rw; then BUNDLE_SUFFIX=; else BUNDLE_SUFFIX=,readonly; fi
-  if test "$BROKER" = yes; then
+  if test "$COMMAND" = telegram-bootstrap; then
+    /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm $INTERACTIVE --pull=never --network "$NETWORK" \
+      --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
+      --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
+      --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
+      --mount "type=bind,src=$POLLER_FACT,dst=/run/ouro-acceptance/telegram-poller-count.json,readonly" \
+      --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
+      --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
+      --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
+      --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
+      --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
+      --entrypoint /bin/sh "$IMAGE_ID" -ceu \
+      'if test -e /proc/self/fd/3; then exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@" 3<&3; fi; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@"' \
+      sanctuary-unit16 "$COMMAND" --config /run/ouro-acceptance/config.json
+  elif test "$BROKER" = yes; then
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm $INTERACTIVE --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
@@ -188,6 +277,7 @@ run_harness() {
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
+      --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
       --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
       --entrypoint /bin/sh "$IMAGE_ID" -ceu \
       'if test -e /proc/self/fd/3; then exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@" 3<&3; fi; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@"' \
@@ -202,6 +292,7 @@ run_harness() {
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
+      --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
       --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
       --entrypoint /bin/sh "$IMAGE_ID" -ceu \
       'if test -e /proc/self/fd/3; then exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@" 3<&3; fi; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@"' \
@@ -218,6 +309,7 @@ if test "$COMMAND" = reboot-request; then
   ' "$EVIDENCE_ROOT/reboot.json"
   sync -f "$EVIDENCE_ROOT/reboot.json"
   sync -f "$EVIDENCE_ROOT"
+  HOST_REBOOT_COMMITTED=yes
   cleanup_unit16
   BROKER_PID=
   PRIVATE_ROOT=

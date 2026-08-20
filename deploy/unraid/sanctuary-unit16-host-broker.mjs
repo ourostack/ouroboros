@@ -8,6 +8,8 @@ import { createServer } from "node:net"
 const KEY_ROOT = "/boot/config/plugins/dynamix.my.servers/keys"
 const RECOVERY_ROOT = "/mnt/user/appdata/ouro-butler/acceptance/revoked-key-proof"
 const UNRAID_API = "/usr/local/sbin/unraid-api"
+const DOCKER = "/usr/bin/docker"
+const PRODUCTION_CONTAINER = "ouro-butler"
 const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
 const BOOT_ID = "/proc/sys/kernel/random/boot_id"
 const TARGET_SERVER = "sanctuary-unraid"
@@ -16,6 +18,8 @@ const KEY_ID = /^[A-Za-z0-9._:-]+$/u
 const KEY_NAME = /^Butler (?:RO|RW)(?: Rotation [0-9a-f]{16})?$/u
 const PERMISSION = /^[A-Z_]+:(?:CREATE|READ|UPDATE|DELETE)_(?:ANY|OWN)$/u
 const MAX_REQUEST = 256 * 1024
+const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
+let expectedImageId = ""
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -86,6 +90,42 @@ function runUnraid(args) {
   return object(JSON.parse(result.stdout), "Unraid API response")
 }
 
+function containerSnapshot(expectedImage) {
+  text(expectedImage, "expected image id", IMAGE_ID)
+  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}}}'
+  const result = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
+    cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" },
+    stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("bounded production container inspection failed")
+  const value = object(JSON.parse(result.stdout), "production container inspection")
+  if (value.imageId !== expectedImage || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) {
+    throw new Error("production container identity is invalid")
+  }
+  const ports = object(value.ports ?? {}, "published ports")
+  const publishedPortCount = Object.values(ports).reduce((count, bindings) => count + (Array.isArray(bindings) ? bindings.length : 0), 0)
+  const mounts = Array.isArray(value.mounts) ? value.mounts.map((raw) => {
+    const mount = object(raw, "container mount")
+    return { destination: mount.Destination, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
+  }).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : []
+  return {
+    schemaVersion: 1,
+    containerId: text(value.containerId, "container id", /^[0-9a-f]{64}$/u),
+    imageId: expectedImage,
+    running: value.running === true,
+    health: text(value.health, "container health", /^(?:healthy|starting|unhealthy|missing)$/u),
+    user: text(value.user, "container user"),
+    readOnlyRoot: value.readOnlyRoot === true,
+    mountCount: mounts.length,
+    mountsDigest: createHash("sha256").update(JSON.stringify(mounts)).digest("hex"),
+    publishedPortCount,
+    networkMode: text(value.networkMode, "container network mode"),
+    restartPolicy: text(value.restartPolicy, "container restart policy"),
+    restartCount: value.restartCount,
+  }
+}
+
 function recoveryPath(id) { return `${RECOVERY_ROOT}/${id}.json` }
 
 function persistRecovery(record) {
@@ -115,7 +155,10 @@ function permissions(value) {
   return result
 }
 
-async function dispatch(request, dependencies = { readBootId: () => readFileSync(BOOT_ID, "utf8") }) {
+async function dispatch(request, dependencies = {
+  readBootId: () => readFileSync(BOOT_ID, "utf8"),
+  containerSnapshot: () => containerSnapshot(expectedImageId),
+}) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
   if (operation === "inventory_keys") {
@@ -184,6 +227,11 @@ async function dispatch(request, dependencies = { readBootId: () => readFileSync
     const prebootId = text(dependencies.readBootId().trim(), "boot id", /^[A-Za-z0-9-]{4,128}$/u)
     return { accepted: true, targetId: TARGET_HOST, requestId: createHash("sha256").update(`sanctuary-reboot\0${key}`).digest("hex"), prebootId, staged: true }
   }
+  if (operation === "container_snapshot") {
+    exactKeys(payload, ["operation", "targetId"], operation)
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    return dependencies.containerSnapshot()
+  }
   throw new Error("host broker operation is not whitelisted")
 }
 
@@ -196,8 +244,9 @@ function writeClosedInventory(file) {
 
 async function main() {
   if (process.getuid?.() !== 0) throw new Error("host broker must run as root")
-  const [socket, closedInventory] = process.argv.slice(2)
-  if (!socket || !closedInventory || process.argv.length !== 4) throw new Error("usage: broker <socket> <closed-inventory>")
+  const [socket, closedInventory, expectedImage] = process.argv.slice(2)
+  if (!socket || !closedInventory || !expectedImage || process.argv.length !== 5) throw new Error("usage: broker <socket> <closed-inventory> <expected-image-id>")
+  expectedImageId = text(expectedImage, "expected image id", IMAGE_ID)
   rmSync(socket, { force: true })
   writeClosedInventory(closedInventory)
   const server = createServer((connection) => {

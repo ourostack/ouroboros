@@ -1172,8 +1172,19 @@ Packaged Unit 16 acceptance execution:
   image/container/health/boot fact files. Host-only operations cross an ephemeral
   root-owned private Unix socket (root:10001 mode 0660) to a root broker extracted
   from the same exact image. The broker accepts only fixed Unraid inventory/create/
-  exact-revoke/rejection operations and a staged reboot request. The main one-shot
+  exact-revoke/rejection operations, exact production-container snapshots, and a
+  staged reboot request. Snapshot refreshes re-inspect only `ouro-butler`, require
+  its immutable image ID, and expose typed/redacted state plus a nonnegative Docker
+  restart count; scenario handles remain private to the scenario adapter. The main one-shot
   never receives the Docker socket, Unraid key directory, or a host-root mount.
+  Telegram bootstrap additionally brackets its one-shot with a host-controlled
+  poller quiescence guard: it verifies the exact healthy production container,
+  stops it with a 30-second grace bound, proves it is stopped, and mounts a
+  root-owned typed zero-poller fact. Its exit/signal trap restarts that same exact
+  container and waits up to 120 seconds for healthy recovery on both success and
+  failure. It never reads or changes Unraid autostart configuration. Every command
+  also receives a freshly generated, redacted typed container-inspect snapshot;
+  raw container environment or credential values are never captured.
 
 Audit and safety verification:
   Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and
