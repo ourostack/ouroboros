@@ -11,6 +11,7 @@ import {
   splitTelegramText,
   FileTelegramOffsetStore,
   FileTelegramUpdateInboxStore,
+  FileTelegramPendingApprovalStore,
   createTelegramLongPoll,
   createTelegramApprovalTransport,
   type TelegramPendingApprovalStore,
@@ -31,12 +32,18 @@ describe("Telegram approval callback transport", () => {
     onDecision?: ReturnType<typeof vi.fn>
     onExpire?: ReturnType<typeof vi.fn>
     apiRequest?: (method: string, body: Record<string, unknown>) => Promise<unknown>
+    save?: (records: ReturnType<TelegramPendingApprovalStore["load"]>, call: number) => void
+    handles?: string[]
+    resolveDecisionToken?: () => Promise<string | undefined>
   } = {}) {
     let records = structuredClone(input.records ?? [])
     const saves: ReturnType<TelegramPendingApprovalStore["load"]>[] = []
     const store: TelegramPendingApprovalStore = {
       load: () => structuredClone(records),
-      save: (next) => { records = structuredClone(next); saves.push(structuredClone(next)) },
+      save: (next) => {
+        input.save?.(next, saves.length + 1)
+        records = structuredClone(next); saves.push(structuredClone(next))
+      },
     }
     const calls: Array<{ method: string; body: Record<string, unknown> }> = []
     const api: TelegramBotApi = {
@@ -55,10 +62,10 @@ describe("Telegram approval callback transport", () => {
       expectedUserId: "10",
       expectedChatId: "10",
       pendingStore: store,
-      createOpaqueHandle: (() => { const values = ["approve", "deny"]; return () => values.shift() ?? "extra" })(),
+      createOpaqueHandle: (() => { const values = [...(input.handles ?? ["approve", "deny"])]; return () => values.shift() ?? "extra" })(),
       onDecision,
       onExpire: input.onExpire,
-      resolveDecisionToken: async () => "restored-secret-token",
+      resolveDecisionToken: input.resolveDecisionToken ?? (async () => "restored-secret-token"),
       now: input.now ?? (() => 1_000_000),
     })
     return { transport, calls, onDecision, records: () => records, saves }
@@ -208,6 +215,165 @@ describe("Telegram approval callback transport", () => {
     release()
     await expect(first).resolves.toMatchObject({ accepted: true })
     await expect(second).resolves.toMatchObject({ accepted: false, reason: "stale_callback" })
+  })
+
+  it("validates persisted callback handles and collisions", () => {
+    const base = { approvalId: "one", messageId: "1", approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }
+    expect(() => approvalFixture({ records: [{ ...base, approveCallbackData: `a:${"x".repeat(64)}` }] })).toThrow("1 to 64 bytes")
+    expect(() => approvalFixture({ records: [base, { ...base, approvalId: "two", approveCallbackData: "a:x", denyCallbackData: "d:y" }] })).toThrow("collision")
+  })
+
+  it("rejects generated handle collisions and rolls back both pre-send persistence failures", async () => {
+    const collision = approvalFixture({ records: [{ approvalId: "old", messageId: "1", approveCallbackData: "a:same", denyCallbackData: "d:old", expiresAt: 2_000_000 }], handles: ["same", "new"] })
+    await expect(collision.transport.sendApproval({ approvalId: "new", decisionToken: "secret", prompt: "go?" })).rejects.toThrow("collision")
+
+    for (const failureCall of [1, 2]) {
+      const fixture = approvalFixture({ save: (_records, call) => { if (call === failureCall) throw new Error(`save-${failureCall}`) } })
+      await expect(fixture.transport.sendApproval({ approvalId: "a", decisionToken: "secret", prompt: "go?" })).rejects.toThrow(`save-${failureCall}`)
+      expect(fixture.transport.listPendingDeliveries()).toEqual([])
+    }
+  })
+
+  it("falls back from exact escaped HTML to exact plaintext and validates message ids", async () => {
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = []
+    const fixture = approvalFixture({ apiRequest: async (method, body) => {
+      calls.push({ method, body })
+      if (calls.length === 1) throw new TelegramApiError("bad html", { status: 400 })
+      return { message_id: 7 }
+    } })
+    await expect(fixture.transport.sendApproval({ approvalId: "a", decisionToken: "secret", prompt: "a < b" })).resolves.toMatchObject({ messageId: "7" })
+    expect(calls).toEqual([
+      { method: "sendMessage", body: expect.objectContaining({ text: "a &lt; b", parse_mode: "HTML" }) },
+      { method: "sendMessage", body: expect.not.objectContaining({ parse_mode: "HTML" }) },
+    ])
+
+    for (const result of [null, [], {}, { message_id: "7" }, { message_id: 1.5 }, { message_id: 0 }]) {
+      const invalid = approvalFixture({ apiRequest: async () => result })
+      await expect(invalid.transport.sendApproval({ approvalId: "a", decisionToken: "secret", prompt: "go?" })).rejects.toThrow("canonical message_id")
+      expect(invalid.transport.listPendingDeliveries()).toMatchObject([{ deliveryState: "delivery_indeterminate", messageId: null }])
+    }
+  })
+
+  it("does not plaintext-retry non-400 prompt failures", async () => {
+    const apiRequest = vi.fn(async () => { throw new TelegramApiError("down", { status: 500 }) })
+    const fixture = approvalFixture({ apiRequest })
+    await expect(fixture.transport.sendApproval({ approvalId: "a", decisionToken: "secret", prompt: "go?" })).rejects.toThrow("down")
+    expect(apiRequest).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ["not_callback", { update_id: 1 }],
+    ["stale_callback", { update_id: 1, callback_query: { id: "q", from: { id: 10 } } }],
+  ])("returns %s for unsupported callback shape", async (reason, update) => {
+    await expect(approvalFixture().transport.handleUpdate(update as any)).resolves.toMatchObject({ reason })
+  })
+
+  it("handles indeterminate, unbound, and expired callback states without authority", async () => {
+    const base = { approvalId: "a", messageId: "99", approveCallbackData: "a:x", denyCallbackData: "d:x" }
+    for (const [record, reason] of [
+      [{ ...base, deliveryState: "delivery_indeterminate", expiresAt: 2_000_000 }, "delivery_indeterminate"],
+      [{ ...base, messageId: null, deliveryState: "pending", expiresAt: 2_000_000 }, "prompt_not_bound"],
+      [{ ...base, deliveryState: "bound", expiresAt: 999_999 }, "expired"],
+    ] as const) {
+      const onExpire = vi.fn()
+      const fixture = approvalFixture({ records: [record], onExpire })
+      await expect(fixture.transport.handleUpdate(approvalCallback("a:x"))).resolves.toMatchObject({ accepted: false, reason })
+      expect(fixture.onDecision).not.toHaveBeenCalled()
+      if (reason === "expired") expect(onExpire).toHaveBeenCalledWith("a")
+    }
+  })
+
+  it("reconciles an interrupted delivery when its callback reveals the message identity", async () => {
+    const record = { approvalId: "a", messageId: null, deliveryState: "send_attempting" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }
+    const fixture = approvalFixture({ records: [record] })
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:x"))).resolves.toMatchObject({ reason: "delivery_indeterminate" })
+    expect(fixture.records()).toEqual([])
+    expect(fixture.calls).toContainEqual({ method: "editMessageText", body: expect.objectContaining({ message_id: 99, reply_markup: { inline_keyboard: [] } }) })
+  })
+
+  it("tolerates stale callback acknowledgements but propagates other acknowledgement failures", async () => {
+    const stale = approvalFixture({ apiRequest: async (method) => {
+      if (method === "answerCallbackQuery") throw new TelegramApiError("query is too old", { status: 400 })
+      return { message_id: 99 }
+    } })
+    const sent = await stale.transport.sendApproval({ approvalId: "a", decisionToken: "secret", prompt: "go?" })
+    await expect(stale.transport.handleUpdate(approvalCallback(sent.denyCallbackData))).resolves.toMatchObject({ accepted: true })
+    expect(stale.onDecision).toHaveBeenCalledWith(expect.objectContaining({ decision: "deny" }))
+
+    const failed = approvalFixture({ apiRequest: async (method) => {
+      if (method === "answerCallbackQuery") throw new Error("ack down")
+      return { message_id: 99 }
+    } })
+    const failedSent = await failed.transport.sendApproval({ approvalId: "a", decisionToken: "secret", prompt: "go?" })
+    await expect(failed.transport.handleUpdate(approvalCallback(failedSent.approveCallbackData))).rejects.toThrow("ack down")
+    expect(failed.transport.listPendingDeliveries()).toHaveLength(1)
+  })
+
+  it("covers terminal edit idempotence, plaintext fallback, and hard failures", async () => {
+    const record = { approvalId: "a", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 999_999 }
+    const idempotent = approvalFixture({ records: [{ ...record, terminal: { accepted: false, terminalText: "done" } }], apiRequest: async () => { throw new TelegramApiError("message is not modified", { status: 400 }) } })
+    await expect(idempotent.transport.reconcileExpired()).resolves.toBeUndefined()
+
+    let unchangedCalls = 0
+    const fallbackUnchanged = approvalFixture({ records: [record], apiRequest: async () => {
+      unchangedCalls += 1
+      throw new TelegramApiError(unchangedCalls === 1 ? "bad html" : "message is not modified", { status: 400 })
+    } })
+    await expect(fallbackUnchanged.transport.reconcileExpired()).resolves.toBeUndefined()
+
+    let calls = 0
+    const fallback = approvalFixture({ records: [record], apiRequest: async () => {
+      calls += 1
+      if (calls === 1) throw new TelegramApiError("bad html", { status: 400 })
+      return true
+    } })
+    await fallback.transport.reconcileExpired()
+    expect(fallback.calls.at(-1)).toEqual({ method: "editMessageText", body: expect.not.objectContaining({ parse_mode: "HTML" }) })
+
+    for (const error of [new Error("down"), new TelegramApiError("down", { status: 500 }), new TelegramApiError("still bad", { status: 400 })]) {
+      let call = 0
+      const hard = approvalFixture({ records: [record], apiRequest: async () => {
+        call += 1
+        if (error instanceof TelegramApiError && error.status === 400 && call === 1) throw new TelegramApiError("bad html", { status: 400 })
+        throw error
+      } })
+      await expect(hard.transport.reconcileExpired()).rejects.toThrow()
+    }
+  })
+
+  it("requires a restored decision token and preserves refused terminal outcomes", async () => {
+    const record = { approvalId: "a", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }
+    const missing = approvalFixture({ records: [record], resolveDecisionToken: async () => undefined })
+    await expect(missing.transport.handleUpdate(approvalCallback("a:x"))).rejects.toThrow("decision token resolver")
+    expect(missing.transport.listPendingDeliveries()).toHaveLength(1)
+
+    const refused = approvalFixture({ records: [{ ...record, terminal: { accepted: false, terminalText: "refused" } }] })
+    await expect(refused.transport.handleUpdate(approvalCallback("a:x"))).resolves.toEqual({ handled: true, accepted: false, reason: "decision_refused" })
+    expect(refused.onDecision).not.toHaveBeenCalled()
+  })
+
+  it("terminalizes missing, null-message, and bound recovered approvals safely", async () => {
+    const none = approvalFixture()
+    await none.transport.terminalizeRecovered("missing", "done")
+    const record = { approvalId: "a", messageId: null, deliveryState: "delivery_indeterminate" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }
+    const indeterminate = approvalFixture({ records: [record] })
+    await indeterminate.transport.terminalizeRecovered("a", "done")
+    expect(indeterminate.transport.listPendingDeliveries()).toEqual([{ ...record, terminal: { accepted: false, terminalText: "done" } }])
+    expect(JSON.stringify(indeterminate.transport.listPendingDeliveries())).not.toContain("secret")
+  })
+
+  it("uses the wall clock by default and leaves live approvals pending during reconciliation", async () => {
+    const future = Date.now() + 60_000
+    let records = [{ approvalId: "a", messageId: "1", deliveryState: "bound" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: future }]
+    const transport = createTelegramApprovalTransport({
+      api: { request: vi.fn(), stop: vi.fn() },
+      expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: () => "opaque",
+      onDecision: vi.fn(),
+    })
+    await transport.reconcileExpired()
+    expect(transport.listPendingDeliveries()).toHaveLength(1)
   })
 })
 
@@ -377,6 +543,123 @@ describe("Telegram durable authorized long poll", () => {
     poll.stop()
     await expect(poll.pollOnce()).rejects.toThrow("stopped")
   })
+
+  it("validates, atomically saves, and defaults missing durable stores", () => {
+    const directory = makeTempDirectory("ouro-telegram-stores-")
+    const offsetPath = join(directory, "nested", "offset.json")
+    const offset = new FileTelegramOffsetStore(offsetPath)
+    expect(offset.load()).toBe(0)
+    offset.save(0)
+    expect(offset.load()).toBe(0)
+    for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) expect(() => offset.save(invalid)).toThrow("non-negative")
+    for (const invalid of [{}, { nextUpdateId: -1 }, { nextUpdateId: 1.5 }]) {
+      writeFileSync(offsetPath, JSON.stringify(invalid))
+      expect(() => offset.load()).toThrow("offset state is corrupt")
+    }
+
+    const inboxPath = join(directory, "inbox.json")
+    const inbox = new FileTelegramUpdateInboxStore(inboxPath)
+    expect(inbox.load()).toEqual([])
+    expect(inbox.loadPending()).toEqual([])
+    expect(inbox.loadIndeterminate()).toEqual([])
+    const one = { update_id: 2, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "two" } }
+    const zero = { update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "one" } }
+    expect(inbox.capture(one)).toBe(true)
+    expect(inbox.capture(zero)).toBe(true)
+    expect(inbox.loadPending().map((update) => update.update_id)).toEqual([1, 2])
+    expect(inbox.capture(zero)).toBe(false)
+    expect(inbox.claim(99)).toBe(false)
+    expect(inbox.claim(1)).toBe(true)
+    expect(inbox.claim(1)).toBe(false)
+    inbox.complete(1)
+    inbox.complete(1)
+    expect(inbox.capture(zero)).toBe(false)
+    inbox.discardCompletedBefore(1)
+    inbox.discardCompletedBefore(2)
+    expect(inbox.load()).toEqual([one])
+
+    const pendingPath = join(directory, "pending.json")
+    const pending = new FileTelegramPendingApprovalStore(pendingPath)
+    expect(pending.load()).toEqual([])
+    pending.save([{ approvalId: "a", messageId: null, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 1 }])
+    expect(pending.load()).toHaveLength(1)
+    writeFileSync(pendingPath, JSON.stringify({ nope: true }))
+    expect(() => pending.load()).toThrow("pending approval state is corrupt")
+
+    expect(() => new FileTelegramOffsetStore(directory).load()).toThrow()
+    const legacyInboxPath = join(directory, "legacy-inbox.json")
+    writeFileSync(legacyInboxPath, JSON.stringify({ pending: [], completedUpdateIds: [] }))
+    expect(new FileTelegramUpdateInboxStore(legacyInboxPath).load()).toEqual([])
+  })
+
+  it.each([
+    {},
+    { pending: {}, completedUpdateIds: [] },
+    { pending: [], dispatching: {}, completedUpdateIds: [] },
+    { pending: [null], completedUpdateIds: [] },
+    { pending: [], dispatching: [null], completedUpdateIds: [] },
+    { pending: [], completedUpdateIds: [-1] },
+  ])("rejects corrupt inbox state %j", (state) => {
+    const directory = makeTempDirectory("ouro-telegram-inbox-invalid-")
+    const inboxPath = join(directory, "inbox.json")
+    writeFileSync(inboxPath, JSON.stringify(state))
+    expect(() => new FileTelegramUpdateInboxStore(inboxPath).load()).toThrow("inbox state is corrupt")
+  })
+
+  it("drains pending updates, skips unclaimable work, and dispatches callbacks first", async () => {
+    const onMessage = vi.fn(async () => undefined)
+    const onUpdate = vi.fn(async (update) => Boolean(update.callback_query))
+    const pending = { update_id: 1, callback_query: { id: "cb", from: { id: 10 }, data: "opaque" } }
+    const inboxStore = {
+      loadIndeterminate: vi.fn(() => [{ update_id: 0, callback_query: { id: "old", from: { id: 10 } } }]),
+      loadPending: vi.fn(() => [pending, { update_id: 2 }]),
+      claim: vi.fn((id: number) => id === 1),
+      complete: vi.fn(), capture: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
+    }
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => []) }
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, inboxStore, onMessage, onUpdate })
+    await expect(poll.pollOnce()).resolves.toBe(0)
+    expect(onUpdate).toHaveBeenCalledWith(pending)
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(inboxStore.complete).toHaveBeenCalledWith(1)
+  })
+
+  it("rejects non-array updates and skips invalid, duplicate, and unclaimable durable updates", async () => {
+    const offsetStore = { load: () => 2, save: vi.fn() }
+    const invalidApi: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => ({})) }
+    const invalid = createTelegramLongPoll({ api: invalidApi, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage: vi.fn() })
+    await expect(invalid.pollOnce()).rejects.toThrow("must be an array")
+
+    const onMessage = vi.fn()
+    const inboxStore = {
+      loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      capture: vi.fn(() => true), claim: vi.fn(() => false), complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
+    }
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => [null, { update_id: 1 }, { update_id: 2.5 }, {
+      update_id: 2, callback_query: { id: "cb", from: { id: 10 }, data: "x" },
+    }]) }
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, inboxStore, onMessage })
+    await expect(poll.pollOnce()).resolves.toBe(3)
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(inboxStore.capture).toHaveBeenCalledOnce()
+    expect(inboxStore.complete).not.toHaveBeenCalled()
+  })
+
+  it("runs until externally aborted and combines the caller signal", async () => {
+    const controller = new AbortController()
+    const request = vi.fn(async () => { controller.abort(); return [] })
+    const poll = createTelegramLongPoll({ api: { request, stop: vi.fn() }, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, onMessage: vi.fn() })
+    await poll.run(controller.signal)
+    expect(request).toHaveBeenCalledOnce()
+  })
+
+  it("runs without a caller signal until stopped", async () => {
+    let poll!: ReturnType<typeof createTelegramLongPoll>
+    const request = vi.fn(async () => { poll.stop(); return [] })
+    poll = createTelegramLongPoll({ api: { request, stop: vi.fn() }, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, onMessage: vi.fn() })
+    await poll.run()
+    expect(request).toHaveBeenCalledOnce()
+  })
 })
 
 describe("Telegram HTML rendering and chunking", () => {
@@ -429,6 +712,38 @@ describe("Telegram HTML rendering and chunking", () => {
     const always400: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => { throw new TelegramApiError("bad", { status: 400 }) }) }
     await expect(sendTelegramText(always400, "42", "hello")).rejects.toThrow("bad")
     expect(always400.request).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    [{ targetUnits: 0 }, "limits"],
+    [{ targetUnits: 1.5 }, "limits"],
+    [{ targetUnits: 2, maxUnits: 1 }, "limits"],
+    [{ maxUnits: 1.5 }, "limits"],
+  ])("rejects invalid chunk limits %#", (options, message) => {
+    expect(() => splitTelegramText("hello", options)).toThrow(message)
+  })
+
+  it("handles empty text plus newline and whitespace boundaries", () => {
+    expect(splitTelegramText("")).toEqual([""])
+    expect(splitTelegramText("aaaa\nbbbb", { targetUnits: 6, maxUnits: 8 })).toEqual(["aaaa\n", "bbbb"])
+    expect(splitTelegramText("aaa bbbb", { targetUnits: 6, maxUnits: 8 })).toEqual(["aaa ", "bbbb"])
+  })
+
+  it("rejects a rendered character that cannot fit the maximum", () => {
+    expect(() => splitTelegramText("&", { targetUnits: 1, maxUnits: 1 })).toThrow("cannot fit one character")
+  })
+
+  it.each([null, [], { message_id: 0 }, { message_id: 1.5 }])("rejects malformed send receipt %j", async (result) => {
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => result) }
+    await expect(sendTelegramText(api, "42", "hello")).rejects.toThrow("canonical message_id")
+  })
+
+  it("sends every chunk with the exact caller signal", async () => {
+    const controller = new AbortController()
+    let id = 0
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => ({ message_id: ++id })) }
+    await expect(sendTelegramText(api, "42", "x".repeat(1_201), controller.signal)).resolves.toEqual([1, 2])
+    for (const call of (api.request as any).mock.calls) expect(call[2]).toBe(controller.signal)
   })
 })
 
@@ -488,5 +803,50 @@ describe("Telegram rate limiting and shutdown", () => {
     stoppable.stop()
     await expect(pending).rejects.toThrow()
     expect(blockingFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it("supports a custom API root and default platform fetch", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ ok: true, result: true }))
+    vi.stubGlobal("fetch", fetch)
+    try {
+      const api = createTelegramBotApi({ token, apiRoot: "https://telegram.example/" })
+      await expect(api.request("getMe", {})).resolves.toBe(true)
+      expect(fetch).toHaveBeenCalledWith(`https://telegram.example/bot${token}/getMe`, expect.objectContaining({
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      }))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("uses and aborts the default bounded retry sleep", async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const fetch = vi.fn(async () => jsonResponse({ ok: false, error_code: 429, parameters: { retry_after: 1 } }, 429))
+      const api = createTelegramBotApi({ token, fetch })
+      const pending = api.request("getMe", {}, controller.signal)
+      const rejected = expect(pending).rejects.toThrow()
+      await vi.advanceTimersByTimeAsync(1)
+      controller.abort(new Error("caller stopped"))
+      await rejected
+      expect(fetch).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("records numeric Bot API metadata and default error descriptions without leaking tokens", async () => {
+    const api = createTelegramBotApi({ token, fetch: vi.fn(async () => jsonResponse({ ok: false, error_code: "bad", parameters: { retry_after: "later" } }, 400)) })
+    const error = await api.request("getMe", {}).catch((caught) => caught) as TelegramApiError
+    expect(error).toMatchObject({ message: "Telegram request failed", status: 400, errorCode: null, retryAfterSeconds: null })
+
+    const primitive = createTelegramBotApi({ token, fetch: vi.fn(async () => { throw token }) })
+    await expect(primitive.request("getMe", {})).rejects.toMatchObject({ message: "[redacted]" })
+  })
+
+  it("covers a successful envelope on a non-OK HTTP status", async () => {
+    const api = createTelegramBotApi({ token, fetch: vi.fn(async () => jsonResponse({ ok: true, result: true }, 500)) })
+    await expect(api.request("getMe", {})).rejects.toMatchObject({ status: 500 })
   })
 })
