@@ -112,6 +112,7 @@ describe("generic OpenAI-compatible provider", () => {
   it.each([
     ["a non-Error rejection", "secret-never-print", undefined],
     ["an Error with a transport code", Object.assign(new Error("secret-never-print"), { code: "ECONNRESET" }), "ECONNRESET"],
+    ["an Error with a secret-bearing transport code", Object.assign(new Error("failed"), { code: "secret-never-print" }), "[redacted]"],
     ["an Error with a non-finite status", Object.assign(new Error("secret-never-print"), { status: Number.NaN }), undefined],
   ])("redacts and safely normalizes %s", async (_label, rejected, expectedCode) => {
     const runtime = createOpenAICompatibleProviderRuntime("openai-compatible", "glm-5.2", {
