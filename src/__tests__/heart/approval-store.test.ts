@@ -193,6 +193,19 @@ describe("approval store", () => {
     expect(persisted.includes(Buffer.from(rawMessage))).toBe(false)
   })
 
+  it.each([
+    { legacyUserId: "", legacyChatId: "817263540123456789", subject: `tg_${"a".repeat(43)}` },
+    { legacyUserId: "918273645012345678", legacyChatId: "", subject: `tg_${"a".repeat(43)}` },
+    { legacyUserId: "918273645012345678", legacyChatId: "817263540123456789", subject: "raw-subject" },
+  ])("rejects invalid Telegram identity migration coordinates", (input) => {
+    const store = open()
+
+    expect(() => store.migrateTelegramIdentity?.(input)).toThrowError(
+      new ApprovalStoreError("invalid_telegram_identity_migration"),
+    )
+    store.close()
+  })
+
   it("canonicalizes JSON object keys recursively before hashing", () => {
     const left = canonicalApprovalArguments({ z: [3, { b: true, a: null }], a: "x" })
     const right = canonicalApprovalArguments({ a: "x", z: [3, { a: null, b: true }] })
