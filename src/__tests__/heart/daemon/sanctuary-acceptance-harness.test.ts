@@ -425,7 +425,20 @@ describe("Sanctuary acceptance harness", () => {
     expect(wrapper).toContain("--config")
     expect(wrapper).toContain("--contract")
     expect(adapterWrapper).toContain("sanctuary-acceptance-adapter.js")
-    expect(`${wrapper}\n${adapterWrapper}\n${JSON.stringify(contract)}`).not.toMatch(/token|password|api[_-]?key/iu)
+    expect(`${wrapper}\n${adapterWrapper}`).not.toMatch(/token|password|api[_-]?key/iu)
+
+    const stringValues = (value: unknown): string[] => {
+      if (typeof value === "string") return [value]
+      if (Array.isArray(value)) return value.flatMap(stringValues)
+      if (value && typeof value === "object") return Object.values(value).flatMap(stringValues)
+      return []
+    }
+    const secretShapedValue = /(?:\bBearer\s+\S+|\bsk-[A-Za-z0-9_-]{12,}|\b\d{6,}:[A-Za-z0-9_-]{20,})/u
+    expect(stringValues(contract)).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(secretShapedValue),
+    ]))
+    expect(stringValues({ telegramCredentialField: "8541786263:abcdefghijklmnopqrstuvwxyzABCDE" }))
+      .toEqual(expect.arrayContaining([expect.stringMatching(secretShapedValue)]))
   })
 
   it("hard-times-out packaged adapters and Telegram network requests", async () => {
