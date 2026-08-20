@@ -787,8 +787,11 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
       expect(calls.match(/^inventory$/gmu)).toHaveLength(2)
       expect(calls.match(new RegExp(`^verify ${ids.READ_ID} read-only$`, "gmu"))).toHaveLength(2)
       expect(calls.match(new RegExp(`^verify ${ids.WRITE_ID} bounded-write$`, "gmu"))).toHaveLength(2)
-      expect(calls.lastIndexOf(`verify ${ids.READ_ID} read-only`)).toBeGreaterThan(calls.indexOf(`rejected ${ids.LEGACY_ID}`))
-      expect(calls.lastIndexOf(`verify ${ids.WRITE_ID} bounded-write`)).toBeGreaterThan(calls.indexOf(`rejected ${ids.LEGACY_ID}`))
+      const oldReadRejected = calls.indexOf(`rejected ${ids.OLD_READ_ID}`)
+      const oldWriteRejected = calls.indexOf(`rejected ${ids.OLD_WRITE_ID}`)
+      expect(oldWriteRejected).toBeGreaterThan(oldReadRejected)
+      expect(calls.lastIndexOf(`verify ${ids.READ_ID} read-only`)).toBeGreaterThan(oldWriteRejected)
+      expect(calls.lastIndexOf(`verify ${ids.WRITE_ID} bounded-write`)).toBeGreaterThan(oldWriteRejected)
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
