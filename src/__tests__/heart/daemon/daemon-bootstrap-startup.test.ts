@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from "vitest"
 
+const startupMocks = vi.hoisted(() => ({
+  emit: vi.fn(),
+  writeTombstone: vi.fn(),
+}))
+
+vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: startupMocks.emit }))
+vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
+  writeDaemonTombstone: startupMocks.writeTombstone,
+}))
+
 import {
   failFastContainerCredentialBootstrapStartup,
   startDaemonAfterContainerCredentialBootstrap,
@@ -10,12 +20,14 @@ describe("daemon container credential bootstrap startup boundary", () => {
     let releaseBootstrap!: () => void
     const loadBootstrap = vi.fn(() => new Promise<void>((resolve) => { releaseBootstrap = resolve }))
     const startDaemon = vi.fn(async () => undefined)
-    const onBootstrapRejected = vi.fn()
+    const markStartupFailure = vi.fn()
+    const exit = vi.fn()
 
     const startup = startDaemonAfterContainerCredentialBootstrap({
       loadBootstrap,
       startDaemon,
-      onBootstrapRejected,
+      markStartupFailure,
+      exit,
     })
     await Promise.resolve()
     expect(startDaemon).not.toHaveBeenCalled()
@@ -23,42 +35,43 @@ describe("daemon container credential bootstrap startup boundary", () => {
     releaseBootstrap()
     await expect(startup).resolves.toBe(true)
     expect(startDaemon).toHaveBeenCalledTimes(1)
-    expect(onBootstrapRejected).not.toHaveBeenCalled()
+    expect(markStartupFailure).not.toHaveBeenCalled()
+    expect(exit).not.toHaveBeenCalled()
   })
 
   it("terminates the startup branch without starting or forwarding a raw bootstrap rejection", async () => {
     const loadBootstrap = vi.fn(async () => { throw new Error("secret-bearing rejection") })
     const startDaemon = vi.fn(async () => undefined)
-    const onBootstrapRejected = vi.fn()
+    const markStartupFailure = vi.fn()
+    const exit = vi.fn()
 
     await expect(startDaemonAfterContainerCredentialBootstrap({
       loadBootstrap,
       startDaemon,
-      onBootstrapRejected,
+      markStartupFailure,
+      exit,
     })).resolves.toBe(false)
-    expect(onBootstrapRejected).toHaveBeenCalledWith()
+    expect(markStartupFailure).toHaveBeenCalledWith()
     expect(startDaemon).not.toHaveBeenCalled()
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("secret-bearing rejection")
+    expect(JSON.stringify(startupMocks.emit.mock.calls)).not.toContain("secret-bearing rejection")
   })
 
   it("writes only a fixed redacted startup failure and exits PID 1 nonzero immediately", () => {
-    const calls: string[] = []
-    const writeTombstone = vi.fn((reason: string, error: Error) => {
-      calls.push(`tombstone:${reason}:${error.message}`)
-    })
-    const emit = vi.fn((event: unknown) => {
-      calls.push(`event:${JSON.stringify(event)}`)
-    })
-    const exit = vi.fn((code: number) => { calls.push(`exit:${code}`) })
+    startupMocks.writeTombstone.mockClear()
+    startupMocks.emit.mockClear()
+    const exit = vi.fn()
 
-    failFastContainerCredentialBootstrapStartup({ writeTombstone, emit, exit })
+    failFastContainerCredentialBootstrapStartup({ exit })
 
-    expect(writeTombstone).toHaveBeenCalledWith(
+    expect(startupMocks.writeTombstone).toHaveBeenCalledWith(
       "startupFailure",
       expect.objectContaining({
         message: "container credential bootstrap rejected; recoverable claim retained for reconciliation",
       }),
     )
-    expect(emit).toHaveBeenCalledWith({
+    expect(startupMocks.emit).toHaveBeenCalledWith({
       level: "error",
       component: "daemon",
       event: "daemon.entry_error",
@@ -68,23 +81,21 @@ describe("daemon container credential bootstrap startup boundary", () => {
       },
     })
     expect(exit).toHaveBeenCalledWith(1)
-    expect(calls.map((call) => call.split(":", 1)[0])).toEqual(["tombstone", "event", "exit"])
-    expect(JSON.stringify(calls)).not.toContain("secret-bearing rejection")
+    expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("secret-bearing rejection")
+    expect(JSON.stringify(startupMocks.emit.mock.calls)).not.toContain("secret-bearing rejection")
   })
 
   it("still exits nonzero when tombstone or event reporting fails", () => {
     const exitAfterTombstoneFailure = vi.fn()
+    startupMocks.writeTombstone.mockImplementationOnce(() => { throw new Error("disk unavailable") })
     failFastContainerCredentialBootstrapStartup({
-      writeTombstone: () => { throw new Error("disk unavailable") },
-      emit: vi.fn(),
       exit: exitAfterTombstoneFailure,
     })
     expect(exitAfterTombstoneFailure).toHaveBeenCalledWith(1)
 
     const exitAfterEventFailure = vi.fn()
+    startupMocks.emit.mockImplementationOnce(() => { throw new Error("logger unavailable") })
     failFastContainerCredentialBootstrapStartup({
-      writeTombstone: vi.fn(),
-      emit: () => { throw new Error("logger unavailable") },
       exit: exitAfterEventFailure,
     })
     expect(exitAfterEventFailure).toHaveBeenCalledWith(1)
