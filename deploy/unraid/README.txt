@@ -1133,24 +1133,47 @@ Packaged Unit 16 acceptance execution:
       --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit16-run.sh >"$UNIT16_LAUNCHER_TMP"
     install -m 0755 -o root -g root "$UNIT16_LAUNCHER_TMP" "$UNIT16_ROOT/sanctuary-unit16-run.sh"
     rm -f -- "$UNIT16_LAUNCHER_TMP"
-  Place one reviewed JSON config per command at the exact paths below. Every
-  config must be a regular, non-symlink file owned by 10001:10001 with mode 0600
-  and must set `allowedRoot` to exactly `/evidence`; every evidence path in a
-  config is relative to that root. The launcher validates those invariants,
-  revalidates IMAGE_ID, and creates a bounded one-shot from that exact image
-  with a read-only root filesystem, read-only config/runtime/bundle mounts, one
-  writable evidence-root mount, host network, no Docker socket, and no host-root
-  mount. Invoke the complete packaged harness only as follows:
+  Never hand-author a Unit 16 config. Materialize it from the exact image, then
+  execute it in the order below. Before every execution the launcher regenerates
+  the config from the packaged fixed contract and requires byte-for-byte equality.
+  The cursor snapshot is deliberately materialized and executed twice around the
+  live scenario. Telegram bootstrap reads the new bot token from standard input;
+  callback injection reads the reviewed saved callback-update JSON from standard
+  input. Neither value belongs in argv, shell history, or a config file.
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize telegram-bootstrap
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" telegram-bootstrap telegram-bootstrap.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot before
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
+    # Perform the live scenario whose cursor movement is being measured.
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot after
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-delta
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-delta cursor-delta.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize callback-inject
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize unraid-key-rotate
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" unraid-key-rotate unraid-key-rotate.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-snapshot evidence-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-request
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-request reboot-request.json
+    # The preceding command verifies and fsyncs the requested checkpoint, then
+    # invokes the host reboot. Reconnect only after Unraid and Docker are ready.
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-resume
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-resume reboot-resume.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-snapshot
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-snapshot evidence-snapshot.json
+    # Complete the documented post-boot scenario matrix before indexing it.
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-index
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-index evidence-bundle-index.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-verify
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-verify evidence-bundle-verify.json
+  Each execution revalidates the immutable image and the production container's
+  exact image ID. The main one-shot gets a read-only root filesystem, one writable
+  evidence mount, narrowly selected runtime/bundle modes, and individual read-only
+  image/container/health/boot fact files. Host-only operations cross an ephemeral
+  root-owned private Unix socket (root:10001 mode 0660) to a root broker extracted
+  from the same exact image. The broker accepts only fixed Unraid inventory/create/
+  exact-revoke/rejection operations and a staged reboot request. The main one-shot
+  never receives the Docker socket, Unraid key directory, or a host-root mount.
 
 Audit and safety verification:
   Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and
@@ -1173,8 +1196,9 @@ Audit and safety verification:
   delta, or probe response fails closed.
 
   Record only IDs, names, and permission sets in evidence; never raw key values.
-  Raw credentials must not appear in argv, shell history, logs, sockets, or
-  acceptance evidence. The narrow revocation-retry recovery records under
+  Raw credentials must not appear in argv, shell history, stdout, logs, or
+  acceptance evidence. They may cross only the ephemeral private Unit 16 Unix
+  socket in process memory. The narrow revocation-retry recovery records under
   `/mnt/user/appdata/ouro-butler/acceptance/revoked-key-proof` are the sole file
   exception: they are root-owned mode 0600 beneath a root-owned mode 0700
   directory, excluded from backup/evidence, streamed only on standard input to
