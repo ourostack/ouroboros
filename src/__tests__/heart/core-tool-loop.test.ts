@@ -1583,7 +1583,7 @@ describe("runAgent tool loop guard", () => {
     })
 
     it.each([
-      ["unadvertised tool", "not_advertised", [], JSON.stringify({ command: "docker restart calibre-web" })],
+      ["unadvertised tool", "not_advertised", [], JSON.stringify({ command: "docker restart calibre-web" }), "was not advertised"],
       ["invalid advertised schema", "shell", [{
         type: "function",
         function: {
@@ -1591,8 +1591,8 @@ describe("runAgent tool loop guard", () => {
           description: "invalid schema fixture",
           parameters: { type: "not-a-json-schema-type" },
         },
-      }], JSON.stringify({ command: "docker restart calibre-web" })],
-    ])("fails closed for %s before proposal or execution", async (_label, name, tools, rawArguments) => {
+      }], JSON.stringify({ command: "docker restart calibre-web" }), "invalid tool arguments"],
+    ])("fails closed for %s before proposal or execution", async (_label, name, tools, rawArguments, expectedFragment) => {
       mockCreate.mockReset()
       mockCreate.mockReturnValueOnce(streamedCall(name, rawArguments, "call_schema_drift"))
       mockCreate.mockReturnValueOnce(settled("schema rejected"))
@@ -1614,7 +1614,7 @@ describe("runAgent tool loop guard", () => {
       expect(messages).toContainEqual(expect.objectContaining({
         role: "tool",
         tool_call_id: "call_schema_drift",
-        content: expect.stringContaining("invalid tool arguments"),
+        content: expect.stringContaining(expectedFragment),
       }))
     })
 

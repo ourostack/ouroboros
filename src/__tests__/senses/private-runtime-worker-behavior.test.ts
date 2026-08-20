@@ -12,6 +12,7 @@ const {
   mockIsSafeHabitRunId,
   mockWriteHabitRunReceipt,
   mockReserveAutonomyBudget,
+  mockResolveAutonomyBudgetPolicy,
   mockApplyHabitRuntimeState,
   mockReadHabitSessionSummary,
   mockReadFileSync,
@@ -28,6 +29,7 @@ const {
   mockIsSafeHabitRunId: vi.fn(() => true),
   mockWriteHabitRunReceipt: vi.fn(),
   mockReserveAutonomyBudget: vi.fn(),
+  mockResolveAutonomyBudgetPolicy: vi.fn(),
   mockApplyHabitRuntimeState: vi.fn((_agentRoot: string, habit: any) => habit),
   mockReadHabitSessionSummary: vi.fn(() => null),
   mockReadFileSync: vi.fn(),
@@ -93,6 +95,7 @@ vi.mock("../../arc/flight-recorder", () => ({
 
 vi.mock("../../heart/autonomy-budget", () => ({
   reserveAutonomyBudget: (...args: any[]) => mockReserveAutonomyBudget(...args),
+  resolveAutonomyBudgetPolicy: (...args: any[]) => mockResolveAutonomyBudgetPolicy(...args),
 }))
 
 import { createPrivateRuntimeWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startPrivateRuntimeWorker } from "../../senses/private-runtime-worker"
@@ -123,6 +126,18 @@ describe("private-runtime-worker", () => {
       senseOrHabit: "heartbeat",
       targetHash: "sha256:test",
       idempotencyKey: "habit:test",
+    })
+    mockResolveAutonomyBudgetPolicy.mockReset().mockReturnValue({
+      agentProactivePaidTurnsPerHour: 6,
+      agentProactivePaidTurnsPerDay: 40,
+      senseRecoveryPaidTurnsPer15m: 3,
+      senseRecoveryPaidTurnsPerDay: 12,
+      habitPaidTurnsPerDay: 4,
+      duplicateRecoveryTtlMs: 600_000,
+      duplicateHabitTtlMs: 86_400_000,
+      stormFailureThreshold: 3,
+      stormFailureWindowMs: 600_000,
+      stormBlockMs: 1_800_000,
     })
     mockApplyHabitRuntimeState.mockReset().mockImplementation((_agentRoot: string, habit: any) => habit)
     mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
@@ -1230,7 +1245,7 @@ describe("private-runtime-worker", () => {
           rsvpIdempotencyRef: "state/rsvp/outbound-state.json",
         }),
         idempotencyKey: expect.stringContaining("rsvp-wedding"),
-      }))
+      }), expect.any(Object))
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
         habitName: "rsvp-wedding",
         toolPolicy: expect.objectContaining({

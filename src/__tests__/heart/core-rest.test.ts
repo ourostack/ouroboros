@@ -423,8 +423,8 @@ describe("rest tool in runAgent", () => {
         { index: 1, function: { arguments: JSON.stringify({ path: "/tmp/foo" }) } },
       ]),
     ]))
-    // Second call: settle to end the loop
-    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    // Second call: a valid sole rest ends the private-runtime loop
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
 
     const callbacks = makeCallbacks()
     await runAgent(
@@ -439,7 +439,7 @@ describe("rest tool in runAgent", () => {
       },
     )
 
-    // Rest was rejected as sole-call violation, then settled
+    // Rest was rejected as sole-call violation, then rested
     expect(mockCreate).toHaveBeenCalledTimes(2)
   })
 
@@ -508,16 +508,18 @@ describe("rest tool in runAgent", () => {
 
   // ── Edge cases ──────────────────────────────────
 
-  it("rest handles malformed JSON arguments gracefully", async () => {
+  it("rest rejects malformed JSON arguments before handling", async () => {
     // Stream a rest call with invalid JSON arguments
     mockCreate.mockReturnValueOnce(makeStream([
       makeChunk(undefined, [{ index: 0, id: "call_rest", function: { name: "rest", arguments: "" } }]),
       makeChunk(undefined, [{ index: 0, function: { arguments: "not json" } }]),
     ]))
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
 
     const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "user", content: "heartbeat" }]
     const result = await runAgent(
-      [{ role: "user", content: "heartbeat" }],
+      messages,
       callbacks,
       "inner",
       undefined,
@@ -528,7 +530,10 @@ describe("rest tool in runAgent", () => {
       },
     )
 
-    // Should still succeed (args parse falls back to {})
+    const rejected = messages.find((message: any) =>
+      message.role === "tool" && message.tool_call_id === "call_rest" && message.content.includes("malformed JSON")
+    )
+    expect(rejected).toBeDefined()
     expect(result.outcome).toBe("rested")
   })
 

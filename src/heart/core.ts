@@ -1907,19 +1907,32 @@ export async function runAgent(
         if (invalidCall) {
           await streamCallbackBuffer?.flush()
           pushGenerated(msg)
+          const unadvertisedCall = validatedCalls.find((entry) => !activeToolNames.has(entry.call.name))
           for (const entry of validatedCalls) {
             const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
-            const rejection = `invalid tool arguments: ${detail}`
+            const rejection = unadvertisedCall
+              ? `rejected: ${entry.call.name} was not advertised for this channel; no handler was executed.`
+              : `invalid tool arguments: ${detail}`
             pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
             providerRuntime.appendToolOutput(entry.call.id, rejection)
           }
-          emitNervesEvent({
-            level: "warn",
-            component: "engine",
-            event: "engine.tool_arguments_rejected",
-            message: "tool batch rejected before execution because arguments were invalid",
-            meta: { toolCallId: invalidCall.call.id, toolName: invalidCall.call.name },
-          })
+          if (unadvertisedCall) {
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.unadvertised_tool_blocked",
+              message: "blocked an unadvertised tool call before batch execution",
+              meta: { channel: String(channel), toolName: unadvertisedCall.call.name },
+            })
+          } else {
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.tool_arguments_rejected",
+              message: "tool batch rejected before execution because arguments were invalid",
+              meta: { toolCallId: invalidCall.call.id, toolName: invalidCall.call.name },
+            })
+          }
           continue
         }
         const validCalls = validatedCalls as Array<{
