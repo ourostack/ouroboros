@@ -4,6 +4,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  fstatSync,
   fsyncSync,
   linkSync,
   lstatSync,
@@ -14,6 +15,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs"
+import { constants as fsConstants } from "node:fs"
 import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -285,9 +287,12 @@ export const SANCTUARY_UNIT_16_EVIDENCE_LABELS = [
   "unit-16m-restart-continuation",
 ] as const
 
-function assertRedactedEvidence(value: unknown, label: string): void {
+const SAFE_OPERATIONAL_NUMBER_KEY = /(?:at|time|timestamp|duration|latency|counter|count|total|units|bytes|percent|status|code|port|ttl|interval|timeout|attempts|claims|mutations|generation|version|concurrency|index)$/iu
+const RAW_LONG_DECIMAL = /^-?\d{5,16}$/u
+
+function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
   if (Array.isArray(value)) {
-    for (const item of value) assertRedactedEvidence(item, label)
+    for (const item of value) assertRedactedEvidence(item, label, key)
     return
   }
   if (value && typeof value === "object") {
@@ -295,12 +300,17 @@ function assertRedactedEvidence(value: unknown, label: string): void {
       if (/(?:telegram)?(?:user|chat|update|message)[_-]?id|token|secret|password|credential|api[_-]?key/iu.test(key)) {
         throw new Error(`${label} contains a sensitive or raw Telegram identity field`)
       }
-      assertRedactedEvidence(item, label)
+      assertRedactedEvidence(item, label, key)
     }
     return
   }
   if (typeof value === "string" && /\b\d{5,}:[A-Za-z0-9_-]{20,}\b/u.test(value)) {
     throw new Error(`${label} contains sensitive material`)
+  }
+  if (((typeof value === "string" && RAW_LONG_DECIMAL.test(value))
+    || (typeof value === "number" && Number.isSafeInteger(value) && Math.abs(value) >= 10_000))
+    && !SAFE_OPERATIONAL_NUMBER_KEY.test(key)) {
+    throw new Error(`${label} contains a raw Telegram identity-like decimal value`)
   }
 }
 
@@ -311,6 +321,57 @@ function normalizedEvidenceHash(value: unknown): string {
 function exactEvidenceLabels(entries: Array<{ label: string }>): boolean {
   return JSON.stringify(entries.map((entry) => entry.label).sort())
     === JSON.stringify([...SANCTUARY_UNIT_16_EVIDENCE_LABELS].sort())
+}
+
+interface EvidenceProvenance {
+  imageDigest: string
+  containerDigest: string
+  cursorDigest: string
+  harnessSha256: string
+}
+
+function packagedHarnessSha256(value: unknown): string {
+  const configured = text(value, "harnessPath")
+  if (!path.isAbsolute(configured)) throw new Error("harnessPath must be absolute")
+  const resolved = path.resolve(configured)
+  const handle = openSync(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+  try {
+    const metadata = fstatSync(handle)
+    if (!metadata.isFile()) throw new Error("packaged harness must be a regular file")
+    if ((metadata.mode & 0o022) !== 0) throw new Error("packaged harness must not be group- or world-writable")
+    if (realpathSync(resolved) !== resolved) throw new Error("packaged harness path must be canonical")
+    return createHash("sha256").update(readFileSync(handle)).digest("hex")
+  } finally {
+    closeSync(handle)
+  }
+}
+
+function evidenceProvenance(value: unknown, label: string): EvidenceProvenance {
+  const provenance = object(value, `${label} provenance`)
+  const expectedKeys = ["containerDigest", "cursorDigest", "harnessSha256", "imageDigest"]
+  if (JSON.stringify(Object.keys(provenance).sort()) !== JSON.stringify(expectedKeys)) {
+    throw new Error(`${label} provenance must contain the exact continuity coordinates`)
+  }
+  return {
+    imageDigest: opaqueDigest(provenance.imageDigest, `${label} imageDigest`),
+    containerDigest: opaqueDigest(provenance.containerDigest, `${label} containerDigest`),
+    cursorDigest: opaqueDigest(provenance.cursorDigest, `${label} cursorDigest`),
+    harnessSha256: opaqueDigest(provenance.harnessSha256, `${label} harnessSha256`),
+  }
+}
+
+function completeEvidenceContract(value: JsonObject, label: string): EvidenceProvenance {
+  if (value.schemaVersion !== 1 || value.operation !== label || value.phase !== "complete") {
+    throw new Error(`${label} evidence contract must use schemaVersion 1, its exact operation, and phase complete`)
+  }
+  return evidenceProvenance(value.provenance, label)
+}
+
+function sameProvenance(left: EvidenceProvenance, right: EvidenceProvenance): boolean {
+  return left.imageDigest === right.imageDigest
+    && left.containerDigest === right.containerDigest
+    && left.cursorDigest === right.cursorDigest
+    && left.harnessSha256 === right.harnessSha256
 }
 
 async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
@@ -325,20 +386,28 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
   if (!exactEvidenceLabels(requested) || new Set(requested.map((entry) => entry.label)).size !== requested.length) {
     throw new Error("evidence entries must equal the complete Unit 16 evidence matrix")
   }
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
   const byLabel = new Map(requested.map((entry) => [entry.label, entry.path]))
+  let continuity: EvidenceProvenance | undefined
   const entries = SANCTUARY_UNIT_16_EVIDENCE_LABELS.map((label) => {
     const source = requirePrivateRegularFile(root, byLabel.get(label), `${label} evidence`)
     const value = object(JSON.parse(readFileSync(source, "utf8")) as unknown, `${label} evidence`)
     assertRedactedEvidence(value, label)
+    const provenance = completeEvidenceContract(value, label)
+    if (provenance.harnessSha256 !== harnessSha256) throw new Error(`${label} harness provenance does not match the packaged harness bytes`)
+    continuity ??= provenance
+    if (!sameProvenance(continuity, provenance)) throw new Error(`${label} provenance breaks image, container, cursor, or harness continuity`)
     return { label, sha256: normalizedEvidenceHash(value), evidence: value }
   })
+  if (!continuity) throw new Error("evidence provenance is missing")
   const core = {
     schemaVersion: 1,
     operation: "sanctuary-unit-16-evidence-bundle",
     phase: "complete",
-    imageDigest: opaqueDigest(config.imageDigest, "imageDigest"),
-    containerDigest: opaqueDigest(config.containerDigest, "containerDigest"),
-    cursorDigest: opaqueDigest(config.cursorDigest, "cursorDigest"),
+    imageDigest: continuity.imageDigest,
+    containerDigest: continuity.containerDigest,
+    cursorDigest: continuity.cursorDigest,
+    harnessSha256,
     entries,
   }
   initializeCheckpoint(root, evidencePath, { ...core, bundleDigest: normalizedEvidenceHash(core), completedAt: deps.now() })
@@ -347,15 +416,21 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
 function verifyEvidenceBundle(config: JsonObject): void {
   const root = privateAllowedRoot(config)
   const bundle = readCheckpoint(root, config.evidencePath)
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
   if (bundle.schemaVersion !== 1 || bundle.operation !== "sanctuary-unit-16-evidence-bundle" || bundle.phase !== "complete") {
     throw new Error("evidence bundle header is invalid")
   }
   if (!Array.isArray(bundle.entries)) throw new Error("evidence bundle entries must be an array")
+  let continuity: EvidenceProvenance | undefined
   const entries = bundle.entries.map((raw) => {
     const entry = object(raw, "evidence bundle entry")
     const label = text(entry.label, "evidence bundle label")
     const evidence = object(entry.evidence, `${label} evidence`)
     assertRedactedEvidence(evidence, label)
+    const provenance = completeEvidenceContract(evidence, label)
+    if (provenance.harnessSha256 !== harnessSha256) throw new Error(`${label} harness provenance does not match the packaged harness bytes`)
+    continuity ??= provenance
+    if (!sameProvenance(continuity, provenance)) throw new Error(`${label} provenance breaks image, container, cursor, or harness continuity`)
     const sha256 = opaqueDigest(entry.sha256, `${label} entry hash`)
     if (sha256 !== normalizedEvidenceHash(evidence)) throw new Error("evidence bundle entry hash mismatch")
     return { label, sha256, evidence }
@@ -363,6 +438,7 @@ function verifyEvidenceBundle(config: JsonObject): void {
   if (!exactEvidenceLabels(entries) || new Set(entries.map((entry) => entry.label)).size !== entries.length) {
     throw new Error("evidence bundle does not contain the complete Unit 16 evidence matrix")
   }
+  if (!continuity) throw new Error("evidence bundle provenance is missing")
   const core = {
     schemaVersion: 1,
     operation: "sanctuary-unit-16-evidence-bundle",
@@ -370,8 +446,14 @@ function verifyEvidenceBundle(config: JsonObject): void {
     imageDigest: opaqueDigest(bundle.imageDigest, "bundle imageDigest"),
     containerDigest: opaqueDigest(bundle.containerDigest, "bundle containerDigest"),
     cursorDigest: opaqueDigest(bundle.cursorDigest, "bundle cursorDigest"),
+    harnessSha256: opaqueDigest(bundle.harnessSha256, "bundle harnessSha256"),
     entries,
   }
+  if (core.imageDigest !== continuity.imageDigest || core.containerDigest !== continuity.containerDigest
+    || core.cursorDigest !== continuity.cursorDigest || core.harnessSha256 !== continuity.harnessSha256) {
+    throw new Error("evidence bundle continuity coordinates do not match its entries")
+  }
+  if (core.harnessSha256 !== harnessSha256) throw new Error("evidence bundle does not match the packaged harness bytes")
   if (opaqueDigest(bundle.bundleDigest, "bundle digest") !== normalizedEvidenceHash(core)) throw new Error("evidence bundle digest mismatch")
 }
 
