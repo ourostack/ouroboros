@@ -1470,6 +1470,17 @@ executeSanctuaryAcceptanceHarness("reboot-request", {
     await expect(snapshot(path.join(publicAncestor, "evidence.json"))).rejects.toThrow(/owned private directory/u)
     const canonicalAlias = dir.startsWith("/private/") ? dir.slice("/private".length) : dir
     if (canonicalAlias !== dir) await expect(snapshot(path.join(dir, "canonical.json"), canonicalAlias)).rejects.toThrow(/canonical/u)
+    if (process.platform === "linux") {
+      const canonicalRoot = path.join(dir, "canonical-root")
+      fs.mkdirSync(canonicalRoot, { mode: 0o700 })
+      const directoryFd = fs.openSync(dir, "r")
+      try {
+        const procAlias = `/proc/self/fd/${directoryFd}/canonical-root`
+        await expect(snapshot(path.join(procAlias, "evidence.json"), procAlias)).rejects.toThrow(/canonical/u)
+      } finally {
+        fs.closeSync(directoryFd)
+      }
+    }
 
     const raced = path.join(dir, "raced.json")
     await expect(executeHarness("evidence-snapshot", {
