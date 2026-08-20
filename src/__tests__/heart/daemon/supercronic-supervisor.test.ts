@@ -61,6 +61,15 @@ describe("SupercronicSupervisor", () => {
     expect(f.files.get("/scheduler/sanctuary.crontab")).not.toContain("sanctuary-health")
   })
 
+  it("sorts multiple jobs within one namespace by stable job id", () => {
+    const f = fixture()
+    const habits = f.supervisor.namespace("habit:sanctuary")
+    habits.sync([job("sanctuary", "z-last"), job("sanctuary", "a-first")])
+    expect(habits.list()).toEqual(["a-first", "z-last"])
+    expect(f.files.get("/scheduler/sanctuary.crontab")!.indexOf("a-first"))
+      .toBeLessThan(f.files.get("/scheduler/sanctuary.crontab")!.indexOf("z-last"))
+  })
+
   it("refuses invalid namespaces, newline injection, and a second live owner", () => {
     const f = fixture()
     expect(() => f.supervisor.namespace("habit:../escape")).toThrow("invalid Supercronic namespace")

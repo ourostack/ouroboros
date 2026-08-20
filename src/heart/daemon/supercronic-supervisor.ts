@@ -81,7 +81,7 @@ export class SupercronicSupervisor {
   }
 
   start(): void {
-    if (this.child) return
+    if (this.child || this.restartTimer) return
     this.deps.mkdir(path.dirname(this.crontabPath))
     const priorPid = this.readPriorPid()
     if (priorPid !== null && this.deps.processAlive(priorPid)) throw new Error(`Supercronic is already running with PID ${priorPid}`)
