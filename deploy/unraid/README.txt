@@ -21,11 +21,20 @@ Update:
     IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")
     printf '%s\n' "$IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
     docker image inspect "$IMAGE_ID" >/dev/null
-  Replace sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID in a copy of sanctuary.xml
-  with exactly $IMAGE_ID. Run audit-container-spec.sh against that staged template,
-  container-runtime.json, and $IMAGE_ID before docker create. Create
-  ouro-butler-staging from "$IMAGE_ID", with autostart disabled and the same
-  two binds. After its health and Telegram checks pass, stop production,
+  Stage copies of the packaged template and runtime policy at these paths:
+    STAGED_TEMPLATE=/mnt/user/appdata/ouro-butler/staging/sanctuary.xml
+    STAGED_RUNTIME_POLICY=/mnt/user/appdata/ouro-butler/staging/container-runtime.json
+  Replace sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID in the staged template at
+  $STAGED_TEMPLATE with exactly $IMAGE_ID. Before docker create, run the
+  packaged auditor from that exact image ID with both staged inputs mounted
+  read-only:
+    docker run --rm --pull=never --network=none \
+      --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
+      --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
+      --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
+      "$IMAGE_ID" /audit/sanctuary.xml /audit/container-runtime.json "$IMAGE_ID"
+  Create ouro-butler-staging from "$IMAGE_ID", with autostart disabled and the
+  same two binds. After its health and Telegram checks pass, stop production,
   retain it as the stopped ouro-butler-rollback container, recreate
   ouro-butler from the same exact local image ID, and enable only ouro-butler
   among Butler containers for Unraid array autostart. Never run two active
