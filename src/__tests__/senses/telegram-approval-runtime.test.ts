@@ -13,7 +13,11 @@ const runtimeMocks = vi.hoisted(() => {
     abandonPromptBinding: vi.fn(),
   }
   const checkpoints = { read: vi.fn() }
-  const tokens = { get: vi.fn(), remove: vi.fn() }
+  const tokenState = { value: undefined as string | undefined }
+  const tokens = {
+    get: vi.fn(() => tokenState.value),
+    remove: vi.fn(() => { tokenState.value = undefined }),
+  }
   const transport = {
     handleUpdate: vi.fn(),
     listPendingDeliveries: vi.fn(),
@@ -24,6 +28,7 @@ const runtimeMocks = vi.hoisted(() => {
   return {
     store,
     checkpoints,
+    tokenState,
     tokens,
     transport,
     openApprovalStore: vi.fn(() => store),
@@ -141,7 +146,7 @@ beforeEach(() => {
   runtimeMocks.checkpoints.read.mockReturnValue({
     preCallMessages: [{ role: "user", content: "restart calibre-web" }],
   })
-  runtimeMocks.tokens.get.mockReturnValue("server-secret")
+  runtimeMocks.tokenState.value = "server-secret"
   runtimeMocks.executeApprovalDecision.mockResolvedValue({ ...baseRecord, state: "succeeded" })
   runtimeMocks.recoverClaimedApproval.mockImplementation(({ approvalId }) => ({ ...baseRecord, approvalId, state: "failed" }))
   runtimeMocks.recoverAttemptedApproval.mockImplementation(({ approvalId }) => ({ ...baseRecord, approvalId, state: "attempted_indeterminate" }))
@@ -333,17 +338,30 @@ describe("Telegram approval runtime orchestration", () => {
     expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
   })
 
-  it("reports a missing continuation checkpoint without running or consuming its token", async () => {
+  it("consumes the decision token before reporting a missing continuation checkpoint", async () => {
     makeRuntime()
+    const options = transportOptions()
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "failed" })
     runtimeMocks.checkpoints.read.mockReturnValue(undefined)
 
-    await expect(transportOptions().onDecision({ approvalId: "approval-1" })).resolves.toEqual({
+    await expect(options.onDecision({ approvalId: "approval-1" })).resolves.toEqual({
       accepted: false,
       terminalText: "⚠️ Approval checkpoint is unavailable",
     })
     expect(runtimeMocks.resumeApprovalContinuation).not.toHaveBeenCalled()
-    expect(runtimeMocks.tokens.remove).not.toHaveBeenCalled()
+    expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
+    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("")
+  })
+
+  it("consumes the decision token before a continuation attempt that fails", async () => {
+    makeRuntime()
+    const options = transportOptions()
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "failed" })
+    runtimeMocks.resumeApprovalContinuation.mockRejectedValueOnce(new Error("resume state is unavailable"))
+
+    await expect(options.onDecision({ approvalId: "approval-1" })).rejects.toThrow("resume state is unavailable")
+    expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
+    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("")
   })
 
   it("wires continuation claims, persistence, delivery, and recursively gated proposals", async () => {
