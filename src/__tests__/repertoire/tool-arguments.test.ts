@@ -47,4 +47,20 @@ describe("strict advertised tool arguments", () => {
       reason: expect.stringContaining("/command"),
     })
   })
+
+  it("rejects cycles reached through object properties and array entries", () => {
+    const objectCycle: Record<string, unknown> = { type: "object" }
+    objectCycle.properties = { self: objectCycle }
+    expect(validateAdvertisedToolArguments("{}", objectCycle)).toEqual({
+      ok: false,
+      reason: expect.stringContaining("cyclic schemas are unsupported"),
+    })
+
+    const arrayCycle: unknown[] = []
+    arrayCycle.push(arrayCycle)
+    expect(validateAdvertisedToolArguments("{}", arrayCycle)).toEqual({
+      ok: false,
+      reason: expect.stringContaining("cyclic schemas are unsupported"),
+    })
+  })
 })

@@ -662,6 +662,28 @@ describe("runSenseTurn", () => {
     expect(input.runAgentOptions.skipKeptNotes).toBe(true)
   })
 
+  it("builds an approval coordinator from the leased session checkpoint", async () => {
+    const approvalCoordinator = { coordinate: vi.fn() }
+    const approvalCoordinatorFactory = vi.fn(() => approvalCoordinator)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "approval-session",
+      friendId: "friend-1",
+      userMessage: "restart it",
+      approvalCoordinatorFactory: approvalCoordinatorFactory as never,
+    })
+
+    expect(approvalCoordinatorFactory).toHaveBeenCalledWith({
+      sessionPath: "/tmp/test-agent/state/sessions/friend-1/mcp/approval-session.json",
+      baseSessionRevision: "revision-a",
+    })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.approvalCoordinator)
+      .toBe(approvalCoordinator)
+  })
+
   it("handles null mcpManager gracefully (no MCP servers)", async () => {
     mockGetSharedMcpManager.mockResolvedValue(null)
     mockLoadSession.mockReturnValue(null)

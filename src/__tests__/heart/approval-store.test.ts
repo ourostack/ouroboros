@@ -389,6 +389,10 @@ describe("approval store", () => {
       state: "abandoned_before_attempt",
       reason: "approval prompt delivery was indeterminate; action was not executed",
     })
+    expect(store.abandonPromptBinding({
+      approvalId: prepared.record.approvalId,
+      reason: "approval prompt delivery was indeterminate; action was not executed",
+    })).toEqual(abandoned)
     expect(() => store.abandonPromptBinding({ approvalId: prepared.record.approvalId, reason: "different" }))
       .toThrowError(ApprovalStoreError)
     store.close()

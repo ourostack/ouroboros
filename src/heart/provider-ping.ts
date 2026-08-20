@@ -233,7 +233,6 @@ export function createProviderRuntimeForConfig(
     case "openai-compatible":
     case "openai-compatible-gemini":
       return createOpenAICompatibleProviderRuntime(provider, resolvedModel, config as OpenAICompatibleProviderConfig)
-    /* v8 ignore next 2 -- exhaustive: all providers handled above @preserve */
     default:
       throw new Error(`unsupported provider for ping: ${provider}`)
   }

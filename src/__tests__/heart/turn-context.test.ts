@@ -781,6 +781,36 @@ describe("buildTurnContext", () => {
     ])
   })
 
+  it("distinguishes complete and partially configured Telegram coordinates", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { telegram: { enabled: true } },
+    })
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/config",
+      revision: "runtime_telegram",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      config: {
+        telegramBotToken: "token",
+        telegramAuthorizedUserId: "42",
+        telegramAuthorizedChatId: "7",
+      },
+    })
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: ready")
+
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/config",
+      revision: "runtime_telegram_partial",
+      updatedAt: "2026-08-20T00:00:01.000Z",
+      config: {
+        telegramBotToken: "token",
+        telegramAuthorizedUserId: "42",
+      },
+    })
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: needs_config")
+  })
+
   it("uses fallback senses config when config.senses is undefined", async () => {
     mockLoadAgentConfig.mockReturnValue({})
 

@@ -276,8 +276,10 @@ function validStateShape(record: ApprovalRecord): boolean {
   if (record.state === "abandoned_before_attempt") {
     const validPreparingRecovery = !hasOwner && record.epoch === 0
       && record.suspendedSessionRevision === null && record.transportMessageId === null
+    const validPromptBindingRecovery = !hasOwner && record.epoch === 0
+      && hasSuspension && record.transportMessageId === null
     const validClaimRecovery = hasOwner && record.epoch > 0 && hasSuspension && hasPromptBinding
-    return (validPreparingRecovery || validClaimRecovery)
+    return (validPreparingRecovery || validPromptBindingRecovery || validClaimRecovery)
       && !hasAttempt && record.result === null && isNonEmpty(record.reason)
   }
   if (record.state === "drifted") {

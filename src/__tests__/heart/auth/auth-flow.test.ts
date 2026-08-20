@@ -790,6 +790,23 @@ describe("runtime auth flow", () => {
     })
     expect(promptInput).not.toHaveBeenCalledWith("Azure API key: ")
   })
+
+  it("requires an interactive, non-empty secret for OpenAI-compatible providers", async () => {
+    emitTestEvent("openai-compatible secret validation")
+    await expect(collectRuntimeAuthCredentials(
+      { agentName: "Zed", provider: "openai-compatible" },
+      {},
+    )).rejects.toThrow("interactive terminal")
+
+    await expect(collectRuntimeAuthCredentials(
+      {
+        agentName: "Gemini",
+        provider: "openai-compatible-gemini",
+        promptSecret: vi.fn(async () => "   "),
+      },
+      {},
+    )).rejects.toThrow("openai-compatible-gemini API key is required")
+  })
 })
 
 // --- Unit 3a: github-copilot auth flow tests ---
