@@ -115,7 +115,12 @@ Update:
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
       "$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
   Disable every Butler name in Unraid's array-autostart file and verify that
-  result before stopping production:
+  result before stopping production. First resolve and validate the exact image
+  ID of the known-good production container while it is still running, so a
+  lookup failure cannot strand a renamed container:
+    ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
+    printf '%s\n' "$ROLLBACK_IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
+    docker image inspect "$ROLLBACK_IMAGE_ID" >/dev/null
     disable_butler_autostart
   Stop production and retain that known-good container as the rollback target:
     docker stop ouro-butler
@@ -125,31 +130,42 @@ Update:
     fi
     docker rename ouro-butler ouro-butler-rollback
     test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false
-  Create staging from the exact image ID with no command, environment, port,
-  device, capability, privilege, or extra mount override:
-    docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
+  Put the entire post-rename staging phase in one explicit conditional so
+  `set -eu` cannot bypass rollback at the create, effective-audit, start, or
+  bounded-readiness boundary. Staging uses the exact image ID with no command,
+  environment, port, device, capability, privilege, or extra mount override.
+  A passing staging container is stopped and removed inside the same condition,
+  completing the poller handoff before production creation:
+    if docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-      "$IMAGE_ID"
-  Before start, audit the actual effective staging spec:
-    audit_effective ouro-butler-staging "$IMAGE_ID"
-  Only after that effective audit passes, start staging:
-    docker start ouro-butler-staging
-    wait_butler_ready ouro-butler-staging
+      "$IMAGE_ID" \
+      && audit_effective ouro-butler-staging "$IMAGE_ID" \
+      && docker start ouro-butler-staging \
+      && wait_butler_ready ouro-butler-staging \
+      && docker stop ouro-butler-staging \
+      && docker rm ouro-butler-staging; then
+      :
+    else
+      STAGING_ACTIVATION_STATUS=$?
+      if docker container inspect ouro-butler-staging >/dev/null 2>&1; then
+        docker stop ouro-butler-staging >/dev/null 2>&1 || true
+        docker rm --force ouro-butler-staging >/dev/null 2>&1 || true
+      fi
+      ! docker container inspect ouro-butler-staging >/dev/null 2>&1
+      docker rename ouro-butler-rollback ouro-butler
+      audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+      docker start ouro-butler
+      wait_butler_ready ouro-butler
+      enable_butler_autostart
+      (exit "$STAGING_ACTIVATION_STATUS")
+    fi
+  The failure arm safely handles staging that was never created, remains
+  stopped, is running, or exited: it force-removes any partial staging state,
+  verifies the name is absent, restores and re-audits the old production against
+  its exact pre-recorded image ID, starts and bounded-waits it, atomically
+  restores production-only autostart, and propagates the original failure.
   At no point may production and staging run together against the same Telegram token.
-  If staging fails its health or Telegram checks, stop and remove staging,
-  then restore the stopped known-good container:
-    docker stop ouro-butler-staging
-    docker rm ouro-butler-staging
-    docker rename ouro-butler-rollback ouro-butler
-    ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
-    audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
-    docker start ouro-butler
-    wait_butler_ready ouro-butler
-    enable_butler_autostart
-  If staging passes, stop and remove it. This is the poller handoff boundary:
-    docker stop ouro-butler-staging
-    docker rm ouro-butler-staging
   Create production from the same exact image ID and exact authority:
     docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
