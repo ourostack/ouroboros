@@ -105,12 +105,17 @@ describe("approved Unraid restart executor", () => {
     })
     await expect(restart({ container: "calibre-web" })).resolves.toMatchObject({ ok: false, error: { code: "invalid_response" } })
     expect(createClient).not.toHaveBeenCalled()
-    expect(persistAttempt).toHaveBeenCalledExactlyOnceWith({
+    expect(persistAttempt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       container: { id: "Docker:abc", name: "calibre-web" },
       beforeState: "running",
       observedAt: "2026-08-20T00:00:00.000Z",
       state: "attempt_not_started",
-    })
+      actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      argumentDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      attemptId: expect.any(String),
+      mutationAcknowledged: false,
+      afterState: null,
+    }))
   })
 
   it.each([

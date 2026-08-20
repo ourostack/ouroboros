@@ -6,7 +6,7 @@ import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
 import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDecision, recoverAttemptedApproval, recoverClaimedApproval } from "../heart/tool-approval"
 import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
-import { readSanctuaryAcceptanceMarker } from "../heart/daemon/sanctuary-acceptance-marker"
+import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval } from "../heart/daemon/sanctuary-acceptance-marker"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
 import { execTool, resolveToolDefinition } from "../repertoire/tools"
@@ -237,6 +237,11 @@ export function createTelegramApprovalRuntime(options: {
     expectedChatId: options.authorizedChatId,
     pendingStore,
     createOpaqueHandle: () => randomBytes(12).toString("base64url"),
+    acceptanceEventMeta: () => {
+      const scenarioHandleDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
+      const meta: Record<string, string> = scenarioHandleDigest ? { scenarioHandleDigest } : {}
+      return meta
+    },
     resolveDecisionToken: async (approvalId) => tokens.get(approvalId) ?? "",
     onExpire: async (approvalId) => {
       store.expire({ approvalId })
@@ -269,12 +274,20 @@ export function createTelegramApprovalRuntime(options: {
             resolveTool: resolveToolDefinition,
             liveGuard: async () => ({ ok: true }),
             liveRisk: async () => ({ ok: true }),
-            execute: (name, args) => executeApprovedTelegramTool(
-              name,
-              args,
-              (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
-              decisionScenarioDigest,
-            ),
+            execute: (name, args) => {
+              const execute = () => executeApprovedTelegramTool(
+                name,
+                args,
+                (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
+                decisionScenarioDigest,
+              )
+              return decisionScenarioDigest
+                ? runWithSanctuaryAcceptanceApproval(
+                  { approvalId: existing.approvalId, argumentDigest: existing.argumentDigest },
+                  execute,
+                )
+                : execute()
+            },
           }))
       } else if (["succeeded", "failed", "attempted_indeterminate", "denied", "expired", "drifted", "session_head_changed", "abandoned_before_attempt"].includes(existing.state)) {
         record = existing

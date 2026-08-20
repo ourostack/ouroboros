@@ -85,8 +85,13 @@ describe("Sanctuary runtime tool context", () => {
       apiKey: "synthetic-read-key",
     })
     expect(runtimeMocks.createUnraidReadTools).toHaveBeenCalledOnce()
-    expect(context.sanctuary).toEqual({ ...runtimeMocks.readTools, restartContainer: runtimeMocks.restart })
+    expect(context.sanctuary).toMatchObject({ restartContainer: runtimeMocks.restart })
+    for (const key of Object.keys(runtimeMocks.readTools)) expect(context.sanctuary?.[key as keyof typeof runtimeMocks.readTools]).toEqual(expect.any(Function))
     expect(runtimeMocks.readMachineRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
+
+    runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 10 } })
+    await expect(context.sanctuary!.getSystem()).resolves.toEqual({ ok: true, data: { uptime: 10 } })
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_read_receipt", meta: expect.objectContaining({ toolName: "unraid_get_system", success: true, resultDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) }) }))
 
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({
       unraidWriteApiKey: " rotated-synthetic-write-key ",

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient } from "./unraid-client"
 
@@ -26,6 +27,13 @@ export interface UnraidRestartAttempt {
   container: { id: string; name: string }
   beforeState: string
   observedAt: string
+  actionDigest: string
+  argumentDigest: string
+  scenarioHandleDigest?: string
+  approvalId?: string
+  attemptId: string
+  mutationAcknowledged: boolean
+  afterState: string | null
 }
 
 interface RestartClient {
@@ -41,6 +49,8 @@ export interface ApprovedUnraidRestartOptions {
   sleep?: (milliseconds: number) => Promise<void>
   now?: () => Date
   observationTimeoutMs?: number
+  acceptanceScenarioHandleDigest?: () => string | undefined
+  acceptanceApproval?: () => { approvalId: string; argumentDigest: string } | null
 }
 
 function failure(code: "invalid_response" | "not_found" | "ambiguous" | "stale_target", message: string): RestartResult {
@@ -83,12 +93,26 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
     if ("ok" in fresh) return fresh
     if (fresh.id !== resolved.id) return failure("stale_target", "container identity changed before restart")
 
-    const attempt = { container: { id: fresh.id, name: fresh.name }, beforeState: fresh.state, observedAt: now().toISOString() }
-    await options.persistAttempt?.({ ...attempt, state: "attempt_not_started" })
+    const scenarioHandleDigest = options.acceptanceScenarioHandleDigest?.()
+    const approval = options.acceptanceApproval?.()
+    const attempt = {
+      container: { id: fresh.id, name: fresh.name },
+      beforeState: fresh.state,
+      observedAt: now().toISOString(),
+      actionDigest: createHash("sha256").update(JSON.stringify({ operation: "restart", container: { id: fresh.id, name: fresh.name } })).digest("hex"),
+      argumentDigest: createHash("sha256").update(JSON.stringify({ container: args.container })).digest("hex"),
+      ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}),
+      ...(approval ? { approvalId: approval.approvalId } : {}),
+      attemptId: randomUUID(),
+      mutationAcknowledged: false,
+      afterState: null,
+    }
+    if (approval && approval.argumentDigest !== attempt.argumentDigest) return failure("stale_target", "approval arguments changed before restart")
+    await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempt_not_started" })
     const apiKey = await options.loadWriteApiKey()
     if (!apiKey.trim()) return failure("invalid_response", "Unraid write credential is unavailable")
     const client = createClient({ endpoint: options.endpoint, apiKey })
-    await options.persistAttempt?.({ ...attempt, state: "attempting" })
+    await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempting" })
     emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_start", message: "approved Unraid restart started", meta: { containerId: fresh.id, containerName: fresh.name } })
 
     let acknowledged = false
@@ -106,12 +130,12 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
       const observed = exactTarget(await options.listContainers(), args.container)
       if (!("ok" in observed)) {
         if (observed.id !== fresh.id) {
-          await options.persistAttempt?.({ ...attempt, state: "attempted_or_indeterminate" })
+          await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
           return failure("ambiguous", "container identity changed after restart attempt")
         }
         sawRestarting ||= observed.state === "restarting"
         if (observed.state === "running" && !observed.degraded && (acknowledged || sawRestarting)) {
-          await options.persistAttempt?.({ ...attempt, state: "succeeded" })
+          await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "succeeded", mutationAcknowledged: acknowledged, afterState: observed.state })
           emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_end", message: "approved Unraid restart completed", meta: { containerId: fresh.id, observedRestart: true } })
           return { ok: true, data: { container: { id: fresh.id, name: fresh.name }, beforeState: fresh.state, afterState: observed.state, observedRestart: true, degraded: false } }
         }
@@ -120,7 +144,7 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
       await sleep(1_000)
     } while (true)
 
-    await options.persistAttempt?.({ ...attempt, state: "attempted_or_indeterminate" })
+    await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
     emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.unraid_restart_error", message: "approved Unraid restart outcome was ambiguous", meta: { containerId: fresh.id, acknowledged } })
     return failure("ambiguous", "restart was attempted but could not be proven; it was not retried")
   }

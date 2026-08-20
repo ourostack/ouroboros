@@ -1,10 +1,12 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { AsyncLocalStorage } from "node:async_hooks"
 
 import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const SHA256 = /^[0-9a-f]{64}$/u
+const acceptanceApproval = new AsyncLocalStorage<{ approvalId: string; argumentDigest: string }>()
 
 export interface SanctuaryAcceptanceMarker {
   schemaVersion: "sanctuary-acceptance-marker-v1"
@@ -113,4 +115,17 @@ export function clearSanctuaryAcceptanceGateStatus(filePath = DEFAULT_GATE_STATU
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
   }
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_gate_status_cleared", message: "Sanctuary acceptance gate status cleared", meta: { path: filePath } })
+}
+
+export function runWithSanctuaryAcceptanceApproval<T>(
+  value: { approvalId: string; argumentDigest: string },
+  operation: () => T,
+): T {
+  if (!value.approvalId || !SHA256.test(value.argumentDigest)) throw new Error("acceptance approval context is invalid")
+  return acceptanceApproval.run({ ...value }, operation)
+}
+
+export function readSanctuaryAcceptanceApproval(): { approvalId: string; argumentDigest: string } | null {
+  const value = acceptanceApproval.getStore()
+  return value ? { ...value } : null
 }
