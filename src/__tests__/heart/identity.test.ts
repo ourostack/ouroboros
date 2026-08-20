@@ -89,6 +89,24 @@ describe("getAgentName", () => {
   })
 })
 
+describe("habit paid-turn config", () => {
+  it("defaults only non-Sanctuary agents to four turns", async () => {
+    const { normalizeHabitPaidTurnsPerDay } = await import("../../heart/identity")
+    expect(normalizeHabitPaidTurnsPerDay("slugger", undefined, "/tmp/agent.json")).toBe(4)
+    expect(() => normalizeHabitPaidTurnsPerDay("sanctuary", undefined, "/tmp/agent.json")).toThrow("must explicitly set")
+  })
+
+  it.each([0, 24, 96])("accepts integer budget %i", async (value) => {
+    const { normalizeHabitPaidTurnsPerDay } = await import("../../heart/identity")
+    expect(normalizeHabitPaidTurnsPerDay("sanctuary", value, "/tmp/agent.json")).toBe(value)
+  })
+
+  it.each([-1, 97, 1.5, "24", null])("rejects invalid budget %j without fallback", async (value) => {
+    const { normalizeHabitPaidTurnsPerDay } = await import("../../heart/identity")
+    expect(() => normalizeHabitPaidTurnsPerDay("sanctuary", value, "/tmp/agent.json")).toThrow("integer from 0 through 96")
+  })
+})
+
 describe("setAgentName", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -203,6 +221,7 @@ describe("buildDefaultAgentTemplate", () => {
         maxTokens: 80000,
         contextMargin: 20,
       },
+      habitPaidTurnsPerDay: 4,
       phrases: {
         thinking: ["working"],
         tool: ["running tool"],

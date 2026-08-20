@@ -3,6 +3,9 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
+import { DEFAULT_HABIT_PAID_TURNS_PER_DAY, normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
+
+export { normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 
 export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini"
 
@@ -62,6 +65,7 @@ export interface AgentConfig {
     maxTokens?: number
     contextMargin?: number
   }
+  habitPaidTurnsPerDay?: number
   logging?: {
     level?: LogLevel
     sinks?: LogSinkType[]
@@ -254,6 +258,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
     humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     context: { ...DEFAULT_AGENT_CONTEXT },
+    habitPaidTurnsPerDay: DEFAULT_HABIT_PAID_TURNS_PER_DAY,
     senses: {
       cli: { ...DEFAULT_AGENT_SENSES.cli },
       teams: { ...DEFAULT_AGENT_SENSES.teams },
@@ -568,6 +573,7 @@ export function loadAgentConfig(): AgentConfig {
     enabled,
     humanFacing,
     agentFacing,
+    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(getAgentName(), parsed.habitPaidTurnsPerDay, configFile),
     senses: normalizeSenses(parsed.senses, configFile),
     phrases: parsed.phrases as AgentConfig["phrases"],
   }

@@ -3,7 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentBundlesRoot, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, normalizeHabitPaidTurnsPerDay, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import { resolveModelForProviderSelection } from "../provider-models"
 import type { Facing } from "@ouro.bot/friends"
@@ -116,6 +116,7 @@ export function readAgentConfigForAgent(
   const config: AgentConfig = {
     ...(parsed as unknown as AgentConfig),
     senses: normalizeSenses(parsed.senses, configPath),
+    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(agentName, parsed.habitPaidTurnsPerDay, configPath),
   }
 
   return {

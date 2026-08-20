@@ -16,6 +16,7 @@ import {
   readAutonomyBudgetState,
   readAutonomyStormBreakers,
   recordAutonomyFailure,
+  resolveAutonomyBudgetPolicy,
   reserveAutonomyBudget,
 } from "../../heart/autonomy-budget"
 
@@ -39,6 +40,16 @@ function baseRequest(overrides: Record<string, unknown> = {}) {
 describe("autonomy budget", () => {
   beforeEach(() => {
     mockEmitNervesEvent.mockReset()
+  })
+
+  it("resolves the per-agent habit budget from validated agent config", () => {
+    const sanctuaryRoot = tempAgentRoot()
+    fs.writeFileSync(path.join(sanctuaryRoot, "agent.json"), JSON.stringify({ habitPaidTurnsPerDay: 24 }))
+    expect(resolveAutonomyBudgetPolicy(sanctuaryRoot, "sanctuary").habitPaidTurnsPerDay).toBe(24)
+
+    const genericRoot = tempAgentRoot()
+    expect(resolveAutonomyBudgetPolicy(genericRoot, "slugger").habitPaidTurnsPerDay).toBe(4)
+    expect(() => resolveAutonomyBudgetPolicy(genericRoot, "sanctuary")).toThrow("must explicitly set")
   })
 
   it("allows a first recovery reservation and stores only content-free budget state", () => {

@@ -39,7 +39,7 @@ import {
   usageMetadataFromUsageData,
   type RunLedgerLifecycle,
 } from "../heart/run-ledger"
-import { reserveAutonomyBudget, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
+import { reserveAutonomyBudget, resolveAutonomyBudgetPolicy, type AutonomyBudgetDecision } from "../heart/autonomy-budget"
 import { privateRuntimeHabitRejectionReason } from "./habit-lifecycle-guard"
 
 export type PrivateRuntimeWorkerReason = "boot" | "habit" | "instinct" | "await"
@@ -209,15 +209,16 @@ function reserveHabitAutonomyBudget(habitRun: PreparedHabitRun, nowIso: string):
     target.rsvpBudgetRef = habitRun.rsvpPolicy.budgetRef
     target.rsvpIdempotencyRef = habitRun.rsvpPolicy.idempotencyRef
   }
+  const agentName = getAgentName()
   return reserveAutonomyBudget(habitRun.agentRoot, {
-    agent: getAgentName(),
+    agent: agentName,
     triggerType: "habit",
     sourceKind: "private-runtime",
     senseOrHabit: habitRun.habit.name,
     target,
     idempotencyKey: `habit:${habitRun.habit.name}:${habitRun.runId}`,
     now: nowIso,
-  })
+  }, resolveAutonomyBudgetPolicy(habitRun.agentRoot, agentName))
 }
 
 /**
