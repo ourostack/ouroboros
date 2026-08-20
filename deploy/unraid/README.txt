@@ -13,6 +13,87 @@ Status and health:
   docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' ouro-butler
   docker logs --tail 200 ouro-butler
 
+Effective-spec audit helper:
+  Run Update and Restore command sequences from a root shell with `set -eu`.
+  Before either sequence, define this helper. It captures one actual container
+  inspect and its reviewed image inspect without printing either, invokes the
+  packaged auditor from IMAGE_ID, and removes its mode-0600 inputs on success
+  or shell exit:
+    audit_effective() {
+      AUDIT_CONTAINER=$1
+      AUDIT_EXPECTED_IMAGE=$2
+      INSPECT_DIR=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX)
+      chmod 0700 "$INSPECT_DIR"
+      trap 'rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"; rmdir -- "$INSPECT_DIR"' EXIT
+      umask 077
+      docker inspect "$AUDIT_CONTAINER" >"$INSPECT_DIR/container.json"
+      docker image inspect "$AUDIT_EXPECTED_IMAGE" >"$INSPECT_DIR/image.json"
+      chmod 0600 "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"
+      docker run --rm --pull=never --network=none \
+        --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
+        --mount "type=bind,src=$INSPECT_DIR/container.json,dst=/audit/container.json,readonly" \
+        --mount "type=bind,src=$INSPECT_DIR/image.json,dst=/audit/image.json,readonly" \
+        "$IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE"
+      rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"
+      rmdir -- "$INSPECT_DIR"
+      trap - EXIT
+    }
+  Define these helpers in the same root shell. Each autostart change refuses an
+  unexpected file, atomically replaces it through a same-directory temporary
+  file, fsyncs the replacement and directory, and reads back the exact result:
+    disable_butler_autostart() {
+      AUTOSTART_FILE=/var/lib/docker/unraid-autostart
+      test -f "$AUTOSTART_FILE"
+      test "$(stat -c '%u:%g %a' "$AUTOSTART_FILE")" = "0:0 644"
+      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX")
+      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT
+      awk '$0 != "ouro-butler" && $0 != "ouro-butler-staging" && $0 != "ouro-butler-rollback"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP"
+      chown 0:0 "$AUTOSTART_TMP"
+      chmod 0644 "$AUTOSTART_TMP"
+      sync -f "$AUTOSTART_TMP"
+      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE"
+      sync -f /var/lib/docker
+      trap - EXIT
+      ! grep -Fxq "ouro-butler" "$AUTOSTART_FILE"
+      ! grep -Fxq "ouro-butler-staging" "$AUTOSTART_FILE"
+      ! grep -Fxq "ouro-butler-rollback" "$AUTOSTART_FILE"
+    }
+    enable_butler_autostart() {
+      AUTOSTART_FILE=/var/lib/docker/unraid-autostart
+      test -f "$AUTOSTART_FILE"
+      test "$(stat -c '%u:%g %a' "$AUTOSTART_FILE")" = "0:0 644"
+      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX")
+      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT
+      awk '$0 != "ouro-butler" && $0 != "ouro-butler-staging" && $0 != "ouro-butler-rollback"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP"
+      printf '%s\n' ouro-butler >>"$AUTOSTART_TMP"
+      chown 0:0 "$AUTOSTART_TMP"
+      chmod 0644 "$AUTOSTART_TMP"
+      sync -f "$AUTOSTART_TMP"
+      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE"
+      sync -f /var/lib/docker
+      trap - EXIT
+      test "$(grep -Fxc "ouro-butler" "$AUTOSTART_FILE")" = 1
+      ! grep -Fxq "ouro-butler-staging" "$AUTOSTART_FILE"
+      ! grep -Fxq "ouro-butler-rollback" "$AUTOSTART_FILE"
+    }
+  This bounded wait accepts only Docker's healthy state. The image healthcheck
+  verifies fresh daemon state plus exactly one managed Telegram process and one
+  managed scheduler process. It fails immediately on an exited, dead, or
+  unhealthy container and times out after four minutes:
+    wait_butler_ready() {
+      WAIT_CONTAINER=$1
+      WAIT_DEADLINE=$(( $(date +%s) + 240 ))
+      while test "$(date +%s)" -lt "$WAIT_DEADLINE"; do
+        WAIT_STATE=$(docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' "$WAIT_CONTAINER")
+        test "$WAIT_STATE" = "running healthy" && return 0
+        case "$WAIT_STATE" in
+          exited\ *|dead\ *|*\ unhealthy) return 1 ;;
+        esac
+        sleep 5
+      done
+      return 1
+    }
+
 Update:
   Build and verify a new ouro-butler:<version> image first. The tag is only a
   lookup handle and never authorizes container creation. Resolve and validate
@@ -32,27 +113,59 @@ Update:
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
-      "$IMAGE_ID" /audit/sanctuary.xml /audit/container-runtime.json "$IMAGE_ID"
-  Before starting any same-token staging container, stop production and retain
-  that known-good container as the rollback target:
+      "$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
+  Disable every Butler name in Unraid's array-autostart file and verify that
+  result before stopping production:
+    disable_butler_autostart
+  Stop production and retain that known-good container as the rollback target:
     docker stop ouro-butler
-    docker rm ouro-butler-rollback  # only if this is the prior stopped rollback
+    if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
+      test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false
+      docker rm ouro-butler-rollback
+    fi
     docker rename ouro-butler ouro-butler-rollback
-  Create ouro-butler-staging from "$IMAGE_ID", with autostart disabled and the
-  same two binds, then start it:
+    test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false
+  Create staging from the exact image ID with no command, environment, port,
+  device, capability, privilege, or extra mount override:
+    docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
+      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
+      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      "$IMAGE_ID"
+  Before start, audit the actual effective staging spec:
+    audit_effective ouro-butler-staging "$IMAGE_ID"
+  Only after that effective audit passes, start staging:
     docker start ouro-butler-staging
+    wait_butler_ready ouro-butler-staging
   At no point may production and staging run together against the same Telegram token.
   If staging fails its health or Telegram checks, stop and remove staging,
   then restore the stopped known-good container:
     docker stop ouro-butler-staging
     docker rm ouro-butler-staging
     docker rename ouro-butler-rollback ouro-butler
+    ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
+    audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
     docker start ouro-butler
-  If staging passes, stop and remove staging,
-  recreate ouro-butler from the same exact local image ID, enable only
-  ouro-butler for Unraid array autostart, and keep ouro-butler-rollback stopped
-  until the new production container is proven. Never create a container from
-  the mutable lookup tag.
+    wait_butler_ready ouro-butler
+    enable_butler_autostart
+  If staging passes, stop and remove it. This is the poller handoff boundary:
+    docker stop ouro-butler-staging
+    docker rm ouro-butler-staging
+  Create production from the same exact image ID and exact authority:
+    docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
+      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
+      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      "$IMAGE_ID"
+  Audit the actual effective production spec before starting it, then require
+  healthy Telegram readiness while rollback remains stopped:
+    audit_effective ouro-butler "$IMAGE_ID"
+    docker start ouro-butler
+    test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false
+    wait_butler_ready ouro-butler
+  Only after production acceptance, atomically enable exactly ouro-butler in
+  Unraid array autostart and read back the exact result:
+    enable_butler_autostart
+  Keep ouro-butler-rollback stopped until the new production container is proven.
+  Never create a container from the mutable lookup tag.
 
 Backup:
   Stop ouro-butler, then snapshot both of these directories together:
@@ -63,10 +176,30 @@ Backup:
   is pending or failed and must be reconciled before taking the backup.
 
 Restore:
-  Stop and remove the current container, restore both directories with numeric
-  ownership 10001:10001, verify the pinned exact local image ID still resolves
-  with docker image inspect, recreate from that image ID and its staged
-  template, then verify health before enabling array autostart.
+  Set BACKUP_ROOT to the exact verified snapshot containing `runtime/.ouro-cli`
+  and `agent/sanctuary.ouro`, and set IMAGE_ID to its recorded local image ID.
+  Disable/read back autostart before stopping or removing any Butler container.
+  Stop and remove only ouro-butler, restore the two roots without retaining
+  stale files, and restore exact ownership:
+    disable_butler_autostart
+    docker stop ouro-butler
+    docker rm ouro-butler
+    rsync -a --delete "$BACKUP_ROOT/runtime/.ouro-cli/" /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/
+    rsync -a --delete "$BACKUP_ROOT/agent/sanctuary.ouro/" /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/
+    chown -R 10001:10001 /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+    docker image inspect "$IMAGE_ID" >/dev/null
+  Recreate with the exact production command, not a mutable tag:
+    docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
+      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
+      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      "$IMAGE_ID"
+  Audit the actual effective restored spec before starting it:
+    audit_effective ouro-butler "$IMAGE_ID"
+    docker start ouro-butler
+    wait_butler_ready ouro-butler
+  Only after healthy Telegram readiness, atomically enable and read back the
+  exact production-only autostart entry:
+    enable_butler_autostart
 
 Credential recovery:
   Restore or unlock the Sanctuary agent vault, then run provider refresh.

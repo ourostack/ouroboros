@@ -14,6 +14,7 @@ const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
 
 export interface SanctuaryContainerAuditOptions {
   expectedImage: string
+  expectedEnvironment: readonly string[]
 }
 
 export interface SanctuaryContainerAuditResult {
@@ -55,11 +56,13 @@ export function auditSanctuaryContainerSpec(
   } else {
     if (!/^sha256:[a-f0-9]{64}$/u.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
     if (config.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
+    if (root.Path !== "node") violations.push("effective container path must be node")
+    if (JSON.stringify(root.Args) !== JSON.stringify(["/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("effective container arguments must be the direct daemon entry")
     if (config.User !== "10001:10001") violations.push("container user must be 10001:10001")
     if (JSON.stringify(config.Entrypoint) !== JSON.stringify(["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("entrypoint must be the direct daemon entry")
     if (!(config.Cmd === null || (Array.isArray(config.Cmd) && config.Cmd.length === 0))) violations.push("container command must be empty")
     const environment = stringArray(config.Env)
-    if (!environment || !environment.includes("HOME=/home/ouro")) violations.push("HOME must be /home/ouro")
+    if (!environment || JSON.stringify(environment) !== JSON.stringify(options.expectedEnvironment)) violations.push("container environment must exactly match the reviewed image environment")
     if (!(config.ExposedPorts === null || config.ExposedPorts === undefined || isEmptyRecord(config.ExposedPorts))) violations.push("container must expose no ports")
     if (host.NetworkMode !== "host") violations.push("network mode must be host")
     if (host.Privileged !== false) violations.push("container must not be privileged")

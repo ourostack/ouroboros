@@ -15,7 +15,7 @@ function validInspect() {
       Image: "sha256:" + "a".repeat(64),
       Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"],
       Cmd: [],
-      Env: ["HOME=/home/ouro"],
+      Env: ["PATH=/usr/local/bin:/usr/bin:/bin", "NODE_VERSION=22.18.0", "HOME=/home/ouro"],
       ExposedPorts: null,
     },
     HostConfig: {
@@ -194,6 +194,14 @@ describe("Sanctuary pre-activation container auditor", () => {
     ["multiple images", JSON.stringify([validInspect()]), JSON.stringify([validImageInspect(), validImageInspect()])],
     ["malformed container JSON", "not-json", JSON.stringify([validImageInspect()])],
     ["malformed image JSON", JSON.stringify([validInspect()]), "not-json"],
+    ["null container record", JSON.stringify([null]), JSON.stringify([validImageInspect()])],
+    ["scalar container record", JSON.stringify(["secret"]), JSON.stringify([validImageInspect()])],
+    ["array container record", JSON.stringify([[]]), JSON.stringify([validImageInspect()])],
+    ["missing image config", JSON.stringify([validInspect()]), JSON.stringify([{ Id: validImageInspect().Id }])],
+    ["scalar image config", JSON.stringify([validInspect()]), JSON.stringify([{ Id: validImageInspect().Id, Config: "secret" }])],
+    ["array image config", JSON.stringify([validInspect()]), JSON.stringify([{ Id: validImageInspect().Id, Config: [] }])],
+    ["non-array image environment", JSON.stringify([validInspect()]), JSON.stringify([{ Id: validImageInspect().Id, Config: { Env: "secret" } }])],
+    ["non-string image environment", JSON.stringify([validInspect()]), JSON.stringify([{ Id: validImageInspect().Id, Config: { Env: ["HOME=/home/ouro", 7] } }])],
   ])("fails closed for %s without printing inspect contents", (_label, containerJson, imageJson) => {
     const output: string[] = []
     expect(runContainerSpecAuditorCli([
@@ -212,6 +220,7 @@ describe("Sanctuary pre-activation container auditor", () => {
       ["--inspect", "/audit/container.json", "--expected-image", "sha256:" + "a".repeat(64)],
       ["--inspect", "/audit/container.json", "--inspect", "/audit/other.json", "--expected-image", "sha256:" + "a".repeat(64)],
       ["--template", "/audit/template.xml", "--image-inspect", "/audit/image.json", "--expected-image", "sha256:" + "a".repeat(64)],
+      ["--inspect", "", "--image-inspect", "/audit/image.json", "--expected-image", "sha256:" + "a".repeat(64)],
     ]
     for (const args of invalidArguments) {
       expect(runContainerSpecAuditorCli(args, { readFile: () => "secret", write: () => undefined })).toBe(2)
@@ -263,6 +272,19 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--runtime-policy", "/tmp/runtime.json",
       "--expected-image", "sha256:" + "a".repeat(64),
     ], { readFile: () => { throw "missing" }, write: () => undefined })).toBe(2)
+    const effectiveArguments = [
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", "sha256:" + "a".repeat(64),
+    ]
+    expect(runContainerSpecAuditorCli(effectiveArguments, {
+      readFile: () => { throw new Error("private path") },
+      write: () => undefined,
+    })).toBe(2)
+    expect(runContainerSpecAuditorCli(effectiveArguments, {
+      readFile: () => { throw "private path" },
+      write: () => undefined,
+    })).toBe(2)
   })
 
   it("uses filesystem/stdout adapters when dependencies are omitted", () => {
