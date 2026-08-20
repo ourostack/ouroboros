@@ -13,7 +13,7 @@
         "Audit staged Unraid templates plus actual image and stopped-container inspect records against the exact immutable local Docker image ID, image environment, direct daemon command, non-root user, exact two writable roots, host networking, updater-off policy, and absence of ports, devices, capabilities, or injected container flags before activation; preserve one Telegram poller through bounded-readiness cutover, rollback, restore, and atomic Unraid autostart readback.",
         "Consume approval decision tokens before continuation work and persist token-free terminal tombstones so failed callbacks cannot replay within the same process or after restart.",
         "Give each agent an independently enforced paid habit budget, route health alerts through bounded private turns, and durably resume cached delivery payloads without replaying ambiguous sends.",
-        "Close final butler runtime coverage gaps with behavioral contracts, keep Supercronic single-owned when start races a pending restart, preserve idempotent prompt-binding abandonment records, initialize daemon heartbeat shutdown exactly once, and remove duplicate post-schema validation branches in the core tool loop."
+        "Close final butler runtime coverage gaps with behavioral contracts and no production coverage suppressions, keep Supercronic single-owned when start races a pending restart, preserve idempotent prompt-binding abandonment records, initialize daemon heartbeat shutdown exactly once, remove duplicate post-schema validation branches in the core tool loop, and make failed production activation execute and verify rollback before restoring autostart."
       ]
     },
     {
