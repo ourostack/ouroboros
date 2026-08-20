@@ -254,10 +254,6 @@ export function createTelegramApprovalRuntime(options: {
     let failureCount = 0
     for (const pending of transport.listPendingDeliveries()) {
       try {
-        if (pending.terminal) {
-          await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
-          continue
-        }
         const existing = store.read(pending.approvalId)
         if (!existing) {
           const orphanRecovery = await transport.terminalizeOrphaned(
@@ -274,6 +270,10 @@ export function createTelegramApprovalRuntime(options: {
               terminalEditSucceeded: orphanRecovery.terminalEditSucceeded,
             },
           })
+          continue
+        }
+        if (pending.terminal) {
+          await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
           continue
         }
         const deliveryState = pending.deliveryState ?? "bound"

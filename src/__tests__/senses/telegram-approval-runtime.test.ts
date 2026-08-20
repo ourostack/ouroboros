@@ -494,9 +494,11 @@ describe("Telegram approval runtime orchestration", () => {
       { approvalId: "second", terminal: { terminalText: "second terminal" } },
       { approvalId: "bound", deliveryState: "bound", messageId: "101" },
     ])
-    runtimeMocks.store.read.mockImplementation((approvalId) => approvalId === "bound"
-      ? { ...baseRecord, approvalId, state: "awaiting_prompt_binding" }
-      : undefined)
+    runtimeMocks.store.read.mockImplementation((approvalId) => ({
+      ...baseRecord,
+      approvalId,
+      state: approvalId === "bound" ? "awaiting_prompt_binding" : "succeeded",
+    }))
     runtimeMocks.transport.terminalizeRecovered
       .mockRejectedValueOnce(new Error("private upstream detail"))
       .mockResolvedValue(undefined)

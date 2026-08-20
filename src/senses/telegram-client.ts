@@ -115,7 +115,7 @@ export interface TelegramUpdateInboxStore {
   load(): TelegramUpdateReceipt[]
   loadPending(): TelegramUpdateReceipt[]
   loadIndeterminate(): TelegramUpdateReceipt[]
-  quarantineStranded(): TelegramUpdateReceipt[]
+  quarantineStranded(options?: { acknowledgeWarnings?: boolean }): TelegramUpdateReceipt[]
   capture(update: TelegramUpdate): boolean
   claim(update: TelegramUpdate): boolean
   complete(update: TelegramUpdate): void
@@ -298,7 +298,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
     return this.read().indeterminate
   }
 
-  quarantineStranded(): TelegramUpdateReceipt[] {
+  quarantineStranded(options: { acknowledgeWarnings?: boolean } = {}): TelegramUpdateReceipt[] {
     const state = this.read()
     const stranded = uniqueReceipts([...state.pending, ...state.dispatching])
     const timestamp = this.timestamp()
@@ -313,11 +313,16 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
       combined.findIndex((candidate) => sameReceipt(candidate, record)) === index
     )), timestamp)
     const warnings = state.indeterminate.filter((record) => !record.warningAcknowledged)
-    if (stranded.length > 0 || warnings.length > 0) {
-      for (const warning of warnings) warning.warningAcknowledged = true
+    const acknowledgeWarnings = options.acknowledgeWarnings !== false
+    if (stranded.length > 0 || (acknowledgeWarnings && warnings.length > 0)) {
+      if (acknowledgeWarnings) {
+        for (const warning of warnings) warning.warningAcknowledged = true
+      }
       this.write(state)
     }
-    return warnings.map(({ quarantinedAt: _quarantinedAt, warningAcknowledged: _warningAcknowledged, ...receipt }) => receipt)
+    return acknowledgeWarnings
+      ? warnings.map(({ quarantinedAt: _quarantinedAt, warningAcknowledged: _warningAcknowledged, ...receipt }) => receipt)
+      : []
   }
 
   capture(update: TelegramUpdate): boolean {
@@ -438,7 +443,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
           await dispatch(update)
           if (requiresDurableDispatch) options.inboxStore?.complete(update)
         } catch (error) {
-          options.inboxStore?.quarantineStranded?.()
+          options.inboxStore?.quarantineStranded?.({ acknowledgeWarnings: false })
           throw error
         }
       }
