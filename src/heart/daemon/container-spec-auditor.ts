@@ -10,6 +10,8 @@ const EXPECTED_MOUNTS = [
   ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro"],
 ] as const
 
+const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
+
 export interface SanctuaryContainerAuditOptions {
   expectedImage: string
 }
@@ -81,13 +83,22 @@ export function auditSanctuaryContainerSpec(
     }
   }
   const result = { ok: violations.length === 0, violations }
-  emitNervesEvent({
-    level: result.ok ? "info" : "error",
-    component: "daemon",
-    event: result.ok ? "daemon.container_spec_audit_end" : "daemon.container_spec_audit_error",
-    message: result.ok ? "Sanctuary container spec audit passed" : "Sanctuary container spec audit failed",
-    meta: { violationCount: violations.length },
-  })
+  if (result.ok) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.container_spec_audit_end",
+      message: "Sanctuary container spec audit passed",
+      meta: { violationCount: 0 },
+    })
+  } else {
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.container_spec_audit_error",
+      message: "Sanctuary container spec audit failed",
+      meta: { violationCount: violations.length },
+    })
+  }
   return result
 }
 
@@ -116,9 +127,11 @@ export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): San
       return target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
     })
   if (input.templateXml.match(/<Config\b[^>]*\bType="(?:Port|Device)"/u)) violations.push("template must not declare ports or devices")
+  const extraParams = tag(input.templateXml, "ExtraParams")
+  if (extraParams !== EXPECTED_EXTRA_PARAMS) violations.push("template ExtraParams must equal the canonical user and restart flags")
   const spec = {
     Config: {
-      User: /(?:^|\s)--user=10001:10001(?:\s|$)/u.test(tag(input.templateXml, "ExtraParams") ?? "") ? "10001:10001" : "",
+      User: extraParams === EXPECTED_EXTRA_PARAMS ? "10001:10001" : "",
       Image: tag(input.templateXml, "Repository"),
       Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"],
       Cmd: [],
@@ -128,7 +141,7 @@ export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): San
     HostConfig: {
       NetworkMode: tag(input.templateXml, "Network"),
       Privileged: tag(input.templateXml, "Privileged") === "true",
-      RestartPolicy: { Name: /(?:^|\s)--restart=unless-stopped(?:\s|$)/u.test(tag(input.templateXml, "ExtraParams") ?? "") ? "unless-stopped" : "", MaximumRetryCount: 0 },
+      RestartPolicy: { Name: extraParams === EXPECTED_EXTRA_PARAMS ? "unless-stopped" : "", MaximumRetryCount: 0 },
       Binds: pathConfigs,
       PortBindings: {},
       Devices: [],

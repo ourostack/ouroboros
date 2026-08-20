@@ -124,4 +124,26 @@ describe("Sanctuary pre-activation container auditor", () => {
       expectedImage,
     }).ok).toBe(false)
   })
+
+  it.each([
+    "--privileged",
+    "--cap-add=SYS_ADMIN",
+    "-p 8080:8080",
+    "--device=/dev/sda",
+    "-v /mnt/user:/host",
+  ])("rejects unapproved staged ExtraParams authority: %s", (extra) => {
+    const result = auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace(
+        "--restart=unless-stopped --user=10001:10001",
+        `--restart=unless-stopped --user=10001:10001 ${extra}`,
+      ),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "ouro-butler@sha256:" + "a".repeat(64),
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      violations: expect.arrayContaining(["template ExtraParams must equal the canonical user and restart flags"]),
+    }))
+  })
 })
