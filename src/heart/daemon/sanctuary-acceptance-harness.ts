@@ -692,6 +692,10 @@ async function callbackInject(config: JsonObject, deps: AcceptanceHarnessDepende
 }
 
 interface InventoryKey { id: string; name: string; permissions: string[]; roles: string[] }
+interface DesiredInventoryKey { name: string; vaultField: string; permissions: string[] }
+interface OldInventoryKey { id: string; secretAdapter: string }
+
+const SANCTUARY_ACCEPTANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 
 function inventory(value: unknown): InventoryKey[] {
   const root = object(value, "Unraid inventory")
@@ -725,6 +729,112 @@ function sameInventory(left: InventoryKey[], right: InventoryKey[]): boolean {
   return expected.length === actual.length && expected.every((key, index) => sameInventoryKey(key, actual[index]!))
 }
 
+async function rotateOccupiedCanonicalUnraidKeys(input: {
+  root: string
+  evidencePath: string
+  targetServerId: string
+  adapters: { inventory: string; create: string; store: string; revoke: string; probe: string }
+  desired: DesiredInventoryKey[]
+  oldKeys: OldInventoryKey[]
+  initial: InventoryKey[]
+  deps: AcceptanceHarnessDependencies
+}): Promise<void> {
+  const { root, evidencePath, targetServerId, adapters, desired, oldKeys, initial, deps } = input
+  const requiredNames = ["Butler RO", "Butler RW"]
+  if (targetServerId !== "sanctuary-unraid"
+    || desired.length !== 2 || initial.length !== 2 || oldKeys.length !== 2
+    || JSON.stringify(desired.map((key) => key.name).sort()) !== JSON.stringify(requiredNames)
+    || Object.values(adapters).some((value) => value !== SANCTUARY_ACCEPTANCE_ADAPTER)
+    || oldKeys.some((old) => old.secretAdapter !== SANCTUARY_ACCEPTANCE_ADAPTER)) {
+    throw new Error("occupied canonical Unraid rotation requires the fixed packaged two-key contract")
+  }
+  for (const desiredKey of desired) {
+    const occupied = initial.find((entry) => entry.name === desiredKey.name)
+    if (!occupied || !oldKeys.some((old) => old.id === occupied.id)) throw new Error("canonical Unraid name is not owned by the exact old key set")
+  }
+
+  const base: JsonObject = {
+    schemaVersion: 1,
+    operation: "unraid-key-rotate",
+    phase: "preflight",
+    targetServerId,
+    initialInventoryDigest: digest(initial),
+    createdKeyIds: [],
+    revokedKeyIds: [],
+  }
+  initializeCheckpoint(root, evidencePath, base)
+  const created: Array<InventoryKey & { handle: string; desired: DesiredInventoryKey; temporary: boolean }> = []
+  const revokedKeyIds: string[] = []
+  const suffix = deps.randomBytes(8).toString("hex")
+
+  const createAndAttest = async (key: DesiredInventoryKey, name: string, temporary: boolean): Promise<void> => {
+    const response = object(await deps.runAdapter(adapters.create, {
+      operation: "create_key", targetServerId, name, permissions: key.permissions,
+    }), "created Unraid key")
+    const id = text(response.id, "created key id")
+    const handle = text(response.key, "created key handle")
+    if (response.name !== name || !sameStrings(stringArray(response.permissions, "created permissions"), key.permissions)
+      || !Array.isArray(response.roles) || response.roles.length !== 0
+      || initial.some((entry) => entry.id === id) || created.some((entry) => entry.id === id)) {
+      throw new Error("created Unraid key scope or identity mismatch")
+    }
+    created.push({ id, name, permissions: key.permissions, roles: [], handle, desired: key, temporary })
+    replaceCheckpoint(root, evidencePath, { ...base, phase: temporary ? "temporary_key_created" : "canonical_key_created", createdKeyIds: created.map((entry) => entry.id), revokedKeyIds })
+    const stored = object(await deps.runAdapter(adapters.store, {
+      operation: "store_key", targetServerId, vaultField: key.vaultField, keyId: id, key: handle,
+    }), "key store result")
+    if (stored.stored !== true || stored.keyId !== id) throw new Error("vault did not attest exact key storage")
+    const probe = object(await deps.runAdapter(adapters.probe, {
+      operation: "probe_new_key", targetServerId, id, key: handle,
+    }), "new key probe")
+    if (probe.valid !== true) throw new Error("new Unraid key readiness failed")
+  }
+
+  const revokeAndReject = async (id: string, handle: string): Promise<void> => {
+    const revoked = object(await deps.runAdapter(adapters.revoke, { operation: "revoke_key", targetServerId, id }), "key revoke result")
+    if (revoked.revoked !== true || revoked.id !== id) throw new Error("Unraid revoke did not attest exact key id")
+    const probe = object(await deps.runAdapter(adapters.probe, { operation: "probe_revoked_key", targetServerId, id, key: handle }), "revoked key probe")
+    if (probe.valid !== false || (probe.status !== 401 && probe.status !== 403)) throw new Error("revoked Unraid key still authenticates")
+    revokedKeyIds.push(id)
+    replaceCheckpoint(root, evidencePath, { ...base, phase: "key_revoked", createdKeyIds: created.map((entry) => entry.id), revokedKeyIds })
+  }
+
+  try {
+    for (const key of desired) await createAndAttest(key, `${key.name} Rotation ${suffix}`, true)
+    const withTemporary = inventory(await deps.runAdapter(adapters.inventory, { operation: "inventory_keys", targetServerId }))
+    if (!sameInventory(withTemporary, [...initial, ...created.map(({ handle: _handle, desired: _desired, temporary: _temporary, ...entry }) => entry)])) {
+      throw new Error("temporary Unraid key inventory changed ambiguously")
+    }
+    for (const old of oldKeys) {
+      const secret = object(await deps.runAdapter(old.secretAdapter, { operation: "read_old_key", targetServerId, id: old.id }), "old key handle result")
+      await revokeAndReject(old.id, text(secret.key, "old key handle"))
+    }
+    const temporary = [...created]
+    const afterOldRevokes = inventory(await deps.runAdapter(adapters.inventory, { operation: "inventory_keys", targetServerId }))
+    const expectedTemporary = temporary.map(({ handle: _handle, desired: _desired, temporary: _temporary, ...entry }) => entry)
+    if (!sameInventory(afterOldRevokes, expectedTemporary)) throw new Error("old-key revoke inventory is not the exact temporary pair")
+    for (const key of desired) await createAndAttest(key, key.name, false)
+    const withCanonical = inventory(await deps.runAdapter(adapters.inventory, { operation: "inventory_keys", targetServerId }))
+    const expectedWithCanonical = created.map(({ handle: _handle, desired: _desired, temporary: _temporary, ...entry }) => entry)
+    if (!sameInventory(withCanonical, expectedWithCanonical)) throw new Error("canonical-key mint inventory changed ambiguously")
+    for (const key of temporary) await revokeAndReject(key.id, key.handle)
+    const final = inventory(await deps.runAdapter(adapters.inventory, { operation: "inventory_keys", targetServerId }))
+    const canonical = created.filter((entry) => !entry.temporary).map(({ handle: _handle, desired: _desired, temporary: _temporary, ...entry }) => entry)
+    if (!sameInventory(final, canonical)) throw new Error("final canonical Unraid key inventory mismatch")
+    replaceCheckpoint(root, evidencePath, {
+      ...base,
+      phase: "complete",
+      createdKeyIds: created.map((entry) => entry.id),
+      revokedKeyIds,
+      finalInventoryDigest: digest(final),
+      completedAt: deps.now(),
+    })
+  } catch (error) {
+    failedCheckpoint(root, evidencePath, { ...base, createdKeyIds: created.map((entry) => entry.id), revokedKeyIds }, error)
+    throw error
+  }
+}
+
 async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
   const root = privateAllowedRoot(config)
   const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
@@ -751,6 +861,15 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
   })
   if (new Set(oldKeys.map((key) => key.id)).size !== oldKeys.length) throw new Error("old key IDs must be unique")
   const initial = inventory(await deps.runAdapter(inventoryAdapter, { operation: "inventory_keys", targetServerId }))
+  const desiredNamesOccupied = desired.every((key) => initial.some((entry) => entry.name === key.name))
+  if (desiredNamesOccupied) {
+    await rotateOccupiedCanonicalUnraidKeys({
+      root, evidencePath, targetServerId,
+      adapters: { inventory: inventoryAdapter, create: createAdapter, store: storeAdapter, revoke: revokeAdapter, probe: probeAdapter },
+      desired, oldKeys, initial, deps,
+    })
+    return
+  }
   for (const key of desired) if (initial.some((entry) => entry.name === key.name)) throw new Error(`Unraid key ${key.name} already exists`)
   for (const old of oldKeys) if (!initial.some((entry) => entry.id === old.id)) throw new Error(`old Unraid key ${old.id} is absent`)
 
