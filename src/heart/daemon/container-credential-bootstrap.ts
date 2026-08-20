@@ -34,6 +34,9 @@ function parseEnvelope(raw: string): ContainerBootstrapEnvelope {
   if (Object.keys(value).sort().join(",") !== "credentials,schemaVersion") {
     throw new Error("container credential bootstrap has unsupported fields")
   }
+  if (value.credentials.length === 0) {
+    throw new Error("container credential bootstrap must contain at least one credential")
+  }
   return value as unknown as ContainerBootstrapEnvelope
 }
 
