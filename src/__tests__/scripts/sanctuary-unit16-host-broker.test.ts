@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url"
+import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { describe, expect, it } from "vitest"
@@ -37,5 +38,17 @@ describe("Sanctuary Unit 16 host broker", () => {
       targetId: "another-host",
       idempotencyKey: "0123456789abcdef0123456789abcdef",
     })).rejects.toThrow(/target host is invalid/u)
+  })
+
+  it("keeps host authority fixed and emits only redacted broker failures", () => {
+    const source = fs.readFileSync("deploy/unraid/sanctuary-unit16-host-broker.mjs", "utf8")
+    expect(source).toContain('const KEY_ROOT = "/boot/config/plugins/dynamix.my.servers/keys"')
+    expect(source).toContain('const UNRAID_API = "/usr/local/sbin/unraid-api"')
+    expect(source).toContain('const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"')
+    expect(source).toContain('chownSync(socket, 0, 10001)')
+    expect(source).toContain('chmodSync(socket, 0o660)')
+    expect(source).toContain('{ ok: false, error: "host operation failed" }')
+    expect(source).not.toMatch(/console\.(?:log|error|warn)/u)
+    expect(source).not.toContain("/var/run/docker.sock")
   })
 })
