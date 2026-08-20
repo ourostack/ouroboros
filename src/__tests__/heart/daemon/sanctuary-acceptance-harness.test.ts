@@ -477,7 +477,9 @@ describe("Sanctuary acceptance harness", () => {
     const afterMissing = path.join(dir, "after-missing.json")
     fs.writeFileSync(beforeMissing, JSON.stringify({ values: { beforeOnly: 1, unchanged: null } }), { mode: 0o600 })
     fs.writeFileSync(afterMissing, JSON.stringify({ values: { afterOnly: 2, unchanged: null } }), { mode: 0o600 })
-    await executeSanctuaryAcceptanceHarness("cursor-delta", { evidencePath: path.join(dir, "missing-delta.json"), beforePath: beforeMissing, afterPath: afterMissing }, dependencies())
+    await expect(executeSanctuaryAcceptanceHarness("cursor-delta", {
+      evidencePath: path.join(dir, "missing-delta.json"), beforePath: beforeMissing, afterPath: afterMissing,
+    }, dependencies())).rejects.toThrow(/exact complete cursor snapshot/u)
   })
 
   it("covers callback refusal variants and preserves redacted failed checkpoints", async () => {
@@ -746,9 +748,11 @@ describe("Sanctuary acceptance harness", () => {
     }
     const cases: Array<[string, Record<string, unknown>]> = [
       ["raw", { ...valid, values: { token: "raw-secret" } }],
+      ["version", { ...valid, schemaVersion: 2 }],
       ["operation", { ...valid, operation: "evidence-snapshot" }],
       ["phase", { ...valid, phase: "failed" }],
       ["schema", { ...valid, schema: "postboot-health-v1" }],
+      ["values-shape", { ...valid, values: null }],
       ["extra-key", { ...valid, values: { ...valid.values, extra: "c".repeat(64) } }],
       ["invalid-digest", { ...valid, values: { ...valid.values, "telegram-cursor-v1.offsetDigest": "not-opaque" } }],
     ]
@@ -763,6 +767,21 @@ describe("Sanctuary acceptance harness", () => {
       }, dependencies())).rejects.toThrow(/cursor snapshot/u)
       expect(fs.existsSync(delta)).toBe(false)
     }
+    const exactBefore = path.join(dir, "exact-before.json")
+    const exactAfter = path.join(dir, "exact-after.json")
+    const exactDelta = path.join(dir, "exact-delta.json")
+    fs.writeFileSync(exactBefore, JSON.stringify(valid), { mode: 0o600 })
+    fs.writeFileSync(exactAfter, JSON.stringify({
+      ...valid,
+      values: { ...valid.values, "telegram-cursor-v1.offsetDigest": "c".repeat(64) },
+    }), { mode: 0o600 })
+    await executeSanctuaryAcceptanceHarness("cursor-delta", {
+      allowedRoot: dir, evidencePath: exactDelta, beforePath: exactBefore, afterPath: exactAfter,
+    }, dependencies())
+    expect(evidence(exactDelta)).toMatchObject({
+      changes: { "telegram-cursor-v1.offsetDigest": { before: "a".repeat(64), after: "c".repeat(64) } },
+    })
+    expect((evidence(exactDelta).changes as Record<string, unknown>)).not.toHaveProperty("telegram-cursor-v1.auditCursorDigest")
   })
 
   it("atomically grants only one concurrent process an initial checkpoint claim", async () => {
