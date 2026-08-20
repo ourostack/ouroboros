@@ -537,6 +537,179 @@ local unlock: available
       ! docker container inspect ouro-butler-provider-readiness >/dev/null 2>&1 || return 1
       validate_sanctuary_roots "$BOOTSTRAP_RUNTIME_ROOT" "$BOOTSTRAP_AGENT_ROOT" || return $?
     }
+    run_sanctuary_docker() {
+      /usr/bin/timeout -s KILL 20 /usr/bin/docker "$@"
+    }
+    run_sanctuary_unraid_api() {
+      /usr/bin/timeout -s KILL 20 /usr/local/sbin/unraid-api "$@"
+    }
+    run_sanctuary_node() {
+      /usr/local/bin/node "$@"
+    }
+    resolve_sanctuary_unraid_key() {
+      run_sanctuary_node -e '
+        const fs = require("node:fs");
+        const root = "/boot/config/plugins/dynamix.my.servers/keys";
+        const expected = process.argv[1];
+        const found = [];
+        for (const name of fs.readdirSync(root)) {
+          if (!/^[A-Za-z0-9._:-]+\.json$/.test(name)) process.exit(1);
+          const path = `${root}/${name}`;
+          const stat = fs.lstatSync(path);
+          if (!stat.isFile() || stat.isSymbolicLink()) process.exit(1);
+          const value = JSON.parse(fs.readFileSync(path, "utf8"));
+          if (value.id === expected) found.push({ path, name: value.name });
+        }
+        if (found.length !== 1 || typeof found[0].name !== "string" || !/^[A-Za-z0-9 ._:-]+$/.test(found[0].name)) process.exit(1);
+        process.stdout.write(`${found[0].path}\t${found[0].name}`);
+      ' "$1"
+    }
+    verify_vault_backed_unraid_key() {
+      KEY_ID=$1
+      CAPABILITY=$2
+      case "$KEY_ID" in ''|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+      case "$CAPABILITY" in read-only|bounded-write) ;; *) return 1 ;; esac
+      IMAGE_DIGEST=${IMAGE_ID#sha256:}
+      test "$IMAGE_DIGEST" != "$IMAGE_ID" || return 1
+      test "${#IMAGE_DIGEST}" -eq 64 || return 1
+      case "$IMAGE_DIGEST" in *[!0-9a-f]*) return 1 ;; esac
+      test "$(run_sanctuary_docker image inspect --format '{{.Id}}' "$IMAGE_ID")" = "$IMAGE_ID" || return $?
+      VERIFY_RESULT=$(run_sanctuary_docker run --rm --pull=never --network host \
+        --user 0:0 \
+        --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
+        --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
+        --mount type=bind,src=/boot/config/plugins/dynamix.my.servers/keys,dst=/boot/config/plugins/dynamix.my.servers/keys,readonly \
+        --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
+        "$IMAGE_ID" vault-probe "$KEY_ID" "$CAPABILITY") || return $?
+      printf '%s' "$VERIFY_RESULT" | run_sanctuary_node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const value = JSON.parse(input);
+          const expectedId = process.argv[1];
+          const expectedCapability = process.argv[2];
+          const expectedProof = expectedCapability === "read-only"
+            ? "read-authorized-write-denied"
+            : "read-authorized-write-reached-not-found";
+          if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["capability", "keyId", "proof", "valid"])) process.exit(1);
+          if (value.valid !== true || value.keyId !== expectedId || value.capability !== expectedCapability) process.exit(1);
+          if (value.proof !== expectedProof) process.exit(1);
+        });
+      ' "$KEY_ID" "$CAPABILITY" || return $?
+    }
+    inventory_unraid_key_ids() {
+      IMAGE_DIGEST=${IMAGE_ID#sha256:}
+      test "$IMAGE_DIGEST" != "$IMAGE_ID" || return 1
+      test "${#IMAGE_DIGEST}" -eq 64 || return 1
+      case "$IMAGE_DIGEST" in *[!0-9a-f]*) return 1 ;; esac
+      test "$(run_sanctuary_docker image inspect --format '{{.Id}}' "$IMAGE_ID")" = "$IMAGE_ID" || return $?
+      INVENTORY_RESULT=$(printf '%s' '{"operation":"closed-inventory"}' | \
+        run_sanctuary_docker run --rm -i --pull=never --network none \
+          --user 0:0 --read-only \
+          --mount type=bind,src=/boot/config/plugins/dynamix.my.servers/keys,dst=/boot/config/plugins/dynamix.my.servers/keys,readonly \
+          --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh "$IMAGE_ID") || return $?
+      printf '%s' "$INVENTORY_RESULT" | run_sanctuary_node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const value = JSON.parse(input);
+          if (!value || JSON.stringify(Object.keys(value)) !== JSON.stringify(["keys"]) || !Array.isArray(value.keys)) process.exit(1);
+          for (const key of value.keys) {
+            if (!key || JSON.stringify(Object.keys(key).sort()) !== JSON.stringify(["id", "roles", "scope"])) process.exit(1);
+            if (!/^[A-Za-z0-9._:-]+$/.test(key.id)) process.exit(1);
+            if (!["read-only", "bounded-write", "legacy-write"].includes(key.scope) || key.roles !== "none") process.exit(1);
+            process.stdout.write(`${key.id}\t${key.scope}\t${key.roles}\n`);
+          }
+        });
+      ' || return $?
+    }
+    revoke_unraid_key_exact() {
+      KEY_ID=$1
+      case "$KEY_ID" in ''|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+      test "${REVOKED_KEY_FD_OPEN:-no}" = no || return 1
+      KEY_TARGET=$(resolve_sanctuary_unraid_key "$KEY_ID") || return $?
+      KEY_PATH=${KEY_TARGET%%	*}
+      KEY_NAME=${KEY_TARGET#*	}
+      test "$KEY_PATH" != "$KEY_TARGET" || return 1
+      test -f "$KEY_PATH" && test ! -L "$KEY_PATH" || return $?
+      exec 9<"$KEY_PATH" || return $?
+      REVOKED_KEY_FD_OPEN=yes
+      REVOKED_KEY_ID=$KEY_ID
+      if ! REVOKE_RESULT=$(run_sanctuary_unraid_api apikey --name "$KEY_NAME" --delete --json); then
+        exec 9<&-
+        REVOKED_KEY_FD_OPEN=no
+        REVOKED_KEY_ID=
+        return 1
+      fi
+      if ! printf '%s' "$REVOKE_RESULT" | run_sanctuary_node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const value = JSON.parse(input);
+          const expectedId = process.argv[1];
+          const expectedName = process.argv[2];
+          if (value.deleted !== 1 || !Array.isArray(value.keys) || value.keys.length !== 1) process.exit(1);
+          if (value.keys[0].id !== expectedId || value.keys[0].name !== expectedName) process.exit(1);
+        });
+      ' "$KEY_ID" "$KEY_NAME"; then
+        exec 9<&-
+        REVOKED_KEY_FD_OPEN=no
+        REVOKED_KEY_ID=
+        return 1
+      fi
+    }
+    verify_revoked_unraid_key_rejected() {
+      KEY_ID=$1
+      case "$KEY_ID" in ''|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+      test "${REVOKED_KEY_FD_OPEN:-no}" = yes || return 1
+      if test "${REVOKED_KEY_ID:-}" != "$KEY_ID"; then
+        exec 9<&-
+        REVOKED_KEY_FD_OPEN=no
+        REVOKED_KEY_ID=
+        return 1
+      fi
+      IMAGE_DIGEST=${IMAGE_ID#sha256:}
+      if test "$IMAGE_DIGEST" = "$IMAGE_ID" || test "${#IMAGE_DIGEST}" -ne 64; then
+        exec 9<&-
+        REVOKED_KEY_FD_OPEN=no
+        REVOKED_KEY_ID=
+        return 1
+      fi
+      case "$IMAGE_DIGEST" in *[!0-9a-f]*)
+        exec 9<&-
+        REVOKED_KEY_FD_OPEN=no
+        REVOKED_KEY_ID=
+        return 1
+      ;; esac
+      if test "$(run_sanctuary_docker image inspect --format '{{.Id}}' "$IMAGE_ID")" != "$IMAGE_ID"; then
+        exec 9<&-
+        REVOKED_KEY_FD_OPEN=no
+        REVOKED_KEY_ID=
+        return 1
+      fi
+      if REJECT_RESULT=$(run_sanctuary_docker run --rm -i --pull=never --network host \
+        --user 10001:10001 --read-only \
+        --entrypoint /bin/sh "$IMAGE_ID" -ceu \
+        'exec 3<&0; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh revoked-probe "$1" "$2" 3<&3' \
+        sanctuary-revoked-probe "$KEY_ID" http://127.0.0.1/graphql <&9); then REJECT_STATUS=0; else REJECT_STATUS=$?; fi
+      exec 9<&-
+      REVOKED_KEY_FD_OPEN=no
+      REVOKED_KEY_ID=
+      test "$REJECT_STATUS" -eq 0 || return "$REJECT_STATUS"
+      printf '%s' "$REJECT_RESULT" | run_sanctuary_node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const value = JSON.parse(input);
+          if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["id", "rejected", "status"])) process.exit(1);
+          if (value.rejected !== true || value.id !== process.argv[1] || ![401, 403].includes(value.status)) process.exit(1);
+        });
+      ' "$KEY_ID" || return $?
+    }
     retire_legacy_unraid_key() {
       NEW_READ_KEY_ID=$1
       NEW_WRITE_KEY_ID=$2

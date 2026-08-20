@@ -803,9 +803,15 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
     const inventory = extractRunbookFunction(runbook, "inventory_unraid_key_ids")
     const revoke = extractRunbookFunction(runbook, "revoke_unraid_key_exact")
     const rejected = extractRunbookFunction(runbook, "verify_revoked_unraid_key_rejected")
+    const dockerBoundary = extractRunbookFunction(runbook, "run_sanctuary_docker")
+    const apiBoundary = extractRunbookFunction(runbook, "run_sanctuary_unraid_api")
+    const nodeBoundary = extractRunbookFunction(runbook, "run_sanctuary_node")
 
-    expect(verify).toContain('docker image inspect --format \'{{.Id}}\' "$IMAGE_ID"')
-    expect(verify).toContain("/usr/bin/timeout -s KILL 20 /usr/bin/docker run")
+    expect(dockerBoundary).toContain('/usr/bin/timeout -s KILL 20 /usr/bin/docker "$@"')
+    expect(apiBoundary).toContain('/usr/bin/timeout -s KILL 20 /usr/local/sbin/unraid-api "$@"')
+    expect(nodeBoundary).toContain('/usr/local/bin/node "$@"')
+    expect(verify).toContain('run_sanctuary_docker image inspect --format \'{{.Id}}\' "$IMAGE_ID"')
+    expect(verify).toContain("run_sanctuary_docker run")
     expect(verify).toContain("--pull=never --network host")
     expect(verify).toContain("--entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh")
     expect(verify).not.toMatch(/unraid(Read|Write)ApiKey|x-api-key/u)
@@ -815,7 +821,7 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
     expect(inventory).toContain('{"operation":"closed-inventory"}')
     expect(inventory).not.toContain("/var/run/docker.sock")
 
-    expect(revoke).toContain("/usr/local/sbin/unraid-api apikey --name")
+    expect(revoke).toContain("run_sanctuary_unraid_api apikey --name")
     expect(revoke).toContain("--delete --json")
     expect(revoke).toContain("exec 9<")
     expect(revoke).not.toMatch(/\.key\b|x-api-key/u)
@@ -825,6 +831,85 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
     expect(rejected).toContain("<&9")
     expect(rejected).toContain("http://127.0.0.1/graphql")
     expect(rejected).not.toContain("/var/run/docker.sock")
+  })
+
+  it("runs the exact retirement helper through real packaged adapter functions", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const functions = [
+      "verify_vault_backed_unraid_key",
+      "inventory_unraid_key_ids",
+      "revoke_unraid_key_exact",
+      "verify_revoked_unraid_key_rejected",
+      "retire_legacy_unraid_key",
+    ].map((name) => extractRunbookFunction(runbook, name)).join("\n")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-key-adapter-topology-"))
+    const keyPath = path.join(testRoot, "legacy.json")
+    const callLog = path.join(testRoot, "calls.log")
+    fs.writeFileSync(keyPath, JSON.stringify({ id: "old-ro", key: "must-not-appear", name: "old ro" }), { mode: 0o600 })
+    const script = String.raw`set -u
+run_sanctuary_node() { "$NODE_BIN" "$@"; }
+run_sanctuary_docker() {
+  command printf 'docker' >>"$CALL_LOG"
+  for argument in "$@"; do command printf '\t%s' "$argument" >>"$CALL_LOG"; done
+  command printf '\n' >>"$CALL_LOG"
+  PROBE_ID=
+  PROBE_CAPABILITY=
+  PREVIOUS=
+  for argument in "$@"; do
+    if [ "$PREVIOUS" = vault-probe ]; then PROBE_ID=$argument; PREVIOUS=vault-id; continue; fi
+    if [ "$PREVIOUS" = vault-id ]; then PROBE_CAPABILITY=$argument; PREVIOUS=; continue; fi
+    if [ "$PREVIOUS" = revoked-probe ]; then PROBE_ID=$argument; PREVIOUS=; continue; fi
+    case "$argument" in vault-probe|revoked-probe) PREVIOUS=$argument ;; old-ro|old-rw) PROBE_ID=$argument ;; esac
+  done
+  case "$*" in
+    *'image inspect'*) command printf '%s\n' "$IMAGE_ID" ;;
+    *'vault-probe'*)
+      if [ "$PROBE_CAPABILITY" = read-only ]; then PROBE_PROOF=read-authorized-write-denied; else PROBE_PROOF=read-authorized-write-reached-not-found; fi
+      command printf '{"valid":true,"keyId":"%s","capability":"%s","proof":"%s"}' "$PROBE_ID" "$PROBE_CAPABILITY" "$PROBE_PROOF"
+    ;;
+    *'revoked-probe'*) command cat >/dev/null; command printf '{"rejected":true,"id":"%s","status":401}' "$PROBE_ID" ;;
+    *)
+      if command grep -q '^unraid-api' "$CALL_LOG"; then
+        command printf '{"keys":[{"id":"new-ro","scope":"read-only","roles":"none"},{"id":"new-rw","scope":"bounded-write","roles":"none"}]}'
+      else
+        command printf '{"keys":[{"id":"new-ro","scope":"read-only","roles":"none"},{"id":"new-rw","scope":"bounded-write","roles":"none"},{"id":"old-ro","scope":"read-only","roles":"none"},{"id":"old-rw","scope":"bounded-write","roles":"none"}]}'
+      fi
+    ;;
+  esac
+}
+run_sanctuary_unraid_api() {
+  command printf 'unraid-api' >>"$CALL_LOG"
+  for argument in "$@"; do command printf '\t%s' "$argument" >>"$CALL_LOG"; done
+  command printf '\n' >>"$CALL_LOG"
+  case "$3" in 'old ro') CURRENT_KEY_ID=old-ro ;; 'old rw') CURRENT_KEY_ID=old-rw ;; *) return 1 ;; esac
+  command printf '{"deleted":1,"keys":[{"id":"%s","name":"%s"}]}' "$CURRENT_KEY_ID" "$3"
+}
+resolve_sanctuary_unraid_key() {
+  case "$1" in old-ro) CURRENT_KEY_NAME='old ro' ;; old-rw) CURRENT_KEY_NAME='old rw' ;; *) return 1 ;; esac
+  command printf '%s\t%s' "$KEY_PATH" "$CURRENT_KEY_NAME"
+}
+${functions}
+retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
+    try {
+      const result = runConditionalHelper(script, "unused", {
+        CALL_LOG: callLog,
+        KEY_PATH: keyPath,
+        NODE_BIN: process.execPath,
+        IMAGE_ID: `sha256:${"a".repeat(64)}`,
+      })
+      const calls = fs.readFileSync(callLog, "utf8")
+      expect(result.status, `${result.stderr}\n${calls}`).toBe(0)
+      expect(calls).toContain("--mount\ttype=bind,src=/boot/config/plugins/dynamix.my.servers/keys,dst=/boot/config/plugins/dynamix.my.servers/keys,readonly")
+      expect(calls).toContain("--entrypoint\t/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh")
+      expect(calls).toContain("unraid-api\tapikey\t--name\told ro\t--delete\t--json")
+      expect(calls).toContain("unraid-api\tapikey\t--name\told rw\t--delete\t--json")
+      expect(calls).toContain("revoked-probe")
+      expect(calls).not.toContain("must-not-appear")
+      expect(result.stdout).not.toContain("must-not-appear")
+      expect(result.stderr).not.toContain("must-not-appear")
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
   })
 
   it("rejects update topology before effective audit can create a container", () => {
