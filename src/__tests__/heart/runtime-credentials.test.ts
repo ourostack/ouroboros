@@ -426,7 +426,7 @@ describe("runtime credentials vault config", () => {
     expect(mockCredentialStore.items.has("providers/openai-compatible")).toBe(true)
   })
 
-  it("uses an explicit message machine id and rejects invalid bootstrap without vault writes", async () => {
+  it("uses a matching explicit message machine id and rejects invalid bootstrap without vault writes", async () => {
     emitTestEvent("runtime credentials durable bootstrap validation")
 
     await expect(persistRuntimeCredentialBootstrapMessage({
@@ -434,7 +434,7 @@ describe("runtime credentials vault config", () => {
       agentName: "sanctuary",
       machineId: "machine_from_envelope",
       machineRuntimeConfig: { unraidReadApiKey: "read-secret" },
-    }, { machineId: "machine_fallback" })).resolves.toBe(true)
+    }, { machineId: "machine_from_envelope" })).resolves.toBe(true)
     expect(mockCredentialStore.items.has("runtime/machines/machine_from_envelope/config")).toBe(true)
 
     mockCredentialStore.items.clear()
