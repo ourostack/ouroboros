@@ -218,6 +218,26 @@ describe("Telegram approval callback transport", () => {
     await expect(second).resolves.toMatchObject({ accepted: false, reason: "stale_callback" })
   })
 
+  it("terminally fences a decision token after onDecision rejects", async () => {
+    const onDecision = vi.fn(async () => { throw new Error("continuation unavailable") })
+    const resolveDecisionToken = vi.fn(async () => "must-not-be-reused")
+    const fixture = approvalFixture({ onDecision, resolveDecisionToken })
+    const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "one-shot-token", prompt: "Restart?" })
+
+    await expect(fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-1" })))
+      .rejects.toThrow("continuation unavailable")
+    expect(fixture.records()).toEqual([expect.objectContaining({
+      approvalId: "approval-1",
+      terminal: { accepted: false, terminalText: "⚠️ Approval did not complete" },
+    })])
+    expect(JSON.stringify(fixture.records())).not.toContain("one-shot-token")
+
+    await expect(fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-2" })))
+      .resolves.toEqual({ handled: true, accepted: false, reason: "decision_refused" })
+    expect(onDecision).toHaveBeenCalledOnce()
+    expect(resolveDecisionToken).not.toHaveBeenCalled()
+  })
+
   it("validates persisted callback handles and collisions", () => {
     const base = { approvalId: "one", messageId: "1", approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }
     expect(() => approvalFixture({ records: [{ ...base, approveCallbackData: `a:${"x".repeat(64)}` }] })).toThrow("1 to 64 bytes")
