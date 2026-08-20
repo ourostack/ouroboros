@@ -510,8 +510,14 @@ prepare_canonical_sanctuary_roots "$IMAGE_ID"`
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
     const helper = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
+      .replaceAll("/mnt/user/appdata/ouro-butler/runtime/container-credentials.json", "$LEGACY_SOURCE")
+      .replaceAll("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "$CANONICAL_RUNTIME_ROOT")
     const script = String.raw`set -u
 SCENARIO=$1
+stat() { case "$*" in *container-credentials.json*) command printf '10001:10001 600\n' ;; *) command stat "$@" ;; esac; }
+install() { eval "INSTALL_TARGET=\${$#}"; command cp "$LEGACY_SOURCE" "$INSTALL_TARGET"; command chmod 0600 "$INSTALL_TARGET"; }
+chown() { return 0; }
+sync() { return 0; }
 docker() {
   command printf '%s\n' "$*" >>"$CALL_LOG"
   case "$*" in
@@ -524,6 +530,7 @@ docker() {
       elif [ "$SCENARIO" = absent ]; then command printf 'vault locator: not configured in agent.json\nlocal unlock: not checked\n'
       elif [ "$SCENARIO" = available ]; then command printf 'vault locator: agent.json\nlocal unlock: available\n'
       else command printf 'vault locator: agent.json\nlocal unlock: missing\n'; fi ;;
+    *"loadContainerCredentialBootstrap"*) command rm -f "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming" ;;
     *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js check --agent sanctuary --lane outward"*) return 0 ;;
     *) return 23 ;;
   esac
@@ -537,12 +544,32 @@ bootstrap_sanctuary_vault "$IMAGE_ID"`
     try {
       for (const scenario of ["absent", "existing", "available"]) {
         const callLog = path.join(testRoot, `${scenario}.log`)
-        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, IMAGE_ID: image })
+        const legacySource = path.join(testRoot, "legacy", "container-credentials.json")
+        const canonicalRuntimeRoot = path.join(testRoot, "canonical")
+        const canonicalSource = path.join(canonicalRuntimeRoot, "container-credentials.json")
+        fs.mkdirSync(path.dirname(legacySource), { recursive: true })
+        fs.mkdirSync(canonicalRuntimeRoot, { recursive: true })
+        if (scenario === "available") fs.writeFileSync(legacySource, '{"credential":"redacted"}\n', { mode: 0o600 })
+        else fs.rmSync(legacySource, { force: true })
+        const result = runConditionalHelper(script, scenario, {
+          CALL_LOG: callLog,
+          IMAGE_ID: image,
+          LEGACY_SOURCE: legacySource,
+          CANONICAL_RUNTIME_ROOT: canonicalRuntimeRoot,
+          CANONICAL_SOURCE: canonicalSource,
+        })
         expect(result.status, `${scenario}\n${result.stderr}`).toBe(0)
         const calls = fs.readFileSync(callLog, "utf8")
         if (scenario === "available") {
           expect(calls).not.toMatch(/ouro-entry\.js vault (?:create|unlock)/u)
           expect(calls).not.toContain("run --rm -it")
+          const importCall = calls.indexOf("loadContainerCredentialBootstrap")
+          const providerCall = calls.indexOf("ouro-entry.js check --agent sanctuary --lane outward")
+          expect(importCall).toBeGreaterThan(-1)
+          expect(providerCall).toBeGreaterThan(importCall)
+          expect(fs.existsSync(legacySource)).toBe(true)
+          expect(fs.existsSync(canonicalSource)).toBe(false)
+          expect(fs.existsSync(`${canonicalSource}.consuming`)).toBe(false)
           expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane outward")
           expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane inner")
           continue
@@ -552,7 +579,7 @@ bootstrap_sanctuary_vault "$IMAGE_ID"`
         const actionCall = calls.split("\n").find((line) => line.includes(`ouro-entry.js vault ${action} --agent sanctuary --store plaintext-file`))
         expect(actionCall).toContain("run --rm -it --pull=never --network host")
         expect(actionCall).toContain("--user 10001:10001")
-        expect(actionCall).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli")
+        expect(actionCall).toContain(`type=bind,src=${canonicalRuntimeRoot},dst=/home/ouro/.ouro-cli`)
         expect(actionCall).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro")
         expect(actionCall).toContain(`--entrypoint node ${image} /opt/ouro/dist/heart/daemon/ouro-entry.js`)
         expect(calls).not.toContain(`ouro-entry.js vault ${opposite} --agent sanctuary`)
