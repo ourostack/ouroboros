@@ -80,11 +80,11 @@ describe("Telegram sense coverage contracts", () => {
 
   it("constructs default API, stores, turn runner, tool context, approval runtime, and poll paths", async () => {
     const f = defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "butler", credentials })
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials })
     expect(mocks.createTelegramBotApi).toHaveBeenCalledWith({ token: credentials.botToken })
-    expect(mocks.createSanctuaryToolContext).toHaveBeenCalledWith("butler")
+    expect(mocks.createSanctuaryToolContext).toHaveBeenCalledWith("sanctuary")
     expect(mocks.createTelegramApprovalRuntime).toHaveBeenCalledWith(expect.objectContaining({
-      agentName: "butler", api: f.api, authorizedUserId: "42", authorizedChatId: "43", toolContext: { sanctuary: true },
+      agentName: "sanctuary", api: f.api, authorizedUserId: "42", authorizedChatId: "43", toolContext: { sanctuary: true },
     }))
     expect(mocks.createTelegramLongPoll).toHaveBeenCalledWith(expect.objectContaining({
       api: f.api, expectedUserId: "42", expectedChatId: "43",
@@ -99,13 +99,26 @@ describe("Telegram sense coverage contracts", () => {
   it("supplies an empty tool context if context construction yields no value", () => {
     const f = defaultFixture()
     mocks.createSanctuaryToolContext.mockReturnValueOnce(undefined as any)
-    createTelegramSenseApp({ agentName: "butler", credentials })
+    createTelegramSenseApp({ agentName: "sanctuary", credentials })
     expect(mocks.createTelegramApprovalRuntime).toHaveBeenCalledWith(expect.objectContaining({ api: f.api, toolContext: {} }))
+  })
+
+  it("starts a non-Sanctuary Telegram agent without constructing Sanctuary runtime state", async () => {
+    const f = defaultFixture()
+    createTelegramSenseApp({ agentName: "slugger", credentials })
+
+    expect(mocks.createSanctuaryToolContext).not.toHaveBeenCalled()
+    expect(mocks.createTelegramApprovalRuntime).not.toHaveBeenCalled()
+    await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
+    const turnOptions = mocks.runSenseTurn.mock.calls[0]![0]
+    expect(turnOptions).not.toHaveProperty("toolContext")
+    expect(turnOptions).not.toHaveProperty("approvalCoordinatorFactory")
+    expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined)
   })
 
   it("passes default tool and approval context, then sends a response only when no streamed delivery occurred", async () => {
     const f = defaultFixture()
-    createTelegramSenseApp({ agentName: "butler", credentials })
+    createTelegramSenseApp({ agentName: "sanctuary", credentials })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     expect(mocks.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
       toolContext: { sanctuary: true }, approvalCoordinatorFactory: f.runtime.coordinator,

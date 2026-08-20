@@ -85,14 +85,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     path.join(getAgentRoot(options.agentName), "state", "senses", "telegram", "inbox.json"),
   )
   const runTurn = options.runTurn ?? runSenseTurn
-  const toolContext = options.runTurn ? undefined : createSanctuaryToolContext(options.agentName)
-  const approvalRuntime = options.approvalRuntime ?? (options.runTurn ? undefined : createTelegramApprovalRuntime({
+  const useSanctuaryRuntime = options.agentName === "sanctuary" && !options.runTurn
+  const toolContext = useSanctuaryRuntime ? createSanctuaryToolContext(options.agentName) : undefined
+  const approvalRuntime = options.approvalRuntime ?? (useSanctuaryRuntime ? createTelegramApprovalRuntime({
     agentName: options.agentName,
     api,
     authorizedUserId,
     authorizedChatId,
     toolContext: toolContext ?? {},
-  }))
+  }) : undefined)
   const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
   const healthSweep = options.healthSweep
 
