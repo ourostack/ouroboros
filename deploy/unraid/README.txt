@@ -36,8 +36,9 @@ Backup:
   Stop ouro-butler, then snapshot both of these directories together:
     /mnt/user/appdata/ouro-butler/runtime/.ouro-cli
     /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
-  The backup must not contain container-credentials.json; that file is a
-  single-use migration import deleted durably before the daemon applies it.
+  A routine backup must not contain container-credentials.json or
+  container-credentials.json.consuming. If either exists, credential migration
+  is pending or failed and must be reconciled before taking the backup.
 
 Restore:
   Stop and remove the current container, restore both directories with numeric
@@ -50,8 +51,18 @@ Credential recovery:
   /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/container-credentials.json
   exists only for a one-time migration: if
   used, install it atomically as root with ownership 10001:10001 and mode 0600.
-  Startup claims and durably deletes it before applying anything; it is never
-  a credential source of truth and must not be recreated for routine boots.
+  Startup atomically claims it as container-credentials.json.consuming and
+  writes every credential class into the unlocked Sanctuary vault before deleting the claimed envelope.
+  Only then does it refresh the daemon's in-memory credentials.
+  If validation or any vault write fails, startup fails closed and preserves
+  container-credentials.json.consuming for the next startup to reconcile.
+  Restore or create/unlock the configured agent vault, then restart the same
+  reviewed image and let it retry the preserved claim. If both the source and
+  claimed envelope exist, stop: their relationship is ambiguous and startup
+  intentionally refuses to choose one.
+  Do not rename, copy, delete, or recreate either envelope during reconciliation.
+  After successful import, both files
+  are absent and the vault is the only credential source of truth.
   Never print or place credential values in logs, templates, command arguments,
   backups, or this runbook.
 
