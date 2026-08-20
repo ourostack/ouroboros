@@ -106,6 +106,54 @@ afterEach(() => {
 })
 
 describe("approval store", () => {
+  it("migrates legacy Telegram identity bindings without retaining raw user or chat IDs", () => {
+    const root = makeRoot()
+    const databasePath = path.join(root, "approvals.sqlite")
+    const store = openApprovalStore({
+      databasePath,
+      now: () => new Date(NOW),
+      randomUUID: () => UUID,
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const rawUser = "918273645012345678"
+    const rawChat = "817263540123456789"
+    const rawMessage = "716253401234567891"
+    const subject = `tg_${"a".repeat(43)}`
+    const prepared = store.prepare(proposalInput({
+      requesterId: rawUser,
+      transportUserId: rawUser,
+      transportChatId: rawChat,
+      sessionKey: `telegram:${rawChat}`,
+      sessionPath: `/bundle/state/sessions/telegram-user:${rawUser}/telegram/telegram_${rawChat}.json`,
+    }))
+    store.activate({
+      approvalId: prepared.record.approvalId,
+      checkpointDigest: prepared.record.checkpointDigest,
+      suspendedSessionRevision: "f".repeat(64),
+    })
+    store.bindPrompt({
+      approvalId: prepared.record.approvalId,
+      transport: "telegram",
+      transportChatId: rawChat,
+      transportMessageId: rawMessage,
+    })
+
+    expect(store.migrateTelegramIdentity?.({ legacyUserId: rawUser, legacyChatId: rawChat, subject })).toBe(1)
+    expect(store.read(prepared.record.approvalId)).toMatchObject({
+      requesterId: subject,
+      transportUserId: subject,
+      transportChatId: subject,
+      sessionKey: `telegram:${subject}`,
+      sessionPath: `/bundle/state/sessions/telegram-user:${subject}/telegram/telegram_${subject}.json`,
+      transportMessageId: expect.stringMatching(/^tgm_[A-Za-z0-9_-]{43}$/u),
+    })
+    store.close()
+    const persisted = fs.readFileSync(databasePath)
+    expect(persisted.includes(Buffer.from(rawUser))).toBe(false)
+    expect(persisted.includes(Buffer.from(rawChat))).toBe(false)
+    expect(persisted.includes(Buffer.from(rawMessage))).toBe(false)
+  })
+
   it("canonicalizes JSON object keys recursively before hashing", () => {
     const left = canonicalApprovalArguments({ z: [3, { b: true, a: null }], a: "x" })
     const right = canonicalApprovalArguments({ a: "x", z: [3, { a: null, b: true }] })

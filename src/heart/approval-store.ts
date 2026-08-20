@@ -1,4 +1,4 @@
-import { createHash, randomBytes as createRandomBytes, randomUUID as createRandomUUID, timingSafeEqual } from "node:crypto"
+import { createHash, createHmac, randomBytes as createRandomBytes, randomUUID as createRandomUUID, timingSafeEqual } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
@@ -152,6 +152,7 @@ export interface ApprovalStore {
   markContinuationAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
   completeContinuation(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
   read(approvalId: string): ApprovalRecord | null
+  migrateTelegramIdentity?(input: { legacyUserId: string; legacyChatId: string; subject: string }): number
   close(): void
 }
 
@@ -908,6 +909,43 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     },
 
     read(approvalId) { return observeRead(() => rawRead(approvalId)) },
+    migrateTelegramIdentity(input) {
+      if (!isNonEmpty(input.legacyUserId) || !isNonEmpty(input.legacyChatId) || !/^tg_[A-Za-z0-9_-]{43}$/u.test(input.subject)) {
+        fail("invalid_telegram_identity_migration")
+      }
+      const rows = database.prepare("SELECT approval_id, record_json FROM approval_actions ORDER BY approval_id")
+        .all() as Array<{ approval_id: string; record_json: string }>
+      const migrate = database.transaction(() => {
+        let migrated = 0
+        for (const row of rows) {
+          const previous = parseApprovalRecord(JSON.parse(row.record_json))
+          if (previous.transport !== "telegram") continue
+          const next: ApprovalRecord = {
+            ...previous,
+            sessionKey: previous.sessionKey === `telegram:${input.legacyChatId}` ? `telegram:${input.subject}` : previous.sessionKey,
+            sessionPath: previous.sessionPath
+              .replace(`telegram-user:${input.legacyUserId}`, `telegram-user:${input.subject}`)
+              .replace(`telegram_${input.legacyChatId}.json`, `telegram_${input.subject}.json`),
+            requesterId: previous.requesterId === input.legacyUserId ? input.subject : previous.requesterId,
+            transportUserId: previous.transportUserId === input.legacyUserId ? input.subject : previous.transportUserId,
+            transportChatId: previous.transportChatId === input.legacyChatId ? input.subject : previous.transportChatId,
+            transportMessageId: previous.transportMessageId && !previous.transportMessageId.startsWith("tgm_")
+              ? `tgm_${createHmac("sha256", input.subject).update(`message:${previous.transportMessageId}`, "utf8").digest("base64url")}`
+              : previous.transportMessageId,
+          }
+          const nextJson = JSON.stringify(parseApprovalRecord(next))
+          if (nextJson === row.record_json) continue
+          const changed = database.prepare("UPDATE approval_actions SET record_json = ? WHERE approval_id = ? AND record_json = ?")
+            .run(nextJson, row.approval_id, row.record_json)
+          if (changed.changes !== 1) fail("telegram_identity_migration_conflict")
+          migrated += 1
+        }
+        return migrated
+      })
+      const migrated = migrate()
+      if (migrated > 0) database.exec("VACUUM")
+      return migrated
+    },
     close() {
       return observeClose(() => {
         options.hooks?.beforeClose?.()

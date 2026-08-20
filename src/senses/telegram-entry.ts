@@ -30,10 +30,12 @@ Promise.all([
       await refreshRuntimeCredentialConfig(agentName)
     }
     const app = await startTelegramSenseApp(agentName)
-    const stop = (): void => app.stop()
+    let stopping: Promise<void> | undefined
+    const stop = (): void => { stopping ??= app.stop() }
     process.once("SIGTERM", stop)
     process.once("SIGINT", stop)
     await app.run()
+    await stopping
   })
   .catch((error) => {
     emitNervesEvent({

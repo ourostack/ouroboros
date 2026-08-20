@@ -446,19 +446,25 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   }
 
   const reconcileExpired = async (): Promise<void> => {
+    let firstFailure: unknown
     for (const pending of uniquePending()) {
       if (now() < pending.expiresAt) continue
-      if (pending.terminal) {
-        await editTerminal(pending, pending.terminal.terminalText)
+      try {
+        if (pending.terminal) {
+          await editTerminal(pending, pending.terminal.terminalText)
+          remove(pending)
+          persist()
+          continue
+        }
+        await options.onExpire?.(pending.approvalId)
+        await editTerminal(pending, "⚠️ Approval expired")
         remove(pending)
         persist()
-        continue
+      } catch (error) {
+        firstFailure ??= error
       }
-      await options.onExpire?.(pending.approvalId)
-      await editTerminal(pending, "⚠️ Approval expired")
-      remove(pending)
-      persist()
     }
+    if (firstFailure !== undefined) throw firstFailure
   }
 
   return {

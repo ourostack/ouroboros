@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 
 const mocks = vi.hoisted(() => ({
   getAgentRoot: vi.fn(() => "/tmp/telegram-agent"),
@@ -28,7 +31,10 @@ vi.mock("../../senses/telegram-client", async (importActual) => ({
 import {
   createTelegramSenseApp,
   loadTelegramSenseCredentials,
+  migrateTelegramFriendIdentity,
+  migrateTelegramSessionIdentity,
   parseTelegramSenseCredentials,
+  readOrCreateTelegramIdentityKey,
   startTelegramSenseApp,
 } from "../../senses/telegram"
 
@@ -66,6 +72,151 @@ beforeEach(() => {
 })
 
 describe("Telegram sense coverage contracts", () => {
+  it("creates one durable mode-0600 identity key and rejects corrupt or permissive keys", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-identity-"))
+    try {
+      const first = readOrCreateTelegramIdentityKey(root)
+      expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/u)
+      expect(readOrCreateTelegramIdentityKey(root)).toBe(first)
+      const keyPath = path.join(root, "state", "senses", "telegram", "identity.key")
+      expect(fs.statSync(keyPath).mode & 0o777).toBe(0o600)
+      fs.writeFileSync(keyPath, "invalid\n", { mode: 0o600 })
+      expect(() => readOrCreateTelegramIdentityKey(root)).toThrow("identity key is invalid")
+      fs.writeFileSync(keyPath, `${first}\n`, { mode: 0o600 })
+      fs.chmodSync(keyPath, 0o644)
+      expect(() => readOrCreateTelegramIdentityKey(root)).toThrow("permissions are invalid")
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("adopts a concurrently created identity key and propagates unrelated create failures", () => {
+    const concurrentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-race-"))
+    const failingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-failure-"))
+    const concurrentKey = "b".repeat(43)
+    try {
+      expect(readOrCreateTelegramIdentityKey(concurrentRoot, { beforeCreate: (keyPath) => {
+        fs.writeFileSync(keyPath, `${concurrentKey}\n`, { flag: "wx", mode: 0o600 })
+      } })).toBe(concurrentKey)
+      expect(() => readOrCreateTelegramIdentityKey(failingRoot, { beforeCreate: (keyPath) => {
+        fs.rmSync(path.dirname(keyPath), { recursive: true, force: true })
+      } })).toThrow()
+    } finally {
+      fs.rmSync(concurrentRoot, { recursive: true, force: true })
+      fs.rmSync(failingRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("migrates legacy Friend, session, pending, and return paths without retaining raw IDs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-migration-"))
+    const rawUser = "918273645012345678"
+    const rawChat = "817263540123456789"
+    const subject = `tg_${"a".repeat(43)}`
+    const legacyFriend = `telegram-user:${rawUser}`
+    const friendPath = path.join(root, "friends", "friend-1.json")
+    fs.mkdirSync(path.dirname(friendPath), { recursive: true })
+    fs.writeFileSync(friendPath, JSON.stringify({
+      id: "friend-1", name: `Telegram user ${rawUser}`, role: "friend", trustLevel: "family",
+      externalIds: [{ provider: "telegram-user", externalId: rawUser, linkedAt: "2026-01-01T00:00:00.000Z" }],
+      tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", schemaVersion: 1,
+    }))
+    const session = path.join(root, "state", "sessions", legacyFriend, "telegram", `telegram_${rawChat}.json`)
+    const pending = path.join(root, "state", "pending", legacyFriend, "telegram", `telegram:${rawChat}`)
+    const returns = path.join(root, "state", "pending-returns", legacyFriend)
+    fs.mkdirSync(path.dirname(session), { recursive: true })
+    fs.writeFileSync(session, "{}")
+    fs.mkdirSync(pending, { recursive: true })
+    fs.mkdirSync(returns, { recursive: true })
+    try {
+      migrateTelegramSessionIdentity(root, rawUser, rawChat, subject)
+      await migrateTelegramFriendIdentity(root, rawUser, subject)
+      migrateTelegramSessionIdentity(root, rawUser, rawChat, subject)
+      const allPaths: string[] = []
+      const visit = (directory: string): void => {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+          const entryPath = path.join(directory, entry.name)
+          allPaths.push(entryPath)
+          if (entry.isDirectory()) visit(entryPath)
+        }
+      }
+      visit(root)
+      expect(allPaths.join("\n")).not.toContain(rawUser)
+      expect(allPaths.join("\n")).not.toContain(rawChat)
+      const friend = fs.readFileSync(friendPath, "utf8")
+      expect(friend).toContain(subject)
+      expect(friend).not.toContain(rawUser)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed on ambiguous legacy Friend and session migrations", async () => {
+    const subject = `tg_${"c".repeat(43)}`
+    const rawUser = "918273645012345678"
+    const rawChat = "817263540123456789"
+    const friendRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-friend-ambiguous-"))
+    const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-session-ambiguous-"))
+    try {
+      fs.mkdirSync(path.join(friendRoot, "friends"), { recursive: true })
+      const friend = (id: string, externalId: string, name: string) => ({
+        id, name, role: "friend", trustLevel: "family", externalIds: [
+          { provider: "telegram-user", externalId, linkedAt: "2026-01-01T00:00:00.000Z" },
+          { provider: "local", externalId: "unrelated", linkedAt: "2026-01-01T00:00:00.000Z" },
+        ], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", schemaVersion: 1,
+      })
+      fs.writeFileSync(path.join(friendRoot, "friends", "legacy.json"), JSON.stringify(friend("legacy", rawUser, "Kept name")))
+      fs.writeFileSync(path.join(friendRoot, "friends", "opaque.json"), JSON.stringify(friend("opaque", subject, "Opaque")))
+      await expect(migrateTelegramFriendIdentity(friendRoot, rawUser, subject)).rejects.toThrow("ambiguous")
+
+      const legacy = path.join(sessionRoot, "state", "sessions", `telegram-user:${rawUser}`)
+      const opaque = path.join(sessionRoot, "state", "sessions", `telegram-user:${subject}`)
+      fs.mkdirSync(legacy, { recursive: true })
+      fs.mkdirSync(opaque, { recursive: true })
+      expect(() => migrateTelegramSessionIdentity(sessionRoot, rawUser, rawChat, subject)).toThrow("ambiguous")
+    } finally {
+      fs.rmSync(friendRoot, { recursive: true, force: true })
+      fs.rmSync(sessionRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("migrates a Friend already linked to both identities and rejects colliding session artifacts", async () => {
+    const subject = `tg_${"d".repeat(43)}`
+    const rawUser = "918273645012345678"
+    const rawChat = "817263540123456789"
+    const friendRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-friend-linked-"))
+    const sessionFileRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-session-file-"))
+    const pendingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-pending-file-"))
+    try {
+      const friendPath = path.join(friendRoot, "friends", "linked.json")
+      fs.mkdirSync(path.dirname(friendPath), { recursive: true })
+      fs.writeFileSync(friendPath, JSON.stringify({
+        id: "linked", name: "Kept name", role: "friend", trustLevel: "family",
+        externalIds: [
+          { provider: "telegram-user", externalId: rawUser, linkedAt: "2026-01-01T00:00:00.000Z" },
+          { provider: "telegram-user", externalId: subject, linkedAt: "2026-01-01T00:00:00.000Z" },
+          { provider: "local", externalId: "unrelated", linkedAt: "2026-01-01T00:00:00.000Z" },
+        ], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", schemaVersion: 1,
+      }))
+      await migrateTelegramFriendIdentity(friendRoot, rawUser, subject)
+      expect(fs.readFileSync(friendPath, "utf8")).not.toContain(rawUser)
+
+      const legacySessionDir = path.join(sessionFileRoot, "state", "sessions", `telegram-user:${rawUser}`, "telegram")
+      fs.mkdirSync(legacySessionDir, { recursive: true })
+      fs.writeFileSync(path.join(legacySessionDir, `telegram_${rawChat}.json`), "{}")
+      fs.writeFileSync(path.join(legacySessionDir, `telegram_${subject}.json`), "{}")
+      expect(() => migrateTelegramSessionIdentity(sessionFileRoot, rawUser, rawChat, subject)).toThrow("session file migration is ambiguous")
+
+      const legacyPendingDir = path.join(pendingRoot, "state", "pending", `telegram-user:${rawUser}`, "telegram")
+      fs.mkdirSync(path.join(legacyPendingDir, `telegram:${rawChat}`), { recursive: true })
+      fs.mkdirSync(path.join(legacyPendingDir, `telegram:${subject}`), { recursive: true })
+      expect(() => migrateTelegramSessionIdentity(pendingRoot, rawUser, rawChat, subject)).toThrow("pending identity migration is ambiguous")
+    } finally {
+      fs.rmSync(friendRoot, { recursive: true, force: true })
+      fs.rmSync(sessionFileRoot, { recursive: true, force: true })
+      fs.rmSync(pendingRoot, { recursive: true, force: true })
+    }
+  })
+
   it("parses trimmed credentials and rejects missing or non-canonical values without echoing secrets", () => {
     expect(parseTelegramSenseCredentials({
       telegramBotToken: ` ${credentials.botToken} `,
@@ -78,6 +229,8 @@ describe("Telegram sense coverage contracts", () => {
     for (const id of ["0", "01", "-1", "1.5", "abc"]) {
       expect(() => parseTelegramSenseCredentials({ telegramBotToken: credentials.botToken, telegramAuthorizedUserId: id, telegramAuthorizedChatId: "43" })).toThrow("canonical positive decimal")
     }
+    expect(() => createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "invalid" }))
+      .toThrow("identity key is invalid")
   })
 
   it("constructs default API, stores, turn runner, tool context, approval runtime, and poll paths", async () => {
@@ -94,7 +247,7 @@ describe("Telegram sense coverage contracts", () => {
     await app.run()
     expect(f.runtime.recover).toHaveBeenCalledBefore(f.transport.reconcileExpired)
     expect(f.transport.reconcileExpired).toHaveBeenCalledBefore(f.poll.run)
-    app.stop()
+    await app.stop()
     expect(f.runtime.close).toHaveBeenCalledOnce()
   })
 

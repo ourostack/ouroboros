@@ -121,6 +121,7 @@ function makeRuntime() {
     authorizedUserId: "10",
     authorizedChatId: "20",
     subject: "tg_stable-subject",
+    legacySubject: `tg_${"l".repeat(43)}`,
     toolContext: { agentName: "sanctuary" },
   })
 }
@@ -238,7 +239,12 @@ describe("Telegram approval runtime orchestration", () => {
 
     expect(runtimeMocks.getAgentRoot).toHaveBeenCalledWith("sanctuary")
     expect(runtimeMocks.openApprovalStore).toHaveBeenCalledWith({ databasePath: "/agents/sanctuary.ouro/state/approvals/approvals.sqlite" })
-    expect(runtimeMocks.store.migrateTelegramIdentity).toHaveBeenCalledWith({
+    expect(runtimeMocks.store.migrateTelegramIdentity).toHaveBeenNthCalledWith(1, {
+      legacyUserId: `tg_${"l".repeat(43)}`,
+      legacyChatId: `tg_${"l".repeat(43)}`,
+      subject: "tg_stable-subject",
+    })
+    expect(runtimeMocks.store.migrateTelegramIdentity).toHaveBeenNthCalledWith(2, {
       legacyUserId: "10",
       legacyChatId: "20",
       subject: "tg_stable-subject",
@@ -262,7 +268,10 @@ describe("Telegram approval runtime orchestration", () => {
       decisionToken: "server-secret",
       prompt: 'Approve unraid_restart_container with exact arguments {"container":"calibre-web"}?',
     }))
-    expect(runtimeMocks.store.bindPrompt).toHaveBeenCalledWith(expect.objectContaining({ transportChatId: "tg_stable-subject", transportMessageId: "99" }))
+    expect(runtimeMocks.store.bindPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      transportChatId: "tg_stable-subject",
+      transportMessageId: expect.stringMatching(/^tgm_[A-Za-z0-9_-]{43}$/u),
+    }))
     runtime.close()
     expect(runtimeMocks.store.close).toHaveBeenCalledOnce()
   })
@@ -326,7 +335,13 @@ describe("Telegram approval runtime orchestration", () => {
       .resolves.toEqual({ accepted: true, terminalText: "✅ Approved — action completed" })
 
     expect(runtimeMocks.executeApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({
-      decision: expect.objectContaining({ requesterId: "tg_stable-subject", transportUserId: "tg_stable-subject", transportChatId: "tg_stable-subject", sessionKey: "telegram:tg_stable-subject" }),
+      decision: expect.objectContaining({
+        requesterId: "tg_stable-subject",
+        transportUserId: "tg_stable-subject",
+        transportChatId: "tg_stable-subject",
+        transportMessageId: expect.stringMatching(/^tgm_[A-Za-z0-9_-]{43}$/u),
+        sessionKey: "telegram:tg_stable-subject",
+      }),
       currentSessionRevision: "revision-current",
     }))
     expect(runtimeMocks.execTool).toHaveBeenCalledWith("ponder", { thought: "safe" }, { agentName: "sanctuary" })
@@ -457,7 +472,7 @@ describe("Telegram approval runtime orchestration", () => {
       approvalId: "bound",
       transport: "telegram",
       transportChatId: "tg_stable-subject",
-      transportMessageId: "101",
+      transportMessageId: expect.stringMatching(/^tgm_[A-Za-z0-9_-]{43}$/u),
     })
     expect(runtimeMocks.resumeApprovalContinuation).not.toHaveBeenCalled()
   })

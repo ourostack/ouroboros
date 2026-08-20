@@ -43,7 +43,8 @@ function fixture(input: {
   const app = createTelegramSenseApp({
     agentName: "butler",
     credentials: { botToken: input.botToken ?? "test-token", authorizedUserId: "42", authorizedChatId: "42" },
-    identityKey: "stable-agent-scoped-identity-key-with-32-bytes",
+    identityKey: "k".repeat(43),
+    migrateIdentity: async () => undefined,
     api,
     offsetStore: { load: () => 0, save: vi.fn() },
     createLongPoll,
@@ -105,6 +106,7 @@ describe("Telegram sense", () => {
     await f.app.run()
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledBefore(f.poll.run as any)
     await f.app.stop()
+    await f.app.stop()
     expect(f.poll.stop).toHaveBeenCalledOnce()
     expect(f.api.stop).toHaveBeenCalledOnce()
   })
@@ -143,7 +145,7 @@ describe("Telegram sense", () => {
 
     const running = f.app.run()
     await vi.advanceTimersByTimeAsync(3_000)
-    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
 
     await f.app.stop()
     finishPolling()
@@ -152,6 +154,7 @@ describe("Telegram sense", () => {
   })
 
   it("joins an in-flight reconciliation before closing transport resources", async () => {
+    vi.useFakeTimers()
     let releaseReconcile!: () => void
     let finishPolling!: () => void
     const approvalRuntime = {
@@ -166,7 +169,6 @@ describe("Telegram sense", () => {
     const f = fixture({ approvalRuntime, pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
     const running = f.app.run()
     await vi.waitFor(() => expect(approvalRuntime.transport.reconcileExpired).toHaveBeenCalledTimes(1))
-    vi.useFakeTimers()
     await vi.advanceTimersByTimeAsync(1_000)
     const stopping = f.app.stop()
     expect(approvalRuntime.close).not.toHaveBeenCalled()

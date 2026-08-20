@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import { randomBytes, randomUUID } from "node:crypto"
+import { createHmac, randomBytes, randomUUID } from "node:crypto"
 
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
 import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
@@ -76,11 +76,17 @@ export async function executeApprovedTelegramTool(
   return result
 }
 
+function opaqueTelegramMessageBinding(subject: string, messageId: string): string {
+  return `tgm_${createHmac("sha256", subject).update(`message:${messageId}`, "utf8").digest("base64url")}`
+}
+
 export function createTelegramApprovalRuntime(options: {
   agentName: string
   api: TelegramBotApi
   authorizedUserId: string
   authorizedChatId: string
+  subject: string
+  legacySubject: string
   toolContext: Partial<ToolContext>
 }): TelegramApprovalRuntime {
   emitNervesEvent({
@@ -91,6 +97,16 @@ export function createTelegramApprovalRuntime(options: {
   })
   const stateRoot = path.join(getAgentRoot(options.agentName), "state", "approvals")
   const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite") })
+  store.migrateTelegramIdentity?.({
+    legacyUserId: options.legacySubject,
+    legacyChatId: options.legacySubject,
+    subject: options.subject,
+  })
+  store.migrateTelegramIdentity?.({
+    legacyUserId: options.authorizedUserId,
+    legacyChatId: options.authorizedChatId,
+    subject: options.subject,
+  })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
   const pendingStore = new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json"))
@@ -111,14 +127,14 @@ export function createTelegramApprovalRuntime(options: {
           toolDigest: request.toolDigest,
           policyDigest: request.policyDigest,
           policyId: request.policyId,
-          sessionKey: `telegram:${options.authorizedChatId}`,
+          sessionKey: `telegram:${options.subject}`,
           sessionPath: context.sessionPath,
           baseSessionRevision: context.baseSessionRevision,
           checkpointDigest: "0".repeat(64),
-          requesterId: options.authorizedUserId,
+          requesterId: options.subject,
           transport: "telegram",
-          transportUserId: options.authorizedUserId,
-          transportChatId: options.authorizedChatId,
+          transportUserId: options.subject,
+          transportChatId: options.subject,
           expiresAt: new Date(Date.now() + 300_000).toISOString(),
           frozenAssistantMessage: request.frozenAssistantMessage as never,
         },
@@ -129,8 +145,8 @@ export function createTelegramApprovalRuntime(options: {
       store.bindPrompt({
         approvalId: committed.record.approvalId,
         transport: "telegram",
-        transportChatId: options.authorizedChatId,
-        transportMessageId: sent.messageId,
+        transportChatId: options.subject,
+        transportMessageId: opaqueTelegramMessageBinding(options.subject, sent.messageId),
       })
       return {
         approvalId: committed.record.approvalId,
@@ -217,7 +233,10 @@ export function createTelegramApprovalRuntime(options: {
             checkpointStore: checkpoints,
             decision: {
               ...decision,
-              transportUserId: options.authorizedUserId,
+              requesterId: options.subject,
+              transportUserId: options.subject,
+              transportChatId: options.subject,
+              transportMessageId: opaqueTelegramMessageBinding(options.subject, decision.transportMessageId),
               sessionKey: existing.sessionKey,
             },
             ownerId,
@@ -264,8 +283,8 @@ export function createTelegramApprovalRuntime(options: {
         store.bindPrompt({
           approvalId: existing.approvalId,
           transport: "telegram",
-          transportChatId: options.authorizedChatId,
-          transportMessageId: pending.messageId,
+          transportChatId: options.subject,
+          transportMessageId: opaqueTelegramMessageBinding(options.subject, pending.messageId),
         })
         continue
       }
