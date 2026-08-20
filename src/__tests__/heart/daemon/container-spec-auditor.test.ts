@@ -8,6 +8,8 @@ import { runContainerSpecAuditorCli } from "../../../heart/daemon/container-spec
 
 function validInspect() {
   return {
+    Path: "node",
+    Args: ["/opt/ouro/dist/heart/daemon/daemon-entry.js"],
     Config: {
       User: "10001:10001",
       Image: "sha256:" + "a".repeat(64),
@@ -35,6 +37,17 @@ function validInspect() {
   }
 }
 
+function validImageInspect() {
+  return {
+    Id: "sha256:" + "a".repeat(64),
+    Config: {
+      Env: ["PATH=/usr/local/bin:/usr/bin:/bin", "NODE_VERSION=22.18.0", "HOME=/home/ouro"],
+    },
+  }
+}
+
+const expectedEnvironment = validImageInspect().Config.Env
+
 function stagedTemplate(): string {
   return [
     "<Container>",
@@ -53,6 +66,7 @@ describe("Sanctuary pre-activation container auditor", () => {
   it("accepts only the exact released effective spec", () => {
     expect(auditSanctuaryContainerSpec(validInspect(), {
       expectedImage: "sha256:" + "a".repeat(64),
+      expectedEnvironment,
     })).toEqual({ ok: true, violations: [] })
   })
 
@@ -61,7 +75,10 @@ describe("Sanctuary pre-activation container auditor", () => {
     ["mutable image", (spec: any) => { spec.Config.Image = "ouro-butler:latest" }],
     ["wrong entrypoint", (spec: any) => { spec.Config.Entrypoint = ["sh"] }],
     ["extra command", (spec: any) => { spec.Config.Cmd = ["sleep", "infinity"] }],
+    ["effective path override", (spec: any) => { spec.Path = "sh" }],
+    ["effective argument override", (spec: any) => { spec.Args = ["-c", "sleep infinity"] }],
     ["wrong home", (spec: any) => { spec.Config.Env = ["HOME=/tmp"] }],
+    ["environment injection", (spec: any) => { spec.Config.Env.push("NODE_OPTIONS=--require=/mounted/state/injected.js") }],
     ["published port", (spec: any) => { spec.HostConfig.PortBindings = { "80/tcp": [{ HostPort: "8080" }] } }],
     ["exposed port", (spec: any) => { spec.Config.ExposedPorts = { "80/tcp": {} } }],
     ["bridge network", (spec: any) => { spec.HostConfig.NetworkMode = "bridge" }],
@@ -76,7 +93,7 @@ describe("Sanctuary pre-activation container auditor", () => {
   ])("rejects %s", (_label, mutate) => {
     const spec = validInspect()
     mutate(spec)
-    const result = auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64) })
+    const result = auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedEnvironment })
     expect(result.ok).toBe(false)
     expect(result.violations.length).toBeGreaterThan(0)
   })
@@ -92,12 +109,12 @@ describe("Sanctuary pre-activation container auditor", () => {
     for (const mutate of mutations) {
       const spec = validInspect()
       mutate(spec)
-      expect(auditSanctuaryContainerSpec(spec, { expectedImage: "mutable" }).ok).toBe(false)
+      expect(auditSanctuaryContainerSpec(spec, { expectedImage: "mutable", expectedEnvironment }).ok).toBe(false)
     }
   })
 
   it.each([null, [], {}, "not-json"])("fails closed for malformed inspect shape %#", (spec) => {
-    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64) }).ok).toBe(false)
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedEnvironment }).ok).toBe(false)
   })
 
   it.each([
@@ -110,7 +127,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     const spec = validInspect()
     spec.Config.Image = expectedImage
 
-    expect(auditSanctuaryContainerSpec(spec, { expectedImage })).toEqual(expect.objectContaining({
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage, expectedEnvironment })).toEqual(expect.objectContaining({
       ok: false,
       violations: expect.arrayContaining(["expected image must be an exact local Docker image ID"]),
     }))
@@ -120,7 +137,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     const spec = validInspect()
     spec.Config.Image = "sha256:" + "b".repeat(64)
 
-    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64) })).toEqual(expect.objectContaining({
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedEnvironment })).toEqual(expect.objectContaining({
       ok: false,
       violations: expect.arrayContaining(["image does not match the reviewed exact local Docker image ID"]),
     }))
@@ -149,6 +166,89 @@ describe("Sanctuary pre-activation container auditor", () => {
       readFile: (filePath) => filePath.endsWith(".xml") ? "<Container />" : "{}",
       write: () => undefined,
     })).toBe(1)
+  })
+
+  it("audits exactly one effective container against exactly one reviewed image without echoing either payload", () => {
+    const output: string[] = []
+    const container = validInspect()
+    container.Config.Env = [...expectedEnvironment]
+    const files: Record<string, string> = {
+      "/audit/container.json": JSON.stringify([container]),
+      "/audit/image.json": JSON.stringify([validImageInspect()]),
+    }
+
+    expect(runContainerSpecAuditorCli([
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", "sha256:" + "a".repeat(64),
+    ], {
+      readFile: (filePath) => files[filePath]!,
+      write: (text) => output.push(text),
+    })).toBe(0)
+    expect(output.join("")).toBe('{"ok":true,"violations":[]}\n')
+    expect(output.join("")).not.toContain("NODE_VERSION")
+  })
+
+  it.each([
+    ["multiple containers", JSON.stringify([validInspect(), validInspect()]), JSON.stringify([validImageInspect()])],
+    ["multiple images", JSON.stringify([validInspect()]), JSON.stringify([validImageInspect(), validImageInspect()])],
+    ["malformed container JSON", "not-json", JSON.stringify([validImageInspect()])],
+    ["malformed image JSON", JSON.stringify([validInspect()]), "not-json"],
+  ])("fails closed for %s without printing inspect contents", (_label, containerJson, imageJson) => {
+    const output: string[] = []
+    expect(runContainerSpecAuditorCli([
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", "sha256:" + "a".repeat(64),
+    ], {
+      readFile: (filePath) => filePath.includes("image") ? imageJson : containerJson,
+      write: (text) => output.push(text),
+    })).not.toBe(0)
+    expect(output.join("")).not.toContain("HOME=/home/ouro")
+  })
+
+  it("rejects mixed, duplicate, and incomplete CLI modes", () => {
+    const invalidArguments = [
+      ["--inspect", "/audit/container.json", "--expected-image", "sha256:" + "a".repeat(64)],
+      ["--inspect", "/audit/container.json", "--inspect", "/audit/other.json", "--expected-image", "sha256:" + "a".repeat(64)],
+      ["--template", "/audit/template.xml", "--image-inspect", "/audit/image.json", "--expected-image", "sha256:" + "a".repeat(64)],
+    ]
+    for (const args of invalidArguments) {
+      expect(runContainerSpecAuditorCli(args, { readFile: () => "secret", write: () => undefined })).toBe(2)
+    }
+  })
+
+  it("rejects image-inspect identity drift without printing image metadata", () => {
+    const output: string[] = []
+    const image = validImageInspect()
+    image.Id = "sha256:" + "b".repeat(64)
+    expect(runContainerSpecAuditorCli([
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", "sha256:" + "a".repeat(64),
+    ], {
+      readFile: (filePath) => JSON.stringify(filePath.includes("image") ? [image] : [validInspect()]),
+      write: (text) => output.push(text),
+    })).toBe(1)
+    expect(output.join("")).toContain("reviewed image inspect identity")
+    expect(output.join("")).not.toContain(image.Id)
+  })
+
+  it("rejects an injected effective environment using the reviewed image environment", () => {
+    const container = validInspect()
+    container.Config.Env = [...expectedEnvironment, "NODE_OPTIONS=--require=/state/secret.js"]
+    const output: string[] = []
+    expect(runContainerSpecAuditorCli([
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", "sha256:" + "a".repeat(64),
+    ], {
+      readFile: (filePath) => JSON.stringify(filePath.includes("image") ? [validImageInspect()] : [container]),
+      write: (text) => output.push(text),
+    })).toBe(1)
+    expect(output.join("")).toContain("environment must exactly match")
+    expect(output.join("")).not.toContain("NODE_OPTIONS")
+    expect(output.join("")).not.toContain("secret.js")
   })
 
   it("fails closed for missing arguments and unreadable JSON", () => {
