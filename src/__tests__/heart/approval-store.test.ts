@@ -106,6 +106,38 @@ afterEach(() => {
 })
 
 describe("approval store", () => {
+  it("discovers distinct opaque Telegram identity subjects from live approval records only", () => {
+    const root = makeRoot()
+    const store = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"),
+      now: () => new Date(NOW),
+      randomUUID: (() => {
+        const values = [UUID, "33333333-3333-4333-8333-333333333333"]
+        return () => values.shift()!
+      })(),
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const first = `tg_${"a".repeat(43)}`
+    const second = `tg_${"b".repeat(43)}`
+    store.prepare(proposalInput({
+      requesterId: first,
+      transportUserId: first,
+      transportChatId: first,
+      sessionKey: `telegram:${first}`,
+      sessionPath: `/bundle/state/sessions/telegram-user:${first}/telegram/telegram_${first}.json`,
+    }))
+    store.prepare(proposalInput({
+      requesterId: second,
+      transportUserId: second,
+      transportChatId: second,
+      sessionKey: `telegram:${second}`,
+      sessionPath: `/bundle/state/sessions/telegram-user:${second}/telegram/telegram_${second}.json`,
+    }))
+
+    expect(store.listTelegramIdentitySubjects?.()).toEqual([first, second])
+    store.close()
+  })
+
   it("migrates legacy Telegram identity bindings without retaining raw user or chat IDs", () => {
     const root = makeRoot()
     const databasePath = path.join(root, "approvals.sqlite")

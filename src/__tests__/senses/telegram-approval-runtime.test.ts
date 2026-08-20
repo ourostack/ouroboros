@@ -12,6 +12,7 @@ const runtimeMocks = vi.hoisted(() => {
     read: vi.fn(),
     abandonPromptBinding: vi.fn(),
     migrateTelegramIdentity: vi.fn(),
+    listTelegramIdentitySubjects: vi.fn(),
   }
   const checkpoints = { read: vi.fn() }
   const tokenState = { value: undefined as string | undefined }
@@ -239,6 +240,10 @@ describe("Telegram approval runtime orchestration", () => {
 
     expect(runtimeMocks.getAgentRoot).toHaveBeenCalledWith("sanctuary")
     expect(runtimeMocks.openApprovalStore).toHaveBeenCalledWith({ databasePath: "/agents/sanctuary.ouro/state/approvals/approvals.sqlite" })
+    expect(runtimeMocks.store.migrateTelegramIdentity).not.toHaveBeenCalled()
+    runtimeMocks.store.listTelegramIdentitySubjects.mockReturnValue([`tg_${"l".repeat(43)}`, "tg_stable-subject"])
+    expect(runtime.legacySubjects()).toEqual([`tg_${"l".repeat(43)}`])
+    runtime.migrateIdentity([`tg_${"l".repeat(43)}`])
     expect(runtimeMocks.store.migrateTelegramIdentity).toHaveBeenNthCalledWith(1, {
       legacyUserId: `tg_${"l".repeat(43)}`,
       legacyChatId: `tg_${"l".repeat(43)}`,
