@@ -421,7 +421,7 @@ if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; f
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
     const prepare = adoption.indexOf('prepare_canonical_sanctuary_roots "$IMAGE_ID"')
-    const bootstrap = adoption.indexOf('bootstrap_sanctuary_vault "$IMAGE_ID"', prepare)
+    const bootstrap = adoption.indexOf('bootstrap_sanctuary_vault "$IMAGE_ID" /mnt/user/appdata/ouro-butler/runtime/container-credentials.json', prepare)
     const stopLegacy = adoption.indexOf("docker stop ouro-butler-staging", bootstrap)
 
     expect(prepare).toBeGreaterThan(-1)
@@ -528,9 +528,11 @@ docker() {
       if command grep -q 'ouro-entry.js vault \(create\|unlock\) --agent sanctuary --store plaintext-file' "$CALL_LOG"; then
         command printf 'vault locator: agent.json\nlocal unlock: available\n'
       elif [ "$SCENARIO" = absent ]; then command printf 'vault locator: not configured in agent.json\nlocal unlock: not checked\n'
-      elif [ "$SCENARIO" = available ]; then command printf 'vault locator: agent.json\nlocal unlock: available\n'
+      elif [ "$SCENARIO" = available ] || [ "$SCENARIO" = import-failure ]; then command printf 'vault locator: agent.json\nlocal unlock: available\n'
       else command printf 'vault locator: agent.json\nlocal unlock: missing\n'; fi ;;
-    *"loadContainerCredentialBootstrap"*) command rm -f "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming" ;;
+    *"loadContainerCredentialBootstrap"*)
+      if [ "$SCENARIO" = import-failure ]; then command mv "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming"; return 23; fi
+      command rm -f "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming" ;;
     *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js check --agent sanctuary --lane outward"*) return 0 ;;
     *) return 23 ;;
   esac
@@ -538,7 +540,11 @@ docker() {
 ${imageValidator}
 validate_sanctuary_roots() { return 0; }
 ${helper}
-bootstrap_sanctuary_vault "$IMAGE_ID"`
+if [ "$SCENARIO" = available ] || [ "$SCENARIO" = import-failure ]; then
+  bootstrap_sanctuary_vault "$IMAGE_ID" "$LEGACY_SOURCE"
+else
+  bootstrap_sanctuary_vault "$IMAGE_ID"
+fi`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-vault-bootstrap-"))
     const image = `sha256:${"7".repeat(64)}`
     try {
@@ -588,9 +594,33 @@ bootstrap_sanctuary_vault "$IMAGE_ID"`
         expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane inner")
       }
       const callLog = path.join(testRoot, "failure.log")
-      const failure = runConditionalHelper(script, "status-failure", { CALL_LOG: callLog, IMAGE_ID: image })
+      const failure = runConditionalHelper(script, "status-failure", {
+        CALL_LOG: callLog,
+        IMAGE_ID: image,
+        LEGACY_SOURCE: path.join(testRoot, "legacy", "container-credentials.json"),
+        CANONICAL_RUNTIME_ROOT: path.join(testRoot, "canonical"),
+        CANONICAL_SOURCE: path.join(testRoot, "canonical", "container-credentials.json"),
+      })
       expect(failure.status).toBe(23)
       expect(fs.readFileSync(callLog, "utf8")).not.toMatch(/ouro-entry\.js vault (?:create|unlock)/u)
+
+      const importFailureLog = path.join(testRoot, "import-failure.log")
+      const legacySource = path.join(testRoot, "legacy", "container-credentials.json")
+      const canonicalRuntimeRoot = path.join(testRoot, "canonical")
+      const canonicalSource = path.join(canonicalRuntimeRoot, "container-credentials.json")
+      fs.mkdirSync(path.dirname(legacySource), { recursive: true })
+      fs.writeFileSync(legacySource, '{"credential":"redacted"}\n', { mode: 0o600 })
+      const importFailure = runConditionalHelper(script, "import-failure", {
+        CALL_LOG: importFailureLog,
+        IMAGE_ID: image,
+        LEGACY_SOURCE: legacySource,
+        CANONICAL_RUNTIME_ROOT: canonicalRuntimeRoot,
+        CANONICAL_SOURCE: canonicalSource,
+      })
+      expect(importFailure.status).toBe(23)
+      expect(fs.existsSync(legacySource)).toBe(true)
+      expect(fs.existsSync(`${canonicalSource}.consuming`)).toBe(true)
+      expect(fs.readFileSync(importFailureLog, "utf8")).not.toContain("ouro-entry.js check --agent sanctuary --lane outward")
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }

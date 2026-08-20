@@ -307,7 +307,7 @@ Effective-spec audit helper:
       validate_exact_image_id "$LEGACY_STAGING_IMAGE_ID" || return $?
       validate_exact_image_id "$IMAGE_ID" || return $?
       prepare_canonical_sanctuary_roots "$IMAGE_ID" || return $?
-      bootstrap_sanctuary_vault "$IMAGE_ID" || return $?
+      bootstrap_sanctuary_vault "$IMAGE_ID" /mnt/user/appdata/ouro-butler/runtime/container-credentials.json || return $?
       LEGACY_EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/legacy-evidence
       LEGACY_EVIDENCE_DIR="$LEGACY_EVIDENCE_ROOT/${LEGACY_STAGING_IMAGE_ID#sha256:}"
       install -d -m 0700 -o 0 -g 0 "$LEGACY_EVIDENCE_ROOT" || return $?
@@ -393,10 +393,15 @@ ouro-butler-staging
     }
     bootstrap_sanctuary_vault() {
       BOOTSTRAP_IMAGE_ID=$1
+      BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE=${2-}
       validate_exact_image_id "$BOOTSTRAP_IMAGE_ID" || return $?
+      case "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" in
+        ""|/mnt/user/appdata/ouro-butler/runtime/container-credentials.json) ;;
+        *) return 1 ;;
+      esac
       BOOTSTRAP_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
       BOOTSTRAP_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
-      for BOOTSTRAP_CONTAINER in ouro-butler-vault-status ouro-butler-vault-bootstrap ouro-butler-provider-readiness; do
+      for BOOTSTRAP_CONTAINER in ouro-butler-vault-status ouro-butler-vault-bootstrap ouro-butler-credential-bootstrap ouro-butler-provider-readiness; do
         ! docker container inspect "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || return 1
       done
       VAULT_STATUS=$(docker run --rm --pull=never --network host --name ouro-butler-vault-status --user 10001:10001 \
@@ -458,6 +463,50 @@ local unlock: available
 "*) ;;
         *) return 1 ;;
       esac
+      if test -n "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE"; then
+        BOOTSTRAP_CREDENTIAL_SOURCE="$BOOTSTRAP_RUNTIME_ROOT/container-credentials.json"
+        BOOTSTRAP_CREDENTIAL_CLAIM="$BOOTSTRAP_CREDENTIAL_SOURCE.consuming"
+        test -f "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
+        test ! -L "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
+        BOOTSTRAP_LEGACY_METADATA=$(stat -c '%u:%g %a' "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE") || return $?
+        test "$BOOTSTRAP_LEGACY_METADATA" = "10001:10001 600" || return $?
+        if test -e "$BOOTSTRAP_CREDENTIAL_SOURCE"; then
+          test -f "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
+          test ! -L "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
+          test "$(stat -c '%u:%g %a' "$BOOTSTRAP_CREDENTIAL_SOURCE")" = "10001:10001 600" || return $?
+          cmp -s "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
+        elif test -e "$BOOTSTRAP_CREDENTIAL_CLAIM"; then
+          test -f "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
+          test ! -L "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
+          test "$(stat -c '%u:%g %a' "$BOOTSTRAP_CREDENTIAL_CLAIM")" = "10001:10001 600" || return $?
+          cmp -s "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
+        else
+          BOOTSTRAP_CREDENTIAL_TMP=$(mktemp "$BOOTSTRAP_RUNTIME_ROOT/container-credentials.json.tmp.XXXXXX") || return $?
+          trap 'rm -f -- "$BOOTSTRAP_CREDENTIAL_TMP"' EXIT || return $?
+          install -m 0600 -o 10001 -g 10001 "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" "$BOOTSTRAP_CREDENTIAL_TMP" || return $?
+          cmp -s "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" "$BOOTSTRAP_CREDENTIAL_TMP" || return $?
+          sync -f "$BOOTSTRAP_CREDENTIAL_TMP" || return $?
+          mv -f -- "$BOOTSTRAP_CREDENTIAL_TMP" "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
+          sync -f "$BOOTSTRAP_RUNTIME_ROOT" || return $?
+          trap - EXIT || return $?
+        fi
+        docker run --rm --pull=never --network host --name ouro-butler-credential-bootstrap --user 10001:10001 \
+          --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+          --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --entrypoint node "$BOOTSTRAP_IMAGE_ID" -e '
+            const { loadContainerCredentialBootstrap } = require("/opt/ouro/dist/heart/daemon/container-credential-bootstrap.js")
+            loadContainerCredentialBootstrap(["sanctuary"]).then(
+              () => process.exit(0),
+              () => { process.stderr.write("credential bootstrap failed\n"); process.exit(1) },
+            )
+          ' || return $?
+        ! docker container inspect ouro-butler-credential-bootstrap >/dev/null 2>&1 || return 1
+        test ! -e "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
+        test ! -e "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
+        test -f "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
+        test ! -L "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
+        test "$(stat -c '%u:%g %a' "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE")" = "$BOOTSTRAP_LEGACY_METADATA" || return $?
+      fi
       docker run --rm --pull=never --network host --name ouro-butler-provider-readiness --user 10001:10001 \
         --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
         --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
@@ -829,9 +878,15 @@ Credential recovery:
    Its first read-only `vault status` is authoritative: it runs `vault create`
    only when the locator is absent, runs `vault unlock` only when the locator
    exists but local unlock is missing, and does not prompt when local unlock is
-   already available. It then requires the configured locator, available local
-   unlock, and successful auth verification. Never guess from a failed status
-   command.
+  already available. It then requires the configured locator, available local
+  unlock, and successful auth verification. Never guess from a failed status
+  command.
+  Initial legacy adoption passes the exact legacy envelope path as the helper's
+  second argument. After vault availability, the helper validates and atomically
+  copies that envelope into the canonical runtime root, imports it with a fresh
+  same-image one-shot container, and requires both canonical source and claim to
+  be absent before provider readiness. The exact legacy source remains untouched
+  as rollback evidence until canonical acceptance completes.
   Restore or unlock the Sanctuary agent vault, then run provider refresh.
   /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/container-credentials.json
   exists only for a one-time migration: if
