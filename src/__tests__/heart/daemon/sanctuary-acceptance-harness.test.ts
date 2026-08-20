@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto"
+import { spawn } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import * as ts from "typescript"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
@@ -671,6 +673,53 @@ describe("Sanctuary acceptance harness", () => {
     expect(operations[operations.indexOf("revoke_key") - 2]).toBe("inventory_keys")
   })
 
+  it("rejects any added or changed authority in the final Unraid inventory", async () => {
+    const dir = root()
+    const base = {
+      allowedRoot: dir,
+      targetServerId: "target",
+      inventoryAdapter: "/inventory",
+      createAdapter: "/create",
+      storeAdapter: "/store",
+      revokeAdapter: "/revoke",
+      probeAdapter: "/probe",
+      keys: [{ name: "Butler RO", vaultField: "read", permissions: ["READ"] }],
+      oldKeys: [{ id: "old", secretAdapter: "/old" }],
+    }
+    for (const scenario of ["added", "changed"] as const) {
+      let inventoryCall = 0
+      await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", {
+        ...base, evidencePath: path.join(dir, `${scenario}.json`),
+      }, dependencies({ adapter: async (executable, payload: any) => {
+        if (executable === "/inventory") {
+          inventoryCall += 1
+          if (inventoryCall === 1) return { keys: [
+            { id: "old", name: "Legacy", permissions: ["READ"], roles: [] },
+            { id: "retained", name: "Retained", permissions: ["READ"], roles: [] },
+          ] }
+          if (inventoryCall === 2) return { keys: [
+            { id: "old", name: "Legacy", permissions: ["READ"], roles: [] },
+            { id: "retained", name: "Retained", permissions: ["READ"], roles: [] },
+            { id: "new", name: "Butler RO", permissions: ["READ"], roles: [] },
+          ] }
+          return { keys: [
+            { id: "new", name: "Butler RO", permissions: ["READ"], roles: [] },
+            scenario === "added"
+              ? { id: "rogue", name: "Rogue Admin", permissions: ["WRITE"], roles: ["ADMIN"] }
+              : { id: "retained", name: "Retained", permissions: ["WRITE"], roles: [] },
+            ...(scenario === "added" ? [{ id: "retained", name: "Retained", permissions: ["READ"], roles: [] }] : []),
+          ] }
+        }
+        if (executable === "/create") return { id: "new", name: "Butler RO", permissions: ["READ"], roles: [], key: "raw" }
+        if (executable === "/store") return { stored: true, keyId: "new" }
+        if (executable === "/old") return { key: "old-raw" }
+        if (executable === "/revoke") return { revoked: true, id: "old" }
+        return payload.operation === "probe_new_key" ? { valid: true } : { valid: false, status: 401 }
+      } }))).rejects.toThrow(/final Unraid key inventory mismatch/u)
+      expect(evidence(path.join(dir, `${scenario}.json`))).toMatchObject({ phase: "failed" })
+    }
+  })
+
   it("uses fixed evidence schemas without hashing untrusted adapter responses", async () => {
     const dir = root()
     const file = path.join(dir, "health-fixed.json")
@@ -680,6 +729,109 @@ describe("Sanctuary acceptance harness", () => {
     expect(evidence(file)).toMatchObject({ schema: "postboot-health-v1", values: { healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) } })
     expect(fs.readFileSync(file, "utf8")).not.toContain("raw-secret")
     expect(evidence(file)).not.toHaveProperty("payloadDigest")
+  })
+
+  it("rejects cursor deltas unless both inputs are exact complete cursor snapshots", async () => {
+    const dir = root()
+    const valid = {
+      schemaVersion: 1,
+      operation: "cursor-snapshot",
+      phase: "complete",
+      schema: "telegram-cursor-v1",
+      capturedAt: 1_800_000_000_000,
+      values: {
+        "telegram-cursor-v1.offsetDigest": "a".repeat(64),
+        "telegram-cursor-v1.auditCursorDigest": "b".repeat(64),
+      },
+    }
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["raw", { ...valid, values: { token: "raw-secret" } }],
+      ["operation", { ...valid, operation: "evidence-snapshot" }],
+      ["phase", { ...valid, phase: "failed" }],
+      ["schema", { ...valid, schema: "postboot-health-v1" }],
+      ["extra-key", { ...valid, values: { ...valid.values, extra: "c".repeat(64) } }],
+      ["invalid-digest", { ...valid, values: { ...valid.values, "telegram-cursor-v1.offsetDigest": "not-opaque" } }],
+    ]
+    for (const [name, malformed] of cases) {
+      const before = path.join(dir, `${name}-before.json`)
+      const after = path.join(dir, `${name}-after.json`)
+      const delta = path.join(dir, `${name}-delta.json`)
+      fs.writeFileSync(before, JSON.stringify(malformed), { mode: 0o600 })
+      fs.writeFileSync(after, JSON.stringify(valid), { mode: 0o600 })
+      await expect(executeSanctuaryAcceptanceHarness("cursor-delta", {
+        allowedRoot: dir, evidencePath: delta, beforePath: before, afterPath: after,
+      }, dependencies())).rejects.toThrow(/cursor snapshot/u)
+      expect(fs.existsSync(delta)).toBe(false)
+    }
+  })
+
+  it("atomically grants only one concurrent process an initial checkpoint claim", async () => {
+    const dir = root()
+    const compiledRoot = path.join(dir, "compiled")
+    const harnessPath = path.join(compiledRoot, "heart", "daemon", "sanctuary-acceptance-harness.cjs")
+    const nervesPath = path.join(compiledRoot, "nerves", "runtime.js")
+    fs.mkdirSync(path.dirname(harnessPath), { recursive: true })
+    fs.mkdirSync(path.dirname(nervesPath), { recursive: true })
+    const source = fs.readFileSync(path.join(process.cwd(), "src", "heart", "daemon", "sanctuary-acceptance-harness.ts"), "utf8")
+    const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+    fs.writeFileSync(harnessPath, compiled)
+    fs.writeFileSync(nervesPath, "exports.emitNervesEvent = () => {};\n")
+    const evidencePath = path.join(dir, "claim.json")
+    const mutationPath = path.join(dir, "mutations.log")
+    const runnerPath = path.join(dir, "runner.cjs")
+    fs.writeFileSync(runnerPath, String.raw`
+const fs = require("node:fs")
+const [harnessPath, allowedRoot, evidencePath, mutationPath, marker] = process.argv.slice(2)
+const originalExists = fs.existsSync
+let exactCalls = 0
+fs.existsSync = (candidate) => {
+  if (candidate === evidencePath && ++exactCalls === 2) {
+    fs.writeFileSync(marker, "ready")
+    const peer = marker.endsWith("-a") ? marker.slice(0, -2) + "-b" : marker.slice(0, -2) + "-a"
+    const deadline = Date.now() + 5000
+    while (!originalExists(peer) && Date.now() < deadline) {}
+    if (!originalExists(peer)) process.exit(19)
+    return false
+  }
+  return originalExists(candidate)
+}
+const { executeSanctuaryAcceptanceHarness } = require(harnessPath)
+executeSanctuaryAcceptanceHarness("reboot-request", {
+  allowedRoot, evidencePath, targetId: "sanctuary", adapter: "/reboot",
+}, {
+  readSecret: () => "",
+  runAdapter: async () => {
+    fs.appendFileSync(mutationPath, process.pid + "\n")
+    return { accepted: true, targetId: "sanctuary", requestId: String(process.pid), prebootId: "boot-before" }
+  },
+  fetch: globalThis.fetch,
+  now: Date.now,
+  randomBytes: require("node:crypto").randomBytes,
+  sleep: async () => {},
+}).then(() => process.exit(0), () => process.exit(17))
+`)
+    const markerBase = path.join(dir, "barrier")
+    const run = (suffix: string) => new Promise<number>((resolve, reject) => {
+      const child = spawn(process.execPath, [runnerPath, harnessPath, dir, evidencePath, mutationPath, `${markerBase}-${suffix}`], { stdio: "ignore" })
+      child.once("error", reject)
+      child.once("exit", (code) => resolve(code ?? -1))
+    })
+    const statuses = await Promise.all([run("a"), run("b")])
+    expect(statuses.sort()).toEqual([0, 17])
+    expect(fs.readFileSync(mutationPath, "utf8").trim().split("\n")).toHaveLength(1)
+    expect(evidence(evidencePath)).toMatchObject({ operation: "reboot", phase: "requested" })
+  })
+
+  it("rejects a dangling checkpoint target before invoking an adapter", async () => {
+    const dir = root()
+    const evidencePath = path.join(dir, "dangling.json")
+    fs.symlinkSync(path.join(dir, "missing.json"), evidencePath)
+    let adapterCalls = 0
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", {
+      allowedRoot: dir, evidencePath, schema: "postboot-health-v1", adapter: "/health",
+    }, dependencies({ adapter: async () => { adapterCalls += 1; return { healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) } } }))).rejects.toThrow(/inspect-before-retry|nonsymlink/u)
+    expect(adapterCalls).toBe(0)
+    expect(fs.lstatSync(evidencePath).isSymbolicLink()).toBe(true)
   })
 
   it("confines atomic private checkpoints to an owned nonsymlink allowed root", async () => {
