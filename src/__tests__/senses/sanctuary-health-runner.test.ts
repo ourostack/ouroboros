@@ -98,4 +98,16 @@ describe("native Sanctuary health habit", () => {
     expect(runPrivateTurn).not.toHaveBeenCalled()
     expect(order).toEqual(["cache-confirmed", "attempting", "send", "delivered"])
   })
+
+  it("keeps an undelivered private event pending", async () => {
+    const sweep = vi.fn(async () => ({ message: "degraded", incidents: [], deliveryId: "delivery-4" }))
+    const api = { request: vi.fn(), stop: vi.fn() }
+    await expect(runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => sweep,
+      createApi: () => api,
+      credentials: () => ({ botToken: "token", authorizedChatId: "42" }),
+      runPrivateTurn: async () => ({ delivered: false }),
+    })).resolves.toMatchObject({ message: "health event remains pending", data: { delivered: false } })
+    expect(api.stop).toHaveBeenCalledOnce()
+  })
 })
