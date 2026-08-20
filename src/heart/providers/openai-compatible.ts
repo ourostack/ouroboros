@@ -175,8 +175,18 @@ export function createOpenAICompatibleProviderRuntime(
     },
     async ping(signal) {
       const callbacks: ProviderTurnRequest["callbacks"] = {
-        onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}, onReasoningChunk() {},
-        onToolStart() {}, onToolEnd() {}, onError() {},
+        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
+        onModelStart() {},
+        onModelStreamStart() {},
+        onTextChunk() {},
+        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
+        onReasoningChunk() {},
+        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
+        onToolStart() {},
+        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
+        onToolEnd() {},
+        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
+        onError() {},
       }
       parseCompletion(await request([{ role: "user", content: "ping" }], [], signal), callbacks)
     },
