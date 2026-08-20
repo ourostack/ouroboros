@@ -356,6 +356,42 @@ local unlock: available
       esac
       ouro auth verify --agent sanctuary || return $?
     }
+    retire_legacy_unraid_key() {
+      NEW_READ_KEY_ID=$1
+      NEW_WRITE_KEY_ID=$2
+      LEGACY_KEY_ID=$3
+      for KEY_ID in "$NEW_READ_KEY_ID" "$NEW_WRITE_KEY_ID" "$LEGACY_KEY_ID"; do
+        test -n "$KEY_ID" || return 1
+        case "$KEY_ID" in *[!A-Za-z0-9._:-]*) return 1 ;; esac
+      done
+      test "$NEW_READ_KEY_ID" != "$NEW_WRITE_KEY_ID" || return $?
+      test "$NEW_READ_KEY_ID" != "$LEGACY_KEY_ID" || return $?
+      test "$NEW_WRITE_KEY_ID" != "$LEGACY_KEY_ID" || return $?
+      verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
+      verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
+      KEY_INVENTORY_BEFORE=$(inventory_unraid_key_ids) || return $?
+      KEY_COUNTS_BEFORE=$(printf '%s\n' "$KEY_INVENTORY_BEFORE" | awk \
+        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" -v legacy_id="$LEGACY_KEY_ID" '
+        $1 == read_id && $2 == "read-only" { read_count++ }
+        $1 == write_id && $2 == "bounded-write" { write_count++ }
+        $1 == legacy_id { legacy_count++ }
+        $2 == "bounded-write" && $1 != write_id && $1 != legacy_id { unexpected_write++ }
+        END { printf "%d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0 }
+      ') || return $?
+      test "$KEY_COUNTS_BEFORE" = "1 1 1 0" || return $?
+      revoke_unraid_key_exact "$LEGACY_KEY_ID" || return $?
+      verify_revoked_unraid_key_rejected "$LEGACY_KEY_ID" || return $?
+      KEY_INVENTORY_AFTER=$(inventory_unraid_key_ids) || return $?
+      KEY_COUNTS_AFTER=$(printf '%s\n' "$KEY_INVENTORY_AFTER" | awk \
+        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" -v legacy_id="$LEGACY_KEY_ID" '
+        $1 == read_id && $2 == "read-only" { read_count++ }
+        $1 == write_id && $2 == "bounded-write" { write_count++ }
+        $1 == legacy_id { legacy_count++ }
+        $2 == "bounded-write" && $1 != write_id { unexpected_write++ }
+        END { printf "%d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0 }
+      ') || return $?
+      test "$KEY_COUNTS_AFTER" = "1 1 0 0" || return $?
+    }
 
 Update:
   Build and verify a new ouro-butler:<version> image first. The tag is only a
@@ -688,3 +724,7 @@ Audit and safety verification:
   no-unintended-write-key audit. Do not pass raw keys in argv, files, shell
   history, or logs; verification adapters must read them directly from the
   Sanctuary vault.
+  The adapters used by retire_legacy_unraid_key must emit only `<id> <class>`
+  inventory rows, verify capability by reading credentials inside the vault
+  adapter, revoke only the ID argument, and return success from the revoked-key
+  probe only for an authentication rejection. Never substitute names for IDs.

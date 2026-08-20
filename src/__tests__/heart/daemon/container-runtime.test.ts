@@ -422,6 +422,52 @@ bootstrap_sanctuary_vault`
     }
   })
 
+  it("revokes only an exact legacy key after unambiguous vault-backed verification", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const helper = extractRunbookFunction(runbook, "retire_legacy_unraid_key")
+    const script = String.raw`set -u
+SCENARIO=$1
+verify_vault_backed_unraid_key() {
+  command printf 'verify %s %s\n' "$1" "$2" >>"$CALL_LOG"
+  test "$SCENARIO" != verify-failure || return 23
+}
+inventory_unraid_key_ids() {
+  command printf 'inventory\n' >>"$CALL_LOG"
+  if command grep -q '^revoke ' "$CALL_LOG"; then
+    command printf '%s read-only\n%s bounded-write\n' "$READ_ID" "$WRITE_ID"
+  elif [ "$SCENARIO" = duplicate ]; then
+    command printf '%s read-only\n%s read-only\n%s bounded-write\n%s legacy-write\n' "$READ_ID" "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+  else
+    command printf '%s read-only\n%s bounded-write\n%s legacy-write\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+  fi
+}
+revoke_unraid_key_exact() { command printf 'revoke %s\n' "$1" >>"$CALL_LOG"; }
+verify_revoked_unraid_key_rejected() { command printf 'rejected %s\n' "$1" >>"$CALL_LOG"; }
+${helper}
+retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$LEGACY_ID"`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-key-retirement-"))
+    const ids = { READ_ID: "key-ro-123", WRITE_ID: "key-rw-456", LEGACY_ID: "key-old-789" }
+    try {
+      for (const scenario of ["verify-failure", "duplicate"]) {
+        const callLog = path.join(testRoot, `${scenario}.log`)
+        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, ...ids })
+        expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
+        expect(fs.readFileSync(callLog, "utf8")).not.toContain("revoke ")
+      }
+      const callLog = path.join(testRoot, "safe.log")
+      const success = runConditionalHelper(script, "safe", { CALL_LOG: callLog, ...ids })
+      expect(success.status, success.stderr).toBe(0)
+      const calls = fs.readFileSync(callLog, "utf8")
+      expect(calls).toContain(`verify ${ids.READ_ID} read-only`)
+      expect(calls).toContain(`verify ${ids.WRITE_ID} bounded-write`)
+      expect(calls).toContain(`revoke ${ids.LEGACY_ID}`)
+      expect(calls).toContain(`rejected ${ids.LEGACY_ID}`)
+      expect(calls.match(/^inventory$/gmu)).toHaveLength(2)
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     expect(runbook).toContain("Mendelow Cloud Butler")
