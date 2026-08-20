@@ -225,6 +225,35 @@ describe("Telegram approval callback transport", () => {
     expect(fixture.records()).toEqual([])
   })
 
+  it("retries a terminal tombstone immediately without waiting for its original expiry", async () => {
+    const onExpire = vi.fn()
+    const record = {
+      approvalId: "terminal-now",
+      messageId: "99",
+      deliveryState: "bound" as const,
+      approveCallbackData: "a:terminal-now",
+      denyCallbackData: "d:terminal-now",
+      expiresAt: 1_300_000,
+      terminal: { accepted: true, terminalText: "✅ Approved — action completed" },
+    }
+    const fixture = approvalFixture({ records: [record], onExpire })
+
+    await fixture.transport.reconcileExpired()
+
+    expect(onExpire).not.toHaveBeenCalled()
+    expect(fixture.records()).toEqual([])
+    expect(fixture.calls.at(-1)).toEqual({
+      method: "editMessageText",
+      body: {
+        chat_id: "10",
+        message_id: 99,
+        text: "✅ Approved — action completed",
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [] },
+      },
+    })
+  })
+
   it("atomically consumes concurrent duplicate callbacks before authority", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })

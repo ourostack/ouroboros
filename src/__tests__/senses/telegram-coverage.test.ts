@@ -72,13 +72,17 @@ beforeEach(() => {
 })
 
 describe("Telegram sense coverage contracts", () => {
-  it("creates one durable mode-0600 identity key and rejects corrupt or permissive keys", () => {
+  it("creates one durable mode-0600 identity key in a repaired mode-0700 directory and rejects corrupt or permissive keys", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-identity-"))
     try {
+      const directory = path.join(root, "state", "senses", "telegram")
+      fs.mkdirSync(directory, { recursive: true, mode: 0o755 })
+      fs.chmodSync(directory, 0o755)
       const first = readOrCreateTelegramIdentityKey(root)
       expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/u)
       expect(readOrCreateTelegramIdentityKey(root)).toBe(first)
-      const keyPath = path.join(root, "state", "senses", "telegram", "identity.key")
+      const keyPath = path.join(directory, "identity.key")
+      expect(fs.statSync(directory).mode & 0o777).toBe(0o700)
       expect(fs.statSync(keyPath).mode & 0o777).toBe(0o600)
       fs.writeFileSync(keyPath, "invalid\n", { mode: 0o600 })
       expect(() => readOrCreateTelegramIdentityKey(root)).toThrow("identity key is invalid")
@@ -87,6 +91,36 @@ describe("Telegram sense coverage contracts", () => {
       expect(() => readOrCreateTelegramIdentityKey(root)).toThrow("permissions are invalid")
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("publishes a fully durable identity key atomically and never follows a Telegram-directory symlink", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-atomic-"))
+    const symlinkRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-symlink-"))
+    const symlinkTarget = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-target-"))
+    try {
+      const keyPath = path.join(root, "state", "senses", "telegram", "identity.key")
+      expect(() => readOrCreateTelegramIdentityKey(root, {
+        beforePublish: (temporaryPath, finalPath) => {
+          expect(finalPath).toBe(keyPath)
+          expect(fs.existsSync(finalPath)).toBe(false)
+          expect(fs.statSync(temporaryPath).mode & 0o777).toBe(0o600)
+          expect(fs.readFileSync(temporaryPath, "utf8")).toMatch(/^[A-Za-z0-9_-]{43}\n$/u)
+          throw new Error("synthetic pre-publication crash")
+        },
+      })).toThrow("synthetic pre-publication crash")
+      expect(fs.existsSync(keyPath)).toBe(false)
+      expect(fs.readdirSync(path.dirname(keyPath))).toEqual([])
+
+      const senses = path.join(symlinkRoot, "state", "senses")
+      fs.mkdirSync(senses, { recursive: true })
+      fs.symlinkSync(symlinkTarget, path.join(senses, "telegram"), "dir")
+      expect(() => readOrCreateTelegramIdentityKey(symlinkRoot)).toThrow(/symbolic link|directory/u)
+      expect(fs.readdirSync(symlinkTarget)).toEqual([])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+      fs.rmSync(symlinkRoot, { recursive: true, force: true })
+      fs.rmSync(symlinkTarget, { recursive: true, force: true })
     }
   })
 
@@ -176,6 +210,51 @@ describe("Telegram sense coverage contracts", () => {
     } finally {
       fs.rmSync(friendRoot, { recursive: true, force: true })
       fs.rmSync(sessionRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("discovers and records one prior opaque subject after token rotation, and fails closed on ambiguity", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-subject-index-"))
+    const ambiguousRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-subject-ambiguous-"))
+    const legacySubject = `tg_${"l".repeat(43)}`
+    const secondLegacySubject = `tg_${"m".repeat(43)}`
+    const makeLegacySession = (agentRoot: string, candidate: string): void => {
+      fs.mkdirSync(path.join(agentRoot, "state", "sessions", `telegram-user:${candidate}`), { recursive: true })
+    }
+    try {
+      makeLegacySession(root, legacySubject)
+      mocks.getAgentRoot.mockReturnValue(root)
+      const fixture = defaultFixture()
+      const app = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) })
+      await app.run()
+
+      const migratedNames = fs.readdirSync(path.join(root, "state", "sessions"))
+      expect(migratedNames).toHaveLength(1)
+      expect(migratedNames[0]).toMatch(/^telegram-user:tg_[A-Za-z0-9_-]{43}$/u)
+      expect(migratedNames[0]).not.toBe(`telegram-user:${legacySubject}`)
+      const indexPath = path.join(root, "state", "senses", "telegram", "identity-subjects.json")
+      const indexText = fs.readFileSync(indexPath, "utf8")
+      expect(fs.statSync(indexPath).mode & 0o777).toBe(0o600)
+      expect(indexText).toContain(legacySubject)
+      expect(indexText).not.toContain(credentials.botToken)
+      expect(indexText).not.toMatch(/"42"|"43"/u)
+      expect(fixture.runtime.migrateIdentity).toHaveBeenCalledWith([legacySubject])
+
+      makeLegacySession(ambiguousRoot, legacySubject)
+      makeLegacySession(ambiguousRoot, secondLegacySubject)
+      mocks.getAgentRoot.mockReturnValue(ambiguousRoot)
+      const ambiguousFixture = defaultFixture()
+      const ambiguous = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) })
+      await expect(ambiguous.run()).rejects.toThrow("ambiguous")
+      expect(ambiguousFixture.runtime.migrateIdentity).not.toHaveBeenCalled()
+      expect(fs.readdirSync(path.join(ambiguousRoot, "state", "sessions")).sort()).toEqual([
+        `telegram-user:${legacySubject}`,
+        `telegram-user:${secondLegacySubject}`,
+      ].sort())
+    } finally {
+      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      fs.rmSync(root, { recursive: true, force: true })
+      fs.rmSync(ambiguousRoot, { recursive: true, force: true })
     }
   })
 

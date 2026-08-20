@@ -173,11 +173,41 @@ describe("Telegram sense", () => {
     const stopping = f.app.stop()
     expect(approvalRuntime.close).not.toHaveBeenCalled()
     releaseReconcile()
+    finishPolling()
     await stopping
     expect(approvalRuntime.close).toHaveBeenCalledOnce()
-    finishPolling()
     await running
     vi.useRealTimers()
+  })
+
+  it("joins an active callback dispatch before closing the approval journal or API", async () => {
+    let releaseDecision!: () => void
+    const approvalRuntime = {
+      transport: {
+        sendApproval: vi.fn(), terminalizeRecovered: vi.fn(), reconcileExpired: vi.fn(async () => undefined),
+        handleUpdate: vi.fn(() => new Promise<{ handled: boolean; accepted: boolean; reason: string }>((resolve) => {
+          releaseDecision = () => resolve({ handled: true, accepted: true, reason: "accepted" })
+        })),
+      },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+    }
+    const f = fixture({ approvalRuntime })
+    ;(f.poll.run as any).mockImplementation(async () => {
+      await f.getOnUpdate()({ update_id: 1, callback_query: { id: "decision", from: { id: 42 } } })
+    })
+
+    const running = f.app.run()
+    await vi.waitFor(() => expect(approvalRuntime.transport.handleUpdate).toHaveBeenCalledOnce())
+    const stopping = f.app.stop()
+    await Promise.resolve()
+
+    expect(f.api.stop).not.toHaveBeenCalled()
+    expect(approvalRuntime.close).not.toHaveBeenCalled()
+    releaseDecision()
+    await running
+    await stopping
+    expect(f.api.stop).toHaveBeenCalledOnce()
+    expect(approvalRuntime.close).toHaveBeenCalledOnce()
   })
 
   it("caps persistent reconciliation retries with exponential backoff", async () => {
