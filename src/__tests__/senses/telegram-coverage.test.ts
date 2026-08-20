@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   sendTelegramText: vi.fn(),
   createSanctuaryToolContext: vi.fn(() => ({ sanctuary: true })),
   createTelegramApprovalRuntime: vi.fn(),
+  emitNervesEvent: vi.fn(),
 }))
 
 vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot }))
@@ -16,6 +17,7 @@ vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig:
 vi.mock("../../senses/shared-turn", () => ({ runSenseTurn: mocks.runSenseTurn }))
 vi.mock("../../senses/sanctuary-runtime", () => ({ createSanctuaryToolContext: mocks.createSanctuaryToolContext }))
 vi.mock("../../senses/telegram-approval-runtime", () => ({ createTelegramApprovalRuntime: mocks.createTelegramApprovalRuntime }))
+vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: mocks.emitNervesEvent }))
 vi.mock("../../senses/telegram-client", async (importActual) => ({
   ...await importActual<typeof import("../../senses/telegram-client")>(),
   createTelegramBotApi: mocks.createTelegramBotApi,
@@ -116,6 +118,71 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined)
   })
 
+  it("uses one deterministic domain-safe opaque subject for turn, friend, identity, and log surfaces", async () => {
+    const privateCredentials = {
+      botToken: "privacy-test-bot-token",
+      authorizedUserId: "918273645012345678",
+      authorizedChatId: "817263540123456789",
+    }
+    const capture = async (input: typeof privateCredentials) => {
+      const f = defaultFixture()
+      createTelegramSenseApp({ agentName: "butler", credentials: input })
+      await f.getOnMessage()({
+        updateId: 716253401234567891,
+        messageId: "615243019876543219",
+        userId: input.authorizedUserId,
+        chatId: input.authorizedChatId,
+        text: "privacy check",
+      })
+      return mocks.runSenseTurn.mock.calls.at(-1)![0]
+    }
+
+    const first = await capture(privateCredentials)
+    const repeated = await capture(privateCredentials)
+    const otherToken = await capture({ ...privateCredentials, botToken: "different-privacy-test-bot-token" })
+    const otherUser = await capture({ ...privateCredentials, authorizedUserId: "918273645012345679" })
+    const otherChat = await capture({ ...privateCredentials, authorizedChatId: "817263540123456790" })
+    const subject = first.identity.externalId as string
+
+    expect(subject).toMatch(/^tg_[A-Za-z0-9_-]{43}$/u)
+    expect(repeated.identity.externalId).toBe(subject)
+    expect(otherToken.identity.externalId).not.toBe(subject)
+    expect(otherUser.identity.externalId).not.toBe(subject)
+    expect(otherChat.identity.externalId).not.toBe(subject)
+    expect(first).toMatchObject({
+      sessionKey: `telegram:${subject}`,
+      friendId: `telegram-user:${subject}`,
+      identity: {
+        provider: "telegram-user",
+        externalId: subject,
+        displayName: `Telegram user ${subject}`,
+      },
+    })
+    expect(mocks.createTelegramLongPoll).toHaveBeenCalledWith(expect.objectContaining({
+      expectedUserId: privateCredentials.authorizedUserId,
+      expectedChatId: privateCredentials.authorizedChatId,
+    }))
+    expect(mocks.sendTelegramText).toHaveBeenCalledWith(
+      expect.anything(),
+      privateCredentials.authorizedChatId,
+      "fallback",
+      undefined,
+    )
+
+    const privateSurfaces = JSON.stringify({ turn: first, logs: mocks.emitNervesEvent.mock.calls })
+    for (const rawId of [
+      privateCredentials.authorizedUserId,
+      privateCredentials.authorizedChatId,
+      "716253401234567891",
+      "615243019876543219",
+    ]) {
+      expect(privateSurfaces).not.toContain(rawId)
+    }
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      meta: expect.objectContaining({ subject }),
+    }))
+  })
+
   it("passes default tool and approval context, then sends a response only when no streamed delivery occurred", async () => {
     const f = defaultFixture()
     createTelegramSenseApp({ agentName: "sanctuary", credentials })
@@ -145,6 +212,39 @@ describe("Telegram sense coverage contracts", () => {
     createTelegramSenseApp({ agentName: "butler", credentials })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "I couldn't complete that turn. The failure was recorded; please try again.", undefined)
+  })
+
+  it("redacts transport secrets and raw Telegram identifiers from logged failures", async () => {
+    const privateCredentials = {
+      botToken: "private-error-bot-token",
+      authorizedUserId: "908172635401234567",
+      authorizedChatId: "807162534012345678",
+    }
+    const updateId = 7061524301
+    const messageId = "605142309876543210"
+    const f = defaultFixture()
+    mocks.runSenseTurn.mockRejectedValueOnce(new Error([
+      privateCredentials.botToken,
+      privateCredentials.authorizedUserId,
+      privateCredentials.authorizedChatId,
+      updateId,
+      messageId,
+    ].join("/")))
+    createTelegramSenseApp({ agentName: "butler", credentials: privateCredentials })
+
+    await f.getOnMessage()({ updateId, messageId, text: "fail privately" })
+
+    const logged = JSON.stringify(mocks.emitNervesEvent.mock.calls)
+    for (const privateValue of [
+      privateCredentials.botToken,
+      privateCredentials.authorizedUserId,
+      privateCredentials.authorizedChatId,
+      String(updateId),
+      messageId,
+    ]) {
+      expect(logged).not.toContain(privateValue)
+    }
+    expect(logged).toContain("[redacted]")
   })
 
   it("declines non-callback updates and callbacks when no approval transport exists", async () => {

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto"
 import * as path from "node:path"
 
 import { getAgentRoot } from "../heart/identity"
@@ -38,6 +39,7 @@ export interface TelegramSenseApp {
 type TelegramTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 type TelegramLongPollFactory = (options: TelegramLongPollOptions) => TelegramLongPoll
 const APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS = 1_000
+const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 
 export interface CreateTelegramSenseAppOptions {
   agentName: string
@@ -66,6 +68,21 @@ function canonicalTelegramId(value: unknown, label: string): string {
   return text
 }
 
+function opaqueTelegramSubject(botToken: string, authorizedUserId: string, authorizedChatId: string): string {
+  const payload = [
+    TELEGRAM_SUBJECT_DOMAIN,
+    `user:${authorizedUserId.length}:${authorizedUserId}`,
+    `chat:${authorizedChatId.length}:${authorizedChatId}`,
+  ].join("\0")
+  return `tg_${createHmac("sha256", botToken).update(payload, "utf8").digest("base64url")}`
+}
+
+function redactTelegramPrivateValues(error: unknown, privateValues: readonly string[]): string {
+  let message = error instanceof Error ? error.message : String(error)
+  for (const privateValue of privateValues) message = message.split(privateValue).join("[redacted]")
+  return message
+}
+
 export function parseTelegramSenseCredentials(value: Record<string, unknown>): TelegramSenseCredentials {
   return {
     botToken: requiredText(value.telegramBotToken, "bot token"),
@@ -78,6 +95,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const botToken = requiredText(options.credentials.botToken, "bot token")
   const authorizedUserId = canonicalTelegramId(options.credentials.authorizedUserId, "authorized user id")
   const authorizedChatId = canonicalTelegramId(options.credentials.authorizedChatId, "authorized chat id")
+  const subject = opaqueTelegramSubject(botToken, authorizedUserId, authorizedChatId)
+  const transportError = (error: unknown): string => redactTelegramPrivateValues(
+    error,
+    [botToken, authorizedUserId, authorizedChatId],
+  )
   const api = options.api ?? createTelegramBotApi({ token: botToken })
   const offsetStore = options.offsetStore ?? new FileTelegramOffsetStore(
     path.join(getAgentRoot(options.agentName), "state", "senses", "telegram", "offset.json"),
@@ -115,7 +137,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           component: "senses",
           event: "senses.telegram_approval_reconcile_error",
           message: "Telegram approval expiry reconciliation failed",
-          meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) },
+          meta: { agentName: options.agentName, subject, error: transportError(error) },
         })
       }).finally(scheduleApprovalReconcile)
     }, APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS)
@@ -136,7 +158,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.sanctuary_health_error",
         message: "Sanctuary deterministic health sweep failed",
-        meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) },
+        meta: { agentName: options.agentName, subject, error: transportError(error) },
       })
     }
   }
@@ -150,19 +172,19 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       component: "senses",
       event: "senses.telegram_turn_start",
       message: "Telegram authorized turn started",
-      meta: { agentName: options.agentName, updateId: message.updateId, messageId: message.messageId },
+      meta: { agentName: options.agentName, subject },
     })
     let deliveryCount = 0
     try {
       const result = await runTurn({
         agentName: options.agentName,
         channel: "telegram",
-        sessionKey: `telegram:${authorizedChatId}`,
-        friendId: `telegram-user:${authorizedUserId}`,
+        sessionKey: `telegram:${subject}`,
+        friendId: `telegram-user:${subject}`,
         identity: {
           provider: "telegram-user",
-          externalId: authorizedUserId,
-          displayName: `Telegram user ${authorizedUserId}`,
+          externalId: subject,
+          displayName: `Telegram user ${subject}`,
         },
         userMessage: message.text,
         deliverySink: {
@@ -179,7 +201,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_end",
         message: "Telegram authorized turn completed",
-        meta: { agentName: options.agentName, updateId: message.updateId, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0) },
+        meta: { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0) },
       })
     } catch (error) {
       emitNervesEvent({
@@ -187,7 +209,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_error",
         message: "Telegram authorized turn failed",
-        meta: { agentName: options.agentName, updateId: message.updateId, error: error instanceof Error ? error.message : String(error) },
+        meta: {
+          agentName: options.agentName,
+          subject,
+          error: redactTelegramPrivateValues(
+            error,
+            [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId],
+          ),
+        },
       })
       await deliver("I couldn't complete that turn. The failure was recorded; please try again.")
     }
@@ -218,7 +247,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_poll_start",
         message: "Telegram long poll started",
-        meta: { agentName: options.agentName },
+        meta: { agentName: options.agentName, subject },
       })
       approvalReconciliationActive = true
       scheduleApprovalReconcile()
@@ -242,7 +271,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_poll_end",
         message: "Telegram long poll stopped",
-        meta: { agentName: options.agentName },
+        meta: { agentName: options.agentName, subject },
       })
     },
   }

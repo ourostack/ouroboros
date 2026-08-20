@@ -61,9 +61,13 @@ describe("Telegram sense", () => {
     expect(f.runTurn).toHaveBeenCalledWith(expect.objectContaining({
       agentName: "butler",
       channel: "telegram",
-      sessionKey: "telegram:42",
-      friendId: "telegram-user:42",
-      identity: { provider: "telegram-user", externalId: "42", displayName: "Telegram user 42" },
+      sessionKey: expect.stringMatching(/^telegram:tg_[A-Za-z0-9_-]{43}$/u),
+      friendId: expect.stringMatching(/^telegram-user:tg_[A-Za-z0-9_-]{43}$/u),
+      identity: {
+        provider: "telegram-user",
+        externalId: expect.stringMatching(/^tg_[A-Za-z0-9_-]{43}$/u),
+        displayName: expect.stringMatching(/^Telegram user tg_[A-Za-z0-9_-]{43}$/u),
+      },
       userMessage: "health?",
     }))
     expect(f.api.request).toHaveBeenCalledWith("sendMessage", {
