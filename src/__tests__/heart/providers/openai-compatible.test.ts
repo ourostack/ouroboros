@@ -121,6 +121,8 @@ describe("generic OpenAI-compatible provider", () => {
 
     const error = await runtime.ping().catch((caught: unknown) => caught as Error & { code?: string; status?: number })
     expect(error.message).not.toContain("secret-never-print")
+    expect(error.cause).toBeUndefined()
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain("secret-never-print")
     expect(error.code).toBe(expectedCode)
     expect(error.status).toBeUndefined()
   })

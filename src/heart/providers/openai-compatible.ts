@@ -40,7 +40,7 @@ function canonicalBaseUrl(provider: OpenAICompatibleProviderId, value: string): 
 
 function safeError(error: unknown, apiKey: string): Error {
   const message = (error instanceof Error ? error.message : String(error)).split(apiKey).join("[redacted]")
-  const safe = new Error(message, error instanceof Error ? { cause: error } : undefined) as Error & { status?: number; code?: string }
+  const safe = new Error(message) as Error & { status?: number; code?: string }
   if (error instanceof Error) {
     const source = error as Error & { status?: unknown; code?: unknown }
     if (typeof source.status === "number" && Number.isFinite(source.status)) safe.status = source.status
