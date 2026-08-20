@@ -31,7 +31,8 @@ function canonicalBaseUrl(provider: OpenAICompatibleProviderId, value: string): 
     throw new Error(`${provider} requires its canonical base URL`)
   }
   const normalized = parsed.toString().replace(/\/+$/u, "/")
-  if (value !== CANONICAL_BASE_URLS[provider] || normalized !== CANONICAL_BASE_URLS[provider]) {
+  const normalizedInput = value.replace(/\/+$/u, "/")
+  if (normalizedInput !== CANONICAL_BASE_URLS[provider] || normalized !== CANONICAL_BASE_URLS[provider]) {
     throw new Error(`${provider} requires its canonical base URL ${CANONICAL_BASE_URLS[provider]}`)
   }
   return normalized

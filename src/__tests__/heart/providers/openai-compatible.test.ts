@@ -93,6 +93,13 @@ describe("generic OpenAI-compatible provider", () => {
       .toThrow("canonical base URL")
   })
 
+  it("normalizes only redundant trailing slashes on a canonical base URL", () => {
+    expect(() => createOpenAICompatibleProviderRuntime("openai-compatible", "glm-5.2", {
+      apiKey: "secret",
+      baseUrl: "https://api.z.ai/api/paas/v4////",
+    }, { fetch: vi.fn() })).not.toThrow()
+  })
+
   it("redacts the API key from transport failures", async () => {
     const runtime = createOpenAICompatibleProviderRuntime("openai-compatible", "glm-5.2", {
       apiKey: "secret-never-print",

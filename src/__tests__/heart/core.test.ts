@@ -1408,7 +1408,7 @@ describe("runAgent", () => {
     expect(execTool).not.toHaveBeenCalled()
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_array", content: expect.stringContaining("arguments must be a JSON object") }),
-      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("arguments must be a JSON object") }),
+      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("malformed JSON") }),
     ]))
   })
 
@@ -1468,7 +1468,7 @@ describe("runAgent", () => {
 
     expect(execTool).not.toHaveBeenCalled()
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("malformed JSON arguments") }),
+      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("malformed JSON") }),
     ]))
   })
 
@@ -2164,8 +2164,6 @@ describe("runAgent", () => {
           makeChunk(undefined, [
             { index: 0, id: "tc_surface_unknown", function: { name: "surface", arguments: "{\"content\":\"no target\"}" } },
             { index: 1, id: "tc_surface_delegated", function: { name: "surface", arguments: "{\"delegationId\":\"delegation-1\",\"content\":\"return this\"}" } },
-            { index: 2, id: "tc_read", function: { name: "read_file", arguments: "{\"path\":\"safe.txt\"}" } },
-            { index: 3, id: "tc_surface_bad_json", function: { name: "surface", arguments: "{\"content\":" } },
           ]),
         ])
       }
@@ -2192,7 +2190,6 @@ describe("runAgent", () => {
     await (runAgent as any)(messages, callbacks, "inner", undefined, {
       tools: [
         { type: "function" as const, function: { name: "surface", description: "surface", parameters: { type: "object", properties: {} } } },
-        { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } } },
       ],
       execTool,
       habitSession: {
@@ -2204,8 +2201,8 @@ describe("runAgent", () => {
           warnings: [],
         },
         toolPolicy: {
-          requestedTools: ["surface", "read_file"],
-          grantedTools: ["surface", "read_file"],
+          requestedTools: ["surface"],
+          grantedTools: ["surface"],
           deniedTools: [],
           outwardMessagingAllowed: true,
         },
@@ -2570,7 +2567,7 @@ describe("runAgent", () => {
         return makeStream([
           makeChunk(undefined, [
             { index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"a.txt"}' } },
-            { index: 1, id: "call_2", function: { name: "list_directory", arguments: '{"path":"/tmp"}' } },
+            { index: 1, id: "call_2", function: { name: "read_file", arguments: '{"path":"b.txt"}' } },
           ]),
         ])
       }
@@ -2588,7 +2585,7 @@ describe("runAgent", () => {
     }
 
     await runAgent([{ role: "system", content: "test" }], callbacks)
-    expect(toolStarts).toEqual(["read_file", "list_directory"])
+    expect(toolStarts).toEqual(["read_file", "read_file"])
   })
 
   it("fires onToolEnd with success=false when tool throws", async () => {
@@ -2647,7 +2644,7 @@ describe("runAgent", () => {
     expect(chunks).toEqual(["text"])
   })
 
-  it("handles invalid JSON in tool call arguments gracefully", async () => {
+  it("rejects invalid JSON in tool call arguments before execution", async () => {
     vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("fallback"))
 
     let callCount = 0
@@ -2674,8 +2671,7 @@ describe("runAgent", () => {
     }
 
     await runAgent([{ role: "system", content: "test" }], callbacks)
-    // args should be empty object when JSON parse fails
-    expect(toolStarts[0].args).toEqual({})
+    expect(toolStarts).toEqual([])
   })
 
   it("wraps non-Error thrown values in Error in onError callback", async () => {
@@ -2835,7 +2831,7 @@ describe("runAgent", () => {
     expect(toolMsg.content).toBe("data")
   })
 
-  it("handles tool call chunk with no function arguments", async () => {
+  it("rejects a tool call chunk with no function arguments", async () => {
     mockReadFileToolResult("data")
 
     let callCount = 0
@@ -2863,7 +2859,7 @@ describe("runAgent", () => {
     }
 
     await runAgent([{ role: "system", content: "test" }], callbacks)
-    expect(toolStarts).toContain("get_current_time")
+    expect(toolStarts).toEqual([])
   })
 
   it("uses minimax model from config when set", async () => {

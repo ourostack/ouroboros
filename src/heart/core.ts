@@ -1886,6 +1886,51 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
+        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
+        const callIdCounts = new Map<string, number>()
+        for (const call of result.toolCalls) callIdCounts.set(call.id, (callIdCounts.get(call.id) ?? 0) + 1)
+        const validatedCalls: Array<
+          | { call: (typeof result.toolCalls)[number]; advertised: OpenAI.ChatCompletionFunctionTool; validated: ValidatedToolArguments }
+          | { call: (typeof result.toolCalls)[number]; error: string }
+        > = result.toolCalls.map((call) => {
+          if ((callIdCounts.get(call.id) ?? 0) !== 1) return { call, error: "duplicate tool call id" } as const
+          const advertised = activeTools.find((tool) => tool.function.name === call.name)
+          if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") {
+            return { call, error: "tool was not advertised with a valid argument schema" } as const
+          }
+          const validated = validateAdvertisedToolArguments(call.arguments, advertised.function.parameters)
+          return validated.ok
+            ? { call, advertised, validated: validated.value } as const
+            : { call, error: validated.reason } as const
+        })
+        const invalidCall = validatedCalls.find((entry) => "error" in entry)
+        if (invalidCall) {
+          await streamCallbackBuffer?.flush()
+          pushGenerated(msg)
+          for (const entry of validatedCalls) {
+            const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
+            const rejection = `invalid tool arguments: ${detail}`
+            pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
+            providerRuntime.appendToolOutput(entry.call.id, rejection)
+          }
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.tool_arguments_rejected",
+            message: "tool batch rejected before execution because arguments were invalid",
+            meta: { toolCallId: invalidCall.call.id, toolName: invalidCall.call.name },
+          })
+          continue
+        }
+        const validCalls = validatedCalls as Array<{
+          call: (typeof result.toolCalls)[number]
+          advertised: OpenAI.ChatCompletionFunctionTool
+          validated: ValidatedToolArguments
+        }>
+        const validatedCallArguments = new Map(validCalls.map((entry) => [
+          entry.call,
+          entry.validated.arguments as Record<string, string>,
+        ]))
         const habitBlockReason = await habitToolBatchBlockReason(
           habitSession,
           result.toolCalls,
@@ -1918,15 +1963,7 @@ export async function runAgent(
           ? resolveToolDefinition(soleTerminalCall.name)?.terminalProjection
           : undefined
         if (soleTerminalCall && soleTerminalProjection?.mode === "verbatim") {
-          let terminalArgs: Record<string, string> = {}
-          try {
-            const parsed = JSON.parse(soleTerminalCall.arguments)
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-              terminalArgs = parsed as Record<string, string>
-            }
-          } catch {
-            // The registered handler owns exact argument validation.
-          }
+          const terminalArgs = validatedCallArguments.get(soleTerminalCall)!
           if (
             soleTerminalProjection.clearBufferedText
             || callbacks.settleOutputMode === "final_only"
@@ -1977,8 +2014,7 @@ export async function runAgent(
         }
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
-          /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
-          const settleArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          const settleArgs = validatedCallArguments.get(result.toolCalls[0])!
           callbacks.onToolStart("settle", settleArgs);
           // Private-runtime attention queue gate: reject settle if items remain
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
@@ -2086,8 +2122,7 @@ export async function runAgent(
         const isSoleObserve = result.toolCalls.length === 1 && result.toolCalls[0].name === "observe";
         if (isSoleObserve) {
           streamCallbackBuffer?.discard();
-          /* v8 ignore next -- defensive: JSON.parse catch for malformed observe args @preserve */
-          const observeArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          const observeArgs = validatedCallArguments.get(result.toolCalls[0])!
           let reason: string | undefined;
           if (typeof observeArgs?.reason === "string") reason = observeArgs.reason;
           callbacks.onToolStart("observe", observeArgs);
@@ -2111,7 +2146,7 @@ export async function runAgent(
         const isSoleRest = result.toolCalls.length === 1 && result.toolCalls[0].name === "rest";
         if (isSoleRest) {
           streamCallbackBuffer?.discard();
-          const restArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          const restArgs = validatedCallArguments.get(result.toolCalls[0])!
           callbacks.onToolStart("rest", restArgs);
 
           // Attention queue gate: reject rest if items remain
@@ -2160,46 +2195,6 @@ export async function runAgent(
           continue;
         }
 
-        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
-        const validatedCalls: Array<
-          | { call: (typeof result.toolCalls)[number]; advertised: OpenAI.ChatCompletionFunctionTool; validated: ValidatedToolArguments }
-          | { call: (typeof result.toolCalls)[number]; error: string }
-        > = result.toolCalls.map((call) => {
-              const advertised = activeTools.find((tool) => tool.function.name === call.name)
-              if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") {
-                return { call, error: "tool was not advertised with a valid argument schema" } as const
-              }
-              const validated = validateAdvertisedToolArguments(call.arguments, advertised.function.parameters)
-              return validated.ok
-                ? { call, advertised, validated: validated.value } as const
-                : { call, error: validated.reason } as const
-            })
-        const invalidApprovalCall = validatedCalls?.find((entry) => "error" in entry)
-        if (invalidApprovalCall) {
-          await streamCallbackBuffer?.flush()
-          pushGenerated(msg)
-          for (const entry of validatedCalls!) {
-            const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
-            const rejection = `invalid tool arguments: ${detail}`
-            pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
-            providerRuntime.appendToolOutput(entry.call.id, rejection)
-          }
-          emitNervesEvent({
-            level: "warn",
-            component: "engine",
-            event: "engine.tool_arguments_rejected",
-            message: "tool batch rejected before execution because arguments were invalid",
-            meta: { toolCallId: invalidApprovalCall.call.id, toolName: invalidApprovalCall.call.name },
-          })
-          continue
-        }
-
-        const validCalls = validatedCalls as Array<{
-          call: (typeof result.toolCalls)[number]
-          advertised: OpenAI.ChatCompletionFunctionTool
-          validated: ValidatedToolArguments
-        }>
-        const validatedCallById = new Map(validCalls.map((entry) => [entry.call.id, entry.validated]))
         const approvalCalls = options?.approvalCoordinator ? validCalls.map((entry) => ({
           ...entry,
           policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments),
@@ -2304,7 +2299,7 @@ export async function runAgent(
             providerRuntime.appendToolOutput(tc.id, soleCallRejection);
             continue;
           }
-          const args = validatedCallById.get(tc.id)!.arguments as Record<string, string>
+          const args = validatedCallArguments.get(tc)!
           if (tc.name === "send_message" && args.friendId === "self") {
             const latestUserText = latestUserMessageText(messages)
             if (!isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserText)) {
