@@ -136,7 +136,7 @@ restore_production_container() {
   return 1
 }
 
-quiesce_production_telegram_poller() {
+stop_exact_production_container() {
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = true || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$PRODUCTION_CONTAINER")" = healthy || return 1
@@ -145,6 +145,10 @@ quiesce_production_telegram_poller() {
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = false || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Pid}}' "$PRODUCTION_CONTAINER")" = 0 || return 1
+}
+
+quiesce_production_telegram_poller() {
+  stop_exact_production_container
   printf '%s\n' '{"activePollers":0,"productionContainerStopped":true}' >"$POLLER_FACT"
   chmod 0444 "$POLLER_FACT"
   chown 0:0 "$POLLER_FACT"
@@ -245,6 +249,7 @@ assert_acceptance_state_inode() {
 }
 
 if test "$COMMAND" = evidence-snapshot; then
+  stop_exact_production_container
   BUNDLE_STATE_ROOT=$BUNDLE_ROOT/state
   test -d "$BUNDLE_STATE_ROOT" && test ! -L "$BUNDLE_STATE_ROOT" || exit 1
   test "$(stat -c '%u:%g %a' "$BUNDLE_STATE_ROOT")" = "10001:10001 700" || exit 1
@@ -259,10 +264,25 @@ if test "$COMMAND" = evidence-snapshot; then
   ! /bin/mountpoint -q "$ACCEPTANCE_PIN_ROOT" || exit 1
   ! /bin/mountpoint -q "$ACCEPTANCE_STATE_ROOT" || exit 1
   ACCEPTANCE_ALIAS_MOUNTED=yes
-  /usr/bin/timeout -s KILL 10 /bin/mount --bind "$ACCEPTANCE_STATE_ROOT" "$ACCEPTANCE_PIN_ROOT"
-  test "$(stat -Lc '%d:%i' "$ACCEPTANCE_STATE_ROOT")" = "$(stat -Lc '%d:%i' "$ACCEPTANCE_PIN_ROOT")" || exit 1
+  /usr/bin/timeout -s KILL 20 /usr/local/bin/node -e '
+    const { spawnSync } = require("node:child_process");
+    const { closeSync, constants, fstatSync, openSync } = require("node:fs");
+    const [sourcePath, target] = process.argv.slice(1);
+    const source = openSync(sourcePath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const metadata = fstatSync(source);
+      if (!metadata.isDirectory() || metadata.uid !== 10001 || (metadata.mode & 0o777) !== 0o700) process.exit(1);
+      const result = spawnSync("/bin/mount", ["--bind", "/proc/self/fd/3", target], {
+        cwd: "/", timeout: 10_000, env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+        stdio: ["ignore", "ignore", "ignore", source],
+      });
+      if (result.error || result.status !== 0) process.exit(1);
+    } finally { closeSync(source); }
+  ' "$ACCEPTANCE_STATE_ROOT" "$ACCEPTANCE_PIN_ROOT"
   ACCEPTANCE_CANONICAL_PINNED=yes
   /usr/bin/timeout -s KILL 10 /bin/mount --bind "$ACCEPTANCE_PIN_ROOT" "$ACCEPTANCE_STATE_ROOT"
+  restore_production_container
+  PRODUCTION_STOPPED=no
   assert_acceptance_state_inode
 fi
 

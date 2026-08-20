@@ -1281,9 +1281,12 @@ Packaged Unit 16 acceptance execution:
   also receives a freshly generated, redacted typed container-inspect snapshot;
   raw container environment or credential values are never captured.
   Evidence-snapshot keeps the bundle mount read-only and overlays only the exact
-  canonical `state/acceptance` directory as writable. The launcher bind-pins its
-  verified inode behind a root-only alias, bind-pins that inode back onto the
-  canonical path against rename swaps, and compares the alias, canonical path,
+  canonical `state/acceptance` directory as writable. It first stops the exact
+  healthy production container under recovery responsibility, then opens the
+  directory with `O_DIRECTORY|O_NOFOLLOW` and bind-mounts from the inherited fd
+  while no Sanctuary UID process is running. The launcher bind-pins that inode
+  behind a root-only alias and back onto the canonical path against rename swaps,
+  restarts the same exact image healthy, and compares the alias, canonical path,
   and production container's inode before and after capture. Cleanup unmounts the
   canonical pin and then the alias. The production daemon therefore sees the same
   inode used by the one-shot for marker correlation.
