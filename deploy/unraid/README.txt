@@ -441,7 +441,7 @@ ouro-butler-staging
         const fs = require("node:fs");
         const sourceDigest = `sha256:${crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex")}`;
         const marker = { schemaVersion: 1, machineId: "sanctuary", sourceDigest, importedAt: new Date().toISOString() };
-        fs.writeFileSync(process.argv[1], `${JSON.stringify(marker)}\n`, { mode: 0o600, flag: "wx" });
+        fs.writeFileSync(process.argv[1], `${JSON.stringify(marker)}\n`, { mode: 0o600, flag: "w" });
       ' "$IMPORT_MARKER_TMP" "$IMPORT_SOURCE" || return $?
       chown 10001:10001 "$IMPORT_MARKER_TMP" || return $?
       chmod 0600 "$IMPORT_MARKER_TMP" || return $?
