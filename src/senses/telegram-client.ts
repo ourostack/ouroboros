@@ -376,6 +376,7 @@ export interface TelegramLongPollOptions {
   inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
+  acceptanceEventMeta?: () => Record<string, string>
 }
 
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
@@ -409,7 +410,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       component: "senses",
       event: "telegram.update_dropped",
       message: "Telegram update dropped before dispatch",
-      meta: { updateClass: update.message ? "message" : "other", reason: "unauthorized_or_unsupported" },
+      meta: { updateClass: update.message ? "message" : "other", reason: "unauthorized_or_unsupported", ...options.acceptanceEventMeta?.() },
     })
   }
 
@@ -423,7 +424,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
         component: "senses",
         event: "telegram.update_dropped",
         message: "Telegram update dispatch outcome is indeterminate after restart",
-        meta: { updateClass: indeterminate.updateClass, reason: "dispatch_indeterminate" },
+        meta: { updateClass: indeterminate.updateClass, reason: "dispatch_indeterminate", ...options.acceptanceEventMeta?.() },
       })
       options.inboxStore?.acknowledgeIndeterminateWarning(indeterminate)
     }

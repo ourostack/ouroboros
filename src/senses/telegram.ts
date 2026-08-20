@@ -20,6 +20,7 @@ import * as path from "node:path"
 import { FileFriendStore } from "@ouro.bot/friends"
 
 import { getAgentRoot } from "../heart/identity"
+import { sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
@@ -452,6 +453,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (result.deliveryId) await healthSweep.markDeliveryAttempting?.(result.deliveryId)
         const messageIds = await deliver(result.message)
         if (result.deliveryId) await healthSweep.markDelivered?.(result.deliveryId, messageIds)
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.sanctuary_health_delivered",
+          message: "Sanctuary health notification was delivered",
+          meta: { agentName: options.agentName, deliveryCount: messageIds.length, ...sanctuaryAcceptanceEventMeta(options.agentName) },
+        })
       }
     } catch (error) {
       emitNervesEvent({
@@ -469,11 +476,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const onMessage = async (message: TelegramInboundMessage): Promise<void> => {
+    const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
     emitNervesEvent({
       component: "senses",
       event: "senses.telegram_turn_start",
       message: "Telegram authorized turn started",
-      meta: { agentName: options.agentName, subject },
+      meta: { agentName: options.agentName, subject, ...acceptanceMeta },
     })
     let deliveryCount = 0
     try {
@@ -502,7 +510,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_end",
         message: "Telegram authorized turn completed",
-        meta: { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0) },
+        meta: { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta },
       })
     } catch (error) {
       emitNervesEvent({
@@ -513,6 +521,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         meta: {
           agentName: options.agentName,
           subject,
+          ...acceptanceMeta,
           error: redactTelegramPrivateValues(
             error,
             [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId],
@@ -537,6 +546,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     inboxStore,
     onMessage,
     onUpdate,
+    acceptanceEventMeta: () => sanctuaryAcceptanceEventMeta(options.agentName),
   })
 
   return {

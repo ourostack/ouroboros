@@ -106,6 +106,17 @@ afterEach(() => {
 })
 
 describe("approval store", () => {
+  it("binds approvals to an opaque acceptance scenario digest and supports read-only lookup", () => {
+    const store = open()
+    const scenarioHandleDigest = "9".repeat(64)
+    const prepared = store.prepare(proposalInput({ scenarioHandleDigest }))
+
+    expect(store.readByScenarioHandleDigest(scenarioHandleDigest)).toEqual([prepared.record])
+    expect(store.readByScenarioHandleDigest("8".repeat(64))).toEqual([])
+    expect(() => store.readByScenarioHandleDigest("not-a-digest")).toThrowError(ApprovalStoreError)
+    store.close()
+  })
+
   it("discovers distinct opaque Telegram identity subjects from live approval records only", () => {
     const root = makeRoot()
     const store = openApprovalStore({

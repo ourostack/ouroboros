@@ -76,6 +76,7 @@ export interface PrepareApprovalInput {
   transportChatId: string
   expiresAt: string
   frozenAssistantMessage: JsonObject
+  scenarioHandleDigest?: string
 }
 
 export interface ApprovalStoreOptions {
@@ -152,6 +153,7 @@ export interface ApprovalStore {
   markContinuationAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
   completeContinuation(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
   read(approvalId: string): ApprovalRecord | null
+  readByScenarioHandleDigest(scenarioHandleDigest: string): ApprovalRecord[]
   listTelegramIdentitySubjects?(): string[]
   migrateTelegramIdentity?(input: { legacyUserId: string; legacyChatId: string; subject: string }): number
   close(): void
@@ -589,6 +591,15 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
       attempted_at TEXT,
       continued_at TEXT
     )
+    ;
+    CREATE TABLE IF NOT EXISTS approval_acceptance_scenarios (
+      approval_id TEXT PRIMARY KEY,
+      scenario_handle_digest TEXT NOT NULL,
+      FOREIGN KEY (approval_id) REFERENCES approval_actions(approval_id)
+    )
+    ;
+    CREATE INDEX IF NOT EXISTS approval_acceptance_scenario_digest
+      ON approval_acceptance_scenarios (scenario_handle_digest)
   `)
   const now = options.now ?? (() => new Date())
   const randomUUID = options.randomUUID ?? createRandomUUID
@@ -606,9 +617,21 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     }
   }
 
-  const insert = (record: ApprovalRecord): void => {
-    database.prepare("INSERT INTO approval_actions (approval_id, state, epoch, record_json) VALUES (?, ?, ?, ?)")
-      .run(record.approvalId, record.state, record.epoch, JSON.stringify(record))
+  const insert = (record: ApprovalRecord, scenarioHandleDigest?: string): void => {
+    const transaction = database.transaction(() => {
+      database.prepare("INSERT INTO approval_actions (approval_id, state, epoch, record_json) VALUES (?, ?, ?, ?)")
+        .run(record.approvalId, record.state, record.epoch, JSON.stringify(record))
+      if (scenarioHandleDigest) database.prepare("INSERT INTO approval_acceptance_scenarios (approval_id, scenario_handle_digest) VALUES (?, ?)")
+        .run(record.approvalId, scenarioHandleDigest)
+    })
+    transaction()
+    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_transition", message: "acceptance-bound approval transitioned", meta: { scenarioHandleDigest, state: record.state } })
+  }
+
+  const acceptanceDigest = (approvalId: string): string | null => {
+    const row = database.prepare("SELECT scenario_handle_digest FROM approval_acceptance_scenarios WHERE approval_id = ?")
+      .get(approvalId) as { scenario_handle_digest: string } | undefined
+    return row?.scenario_handle_digest ?? null
   }
 
   const cas = (previous: ApprovalRecord, next: ApprovalRecord): ApprovalRecord => {
@@ -617,6 +640,8 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
       WHERE approval_id = ? AND state = ? AND epoch = ? AND record_json = ?
     `).run(next.state, next.epoch, JSON.stringify(next), previous.approvalId, previous.state, previous.epoch, JSON.stringify(previous))
     if (changed.changes !== 1) fail("transition_conflict")
+    const scenarioHandleDigest = acceptanceDigest(next.approvalId)
+    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_transition", message: "acceptance-bound approval transitioned", meta: { scenarioHandleDigest, state: next.state } })
     return structuredClone(next)
   }
 
@@ -659,6 +684,8 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
       WHERE approval_id = ? AND owner_id = ? AND epoch = ? AND state = ?
     `).run(to, timestamp(), input.approvalId, input.ownerId, input.epoch, from)
     if (changed.changes !== 1) fail(`continuation_${to}_not_eligible`)
+    const scenarioHandleDigest = acceptanceDigest(input.approvalId)
+    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { scenarioHandleDigest, state: to } })
     return combineContinuation(approval, readContinuationRow(input.approvalId))
   }
 
@@ -704,7 +731,8 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
           reason: null,
           frozenAssistantMessage: structuredClone(input.frozenAssistantMessage),
         }
-        insert(parseApprovalRecord(record))
+        if (input.scenarioHandleDigest !== undefined) assertHash(input.scenarioHandleDigest, "invalid_proposal")
+        insert(parseApprovalRecord(record), input.scenarioHandleDigest)
         return { record: structuredClone(record), decisionToken }
       })
     },
@@ -879,6 +907,8 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
           interruptedAfterAttempt = terminalized.changes === 1
           row = readContinuationRow(input.approvalId)
         }
+        const scenarioHandleDigest = acceptanceDigest(input.approvalId)
+        if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { scenarioHandleDigest, state: row.state } })
         return {
           claimed,
           interruptedAfterAttempt,
@@ -905,11 +935,24 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
             AND state IN ('materialized', 'attempted') AND continued_at IS NULL
         `).run(completedAt, input.approvalId, input.ownerId, input.epoch)
         if (changed.changes !== 1) fail("continuation_completion_not_eligible")
+        const scenarioHandleDigest = acceptanceDigest(input.approvalId)
+        if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { scenarioHandleDigest, state: "completed" } })
         return combineContinuation(approval, readContinuationRow(input.approvalId))
       })
     },
 
     read(approvalId) { return observeRead(() => rawRead(approvalId)) },
+    readByScenarioHandleDigest(scenarioHandleDigest) {
+      assertHash(scenarioHandleDigest, "invalid_scenario_handle_digest")
+      const rows = database.prepare(`
+        SELECT a.record_json
+        FROM approval_actions a
+        INNER JOIN approval_acceptance_scenarios s ON s.approval_id = a.approval_id
+        WHERE s.scenario_handle_digest = ?
+        ORDER BY a.approval_id
+      `).all(scenarioHandleDigest) as Array<{ record_json: string }>
+      return rows.map((row) => parseApprovalRecord(JSON.parse(row.record_json) as unknown))
+    },
     listTelegramIdentitySubjects() {
       const subjects = new Set<string>()
       const add = (value: string): void => {

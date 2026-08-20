@@ -6,6 +6,7 @@ import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
 import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDecision, recoverAttemptedApproval, recoverClaimedApproval } from "../heart/tool-approval"
 import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
+import { readSanctuaryAcceptanceMarker } from "../heart/daemon/sanctuary-acceptance-marker"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
 import { execTool, resolveToolDefinition } from "../repertoire/tools"
@@ -39,7 +40,15 @@ export async function executeApprovedTelegramTool(
   name: string,
   args: Record<string, unknown>,
   execute: (name: string, args: Record<string, unknown>) => Promise<string>,
+  scenarioHandleDigest?: string,
 ): Promise<string> {
+  if (name === "unraid_restart_container") emitNervesEvent({
+    component: "senses",
+    event: "senses.telegram_approved_restart_start",
+    message: "approved Sanctuary restart execution started",
+    meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}) },
+  })
+  try {
   const result = await execute(name, args)
   if (name !== "unraid_restart_container") return result
   let parsed: unknown
@@ -75,7 +84,23 @@ export async function executeApprovedTelegramTool(
   if (!validSuccess) {
     throw new ApprovalExecutionFailedError("approved restart returned an invalid result")
   }
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.telegram_approved_restart_end",
+    message: "approved Sanctuary restart execution completed",
+    meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), observedRestart: true },
+  })
   return result
+  } catch (error) {
+    if (name === "unraid_restart_container") emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.telegram_approved_restart_error",
+      message: "approved Sanctuary restart execution failed",
+      meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), reason: error instanceof Error ? error.message.slice(0, 240) : "unknown" },
+    })
+    throw error
+  }
 }
 
 function opaqueTelegramMessageBinding(subject: string, messageId: string): string {
@@ -106,6 +131,7 @@ export function createTelegramApprovalRuntime(options: {
   const coordinator = (context: { sessionPath: string; baseSessionRevision: string }): ApprovalCoordinator => ({
     propose: async (request) => {
       if (request.toolCall.type !== "function") throw new Error("approval requires a function tool call")
+      const scenarioHandleDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
       const committed = commitApprovalProposal({
         approvalStore: store,
         checkpointStore: checkpoints,
@@ -128,6 +154,7 @@ export function createTelegramApprovalRuntime(options: {
           transportChatId: options.subject,
           expiresAt: new Date(Date.now() + 300_000).toISOString(),
           frozenAssistantMessage: request.frozenAssistantMessage as never,
+          ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}),
         },
         preCallMessages: request.preCallMessages,
       })
@@ -138,6 +165,12 @@ export function createTelegramApprovalRuntime(options: {
         transport: "telegram",
         transportChatId: options.subject,
         transportMessageId: opaqueTelegramMessageBinding(options.subject, sent.messageId),
+      })
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.telegram_approval_proposed",
+        message: "Telegram approval proposal was durably bound",
+        meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), toolName: request.toolCall.function.name },
       })
       return {
         approvalId: committed.record.approvalId,
@@ -210,6 +243,7 @@ export function createTelegramApprovalRuntime(options: {
       tokens.remove(approvalId)
     },
     onDecision: async (decision) => {
+      const decisionScenarioDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
       const existing = store.read(decision.approvalId)
       if (!existing) return { accepted: false, terminalText: "⚠️ Approval is no longer valid" }
       let record: ApprovalRecord
@@ -239,6 +273,7 @@ export function createTelegramApprovalRuntime(options: {
               name,
               args,
               (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
+              decisionScenarioDigest,
             ),
           }))
       } else if (["succeeded", "failed", "attempted_indeterminate", "denied", "expired", "drifted", "session_head_changed", "abandoned_before_attempt"].includes(existing.state)) {
@@ -246,6 +281,12 @@ export function createTelegramApprovalRuntime(options: {
       } else {
         return { accepted: false, terminalText: "⚠️ Approval is not recoverable" }
       }
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.telegram_approval_terminal",
+        message: "Telegram approval reached a terminal decision state",
+        meta: { state: record.state, ...(decisionScenarioDigest ? { scenarioHandleDigest: decisionScenarioDigest } : {}) },
+      })
       return continueTerminalRecord(record)
     },
   })
