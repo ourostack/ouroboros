@@ -66,6 +66,7 @@ CONTAINER_FACT=$PRIVATE_ROOT/container-digest
 HEALTH_FACT=$PRIVATE_ROOT/postboot-health.json
 POLLER_FACT=$PRIVATE_ROOT/telegram-poller-count.json
 CONTAINER_INSPECT_FACT=$PRIVATE_ROOT/container-inspect.json
+ACCEPTANCE_STATE_ROOT=
 
 start_broker() {
   /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
@@ -221,6 +222,18 @@ case "$COMMAND" in
   *) TIME_LIMIT=120; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
 esac
 
+if test "$COMMAND" = evidence-snapshot; then
+  BUNDLE_STATE_ROOT=$BUNDLE_ROOT/state
+  test -d "$BUNDLE_STATE_ROOT" && test ! -L "$BUNDLE_STATE_ROOT" || exit 1
+  test "$(stat -c '%u:%g %a' "$BUNDLE_STATE_ROOT")" = "10001:10001 700" || exit 1
+  ACCEPTANCE_STATE_ROOT=$BUNDLE_ROOT/state/acceptance
+  if test ! -e "$ACCEPTANCE_STATE_ROOT"; then
+    install -d -m 0700 -o 10001 -g 10001 "$ACCEPTANCE_STATE_ROOT"
+  fi
+  test -d "$ACCEPTANCE_STATE_ROOT" && test ! -L "$ACCEPTANCE_STATE_ROOT" || exit 1
+  test "$(stat -c '%u:%g %a' "$ACCEPTANCE_STATE_ROOT")" = "10001:10001 700" || exit 1
+fi
+
 run_harness() {
   if test "$BUNDLE_MODE" = rw; then BUNDLE_SUFFIX=; else BUNDLE_SUFFIX=,readonly; fi
   if test "$COMMAND" = telegram-bootstrap; then
@@ -254,6 +267,22 @@ run_harness() {
       --entrypoint /bin/sh "$IMAGE_ID" -ceu \
       'exec 3<&0; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@" 3<&3' \
       sanctuary-unit16 "$COMMAND" --config /run/ouro-acceptance/config.json <&3
+  elif test "$COMMAND" = evidence-snapshot; then
+    /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
+      --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
+      --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
+      --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
+      --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
+      --mount "type=bind,src=$ACCEPTANCE_STATE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance" \
+      --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
+      --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
+      --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
+      --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
+      --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
+      --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
+      --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh \
+      "$IMAGE_ID" "$COMMAND" --config /run/ouro-acceptance/config.json
   elif test "$BROKER" = yes; then
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \

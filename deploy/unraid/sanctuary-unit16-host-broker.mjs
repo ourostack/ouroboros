@@ -147,7 +147,19 @@ function updaterDisabled(expectedImage) {
 }
 
 function parseVaultStatus(output, succeeded) {
+  const lines = output.split(/\r?\n/u)
+  const runtimeLine = lines.find((line) => line.startsWith("runtime credentials: "))
+  const runtimeMatch = /^runtime credentials: (.+) \([^)]+\)$/u.exec(runtimeLine ?? "")
+  const runtimeFields = runtimeMatch ? runtimeMatch[1].split(", ") : []
+  const providerReady = (provider) => {
+    const line = lines.find((candidate) => candidate.startsWith(`  ${provider}: `))
+    const match = /^  [a-z0-9-]+: credential fields (.+), config fields (.+)$/u.exec(line ?? "")
+    if (!match) return false
+    return match[1].split(", ").includes("apiKey") && match[2].split(", ").includes("baseUrl")
+  }
   const unlocked = succeeded && /^local unlock: available$/mu.test(output)
+    && ["telegramBotToken", "telegramAuthorizedUserId", "telegramAuthorizedChatId"].every((field) => runtimeFields.includes(field))
+    && providerReady("openai-compatible") && providerReady("openai-compatible-gemini")
   return { vaultUnlocked: unlocked, manualAuthRequired: !unlocked }
 }
 

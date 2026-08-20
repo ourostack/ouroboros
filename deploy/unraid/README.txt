@@ -1159,12 +1159,65 @@ Packaged Unit 16 acceptance execution:
       unset UNIT16_BOT_TOKEN
       return "$UNIT16_BOT_STATUS"
     }
-  Set CALLBACK_UPDATE_FILE to the exact reviewed callback-update JSON, and prove
-  it is a root-owned, mode-0600 regular file rather than a symbolic link before
-  opening it as fd 3:
-    CALLBACK_UPDATE_FILE=/root/sanctuary-unit16-callback-update.json
-    test -f "$CALLBACK_UPDATE_FILE" && test ! -L "$CALLBACK_UPDATE_FILE"
-    test "$(stat -c '%u:%g %a' "$CALLBACK_UPDATE_FILE")" = "0:0 600"
+  Stage the reviewed callback JSON at the fixed path below in the root-owned
+  tmpfs inbox, then use this single fail-closed helper. It opens the input once,
+  validates the opened descriptor and its original path refer to the same
+  root-owned mode-0600 regular file, and invokes the launcher only afterward.
+  Success overwrites, fsyncs, and unlinks the raw input. Launcher failure moves
+  it out of `/run` into a mode-000 persistent private quarantine for diagnosis;
+  no raw callback update remains loose in `/root` or the inbox.
+    UNIT16_CALLBACK_INBOX=/run/ouro-unit16-callback-input
+    UNIT16_CALLBACK_FILE=$UNIT16_CALLBACK_INBOX/callback-update.json
+    UNIT16_CALLBACK_QUARANTINE_ROOT=$UNIT16_ROOT/callback-quarantine
+    install -d -m 0700 -o root -g root "$UNIT16_CALLBACK_INBOX" "$UNIT16_CALLBACK_QUARANTINE_ROOT"
+    run_unit16_callback_inject() {
+      (
+      UNIT16_CALLBACK_VALIDATED=no
+      UNIT16_CALLBACK_STATUS=1
+      UNIT16_CALLBACK_QUARANTINE_FILE=$UNIT16_CALLBACK_QUARANTINE_ROOT/failed-$$.json
+      unit16_callback_cleanup() {
+        UNIT16_CALLBACK_STATUS=$?
+        trap - EXIT HUP INT TERM
+        if test "$UNIT16_CALLBACK_VALIDATED" = yes; then
+          if test "$UNIT16_CALLBACK_STATUS" -eq 0; then
+            if ! truncate -s 0 /proc/self/fd/3 \
+              || ! sync -f /proc/self/fd/3 \
+              || ! rm -f -- "$UNIT16_CALLBACK_FILE" \
+              || ! sync -f "$UNIT16_CALLBACK_INBOX"; then
+              UNIT16_CALLBACK_STATUS=1
+            fi
+          else
+            if mv -- "$UNIT16_CALLBACK_FILE" "$UNIT16_CALLBACK_QUARANTINE_FILE"; then
+              chmod 000 "$UNIT16_CALLBACK_QUARANTINE_FILE" || UNIT16_CALLBACK_STATUS=1
+              sync -f "$UNIT16_CALLBACK_QUARANTINE_FILE" || UNIT16_CALLBACK_STATUS=1
+              sync -f "$UNIT16_CALLBACK_QUARANTINE_ROOT" || UNIT16_CALLBACK_STATUS=1
+            else
+              chmod 000 "$UNIT16_CALLBACK_FILE" 2>/dev/null || true
+              UNIT16_CALLBACK_STATUS=1
+            fi
+          fi
+        fi
+        exec 3<&-
+        exit "$UNIT16_CALLBACK_STATUS"
+      }
+      trap unit16_callback_cleanup EXIT
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      test -d "$UNIT16_CALLBACK_INBOX" && test ! -L "$UNIT16_CALLBACK_INBOX" || exit 1
+      test "$(stat -c '%F %u:%g %a' "$UNIT16_CALLBACK_INBOX")" = "directory 0:0 700" || exit 1
+      test -d "$UNIT16_CALLBACK_QUARANTINE_ROOT" && test ! -L "$UNIT16_CALLBACK_QUARANTINE_ROOT" || exit 1
+      test "$(stat -c '%F %u:%g %a' "$UNIT16_CALLBACK_QUARANTINE_ROOT")" = "directory 0:0 700" || exit 1
+      test -f "$UNIT16_CALLBACK_FILE" && test ! -L "$UNIT16_CALLBACK_FILE" || exit 1
+      exec 3<"$UNIT16_CALLBACK_FILE"
+      test "$(stat -Lc '%F' /proc/self/fd/3)" = "regular file" || exit 1
+      test "$(stat -c '%d:%i' "$UNIT16_CALLBACK_FILE")" = "$(stat -Lc '%d:%i' /proc/self/fd/3)" || exit 1
+      UNIT16_CALLBACK_VALIDATED=yes
+      test "$(stat -Lc '%F %u:%g %a' /proc/self/fd/3)" = "regular file 0:0 600" || exit 1
+      test ! -e "$UNIT16_CALLBACK_QUARANTINE_FILE" || exit 1
+      "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json 3<&3
+      )
+    }
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize telegram-bootstrap
     run_unit16_telegram_bootstrap
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot before
@@ -1175,7 +1228,7 @@ Packaged Unit 16 acceptance execution:
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-delta
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-delta cursor-delta.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize callback-inject
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json 3<"$CALLBACK_UPDATE_FILE"
+    run_unit16_callback_inject
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize unraid-key-rotate
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" unraid-key-rotate unraid-key-rotate.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-request
@@ -1206,7 +1259,9 @@ Packaged Unit 16 acceptance execution:
   and exactly one production entry in `/var/lib/docker/unraid-autostart`, derives
   `updaterDisabled` from `/opt/ouro/container-runtime.json` inside the exact image,
   and derives `vaultUnlocked`/`manualAuthRequired` from a bounded live Sanctuary
-  vault-status command. Scenario handles remain private to the scenario adapter. The main one-shot
+  vault-status command only when its non-secret summary proves the required
+  Telegram runtime fields and both configured provider records were freshly read.
+  Scenario handles remain private to the scenario adapter. The main one-shot
   never receives the Docker socket, Unraid key directory, or a host-root mount.
   Telegram bootstrap additionally brackets its one-shot with a host-controlled
   poller quiescence guard: it verifies the exact healthy production container,
@@ -1217,6 +1272,10 @@ Packaged Unit 16 acceptance execution:
   failure. It never reads or changes Unraid autostart configuration. Every command
   also receives a freshly generated, redacted typed container-inspect snapshot;
   raw container environment or credential values are never captured.
+  Evidence-snapshot keeps the bundle mount read-only and overlays only the exact
+  canonical `state/acceptance` directory as writable after proving it is a
+  non-symlink, UID/GID 10001, mode-0700 directory. The production daemon sees the
+  same canonical subpath through its existing bundle mount for marker correlation.
 
 Audit and safety verification:
   Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and

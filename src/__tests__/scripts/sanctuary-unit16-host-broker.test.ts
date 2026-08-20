@@ -78,10 +78,14 @@ describe("Sanctuary Unit 16 host broker", () => {
     })
   })
 
-  it("derives vault state only from a successful live local-unlock status", async () => {
+  it("requires successful live runtime and both provider vault reads", async () => {
     const { parseVaultStatus } = await broker()
     expect(parseVaultStatus("local unlock: available\nruntime credentials: missing\nprovider credentials: unavailable (network)\n", true))
+      .toEqual({ vaultUnlocked: false, manualAuthRequired: true })
+    expect(parseVaultStatus("local unlock: available\nruntime credentials: telegramAuthorizedChatId, telegramAuthorizedUserId, telegramBotToken (runtime_revision)\nprovider credentials: \n  openai-compatible: credential fields apiKey, config fields baseUrl\n  openai-compatible-gemini: credential fields apiKey, config fields baseUrl\n", true))
       .toEqual({ vaultUnlocked: true, manualAuthRequired: false })
+    expect(parseVaultStatus("local unlock: available\nruntime credentials: telegramAuthorizedChatId, telegramAuthorizedUserId, telegramBotToken (runtime_revision)\nprovider credentials: \n  openai-compatible: credential fields apiKey, config fields baseUrl\n", true))
+      .toEqual({ vaultUnlocked: false, manualAuthRequired: true })
     expect(parseVaultStatus("local unlock: missing\n", true))
       .toEqual({ vaultUnlocked: false, manualAuthRequired: true })
     expect(parseVaultStatus("local unlock: available\n", false))
