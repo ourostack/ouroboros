@@ -279,6 +279,7 @@ docker() {
 }
 ${imageValidator}
 ${onlyRunning}
+validate_sanctuary_roots() { test "$SCENARIO" != invalid-roots; }
 ${preflight}
 if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     try {
@@ -287,6 +288,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
         { scenario: "relative", env: { BACKUP_ROOT: "relative", IMAGE_ID: validImage } },
         { scenario: "missing", env: { BACKUP_ROOT: path.join(testRoot, "missing"), IMAGE_ID: validImage } },
         { scenario: "bad-image", env: { BACKUP_ROOT: validRoot, IMAGE_ID: "latest" } },
+        { scenario: "invalid-roots", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
         { scenario: "staging", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
       ]
       for (const testCase of cases) {
@@ -489,11 +491,12 @@ docker() {
         command printf 'vault locator: agent.json\nlocal unlock: available\n'
       elif [ "$SCENARIO" = absent ]; then command printf 'vault locator: not configured in agent.json\nlocal unlock: not checked\n'
       else command printf 'vault locator: agent.json\nlocal unlock: missing\n'; fi ;;
-    *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js auth verify --agent sanctuary") return 0 ;;
+    *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js check --agent sanctuary --lane outward"*) return 0 ;;
     *) return 23 ;;
   esac
 }
 ${imageValidator}
+validate_sanctuary_roots() { return 0; }
 ${helper}
 bootstrap_sanctuary_vault "$IMAGE_ID"`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-vault-bootstrap-"))
@@ -514,12 +517,124 @@ bootstrap_sanctuary_vault "$IMAGE_ID"`
         expect(actionCall).toContain(`--entrypoint node ${image} /opt/ouro/dist/heart/daemon/ouro-entry.js`)
         expect(calls).not.toContain(`ouro-entry.js vault ${opposite} --agent sanctuary`)
         expect(calls.lastIndexOf("ouro-entry.js vault status --agent sanctuary --store plaintext-file")).toBeGreaterThan(calls.indexOf(`ouro-entry.js vault ${action} --agent sanctuary --store plaintext-file`))
-        expect(calls).toContain("ouro-entry.js auth verify --agent sanctuary")
+        expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane outward")
+        expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane inner")
       }
       const callLog = path.join(testRoot, "failure.log")
       const failure = runConditionalHelper(script, "status-failure", { CALL_LOG: callLog, IMAGE_ID: image })
       expect(failure.status).toBe(23)
       expect(fs.readFileSync(callLog, "utf8")).not.toMatch(/ouro-entry\.js vault (?:create|unlock)/u)
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("requires fresh structured ready records for both configured provider lanes", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const helper = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
+    expect(helper).toContain("ouro-entry.js check --agent sanctuary --lane outward")
+    expect(helper).toContain("ouro-entry.js check --agent sanctuary --lane inner")
+    expect(helper).toContain("state/providers/readiness.json")
+    expect(helper).toContain("umask 077")
+    expect(helper).toContain('validate_sanctuary_roots "$BOOTSTRAP_RUNTIME_ROOT" "$BOOTSTRAP_AGENT_ROOT"')
+    expect(helper).toContain('entry.status !== \\"ready\\"')
+    expect(helper).toContain("entry.provider !== binding.provider")
+    expect(helper).toContain("entry.model !== binding.model")
+    expect(helper).not.toContain("ouro-entry.js auth verify --agent sanctuary")
+
+    const match = helper.match(/node -e "\n([\s\S]*?)\n\s+" "\$READINESS_STARTED_AT"/u)
+    expect(match).not.toBeNull()
+    const validator = match![1]!.replaceAll('\\"', '"')
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-readiness-validator-"))
+    const agentPath = path.join(testRoot, "agent.json")
+    const readinessPath = path.join(testRoot, "readiness.json")
+    const startedAt = "2026-08-20T12:00:00.000Z"
+    fs.writeFileSync(agentPath, JSON.stringify({
+      humanFacing: { provider: "openai-compatible", model: "glm-5.2" },
+      agentFacing: { provider: "openai-compatible", model: "glm-5.2" },
+    }))
+    const ready = (status = "ready", checkedAt = "2026-08-20T12:00:01.000Z") => ({
+      schemaVersion: 1,
+      lanes: Object.fromEntries(["outward", "inner"].map((lane) => [lane, {
+        agentName: "sanctuary", lane, provider: "openai-compatible", model: "glm-5.2",
+        credentialRevision: "sha256:revision", status, checkedAt,
+      }])),
+    })
+    try {
+      for (const [name, payload, expected] of [
+        ["ready", ready(), 0],
+        ["failed", ready("failed"), 1],
+        ["stale", ready("ready", "2026-08-20T11:59:59.000Z"), 1],
+        ["missing", { schemaVersion: 1, lanes: { outward: ready().lanes.outward } }, 1],
+        ["mismatch", { ...ready(), lanes: { ...ready().lanes, inner: { ...ready().lanes.inner, provider: "openai-compatible-gemini" } } }, 1],
+      ] as const) {
+        fs.writeFileSync(readinessPath, JSON.stringify(payload))
+        const result = spawnSync(process.execPath, ["-e", validator, startedAt, agentPath, readinessPath], { encoding: "utf8" })
+        expect(result.status, `${name}\n${result.stderr}`).toBe(expected)
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("validates complete private restore roots before mutation and after copying", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const validator = extractRunbookFunction(runbook, "validate_sanctuary_roots")
+    const preflightHelper = extractRunbookFunction(runbook, "assert_restore_preflight")
+    const restore = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
+    expect(validator).toContain("agent.json bundle-meta.json provider-readiness.json tool-profiles.json")
+    expect(validator).toContain("vault-unlock")
+    expect(validator).toContain("-type l")
+    expect(validator).toContain("! -user 10001")
+    expect(validator).toContain("! -perm 0700")
+    expect(validator).toContain("! -perm 0600")
+    expect(validator).toContain("container-credentials.json")
+    expect(preflightHelper).toContain('validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"')
+    const preflight = restore.indexOf("if assert_restore_preflight; then")
+    const stop = restore.indexOf("docker stop ouro-butler", preflight)
+    const postCopy = restore.indexOf('validate_sanctuary_roots /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro', stop)
+    const start = restore.indexOf("docker start ouro-butler", postCopy)
+    expect(preflight).toBeGreaterThan(-1)
+    expect(stop).toBeGreaterThan(preflight)
+    expect(postCopy).toBeGreaterThan(stop)
+    expect(start).toBeGreaterThan(postCopy)
+
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-restore-roots-validator-"))
+    const runtimeRoot = path.join(testRoot, "runtime", ".ouro-cli")
+    const agentRoot = path.join(testRoot, "agent", "sanctuary.ouro")
+    const buildValidRoots = () => {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+      for (const directory of [runtimeRoot, path.join(runtimeRoot, "vault-unlock"), agentRoot, path.join(agentRoot, "psyche"), path.join(agentRoot, "habits")]) {
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+        fs.chmodSync(directory, 0o700)
+      }
+      for (const relative of ["agent.json", "bundle-meta.json", "provider-readiness.json", "tool-profiles.json", "psyche/SOUL.md", "habits/sanctuary-health.md"]) {
+        const file = path.join(agentRoot, relative)
+        fs.writeFileSync(file, "x", { mode: 0o600 })
+        fs.chmodSync(file, 0o600)
+      }
+      fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), "secret", { mode: 0o600 })
+    }
+    const script = String.raw`set -u
+find() { case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac; }
+${validator}
+validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
+    try {
+      const run = () => runConditionalHelper(script, "validate", { RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot })
+      buildValidRoots()
+      expect(run().status).toBe(0)
+      for (const mutate of [
+        () => fs.writeFileSync(path.join(agentRoot, "agent.json"), ""),
+        () => fs.symlinkSync("agent.json", path.join(agentRoot, "link")),
+        () => fs.chmodSync(path.join(agentRoot, "psyche"), 0o755),
+        () => fs.chmodSync(path.join(agentRoot, "agent.json"), 0o644),
+        () => fs.writeFileSync(path.join(runtimeRoot, "container-credentials.json"), "{}", { mode: 0o600 }),
+        () => fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), ""),
+      ]) {
+        buildValidRoots()
+        mutate()
+        expect(run().status).not.toBe(0)
+      }
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -537,11 +652,15 @@ verify_vault_backed_unraid_key() {
 inventory_unraid_key_ids() {
   command printf 'inventory\n' >>"$CALL_LOG"
   if command grep -q '^revoke ' "$CALL_LOG"; then
-    command printf '%s read-only\n%s bounded-write\n' "$READ_ID" "$WRITE_ID"
+    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n' "$READ_ID" "$WRITE_ID"
   elif [ "$SCENARIO" = duplicate ]; then
-    command printf '%s read-only\n%s read-only\n%s bounded-write\n%s legacy-write\n' "$READ_ID" "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+    command printf '%s\tread-only\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\n' "$READ_ID" "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+  elif [ "$SCENARIO" = unknown-class ]; then
+    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\nrogue\tadmin-write\tnone\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+  elif [ "$SCENARIO" = unexpected-role ]; then
+    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\nrogue\tread-only\tadmin\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
   else
-    command printf '%s read-only\n%s bounded-write\n%s legacy-write\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
+    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tlegacy-write\tnone\n' "$READ_ID" "$WRITE_ID" "$LEGACY_ID"
   fi
 }
 revoke_unraid_key_exact() { command printf 'revoke %s\n' "$1" >>"$CALL_LOG"; }
@@ -551,7 +670,7 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$LEGACY_ID"`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-key-retirement-"))
     const ids = { READ_ID: "key-ro-123", WRITE_ID: "key-rw-456", LEGACY_ID: "key-old-789" }
     try {
-      for (const scenario of ["verify-failure", "duplicate"]) {
+      for (const scenario of ["verify-failure", "duplicate", "unknown-class", "unexpected-role"]) {
         const callLog = path.join(testRoot, `${scenario}.log`)
         const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, ...ids })
         expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
@@ -580,8 +699,10 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$LEGACY_ID"`
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     const topology = update.indexOf('if assert_update_topology "$ROLLBACK_IMAGE_ID"; then')
     const audit = update.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+    const firstDockerRun = update.indexOf("docker run --rm")
     expect(topology).toBeGreaterThan(-1)
     expect(audit).toBeGreaterThan(topology)
+    expect(firstDockerRun).toBeGreaterThan(topology)
   })
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {

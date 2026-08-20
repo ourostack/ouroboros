@@ -182,6 +182,32 @@ Effective-spec audit helper:
       esac
       assert_only_running_butler ouro-butler || return $?
     }
+    validate_sanctuary_roots() {
+      (
+      VALIDATE_RUNTIME_ROOT=$1
+      VALIDATE_AGENT_ROOT=$2
+      test -d "$VALIDATE_RUNTIME_ROOT" || return $?
+      test -d "$VALIDATE_AGENT_ROOT" || return $?
+      VALIDATE_BAD_SHAPE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( -type l -o \( ! -type d -a ! -type f \) \) -print -quit) || return $?
+      test -z "$VALIDATE_BAD_SHAPE" || return $?
+      for VALIDATE_REQUIRED_FILE in \
+        agent.json bundle-meta.json provider-readiness.json tool-profiles.json \
+        psyche/SOUL.md habits/sanctuary-health.md; do
+        test -s "$VALIDATE_AGENT_ROOT/$VALIDATE_REQUIRED_FILE" || return $?
+      done
+      test -d "$VALIDATE_RUNTIME_ROOT/vault-unlock" || return $?
+      VALIDATE_UNLOCK_FILES=$(find "$VALIDATE_RUNTIME_ROOT/vault-unlock" -xdev -mindepth 1 -maxdepth 1 -type f -name '*.secret' -size +0c -print) || return $?
+      test "$(printf '%s\n' "$VALIDATE_UNLOCK_FILES" | awk 'NF { count++ } END { print count + 0 }')" = 1 || return $?
+      test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json" || return $?
+      test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json.consuming" || return $?
+      VALIDATE_WRONG_OWNER=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( ! -user 10001 -o ! -group 10001 \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_OWNER" || return $?
+      VALIDATE_WRONG_DIR_MODE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type d ! -perm 0700 -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_DIR_MODE" || return $?
+      VALIDATE_WRONG_FILE_MODE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type f ! -perm 0600 -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_FILE_MODE" || return $?
+      )
+    }
     assert_restore_preflight() {
       (
       test -n "${BACKUP_ROOT-}" || return 1
@@ -195,6 +221,7 @@ Effective-spec audit helper:
       test "$RESTORE_BACKUP_ROOT" = "$BACKUP_ROOT" || return $?
       test -d "$BACKUP_ROOT/runtime/.ouro-cli" || return $?
       test -d "$BACKUP_ROOT/agent/sanctuary.ouro" || return $?
+      validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro" || return $?
       validate_exact_image_id "$IMAGE_ID" || return $?
       RESTORE_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
       RESTORE_NAME_COUNTS=$(printf '%s\n' "$RESTORE_CONTAINER_NAMES" | awk '
@@ -362,7 +389,7 @@ ouro-butler-staging
       validate_exact_image_id "$BOOTSTRAP_IMAGE_ID" || return $?
       BOOTSTRAP_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
       BOOTSTRAP_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
-      for BOOTSTRAP_CONTAINER in ouro-butler-vault-status ouro-butler-vault-bootstrap ouro-butler-auth-verify; do
+      for BOOTSTRAP_CONTAINER in ouro-butler-vault-status ouro-butler-vault-bootstrap ouro-butler-provider-readiness; do
         ! docker container inspect "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || return 1
       done
       VAULT_STATUS=$(docker run --rm --pull=never --network host --name ouro-butler-vault-status --user 10001:10001 \
@@ -410,12 +437,35 @@ local unlock: available
 "*) ;;
         *) return 1 ;;
       esac
-      docker run --rm --pull=never --network host --name ouro-butler-auth-verify --user 10001:10001 \
+      docker run --rm --pull=never --network host --name ouro-butler-provider-readiness --user 10001:10001 \
         --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
         --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-        --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
-        auth verify --agent sanctuary || return $?
-      ! docker container inspect ouro-butler-auth-verify >/dev/null 2>&1 || return 1
+        --entrypoint /bin/sh "$BOOTSTRAP_IMAGE_ID" -ceu '
+          umask 077
+          READINESS_STARTED_AT=$(node -e "process.stdout.write(new Date().toISOString())")
+          node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent sanctuary --lane outward
+          node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent sanctuary --lane inner
+          node -e "
+            const fs = require(\"node:fs\");
+            const agentPath = process.argv[2];
+            const readinessPath = process.argv[3];
+            const agent = JSON.parse(fs.readFileSync(agentPath, \"utf8\"));
+            const readiness = JSON.parse(fs.readFileSync(readinessPath, \"utf8\"));
+            if (readiness.schemaVersion !== 1 || !readiness.lanes || typeof readiness.lanes !== \"object\") process.exit(1);
+            for (const [lane, facing] of [[\"outward\", \"humanFacing\"], [\"inner\", \"agentFacing\"]]) {
+              const entry = readiness.lanes[lane];
+              const binding = agent[facing];
+              if (!entry || !binding || entry.agentName !== \"sanctuary\" || entry.lane !== lane) process.exit(1);
+              if (entry.status !== \"ready\" || entry.provider !== binding.provider || entry.model !== binding.model) process.exit(1);
+              if (!Number.isFinite(Date.parse(entry.checkedAt)) || Date.parse(entry.checkedAt) < Date.parse(process.argv[1])) process.exit(1);
+              if (typeof entry.credentialRevision !== \"string\" || entry.credentialRevision.length === 0) process.exit(1);
+            }
+          " "$READINESS_STARTED_AT" \
+            /home/ouro/AgentBundles/sanctuary.ouro/agent.json \
+            /home/ouro/AgentBundles/sanctuary.ouro/state/providers/readiness.json
+        ' || return $?
+      ! docker container inspect ouro-butler-provider-readiness >/dev/null 2>&1 || return 1
+      validate_sanctuary_roots "$BOOTSTRAP_RUNTIME_ROOT" "$BOOTSTRAP_AGENT_ROOT" || return $?
     }
     retire_legacy_unraid_key() {
       NEW_READ_KEY_ID=$1
@@ -431,27 +481,33 @@ local unlock: available
       verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
       verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
       KEY_INVENTORY_BEFORE=$(inventory_unraid_key_ids) || return $?
-      KEY_COUNTS_BEFORE=$(printf '%s\n' "$KEY_INVENTORY_BEFORE" | awk \
+      KEY_COUNTS_BEFORE=$(printf '%s\n' "$KEY_INVENTORY_BEFORE" | awk -F '\t' \
         -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" -v legacy_id="$LEGACY_KEY_ID" '
+        NF != 3 || $1 !~ /^[A-Za-z0-9._:-]+$/ { invalid++; next }
+        $2 != "read-only" && $2 != "bounded-write" && $2 != "legacy-write" { invalid++; next }
+        $3 != "none" { invalid++; next }
         $1 == read_id && $2 == "read-only" { read_count++ }
         $1 == write_id && $2 == "bounded-write" { write_count++ }
-        $1 == legacy_id { legacy_count++ }
-        $2 == "bounded-write" && $1 != write_id && $1 != legacy_id { unexpected_write++ }
-        END { printf "%d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0 }
+        $1 == legacy_id && $2 == "legacy-write" { legacy_count++ }
+        ($2 == "bounded-write" || $2 == "legacy-write") && $1 != write_id && $1 != legacy_id { unexpected_write++ }
+        END { printf "%d %d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0, invalid + 0 }
       ') || return $?
-      test "$KEY_COUNTS_BEFORE" = "1 1 1 0" || return $?
+      test "$KEY_COUNTS_BEFORE" = "1 1 1 0 0" || return $?
       revoke_unraid_key_exact "$LEGACY_KEY_ID" || return $?
       verify_revoked_unraid_key_rejected "$LEGACY_KEY_ID" || return $?
       KEY_INVENTORY_AFTER=$(inventory_unraid_key_ids) || return $?
-      KEY_COUNTS_AFTER=$(printf '%s\n' "$KEY_INVENTORY_AFTER" | awk \
+      KEY_COUNTS_AFTER=$(printf '%s\n' "$KEY_INVENTORY_AFTER" | awk -F '\t' \
         -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" -v legacy_id="$LEGACY_KEY_ID" '
+        NF != 3 || $1 !~ /^[A-Za-z0-9._:-]+$/ { invalid++; next }
+        $2 != "read-only" && $2 != "bounded-write" && $2 != "legacy-write" { invalid++; next }
+        $3 != "none" { invalid++; next }
         $1 == read_id && $2 == "read-only" { read_count++ }
         $1 == write_id && $2 == "bounded-write" { write_count++ }
         $1 == legacy_id { legacy_count++ }
-        $2 == "bounded-write" && $1 != write_id { unexpected_write++ }
-        END { printf "%d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0 }
+        ($2 == "bounded-write" || $2 == "legacy-write") && $1 != write_id { unexpected_write++ }
+        END { printf "%d %d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0, invalid + 0 }
       ') || return $?
-      test "$KEY_COUNTS_AFTER" = "1 1 0 0" || return $?
+      test "$KEY_COUNTS_AFTER" = "1 1 0 0 0" || return $?
       verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
       verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
     }
@@ -464,18 +520,6 @@ Update:
     IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")
     printf '%s\n' "$IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
     docker image inspect "$IMAGE_ID" >/dev/null
-  Stage copies of the packaged template and runtime policy at these paths:
-    STAGED_TEMPLATE=/mnt/user/appdata/ouro-butler/staging/sanctuary.xml
-    STAGED_RUNTIME_POLICY=/mnt/user/appdata/ouro-butler/staging/container-runtime.json
-  Replace sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID in the staged template at
-  $STAGED_TEMPLATE with exactly $IMAGE_ID. Before docker create, run the
-  packaged auditor from that exact image ID with both staged inputs mounted
-  read-only:
-    docker run --rm --pull=never --network=none \
-      --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
-      --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
-      --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
-      "$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
   Initial install/adoption is a separate terminal path for the verified live
   legacy state: no production or rollback, exactly one running (possibly
   unhealthy) ouro-butler-staging, and no legacy-evidence container. Run this and
@@ -514,6 +558,19 @@ Update:
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
     audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+  Only after that topology gate, stage copies of the packaged template and
+  runtime policy at these paths:
+    STAGED_TEMPLATE=/mnt/user/appdata/ouro-butler/staging/sanctuary.xml
+    STAGED_RUNTIME_POLICY=/mnt/user/appdata/ouro-butler/staging/container-runtime.json
+  Replace sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID in the staged template at
+  $STAGED_TEMPLATE with exactly $IMAGE_ID. Before docker create, run the
+  packaged auditor from that exact image ID with both staged inputs mounted
+  read-only:
+    docker run --rm --pull=never --network=none \
+      --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
+      --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
+      --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
+      "$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
   Guard the atomic autostart disable separately. If it fails, production has not
   been touched and the captured status is propagated:
     if disable_butler_autostart; then
@@ -710,6 +767,7 @@ Restore:
       && rsync -a --delete "$BACKUP_ROOT/runtime/.ouro-cli/" /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/ \
       && rsync -a --delete "$BACKUP_ROOT/agent/sanctuary.ouro/" /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/ \
       && chown -R 10001:10001 /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
+      && validate_sanctuary_roots /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
       && docker image inspect "$IMAGE_ID" >/dev/null \
       && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
@@ -793,7 +851,11 @@ Audit and safety verification:
   no-unintended-write-key audit. Do not pass raw keys in argv, files, shell
   history, or logs; verification adapters must read them directly from the
   Sanctuary vault.
-  The adapters used by retire_legacy_unraid_key must emit only `<id> <class>`
-  inventory rows, verify capability by reading credentials inside the vault
+  The adapters used by retire_legacy_unraid_key must emit only tab-separated
+  `<id>\t<capability-class>\t<role-class>` inventory rows. Capability class is
+  the closed set `read-only|bounded-write|legacy-write`; role class must be
+  exactly `none`. Unknown classes, malformed rows, roles, and any additional
+  write-capable row fail before revocation and again after revocation. Adapters
+  verify capability by reading credentials inside the vault
   adapter, revoke only the ID argument, and return success from the revoked-key
   probe only for an authentication rejection. Never substitute names for IDs.
