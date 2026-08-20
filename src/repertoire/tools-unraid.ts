@@ -53,6 +53,7 @@ const EXITED = new RegExp(`^Exited \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")
 const RESTARTING = new RegExp(`^Restarting \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")
 
 function exitCode(match: RegExpMatchArray | null): number | null {
+  /* v8 ignore next -- @preserve Callers invoke this only after the same regex has matched; null remains a defensive guard. */
   if (!match) return null
   const value = Number(match[1])
   return Number.isSafeInteger(value) && value >= 0 && value <= 4_294_967_295 ? value : null
@@ -222,7 +223,12 @@ export function createUnraidReadTools(client: ReadClient) {
           const title = display(item.title, 160); const subject = display(item.subject, 250); const description = display(item.description, 250)
           const summary = display([subject.value, description.value].filter(Boolean).join("\n"), 500)
           return { id, createdAt, severity, title: title.value, summary: summary.value, degraded: !createdAt || severity === "unknown" || title.truncated || subject.truncated || description.truncated || summary.truncated }
-        }).sort((a, b) => b.createdAt?.localeCompare(a.createdAt ?? "") ?? (a.createdAt ? -1 : b.createdAt ? 1 : a.id.localeCompare(b.id)))
+        }).sort((a, b) => {
+          if (a.createdAt && b.createdAt) return b.createdAt.localeCompare(a.createdAt)
+          if (a.createdAt) return -1
+          if (b.createdAt) return 1
+          return a.id.localeCompare(b.id)
+        })
         return { ok: true, data: { unacknowledged, truncated } }
       } catch (error) { return fail(error) }
     },

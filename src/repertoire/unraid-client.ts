@@ -158,6 +158,7 @@ export class UnraidClient {
       })
       return record.data as T
     }
+    /* v8 ignore next -- @preserve The finite loop's last attempt always returns or throws; this is a defensive exhaustiveness guard. */
     throw new UnraidClientError("transport", "Unraid GraphQL retry budget exhausted")
   }
 
