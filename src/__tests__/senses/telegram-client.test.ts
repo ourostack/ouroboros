@@ -563,6 +563,23 @@ describe("Telegram durable authorized long poll", () => {
     expect(onUpdate).toHaveBeenCalledWith(callback)
   })
 
+  it("durably claims authorized callbacks by opaque receipt and skips an unclaimable duplicate", async () => {
+    const inboxStore = {
+      quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      capture: vi.fn(() => true), claim: vi.fn(() => false), complete: vi.fn(), load: vi.fn(),
+    }
+    const callback = { update_id: 7, callback_query: { id: "query", from: { id: 10 }, data: "a:opaque", message: { message_id: 8, chat: { id: 10 } } } }
+    const onUpdate = vi.fn(async () => true)
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [callback]) }, expectedUserId: "10", expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() }, inboxStore, onMessage: vi.fn(), onUpdate,
+    })
+    await poll.pollOnce()
+    expect(inboxStore.capture).toHaveBeenCalledWith(callback)
+    expect(inboxStore.claim).toHaveBeenCalledWith(callback)
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
   it("captures before offset and quarantines a turn whose dispatch may have begun", async () => {
     const directory = makeTempDirectory("ouro-telegram-inbox-")
     const inboxPath = join(directory, "inbox.json")
@@ -586,7 +603,7 @@ describe("Telegram durable authorized long poll", () => {
     expect(offset).toBe(12)
     expect(inboxStore.loadIndeterminate()).toHaveLength(1)
     const persisted = readFileSync(inboxPath, "utf8")
-    for (const raw of ["11", "2", "10", "restart"]) expect(persisted).not.toContain(raw)
+    for (const raw of ["update_id", "message_id", '"from"', '"chat"', "restart"]) expect(persisted).not.toContain(raw)
 
     const recoveredMessage = vi.fn(async () => undefined)
     const recoveredApi: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => []) }
@@ -733,17 +750,17 @@ describe("Telegram durable authorized long poll", () => {
     const zero = { update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "one" } }
     expect(inbox.capture(one)).toBe(true)
     expect(inbox.capture(zero)).toBe(true)
-    expect(inbox.loadPending().map((update) => update.update_id)).toEqual([1, 2])
+    expect(inbox.loadPending()).toHaveLength(2)
+    expect(inbox.loadPending().every((receipt) => /^tgu_[A-Za-z0-9_-]{43}$/u.test(receipt.digest))).toBe(true)
     expect(inbox.capture(zero)).toBe(false)
-    expect(inbox.claim(99)).toBe(false)
-    expect(inbox.claim(1)).toBe(true)
-    expect(inbox.claim(1)).toBe(false)
-    inbox.complete(1)
-    inbox.complete(1)
-    expect(inbox.capture(zero)).toBe(false)
-    inbox.discardCompletedBefore(1)
-    inbox.discardCompletedBefore(2)
-    expect(inbox.load()).toEqual([one])
+    const absent = { update_id: 99 }
+    expect(inbox.claim(absent)).toBe(false)
+    expect(inbox.claim(zero)).toBe(true)
+    expect(inbox.claim(zero)).toBe(false)
+    inbox.complete(zero)
+    inbox.complete(zero)
+    expect(inbox.capture(zero)).toBe(true)
+    expect(inbox.load()).toHaveLength(2)
 
     const pendingPath = join(directory, "pending.json")
     const pending = new FileTelegramPendingApprovalStore(pendingPath)
@@ -766,6 +783,9 @@ describe("Telegram durable authorized long poll", () => {
     { pending: [null], completedUpdateIds: [] },
     { pending: [], dispatching: [null], completedUpdateIds: [] },
     { pending: [], completedUpdateIds: [-1] },
+    { version: 2, pending: {}, dispatching: [], indeterminate: [] },
+    { version: 2, pending: [{}], dispatching: [], indeterminate: [] },
+    { version: 2, pending: [], dispatching: [], indeterminate: [], raw: "forbidden" },
   ])("rejects corrupt inbox state %j", (state) => {
     const directory = makeTempDirectory("ouro-telegram-inbox-invalid-")
     const inboxPath = join(directory, "inbox.json")
@@ -773,22 +793,22 @@ describe("Telegram durable authorized long poll", () => {
     expect(() => new FileTelegramUpdateInboxStore(inboxPath).load()).toThrow("inbox state is corrupt")
   })
 
-  it("drains pending updates, skips unclaimable work, and dispatches callbacks first", async () => {
+  it("quarantines stranded receipts without blind replay", async () => {
     const onMessage = vi.fn(async () => undefined)
     const onUpdate = vi.fn(async (update) => Boolean(update.callback_query))
     const pending = { update_id: 1, callback_query: { id: "cb", from: { id: 10 }, data: "opaque" } }
     const inboxStore = {
-      loadIndeterminate: vi.fn(() => [{ update_id: 0, callback_query: { id: "old", from: { id: 10 } } }]),
-      loadPending: vi.fn(() => [pending, { update_id: 2 }]),
+      quarantineStranded: vi.fn(() => [{ digest: `tgu_${"a".repeat(43)}`, sequenceDigest: `tgs_${"b".repeat(43)}`, updateClass: "callback" as const }]),
+      loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
       claim: vi.fn((id: number) => id === 1),
       complete: vi.fn(), capture: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
     }
     const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => []) }
     const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, inboxStore, onMessage, onUpdate })
     await expect(poll.pollOnce()).resolves.toBe(0)
-    expect(onUpdate).toHaveBeenCalledWith(pending)
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(onMessage).not.toHaveBeenCalled()
-    expect(inboxStore.complete).toHaveBeenCalledWith(1)
+    expect(inboxStore.complete).not.toHaveBeenCalled()
   })
 
   it("rejects non-array updates and skips invalid, duplicate, and unclaimable durable updates", async () => {
@@ -799,7 +819,7 @@ describe("Telegram durable authorized long poll", () => {
 
     const onMessage = vi.fn()
     const inboxStore = {
-      loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
       capture: vi.fn(() => true), claim: vi.fn(() => false), complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
     }
     const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => [null, { update_id: 1 }, { update_id: 2.5 }, {
@@ -808,7 +828,7 @@ describe("Telegram durable authorized long poll", () => {
     const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, inboxStore, onMessage })
     await expect(poll.pollOnce()).resolves.toBe(3)
     expect(onMessage).not.toHaveBeenCalled()
-    expect(inboxStore.capture).toHaveBeenCalledOnce()
+    expect(inboxStore.capture).not.toHaveBeenCalled()
     expect(inboxStore.complete).not.toHaveBeenCalled()
   })
 

@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 
 type TelegramFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -112,19 +112,47 @@ export interface TelegramInboundMessage {
 }
 
 export interface TelegramUpdateInboxStore {
-  load(): TelegramUpdate[]
-  loadPending(): TelegramUpdate[]
-  loadIndeterminate(): TelegramUpdate[]
+  load(): TelegramUpdateReceipt[]
+  loadPending(): TelegramUpdateReceipt[]
+  loadIndeterminate(): TelegramUpdateReceipt[]
+  quarantineStranded(): TelegramUpdateReceipt[]
   capture(update: TelegramUpdate): boolean
-  claim(updateId: number): boolean
-  complete(updateId: number): void
-  discardCompletedBefore(nextUpdateId: number): void
+  claim(update: TelegramUpdate): boolean
+  complete(update: TelegramUpdate): void
+}
+
+export interface TelegramUpdateReceipt {
+  digest: string
+  sequenceDigest: string
+  updateClass: "callback" | "message" | "other"
 }
 
 interface TelegramUpdateInboxState {
-  pending: TelegramUpdate[]
-  dispatching: TelegramUpdate[]
-  completedUpdateIds: number[]
+  version: 2
+  pending: TelegramUpdateReceipt[]
+  dispatching: TelegramUpdateReceipt[]
+  indeterminate: TelegramUpdateReceipt[]
+}
+
+const TELEGRAM_UPDATE_DIGEST_DOMAIN = "ouroboros.telegram.update.v1"
+const TELEGRAM_UPDATE_SEQUENCE_DOMAIN = "ouroboros.telegram.update-sequence.v1"
+const TELEGRAM_UPDATE_DIGEST = /^tgu_[A-Za-z0-9_-]{43}$/u
+const TELEGRAM_UPDATE_SEQUENCE_DIGEST = /^tgs_[A-Za-z0-9_-]{43}$/u
+
+function updateReceipt(update: TelegramUpdate): TelegramUpdateReceipt {
+  return {
+    digest: `tgu_${createHash("sha256").update(`${TELEGRAM_UPDATE_DIGEST_DOMAIN}\0${JSON.stringify(update)}`, "utf8").digest("base64url")}`,
+    sequenceDigest: `tgs_${createHash("sha256").update(`${TELEGRAM_UPDATE_SEQUENCE_DOMAIN}\0${update.update_id}`, "utf8").digest("base64url")}`,
+    updateClass: update.callback_query ? "callback" : update.message ? "message" : "other",
+  }
+}
+
+function sameReceipt(left: TelegramUpdateReceipt, right: TelegramUpdateReceipt): boolean {
+  return left.digest === right.digest
+}
+
+function uniqueReceipts(records: readonly TelegramUpdateReceipt[]): TelegramUpdateReceipt[] {
+  return records.filter((record, index) => records.findIndex((candidate) => sameReceipt(candidate, record)) === index)
 }
 
 export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
@@ -132,15 +160,41 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
 
   private read(): TelegramUpdateInboxState {
     try {
-      const value = JSON.parse(readFileSync(this.path, "utf8")) as Partial<TelegramUpdateInboxState>
-      if (!Array.isArray(value.pending) || !Array.isArray(value.completedUpdateIds)) throw new Error("invalid inbox shape")
-      if (value.dispatching !== undefined && !Array.isArray(value.dispatching)) throw new Error("invalid dispatching updates")
-      if (!value.pending.every((update) => update && Number.isSafeInteger(update.update_id) && update.update_id >= 0)) throw new Error("invalid pending update")
-      if (!(value.dispatching ?? []).every((update) => update && Number.isSafeInteger(update.update_id) && update.update_id >= 0)) throw new Error("invalid dispatching update")
-      if (!value.completedUpdateIds.every((id) => Number.isSafeInteger(id) && id >= 0)) throw new Error("invalid completed update")
-      return { pending: structuredClone(value.pending), dispatching: structuredClone(value.dispatching ?? []), completedUpdateIds: [...value.completedUpdateIds] }
+      const value = JSON.parse(readFileSync(this.path, "utf8")) as Record<string, unknown>
+      if (value.version === 2) {
+        if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,version") throw new Error("invalid opaque inbox shape")
+        const arrays = [value.pending, value.dispatching, value.indeterminate]
+        if (!arrays.every(Array.isArray)) throw new Error("invalid opaque inbox shape")
+        const valid = (record: unknown): record is TelegramUpdateReceipt => Boolean(record)
+          && typeof record === "object"
+          && !Array.isArray(record)
+          && Object.keys(record as object).sort().join(",") === "digest,sequenceDigest,updateClass"
+          && TELEGRAM_UPDATE_DIGEST.test((record as TelegramUpdateReceipt).digest)
+          && TELEGRAM_UPDATE_SEQUENCE_DIGEST.test((record as TelegramUpdateReceipt).sequenceDigest)
+          && ["callback", "message", "other"].includes((record as TelegramUpdateReceipt).updateClass)
+        if (!arrays.flat().every(valid)) throw new Error("invalid opaque inbox receipt")
+        return structuredClone(value) as unknown as TelegramUpdateInboxState
+      }
+      const pending = value.pending
+      const dispatching = value.dispatching ?? []
+      const completed = value.completedUpdateIds
+      if (!Array.isArray(pending) || !Array.isArray(dispatching) || !Array.isArray(completed)) throw new Error("invalid legacy inbox shape")
+      const validLegacy = (update: unknown): update is TelegramUpdate => Boolean(update)
+        && typeof update === "object"
+        && Number.isSafeInteger((update as TelegramUpdate).update_id)
+        && (update as TelegramUpdate).update_id >= 0
+      if (![...pending, ...dispatching].every(validLegacy)
+        || !completed.every((id) => Number.isSafeInteger(id) && (id as number) >= 0)) throw new Error("invalid legacy inbox record")
+      const migrated: TelegramUpdateInboxState = {
+        version: 2,
+        pending: [],
+        dispatching: [],
+        indeterminate: uniqueReceipts([...pending, ...dispatching].map(updateReceipt)),
+      }
+      this.write(migrated)
+      return migrated
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { pending: [], dispatching: [], completedUpdateIds: [] }
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { version: 2, pending: [], dispatching: [], indeterminate: [] }
       throw new Error("Telegram update inbox state is corrupt", { cause: error })
     }
   }
@@ -149,57 +203,61 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
     durableAtomicWrite(this.path, `${JSON.stringify(state)}\n`)
   }
 
-  load(): TelegramUpdate[] {
+  load(): TelegramUpdateReceipt[] {
     const state = this.read()
-    return [...state.pending, ...state.dispatching]
+    return [...state.pending, ...state.dispatching, ...state.indeterminate]
   }
 
-  loadPending(): TelegramUpdate[] {
+  loadPending(): TelegramUpdateReceipt[] {
     return this.read().pending
   }
 
-  loadIndeterminate(): TelegramUpdate[] {
-    return this.read().dispatching
+  loadIndeterminate(): TelegramUpdateReceipt[] {
+    return this.read().indeterminate
+  }
+
+  quarantineStranded(): TelegramUpdateReceipt[] {
+    const state = this.read()
+    const stranded = uniqueReceipts([...state.pending, ...state.dispatching])
+    if (stranded.length === 0) return state.indeterminate
+    state.pending = []
+    state.dispatching = []
+    state.indeterminate = uniqueReceipts([...state.indeterminate, ...stranded])
+    this.write(state)
+    return state.indeterminate
   }
 
   capture(update: TelegramUpdate): boolean {
     const state = this.read()
-    const existing = [...state.pending, ...state.dispatching].find((candidate) => candidate.update_id === update.update_id)
+    const receipt = updateReceipt(update)
+    const existing = [...state.pending, ...state.dispatching, ...state.indeterminate]
+      .find((candidate) => candidate.sequenceDigest === receipt.sequenceDigest)
     if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(update)) throw new Error(`Telegram update inbox has conflicting update ${update.update_id}`)
+      if (!sameReceipt(existing, receipt)) throw new Error("Telegram update inbox has a conflicting opaque receipt")
       return false
     }
-    if (state.completedUpdateIds.includes(update.update_id)) return false
-    state.pending.push(structuredClone(update))
-    state.pending.sort((left, right) => left.update_id - right.update_id)
+    state.pending.push(receipt)
     this.write(state)
     return true
   }
 
-  claim(updateId: number): boolean {
+  claim(update: TelegramUpdate): boolean {
     const state = this.read()
-    if (state.dispatching.some((update) => update.update_id === updateId)) return false
-    const index = state.pending.findIndex((update) => update.update_id === updateId)
+    const receipt = updateReceipt(update)
+    if (state.dispatching.some((candidate) => sameReceipt(candidate, receipt))) return false
+    const index = state.pending.findIndex((candidate) => sameReceipt(candidate, receipt))
     if (index < 0) return false
-    const [update] = state.pending.splice(index, 1)
-    state.dispatching.push(update!)
+    state.pending.splice(index, 1)
+    state.dispatching.push(receipt)
     this.write(state)
     return true
   }
 
-  complete(updateId: number): void {
+  complete(update: TelegramUpdate): void {
     const state = this.read()
-    state.pending = state.pending.filter((update) => update.update_id !== updateId)
-    state.dispatching = state.dispatching.filter((update) => update.update_id !== updateId)
-    if (!state.completedUpdateIds.includes(updateId)) state.completedUpdateIds.push(updateId)
-    this.write(state)
-  }
-
-  discardCompletedBefore(nextUpdateId: number): void {
-    const state = this.read()
-    const remaining = state.completedUpdateIds.filter((updateId) => updateId >= nextUpdateId)
-    if (remaining.length === state.completedUpdateIds.length) return
-    state.completedUpdateIds = remaining
+    const receipt = updateReceipt(update)
+    state.pending = state.pending.filter((candidate) => !sameReceipt(candidate, receipt))
+    state.dispatching = state.dispatching.filter((candidate) => !sameReceipt(candidate, receipt))
     this.write(state)
   }
 }
@@ -232,6 +290,13 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     return { updateId: update.update_id, messageId: String(message.message_id), userId, chatId, text: message.text }
   }
 
+  const authorizedCallback = (update: TelegramUpdate): boolean => {
+    const callback = update.callback_query
+    return Boolean(callback?.message
+      && String(callback.from.id) === options.expectedUserId
+      && String(callback.message.chat.id) === options.expectedChatId)
+  }
+
   const dispatch = async (update: TelegramUpdate): Promise<void> => {
     const handled = await options.onUpdate?.(update) ?? false
     if (handled) return
@@ -251,19 +316,15 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   const pollOnce = async (signal?: AbortSignal): Promise<number> => {
     const requestSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
     if (requestSignal.aborted) throw new Error("Telegram long poll stopped")
-    for (const indeterminate of options.inboxStore?.loadIndeterminate() ?? []) {
+    const stranded = options.inboxStore?.quarantineStranded?.() ?? options.inboxStore?.loadIndeterminate() ?? []
+    for (const indeterminate of stranded) {
       emitNervesEvent({
         level: "warn",
         component: "senses",
         event: "telegram.update_dropped",
         message: "Telegram update dispatch outcome is indeterminate after restart",
-        meta: { updateClass: indeterminate.callback_query ? "callback" : "message", reason: "dispatch_indeterminate" },
+        meta: { updateClass: indeterminate.updateClass, reason: "dispatch_indeterminate" },
       })
-    }
-    for (const pending of options.inboxStore?.loadPending() ?? []) {
-      if (!options.inboxStore?.claim(pending.update_id)) continue
-      await dispatch(pending)
-      options.inboxStore.complete(pending.update_id)
     }
     const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
       offset: nextUpdateId,
@@ -274,16 +335,20 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     for (const update of updates) {
       if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
       const next = update.update_id + 1
-      const requiresDurableDispatch = Boolean(update.callback_query || authorizedMessage(update))
+      const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
       options.offsetStore.save(next)
       nextUpdateId = next
       if (newlyCaptured) {
-        if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update.update_id)) continue
-        await dispatch(update)
-        if (requiresDurableDispatch) options.inboxStore?.complete(update.update_id)
+        if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) continue
+        try {
+          await dispatch(update)
+          if (requiresDurableDispatch) options.inboxStore?.complete(update)
+        } catch (error) {
+          options.inboxStore?.quarantineStranded?.()
+          throw error
+        }
       }
-      options.inboxStore?.discardCompletedBefore(nextUpdateId)
     }
     return nextUpdateId
   }

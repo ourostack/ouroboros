@@ -251,43 +251,57 @@ export function createTelegramApprovalRuntime(options: {
   })
 
   const recover = async (): Promise<void> => {
+    let failureCount = 0
     for (const pending of transport.listPendingDeliveries()) {
-      if (pending.terminal) {
-        await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
-        continue
-      }
-      const existing = store.read(pending.approvalId)
-      if (!existing) continue
-      const deliveryState = pending.deliveryState ?? "bound"
-      if (existing.state === "awaiting_prompt_binding" && deliveryState !== "bound") {
-        const record = store.abandonPromptBinding({
-          approvalId: existing.approvalId,
-          reason: deliveryState === "pending"
-            ? "approval prompt was interrupted before delivery; action was not executed"
-            : "approval prompt delivery was indeterminate; action was not executed",
-        })
+      try {
+        if (pending.terminal) {
+          await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
+          continue
+        }
+        const existing = store.read(pending.approvalId)
+        if (!existing) continue
+        const deliveryState = pending.deliveryState ?? "bound"
+        if (existing.state === "awaiting_prompt_binding" && deliveryState !== "bound") {
+          const record = store.abandonPromptBinding({
+            approvalId: existing.approvalId,
+            reason: deliveryState === "pending"
+              ? "approval prompt was interrupted before delivery; action was not executed"
+              : "approval prompt delivery was indeterminate; action was not executed",
+          })
+          const outcome = await continueTerminalRecord(record)
+          await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
+          continue
+        }
+        if (existing.state === "awaiting_prompt_binding" && deliveryState === "bound" && pending.messageId) {
+          store.bindPrompt({
+            approvalId: existing.approvalId,
+            transport: "telegram",
+            transportChatId: options.subject,
+            transportMessageId: opaqueTelegramMessageBinding(options.subject, pending.messageId),
+          })
+          continue
+        }
+        if (existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
+        let record = existing
+        if (record.state === "claimed") {
+          record = recoverClaimedApproval({ approvalStore: store, approvalId: record.approvalId, reason: "decision interrupted before action attempt; action was not executed" })
+        } else if (record.state === "attempted") {
+          record = recoverAttemptedApproval({ approvalStore: store, approvalId: record.approvalId })
+        }
         const outcome = await continueTerminalRecord(record)
         await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
-        continue
+      } catch {
+        failureCount += 1
       }
-      if (existing.state === "awaiting_prompt_binding" && deliveryState === "bound" && pending.messageId) {
-        store.bindPrompt({
-          approvalId: existing.approvalId,
-          transport: "telegram",
-          transportChatId: options.subject,
-          transportMessageId: opaqueTelegramMessageBinding(options.subject, pending.messageId),
-        })
-        continue
-      }
-      if (existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
-      let record = existing
-      if (record.state === "claimed") {
-        record = recoverClaimedApproval({ approvalStore: store, approvalId: record.approvalId, reason: "decision interrupted before action attempt; action was not executed" })
-      } else if (record.state === "attempted") {
-        record = recoverAttemptedApproval({ approvalStore: store, approvalId: record.approvalId })
-      }
-      const outcome = await continueTerminalRecord(record)
-      await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
+    }
+    if (failureCount > 0) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.telegram_approval_recovery_error",
+        message: "Telegram approval startup recovery completed with isolated failures",
+        meta: { failureCount },
+      })
     }
   }
 
