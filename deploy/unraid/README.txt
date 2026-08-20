@@ -121,15 +121,56 @@ Update:
     ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     printf '%s\n' "$ROLLBACK_IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
     docker image inspect "$ROLLBACK_IMAGE_ID" >/dev/null
-    disable_butler_autostart
-  Stop production and retain that known-good container as the rollback target:
-    docker stop ouro-butler
-    if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
-      test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false
-      docker rm ouro-butler-rollback
+  Guard the atomic autostart disable separately. If it fails, production has not
+  been touched and the captured status is propagated:
+    if disable_butler_autostart; then
+      :
+    else
+      AUTOSTART_DISABLE_STATUS=$?
+      (exit "$AUTOSTART_DISABLE_STATUS")
     fi
-    docker rename ouro-butler ouro-butler-rollback
-    test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false
+  Define the stale-rollback cleanup used by the preparation guard:
+    remove_stopped_rollback_if_present() {
+      if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
+        test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return $?
+        docker rm ouro-butler-rollback || return $?
+      fi
+    }
+  Stop production, remove only a stopped stale rollback, rename the known-good
+  container, and verify it remains stopped in one explicit preparation guard:
+    if docker stop ouro-butler \
+      && remove_stopped_rollback_if_present \
+      && docker rename ouro-butler ouro-butler-rollback \
+      && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false; then
+      :
+    else
+      PRODUCTION_PREPARATION_STATUS=$?
+      if docker container inspect ouro-butler >/dev/null 2>&1; then
+        if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
+          docker stop ouro-butler-rollback >/dev/null 2>&1 || true
+          docker rm --force ouro-butler-rollback >/dev/null 2>&1 || true
+        fi
+        ! docker container inspect ouro-butler-rollback >/dev/null 2>&1
+        audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+        docker start ouro-butler
+        wait_butler_ready ouro-butler
+        enable_butler_autostart
+      elif docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
+        docker stop ouro-butler-rollback >/dev/null 2>&1 || true
+        test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$ROLLBACK_IMAGE_ID"
+        docker rename ouro-butler-rollback ouro-butler
+        audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+        docker start ouro-butler
+        wait_butler_ready ouro-butler
+        enable_butler_autostart
+      fi
+      (exit "$PRODUCTION_PREPARATION_STATUS")
+    fi
+  Preparation failure therefore either restores the still-named exact production
+  after removing any stale rollback, or renames the exact stopped rollback back;
+  both recoveries re-audit, start, bounded-wait, atomically restore production-only
+  autostart, and propagate the original failure. If neither exact container can
+  be found, the failure propagates with Butler autostart disabled.
   Put the entire post-rename staging phase in one explicit conditional so
   `set -eu` cannot bypass rollback at the create, effective-audit, start, or
   bounded-readiness boundary. Staging uses the exact image ID with no command,
@@ -166,27 +207,31 @@ Update:
   its exact pre-recorded image ID, starts and bounded-waits it, atomically
   restores production-only autostart, and propagates the original failure.
   At no point may production and staging run together against the same Telegram token.
-  Create production from the same exact image ID and exact authority:
-    docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
+  Create and activate production from the same exact image ID and exact authority
+  in one explicit conditional so `set -eu` cannot exit before rollback. Only a
+  successful create, effective audit, start, stopped rollback assertion, and
+  bounded readiness wait may enable production autostart. Any failure captures
+  the activation status, safely removes a partially created new production if it
+  exists, restores the stopped rollback container, audits it against its exact
+  old image ID, proves it ready, atomically enables only production autostart,
+  and then propagates the original activation failure:
+    if docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-      "$IMAGE_ID"
-  Run final production activation as one explicit conditional so `set -eu`
-  cannot exit before rollback. Only a successful effective audit, start, stopped
-  rollback assertion, and bounded readiness wait may enable production autostart.
-  Any failure captures the activation status, removes the failed new production,
-  restores the stopped rollback container, audits it against its exact old image
-  ID, proves it ready, atomically enables only production autostart, and then
-  propagates the original activation failure:
-    if audit_effective ouro-butler "$IMAGE_ID" \
+      "$IMAGE_ID" \
+      && audit_effective ouro-butler "$IMAGE_ID" \
       && docker start ouro-butler \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
-      && wait_butler_ready ouro-butler; then
-      enable_butler_autostart
+      && wait_butler_ready ouro-butler \
+      && enable_butler_autostart; then
+      :
     else
       PRODUCTION_ACTIVATION_STATUS=$?
-      docker stop ouro-butler >/dev/null 2>&1 || true
-      docker rm ouro-butler
+      if docker container inspect ouro-butler >/dev/null 2>&1; then
+        docker stop ouro-butler >/dev/null 2>&1 || true
+        docker rm --force ouro-butler >/dev/null 2>&1 || true
+      fi
+      ! docker container inspect ouro-butler >/dev/null 2>&1
       ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       printf '%s\n' "$ROLLBACK_IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
       docker image inspect "$ROLLBACK_IMAGE_ID" >/dev/null
@@ -212,36 +257,55 @@ Backup:
 Restore:
   Set BACKUP_ROOT to the exact verified snapshot containing `runtime/.ouro-cli`
   and `agent/sanctuary.ouro`, and set IMAGE_ID to its recorded local image ID.
-  Disable/read back autostart before stopping or removing any Butler container.
-  Stop and remove only ouro-butler, restore the two roots without retaining
-  stale files, and restore exact ownership:
-    disable_butler_autostart
-    docker stop ouro-butler
-    docker rm ouro-butler
-    rsync -a --delete "$BACKUP_ROOT/runtime/.ouro-cli/" /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/
-    rsync -a --delete "$BACKUP_ROOT/agent/sanctuary.ouro/" /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/
-    chown -R 10001:10001 /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
-    docker image inspect "$IMAGE_ID" >/dev/null
-  Recreate with the exact production command, not a mutable tag:
-    docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
+  Guard the atomic autostart disable before stopping or removing any Butler
+  container. Failure propagates while the existing production remains untouched:
+    if disable_butler_autostart; then
+      :
+    else
+      RESTORE_AUTOSTART_DISABLE_STATUS=$?
+      (exit "$RESTORE_AUTOSTART_DISABLE_STATUS")
+    fi
+  Stop and remove only ouro-butler, restore both roots without stale files,
+  restore exact ownership, validate the image, and create/audit/start/bounded-wait
+  the restored production inside one explicit condition. The initial tolerant
+  stop plus inspected force-removal safely handles an already absent or stopped
+  container:
+    if { docker stop ouro-butler >/dev/null 2>&1 || true; } \
+      && {
+        if docker container inspect ouro-butler >/dev/null 2>&1; then
+          docker rm --force ouro-butler
+        else
+          :
+        fi
+      } \
+      && ! docker container inspect ouro-butler >/dev/null 2>&1 \
+      && rsync -a --delete "$BACKUP_ROOT/runtime/.ouro-cli/" /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/ \
+      && rsync -a --delete "$BACKUP_ROOT/agent/sanctuary.ouro/" /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/ \
+      && chown -R 10001:10001 /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
+      && docker image inspect "$IMAGE_ID" >/dev/null \
+      && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-      "$IMAGE_ID"
-  Run restored activation in an explicit conditional as well. A restore has no
-  retained old container or pre-restore data root to roll back to, so failure
-  stops and removes the failed restored container, leaves all Butler autostart
-  entries disabled, and propagates the captured failure for operator repair or a
-  verified restore retry:
-    if audit_effective ouro-butler "$IMAGE_ID" \
+      "$IMAGE_ID" \
+      && audit_effective ouro-butler "$IMAGE_ID" \
       && docker start ouro-butler \
-      && wait_butler_ready ouro-butler; then
-      enable_butler_autostart
+      && wait_butler_ready ouro-butler \
+      && enable_butler_autostart; then
+      :
     else
       RESTORE_ACTIVATION_STATUS=$?
-      docker stop ouro-butler >/dev/null 2>&1 || true
-      docker rm ouro-butler
+      if docker container inspect ouro-butler >/dev/null 2>&1; then
+        docker stop ouro-butler >/dev/null 2>&1 || true
+        docker rm --force ouro-butler >/dev/null 2>&1 || true
+      fi
+      ! docker container inspect ouro-butler >/dev/null 2>&1
       (exit "$RESTORE_ACTIVATION_STATUS")
     fi
+  A restore has no retained old container or pre-restore data root to roll back
+  to. Any stop/remove, data replacement, ownership, image validation, create,
+  audit, start, or readiness failure therefore reaches the same cleanup arm,
+  leaves all Butler autostart entries disabled, and propagates the captured
+  failure for operator repair or a verified restore retry.
 
 Credential recovery:
   Restore or unlock the Sanctuary agent vault, then run provider refresh.
