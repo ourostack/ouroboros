@@ -122,7 +122,7 @@ export async function probeSanctuaryEndpoint(url: string, fetchImpl: typeof fetc
   if (configured.protocol !== "https:" || configured.username || configured.password) return { url, ok: false, status: 0 }
   let current = configured
   try {
-    for (let redirects = 0; redirects <= 5; redirects += 1) {
+    for (let redirects = 0; ; redirects += 1) {
       const response = await fetchImpl(current.href, { signal: AbortSignal.timeout(10_000), redirect: "manual" })
       const redirect = response.status >= 300 && response.status < 400
       if (!redirect) {
@@ -141,8 +141,6 @@ export async function probeSanctuaryEndpoint(url: string, fetchImpl: typeof fetc
   } catch {
     return { url, ok: false, status: 0 }
   }
-  /* v8 ignore next -- every loop path returns by the sixth bounded request; defensive exhaustiveness guard @preserve */
-  return { url, ok: false, status: 0 }
 }
 
 export function createSanctuaryHealthSweep(options: {

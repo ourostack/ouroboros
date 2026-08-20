@@ -70,7 +70,10 @@ function parseUsage(value: unknown): UsageData | undefined {
   return { input_tokens: Number(input), output_tokens: Number(output), reasoning_tokens: reasoning, total_tokens: Number(total) }
 }
 
-function parseCompletion(value: unknown, callbacks: ProviderTurnRequest["callbacks"]): TurnResult {
+function parseCompletion(
+  value: unknown,
+  callbacks: Pick<ProviderTurnRequest["callbacks"], "onModelStreamStart" | "onTextChunk">,
+): TurnResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("OpenAI-compatible response envelope is invalid")
   const choices = (value as Record<string, unknown>).choices
   if (!Array.isArray(choices) || choices.length !== 1 || !choices[0] || typeof choices[0] !== "object") {
@@ -175,19 +178,9 @@ export function createOpenAICompatibleProviderRuntime(
       )
     },
     async ping(signal) {
-      const callbacks: ProviderTurnRequest["callbacks"] = {
-        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
-        onModelStart() {},
+      const callbacks: Pick<ProviderTurnRequest["callbacks"], "onModelStreamStart" | "onTextChunk"> = {
         onModelStreamStart() {},
         onTextChunk() {},
-        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
-        onReasoningChunk() {},
-        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
-        onToolStart() {},
-        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
-        onToolEnd() {},
-        /* v8 ignore next -- parseCompletion cannot invoke this interface-required ping callback @preserve */
-        onError() {},
       }
       parseCompletion(await request([{ role: "user", content: "ping" }], [], signal), callbacks)
     },

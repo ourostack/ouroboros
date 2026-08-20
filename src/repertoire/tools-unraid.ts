@@ -52,9 +52,7 @@ const RUNNING = new RegExp(`^Up ${DURATION}(?: \\((?:healthy|unhealthy|health: s
 const EXITED = new RegExp(`^Exited \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")
 const RESTARTING = new RegExp(`^Restarting \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")
 
-function exitCode(match: RegExpMatchArray | null): number | null {
-  /* v8 ignore next -- @preserve Callers invoke this only after the same regex has matched; null remains a defensive guard. */
-  if (!match) return null
+function exitCode(match: RegExpMatchArray): number | null {
   const value = Number(match[1])
   return Number.isSafeInteger(value) && value >= 0 && value <= 4_294_967_295 ? value : null
 }
