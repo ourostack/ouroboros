@@ -10,6 +10,8 @@ const RECOVERY_ROOT = "/mnt/user/appdata/ouro-butler/acceptance/revoked-key-proo
 const UNRAID_API = "/usr/local/sbin/unraid-api"
 const DOCKER = "/usr/bin/docker"
 const PRODUCTION_CONTAINER = "ouro-butler"
+const AUTOSTART_FILE = "/var/lib/docker/unraid-autostart"
+const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"
 const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
 const BOOT_ID = "/proc/sys/kernel/random/boot_id"
 const TARGET_SERVER = "sanctuary-unraid"
@@ -19,6 +21,8 @@ const KEY_NAME = /^Butler (?:RO|RW)(?: Rotation [0-9a-f]{16})?$/u
 const PERMISSION = /^[A-Z_]+:(?:CREATE|READ|UPDATE|DELETE)_(?:ANY|OWN)$/u
 const MAX_REQUEST = 256 * 1024
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
+const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+  .map((resource) => `${resource}:READ_ANY`).sort()
 let expectedImageId = ""
 
 function object(value, label) {
@@ -90,7 +94,73 @@ function runUnraid(args) {
   return object(JSON.parse(result.stdout), "Unraid API response")
 }
 
-function containerSnapshot(expectedImage) {
+function autostartFileExact() {
+  const fd = openSync(AUTOSTART_FILE, constants.O_RDONLY | constants.O_NOFOLLOW)
+  let content
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error("Unraid autostart state is invalid")
+    content = readFileSync(fd, "utf8")
+  } finally { closeSync(fd) }
+  const counts = { production: 0, staging: 0, rollback: 0, legacy: 0 }
+  for (const line of content.split(/\r?\n/u)) {
+    const name = line.trim().split(/\s+/u)[0]
+    if (name === "ouro-butler") counts.production += 1
+    else if (name === "ouro-butler-staging") counts.staging += 1
+    else if (name === "ouro-butler-rollback") counts.rollback += 1
+    else if (name === "ouro-butler-legacy-evidence") counts.legacy += 1
+  }
+  return counts.production === 1 && counts.staging === 0 && counts.rollback === 0 && counts.legacy === 0
+}
+
+async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = fetch) {
+  const matches = records.filter((record) => record.name === "Butler RO" && record.roles.length === 0
+    && JSON.stringify(flattened(record)) === JSON.stringify(RO_PERMISSIONS))
+  if (matches.length !== 1) throw new Error("canonical read-only Unraid key is absent or ambiguous")
+  const descriptor = text(matches[0].key, "canonical read-only key descriptor")
+  const response = await fetchImpl(GRAPHQL_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": descriptor },
+    body: JSON.stringify({ query: "query AcceptanceContainerTopology { docker { containers(skipCache: true) { id names autoStart } } }", variables: {} }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) throw new Error("Unraid container topology query failed")
+  const envelope = object(await response.json(), "Unraid container topology response")
+  if (envelope.errors || !envelope.data) throw new Error("Unraid container topology query was rejected")
+  const containers = object(object(envelope.data, "Unraid topology data").docker, "Unraid topology docker").containers
+  if (!Array.isArray(containers)) throw new Error("Unraid container topology is invalid")
+  const production = containers.filter((raw) => {
+    const container = object(raw, "Unraid topology container")
+    return Array.isArray(container.names) && container.names.some((name) => name === "ouro-butler" || name === "/ouro-butler")
+  })
+  return production.length === 1 && production[0].autoStart === true
+}
+
+function updaterDisabled(expectedImage) {
+  const result = spawnSync(DOCKER, ["run", "--rm", "--pull=never", "--network", "none", "--entrypoint", "/bin/cat", expectedImage, RUNTIME_POLICY_FILE], {
+    cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("container runtime policy read failed")
+  const policy = object(JSON.parse(result.stdout), "container runtime policy")
+  exactKeys(policy, ["scheduler", "updates"], "container runtime policy")
+  return policy.scheduler === "supercronic" && policy.updates === "disabled"
+}
+
+function parseVaultStatus(output, succeeded) {
+  const unlocked = succeeded && /^local unlock: available$/mu.test(output)
+  return { vaultUnlocked: unlocked, manualAuthRequired: !unlocked }
+}
+
+function vaultStatus(running, healthy) {
+  if (!running || !healthy) return { vaultUnlocked: false, manualAuthRequired: true }
+  const result = spawnSync(DOCKER, ["exec", PRODUCTION_CONTAINER, "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "vault", "status", "--agent", "sanctuary", "--store", "plaintext-file"], {
+    cwd: "/", encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  return parseVaultStatus(result.stdout ?? "", !result.error && result.status === 0)
+}
+
+async function containerSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
   const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}}}'
   const result = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
@@ -109,11 +179,14 @@ function containerSnapshot(expectedImage) {
     const mount = object(raw, "container mount")
     return { destination: mount.Destination, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
   }).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : []
+  const running = value.running === true
+  const healthy = value.health === "healthy"
+  const vault = vaultStatus(running, healthy)
   return {
     schemaVersion: 1,
     containerId: text(value.containerId, "container id", /^[0-9a-f]{64}$/u),
     imageId: expectedImage,
-    running: value.running === true,
+    running,
     health: text(value.health, "container health", /^(?:healthy|starting|unhealthy|missing)$/u),
     user: text(value.user, "container user"),
     readOnlyRoot: value.readOnlyRoot === true,
@@ -123,6 +196,9 @@ function containerSnapshot(expectedImage) {
     networkMode: text(value.networkMode, "container network mode"),
     restartPolicy: text(value.restartPolicy, "container restart policy"),
     restartCount: value.restartCount,
+    autostartExact: autostartFileExact() && await queryGraphqlAutostart(),
+    updaterDisabled: updaterDisabled(expectedImage),
+    ...vault,
   }
 }
 
@@ -230,7 +306,7 @@ async function dispatch(request, dependencies = {
   if (operation === "container_snapshot") {
     exactKeys(payload, ["operation", "targetId"], operation)
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
-    return dependencies.containerSnapshot()
+    return await dependencies.containerSnapshot()
   }
   throw new Error("host broker operation is not whitelisted")
 }
@@ -244,11 +320,15 @@ function writeClosedInventory(file) {
 
 async function main() {
   if (process.getuid?.() !== 0) throw new Error("host broker must run as root")
-  const [socket, closedInventory, expectedImage] = process.argv.slice(2)
-  if (!socket || !closedInventory || !expectedImage || process.argv.length !== 5) throw new Error("usage: broker <socket> <closed-inventory> <expected-image-id>")
+  const [socket, closedInventory, expectedImage, initialSnapshot] = process.argv.slice(2)
+  if (!socket || !closedInventory || !expectedImage || !initialSnapshot || process.argv.length !== 6) throw new Error("usage: broker <socket> <closed-inventory> <expected-image-id> <initial-snapshot>")
   expectedImageId = text(expectedImage, "expected image id", IMAGE_ID)
   rmSync(socket, { force: true })
   writeClosedInventory(closedInventory)
+  const snapshot = await containerSnapshot(expectedImageId)
+  const snapshotFd = openSync(initialSnapshot, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600)
+  try { writeFileSync(snapshotFd, `${JSON.stringify(snapshot)}\n`); fsyncSync(snapshotFd) } finally { closeSync(snapshotFd) }
+  chownSync(initialSnapshot, 0, 0)
   const server = createServer((connection) => {
     let input = ""
     connection.setEncoding("utf8")
@@ -273,4 +353,4 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
   main().catch(() => { process.exitCode = 1 })
 }
 
-export { dispatch }
+export { dispatch, parseVaultStatus, queryGraphqlAutostart }

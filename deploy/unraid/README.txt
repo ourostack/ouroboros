@@ -1137,11 +1137,36 @@ Packaged Unit 16 acceptance execution:
   execute it in the order below. Before every execution the launcher regenerates
   the config from the packaged fixed contract and requires byte-for-byte equality.
   The cursor snapshot is deliberately materialized and executed twice around the
-  live scenario. Telegram bootstrap reads the new bot token from standard input;
-  callback injection reads the reviewed saved callback-update JSON from standard
-  input. Neither value belongs in argv, shell history, or a config file.
+  live scenario. Telegram bootstrap reads the new bot token from host file
+  descriptor 3; callback injection reads the reviewed saved callback-update JSON
+  from the same descriptor. The launcher explicitly maps host fd 3 to Docker
+  stdin and then to in-container fd 3 only for those two commands. Neither value
+  belongs in argv, shell history, a config file, or an unrelated command's stdin.
+  Define this Bash helper in the root shell. It disables terminal echo while
+  reading the token, opens an anonymous descriptor for the launcher, and unsets
+  the short-lived shell value on either launcher success or failure:
+    run_unit16_telegram_bootstrap() {
+      local UNIT16_BOT_TOKEN UNIT16_BOT_STATUS
+      printf 'Telegram bot token: ' >&2
+      IFS= read -r -s UNIT16_BOT_TOKEN || return $?
+      printf '\n' >&2
+      if "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" telegram-bootstrap telegram-bootstrap.json \
+        3< <(printf '%s\n' "$UNIT16_BOT_TOKEN"); then
+        UNIT16_BOT_STATUS=0
+      else
+        UNIT16_BOT_STATUS=$?
+      fi
+      unset UNIT16_BOT_TOKEN
+      return "$UNIT16_BOT_STATUS"
+    }
+  Set CALLBACK_UPDATE_FILE to the exact reviewed callback-update JSON, and prove
+  it is a root-owned, mode-0600 regular file rather than a symbolic link before
+  opening it as fd 3:
+    CALLBACK_UPDATE_FILE=/root/sanctuary-unit16-callback-update.json
+    test -f "$CALLBACK_UPDATE_FILE" && test ! -L "$CALLBACK_UPDATE_FILE"
+    test "$(stat -c '%u:%g %a' "$CALLBACK_UPDATE_FILE")" = "0:0 600"
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize telegram-bootstrap
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" telegram-bootstrap telegram-bootstrap.json
+    run_unit16_telegram_bootstrap
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot before
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
     # Perform the live scenario whose cursor movement is being measured.
@@ -1150,7 +1175,7 @@ Packaged Unit 16 acceptance execution:
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-delta
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-delta cursor-delta.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize callback-inject
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json 3<"$CALLBACK_UPDATE_FILE"
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize unraid-key-rotate
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" unraid-key-rotate unraid-key-rotate.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-request
@@ -1173,13 +1198,20 @@ Packaged Unit 16 acceptance execution:
   root-owned private Unix socket (root:10001 mode 0660) to a root broker extracted
   from the same exact image. The broker accepts only fixed Unraid inventory/create/
   exact-revoke/rejection operations, exact production-container snapshots, and a
-  staged reboot request. Snapshot refreshes re-inspect only `ouro-butler`, require
-  its immutable image ID, and expose typed/redacted state plus a nonnegative Docker
-  restart count; scenario handles remain private to the scenario adapter. The main one-shot
+  staged reboot request. The broker performs one atomic inspect of only
+  `ouro-butler`, requires its immutable image ID, writes that exact typed/redacted
+  snapshot before accepting requests, and exposes a nonnegative Docker restart
+  count. Both initial and refreshed snapshots share the same exact schema. The
+  broker derives `autostartExact` from both the Unraid GraphQL `autoStart` value
+  and exactly one production entry in `/var/lib/docker/unraid-autostart`, derives
+  `updaterDisabled` from `/opt/ouro/container-runtime.json` inside the exact image,
+  and derives `vaultUnlocked`/`manualAuthRequired` from a bounded live Sanctuary
+  vault-status command. Scenario handles remain private to the scenario adapter. The main one-shot
   never receives the Docker socket, Unraid key directory, or a host-root mount.
   Telegram bootstrap additionally brackets its one-shot with a host-controlled
   poller quiescence guard: it verifies the exact healthy production container,
-  stops it with a 30-second grace bound, proves it is stopped, and mounts a
+  assumes recovery responsibility before attempting the stop, stops it with a
+  30-second grace bound, proves it is stopped, and mounts a
   root-owned typed zero-poller fact. Its exit/signal trap restarts that same exact
   container and waits up to 120 seconds for healthy recovery on both success and
   failure. It never reads or changes Unraid autostart configuration. Every command
