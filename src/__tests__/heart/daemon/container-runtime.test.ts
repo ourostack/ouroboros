@@ -812,8 +812,8 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
     expect(runbook).toContain("8541786263")
     expect(runbook).not.toContain("Sanctuary Butler")
     expect(runbook).toContain("exact immutable key ID")
-    expect(runbook).toContain("credential now receives an authentication rejection")
-    expect(runbook).toContain("no-unintended-write-key audit")
+    expect(runbook).toContain("old credential receives an authentication rejection")
+    expect(runbook).toMatch(/no additional key of\s+any capability/u)
     expect(runbook).toContain("never raw key values")
   })
 

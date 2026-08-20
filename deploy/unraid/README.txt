@@ -540,44 +540,51 @@ local unlock: available
     retire_legacy_unraid_key() {
       NEW_READ_KEY_ID=$1
       NEW_WRITE_KEY_ID=$2
-      LEGACY_KEY_ID=$3
-      for KEY_ID in "$NEW_READ_KEY_ID" "$NEW_WRITE_KEY_ID" "$LEGACY_KEY_ID"; do
+      OLD_READ_KEY_ID=$3
+      OLD_WRITE_KEY_ID=$4
+      for KEY_ID in "$NEW_READ_KEY_ID" "$NEW_WRITE_KEY_ID" "$OLD_READ_KEY_ID" "$OLD_WRITE_KEY_ID"; do
         test -n "$KEY_ID" || return 1
         case "$KEY_ID" in *[!A-Za-z0-9._:-]*) return 1 ;; esac
       done
       test "$NEW_READ_KEY_ID" != "$NEW_WRITE_KEY_ID" || return $?
-      test "$NEW_READ_KEY_ID" != "$LEGACY_KEY_ID" || return $?
-      test "$NEW_WRITE_KEY_ID" != "$LEGACY_KEY_ID" || return $?
+      test "$OLD_READ_KEY_ID" != "$OLD_WRITE_KEY_ID" || return $?
+      for NEW_KEY_ID in "$NEW_READ_KEY_ID" "$NEW_WRITE_KEY_ID"; do
+        test "$NEW_KEY_ID" != "$OLD_READ_KEY_ID" || return $?
+        test "$NEW_KEY_ID" != "$OLD_WRITE_KEY_ID" || return $?
+      done
       verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
       verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
       KEY_INVENTORY_BEFORE=$(inventory_unraid_key_ids) || return $?
       KEY_COUNTS_BEFORE=$(printf '%s\n' "$KEY_INVENTORY_BEFORE" | awk -F '\t' \
-        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" -v legacy_id="$LEGACY_KEY_ID" '
+        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" \
+        -v old_read_id="$OLD_READ_KEY_ID" -v old_write_id="$OLD_WRITE_KEY_ID" '
         NF != 3 || $1 !~ /^[A-Za-z0-9._:-]+$/ { invalid++; next }
         $2 != "read-only" && $2 != "bounded-write" && $2 != "legacy-write" { invalid++; next }
         $3 != "none" { invalid++; next }
-        $1 == read_id && $2 == "read-only" { read_count++ }
-        $1 == write_id && $2 == "bounded-write" { write_count++ }
-        $1 == legacy_id && $2 == "legacy-write" { legacy_count++ }
-        ($2 == "bounded-write" || $2 == "legacy-write") && $1 != write_id && $1 != legacy_id { unexpected_write++ }
-        END { printf "%d %d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0, invalid + 0 }
+        $1 == read_id && $2 == "read-only" { read_count++; next }
+        $1 == write_id && $2 == "bounded-write" { write_count++; next }
+        $1 == old_read_id && $2 == "read-only" { old_read_count++; next }
+        $1 == old_write_id && $2 == "bounded-write" { old_write_count++; next }
+        { invalid++ }
+        END { printf "%d %d %d %d %d %d", read_count + 0, write_count + 0, old_read_count + 0, old_write_count + 0, invalid + 0, NR + 0 }
       ') || return $?
-      test "$KEY_COUNTS_BEFORE" = "1 1 1 0 0" || return $?
-      revoke_unraid_key_exact "$LEGACY_KEY_ID" || return $?
-      verify_revoked_unraid_key_rejected "$LEGACY_KEY_ID" || return $?
+      test "$KEY_COUNTS_BEFORE" = "1 1 1 1 0 4" || return $?
+      revoke_unraid_key_exact "$OLD_READ_KEY_ID" || return $?
+      verify_revoked_unraid_key_rejected "$OLD_READ_KEY_ID" || return $?
+      revoke_unraid_key_exact "$OLD_WRITE_KEY_ID" || return $?
+      verify_revoked_unraid_key_rejected "$OLD_WRITE_KEY_ID" || return $?
       KEY_INVENTORY_AFTER=$(inventory_unraid_key_ids) || return $?
       KEY_COUNTS_AFTER=$(printf '%s\n' "$KEY_INVENTORY_AFTER" | awk -F '\t' \
-        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" -v legacy_id="$LEGACY_KEY_ID" '
+        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" '
         NF != 3 || $1 !~ /^[A-Za-z0-9._:-]+$/ { invalid++; next }
         $2 != "read-only" && $2 != "bounded-write" && $2 != "legacy-write" { invalid++; next }
         $3 != "none" { invalid++; next }
-        $1 == read_id && $2 == "read-only" { read_count++ }
-        $1 == write_id && $2 == "bounded-write" { write_count++ }
-        $1 == legacy_id { legacy_count++ }
-        ($2 == "bounded-write" || $2 == "legacy-write") && $1 != write_id { unexpected_write++ }
-        END { printf "%d %d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0, invalid + 0 }
+        $1 == read_id && $2 == "read-only" { read_count++; next }
+        $1 == write_id && $2 == "bounded-write" { write_count++; next }
+        { invalid++ }
+        END { printf "%d %d %d %d", read_count + 0, write_count + 0, invalid + 0, NR + 0 }
       ') || return $?
-      test "$KEY_COUNTS_AFTER" = "1 1 0 0 0" || return $?
+      test "$KEY_COUNTS_AFTER" = "1 1 0 2" || return $?
       verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
       verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
     }
@@ -922,18 +929,21 @@ Audit and safety verification:
   first: the read key must perform required reads and reject a harmless Docker
   mutation, while the write key must perform its one typed approved action and
   reject out-of-scope writes. Fail closed if inventory deltas are ambiguous,
-  either expected key is missing/duplicated, or any unintended write-capable key
-  exists. Only after those checks may the operator revoke the exact recorded
-  legacy key ID. Re-inventory, prove that exact ID is absent, prove its old
-  credential now receives an authentication rejection, and repeat the
-  no-unintended-write-key audit. Do not pass raw keys in argv, files, shell
-  history, or logs; verification adapters must read them directly from the
-  Sanctuary vault.
+  either expected key is missing/duplicated, or any unintended key exists. The
+  live legacy state has one compromised read key and one compromised write key;
+  pass both exact recorded old IDs. Only after the preflight proves an inventory
+  containing exactly the new and old RO/RW pairs may the operator revoke each
+  old ID and prove its old credential receives an authentication rejection.
+  Re-inventory and require exactly the new RO/RW pair, with no additional key of
+  any capability. Do not pass raw keys in argv, files, shell history, or logs;
+  verification adapters must read them directly from the Sanctuary vault.
   The adapters used by retire_legacy_unraid_key must emit only tab-separated
   `<id>\t<capability-class>\t<role-class>` inventory rows. Capability class is
   the closed set `read-only|bounded-write|legacy-write`; role class must be
-  exactly `none`. Unknown classes, malformed rows, roles, and any additional
-  write-capable row fail before revocation and again after revocation. Adapters
-  verify capability by reading credentials inside the vault
-  adapter, revoke only the ID argument, and return success from the revoked-key
-  probe only for an authentication rejection. Never substitute names for IDs.
+  exactly `none`. The adapter derives these classes from Unraid's nested
+  `{resource, actions[]}` permission records, never from stringified permission
+  guesses. Unknown classes, malformed rows, roles, and any additional row fail
+  before revocation and again after revocation. Adapters verify capability by
+  reading credentials inside the vault adapter, revoke only the ID argument,
+  and return success from the revoked-key probe only for an authentication
+  rejection. Never substitute names for IDs.
