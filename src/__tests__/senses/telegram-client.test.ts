@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { inspect } from "node:util"
 
 import {
   TelegramApiError,
@@ -418,14 +419,32 @@ describe("Telegram Bot API HTTP core", () => {
   })
 
   it("redacts the token from transport failures", async () => {
+    const cause = new Error(`socket failed for ${token}`, { cause: { token } })
+    Object.defineProperty(cause, "rawResponse", { value: { token }, enumerable: false })
     const api = createTelegramBotApi({
       token,
-      fetch: vi.fn(async () => { throw new Error(`socket failed for ${token}`) }),
+      fetch: vi.fn(async () => { throw cause }),
     })
-    const error = await api.request("getUpdates", {}).catch((caught: unknown) => caught)
+    const error = await api.request("getUpdates", {}).catch((caught: unknown) => caught) as TelegramApiError
 
     expect(error).toBeInstanceOf(TelegramApiError)
+    expect(error).not.toBe(cause)
+    expect(error.cause).toBeUndefined()
     expect(String(error)).not.toContain(token)
+    expect(inspect(error, { depth: 10, showHidden: true })).not.toContain(token)
+  })
+
+  it("rebuilds token-bearing TelegramApiErrors without retaining custom fields or causes", async () => {
+    const cause = new TelegramApiError(`upstream failed for ${token}`, { status: 503, cause: new Error(token) })
+    Object.assign(cause, { rawResponse: { token } })
+    const api = createTelegramBotApi({ token, fetch: vi.fn(async () => { throw cause }) })
+
+    const error = await api.request("getUpdates", {}).catch((caught: unknown) => caught) as TelegramApiError
+
+    expect(error).toMatchObject({ status: 503, errorCode: null, retryAfterSeconds: null })
+    expect(error).not.toBe(cause)
+    expect(error.cause).toBeUndefined()
+    expect(inspect(error, { depth: 10, showHidden: true })).not.toContain(token)
   })
 })
 

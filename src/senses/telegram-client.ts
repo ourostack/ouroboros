@@ -786,8 +786,12 @@ export function createTelegramBotApi(options: TelegramBotApiOptions): TelegramBo
         }
       } catch (caught) {
         const error = caught instanceof TelegramApiError
-          ? caught
-          : new TelegramApiError(safeErrorMessage(caught instanceof Error ? caught.message : String(caught), options.token), { cause: caught })
+          ? new TelegramApiError(safeErrorMessage(caught.message, options.token), {
+              status: caught.status,
+              errorCode: caught.errorCode,
+              retryAfterSeconds: caught.retryAfterSeconds,
+            })
+          : new TelegramApiError(safeErrorMessage(caught instanceof Error ? caught.message : String(caught), options.token))
         emitNervesEvent({
           level: "error",
           component: "senses",
