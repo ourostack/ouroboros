@@ -23,6 +23,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 const MAX_ADAPTER_OUTPUT = 1_048_576
 const DEFAULT_ADAPTER_TIMEOUT_MS = 15_000
 const DEFAULT_TELEGRAM_TIMEOUT_MS = 10_000
+const PACKAGED_PROVENANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
 type FixedEvidenceSchema = "telegram-cursor-v1" | "postboot-health-v1"
 
@@ -287,8 +288,10 @@ export const SANCTUARY_UNIT_16_EVIDENCE_LABELS = [
   "unit-16m-restart-continuation",
 ] as const
 
-const SAFE_OPERATIONAL_NUMBER_KEY = /(?:at|time|timestamp|duration|latency|counter|count|total|units|bytes|percent|status|code|port|ttl|interval|timeout|attempts|claims|mutations|generation|version|concurrency|index)$/iu
 const RAW_LONG_DECIMAL = /^-?\d{5,16}$/u
+const EPOCH_MILLISECONDS_MIN = 1_577_836_800_000
+const EPOCH_MILLISECONDS_MAX = 4_102_444_800_000
+const TYPED_TIMESTAMP_KEYS = new Set(["capturedAt", "completedAt", "requestedAt", "startedAt"])
 
 function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
   if (Array.isArray(value)) {
@@ -296,6 +299,15 @@ function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
     return
   }
   if (value && typeof value === "object") {
+    if (key === "evidenceCounters") {
+      const counters = object(value, `${label} evidenceCounters`)
+      for (const [counterName, counterValue] of Object.entries(counters)) {
+        if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(counterName) || !Number.isSafeInteger(counterValue) || (counterValue as number) < 0) {
+          throw new Error(`${label} evidenceCounters contain an invalid or raw Telegram identity-like counter`)
+        }
+      }
+      return
+    }
     for (const [key, item] of Object.entries(value as JsonObject)) {
       if (/(?:telegram)?(?:user|chat|update|message)[_-]?id|token|secret|password|credential|api[_-]?key/iu.test(key)) {
         throw new Error(`${label} contains a sensitive or raw Telegram identity field`)
@@ -309,7 +321,8 @@ function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
   }
   if (((typeof value === "string" && RAW_LONG_DECIMAL.test(value))
     || (typeof value === "number" && Number.isSafeInteger(value) && Math.abs(value) >= 10_000))
-    && !SAFE_OPERATIONAL_NUMBER_KEY.test(key)) {
+    && !(typeof value === "number" && TYPED_TIMESTAMP_KEYS.has(key)
+      && value >= EPOCH_MILLISECONDS_MIN && value <= EPOCH_MILLISECONDS_MAX)) {
     throw new Error(`${label} contains a raw Telegram identity-like decimal value`)
   }
 }
@@ -374,6 +387,30 @@ function sameProvenance(left: EvidenceProvenance, right: EvidenceProvenance): bo
     && left.harnessSha256 === right.harnessSha256
 }
 
+async function liveEvidenceProvenance(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<Omit<EvidenceProvenance, "harnessSha256">> {
+  const executable = adapter(config.provenanceAdapter, "provenanceAdapter")
+  if (executable !== PACKAGED_PROVENANCE_ADAPTER) throw new Error("provenanceAdapter must be the packaged Sanctuary acceptance adapter")
+  const capture = object(await deps.runAdapter(executable, {
+    operation: "capture_evidence_provenance",
+    schema: "sanctuary-unit-16-provenance-v1",
+  }), "live provenance")
+  const expectedKeys = ["containerDigest", "cursorDigest", "imageDigest"]
+  if (JSON.stringify(Object.keys(capture).sort()) !== JSON.stringify(expectedKeys)) {
+    throw new Error("live provenance must contain the exact image, container, and cursor coordinates")
+  }
+  return {
+    imageDigest: opaqueDigest(capture.imageDigest, "live provenance imageDigest"),
+    containerDigest: opaqueDigest(capture.containerDigest, "live provenance containerDigest"),
+    cursorDigest: opaqueDigest(capture.cursorDigest, "live provenance cursorDigest"),
+  }
+}
+
+function matchesLiveProvenance(provenance: EvidenceProvenance, live: Omit<EvidenceProvenance, "harnessSha256">): boolean {
+  return provenance.imageDigest === live.imageDigest
+    && provenance.containerDigest === live.containerDigest
+    && provenance.cursorDigest === live.cursorDigest
+}
+
 async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
   const root = privateAllowedRoot(config)
   const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
@@ -400,6 +437,10 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
     return { label, sha256: normalizedEvidenceHash(value), evidence: value }
   })
   const boundContinuity = continuity as EvidenceProvenance
+  const live = await liveEvidenceProvenance(config, deps)
+  if (!matchesLiveProvenance(boundContinuity, live)) {
+    throw new Error("evidence coordinates do not match trusted live provenance")
+  }
   const core = {
     schemaVersion: 1,
     operation: "sanctuary-unit-16-evidence-bundle",
@@ -413,7 +454,7 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
   initializeCheckpoint(root, evidencePath, { ...core, bundleDigest: normalizedEvidenceHash(core), completedAt: deps.now() })
 }
 
-function verifyEvidenceBundle(config: JsonObject): void {
+async function verifyEvidenceBundle(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
   const root = privateAllowedRoot(config)
   const bundle = readCheckpoint(root, config.evidencePath)
   const harnessSha256 = packagedHarnessSha256(config.harnessPath)
@@ -439,6 +480,10 @@ function verifyEvidenceBundle(config: JsonObject): void {
     throw new Error("evidence bundle does not contain the complete Unit 16 evidence matrix")
   }
   const boundContinuity = continuity as EvidenceProvenance
+  const live = await liveEvidenceProvenance(config, deps)
+  if (!matchesLiveProvenance(boundContinuity, live)) {
+    throw new Error("evidence bundle coordinates do not match trusted live provenance")
+  }
   const core = {
     schemaVersion: 1,
     operation: "sanctuary-unit-16-evidence-bundle",
@@ -846,7 +891,7 @@ export async function executeSanctuaryAcceptanceHarness(
       case "reboot-request": await rebootRequest(config, deps); break
       case "reboot-resume": await rebootResume(config, deps); break
       case "evidence-bundle-index": await evidenceBundleIndex(config, deps); break
-      case "evidence-bundle-verify": verifyEvidenceBundle(config); break
+      case "evidence-bundle-verify": await verifyEvidenceBundle(config, deps); break
       default: throw new Error("unknown Sanctuary acceptance command")
     }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_end", message: "Sanctuary acceptance operation completed", meta: { command } })

@@ -137,18 +137,18 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: bundlePath,
       entries,
       harnessPath,
-      provenanceAdapter: "/trusted-live-provenance",
+      provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies(evidenceProvenance, provenanceCalls))
     await executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
       allowedRoot: dir,
       evidencePath: bundlePath,
       harnessPath,
-      provenanceAdapter: "/trusted-live-provenance",
+      provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies(evidenceProvenance, provenanceCalls))
 
     expect(provenanceCalls).toEqual([
-      { executable: "/trusted-live-provenance", payload: { operation: "capture_evidence_provenance", schema: "sanctuary-unit-16-provenance-v1" } },
-      { executable: "/trusted-live-provenance", payload: { operation: "capture_evidence_provenance", schema: "sanctuary-unit-16-provenance-v1" } },
+      { executable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh", payload: { operation: "capture_evidence_provenance", schema: "sanctuary-unit-16-provenance-v1" } },
+      { executable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh", payload: { operation: "capture_evidence_provenance", schema: "sanctuary-unit-16-provenance-v1" } },
     ])
 
     const bundle = evidence(bundlePath)
@@ -183,7 +183,7 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, `${name}.json`),
       entries,
       harnessPath,
-      provenanceAdapter: "/trusted-live-provenance",
+      provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     })
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("missing", createEntries(completeEvidenceLabels.slice(1))), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("duplicate", createEntries([...completeEvidenceLabels, completeEvidenceLabels[0]!])), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
@@ -199,7 +199,7 @@ describe("Sanctuary acceptance harness", () => {
       allowedRoot: dir,
       evidencePath: bundlePath,
       harnessPath,
-      provenanceAdapter: "/trusted-live-provenance",
+      provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies())).rejects.toThrow(/bundle digest|entry hash/u)
   })
 
@@ -220,7 +220,7 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, `${name}.json`),
       entries,
       harnessPath: packagedHarness,
-      provenanceAdapter: "/trusted-live-provenance",
+      provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
       imageDigest: "d".repeat(64),
       containerDigest: "e".repeat(64),
       cursorDigest: "f".repeat(64),
@@ -250,8 +250,15 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, "invalid-live-capture.json"),
       entries: createEntries(() => {}),
       harnessPath,
-      provenanceAdapter: "/trusted-live-provenance",
+      provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies({ ...evidenceProvenance, unexpected: "field" }))).rejects.toThrow(/live provenance/u)
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
+      allowedRoot: dir,
+      evidencePath: path.join(dir, "untrusted-provenance-adapter.json"),
+      entries: createEntries(() => {}),
+      harnessPath,
+      provenanceAdapter: "/tmp/untrusted-adapter",
+    }, liveProvenanceDependencies())).rejects.toThrow(/packaged Sanctuary acceptance adapter/u)
 
     const changedHarness = path.join(dir, "changed-harness.js")
     fs.writeFileSync(changedHarness, "different packaged bytes\n", { mode: 0o700 })
@@ -286,7 +293,7 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, `${name}.json`),
       entries: entries(extra),
       harnessPath,
-      provenanceAdapter: "/trusted-live-provenance",
+      provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies())
 
     await expect(run("numeric-string", { neutral: "8541786263" })).rejects.toThrow(/raw Telegram identity/u)
@@ -319,7 +326,7 @@ describe("Sanctuary acceptance harness", () => {
     })
     const originalPath = path.join(dir, "original-bundle.json")
     await executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
-      allowedRoot: dir, evidencePath: originalPath, entries, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+      allowedRoot: dir, evidencePath: originalPath, entries, harnessPath, provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies())
     const original = evidence(originalPath) as Record<string, any>
     const seal = (value: Record<string, any>) => {
@@ -342,7 +349,7 @@ describe("Sanctuary acceptance harness", () => {
       const file = path.join(dir, `verify-${name}.json`)
       fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 })
       await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
-        allowedRoot: dir, evidencePath: file, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+        allowedRoot: dir, evidencePath: file, harnessPath, provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
       }, liveProvenanceDependencies())).rejects.toThrow(pattern)
     }
 
@@ -364,17 +371,17 @@ describe("Sanctuary acceptance harness", () => {
     const digestMismatchPath = path.join(dir, "verify-bundle-digest.json")
     fs.writeFileSync(digestMismatchPath, `${JSON.stringify(digestMismatch)}\n`, { mode: 0o600 })
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
-      allowedRoot: dir, evidencePath: digestMismatchPath, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+      allowedRoot: dir, evidencePath: digestMismatchPath, harnessPath, provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies())).rejects.toThrow(/bundle digest/u)
 
     const changedHarness = path.join(dir, "verify-changed-harness.js")
     fs.writeFileSync(changedHarness, "changed packaged bytes\n", { mode: 0o700 })
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
-      allowedRoot: dir, evidencePath: originalPath, harnessPath: changedHarness, provenanceAdapter: "/trusted-live-provenance",
+      allowedRoot: dir, evidencePath: originalPath, harnessPath: changedHarness, provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies())).rejects.toThrow(/harness/u)
 
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
-      allowedRoot: dir, evidencePath: originalPath, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+      allowedRoot: dir, evidencePath: originalPath, harnessPath, provenanceAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     }, liveProvenanceDependencies({ ...evidenceProvenance, cursorDigest: "f".repeat(64) }))).rejects.toThrow(/live provenance/u)
   })
 
