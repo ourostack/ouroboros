@@ -102,6 +102,14 @@ describe("Sanctuary acceptance harness", () => {
     cursorDigest: "c".repeat(64),
   }
 
+  const liveProvenanceDependencies = (
+    capture: Record<string, unknown> = evidenceProvenance,
+    calls: Array<{ executable: string; payload: unknown }> = [],
+  ) => dependencies({ adapter: async (executable, payload) => {
+    calls.push({ executable, payload })
+    return capture
+  } })
+
   const completeEvidence = (label: string, harnessSha256: string, extra: Record<string, unknown> = {}) => ({
     schemaVersion: 1,
     operation: label,
@@ -122,18 +130,26 @@ describe("Sanctuary acceptance harness", () => {
       return { label, path: file }
     })
     const bundlePath = path.join(dir, "unit-16-evidence-bundle.json")
+    const provenanceCalls: Array<{ executable: string; payload: unknown }> = []
 
     await executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
       allowedRoot: dir,
       evidencePath: bundlePath,
       entries,
       harnessPath,
-    }, dependencies())
+      provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies(evidenceProvenance, provenanceCalls))
     await executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
       allowedRoot: dir,
       evidencePath: bundlePath,
       harnessPath,
-    }, dependencies())
+      provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies(evidenceProvenance, provenanceCalls))
+
+    expect(provenanceCalls).toEqual([
+      { executable: "/trusted-live-provenance", payload: { operation: "capture_evidence_provenance", schema: "sanctuary-unit-16-provenance-v1" } },
+      { executable: "/trusted-live-provenance", payload: { operation: "capture_evidence_provenance", schema: "sanctuary-unit-16-provenance-v1" } },
+    ])
 
     const bundle = evidence(bundlePath)
     expect(bundle).toMatchObject({
@@ -167,14 +183,15 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, `${name}.json`),
       entries,
       harnessPath,
+      provenanceAdapter: "/trusted-live-provenance",
     })
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("missing", createEntries(completeEvidenceLabels.slice(1))), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("duplicate", createEntries([...completeEvidenceLabels, completeEvidenceLabels[0]!])), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
-    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("unsafe", createEntries(completeEvidenceLabels, true)), dependencies())).rejects.toThrow(/raw Telegram identity|sensitive/u)
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("unsafe", createEntries(completeEvidenceLabels, true)), liveProvenanceDependencies())).rejects.toThrow(/raw Telegram identity|sensitive/u)
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", { ...config("nonarray", []), entries: null }, dependencies())).rejects.toThrow(/must be an array/u)
 
     const bundlePath = path.join(dir, "tampered.json")
-    await executeSanctuaryAcceptanceHarness("evidence-bundle-index", { ...config("unused", createEntries(completeEvidenceLabels)), evidencePath: bundlePath }, dependencies())
+    await executeSanctuaryAcceptanceHarness("evidence-bundle-index", { ...config("unused", createEntries(completeEvidenceLabels)), evidencePath: bundlePath }, liveProvenanceDependencies())
     const tampered = evidence(bundlePath)
     ;(tampered.entries as Array<Record<string, unknown>>)[0]!.sha256 = "f".repeat(64)
     fs.writeFileSync(bundlePath, `${JSON.stringify(tampered)}\n`, { mode: 0o600 })
@@ -182,7 +199,8 @@ describe("Sanctuary acceptance harness", () => {
       allowedRoot: dir,
       evidencePath: bundlePath,
       harnessPath,
-    }, dependencies())).rejects.toThrow(/bundle digest|entry hash/u)
+      provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies())).rejects.toThrow(/bundle digest|entry hash/u)
   })
 
   it("requires exact complete per-label evidence contracts and matching live provenance", async () => {
@@ -202,10 +220,11 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, `${name}.json`),
       entries,
       harnessPath: packagedHarness,
+      provenanceAdapter: "/trusted-live-provenance",
       imageDigest: "d".repeat(64),
       containerDigest: "e".repeat(64),
       cursorDigest: "f".repeat(64),
-    }, dependencies())
+    }, liveProvenanceDependencies())
 
     for (const [name, mutate] of [
       ["schema", (value: Record<string, any>, index: number) => { if (index === 0) value.schemaVersion = 2 }],
@@ -219,6 +238,20 @@ describe("Sanctuary acceptance harness", () => {
     ] as const) {
       await expect(run(name, createEntries(mutate))).rejects.toThrow(/contract|provenance|harness/u)
     }
+
+    await expect(run("fabricated-consensus", createEntries((value) => {
+      value.provenance.imageDigest = "d".repeat(64)
+      value.provenance.containerDigest = "e".repeat(64)
+      value.provenance.cursorDigest = "f".repeat(64)
+    }))).rejects.toThrow(/live provenance/u)
+
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
+      allowedRoot: dir,
+      evidencePath: path.join(dir, "invalid-live-capture.json"),
+      entries: createEntries(() => {}),
+      harnessPath,
+      provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies({ ...evidenceProvenance, unexpected: "field" }))).rejects.toThrow(/live provenance/u)
 
     const changedHarness = path.join(dir, "changed-harness.js")
     fs.writeFileSync(changedHarness, "different packaged bytes\n", { mode: 0o700 })
@@ -253,16 +286,24 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, `${name}.json`),
       entries: entries(extra),
       harnessPath,
-    }, dependencies())
+      provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies())
 
     await expect(run("numeric-string", { neutral: "8541786263" })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("numeric-value", { neutral: 8541786263 })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("sensitive-key", { nested: [{ telegramUserId: "opaque-looking" }] })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("token-shape", { nested: ["12345:abcdefghijklmnopqrstuvwxyz"] })).rejects.toThrow(/sensitive material/u)
+    for (const [name, extra] of [
+      ["status-smuggling", { status: 8541786263 }],
+      ["code-smuggling", { resultCode: 8541786263 }],
+      ["count-smuggling", { retryCount: 8541786263 }],
+      ["false-timestamp", { capturedAt: 8541786263 }],
+    ] as const) await expect(run(name, extra)).rejects.toThrow(/raw Telegram identity/u)
+    await expect(run("counter-string-smuggling", { evidenceCounters: { processed: "8541786263" } })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("safe-operational-values", {
-      arbitraryCounter: 8541786263,
       capturedAt: 1_800_000_000_000,
-      nested: { retryCount: 123_456, completedAt: "2026-08-20T12:34:56.789Z", events: [] },
+      evidenceCounters: { arbitrary: 8541786263, retries: 123_456 },
+      nested: { completedAt: "2026-08-20T12:34:56.789Z", events: [] },
     })).resolves.toBeUndefined()
   })
 
@@ -278,8 +319,8 @@ describe("Sanctuary acceptance harness", () => {
     })
     const originalPath = path.join(dir, "original-bundle.json")
     await executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
-      allowedRoot: dir, evidencePath: originalPath, entries, harnessPath,
-    }, dependencies())
+      allowedRoot: dir, evidencePath: originalPath, entries, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies())
     const original = evidence(originalPath) as Record<string, any>
     const seal = (value: Record<string, any>) => {
       const core = {
@@ -301,8 +342,8 @@ describe("Sanctuary acceptance harness", () => {
       const file = path.join(dir, `verify-${name}.json`)
       fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 })
       await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
-        allowedRoot: dir, evidencePath: file, harnessPath,
-      }, dependencies())).rejects.toThrow(pattern)
+        allowedRoot: dir, evidencePath: file, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+      }, liveProvenanceDependencies())).rejects.toThrow(pattern)
     }
 
     await verifyMutation("header", (value) => { value.phase = "requested" }, /header/u)
@@ -323,14 +364,18 @@ describe("Sanctuary acceptance harness", () => {
     const digestMismatchPath = path.join(dir, "verify-bundle-digest.json")
     fs.writeFileSync(digestMismatchPath, `${JSON.stringify(digestMismatch)}\n`, { mode: 0o600 })
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
-      allowedRoot: dir, evidencePath: digestMismatchPath, harnessPath,
-    }, dependencies())).rejects.toThrow(/bundle digest/u)
+      allowedRoot: dir, evidencePath: digestMismatchPath, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies())).rejects.toThrow(/bundle digest/u)
 
     const changedHarness = path.join(dir, "verify-changed-harness.js")
     fs.writeFileSync(changedHarness, "changed packaged bytes\n", { mode: 0o700 })
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
-      allowedRoot: dir, evidencePath: originalPath, harnessPath: changedHarness,
-    }, dependencies())).rejects.toThrow(/harness/u)
+      allowedRoot: dir, evidencePath: originalPath, harnessPath: changedHarness, provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies())).rejects.toThrow(/harness/u)
+
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
+      allowedRoot: dir, evidencePath: originalPath, harnessPath, provenanceAdapter: "/trusted-live-provenance",
+    }, liveProvenanceDependencies({ ...evidenceProvenance, cursorDigest: "f".repeat(64) }))).rejects.toThrow(/live provenance/u)
   })
 
   it("preserves a non-timeout Telegram transport failure category", async () => {
