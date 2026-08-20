@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest"
 import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { spawnSync } from "node:child_process"
 import { hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
+
+function extractRunbookFunction(runbook: string, name: string): string {
+  const marker = `    ${name}() {`
+  const start = runbook.indexOf(marker)
+  expect(start).toBeGreaterThan(-1)
+  const end = runbook.indexOf("\n    }", start)
+  expect(end).toBeGreaterThan(start)
+  return runbook.slice(start, end + "\n    }".length).split("\n").map((line) => line.replace(/^ {4}/u, "")).join("\n")
+}
+
+function runConditionalHelper(script: string, failKey: string, env: Record<string, string> = {}) {
+  return spawnSync("/bin/sh", ["-c", script, "runbook-helper-test", failKey], {
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  })
+}
 
 describe("container runtime policy", () => {
   it("accepts only the locked scheduler/update policy", () => {
@@ -69,6 +88,130 @@ describe("container runtime policy", () => {
         },
       ],
     })
+  })
+
+  it("propagates autostart helper faults from conditional function contexts", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-autostart-helper-"))
+    const autostartFile = path.join(testRoot, "unraid-autostart")
+    const stubs = String.raw`
+FAIL_KEY=$1
+maybe_fail() { if [ "$FAIL_KEY" = "$1" ]; then return 23; fi; }
+test() { maybe_fail test || return $?; command test "$@"; }
+stat() { maybe_fail stat || return $?; command printf '0:0 644\n'; }
+mktemp() { maybe_fail mktemp || return $?; command mktemp "$@"; }
+awk() {
+  case "$*" in *'printf "%d %d %d"'*) KEY=awk-read ;; *) KEY=awk-write ;; esac
+  maybe_fail "$KEY" || return $?
+  command awk "$@"
+}
+printf() { maybe_fail printf || return $?; command printf "$@"; }
+chown() { maybe_fail chown || return $?; }
+chmod() { maybe_fail chmod || return $?; command chmod "$@"; }
+sync() { maybe_fail sync || return $?; }
+mv() { maybe_fail mv || return $?; command mv "$@"; }
+`
+    try {
+      for (const [name, initial, failures] of [
+        ["disable_butler_autostart", "ouro-butler\nother\n", ["test", "stat", "mktemp", "awk-write", "chown", "chmod", "sync", "mv", "awk-read"]],
+        ["enable_butler_autostart", "other\n", ["test", "stat", "mktemp", "awk-write", "printf", "chown", "chmod", "sync", "mv", "awk-read"]],
+      ] as const) {
+        const helper = extractRunbookFunction(runbook, name).replace("AUTOSTART_FILE=/var/lib/docker/unraid-autostart", "AUTOSTART_FILE=$AUTOSTART_TEST_FILE")
+        for (const failKey of failures) {
+          fs.writeFileSync(autostartFile, initial, { mode: 0o644 })
+          const result = runConditionalHelper(`set -u\n${stubs}\n${helper}\nif ${name}; then command printf 'TRANSITION\\n'; else STATUS=$?; set -- "$AUTOSTART_TEST_ROOT"/*.tmp.*; if [ -e "$1" ]; then command printf 'LEAK\\n'; fi; command printf 'FAILED:%s\\n' "$STATUS"; exit "$STATUS"; fi`, failKey, { AUTOSTART_TEST_FILE: autostartFile, AUTOSTART_TEST_ROOT: testRoot })
+          expect(result.status, `${name}:${failKey}\n${result.stderr}`).toBe(23)
+          expect(result.stdout).not.toContain("TRANSITION")
+          expect(result.stdout).not.toContain("LEAK")
+          expect(fs.readdirSync(testRoot).filter((entry) => entry.includes(".tmp.")).length, `${name}:${failKey} leaked a temp file`).toBe(0)
+        }
+        fs.writeFileSync(autostartFile, initial, { mode: 0o644 })
+        const success = runConditionalHelper(`set -u\n${stubs}\n${helper}\nif ${name}; then command printf 'TRANSITION\\n'; else exit $?; fi`, "none", { AUTOSTART_TEST_FILE: autostartFile })
+        expect(success.status, `${name}:success\n${success.stderr}`).toBe(0)
+        expect(success.stdout).toContain("TRANSITION")
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("propagates effective-audit faults from a conditional function context", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-audit-helper-"))
+    const helper = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
+    const script = String.raw`set -u
+FAIL_KEY=$1
+maybe_fail() { if [ "$FAIL_KEY" = "$1" ]; then return 23; fi; }
+mktemp() { maybe_fail mktemp || return $?; command mktemp "$@"; }
+chmod() { KEY=chmod-$1; maybe_fail "$KEY" || return $?; command chmod "$@"; }
+docker() {
+  case "$1 $2" in "inspect "*) KEY=docker-inspect ;; "image inspect") KEY=docker-image ;; "run --rm") KEY=docker-run ;; *) KEY=docker-other ;; esac
+  maybe_fail "$KEY" || return $?
+  case "$KEY" in docker-inspect|docker-image) command printf '{}\n' ;; esac
+}
+${helper}
+if audit_effective ouro-butler "$IMAGE_ID"; then command printf 'TRANSITION\n'; else STATUS=$?; set -- "$AUDIT_TEST_ROOT"/inspect.*; if [ -e "$1" ]; then command printf 'LEAK\n'; fi; command printf 'FAILED:%s\n' "$STATUS"; exit "$STATUS"; fi`
+    try {
+      for (const failKey of ["mktemp", "chmod-0700", "docker-inspect", "docker-image", "chmod-0600", "docker-run"]) {
+        const result = runConditionalHelper(script, failKey, { AUDIT_TEST_ROOT: testRoot, IMAGE_ID: `sha256:${"a".repeat(64)}` })
+        expect(result.status, `${failKey}\n${result.stderr}`).toBe(23)
+        expect(result.stdout).not.toContain("TRANSITION")
+        expect(result.stdout).not.toContain("LEAK")
+        expect(fs.readdirSync(testRoot), `${failKey} leaked an inspect directory`).toEqual([])
+      }
+      const success = runConditionalHelper(script, "none", { AUDIT_TEST_ROOT: testRoot, IMAGE_ID: `sha256:${"a".repeat(64)}` })
+      expect(success.status, success.stderr).toBe(0)
+      expect(success.stdout).toContain("TRANSITION")
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("propagates readiness and optional-rollback lookup faults from conditional functions", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const waitHelper = extractRunbookFunction(runbook, "wait_butler_ready")
+    const rollbackHelper = extractRunbookFunction(runbook, "remove_stopped_rollback_if_present")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-wait-helper-"))
+    const dateCount = path.join(testRoot, "date-count")
+    fs.writeFileSync(dateCount, "0")
+    const waitScript = String.raw`set -u
+FAIL_KEY=$1
+date() {
+  if [ "$FAIL_KEY" = date ]; then return 23; fi
+  COUNT=$(command cat "$DATE_COUNT_FILE"); COUNT=$((COUNT + 1)); command printf '%s' "$COUNT" >"$DATE_COUNT_FILE"
+  if [ "$COUNT" -gt 2 ]; then command printf '241\n'; else command printf '0\n'; fi
+}
+docker() { if [ "$FAIL_KEY" = docker ]; then return 23; fi; if [ "$FAIL_KEY" = sleep ]; then command printf 'running starting\n'; else command printf 'running healthy\n'; fi; }
+sleep() { if [ "$FAIL_KEY" = sleep ]; then return 23; fi; }
+${waitHelper}
+if wait_butler_ready ouro-butler; then command printf 'TRANSITION\n'; else STATUS=$?; command printf 'FAILED:%s\n' "$STATUS"; exit "$STATUS"; fi`
+    try {
+      for (const failKey of ["date", "docker", "sleep"]) {
+        fs.writeFileSync(dateCount, "0")
+        const result = runConditionalHelper(waitScript, failKey, { DATE_COUNT_FILE: dateCount })
+        expect(result.status, `wait:${failKey}\n${result.stderr}`).toBe(23)
+        expect(result.stdout).not.toContain("TRANSITION")
+      }
+      const rollbackScript = String.raw`set -u
+FAIL_KEY=$1
+docker() {
+  case "$1 $2" in "container ls") KEY=list ;; "inspect --format") KEY=inspect ;; "rm ouro-butler-rollback") KEY=rm ;; *) KEY=other ;; esac
+  if [ "$FAIL_KEY" = "$KEY" ]; then return 23; fi
+  case "$KEY" in list) command printf 'ouro-butler-rollback\n' ;; inspect) command printf 'false\n' ;; esac
+}
+${rollbackHelper}
+if remove_stopped_rollback_if_present; then command printf 'TRANSITION\n'; else STATUS=$?; exit "$STATUS"; fi`
+      for (const failKey of ["list", "inspect", "rm"]) {
+        const rollbackFailure = runConditionalHelper(rollbackScript, failKey)
+        expect(rollbackFailure.status, `rollback:${failKey}\n${rollbackFailure.stderr}`).toBe(23)
+        expect(rollbackFailure.stdout).not.toContain("TRANSITION")
+      }
+      const rollbackSuccess = runConditionalHelper(rollbackScript, "none")
+      expect(rollbackSuccess.status, rollbackSuccess.stderr).toBe(0)
+      expect(rollbackSuccess.stdout).toContain("TRANSITION")
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
   })
 
   it("rolls final production activation back under set -eu before propagating failure", () => {
@@ -277,11 +420,11 @@ describe("container runtime policy", () => {
     expect(runbook).toContain('"$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"')
     const updateRunbook = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     expect(runbook).toContain("AUTOSTART_FILE=/var/lib/docker/unraid-autostart")
-    expect(runbook).toContain("test \"$(stat -c '%u:%g %a' \"$AUTOSTART_FILE\")\" = \"0:0 644\"")
+    expect(runbook).toContain("AUTOSTART_METADATA=$(stat -c '%u:%g %a' \"$AUTOSTART_FILE\") || return $?")
+    expect(runbook).toContain('test "$AUTOSTART_METADATA" = "0:0 644" || return $?')
     expect(runbook).toContain('$0 != "ouro-butler" && $0 != "ouro-butler-staging" && $0 != "ouro-butler-rollback"')
-    expect(runbook).toContain('! grep -Fxq "ouro-butler" "$AUTOSTART_FILE"')
-    expect(runbook).toContain('! grep -Fxq "ouro-butler-staging" "$AUTOSTART_FILE"')
-    expect(runbook).toContain('! grep -Fxq "ouro-butler-rollback" "$AUTOSTART_FILE"')
+    expect(runbook).toContain('test "$AUTOSTART_COUNTS" = "0 0 0" || return $?')
+    expect(runbook).toContain('test "$AUTOSTART_COUNTS" = "1 0 0" || return $?')
     expect(updateRunbook).toContain('docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \\')
@@ -318,7 +461,7 @@ describe("container runtime policy", () => {
     expect(productionStart).toBeGreaterThan(productionAudit)
     expect(updateRunbook).toContain("docker start ouro-butler")
     expect(runbook).toContain("printf '%s\\n' ouro-butler >>\"$AUTOSTART_TMP\"")
-    expect(runbook).toContain('test "$(grep -Fxc "ouro-butler" "$AUTOSTART_FILE")" = 1')
+    expect(runbook).toContain('test "$AUTOSTART_COUNTS" = "1 0 0" || return $?')
     const rollbackReady = updateRunbook.indexOf("wait_butler_ready ouro-butler", rollbackStart)
     const rollbackEnable = updateRunbook.indexOf("enable_butler_autostart", rollbackReady)
     expect(rollbackReady).toBeGreaterThan(rollbackStart)

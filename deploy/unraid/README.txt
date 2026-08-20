@@ -20,61 +20,77 @@ Effective-spec audit helper:
   packaged auditor from IMAGE_ID, and removes its mode-0600 inputs on success
   or shell exit:
     audit_effective() {
+      (
       AUDIT_CONTAINER=$1
       AUDIT_EXPECTED_IMAGE=$2
-      INSPECT_DIR=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX)
-      chmod 0700 "$INSPECT_DIR"
-      trap 'rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"; rmdir -- "$INSPECT_DIR"' EXIT
-      umask 077
-      docker inspect "$AUDIT_CONTAINER" >"$INSPECT_DIR/container.json"
-      docker image inspect "$AUDIT_EXPECTED_IMAGE" >"$INSPECT_DIR/image.json"
-      chmod 0600 "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"
+      INSPECT_DIR=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX) || return $?
+      trap 'rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"; rmdir -- "$INSPECT_DIR"' EXIT || return $?
+      chmod 0700 "$INSPECT_DIR" || return $?
+      umask 077 || return $?
+      docker inspect "$AUDIT_CONTAINER" >"$INSPECT_DIR/container.json" || return $?
+      docker image inspect "$AUDIT_EXPECTED_IMAGE" >"$INSPECT_DIR/image.json" || return $?
+      chmod 0600 "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json" || return $?
       docker run --rm --pull=never --network=none \
         --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
         --mount "type=bind,src=$INSPECT_DIR/container.json,dst=/audit/container.json,readonly" \
         --mount "type=bind,src=$INSPECT_DIR/image.json,dst=/audit/image.json,readonly" \
-        "$IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE"
-      rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"
-      rmdir -- "$INSPECT_DIR"
-      trap - EXIT
+        "$IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE" || return $?
+      rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json" || return $?
+      rmdir -- "$INSPECT_DIR" || return $?
+      trap - EXIT || return $?
+      )
     }
   Define these helpers in the same root shell. Each autostart change refuses an
   unexpected file, atomically replaces it through a same-directory temporary
   file, fsyncs the replacement and directory, and reads back the exact result:
     disable_butler_autostart() {
+      (
       AUTOSTART_FILE=/var/lib/docker/unraid-autostart
-      test -f "$AUTOSTART_FILE"
-      test "$(stat -c '%u:%g %a' "$AUTOSTART_FILE")" = "0:0 644"
-      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX")
-      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT
-      awk '$0 != "ouro-butler" && $0 != "ouro-butler-staging" && $0 != "ouro-butler-rollback"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP"
-      chown 0:0 "$AUTOSTART_TMP"
-      chmod 0644 "$AUTOSTART_TMP"
-      sync -f "$AUTOSTART_TMP"
-      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE"
-      sync -f /var/lib/docker
-      trap - EXIT
-      ! grep -Fxq "ouro-butler" "$AUTOSTART_FILE"
-      ! grep -Fxq "ouro-butler-staging" "$AUTOSTART_FILE"
-      ! grep -Fxq "ouro-butler-rollback" "$AUTOSTART_FILE"
+      test -f "$AUTOSTART_FILE" || return $?
+      AUTOSTART_METADATA=$(stat -c '%u:%g %a' "$AUTOSTART_FILE") || return $?
+      test "$AUTOSTART_METADATA" = "0:0 644" || return $?
+      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX") || return $?
+      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT || return $?
+      awk '$0 != "ouro-butler" && $0 != "ouro-butler-staging" && $0 != "ouro-butler-rollback"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP" || return $?
+      chown 0:0 "$AUTOSTART_TMP" || return $?
+      chmod 0644 "$AUTOSTART_TMP" || return $?
+      sync -f "$AUTOSTART_TMP" || return $?
+      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE" || return $?
+      sync -f /var/lib/docker || return $?
+      trap - EXIT || return $?
+      AUTOSTART_COUNTS=$(awk '
+        $0 == "ouro-butler" { production++ }
+        $0 == "ouro-butler-staging" { staging++ }
+        $0 == "ouro-butler-rollback" { rollback++ }
+        END { printf "%d %d %d", production + 0, staging + 0, rollback + 0 }
+      ' "$AUTOSTART_FILE") || return $?
+      test "$AUTOSTART_COUNTS" = "0 0 0" || return $?
+      )
     }
     enable_butler_autostart() {
+      (
       AUTOSTART_FILE=/var/lib/docker/unraid-autostart
-      test -f "$AUTOSTART_FILE"
-      test "$(stat -c '%u:%g %a' "$AUTOSTART_FILE")" = "0:0 644"
-      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX")
-      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT
-      awk '$0 != "ouro-butler" && $0 != "ouro-butler-staging" && $0 != "ouro-butler-rollback"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP"
-      printf '%s\n' ouro-butler >>"$AUTOSTART_TMP"
-      chown 0:0 "$AUTOSTART_TMP"
-      chmod 0644 "$AUTOSTART_TMP"
-      sync -f "$AUTOSTART_TMP"
-      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE"
-      sync -f /var/lib/docker
-      trap - EXIT
-      test "$(grep -Fxc "ouro-butler" "$AUTOSTART_FILE")" = 1
-      ! grep -Fxq "ouro-butler-staging" "$AUTOSTART_FILE"
-      ! grep -Fxq "ouro-butler-rollback" "$AUTOSTART_FILE"
+      test -f "$AUTOSTART_FILE" || return $?
+      AUTOSTART_METADATA=$(stat -c '%u:%g %a' "$AUTOSTART_FILE") || return $?
+      test "$AUTOSTART_METADATA" = "0:0 644" || return $?
+      AUTOSTART_TMP=$(mktemp "${AUTOSTART_FILE}.tmp.XXXXXX") || return $?
+      trap 'rm -f -- "$AUTOSTART_TMP"' EXIT || return $?
+      awk '$0 != "ouro-butler" && $0 != "ouro-butler-staging" && $0 != "ouro-butler-rollback"' "$AUTOSTART_FILE" >"$AUTOSTART_TMP" || return $?
+      printf '%s\n' ouro-butler >>"$AUTOSTART_TMP" || return $?
+      chown 0:0 "$AUTOSTART_TMP" || return $?
+      chmod 0644 "$AUTOSTART_TMP" || return $?
+      sync -f "$AUTOSTART_TMP" || return $?
+      mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE" || return $?
+      sync -f /var/lib/docker || return $?
+      trap - EXIT || return $?
+      AUTOSTART_COUNTS=$(awk '
+        $0 == "ouro-butler" { production++ }
+        $0 == "ouro-butler-staging" { staging++ }
+        $0 == "ouro-butler-rollback" { rollback++ }
+        END { printf "%d %d %d", production + 0, staging + 0, rollback + 0 }
+      ' "$AUTOSTART_FILE") || return $?
+      test "$AUTOSTART_COUNTS" = "1 0 0" || return $?
+      )
     }
   This bounded wait accepts only Docker's healthy state. The image healthcheck
   verifies fresh daemon state plus exactly one managed Telegram process and one
@@ -82,14 +98,19 @@ Effective-spec audit helper:
   unhealthy container and times out after four minutes:
     wait_butler_ready() {
       WAIT_CONTAINER=$1
-      WAIT_DEADLINE=$(( $(date +%s) + 240 ))
-      while test "$(date +%s)" -lt "$WAIT_DEADLINE"; do
-        WAIT_STATE=$(docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' "$WAIT_CONTAINER")
-        test "$WAIT_STATE" = "running healthy" && return 0
+      WAIT_NOW=$(date +%s) || return $?
+      WAIT_DEADLINE=$(( WAIT_NOW + 240 ))
+      while :; do
+        WAIT_NOW=$(date +%s) || return $?
+        test "$WAIT_NOW" -lt "$WAIT_DEADLINE" || break
+        WAIT_STATE=$(docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' "$WAIT_CONTAINER") || return $?
+        if test "$WAIT_STATE" = "running healthy"; then
+          return 0
+        fi
         case "$WAIT_STATE" in
           exited\ *|dead\ *|*\ unhealthy) return 1 ;;
         esac
-        sleep 5
+        sleep 5 || return $?
       done
       return 1
     }
@@ -131,10 +152,18 @@ Update:
     fi
   Define the stale-rollback cleanup used by the preparation guard:
     remove_stopped_rollback_if_present() {
-      if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
-        test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return $?
+      ROLLBACK_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
+      case "
+$ROLLBACK_CONTAINER_NAMES
+" in
+        *"
+ouro-butler-rollback
+"*)
+        ROLLBACK_RUNNING=$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback) || return $?
+        test "$ROLLBACK_RUNNING" = false || return $?
         docker rm ouro-butler-rollback || return $?
-      fi
+        ;;
+      esac
     }
   Stop production, remove only a stopped stale rollback, rename the known-good
   container, and verify it remains stopped in one explicit preparation guard:
