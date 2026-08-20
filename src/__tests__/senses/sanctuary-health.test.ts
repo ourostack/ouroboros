@@ -27,6 +27,7 @@ function validState(overrides: Record<string, unknown> = {}) {
     outbox: null,
     indeterminateDeliveries: [],
     deliveredReceipts: [],
+    sweepReceipts: [],
     ...overrides,
   }
 }
@@ -200,7 +201,7 @@ describe("Sanctuary deterministic health sweep", () => {
     await restarted.markDeliveryAttempting(nextDigest.deliveryId!)
     await restarted.markDelivered(nextDigest.deliveryId!, [7001])
     expect(JSON.parse(fs.readFileSync(statePath, "utf8")).deliveredReceipts).toEqual([
-      expect.objectContaining({ deliveryId: nextDigest.deliveryId, messageIds: [7001] }),
+      expect.objectContaining({ deliveryId: nextDigest.deliveryId, kind: "digest", messageIds: [7001] }),
     ])
     expect((await broken()).message).toBeNull()
 
@@ -413,7 +414,7 @@ describe("Sanctuary deterministic health sweep", () => {
     const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
     expect(saved.deliveredReceipts).toHaveLength(100)
     expect(saved.deliveredReceipts[0].deliveryId).toBe("old-1")
-    expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", messageIds: [9001, 9002] })
+    expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", kind: "transition", messageIds: [9001, 9002] })
     expect(fs.statSync(filePath).mode & 0o777).toBe(0o600)
     expect(fs.readdirSync(path.dirname(filePath))).toEqual(["state.json"])
   })
@@ -435,6 +436,13 @@ describe("Sanctuary deterministic health sweep", () => {
     const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
     expect(saved.indeterminateDeliveries).toEqual([])
     expect(saved.deliveredReceipts).toEqual([])
+    expect(saved.sweepReceipts).toEqual([expect.objectContaining({
+      sweepId: expect.any(String),
+      incidentDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      opened: 0,
+      recovered: 0,
+      digestDue: false,
+    })])
     expect(Date.parse(saved.updatedAt)).toBeGreaterThan(0)
   })
 

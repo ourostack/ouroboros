@@ -1,9 +1,10 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 
 import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
+import { sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 
 const ENDPOINTS = [
   "https://media.mendelow.cloud/",
@@ -19,6 +20,7 @@ interface HealthDelivery {
   message: string
   status: "pending" | "attempting"
   createdAt: string
+  kind: "transition" | "digest" | "transition_and_digest"
   summarizedMessage?: string
 }
 interface HealthState {
@@ -27,7 +29,17 @@ interface HealthState {
   updatedAt: string
   outbox: HealthDelivery | null
   indeterminateDeliveries: HealthDelivery[]
-  deliveredReceipts: Array<{ deliveryId: string; messageIds: number[]; deliveredAt: string }>
+  deliveredReceipts: Array<{ deliveryId: string; kind: HealthDelivery["kind"]; messageIds: number[]; deliveredAt: string }>
+  sweepReceipts: Array<{
+    sweepId: string
+    startedAt: string
+    completedAt: string
+    incidentDigest: string
+    opened: number
+    recovered: number
+    digestDue: boolean
+    scenarioHandleDigest?: string
+  }>
 }
 
 export interface SanctuaryHealthSweepResult {
@@ -69,6 +81,7 @@ function load(filePath: string): HealthState {
       && typeof (delivery as HealthDelivery).message === "string"
       && ["pending", "attempting"].includes((delivery as HealthDelivery).status)
       && typeof (delivery as HealthDelivery).createdAt === "string"
+      && ((delivery as Partial<HealthDelivery>).kind === undefined || ["transition", "digest", "transition_and_digest"].includes((delivery as HealthDelivery).kind))
       && ((delivery as HealthDelivery).summarizedMessage === undefined || typeof (delivery as HealthDelivery).summarizedMessage === "string"),
     )
     if (!value.incidents || typeof value.incidents !== "object" || Array.isArray(value.incidents)) throw new Error("invalid incidents")
@@ -80,20 +93,28 @@ function load(filePath: string): HealthState {
     )) throw new Error("invalid indeterminate deliveries")
     if (value.deliveredReceipts !== undefined && (!Array.isArray(value.deliveredReceipts) || !value.deliveredReceipts.every((receipt) => (
       receipt && typeof receipt.deliveryId === "string" && typeof receipt.deliveredAt === "string"
+      && (receipt.kind === undefined || ["transition", "digest", "transition_and_digest"].includes(receipt.kind))
       && Array.isArray(receipt.messageIds) && receipt.messageIds.length > 0
       && receipt.messageIds.every((id) => Number.isSafeInteger(id) && id > 0)
     )))) throw new Error("invalid delivered receipts")
+    if (value.sweepReceipts !== undefined && (!Array.isArray(value.sweepReceipts) || !value.sweepReceipts.every((receipt) => (
+      receipt && typeof receipt.sweepId === "string" && typeof receipt.startedAt === "string" && typeof receipt.completedAt === "string"
+      && /^[0-9a-f]{64}$/u.test(receipt.incidentDigest) && Number.isSafeInteger(receipt.opened) && receipt.opened >= 0
+      && Number.isSafeInteger(receipt.recovered) && receipt.recovered >= 0 && typeof receipt.digestDue === "boolean"
+      && (receipt.scenarioHandleDigest === undefined || /^[0-9a-f]{64}$/u.test(receipt.scenarioHandleDigest))
+    )))) throw new Error("invalid sweep receipts")
     return {
       incidents: value.incidents as Record<string, Incident>,
       lastDigestDay: value.lastDigestDay,
       updatedAt: value.updatedAt,
-      outbox: value.outbox ?? null,
-      indeterminateDeliveries: value.indeterminateDeliveries ?? [],
-      deliveredReceipts: value.deliveredReceipts ?? [],
+      outbox: value.outbox ? { ...value.outbox, kind: value.outbox.kind ?? "transition" } : null,
+      indeterminateDeliveries: (value.indeterminateDeliveries ?? []).map((delivery) => ({ ...delivery, kind: delivery.kind ?? "transition" })),
+      deliveredReceipts: (value.deliveredReceipts ?? []).map((receipt) => ({ ...receipt, kind: receipt.kind ?? "transition" })),
+      sweepReceipts: value.sweepReceipts ?? [],
     }
   }
   catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { incidents: {}, lastDigestDay: null, updatedAt: new Date(0).toISOString(), outbox: null, indeterminateDeliveries: [], deliveredReceipts: [] }
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { incidents: {}, lastDigestDay: null, updatedAt: new Date(0).toISOString(), outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [] }
     throw new Error("Sanctuary health state is corrupt", { cause: error })
   }
 }
@@ -152,10 +173,12 @@ export function createSanctuaryHealthSweep(options: {
   const fetchImpl = options.fetch ?? fetch
   const now = options.now ?? (() => new Date())
   const runSweep = async (): Promise<SanctuaryHealthSweepResult> => {
-    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_start", message: "Sanctuary deterministic health sweep started", meta: { statePath: options.statePath } })
+    const sweepId = randomUUID()
+    const startedAt = now().toISOString()
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_start", message: "Sanctuary deterministic health sweep started", meta: { statePath: options.statePath, ...sanctuaryAcceptanceEventMeta("sanctuary") } })
     const pendingState = load(options.statePath)
     if (pendingState.outbox?.status === "pending") {
-      emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status } })
+      emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status, ...sanctuaryAcceptanceEventMeta("sanctuary") } })
       return {
         message: pendingState.outbox.message,
         incidents: Object.values(pendingState.incidents),
@@ -223,7 +246,22 @@ export function createSanctuaryHealthSweep(options: {
         : []),
     ]
     const message = lines.length ? lines.join("\n") : null
-    const delivery = message ? { id: randomUUID(), message, status: "pending" as const, createdAt: now().toISOString() } : null
+    const deliveryKind: HealthDelivery["kind"] = digestDue && (opened.length > 0 || recovered.length > 0)
+      ? "transition_and_digest"
+      : digestDue ? "digest" : "transition"
+    const delivery = message ? { id: randomUUID(), message, status: "pending" as const, createdAt: now().toISOString(), kind: deliveryKind } : null
+    const acceptanceMeta = sanctuaryAcceptanceEventMeta("sanctuary")
+    const completedAt = now().toISOString()
+    const sweepReceipt = {
+      sweepId,
+      startedAt,
+      completedAt,
+      incidentDigest: createHash("sha256").update(JSON.stringify(current)).digest("hex"),
+      opened: opened.length,
+      recovered: recovered.length,
+      digestDue,
+      ...(acceptanceMeta.scenarioHandleDigest ? { scenarioHandleDigest: acceptanceMeta.scenarioHandleDigest } : {}),
+    }
     const next: HealthState = {
       incidents: current,
       lastDigestDay: digestDue ? day : previous.lastDigestDay,
@@ -231,9 +269,10 @@ export function createSanctuaryHealthSweep(options: {
       outbox: delivery,
       indeterminateDeliveries: digestDue ? [] : previous.indeterminateDeliveries,
       deliveredReceipts: previous.deliveredReceipts,
+      sweepReceipts: [...previous.sweepReceipts, sweepReceipt].slice(-500),
     }
     save(options.statePath, next)
-    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue } })
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue, ...sanctuaryAcceptanceEventMeta("sanctuary") } })
     return { message, incidents: Object.values(current), ...(delivery ? { deliveryId: delivery.id } : {}) }
   }
 
@@ -262,7 +301,7 @@ export function createSanctuaryHealthSweep(options: {
     }
     const state = load(options.statePath)
     if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "attempting") throw new Error(`Sanctuary health delivery ${deliveryId} is not attempting`)
-    state.deliveredReceipts = [...state.deliveredReceipts, { deliveryId, messageIds: [...messageIds], deliveredAt: now().toISOString() }].slice(-100)
+    state.deliveredReceipts = [...state.deliveredReceipts, { deliveryId, kind: state.outbox.kind, messageIds: [...messageIds], deliveredAt: now().toISOString() }].slice(-100)
     state.outbox = null
     state.updatedAt = now().toISOString()
     save(options.statePath, state)
