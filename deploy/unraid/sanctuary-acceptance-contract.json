@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "harnessExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+  "adapterExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+  "adapterTimeoutMs": 15000,
+  "telegramTimeoutMs": 10000,
+  "commands": {
+    "telegram-bootstrap": { "invocation": "sanctuary-acceptance-harness.sh telegram-bootstrap --config <private-json>" },
+    "cursor-snapshot": { "invocation": "sanctuary-acceptance-harness.sh cursor-snapshot --config <private-json>" },
+    "cursor-delta": { "invocation": "sanctuary-acceptance-harness.sh cursor-delta --config <private-json>" },
+    "callback-inject": { "invocation": "sanctuary-acceptance-harness.sh callback-inject --config <private-json>" },
+    "unraid-key-rotate": { "invocation": "sanctuary-acceptance-harness.sh unraid-key-rotate --config <private-json>" },
+    "evidence-snapshot": { "invocation": "sanctuary-acceptance-harness.sh evidence-snapshot --config <private-json>" },
+    "reboot-request": { "invocation": "sanctuary-acceptance-harness.sh reboot-request --config <private-json>" },
+    "reboot-resume": { "invocation": "sanctuary-acceptance-harness.sh reboot-resume --config <private-json>" },
+    "evidence-bundle-index": { "invocation": "sanctuary-acceptance-harness.sh evidence-bundle-index --config <private-json>" },
+    "evidence-bundle-verify": { "invocation": "sanctuary-acceptance-harness.sh evidence-bundle-verify --config <private-json>" }
+  },
+  "adapters": {
+    "vault-backed-capability-verify": { "operation": "vault-backed-capability-verify", "authority": "fixed-container-vault-probe" },
+    "closed-inventory": { "operation": "closed-inventory", "authority": "fixed-unraid-key-directory-read" },
+    "exact-id-revoke": { "operation": "exact-id-revoke", "authority": "fixed-unraid-cli-delete" },
+    "revoked-key-auth-rejection": { "operation": "revoked-key-auth-rejection", "authority": "fixed-loopback-auth-probe" },
+    "callback-inject": { "operation": "callback-inject", "authority": "existing-harness-command" },
+    "reboot-request": { "operation": "reboot-request", "authority": "existing-harness-command" },
+    "unraid-key-rotate": { "operation": "unraid-key-rotate", "authority": "existing-harness-command" }
+  }
+}

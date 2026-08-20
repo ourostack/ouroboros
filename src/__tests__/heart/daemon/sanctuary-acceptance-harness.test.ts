@@ -333,6 +333,90 @@ describe("Sanctuary acceptance harness", () => {
     })
   })
 
+  it("fails closed across packaged adapter filesystem, subprocess, inventory, revoke, and probe errors", async () => {
+    const dir = root()
+    const readPermissions = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+      .map((resource) => ({ resource, actions: ["READ_ANY"] }))
+    const valid = { id: "key-id", name: "Butler RO", permissions: readPermissions, roles: [] }
+    const deps = (keys: any[] = [valid], overrides: Partial<SanctuaryAcceptanceAdapterDependencies> = {}): SanctuaryAcceptanceAdapterDependencies => ({
+      readKeyFiles: () => keys,
+      readDescriptor: () => JSON.stringify({ keyId: "key-id", descriptor: "descriptor" }),
+      execFile: async () => ({ status: 0, stdout: JSON.stringify({ valid: true, keyId: "key-id", capability: "read-only" }) }),
+      fetch: async () => jsonResponse({}, 401),
+      ...overrides,
+    })
+    await expect(executeSanctuaryAcceptanceAdapter(null, deps())).rejects.toThrow(/object/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "" }, deps())).rejects.toThrow(/nonempty/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "unknown" }, deps())).rejects.toThrow(/unknown/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "vault-backed-capability-verify", keyId: "bad id", capability: "read-only" }, deps())).rejects.toThrow(/keyId/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "vault-backed-capability-verify", keyId: "key-id", capability: "admin" }, deps())).rejects.toThrow(/capability/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "vault-backed-capability-verify", keyId: "key-id", capability: "read-only" }, deps([], { execFile: async () => ({ status: 0, stdout: "{}" }) }))).rejects.toThrow(/verification failed/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([valid, { ...valid }]))).rejects.toThrow(/duplicate IDs/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([valid, { ...valid, id: "other" }]))).rejects.toThrow(/duplicate names/u)
+    for (const permissions of [null, [{ resource: "UNKNOWN", actions: ["READ_ANY"] }], [{ resource: "DOCKER", actions: [] }]]) {
+      await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([{ ...valid, permissions }]))).rejects.toThrow(/permission/u)
+    }
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([{ ...valid, roles: [1] }]))).rejects.toThrow(/roles/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "exact-id-revoke", keyId: "absent" }, deps())).rejects.toThrow(/absent or ambiguous/u)
+    for (const stdout of [JSON.stringify({ deleted: 0 }), JSON.stringify({ deleted: 1, keys: [{ id: "other", name: "Butler RO" }] })]) {
+      await expect(executeSanctuaryAcceptanceAdapter({ operation: "exact-id-revoke", keyId: "key-id" }, deps([], {
+        readKeyFiles: () => [valid], execFile: async () => ({ status: 0, stdout }),
+      }))).rejects.toThrow(/revoke/u)
+    }
+    for (const endpoint of ["ftp://127.0.0.1/graphql", "http://example.com/graphql", "http://127.0.0.1/not-graphql", "http://user@127.0.0.1/graphql", "http://127.0.0.1/graphql?q=1"]) {
+      await expect(executeSanctuaryAcceptanceAdapter({ operation: "revoked-key-auth-rejection", keyId: "key-id", endpoint }, deps())).rejects.toThrow(/loopback/u)
+    }
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "revoked-key-auth-rejection", keyId: "key-id", endpoint: "http://127.0.0.1/graphql" }, deps([], { readDescriptor: () => "{}" }))).rejects.toThrow(/shape/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "revoked-key-auth-rejection", keyId: "key-id", endpoint: "http://127.0.0.1/graphql" }, deps([], { readDescriptor: () => JSON.stringify({ keyId: "other", descriptor: "x" }) }))).rejects.toThrow(/ID mismatch/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "revoked-key-auth-rejection", keyId: "key-id", endpoint: "http://127.0.0.1/graphql" }, deps([], { fetch: async () => jsonResponse({}, 200) }))).rejects.toThrow(/authentication rejection/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "revoked-key-auth-rejection", keyId: "key-id", endpoint: "http://127.0.0.1/graphql" }, deps([], { fetch: async () => jsonResponse({}, 403) }))).resolves.toMatchObject({ rejected: true, status: 403 })
+
+    const keyDirectory = path.join(dir, "valid-keys")
+    fs.mkdirSync(keyDirectory, { mode: 0o700 })
+    fs.writeFileSync(path.join(keyDirectory, "key.json"), JSON.stringify({ ...valid, key: "never-returned" }), { mode: 0o600 })
+    const descriptorPath = path.join(dir, "descriptor.json")
+    fs.writeFileSync(descriptorPath, JSON.stringify({ keyId: "key-id", descriptor: "descriptor" }), { mode: 0o600 })
+    const descriptorFd = fs.openSync(descriptorPath, "r")
+    const defaults = createSanctuaryAcceptanceAdapterDependencies(descriptorFd, { keyDirectory, adapterTimeoutMs: 25 })
+    createSanctuaryAcceptanceAdapterDependencies()
+    try {
+      await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, defaults)).resolves.toMatchObject({ keys: [{ id: "key-id" }] })
+      expect(JSON.parse(defaults.readDescriptor())).toMatchObject({ keyId: "key-id" })
+    } finally { fs.closeSync(descriptorFd) }
+    const success = path.join(dir, "adapter-success.sh")
+    const failed = path.join(dir, "adapter-failed.sh")
+    const sleeping = path.join(dir, "adapter-sleeping.sh")
+    fs.writeFileSync(success, "#!/bin/sh\nprintf '{}\\n'\n", { mode: 0o700 })
+    fs.writeFileSync(failed, "#!/bin/sh\nexit 1\n", { mode: 0o700 })
+    fs.writeFileSync(sleeping, "#!/bin/sh\nsleep 2\n", { mode: 0o700 })
+    await expect(defaults.execFile(success, [])).resolves.toMatchObject({ status: 0, stdout: "{}\n" })
+    await expect(defaults.execFile(failed, [])).rejects.toThrow(/failed/u)
+    await expect(defaults.execFile(sleeping, [])).rejects.toThrow(/timed out/u)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([{ ...valid, roles: ["ADMIN"] }]))).resolves.toMatchObject({ keys: [{ roles: "present" }] })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([], { readKeyFiles: () => { throw "opaque" } }))).rejects.toBe("opaque")
+
+    const invalidRolesDirectory = path.join(dir, "invalid-roles")
+    fs.mkdirSync(invalidRolesDirectory, { mode: 0o700 })
+    fs.writeFileSync(path.join(invalidRolesDirectory, "key.json"), JSON.stringify({ ...valid, roles: [1] }), { mode: 0o600 })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" },
+      createSanctuaryAcceptanceAdapterDependencies(3, { keyDirectory: invalidRolesDirectory }))).rejects.toThrow(/roles/u)
+  })
+
+  it("fails closed across inner vault-probe readiness and response branches", async () => {
+    const ready = { ok: true as const, itemPath: "vault:opaque", revision: "opaque", updatedAt: "2026-08-20T00:00:00.000Z", config: { unraidGraphqlUrl: "http://127.0.0.1/graphql", unraidReadApiKey: "r", unraidWriteApiKey: "w" } }
+    const run = (capability: string, refreshResult: any = ready, response = jsonResponse({ data: {} })) => executeSanctuaryAcceptanceVaultProbe("key", capability, {
+      refresh: async () => refreshResult,
+      fetch: async () => response,
+    })
+    await expect(executeSanctuaryAcceptanceVaultProbe("key", "invalid")).rejects.toThrow(/capability/u)
+    await expect(run("read-only", { ok: false, reason: "missing", itemPath: "vault:opaque", error: "missing" })).rejects.toThrow(/unavailable/u)
+    await expect(run("read-only", { ...ready, config: { ...ready.config, unraidGraphqlUrl: "" } })).rejects.toThrow(/nonempty/u)
+    await expect(run("read-only", { ...ready, config: { ...ready.config, unraidReadApiKey: "" } })).rejects.toThrow(/nonempty/u)
+    await expect(run("bounded-write", { ...ready, config: { ...ready.config, unraidWriteApiKey: "" } })).rejects.toThrow(/nonempty/u)
+    await expect(run("read-only", ready, jsonResponse({}, 500))).rejects.toThrow(/probe failed/u)
+    await expect(run("read-only", ready, jsonResponse({ errors: [{}] }))).rejects.toThrow(/rejected/u)
+  })
+
   it("performs a Telegram identity/nonce/vault/offset transaction without persisting secrets", async () => {
     const dir = root()
     const evidencePath = path.join(dir, "telegram-evidence.json")

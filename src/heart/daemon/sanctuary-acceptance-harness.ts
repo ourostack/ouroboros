@@ -19,6 +19,8 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const MAX_ADAPTER_OUTPUT = 1_048_576
+const DEFAULT_ADAPTER_TIMEOUT_MS = 15_000
+const DEFAULT_TELEGRAM_TIMEOUT_MS = 10_000
 const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
 type FixedEvidenceSchema = "telegram-cursor-v1" | "postboot-health-v1"
 
@@ -31,9 +33,15 @@ export interface AcceptanceHarnessDependencies {
   now(): number
   randomBytes(size: number): Buffer
   sleep(milliseconds: number): Promise<void>
+  telegramTimeoutMs?: number
 }
 
-export function createSanctuaryAcceptanceHarnessDependencies(secretFd = 3): AcceptanceHarnessDependencies {
+export function createSanctuaryAcceptanceHarnessDependencies(
+  secretFd = 3,
+  options: { adapterTimeoutMs?: number; telegramTimeoutMs?: number } = {},
+): AcceptanceHarnessDependencies {
+  const adapterTimeoutMs = options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS
+  const telegramTimeoutMs = options.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS
   return {
     readSecret: () => readFileSync(secretFd, "utf8"),
     runAdapter: async (executable, payload) => {
@@ -42,10 +50,12 @@ export function createSanctuaryAcceptanceHarnessDependencies(secretFd = 3): Acce
         input: `${JSON.stringify(payload)}\n`,
         encoding: "utf8",
         maxBuffer: MAX_ADAPTER_OUTPUT,
+        timeout: adapterTimeoutMs,
         cwd: "/",
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
         stdio: ["pipe", "pipe", "ignore"],
       })
+      if (result.error && "code" in result.error && result.error.code === "ETIMEDOUT") throw new Error("Sanctuary acceptance adapter timed out")
       if (result.error && "code" in result.error && result.error.code === "ENOBUFS") throw new Error("Sanctuary acceptance adapter output exceeded the limit")
       if (result.error || result.status !== 0) throw new Error("Sanctuary acceptance adapter failed")
       const stdout = result.stdout
@@ -59,6 +69,7 @@ export function createSanctuaryAcceptanceHarnessDependencies(secretFd = 3): Acce
     now: Date.now,
     randomBytes: nodeRandomBytes,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    telegramTimeoutMs,
   }
 }
 
@@ -224,16 +235,144 @@ async function telegramRequest(
   method: string,
   body?: JsonObject,
 ): Promise<unknown> {
-  const response = await deps.fetch(`https://api.telegram.org/bot${token}/${method}`, body ? {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  } : undefined)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), deps.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await deps.fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      ...(body ? {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      } : {}),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("Telegram request timed out")
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
   let envelope: JsonObject
   try { envelope = object(await response.json(), "Telegram response") }
   catch { throw new Error("Telegram returned invalid JSON") }
   if (!response.ok || envelope.ok !== true) throw new Error("Telegram request failed")
   return envelope.result
+}
+
+export const SANCTUARY_UNIT_16_EVIDENCE_LABELS = [
+  "unit-12c-1-opaque-identity",
+  "unit-14b-3-opaque-identity-live",
+  "unit-15c-1-no-callback-terminalization",
+  "unit-16a-pre-reboot-checkpoint",
+  "unit-16a-reboot-request",
+  "unit-16a-boot-recovery-milestones",
+  "unit-16b-runtime-vault-containment",
+  "unit-16c-provider-readiness",
+  "unit-16d-whats-up",
+  "unit-16d-1-space",
+  "unit-16d-2-unauthorized",
+  "unit-16e-containment-audit",
+  "unit-16e-1-stop-denial",
+  "unit-16e-2-restart-denial",
+  "unit-16f-cron-fingerprint",
+  "unit-16g-health-transition",
+  "unit-16h-daily-digest",
+  "unit-16i-delayed-approval",
+  "unit-16j-denial",
+  "unit-16k-timeout-stale",
+  "unit-16l-duplicate-callback",
+  "unit-16m-restart-continuation",
+] as const
+
+function assertRedactedEvidence(value: unknown, label: string): void {
+  if (Array.isArray(value)) {
+    for (const item of value) assertRedactedEvidence(item, label)
+    return
+  }
+  if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value as JsonObject)) {
+      if (/(?:telegram)?(?:user|chat|update|message)[_-]?id|token|secret|password|credential|api[_-]?key/iu.test(key)) {
+        throw new Error(`${label} contains a sensitive or raw Telegram identity field`)
+      }
+      assertRedactedEvidence(item, label)
+    }
+    return
+  }
+  if (typeof value === "string" && /\b\d{5,}:[A-Za-z0-9_-]{20,}\b/u.test(value)) {
+    throw new Error(`${label} contains sensitive material`)
+  }
+}
+
+function normalizedEvidenceHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex")
+}
+
+function exactEvidenceLabels(entries: Array<{ label: string }>): boolean {
+  return JSON.stringify(entries.map((entry) => entry.label).sort())
+    === JSON.stringify([...SANCTUARY_UNIT_16_EVIDENCE_LABELS].sort())
+}
+
+async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
+  if (!Array.isArray(config.entries)) throw new Error("evidence entries must be an array")
+  const requested = config.entries.map((raw) => {
+    const entry = object(raw, "evidence entry")
+    return { label: text(entry.label, "evidence entry label"), path: entry.path }
+  })
+  if (!exactEvidenceLabels(requested) || new Set(requested.map((entry) => entry.label)).size !== requested.length) {
+    throw new Error("evidence entries must equal the complete Unit 16 evidence matrix")
+  }
+  const byLabel = new Map(requested.map((entry) => [entry.label, entry.path]))
+  const entries = SANCTUARY_UNIT_16_EVIDENCE_LABELS.map((label) => {
+    const source = requirePrivateRegularFile(root, byLabel.get(label), `${label} evidence`)
+    const value = object(JSON.parse(readFileSync(source, "utf8")) as unknown, `${label} evidence`)
+    assertRedactedEvidence(value, label)
+    return { label, sha256: normalizedEvidenceHash(value), evidence: value }
+  })
+  const core = {
+    schemaVersion: 1,
+    operation: "sanctuary-unit-16-evidence-bundle",
+    phase: "complete",
+    imageDigest: opaqueDigest(config.imageDigest, "imageDigest"),
+    containerDigest: opaqueDigest(config.containerDigest, "containerDigest"),
+    cursorDigest: opaqueDigest(config.cursorDigest, "cursorDigest"),
+    entries,
+  }
+  initializeCheckpoint(root, evidencePath, { ...core, bundleDigest: normalizedEvidenceHash(core), completedAt: deps.now() })
+}
+
+function verifyEvidenceBundle(config: JsonObject): void {
+  const root = privateAllowedRoot(config)
+  const bundle = readCheckpoint(root, config.evidencePath)
+  if (bundle.schemaVersion !== 1 || bundle.operation !== "sanctuary-unit-16-evidence-bundle" || bundle.phase !== "complete") {
+    throw new Error("evidence bundle header is invalid")
+  }
+  if (!Array.isArray(bundle.entries)) throw new Error("evidence bundle entries must be an array")
+  const entries = bundle.entries.map((raw) => {
+    const entry = object(raw, "evidence bundle entry")
+    const label = text(entry.label, "evidence bundle label")
+    const evidence = object(entry.evidence, `${label} evidence`)
+    assertRedactedEvidence(evidence, label)
+    const sha256 = opaqueDigest(entry.sha256, `${label} entry hash`)
+    if (sha256 !== normalizedEvidenceHash(evidence)) throw new Error("evidence bundle entry hash mismatch")
+    return { label, sha256, evidence }
+  })
+  if (!exactEvidenceLabels(entries) || new Set(entries.map((entry) => entry.label)).size !== entries.length) {
+    throw new Error("evidence bundle does not contain the complete Unit 16 evidence matrix")
+  }
+  const core = {
+    schemaVersion: 1,
+    operation: "sanctuary-unit-16-evidence-bundle",
+    phase: "complete",
+    imageDigest: opaqueDigest(bundle.imageDigest, "bundle imageDigest"),
+    containerDigest: opaqueDigest(bundle.containerDigest, "bundle containerDigest"),
+    cursorDigest: opaqueDigest(bundle.cursorDigest, "bundle cursorDigest"),
+    entries,
+  }
+  if (opaqueDigest(bundle.bundleDigest, "bundle digest") !== normalizedEvidenceHash(core)) throw new Error("evidence bundle digest mismatch")
 }
 
 async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
@@ -625,6 +764,8 @@ export async function executeSanctuaryAcceptanceHarness(
       case "evidence-snapshot": await evidenceSnapshot(config, deps); break
       case "reboot-request": await rebootRequest(config, deps); break
       case "reboot-resume": await rebootResume(config, deps); break
+      case "evidence-bundle-index": await evidenceBundleIndex(config, deps); break
+      case "evidence-bundle-verify": verifyEvidenceBundle(config); break
       default: throw new Error("unknown Sanctuary acceptance command")
     }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_end", message: "Sanctuary acceptance operation completed", meta: { command } })

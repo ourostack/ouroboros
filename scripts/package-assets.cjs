@@ -15,6 +15,8 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/README.txt",
   "deploy/unraid/container-runtime.json",
   "deploy/unraid/sanctuary-acceptance-harness.sh",
+  "deploy/unraid/sanctuary-acceptance-adapter.sh",
+  "deploy/unraid/sanctuary-acceptance-contract.json",
   "deploy/unraid/sanctuary.xml",
   "deploy/unraid/sanctuary.ouro/agent.json",
   "deploy/unraid/sanctuary.ouro/bundle-meta.json",
