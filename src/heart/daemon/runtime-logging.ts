@@ -43,7 +43,14 @@ function defaultLoggingForProcess(processName: RuntimeProcessName): RuntimeLoggi
     }
   }
 
-  if (processName === "bluebubbles" || processName === "mail" || processName === "voice" || processName === "a2a" || processName === "telegram") {
+  if (processName === "telegram") {
+    return {
+      level: "info",
+      sinks: ["terminal", "ndjson"],
+    }
+  }
+
+  if (processName === "bluebubbles" || processName === "mail" || processName === "voice" || processName === "a2a") {
     return {
       level: "warn",
       sinks: ["terminal", "ndjson"],
