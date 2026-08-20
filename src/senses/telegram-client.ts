@@ -566,12 +566,15 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       }
 
       remove(pending!)
+      let decisionStarted = false
       try {
         await acknowledge(callback.id, false)
         let outcome = pending!.terminal
         if (!outcome) {
           const decisionToken = pending!.decisionToken ?? await options.resolveDecisionToken?.(pending!.approvalId)
           if (!decisionToken) throw new Error("Telegram approval restart requires a decision token resolver")
+          pending!.decisionToken = undefined
+          decisionStarted = true
           outcome = await options.onDecision({
             approvalId: pending!.approvalId,
             decisionToken,
@@ -590,7 +593,14 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         persist()
         return { handled: true, accepted: outcome.accepted, reason: outcome.accepted ? "accepted" : "decision_refused" }
       } catch (error) {
+        if (decisionStarted && !pending!.terminal) {
+          pending!.terminal = {
+            accepted: false,
+            terminalText: "⚠️ Approval did not complete",
+          }
+        }
         add(pending!)
+        if (decisionStarted) persist()
         throw error
       }
     },
