@@ -1124,6 +1124,56 @@ describe("habit lifecycle filesystem protocol", () => {
     if (recovered.status === "acquired") expect(releaseHabitLifecycleLock(recovered.lease)).toBe(true)
   }, 45_000)
 
+  it("retries a real-process release across transient coordination contention", async () => {
+    const agentRoot = makeRoot("habit-lifecycle-process-release-contention-")
+    const holderReady = path.join(agentRoot, "holder.ready")
+    const holderStart = path.join(agentRoot, "holder.start")
+    const holderAcquired = path.join(agentRoot, "holder.result")
+    const holderRelease = path.join(agentRoot, "holder.release")
+    const holder = spawnLifecycleChild({
+      mode: "lock",
+      agentRoot,
+      habitId: "contended-habit",
+      operationId: "holder",
+      readyPath: holderReady,
+      startPath: holderStart,
+      resultPath: holderAcquired,
+      releasePath: holderRelease,
+    })
+    await waitForPath(holderReady)
+    fs.writeFileSync(holderStart, "start\n", "utf8")
+    await waitForPath(holderAcquired)
+
+    const contentionReady = path.join(agentRoot, "contention.ready")
+    const contentionStart = path.join(agentRoot, "contention.start")
+    const contentionHeld = path.join(agentRoot, "contention.result")
+    const contentionRelease = path.join(agentRoot, "contention.release")
+    const contention = spawnLifecycleChild({
+      mode: "coordination",
+      agentRoot,
+      habitId: "contended-habit",
+      operationId: "contender",
+      readyPath: contentionReady,
+      startPath: contentionStart,
+      resultPath: contentionHeld,
+      releasePath: contentionRelease,
+    })
+    await waitForPath(contentionReady)
+    fs.writeFileSync(contentionStart, "start\n", "utf8")
+    await waitForPath(contentionHeld)
+
+    fs.writeFileSync(holderRelease, "release\n", "utf8")
+    await sleep(150)
+    expect(fs.existsSync(getHabitLifecyclePaths({
+      agentRoot,
+      habitId: "contended-habit",
+    }).owner)).toBe(true)
+    fs.writeFileSync(contentionRelease, "release\n", "utf8")
+
+    expect(await contention.completion).toMatchObject({ code: 0 })
+    expect(await holder.completion).toMatchObject({ code: 0 })
+  }, 20_000)
+
   it("writes journal and definition bytes in temp-fsync-rename-directory-fsync order", async () => {
     const agentRoot = makeRoot()
     const result = await acquireHabitLifecycleLock({ agentRoot, habitId: "rsvp-demo", operationId: "cancel:demo" }, fixedDeps())
