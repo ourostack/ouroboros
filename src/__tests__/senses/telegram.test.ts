@@ -7,6 +7,7 @@ function fixture(input: {
   healthSweep?: any
   approvalRuntime?: any
   pollRun?: () => Promise<void>
+  botToken?: string
 } = {}) {
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
@@ -41,7 +42,8 @@ function fixture(input: {
   }
   const app = createTelegramSenseApp({
     agentName: "butler",
-    credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+    credentials: { botToken: input.botToken ?? "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+    identityKey: "stable-agent-scoped-identity-key-with-32-bytes",
     api,
     offsetStore: { load: () => 0, save: vi.fn() },
     createLongPoll,
@@ -77,6 +79,19 @@ describe("Telegram sense", () => {
     }, undefined)
   })
 
+  it("keeps the same opaque friend and session identity across bot-token rotation", async () => {
+    const first = fixture({ botToken: "old-token" })
+    const rotated = fixture({ botToken: "rotated-token" })
+    await first.getOnMessage()({ updateId: 1, messageId: "1", userId: "42", chatId: "42", text: "before" })
+    await rotated.getOnMessage()({ updateId: 2, messageId: "2", userId: "42", chatId: "42", text: "after" })
+
+    const firstTurn = first.runTurn.mock.calls[0]![0]
+    const rotatedTurn = rotated.runTurn.mock.calls[0]![0]
+    expect(rotatedTurn.friendId).toBe(firstTurn.friendId)
+    expect(rotatedTurn.sessionKey).toBe(firstTurn.sessionKey)
+    expect(rotatedTurn.identity).toEqual(firstTurn.identity)
+  })
+
   it("routes callback updates only through the approval transport", async () => {
     const f = fixture()
     const update = { update_id: 10, callback_query: { id: "cb", from: { id: 42 }, data: "opaque" } }
@@ -89,7 +104,7 @@ describe("Telegram sense", () => {
     const f = fixture()
     await f.app.run()
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledBefore(f.poll.run as any)
-    f.app.stop()
+    await f.app.stop()
     expect(f.poll.stop).toHaveBeenCalledOnce()
     expect(f.api.stop).toHaveBeenCalledOnce()
   })
@@ -108,7 +123,7 @@ describe("Telegram sense", () => {
     await vi.advanceTimersByTimeAsync(3_000)
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
 
-    f.app.stop()
+    await f.app.stop()
     await vi.advanceTimersByTimeAsync(2_000)
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
     finishPolling()
@@ -130,7 +145,50 @@ describe("Telegram sense", () => {
     await vi.advanceTimersByTimeAsync(3_000)
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
 
-    f.app.stop()
+    await f.app.stop()
+    finishPolling()
+    await running
+    vi.useRealTimers()
+  })
+
+  it("joins an in-flight reconciliation before closing transport resources", async () => {
+    let releaseReconcile!: () => void
+    let finishPolling!: () => void
+    const approvalRuntime = {
+      transport: {
+        sendApproval: vi.fn(), handleUpdate: vi.fn(), terminalizeRecovered: vi.fn(),
+        reconcileExpired: vi.fn()
+          .mockResolvedValueOnce(undefined)
+          .mockImplementationOnce(() => new Promise<void>((resolve) => { releaseReconcile = resolve })),
+      },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+    }
+    const f = fixture({ approvalRuntime, pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    const running = f.app.run()
+    await vi.waitFor(() => expect(approvalRuntime.transport.reconcileExpired).toHaveBeenCalledTimes(1))
+    vi.useFakeTimers()
+    await vi.advanceTimersByTimeAsync(1_000)
+    const stopping = f.app.stop()
+    expect(approvalRuntime.close).not.toHaveBeenCalled()
+    releaseReconcile()
+    await stopping
+    expect(approvalRuntime.close).toHaveBeenCalledOnce()
+    finishPolling()
+    await running
+    vi.useRealTimers()
+  })
+
+  it("caps persistent reconciliation retries with exponential backoff", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    f.approvalTransport.reconcileExpired
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue(new Error("persistent failure"))
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(6)
+    await f.app.stop()
     finishPolling()
     await running
     vi.useRealTimers()

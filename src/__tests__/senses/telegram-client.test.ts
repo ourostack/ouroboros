@@ -171,6 +171,27 @@ describe("Telegram approval callback transport", () => {
     expect(request.at(-1)?.method).toBe("editMessageText")
   })
 
+  it("isolates one terminal-edit failure so later expired prompts still lose their buttons", async () => {
+    const records = [
+      { approvalId: "blocked", messageId: "98", deliveryState: "bound" as const, approveCallbackData: "a:blocked", denyCallbackData: "d:blocked", expiresAt: 999_999 },
+      { approvalId: "later", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:later", denyCallbackData: "d:later", expiresAt: 999_999 },
+    ]
+    const fixture = approvalFixture({
+      records,
+      apiRequest: async (_method, body) => {
+        if (body.message_id === 98) throw new Error("first prompt unavailable")
+        return true
+      },
+    })
+
+    await expect(fixture.transport.reconcileExpired()).rejects.toThrow("first prompt unavailable")
+    expect(fixture.calls).toContainEqual(expect.objectContaining({
+      method: "editMessageText",
+      body: expect.objectContaining({ message_id: 99, reply_markup: { inline_keyboard: [] } }),
+    }))
+    expect(fixture.records()).toEqual([expect.objectContaining({ approvalId: "blocked" })])
+  })
+
   it("terminalizes and removes a recovered approval prompt without replaying its callback", async () => {
     const record = { approvalId: "recovered", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:recovered", denyCallbackData: "d:recovered", expiresAt: 1_300_000 }
     const fixture = approvalFixture({ records: [record] })

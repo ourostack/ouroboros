@@ -146,7 +146,7 @@ describe("Telegram sense coverage contracts", () => {
 
     expect(subject).toMatch(/^tg_[A-Za-z0-9_-]{43}$/u)
     expect(repeated.identity.externalId).toBe(subject)
-    expect(otherToken.identity.externalId).not.toBe(subject)
+    expect(otherToken.identity.externalId).toBe(subject)
     expect(otherUser.identity.externalId).not.toBe(subject)
     expect(otherChat.identity.externalId).not.toBe(subject)
     expect(first).toMatchObject({
