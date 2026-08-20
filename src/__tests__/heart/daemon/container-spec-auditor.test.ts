@@ -10,7 +10,7 @@ function validInspect() {
   return {
     Config: {
       User: "10001:10001",
-      Image: "ouro-butler@sha256:" + "a".repeat(64),
+      Image: "sha256:" + "a".repeat(64),
       Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"],
       Cmd: [],
       Env: ["HOME=/home/ouro"],
@@ -38,7 +38,7 @@ function validInspect() {
 function stagedTemplate(): string {
   return [
     "<Container>",
-    `<Repository>ouro-butler@sha256:${"a".repeat(64)}</Repository>`,
+    `<Repository>sha256:${"a".repeat(64)}</Repository>`,
     "<Network>host</Network>",
     "<Privileged>false</Privileged>",
     "<ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>",
@@ -51,7 +51,7 @@ function stagedTemplate(): string {
 describe("Sanctuary pre-activation container auditor", () => {
   it("accepts only the exact released effective spec", () => {
     expect(auditSanctuaryContainerSpec(validInspect(), {
-      expectedImage: "ouro-butler@sha256:" + "a".repeat(64),
+      expectedImage: "sha256:" + "a".repeat(64),
     })).toEqual({ ok: true, violations: [] })
   })
 
@@ -75,7 +75,7 @@ describe("Sanctuary pre-activation container auditor", () => {
   ])("rejects %s", (_label, mutate) => {
     const spec = validInspect()
     mutate(spec)
-    const result = auditSanctuaryContainerSpec(spec, { expectedImage: "ouro-butler@sha256:" + "a".repeat(64) })
+    const result = auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64) })
     expect(result.ok).toBe(false)
     expect(result.violations.length).toBeGreaterThan(0)
   })
@@ -96,7 +96,33 @@ describe("Sanctuary pre-activation container auditor", () => {
   })
 
   it.each([null, [], {}, "not-json"])("fails closed for malformed inspect shape %#", (spec) => {
-    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "ouro-butler@sha256:" + "a".repeat(64) }).ok).toBe(false)
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64) }).ok).toBe(false)
+  })
+
+  it.each([
+    "ouro-butler:latest",
+    "ouro-butler:0.1.0-alpha.734",
+    "ouro-butler@sha256:" + "a".repeat(64),
+    "sha256:" + "A".repeat(64),
+    "sha256:" + "a".repeat(63),
+  ])("rejects non-local or malformed expected image identity: %s", (expectedImage) => {
+    const spec = validInspect()
+    spec.Config.Image = expectedImage
+
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage })).toEqual(expect.objectContaining({
+      ok: false,
+      violations: expect.arrayContaining(["expected image must be an exact local Docker image ID"]),
+    }))
+  })
+
+  it("rejects an effective image that differs from the reviewed local image ID", () => {
+    const spec = validInspect()
+    spec.Config.Image = "sha256:" + "b".repeat(64)
+
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64) })).toEqual(expect.objectContaining({
+      ok: false,
+      violations: expect.arrayContaining(["image does not match the reviewed exact local Docker image ID"]),
+    }))
   })
 
   it("runs the packaged file-based auditor without echoing the inspect payload", () => {
@@ -104,7 +130,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     const exitCode = runContainerSpecAuditorCli([
       "--template", "/tmp/template.xml",
       "--runtime-policy", "/tmp/runtime.json",
-      "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+      "--expected-image", "sha256:" + "a".repeat(64),
     ], {
       readFile: (filePath) => filePath.endsWith(".xml") ? stagedTemplate() : JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
       write: (text) => output.push(text),
@@ -117,7 +143,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     expect(runContainerSpecAuditorCli([
       "--template", "/tmp/template.xml",
       "--runtime-policy", "/tmp/runtime.json",
-      "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+      "--expected-image", "sha256:" + "a".repeat(64),
     ], {
       readFile: (filePath) => filePath.endsWith(".xml") ? "<Container />" : "{}",
       write: () => undefined,
@@ -129,12 +155,12 @@ describe("Sanctuary pre-activation container auditor", () => {
     expect(runContainerSpecAuditorCli([
       "--template", "/tmp/template.xml",
       "--runtime-policy", "/tmp/runtime.json",
-      "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+      "--expected-image", "sha256:" + "a".repeat(64),
     ], { readFile: () => { throw new Error("missing") }, write: () => undefined })).toBe(2)
     expect(runContainerSpecAuditorCli([
       "--template", "/tmp/template.xml",
       "--runtime-policy", "/tmp/runtime.json",
-      "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+      "--expected-image", "sha256:" + "a".repeat(64),
     ], { readFile: () => { throw "missing" }, write: () => undefined })).toBe(2)
   })
 
@@ -149,7 +175,7 @@ describe("Sanctuary pre-activation container auditor", () => {
       expect(runContainerSpecAuditorCli([
         "--template", templatePath,
         "--runtime-policy", policyPath,
-        "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
+        "--expected-image", "sha256:" + "a".repeat(64),
       ])).toBe(0)
       expect(write).toHaveBeenCalled()
     } finally {
@@ -159,7 +185,7 @@ describe("Sanctuary pre-activation container auditor", () => {
   })
 
   it("audits staged template equality and updater-off policy before creation", () => {
-    const expectedImage = "ouro-butler@sha256:" + "a".repeat(64)
+    const expectedImage = "sha256:" + "a".repeat(64)
     expect(auditSanctuaryStagedFiles({
       templateXml: stagedTemplate(),
       runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
@@ -195,7 +221,7 @@ describe("Sanctuary pre-activation container auditor", () => {
         `--restart=unless-stopped --user=10001:10001 ${extra}`,
       ),
       runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
-      expectedImage: "ouro-butler@sha256:" + "a".repeat(64),
+      expectedImage: "sha256:" + "a".repeat(64),
     })
 
     expect(result).toEqual(expect.objectContaining({

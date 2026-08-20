@@ -14,12 +14,23 @@ Status and health:
   docker logs --tail 200 ouro-butler
 
 Update:
-  Build and verify a new immutable ouro-butler:<version> image first. Create
-  ouro-butler-staging with autostart disabled and the same two binds. After its
-  health and Telegram checks pass, stop production, retain it as the stopped
-  ouro-butler-rollback image reference, recreate ouro-butler from the verified
-  digest, and enable only ouro-butler for Unraid array autostart. Never run two
-  active butlers against the same Telegram token.
+  Build and verify a new ouro-butler:<version> image first. The tag is only a
+  lookup handle and never authorizes container creation. Resolve and validate
+  the exact local Docker image ID before staging:
+    IMAGE_TAG=ouro-butler:<version>
+    IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")
+    printf '%s\n' "$IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
+    docker image inspect "$IMAGE_ID" >/dev/null
+  Replace sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID in a copy of sanctuary.xml
+  with exactly $IMAGE_ID. Run audit-container-spec.sh against that staged template,
+  container-runtime.json, and $IMAGE_ID before docker create. Create
+  ouro-butler-staging from "$IMAGE_ID", with autostart disabled and the same
+  two binds. After its health and Telegram checks pass, stop production,
+  retain it as the stopped ouro-butler-rollback container, recreate
+  ouro-butler from the same exact local image ID, and enable only ouro-butler
+  among Butler containers for Unraid array autostart. Never run two active
+  butlers against the same Telegram token. Never create a container from the
+  mutable lookup tag.
 
 Backup:
   Stop ouro-butler, then snapshot both of these directories together:
@@ -30,8 +41,9 @@ Backup:
 
 Restore:
   Stop and remove the current container, restore both directories with numeric
-  ownership 10001:10001, recreate from the pinned image digest and template,
-  then verify health before enabling array autostart.
+  ownership 10001:10001, verify the pinned exact local image ID still resolves
+  with docker image inspect, recreate from that image ID and its staged
+  template, then verify health before enabling array autostart.
 
 Credential recovery:
   Restore or unlock the Sanctuary agent vault, then run provider refresh.
@@ -46,6 +58,7 @@ Credential recovery:
 Audit and safety verification:
   Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and
   restart-attempt receipts. Confirm no Docker socket/device/host-root mounts and
-  no published ports with docker inspect. The read key must reject Docker stop
-  and restart mutations; only the separate write key may perform the one typed
-  approved restart action.
+  no published ports with docker inspect. Confirm Config.Image equals the exact
+  reviewed local image ID, not the build tag. The read key must reject Docker
+  stop and restart mutations; only the separate write key may perform the one
+  typed approved restart action.

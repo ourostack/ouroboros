@@ -53,8 +53,8 @@ export function auditSanctuaryContainerSpec(
   if (!root || !config || !host) {
     violations.push("inspect payload must contain object Config and HostConfig records")
   } else {
-    if (!/^ouro-butler@sha256:[a-f0-9]{64}$/u.test(options.expectedImage)) violations.push("expected image must be an immutable ouro-butler digest")
-    if (config.Image !== options.expectedImage) violations.push("image does not match the reviewed immutable digest")
+    if (!/^sha256:[a-f0-9]{64}$/u.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
+    if (config.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
     if (config.User !== "10001:10001") violations.push("container user must be 10001:10001")
     if (JSON.stringify(config.Entrypoint) !== JSON.stringify(["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("entrypoint must be the direct daemon entry")
     if (!(config.Cmd === null || (Array.isArray(config.Cmd) && config.Cmd.length === 0))) violations.push("container command must be empty")

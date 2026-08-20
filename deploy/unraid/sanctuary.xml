@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>ouro-butler</Name>
-  <Repository>ouro-butler:0.1.0-alpha.734</Repository>
+  <Repository>sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID</Repository>
   <Registry/>
   <Network>host</Network>
   <Shell>sh</Shell>
