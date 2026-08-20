@@ -3,13 +3,37 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { loadContainerCredentialBootstrap } from "../../../heart/daemon/container-credential-bootstrap"
+const bootstrapMocks = vi.hoisted(() => ({
+  homeDir: "/tmp/container-bootstrap-default-home",
+  persist: vi.fn(async () => true),
+  apply: vi.fn(() => true),
+  machineIdentity: vi.fn(() => ({ machineId: "machine_default" })),
+}))
+
+vi.mock("node:os", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:os")>(),
+  homedir: () => bootstrapMocks.homeDir,
+}))
+vi.mock("../../../heart/runtime-credentials", () => ({
+  persistRuntimeCredentialBootstrapMessage: (...args: unknown[]) => bootstrapMocks.persist(...args),
+  applyRuntimeCredentialBootstrapMessage: (...args: unknown[]) => bootstrapMocks.apply(...args),
+}))
+vi.mock("../../../heart/machine-identity", () => ({
+  loadOrCreateMachineIdentity: () => bootstrapMocks.machineIdentity(),
+}))
+
+import {
+  getDefaultContainerCredentialBootstrapPath,
+  loadContainerCredentialBootstrap,
+} from "../../../heart/daemon/container-credential-bootstrap"
 
 describe("container credential bootstrap", () => {
   let directory = ""
 
   afterEach(() => {
     if (directory) fs.rmSync(directory, { recursive: true, force: true })
+    vi.restoreAllMocks()
+    vi.clearAllMocks()
   })
 
   function fixture(message: Record<string, unknown>): string {
@@ -59,6 +83,17 @@ describe("container credential bootstrap", () => {
     expect(fs.existsSync(file)).toBe(false)
     expect(fs.existsSync(`${file}.consuming`)).toBe(true)
     expect(apply).not.toHaveBeenCalled()
+  })
+
+  it("treats a rejected durable message as a persistence failure and preserves the claim", async () => {
+    const file = fixture({ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} })
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], {
+      path: file,
+      persist: async () => false,
+      apply: () => true,
+    })).rejects.toThrow("container credential bootstrap persistence failed")
+    expect(fs.existsSync(`${file}.consuming`)).toBe(true)
   })
 
   it("reconciles a recoverable claimed envelope left by an interrupted import", async () => {
@@ -136,5 +171,55 @@ describe("container credential bootstrap", () => {
       persist: async () => true,
       apply: () => true,
     })).resolves.toEqual([])
+  })
+
+  it("uses the default claim path, machine identity, durable writer, and cache writer", async () => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "container-bootstrap-default-"))
+    bootstrapMocks.homeDir = directory
+    const file = getDefaultContainerCredentialBootstrapPath()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1,
+      credentials: [{ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} }],
+    }), { mode: 0o600 })
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"])).resolves.toEqual(["sanctuary"])
+    expect(bootstrapMocks.machineIdentity).toHaveBeenCalledTimes(1)
+    expect(bootstrapMocks.persist).toHaveBeenCalledWith(expect.anything(), { machineId: "machine_default" })
+    expect(bootstrapMocks.apply).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects invalid envelope shapes, unsupported fields, unsafe claimed files, and owner mismatch", async () => {
+    const message = { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} }
+    const file = fixture(message)
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 2, credentials: [] }), { mode: 0o600 })
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file })).rejects.toThrow("envelope is invalid")
+    fs.rmSync(`${file}.consuming`)
+
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, credentials: [], extra: true }), { mode: 0o600 })
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file })).rejects.toThrow("unsupported fields")
+    fs.rmSync(`${file}.consuming`)
+
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, credentials: [message] }), { mode: 0o600 })
+    fs.renameSync(file, `${file}.target`)
+    fs.symlinkSync(`${file}.target`, `${file}.consuming`)
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file })).rejects.toThrow("consuming state must be a regular file")
+    fs.rmSync(`${file}.consuming`)
+
+    fs.renameSync(`${file}.target`, `${file}.consuming`)
+    const getuid = process.getuid
+    if (getuid) {
+      vi.spyOn(process, "getuid").mockReturnValue(getuid() + 1)
+      await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file })).rejects.toThrow("owned by the runtime user")
+    }
+  })
+
+  it("rethrows non-absence filesystem errors while probing the source", async () => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "container-bootstrap-stat-error-"))
+    const blocker = path.join(directory, "not-a-directory")
+    fs.writeFileSync(blocker, "x", { mode: 0o600 })
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: path.join(blocker, "credentials.json") }))
+      .rejects.toMatchObject({ code: "ENOTDIR" })
   })
 })

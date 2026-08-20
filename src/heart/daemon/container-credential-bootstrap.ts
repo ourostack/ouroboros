@@ -2,8 +2,12 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { applyRuntimeCredentialBootstrapMessage } from "../runtime-credentials"
+import {
+  applyRuntimeCredentialBootstrapMessage,
+  persistRuntimeCredentialBootstrapMessage,
+} from "../runtime-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { loadOrCreateMachineIdentity } from "../machine-identity"
 
 const MAX_BOOTSTRAP_BYTES = 128 * 1024
 
@@ -15,6 +19,7 @@ interface ContainerBootstrapEnvelope {
 export interface ContainerCredentialBootstrapOptions {
   path?: string
   apply?: (message: unknown) => boolean
+  persist?: (message: unknown) => Promise<boolean>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -46,62 +51,82 @@ export function getDefaultContainerCredentialBootstrapPath(): string {
   return path.join(os.homedir(), ".ouro-cli", "container-credentials.json")
 }
 
-export function loadContainerCredentialBootstrap(
-  enabledAgents: string[],
-  options: ContainerCredentialBootstrapOptions = {},
-): string[] {
-  const filePath = options.path ?? getDefaultContainerCredentialBootstrapPath()
-  const consumingPath = `${filePath}.consuming`
+function optionalStat(filePath: string): fs.Stats | null {
   try {
-    const interrupted = fs.lstatSync(consumingPath)
-    if (!interrupted.isFile() || interrupted.isSymbolicLink()) throw new Error("container credential consuming state must be a regular file")
-    deleteDurably(consumingPath)
+    return fs.lstatSync(filePath)
   } catch (error) {
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error
-  }
-  let stat: fs.Stats
-  try {
-    stat = fs.lstatSync(filePath)
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return []
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null
     throw error
   }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    deleteDurably(filePath)
-    throw new Error("container credential bootstrap must be a regular file")
+}
+
+export async function loadContainerCredentialBootstrap(
+  enabledAgents: string[],
+  options: ContainerCredentialBootstrapOptions = {},
+): Promise<string[]> {
+  const filePath = options.path ?? getDefaultContainerCredentialBootstrapPath()
+  const consumingPath = `${filePath}.consuming`
+  const sourceStat = optionalStat(filePath)
+  const claimedStat = optionalStat(consumingPath)
+  if (sourceStat && claimedStat) {
+    throw new Error("container credential bootstrap has both source and claimed envelopes; reconcile them before retrying")
   }
-  fs.renameSync(filePath, consumingPath)
-  fsyncDirectory(path.dirname(filePath))
+  if (!sourceStat && !claimedStat) return []
+  if (claimedStat && (!claimedStat.isFile() || claimedStat.isSymbolicLink())) {
+    throw new Error("container credential consuming state must be a regular file")
+  }
+  let stat = claimedStat
+  if (sourceStat) {
+    if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+      throw new Error("container credential bootstrap must be a regular file")
+    }
+    fs.renameSync(filePath, consumingPath)
+    fsyncDirectory(path.dirname(filePath))
+    stat = sourceStat
+  }
+  /* v8 ignore next -- source/claimed absence returns above, so a stat always exists here @preserve */
+  if (!stat) throw new Error("container credential bootstrap claim is unavailable")
 
-  let envelope: ContainerBootstrapEnvelope
-  let loaded: Set<string>
+  if ((stat.mode & 0o077) !== 0) throw new Error("container credential bootstrap must have mode 0600")
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error("container credential bootstrap must be owned by the runtime user")
+  }
+  if (stat.size > MAX_BOOTSTRAP_BYTES) throw new Error("container credential bootstrap is too large")
+
+  const envelope = parseEnvelope(fs.readFileSync(consumingPath, "utf8"))
+  const allowed = new Set(enabledAgents)
+  const loaded = new Set<string>()
+  for (const message of envelope.credentials) {
+    if (!isRecord(message) || typeof message.agentName !== "string" || !allowed.has(message.agentName)) {
+      throw new Error("container credential bootstrap agent is not enabled")
+    }
+    if (loaded.has(message.agentName)) throw new Error("container credential bootstrap contains a duplicate agent")
+    loaded.add(message.agentName)
+  }
+
+  const persist = options.persist ?? ((message: unknown) => persistRuntimeCredentialBootstrapMessage(message, {
+    machineId: loadOrCreateMachineIdentity().machineId,
+  }))
   try {
-    if ((stat.mode & 0o077) !== 0) throw new Error("container credential bootstrap must have mode 0600")
-    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-      throw new Error("container credential bootstrap must be owned by the runtime user")
-    }
-    if (stat.size > MAX_BOOTSTRAP_BYTES) throw new Error("container credential bootstrap is too large")
-
-    envelope = parseEnvelope(fs.readFileSync(consumingPath, "utf8"))
-    const allowed = new Set(enabledAgents)
-    loaded = new Set<string>()
     for (const message of envelope.credentials) {
-      if (!isRecord(message) || typeof message.agentName !== "string" || !allowed.has(message.agentName)) {
-        throw new Error("container credential bootstrap agent is not enabled")
-      }
-      if (loaded.has(message.agentName)) throw new Error("container credential bootstrap contains a duplicate agent")
-      loaded.add(message.agentName)
+      if (!await persist(message)) throw new Error("invalid bootstrap message")
     }
-  } finally {
-    try { deleteDurably(consumingPath) } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error
-    }
+  } catch {
+    emitNervesEvent({
+      level: "error",
+      component: "config/identity",
+      event: "config.container_credentials_persist_error",
+      message: "container credential bootstrap persistence failed; recoverable claim retained",
+      meta: { agents: [...loaded].sort(), count: loaded.size, claimedPath: consumingPath },
+    })
+    throw new Error("container credential bootstrap persistence failed; recoverable claim retained for reconciliation")
   }
 
   const apply = options.apply ?? applyRuntimeCredentialBootstrapMessage
   for (const message of envelope.credentials) {
     if (!apply(message)) throw new Error("container credential bootstrap message is invalid")
   }
+  deleteDurably(consumingPath)
   emitNervesEvent({
     component: "config/identity",
     event: "config.container_credentials_loaded",
