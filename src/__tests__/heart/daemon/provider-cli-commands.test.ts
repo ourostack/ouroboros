@@ -10098,6 +10098,93 @@ describe("provider CLI command execution", () => {
     expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({ telegram: { enabled: true } })
   })
 
+  it("rejects persistent Telegram setup for SerpentGuide before prompting", async () => {
+    emitTestEvent("provider cli connect telegram serpent guide")
+    const bundlesRoot = makeTempDir("provider-cli-connect-telegram-serpent-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-telegram-serpent-home")
+    const promptInput = vi.fn(async () => "424242")
+    const promptSecret = vi.fn(async () => "123456:private-bot-token")
+
+    await expect(runOuroCli(["connect", "telegram", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput,
+      promptSecret,
+    }))).rejects.toThrow("SerpentGuide has no persistent runtime credentials")
+    expect(promptInput).not.toHaveBeenCalled()
+    expect(promptSecret).not.toHaveBeenCalled()
+  })
+
+  it("rejects an invalid Telegram bot token before asking for ids or storing config", async () => {
+    emitTestEvent("provider cli connect telegram invalid token")
+    const bundlesRoot = makeTempDir("provider-cli-connect-telegram-invalid-token-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-telegram-invalid-token-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const promptInput = vi.fn(async () => "424242")
+
+    await expect(runOuroCli(["connect", "telegram", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput,
+      promptSecret: async () => "not a bot token",
+    }))).rejects.toThrow("Telegram bot token has an invalid format")
+    expect(promptInput).not.toHaveBeenCalled()
+    expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
+  })
+
+  it("preserves existing runtime config while adding Telegram coordinates", async () => {
+    emitTestEvent("provider cli connect telegram preserves runtime config")
+    const bundlesRoot = makeTempDir("provider-cli-connect-telegram-preserve-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-telegram-preserve-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", { existingCapability: { enabled: true } })
+    resetRuntimeCredentialConfigCache()
+    const answers = ["424242", "424242"]
+
+    await runOuroCli(["connect", "telegram", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "123456:private-bot-token",
+    }))
+
+    expect(readRuntimeSecret("Slugger").config).toEqual({
+      existingCapability: { enabled: true },
+      telegramBotToken: "123456:private-bot-token",
+      telegramAuthorizedUserId: "424242",
+      telegramAuthorizedChatId: "424242",
+    })
+  })
+
+  it("refuses to overwrite unreadable runtime config during Telegram setup", async () => {
+    emitTestEvent("provider cli connect telegram unreadable runtime config")
+    const bundlesRoot = makeTempDir("provider-cli-connect-telegram-unreadable-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-telegram-unreadable-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/config", "{")
+    resetRuntimeCredentialConfigCache()
+    const answers = ["424242", "424242"]
+
+    await expect(runOuroCli(["connect", "telegram", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "123456:private-bot-token",
+    }))).rejects.toThrow("cannot read existing runtime credentials from vault:Slugger:runtime/config")
+    expect(mockVaultDeps.rawSecrets.get("Slugger:runtime/config")).toBe("{")
+  })
+
+  it("reports bundle sync when Telegram setup mutates a sync-enabled bundle", async () => {
+    emitTestEvent("provider cli connect telegram bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-connect-telegram-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-telegram-sync-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+    const answers = ["424242", "424242"]
+
+    const result = await runOuroCli(["connect", "telegram", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "123456:private-bot-token",
+    }))
+
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+  })
+
   it("rejects non-canonical Telegram ids before storing runtime config", async () => {
     emitTestEvent("provider cli connect telegram invalid ids")
     const bundlesRoot = makeTempDir("provider-cli-connect-telegram-invalid-bundles")

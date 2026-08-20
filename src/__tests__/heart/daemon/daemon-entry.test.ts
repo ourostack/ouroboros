@@ -9,6 +9,38 @@ const { listEnabledBundleAgentsMock, readPrivateRuntimeConfigMock } = vi.hoisted
   readPrivateRuntimeConfigMock: vi.fn(() => ({ autoStart: false, source: "default" })),
 }))
 
+const { runSanctuaryHealthHabitMock } = vi.hoisted(() => ({
+  runSanctuaryHealthHabitMock: vi.fn(async (agent: string) => ({ ok: true, message: `health:${agent}` })),
+}))
+
+vi.mock("../../../senses/sanctuary-health-runner", () => ({
+  runSanctuaryHealthHabit: runSanctuaryHealthHabitMock,
+}))
+
+const supercronicMocks = vi.hoisted(() => ({
+  policy: null as null | { scheduler: "supercronic"; updates: "disabled" },
+  options: vi.fn(),
+  start: vi.fn(),
+  stop: vi.fn(async () => undefined),
+}))
+
+vi.mock("../../../heart/daemon/container-runtime", () => ({
+  readContainerRuntimePolicy: () => supercronicMocks.policy,
+}))
+
+vi.mock("../../../heart/daemon/supercronic-supervisor", () => ({
+  SupercronicSupervisor: class MockSupercronicSupervisor {
+    constructor(options: unknown) {
+      supercronicMocks.options(options)
+    }
+    start = supercronicMocks.start
+    stop = supercronicMocks.stop
+    namespace = vi.fn(() => ({}))
+    verificationOutput = vi.fn(() => "supercronic verification")
+    verifyNamespace = vi.fn(() => ({ ok: true, output: "ok" }))
+  },
+}))
+
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
@@ -190,6 +222,7 @@ describe("daemon entrypoint", () => {
     habitSchedulerGetDegradedHabitsMock.mockReturnValue([])
     awaitSchedulerGetDegradedAwaitsMock.mockReturnValue([])
     habitSchedulerTriggerJobMock.mockResolvedValue({ ok: false, message: "unhandled habit trigger" })
+    supercronicMocks.policy = null
   })
 
   afterEach(() => {
@@ -219,6 +252,9 @@ describe("daemon entrypoint", () => {
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     createMcpStatusCanaryProbeMock.mockReset()
+    supercronicMocks.options.mockReset()
+    supercronicMocks.start.mockReset()
+    supercronicMocks.stop.mockReset()
     vi.doUnmock("os")
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
@@ -315,6 +351,7 @@ describe("daemon entrypoint", () => {
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
 
     return {
+      emitNervesEvent,
       checkAgentConfig,
       checkAgentConfigWithProviderHealth,
       processManagerOptions: processManagerCtor.mock.calls[0]?.[0] as {
@@ -601,7 +638,15 @@ describe("daemon entrypoint", () => {
         send: (message: { from: string; to: string; content: string; priority?: string }) => Promise<{ id: string; queuedAt: string }>
         pollInbox: (agent: string) => unknown[]
       }
+      nativeHabitRunner: (input: { agent: string; habitName: string }) => Promise<unknown>
+      nativeHabitMatch: (agent: string, habitName: string) => boolean
     }
+    expect(daemonOptions.nativeHabitMatch("sanctuary", "sanctuary-health")).toBe(true)
+    expect(daemonOptions.nativeHabitMatch("slugger", "sanctuary-health")).toBe(false)
+    expect(daemonOptions.nativeHabitMatch("sanctuary", "other")).toBe(false)
+    await expect(daemonOptions.nativeHabitRunner({ agent: "slugger", habitName: "sanctuary-health" })).resolves.toBeNull()
+    await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "other" })).resolves.toBeNull()
+    await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "sanctuary-health" })).resolves.toEqual({ ok: true, message: "health:sanctuary" })
     expect(daemonOptions.senseManager.listSenseRows()).toEqual([])
     expect(daemonOptions.scheduler.listJobs()).toEqual([])
     await expect(daemonOptions.scheduler.triggerJob("nightly")).resolves.toEqual({
@@ -734,7 +779,8 @@ describe("daemon entrypoint", () => {
   }, 10_000)
 
   it("wires private-runtime workers as passive by default and uses offline config validation", async () => {
-    const { checkAgentConfig, checkAgentConfigWithProviderHealth, processManagerOptions } =
+    supercronicMocks.policy = { scheduler: "supercronic", updates: "disabled" }
+    const { emitNervesEvent, checkAgentConfig, checkAgentConfigWithProviderHealth, processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: false, source: "default" })
 
     expect(processManagerOptions.agents).toEqual([expect.objectContaining({
@@ -748,6 +794,16 @@ describe("daemon entrypoint", () => {
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
     expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
+    const supervisorOptions = supercronicMocks.options.mock.calls[0]?.[0] as { onFatal: (error: Error) => void }
+    supervisorOptions.onFatal(new Error("restart budget exhausted in test"))
+    expect(emitNervesEvent).toHaveBeenCalledWith({
+      level: "error",
+      component: "daemon",
+      event: "daemon.supercronic_state",
+      message: "Supercronic restart budget exhausted",
+      meta: { error: "restart budget exhausted in test" },
+    })
+    expect(process.exit).toHaveBeenCalledWith(1)
     await vi.waitFor(() => {
       expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
         preserveCachedOnFailure: true,

@@ -8,6 +8,16 @@ const mocks = vi.hoisted(() => ({
   applyPendingUpdates: vi.fn(async () => ({ updated: [] })),
   startUpdateChecker: vi.fn(),
   stopUpdateChecker: vi.fn(),
+  emitNervesEvent: vi.fn(),
+  containerPolicy: null as null | { scheduler: "supercronic"; updates: "disabled" },
+}))
+
+vi.mock("../../../nerves/runtime", () => ({
+  emitNervesEvent: (...a: any[]) => mocks.emitNervesEvent(...a),
+}))
+
+vi.mock("../../../heart/daemon/container-runtime", () => ({
+  readContainerRuntimePolicy: () => mocks.containerPolicy,
 }))
 
 // Mock update-hooks module
@@ -55,6 +65,8 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     mocks.applyPendingUpdates.mockClear()
     mocks.startUpdateChecker.mockClear()
     mocks.stopUpdateChecker.mockClear()
+    mocks.emitNervesEvent.mockClear()
+    mocks.containerPolicy = null
   })
 
   function makeDaemon(socketPath: string, bundlesRoot?: string) {
@@ -238,6 +250,29 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     await daemon.stop()
 
     expect(mocks.startUpdateChecker).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.update_checker_skip",
+      meta: { reason: "dev mode" },
+    }))
+
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("skips update application and checking when container policy disables updates", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-container-updates-disabled-"))
+    const socketPath = tmpSocketPath("daemon-boot-container-updates-disabled")
+    mocks.containerPolicy = { scheduler: "supercronic", updates: "disabled" }
+    const { daemon } = makeDaemon(socketPath, bundlesRoot)
+
+    await daemon.start()
+    await daemon.stop()
+
+    expect(mocks.applyPendingUpdates).not.toHaveBeenCalled()
+    expect(mocks.startUpdateChecker).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.update_checker_skip",
+      meta: { reason: "container policy" },
+    }))
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })

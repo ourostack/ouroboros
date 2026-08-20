@@ -1397,6 +1397,113 @@ describe("daemon command plane branches", () => {
     })])
   })
 
+  it("derives a fallback occurrence for an ad-hoc native habit and records a declined run", async () => {
+    const socketPath = tmpSocketPath("daemon-native-habit-fallback")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-native-habit-fallback-bundles-"))
+    writeHabitFile({ bundlesRoot, agent: "sanctuary", habitName: "sanctuary-health", cadence: "15m", lastRun: null })
+    const nativeHabitRunner = vi.fn(async () => null)
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      nativeHabitRunner,
+      nativeHabitMatch: (agent: string, habitName: string) => agent === "sanctuary" && habitName === "sanctuary-health",
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
+
+    await expect(daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "sanctuary",
+      habitName: "sanctuary-health",
+    })).resolves.toEqual({ ok: false, error: "native habit runner declined a matched habit" })
+
+    expect(nativeHabitRunner).toHaveBeenCalledWith({
+      agent: "sanctuary",
+      habitName: "sanctuary-health",
+      trigger: "poke",
+      occurrenceId: "poke:sanctuary:sanctuary-health",
+    })
+    expect(listHabitRunReceipts(path.join(bundlesRoot, "sanctuary.ouro"))).toEqual([
+      expect.objectContaining({
+        operationId: "poke:sanctuary:sanctuary-health",
+        outcome: "error",
+        errors: ["native habit runner declined a matched habit"],
+      }),
+    ])
+  })
+
+  it.each([
+    ["Error", () => { throw new Error("runner Error") }, "runner Error"],
+    ["string", () => { throw "runner string" }, "runner string"],
+  ] as const)("records a native habit runner %s throw as a failed attempt", async (_kind, run, expectedError) => {
+    const socketPath = tmpSocketPath(`daemon-native-habit-throw-${_kind}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-native-habit-throw-${_kind}-bundles-`))
+    writeHabitFile({ bundlesRoot, agent: "sanctuary", habitName: "sanctuary-health", cadence: "15m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      nativeHabitRunner: vi.fn(run),
+      nativeHabitMatch: () => true,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
+
+    await expect(daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "sanctuary",
+      habitName: "sanctuary-health",
+      trigger: "cron",
+      occurrenceId: `cron:${_kind}`,
+    })).resolves.toEqual({ ok: false, error: expectedError })
+    expect(listHabitRunReceipts(path.join(bundlesRoot, "sanctuary.ouro"))).toEqual([
+      expect.objectContaining({ outcome: "error", errors: [expectedError] }),
+    ])
+  })
+
+  it.each([
+    ["error", { ok: false, error: "explicit failure" }, "explicit failure"],
+    ["message", { ok: false, message: "message failure" }, "message failure"],
+    ["default", { ok: false }, "native habit failed"],
+  ] as const)("records the native habit runner %s failure detail", async (kind, runnerResult, expectedError) => {
+    const socketPath = tmpSocketPath(`daemon-native-habit-result-${kind}`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-native-habit-result-${kind}-bundles-`))
+    writeHabitFile({ bundlesRoot, agent: "sanctuary", habitName: "sanctuary-health", cadence: "15m", lastRun: null })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      nativeHabitRunner: vi.fn(async () => runnerResult),
+      nativeHabitMatch: () => true,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
+
+    await expect(daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "sanctuary",
+      habitName: "sanctuary-health",
+      trigger: "cron",
+      occurrenceId: `cron:${kind}`,
+    })).resolves.toEqual(runnerResult)
+    expect(listHabitRunReceipts(path.join(bundlesRoot, "sanctuary.ouro"))).toEqual([
+      expect.objectContaining({ outcome: "error", errors: [expectedError] }),
+    ])
+  })
+
+  it.each(["receipt", "cursor"] as const)("surfaces a native habit %s durability failure", async (failure) => {
+    const socketPath = tmpSocketPath(`daemon-native-habit-${failure}-failure`)
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `daemon-native-habit-${failure}-failure-bundles-`))
+    writeHabitFile({ bundlesRoot, agent: "sanctuary", habitName: "sanctuary-health", cadence: "15m", lastRun: null })
+    const agentRoot = path.join(bundlesRoot, "sanctuary.ouro")
+    fs.writeFileSync(path.join(agentRoot, failure === "receipt" ? "arc" : "state"), "blocks directory creation", "utf-8")
+    const nativeResult = { ok: true, message: "health sweep complete" }
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      nativeHabitRunner: vi.fn(async () => nativeResult),
+      nativeHabitMatch: () => true,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
+
+    await expect(daemon.handleCommand({
+      kind: "habit.poke",
+      agent: "sanctuary",
+      habitName: "sanctuary-health",
+    })).resolves.toEqual({
+      ok: false,
+      error: "native habit completed but its durable receipt or cursor could not be recorded",
+      data: nativeResult,
+    })
+  })
+
   it("deduplicates repeated scheduled habit pokes while lastRun has not advanced", async () => {
     const socketPath = tmpSocketPath("daemon-habit-poke-stable-occurrence")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-habit-poke-stable-bundles-"))

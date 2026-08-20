@@ -61,6 +61,12 @@ describe("daemon-health", () => {
   })
 
   describe("DaemonHealthWriter", () => {
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid heartbeat interval %s", (intervalMs) => {
+      expect(() => startDaemonHealthHeartbeat({ writeHealth: vi.fn() }, () => makeHealthState(), intervalMs)).toThrow(
+        "health heartbeat interval must be positive",
+      )
+    })
+
     it("refreshes the health receipt on a fixed heartbeat", () => {
       vi.useFakeTimers()
       const writer = { writeHealth: vi.fn() }

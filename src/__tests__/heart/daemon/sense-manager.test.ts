@@ -2785,6 +2785,7 @@ describe("daemon sense manager", () => {
         bluebubbles: { enabled: true },
         mail: { enabled: true },
         voice: { enabled: true },
+        telegram: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -2804,6 +2805,9 @@ describe("daemon sense manager", () => {
         elevenLabsApiKey: "eleven-key",
         elevenLabsVoiceId: "voice_123",
       },
+      telegramBotToken: "123456:private-bot-token",
+      telegramAuthorizedUserId: "424242",
+      telegramAuthorizedChatId: "424242",
     }
     let machineRuntimeConfig: Record<string, unknown> | null = {
       bluebubbles: {
@@ -2899,6 +2903,7 @@ describe("daemon sense manager", () => {
     await expect(options.configCheck("slugger:teams")).resolves.toEqual({ ok: true })
     await expect(options.configCheck("slugger:mail")).resolves.toEqual({ ok: true })
     await expect(options.configCheck("slugger:voice")).resolves.toEqual({ ok: true })
+    await expect(options.configCheck("slugger:telegram")).resolves.toEqual({ ok: true })
 
     runtimeConfig = {
     }
@@ -2915,6 +2920,13 @@ describe("daemon sense manager", () => {
       skip: true,
       error: "mail is enabled for slugger but runtime credentials are not ready: missing mailroom.mailboxAddress/mailroom.privateKeys",
       fix: "Agent-runnable: provision Mailroom access with 'ouro connect mail --agent slugger', then restart with 'ouro up'.",
+    })
+    const missingTelegram = await options.configCheck("slugger:telegram")
+    expect(missingTelegram).toEqual({
+      ok: false,
+      skip: true,
+      error: "telegram is enabled for slugger but runtime credentials are not ready: missing runtime/config: telegramBotToken, telegramAuthorizedUserId, telegramAuthorizedChatId",
+      fix: "Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent slugger', then restart with 'ouro up'.",
     })
     await vi.waitFor(() => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
