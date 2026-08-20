@@ -501,6 +501,9 @@ prepare_canonical_sanctuary_roots "$IMAGE_ID"`
       expect(calls).toContain("/home/ouro/AgentBundles/sanctuary.ouro/")
       expect(fs.statSync(path.join(testRoot, "appdata", "agent", "sanctuary.ouro", "agent.json")).mode & 0o777).toBe(0o600)
       expect(fs.statSync(path.join(testRoot, "appdata", "agent", "sanctuary.ouro", "psyche")).mode & 0o777).toBe(0o700)
+      const machine = JSON.parse(fs.readFileSync(path.join(testRoot, "appdata", "runtime", ".ouro-cli", "machine.json"), "utf8")) as { machineId: string }
+      expect(machine.machineId).toBe("sanctuary")
+      expect(calls).not.toContain("machine_")
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -528,10 +531,11 @@ docker() {
       if command grep -q 'ouro-entry.js vault \(create\|unlock\) --agent sanctuary --store plaintext-file' "$CALL_LOG"; then
         command printf 'vault locator: agent.json\nlocal unlock: available\n'
       elif [ "$SCENARIO" = absent ]; then command printf 'vault locator: not configured in agent.json\nlocal unlock: not checked\n'
-      elif [ "$SCENARIO" = available ] || [ "$SCENARIO" = import-failure ]; then command printf 'vault locator: agent.json\nlocal unlock: available\n'
+      elif [ "$SCENARIO" = available ] || [ "$SCENARIO" = resume ] || [ "$SCENARIO" = import-failure ]; then command printf 'vault locator: agent.json\nlocal unlock: available\n'
       else command printf 'vault locator: agent.json\nlocal unlock: missing\n'; fi ;;
     *"loadContainerCredentialBootstrap"*)
       if [ "$SCENARIO" = import-failure ]; then command mv "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming"; return 23; fi
+      if [ "$SCENARIO" = resume ]; then return 91; fi
       command rm -f "$CANONICAL_SOURCE" "$CANONICAL_SOURCE.consuming" ;;
     *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js check --agent sanctuary --lane outward"*) return 0 ;;
     *) return 23 ;;
@@ -576,8 +580,21 @@ fi`
           expect(fs.existsSync(legacySource)).toBe(true)
           expect(fs.existsSync(canonicalSource)).toBe(false)
           expect(fs.existsSync(`${canonicalSource}.consuming`)).toBe(false)
+          const marker = path.join(canonicalRuntimeRoot, "legacy-credentials-imported.json")
+          expect(fs.existsSync(marker)).toBe(true)
           expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane outward")
           expect(calls).toContain("ouro-entry.js check --agent sanctuary --lane inner")
+          const resumeLog = path.join(testRoot, "resume.log")
+          const resumed = runConditionalHelper(script, "resume", {
+            CALL_LOG: resumeLog,
+            IMAGE_ID: image,
+            LEGACY_SOURCE: legacySource,
+            CANONICAL_RUNTIME_ROOT: canonicalRuntimeRoot,
+            CANONICAL_SOURCE: canonicalSource,
+          })
+          expect(resumed.status, resumed.stderr).toBe(0)
+          expect(fs.readFileSync(resumeLog, "utf8")).not.toContain("loadContainerCredentialBootstrap")
+          expect(fs.existsSync(marker)).toBe(true)
           continue
         }
         const action = scenario === "absent" ? "create" : "unlock"
@@ -624,6 +641,21 @@ fi`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
+  })
+
+  it("pins the fixed Sanctuary machine identity and records one-time legacy import authority", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const prepare = extractRunbookFunction(runbook, "prepare_canonical_sanctuary_roots")
+    const bootstrap = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
+    expect(prepare).toContain("$PREPARE_RUNTIME_ROOT/machine.json")
+    expect(prepare).toContain('machineId !== "sanctuary"')
+    expect(prepare).toContain('machineId: "sanctuary"')
+    expect(prepare).not.toContain("machine_")
+    expect(bootstrap).toContain("legacy-credentials-imported.json")
+    expect(bootstrap).toContain("sourceDigest")
+    expect(bootstrap).toContain('machineId !== \\"sanctuary\\"')
+    expect(bootstrap).toContain("sha256")
+    expect(bootstrap.indexOf("legacy-credentials-imported.json")).toBeLessThan(bootstrap.indexOf("ouro-butler-provider-readiness"))
   })
 
   it("requires fresh structured ready records for both configured provider lanes", () => {
