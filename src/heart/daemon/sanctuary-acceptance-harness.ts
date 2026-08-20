@@ -861,8 +861,16 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
   })
   if (new Set(oldKeys.map((key) => key.id)).size !== oldKeys.length) throw new Error("old key IDs must be unique")
   const initial = inventory(await deps.runAdapter(inventoryAdapter, { operation: "inventory_keys", targetServerId }))
-  const desiredNamesOccupied = desired.every((key) => initial.some((entry) => entry.name === key.name))
-  if (desiredNamesOccupied) {
+  const occupiedCanonicalContract = targetServerId === "sanctuary-unraid"
+    && desired.length === 2 && initial.length === 2 && oldKeys.length === 2
+    && JSON.stringify(desired.map((key) => key.name).sort()) === JSON.stringify(["Butler RO", "Butler RW"])
+    && desired.every((key) => {
+      const existing = initial.find((entry) => entry.name === key.name)
+      return existing !== undefined && oldKeys.some((old) => old.id === existing.id)
+    })
+    && [inventoryAdapter, createAdapter, storeAdapter, revokeAdapter, probeAdapter, ...oldKeys.map((old) => old.secretAdapter)]
+      .every((value) => value === SANCTUARY_ACCEPTANCE_ADAPTER)
+  if (occupiedCanonicalContract) {
     await rotateOccupiedCanonicalUnraidKeys({
       root, evidencePath, targetServerId,
       adapters: { inventory: inventoryAdapter, create: createAdapter, store: storeAdapter, revoke: revokeAdapter, probe: probeAdapter },
