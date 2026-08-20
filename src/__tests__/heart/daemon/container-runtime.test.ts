@@ -485,6 +485,7 @@ docker() {
 }
 find() { case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac; }
 install() { eval "INSTALL_LAST=\${$#}"; command mkdir -p "$INSTALL_LAST"; command chmod 0700 "$INSTALL_LAST"; }
+ensure_sanctuary_machine_identity() { command printf '{"schemaVersion":1,"machineId":"sanctuary","createdAt":"x","updatedAt":"x","hostnameAliases":[]}\n' >"$1"; command chmod 0600 "$1"; }
 ${imageValidator}
 ${prepare}
 prepare_canonical_sanctuary_roots "$IMAGE_ID"`
@@ -543,6 +544,8 @@ docker() {
 }
 ${imageValidator}
 validate_sanctuary_roots() { return 0; }
+validate_sanctuary_legacy_import_marker() { test -f "$1"; }
+record_sanctuary_legacy_import_marker() { command printf '{"schemaVersion":1,"machineId":"sanctuary","sourceDigest":"sha256:test","importedAt":"2026-08-20T00:00:00.000Z"}\n' >"$1"; }
 ${helper}
 if [ "$SCENARIO" = available ] || [ "$SCENARIO" = import-failure ]; then
   bootstrap_sanctuary_vault "$IMAGE_ID" "$LEGACY_SOURCE"
@@ -625,6 +628,7 @@ fi`
       const legacySource = path.join(testRoot, "legacy", "container-credentials.json")
       const canonicalRuntimeRoot = path.join(testRoot, "canonical")
       const canonicalSource = path.join(canonicalRuntimeRoot, "container-credentials.json")
+      fs.rmSync(path.join(canonicalRuntimeRoot, "legacy-credentials-imported.json"), { force: true })
       fs.mkdirSync(path.dirname(legacySource), { recursive: true })
       fs.writeFileSync(legacySource, '{"credential":"redacted"}\n', { mode: 0o600 })
       const importFailure = runConditionalHelper(script, "import-failure", {
@@ -647,15 +651,19 @@ fi`
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const prepare = extractRunbookFunction(runbook, "prepare_canonical_sanctuary_roots")
     const bootstrap = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
+    const machine = extractRunbookFunction(runbook, "ensure_sanctuary_machine_identity")
+    const validateMarker = extractRunbookFunction(runbook, "validate_sanctuary_legacy_import_marker")
+    const recordMarker = extractRunbookFunction(runbook, "record_sanctuary_legacy_import_marker")
     expect(prepare).toContain("$PREPARE_RUNTIME_ROOT/machine.json")
-    expect(prepare).toContain('machineId !== "sanctuary"')
-    expect(prepare).toContain('machineId: "sanctuary"')
-    expect(prepare).not.toContain("machine_")
+    expect(machine).toContain('value.machineId === "sanctuary"')
+    expect(machine).toContain('machineId: "sanctuary"')
+    expect(machine).not.toContain("machine_${")
     expect(bootstrap).toContain("legacy-credentials-imported.json")
-    expect(bootstrap).toContain("sourceDigest")
-    expect(bootstrap).toContain('machineId !== \\"sanctuary\\"')
-    expect(bootstrap).toContain("sha256")
-    expect(bootstrap.indexOf("legacy-credentials-imported.json")).toBeLessThan(bootstrap.indexOf("ouro-butler-provider-readiness"))
+    expect(validateMarker).toContain("sourceDigest")
+    expect(validateMarker).toContain('marker.machineId !== "sanctuary"')
+    expect(validateMarker).toContain("sha256")
+    expect(recordMarker).toContain('machineId: "sanctuary"')
+    expect(bootstrap.indexOf("legacy-credentials-imported.json")).toBeLessThan(bootstrap.lastIndexOf("ouro-butler-provider-readiness"))
   })
 
   it("requires fresh structured ready records for both configured provider lanes", () => {

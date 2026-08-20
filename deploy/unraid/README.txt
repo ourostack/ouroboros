@@ -257,6 +257,29 @@ Effective-spec audit helper:
       assert_only_running_butler ouro-butler || return $?
       )
     }
+    ensure_sanctuary_machine_identity() {
+      MACHINE_PATH=$1
+      test ! -L "$MACHINE_PATH" || return 1
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const path = process.argv[1];
+        const valid = value => value && value.schemaVersion === 1 && value.machineId === "sanctuary"
+          && typeof value.createdAt === "string" && typeof value.updatedAt === "string"
+          && Array.isArray(value.hostnameAliases);
+        if (fs.existsSync(path)) {
+          if (!valid(JSON.parse(fs.readFileSync(path, "utf8")))) process.exit(1);
+          process.exit(0);
+        }
+        const now = new Date().toISOString();
+        const value = { schemaVersion: 1, machineId: "sanctuary", createdAt: now, updatedAt: now, hostnameAliases: [] };
+        const temporary = `${path}.tmp.${process.pid}`;
+        fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+        fs.renameSync(temporary, path);
+      ' "$MACHINE_PATH" || return $?
+      chown 10001:10001 "$MACHINE_PATH" || return $?
+      chmod 0600 "$MACHINE_PATH" || return $?
+      sync -f "$MACHINE_PATH" || return $?
+    }
     prepare_canonical_sanctuary_roots() {
       PREPARE_IMAGE_ID=$1
       validate_exact_image_id "$PREPARE_IMAGE_ID" || return $?
@@ -264,6 +287,7 @@ Effective-spec audit helper:
       PREPARE_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
       install -d -m 0700 -o 10001 -g 10001 "$PREPARE_RUNTIME_ROOT" || return $?
       install -d -m 0700 -o 10001 -g 10001 "$PREPARE_AGENT_ROOT" || return $?
+      ensure_sanctuary_machine_identity "$PREPARE_RUNTIME_ROOT/machine.json" || return $?
       if test ! -f "$PREPARE_AGENT_ROOT/agent.json"; then
         PREPARE_EXISTING_ENTRY=$(find "$PREPARE_AGENT_ROOT" -mindepth 1 -print -quit) || return $?
         test -z "$PREPARE_EXISTING_ENTRY" || return $?
@@ -391,6 +415,41 @@ ouro-butler-staging
       test "$(docker inspect --format '{{.State.Running}}' ouro-butler-legacy-evidence)" = false || return $?
       return "$ADOPTION_STATUS"
     }
+    validate_sanctuary_legacy_import_marker() {
+      IMPORT_MARKER=$1
+      IMPORT_SOURCE=$2
+      test -f "$IMPORT_MARKER" && test ! -L "$IMPORT_MARKER" || return 1
+      test "$(stat -c '%u:%g %a' "$IMPORT_MARKER")" = "10001:10001 600" || return 1
+      /usr/local/bin/node -e '
+        const crypto = require("node:crypto");
+        const fs = require("node:fs");
+        const marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        const sourceDigest = `sha256:${crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex")}`;
+        if (JSON.stringify(Object.keys(marker).sort()) !== JSON.stringify(["importedAt", "machineId", "schemaVersion", "sourceDigest"])) process.exit(1);
+        if (marker.schemaVersion !== 1 || marker.machineId !== "sanctuary" || marker.sourceDigest !== sourceDigest) process.exit(1);
+        if (!Number.isFinite(Date.parse(marker.importedAt))) process.exit(1);
+      ' "$IMPORT_MARKER" "$IMPORT_SOURCE"
+    }
+    record_sanctuary_legacy_import_marker() {
+      IMPORT_MARKER=$1
+      IMPORT_SOURCE=$2
+      test ! -e "$IMPORT_MARKER" || return 1
+      IMPORT_MARKER_TMP=$(mktemp "${IMPORT_MARKER}.tmp.XXXXXX") || return $?
+      trap 'rm -f -- "$IMPORT_MARKER_TMP"' EXIT || return $?
+      /usr/local/bin/node -e '
+        const crypto = require("node:crypto");
+        const fs = require("node:fs");
+        const sourceDigest = `sha256:${crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex")}`;
+        const marker = { schemaVersion: 1, machineId: "sanctuary", sourceDigest, importedAt: new Date().toISOString() };
+        fs.writeFileSync(process.argv[1], `${JSON.stringify(marker)}\n`, { mode: 0o600, flag: "wx" });
+      ' "$IMPORT_MARKER_TMP" "$IMPORT_SOURCE" || return $?
+      chown 10001:10001 "$IMPORT_MARKER_TMP" || return $?
+      chmod 0600 "$IMPORT_MARKER_TMP" || return $?
+      mv -f -- "$IMPORT_MARKER_TMP" "$IMPORT_MARKER" || return $?
+      sync -f "$IMPORT_MARKER" || return $?
+      sync -f "$(dirname "$IMPORT_MARKER")" || return $?
+      trap - EXIT || return $?
+    }
     bootstrap_sanctuary_vault() {
       BOOTSTRAP_IMAGE_ID=$1
       BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE=${2-}
@@ -470,6 +529,12 @@ local unlock: available
         test ! -L "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
         BOOTSTRAP_LEGACY_METADATA=$(stat -c '%u:%g %a' "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE") || return $?
         test "$BOOTSTRAP_LEGACY_METADATA" = "10001:10001 600" || return $?
+        BOOTSTRAP_IMPORT_MARKER="$BOOTSTRAP_RUNTIME_ROOT/legacy-credentials-imported.json"
+        if test -e "$BOOTSTRAP_IMPORT_MARKER"; then
+          validate_sanctuary_legacy_import_marker "$BOOTSTRAP_IMPORT_MARKER" "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
+          test ! -e "$BOOTSTRAP_CREDENTIAL_SOURCE" || return 1
+          test ! -e "$BOOTSTRAP_CREDENTIAL_CLAIM" || return 1
+        else
         if test -e "$BOOTSTRAP_CREDENTIAL_SOURCE"; then
           test -f "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
           test ! -L "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
@@ -503,6 +568,9 @@ local unlock: available
         ! docker container inspect ouro-butler-credential-bootstrap >/dev/null 2>&1 || return 1
         test ! -e "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
         test ! -e "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
+        record_sanctuary_legacy_import_marker "$BOOTSTRAP_IMPORT_MARKER" "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
+        validate_sanctuary_legacy_import_marker "$BOOTSTRAP_IMPORT_MARKER" "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
+        fi
         test -f "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
         test ! -L "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
         test "$(stat -c '%u:%g %a' "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE")" = "$BOOTSTRAP_LEGACY_METADATA" || return $?
