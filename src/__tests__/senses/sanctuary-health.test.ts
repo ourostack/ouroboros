@@ -15,6 +15,27 @@ function context(state: "running" | "exited", autostart = true) {
   } } as any
 }
 
+function statePath(prefix = "sanctuary-health-"): string {
+  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), prefix)), "state.json")
+}
+
+function validState(overrides: Record<string, unknown> = {}) {
+  return {
+    incidents: {},
+    lastDigestDay: null,
+    updatedAt: "2026-08-18T18:00:00.000Z",
+    outbox: null,
+    indeterminateDeliveries: [],
+    deliveredReceipts: [],
+    ...overrides,
+  }
+}
+
+function writeState(filePath: string, state: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, `${JSON.stringify(state)}\n`, "utf8")
+}
+
 describe("Sanctuary deterministic health sweep", () => {
   it("follows only bounded same-origin HTTPS redirects with manual redirect control", async () => {
     const fetch = vi.fn()
@@ -39,6 +60,122 @@ describe("Sanctuary deterministic health sweep", () => {
       status: 0,
     })
     expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    "http://books.mendelow.cloud/",
+    "https://user@books.mendelow.cloud/",
+    "https://user:password@books.mendelow.cloud/",
+  ])("rejects an unsafe configured endpoint without fetching it: %s", async (url) => {
+    const fetch = vi.fn()
+
+    await expect(probeSanctuaryEndpoint(url, fetch)).resolves.toEqual({ url, ok: false, status: 0 })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [299, true],
+    [400, false],
+    [503, false],
+  ])("returns terminal HTTP %i health", async (status, ok) => {
+    const fetch = vi.fn().mockResolvedValue({ status, headers: new Headers(), body: null })
+
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch as typeof globalThis.fetch))
+      .resolves.toEqual({ url: "https://books.mendelow.cloud/", ok, status })
+  })
+
+  it("contains transport and response-body cancellation failures", async () => {
+    const transportFailure = vi.fn().mockRejectedValue(new Error("offline"))
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", transportFailure)).resolves.toEqual({
+      url: "https://books.mendelow.cloud/", ok: false, status: 0,
+    })
+
+    const cancelFailure = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: new Headers(),
+      body: { cancel: vi.fn().mockRejectedValue(new Error("already closed")) },
+    })
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", cancelFailure as typeof globalThis.fetch))
+      .resolves.toMatchObject({ ok: true, status: 200 })
+
+    const redirectCancelFailure = vi.fn()
+      .mockResolvedValueOnce({
+        status: 302,
+        headers: new Headers({ location: "/ready" }),
+        body: { cancel: vi.fn().mockRejectedValue(new Error("already closed")) },
+      })
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", redirectCancelFailure as typeof globalThis.fetch))
+      .resolves.toMatchObject({ ok: true, status: 204 })
+  })
+
+  it.each([
+    ["a missing location", "", 1],
+    ["an insecure target", "http://books.mendelow.cloud/ready", 1],
+    ["a credentialed target", "https://user@books.mendelow.cloud/ready", 1],
+    ["a password-bearing target", "https://user:password@books.mendelow.cloud/ready", 1],
+  ])("rejects %s during redirects", async (_label, location, calls) => {
+    const fetch = vi.fn().mockResolvedValue({
+      status: 302,
+      headers: new Headers(location ? { location } : {}),
+      body: { cancel: vi.fn().mockResolvedValue(undefined) },
+    })
+
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch as typeof globalThis.fetch))
+      .resolves.toMatchObject({ ok: false, status: 0 })
+    expect(fetch).toHaveBeenCalledTimes(calls)
+  })
+
+  it("bounds same-origin redirect chains at six requests", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 399, headers: { location: "/again" } }))
+
+    await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/", fetch)).resolves.toMatchObject({ ok: false, status: 0 })
+    expect(fetch).toHaveBeenCalledTimes(6)
+  })
+
+  it("uses ambient fetch when no endpoint dependency is supplied", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal("fetch", fetch)
+    try {
+      await expect(probeSanctuaryEndpoint("https://books.mendelow.cloud/")).resolves.toMatchObject({ ok: true, status: 204 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it.each([
+    ["invalid JSON", "{"],
+    ["missing incidents", JSON.stringify(validState({ incidents: undefined }))],
+    ["primitive incidents", JSON.stringify(validState({ incidents: 1 }))],
+    ["array incidents", JSON.stringify(validState({ incidents: [] }))],
+    ["invalid digest day", JSON.stringify(validState({ lastDigestDay: 1 }))],
+    ["invalid update time", JSON.stringify(validState({ updatedAt: 1 }))],
+    ["invalid outbox primitive", JSON.stringify(validState({ outbox: 1 }))],
+    ["outbox missing id", JSON.stringify(validState({ outbox: { message: "m", status: "pending", createdAt: "t" } }))],
+    ["outbox missing message", JSON.stringify(validState({ outbox: { id: "d", status: "pending", createdAt: "t" } }))],
+    ["outbox invalid status", JSON.stringify(validState({ outbox: { id: "d", message: "m", status: "sent", createdAt: "t" } }))],
+    ["outbox missing created time", JSON.stringify(validState({ outbox: { id: "d", message: "m", status: "pending" } }))],
+    ["outbox invalid cached message", JSON.stringify(validState({ outbox: { id: "d", message: "m", status: "pending", createdAt: "t", summarizedMessage: 1 } }))],
+    ["non-array indeterminate deliveries", JSON.stringify(validState({ indeterminateDeliveries: {} }))],
+    ["invalid indeterminate delivery", JSON.stringify(validState({ indeterminateDeliveries: [null] }))],
+    ["non-array delivered receipts", JSON.stringify(validState({ deliveredReceipts: {} }))],
+    ["null delivered receipt", JSON.stringify(validState({ deliveredReceipts: [null] }))],
+    ["receipt missing delivery id", JSON.stringify(validState({ deliveredReceipts: [{ deliveredAt: "t", messageIds: [1] }] }))],
+    ["receipt missing delivery time", JSON.stringify(validState({ deliveredReceipts: [{ deliveryId: "d", messageIds: [1] }] }))],
+    ["receipt message ids not an array", JSON.stringify(validState({ deliveredReceipts: [{ deliveryId: "d", deliveredAt: "t", messageIds: 1 }] }))],
+    ["receipt message ids empty", JSON.stringify(validState({ deliveredReceipts: [{ deliveryId: "d", deliveredAt: "t", messageIds: [] }] }))],
+    ["receipt message id fractional", JSON.stringify(validState({ deliveredReceipts: [{ deliveryId: "d", deliveredAt: "t", messageIds: [1.5] }] }))],
+    ["receipt message id nonpositive", JSON.stringify(validState({ deliveredReceipts: [{ deliveryId: "d", deliveredAt: "t", messageIds: [0] }] }))],
+  ])("fails closed for corrupt durable state: %s", async (_label, contents) => {
+    const filePath = statePath("sanctuary-health-corrupt-")
+    fs.writeFileSync(filePath, contents, "utf8")
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"),
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    })
+
+    await expect(sweep()).rejects.toThrow("Sanctuary health state is corrupt")
   })
 
   it("alerts once on transition, suppresses unchanged, and emits one recovery", async () => {
@@ -103,5 +240,219 @@ describe("Sanctuary deterministic health sweep", () => {
     })
 
     expect((await sweep()).message).toContain("calibre-web is exited")
+  })
+
+  it("surfaces every degraded health dimension with stable incident identities", async () => {
+    const toolContext = context("running")
+    toolContext.sanctuary.listContainers.mockResolvedValue({ ok: true, data: { containers: [
+      { id: "Docker:optional", name: "optional", autostart: false, state: "exited", exitCode: null, degraded: false },
+      { id: "Docker:auto", name: "auto", autostart: true, state: "exited", exitCode: null, degraded: false },
+      { id: "Docker:unknown", name: "unknown", autostart: false, state: "unknown", exitCode: null, degraded: false },
+      { id: "Docker:degraded", name: "degraded", autostart: false, state: "running", exitCode: null, degraded: true },
+    ], truncated: false } })
+    toolContext.sanctuary.getStorage.mockResolvedValue({ ok: true, data: {
+      array: { state: "STARTED", usedPercent: 95, degraded: false },
+      shares: [
+        { name: "unknown", usedPercent: null, degraded: false },
+        { name: "degraded", usedPercent: 10, degraded: true },
+        { name: "full", usedPercent: 91, degraded: false },
+        { name: "healthy", usedPercent: 30, degraded: false },
+      ],
+    } })
+    toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: {
+      disks: [
+        { id: "Disk:bad", name: "bad", smart: "failed", temperatureC: null },
+        { id: "Disk:hot", name: "hot", smart: "passed", temperatureC: 50 },
+        { id: "Disk:good", name: "good", smart: "passed", temperatureC: 49 },
+      ],
+      parity: { result: "failed", ageHours: 1 },
+    } })
+    toolContext.sanctuary.getNotifications.mockResolvedValue({ ok: true, data: { unacknowledged: [
+      { id: "n1", title: "Disk warning" },
+      { id: "n2", title: "" },
+    ] } })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    const sweep = createSanctuaryHealthSweep({
+      toolContext,
+      statePath: statePath("sanctuary-health-degraded-"),
+      fetch,
+      now: () => new Date("2026-08-18T15:00:00.000Z"),
+    })
+
+    const result = await sweep()
+    const ids = result.incidents.map((incident) => incident.id)
+    expect(ids).toEqual([...ids].sort())
+    expect(ids).toEqual(expect.arrayContaining([
+      "container:Docker:auto:exited:none",
+      "container:Docker:unknown:degraded",
+      "container:Docker:degraded:degraded",
+      "storage:array:90",
+      "storage:share:unknown:degraded",
+      "storage:share:degraded:degraded",
+      "storage:share:full:90",
+      "disk:Disk:bad:smart:failed",
+      "disk:Disk:bad:temperature:unknown",
+      "disk:Disk:hot:temperature:50",
+      "parity:stale-or-failed",
+      "notification:n1",
+      "notification:n2",
+      "endpoint:https://media.mendelow.cloud/",
+      "endpoint:https://books.mendelow.cloud/",
+    ]))
+    expect(ids).not.toContain("container:Docker:optional:exited:none")
+    expect(result.message).toContain("unacknowledged notification: n2")
+    expect(result.message).toContain("returned no response")
+  })
+
+  it.each([
+    ["containers", { listContainers: { ok: false, error: { code: "offline" } } }, "containers:unavailable"],
+    ["storage", { getStorage: { ok: false, error: { code: "offline" } } }, "storage:array:degraded"],
+    ["disks", { getDisks: { ok: false, error: { code: "offline" } } }, "disks:unavailable"],
+    ["notifications", { getNotifications: { ok: false, error: { code: "offline" } } }, "notifications:unavailable"],
+  ])("reports unavailable %s results", async (_label, replacement, expectedId) => {
+    const toolContext = context("running")
+    for (const [method, result] of Object.entries(replacement)) {
+      toolContext.sanctuary[method].mockResolvedValue(result)
+    }
+    const sweep = createSanctuaryHealthSweep({
+      toolContext,
+      statePath: statePath("sanctuary-health-unavailable-"),
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      now: () => new Date("2026-08-18T15:00:00.000Z"),
+    })
+
+    expect((await sweep()).incidents.map((incident) => incident.id)).toContain(expectedId)
+  })
+
+  it("handles absent collections, malformed capacity, and each parity invalidity", async () => {
+    const toolContext = context("running")
+    toolContext.sanctuary.listContainers.mockResolvedValue({ ok: true, data: { containers: null } })
+    toolContext.sanctuary.getStorage.mockResolvedValue({ ok: true, data: { array: [], shares: null } })
+    toolContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: null, parity: [] } })
+    toolContext.sanctuary.getNotifications.mockResolvedValue({ ok: true, data: { unacknowledged: null } })
+    const sweep = createSanctuaryHealthSweep({
+      toolContext,
+      statePath: statePath("sanctuary-health-malformed-tools-"),
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      now: () => new Date("2026-08-18T15:00:00.000Z"),
+    })
+
+    expect((await sweep()).incidents.map((incident) => incident.id)).toEqual(expect.arrayContaining([
+      "containers:unavailable", "storage:array:degraded", "parity:stale-or-failed", "notifications:unavailable",
+    ]))
+
+    const parityCases = [
+      { result: "failed", ageHours: 1 },
+      { result: "success", ageHours: null },
+      { result: "success", ageHours: 45 * 24 },
+    ]
+    for (const parity of parityCases) {
+      const nextContext = context("running")
+      nextContext.sanctuary.getDisks.mockResolvedValue({ ok: true, data: { disks: [], parity } })
+      const next = createSanctuaryHealthSweep({
+        toolContext: nextContext,
+        statePath: statePath("sanctuary-health-parity-"),
+        fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+        now: () => new Date("2026-08-18T15:00:00.000Z"),
+      })
+      expect((await next()).incidents.map((incident) => incident.id)).toContain("parity:stale-or-failed")
+    }
+  })
+
+  it("rejects unavailable runtime and invalid delivery state transitions", async () => {
+    const filePath = statePath("sanctuary-health-transitions-")
+    const absent = createSanctuaryHealthSweep({
+      toolContext: {} as any,
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    })
+    await expect(absent()).rejects.toThrow("Sanctuary health runtime is unavailable")
+
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("exited"),
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      now: () => new Date("2026-08-18T18:00:00.000Z"),
+    })
+    const opened = await sweep()
+    await expect(sweep.markDeliveryAttempting("wrong")).rejects.toThrow("is not pending")
+    await expect(sweep.cacheDeliveryPayload(opened.deliveryId!, 1 as any)).rejects.toThrow("must be nonempty")
+    await expect(sweep.cacheDeliveryPayload(opened.deliveryId!, "   ")).rejects.toThrow("must be nonempty")
+    await expect(sweep.cacheDeliveryPayload("wrong", "summary")).rejects.toThrow("is not pending")
+    await expect(sweep.markDelivered(opened.deliveryId!, null as any)).rejects.toThrow("canonical Telegram message ids")
+    await expect(sweep.markDelivered(opened.deliveryId!, [])).rejects.toThrow("canonical Telegram message ids")
+    await expect(sweep.markDelivered(opened.deliveryId!, [1.5])).rejects.toThrow("canonical Telegram message ids")
+    await expect(sweep.markDelivered(opened.deliveryId!, [0])).rejects.toThrow("canonical Telegram message ids")
+    await expect(sweep.markDelivered(opened.deliveryId!, [1])).rejects.toThrow("is not attempting")
+    await sweep.markDeliveryAttempting(opened.deliveryId!)
+    await expect(sweep.markDeliveryAttempting(opened.deliveryId!)).rejects.toThrow("is not pending")
+    await expect(sweep.cacheDeliveryPayload(opened.deliveryId!, "too late")).rejects.toThrow("is not pending")
+    await expect(sweep.markDelivered("wrong", [1])).rejects.toThrow("is not attempting")
+  })
+
+  it("caps delivered receipts at the newest one hundred and preserves canonical message ids", async () => {
+    const filePath = statePath("sanctuary-health-receipts-")
+    const oldReceipts = Array.from({ length: 100 }, (_, index) => ({
+      deliveryId: `old-${index}`,
+      messageIds: [index + 1],
+      deliveredAt: "2026-08-17T00:00:00.000Z",
+    }))
+    writeState(filePath, validState({
+      outbox: { id: "new", message: "health", status: "attempting", createdAt: "2026-08-18T18:00:00.000Z" },
+      deliveredReceipts: oldReceipts,
+    }))
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"), statePath: filePath, now: () => new Date("2026-08-18T19:00:00.000Z"),
+    })
+
+    await sweep.markDelivered("new", [9001, 9002])
+
+    const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    expect(saved.deliveredReceipts).toHaveLength(100)
+    expect(saved.deliveredReceipts[0].deliveryId).toBe("old-1")
+    expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", messageIds: [9001, 9002] })
+    expect(fs.statSync(filePath).mode & 0o777).toBe(0o600)
+    expect(fs.readdirSync(path.dirname(filePath))).toEqual(["state.json"])
+  })
+
+  it("defaults omitted durable collections and the runtime clock", async () => {
+    const filePath = statePath("sanctuary-health-defaults-")
+    writeState(filePath, {
+      incidents: {},
+      lastDigestDay: null,
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    })
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"),
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    })
+
+    await expect(sweep()).resolves.toMatchObject({ message: null, incidents: [] })
+    const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    expect(saved.indeterminateDeliveries).toEqual([])
+    expect(saved.deliveredReceipts).toEqual([])
+    expect(Date.parse(saved.updatedAt)).toBeGreaterThan(0)
+  })
+
+  it("fails quiet when a locale formatter omits expected date parts", async () => {
+    const formatter = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function () {
+      return { formatToParts: () => [] } as any
+    })
+    try {
+      const sweep = createSanctuaryHealthSweep({
+        toolContext: context("running"),
+        statePath: statePath("sanctuary-health-locale-fallback-"),
+        fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+        now: () => new Date("2026-08-18T18:00:00.000Z"),
+      })
+
+      await expect(sweep()).resolves.toMatchObject({ message: null, incidents: [] })
+    } finally {
+      formatter.mockRestore()
+    }
   })
 })

@@ -141,6 +141,7 @@ export async function probeSanctuaryEndpoint(url: string, fetchImpl: typeof fetc
   } catch {
     return { url, ok: false, status: 0 }
   }
+  /* v8 ignore next -- every loop path returns by the sixth bounded request; defensive exhaustiveness guard @preserve */
   return { url, ok: false, status: 0 }
 }
 
