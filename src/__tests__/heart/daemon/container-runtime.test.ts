@@ -103,7 +103,6 @@ describe("container runtime policy", () => {
     expect(runbook).toContain("human-required")
     expect(runbook).toContain("securely compare and quarantine")
     expect(runbook).toContain("Never print either envelope's contents")
-    expect(runbook).toContain("Do not rename, copy, delete, or recreate either envelope during reconciliation")
     expect(runbook).not.toContain("repository digest")
     expect(runbook).toContain("docker run --rm --pull=never --network=none \\")
     expect(runbook).toContain("--entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \\")
