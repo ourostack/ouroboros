@@ -564,6 +564,41 @@ local unlock: available
         process.stdout.write(`${found[0].path}\t${found[0].name}`);
       ' "$1"
     }
+    sanctuary_revoked_key_recovery_path() {
+      case "$1" in ''|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+      printf '%s/%s.json' /mnt/user/appdata/ouro-butler/acceptance/revoked-key-proof "$1"
+    }
+    validate_sanctuary_revoked_key_recovery() {
+      test -f "$1" && test ! -L "$1" || return 1
+      test "$(stat -c '%u:%g %a' "$1")" = "0:0 600" || return 1
+    }
+    preserve_sanctuary_revoked_key() {
+      KEY_ID=$1
+      KEY_SOURCE=$2
+      RECOVERY_ROOT=/mnt/user/appdata/ouro-butler/acceptance/revoked-key-proof
+      test -f "$KEY_SOURCE" && test ! -L "$KEY_SOURCE" || return 1
+      if test ! -e "$RECOVERY_ROOT"; then
+        install -d -m 0700 -o root -g root "$RECOVERY_ROOT" || return $?
+      fi
+      test -d "$RECOVERY_ROOT" && test ! -L "$RECOVERY_ROOT" || return 1
+      test "$(stat -c '%u:%g %a' "$RECOVERY_ROOT")" = "0:0 700" || return 1
+      RECOVERY_PATH=$(sanctuary_revoked_key_recovery_path "$KEY_ID") || return $?
+      test ! -e "$RECOVERY_PATH" || return 1
+      RECOVERY_TMP=$(mktemp "$RECOVERY_ROOT/$KEY_ID.json.tmp.XXXXXX") || return $?
+      trap 'rm -f -- "$RECOVERY_TMP"' EXIT || return $?
+      install -m 0600 -o root -g root "$KEY_SOURCE" "$RECOVERY_TMP" || return $?
+      cmp -s "$KEY_SOURCE" "$RECOVERY_TMP" || return 1
+      mv -f -- "$RECOVERY_TMP" "$RECOVERY_PATH" || return $?
+      sync -f "$RECOVERY_ROOT" || return $?
+      trap - EXIT || return $?
+    }
+    clear_sanctuary_revoked_key() {
+      RECOVERY_PATH=$(sanctuary_revoked_key_recovery_path "$1") || return $?
+      test -f "$RECOVERY_PATH" && test ! -L "$RECOVERY_PATH" || return 1
+      test "$(stat -c '%u:%g %a' "$RECOVERY_PATH")" = "0:0 600" || return 1
+      rm -f -- "$RECOVERY_PATH" || return $?
+      sync -f "$(dirname "$RECOVERY_PATH")" || return $?
+    }
     verify_vault_backed_unraid_key() {
       KEY_ID=$1
       CAPABILITY=$2
@@ -574,11 +609,15 @@ local unlock: available
       test "${#IMAGE_DIGEST}" -eq 64 || return 1
       case "$IMAGE_DIGEST" in *[!0-9a-f]*) return 1 ;; esac
       test "$(run_sanctuary_docker image inspect --format '{{.Id}}' "$IMAGE_ID")" = "$IMAGE_ID" || return $?
+      KEY_TARGET=$(resolve_sanctuary_unraid_key "$KEY_ID") || return $?
+      KEY_PATH=${KEY_TARGET%%	*}
+      test "$KEY_PATH" != "$KEY_TARGET" || return 1
+      test -f "$KEY_PATH" && test ! -L "$KEY_PATH" || return 1
       VERIFY_RESULT=$(run_sanctuary_docker run --rm --pull=never --network host \
         --user 0:0 \
-        --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
-        --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
-        --mount type=bind,src=/boot/config/plugins/dynamix.my.servers/keys,dst=/boot/config/plugins/dynamix.my.servers/keys,readonly \
+        --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli,readonly \
+        --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly \
+        --mount type=bind,src="$KEY_PATH",dst=/run/ouro-acceptance/unraid-key.json,readonly \
         --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
         "$IMAGE_ID" vault-probe "$KEY_ID" "$CAPABILITY") || return $?
       printf '%s' "$VERIFY_RESULT" | run_sanctuary_node -e '
@@ -634,13 +673,8 @@ local unlock: available
       KEY_NAME=${KEY_TARGET#*	}
       test "$KEY_PATH" != "$KEY_TARGET" || return 1
       test -f "$KEY_PATH" && test ! -L "$KEY_PATH" || return $?
-      exec 9<"$KEY_PATH" || return $?
-      REVOKED_KEY_FD_OPEN=yes
-      REVOKED_KEY_ID=$KEY_ID
+      preserve_sanctuary_revoked_key "$KEY_ID" "$KEY_PATH" || return $?
       if ! REVOKE_RESULT=$(run_sanctuary_unraid_api apikey --name "$KEY_NAME" --delete --json); then
-        exec 9<&-
-        REVOKED_KEY_FD_OPEN=no
-        REVOKED_KEY_ID=
         return 1
       fi
       if ! printf '%s' "$REVOKE_RESULT" | run_sanctuary_node -e '
@@ -655,51 +689,28 @@ local unlock: available
           if (value.keys[0].id !== expectedId || value.keys[0].name !== expectedName) process.exit(1);
         });
       ' "$KEY_ID" "$KEY_NAME"; then
-        exec 9<&-
-        REVOKED_KEY_FD_OPEN=no
-        REVOKED_KEY_ID=
         return 1
       fi
     }
     verify_revoked_unraid_key_rejected() {
       KEY_ID=$1
       case "$KEY_ID" in ''|*[!A-Za-z0-9._:-]*) return 1 ;; esac
-      test "${REVOKED_KEY_FD_OPEN:-no}" = yes || return 1
-      if test "${REVOKED_KEY_ID:-}" != "$KEY_ID"; then
-        exec 9<&-
-        REVOKED_KEY_FD_OPEN=no
-        REVOKED_KEY_ID=
-        return 1
-      fi
+      REVOKED_KEY_RECOVERY_PATH=$(sanctuary_revoked_key_recovery_path "$KEY_ID") || return $?
+      validate_sanctuary_revoked_key_recovery "$REVOKED_KEY_RECOVERY_PATH" || return $?
       IMAGE_DIGEST=${IMAGE_ID#sha256:}
-      if test "$IMAGE_DIGEST" = "$IMAGE_ID" || test "${#IMAGE_DIGEST}" -ne 64; then
-        exec 9<&-
-        REVOKED_KEY_FD_OPEN=no
-        REVOKED_KEY_ID=
-        return 1
-      fi
-      case "$IMAGE_DIGEST" in *[!0-9a-f]*)
-        exec 9<&-
-        REVOKED_KEY_FD_OPEN=no
-        REVOKED_KEY_ID=
-        return 1
-      ;; esac
-      if test "$(run_sanctuary_docker image inspect --format '{{.Id}}' "$IMAGE_ID")" != "$IMAGE_ID"; then
-        exec 9<&-
-        REVOKED_KEY_FD_OPEN=no
-        REVOKED_KEY_ID=
-        return 1
-      fi
-      if REJECT_RESULT=$(run_sanctuary_docker run --rm -i --pull=never --network host \
-        --user 10001:10001 --read-only \
-        --entrypoint /bin/sh "$IMAGE_ID" -ceu \
-        'exec 3<&0; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh revoked-probe "$1" "$2" 3<&3' \
-        sanctuary-revoked-probe "$KEY_ID" http://127.0.0.1/graphql <&9); then REJECT_STATUS=0; else REJECT_STATUS=$?; fi
-      exec 9<&-
-      REVOKED_KEY_FD_OPEN=no
-      REVOKED_KEY_ID=
-      test "$REJECT_STATUS" -eq 0 || return "$REJECT_STATUS"
-      printf '%s' "$REJECT_RESULT" | run_sanctuary_node -e '
+      test "$IMAGE_DIGEST" != "$IMAGE_ID" || return 1
+      test "${#IMAGE_DIGEST}" -eq 64 || return 1
+      case "$IMAGE_DIGEST" in *[!0-9a-f]*) return 1 ;; esac
+      test "$(run_sanctuary_docker image inspect --format '{{.Id}}' "$IMAGE_ID")" = "$IMAGE_ID" || return 1
+      REJECT_ATTEMPT=0
+      while test "$REJECT_ATTEMPT" -lt 3; do
+        REJECT_ATTEMPT=$((REJECT_ATTEMPT + 1))
+        if REJECT_RESULT=$(run_sanctuary_docker run --rm -i --pull=never --network host \
+          --user 10001:10001 --read-only \
+          --entrypoint /bin/sh "$IMAGE_ID" -ceu \
+          'exec 3<&0; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh revoked-probe "$1" "$2" 3<&3' \
+          sanctuary-revoked-probe "$KEY_ID" http://127.0.0.1/graphql <"$REVOKED_KEY_RECOVERY_PATH") \
+          && printf '%s' "$REJECT_RESULT" | run_sanctuary_node -e '
         let input = "";
         process.stdin.setEncoding("utf8");
         process.stdin.on("data", chunk => { input += chunk; });
@@ -708,7 +719,14 @@ local unlock: available
           if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["id", "rejected", "status"])) process.exit(1);
           if (value.rejected !== true || value.id !== process.argv[1] || ![401, 403].includes(value.status)) process.exit(1);
         });
-      ' "$KEY_ID" || return $?
+      ' "$KEY_ID"; then
+          clear_sanctuary_revoked_key "$KEY_ID" || return $?
+          return 0
+        fi
+        test "$REJECT_ATTEMPT" -lt 3 || return 1
+        sleep 2
+      done
+      return 1
     }
     retire_legacy_unraid_key() {
       NEW_READ_KEY_ID=$1
@@ -1088,6 +1106,35 @@ Credential recovery:
   are absent and the vault is the only credential source of truth.
   Never print or place credential values in logs, templates, command arguments,
   backups, or this runbook.
+
+Packaged Unit 16 acceptance execution:
+  Use only the launcher packaged in the exact reviewed image. Install it without
+  network access, then create the two private roots with the runtime UID/GID:
+    UNIT16_ROOT=/mnt/user/appdata/ouro-butler/acceptance
+    install -d -m 0700 -o 10001 -g 10001 "$UNIT16_ROOT/configs" "$UNIT16_ROOT/evidence"
+    UNIT16_LAUNCHER_TMP=$(mktemp "$UNIT16_ROOT/sanctuary-unit16-run.sh.tmp.XXXXXX")
+    /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
+      --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit16-run.sh >"$UNIT16_LAUNCHER_TMP"
+    install -m 0755 -o root -g root "$UNIT16_LAUNCHER_TMP" "$UNIT16_ROOT/sanctuary-unit16-run.sh"
+    rm -f -- "$UNIT16_LAUNCHER_TMP"
+  Place one reviewed JSON config per command at the exact paths below. Every
+  config must be a regular, non-symlink file owned by 10001:10001 with mode 0600
+  and must set `allowedRoot` to exactly `/evidence`; every evidence path in a
+  config is relative to that root. The launcher validates those invariants,
+  revalidates IMAGE_ID, and creates a bounded one-shot from that exact image
+  with a read-only root filesystem, read-only config/runtime/bundle mounts, one
+  writable evidence-root mount, host network, no Docker socket, and no host-root
+  mount. Invoke the complete packaged harness only as follows:
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" telegram-bootstrap telegram-bootstrap.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-delta cursor-delta.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" unraid-key-rotate unraid-key-rotate.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-snapshot evidence-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-request reboot-request.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-resume reboot-resume.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-index evidence-bundle-index.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-verify evidence-bundle-verify.json
 
 Audit and safety verification:
   Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and

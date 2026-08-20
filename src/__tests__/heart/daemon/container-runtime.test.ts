@@ -823,12 +823,12 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
 
     expect(revoke).toContain("run_sanctuary_unraid_api apikey --name")
     expect(revoke).toContain("--delete --json")
-    expect(revoke).toContain("exec 9<")
+    expect(revoke).toContain("preserve_sanctuary_revoked_key")
     expect(revoke).not.toMatch(/\.key\b|x-api-key/u)
 
     expect(rejected).toContain("revoked-probe")
     expect(rejected).toContain("3<&0")
-    expect(rejected).toContain("<&9")
+    expect(rejected).toContain('<"$REVOKED_KEY_RECOVERY_PATH"')
     expect(rejected).toContain("http://127.0.0.1/graphql")
     expect(rejected).not.toContain("/var/run/docker.sock")
   })
@@ -885,9 +885,14 @@ run_sanctuary_unraid_api() {
   command printf '{"deleted":1,"keys":[{"id":"%s","name":"%s"}]}' "$CURRENT_KEY_ID" "$3"
 }
 resolve_sanctuary_unraid_key() {
-  case "$1" in old-ro) CURRENT_KEY_NAME='old ro' ;; old-rw) CURRENT_KEY_NAME='old rw' ;; *) return 1 ;; esac
+  case "$1" in new-ro) CURRENT_KEY_NAME='new ro' ;; new-rw) CURRENT_KEY_NAME='new rw' ;; old-ro) CURRENT_KEY_NAME='old ro' ;; old-rw) CURRENT_KEY_NAME='old rw' ;; *) return 1 ;; esac
   command printf '%s\t%s' "$KEY_PATH" "$CURRENT_KEY_NAME"
 }
+sanctuary_revoked_key_recovery_path() { command printf '%s/%s.json' "$RECOVERY_ROOT" "$1"; }
+validate_sanctuary_revoked_key_recovery() { test -f "$1"; }
+preserve_sanctuary_revoked_key() { command cp "$2" "$RECOVERY_ROOT/$1.json"; }
+clear_sanctuary_revoked_key() { command rm -f "$RECOVERY_ROOT/$1.json"; }
+sleep() { :; }
 ${functions}
 retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
     try {
@@ -895,11 +900,12 @@ retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
         CALL_LOG: callLog,
         KEY_PATH: keyPath,
         NODE_BIN: process.execPath,
+        RECOVERY_ROOT: testRoot,
         IMAGE_ID: `sha256:${"a".repeat(64)}`,
       })
       const calls = fs.readFileSync(callLog, "utf8")
       expect(result.status, `${result.stderr}\n${calls}`).toBe(0)
-      expect(calls).toContain("--mount\ttype=bind,src=/boot/config/plugins/dynamix.my.servers/keys,dst=/boot/config/plugins/dynamix.my.servers/keys,readonly")
+      expect(calls).toContain(`--mount\ttype=bind,src=${keyPath},dst=/run/ouro-acceptance/unraid-key.json,readonly`)
       expect(calls).toContain("--entrypoint\t/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh")
       expect(calls).toContain("unraid-api\tapikey\t--name\told ro\t--delete\t--json")
       expect(calls).toContain("unraid-api\tapikey\t--name\told rw\t--delete\t--json")
@@ -933,9 +939,9 @@ retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
     for (const command of Object.keys(contract.commands)) expect(launcher).toContain(command)
 
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    expect(runbook).toContain("/mnt/user/appdata/ouro-butler/acceptance/configs")
-    expect(runbook).toContain("/mnt/user/appdata/ouro-butler/acceptance/evidence")
-    expect(runbook).toContain("sanctuary-unit16-run.sh \"$IMAGE_ID\"")
+    expect(runbook).toContain("UNIT16_ROOT=/mnt/user/appdata/ouro-butler/acceptance")
+    expect(runbook).toContain('"$UNIT16_ROOT/configs" "$UNIT16_ROOT/evidence"')
+    expect(runbook).toContain('"$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID"')
     for (const command of Object.keys(contract.commands)) expect(runbook).toContain(`${command}.json`)
   })
 
@@ -943,7 +949,7 @@ retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const verify = extractRunbookFunction(runbook, "verify_vault_backed_unraid_key")
     expect(verify).toContain("KEY_TARGET=$(resolve_sanctuary_unraid_key")
-    expect(verify).toContain("type=bind,src=$KEY_PATH,dst=/run/ouro-acceptance/unraid-key.json,readonly")
+    expect(verify).toContain('type=bind,src="$KEY_PATH",dst=/run/ouro-acceptance/unraid-key.json,readonly')
     expect(verify).toContain("dst=/home/ouro/.ouro-cli,readonly")
     expect(verify).toContain("dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly")
     expect(verify).not.toContain("src=/boot/config/plugins/dynamix.my.servers/keys,dst=")
