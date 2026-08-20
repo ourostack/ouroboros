@@ -39,6 +39,7 @@ const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
 const ADAPTER_TIMEOUT_MS = 15_000
 const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
+const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
 const PERMISSION_RESOURCES = new Set([
   "ACTIVATION_CODE", "API_KEY", "ARRAY", "CLOUD", "CONFIG", "CONNECT", "CONNECT__REMOTE_ACCESS",
   "CUSTOMIZATIONS", "DASHBOARD", "DISK", "DISPLAY", "DOCKER", "FLASH", "INFO", "LOGS", "ME",
@@ -78,11 +79,20 @@ function readKeyDirectory(keyDirectory: string): SanctuaryAcceptanceKeyMetadata[
   return readRawKeyDirectory(keyDirectory).map(normalizeKey)
 }
 
-function readKeyRecords(keyDirectory: string): SanctuaryAcceptanceKeyRecord[] {
-  return readRawKeyDirectory(keyDirectory).map((raw) => ({
-    ...normalizeKey(raw),
-    key: text(raw.key, "Unraid key descriptor"),
-  }))
+function readSelectedKeyRecord(keyRecordPath: string): SanctuaryAcceptanceKeyRecord {
+  const raw = object(JSON.parse(readFileSync(keyRecordPath, "utf8")) as unknown, "selected Unraid key file")
+  return { ...normalizeKey(raw), key: text(raw.key, "Unraid key descriptor") }
+}
+
+export function createSanctuaryAcceptanceVaultProbeDependencies(
+  options: { keyRecordPath: string },
+): SanctuaryAcceptanceVaultProbeDependencies {
+  const keyRecordPath = options.keyRecordPath
+  return {
+    refresh: refreshMachineRuntimeCredentialConfig,
+    readKeyRecords: () => [readSelectedKeyRecord(keyRecordPath)],
+    fetch,
+  }
 }
 
 async function defaultExecFile(executable: string, args: string[], timeoutMs: number): Promise<{ status: number; stdout: string }> {
@@ -249,11 +259,7 @@ export async function executeSanctuaryAcceptanceAdapter(
 export async function executeSanctuaryAcceptanceVaultProbe(
   keyIdValue: unknown,
   capabilityValue: unknown,
-  deps: SanctuaryAcceptanceVaultProbeDependencies = {
-    refresh: refreshMachineRuntimeCredentialConfig,
-    readKeyRecords: () => readKeyRecords(KEY_DIRECTORY),
-    fetch,
-  },
+  deps: SanctuaryAcceptanceVaultProbeDependencies = createSanctuaryAcceptanceVaultProbeDependencies({ keyRecordPath: SELECTED_KEY_RECORD }),
 ): Promise<unknown> {
   const id = keyId(keyIdValue)
   const capability = text(capabilityValue, "capability")
