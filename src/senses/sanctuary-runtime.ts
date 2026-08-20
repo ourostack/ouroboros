@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
+import { AsyncLocalStorage } from "node:async_hooks"
 
 import { getAgentRoot } from "../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
@@ -10,6 +11,20 @@ import { createUnraidReadTools } from "../repertoire/tools-unraid"
 import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
+
+const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
+
+export async function runWithSanctuaryToolReceiptCollection<T>(operation: () => Promise<T>): Promise<{ result: T; toolResultDigests: string[] }> {
+  const digests: string[] = []
+  const result = await sanctuaryToolReceipts.run(digests, operation)
+  return { result, toolResultDigests: [...digests] }
+}
+
+function collectToolResult(result: unknown): string {
+  const digest = createHash("sha256").update(JSON.stringify(result)).digest("hex")
+  sanctuaryToolReceipts.getStore()?.push(digest)
+  return digest
+}
 
 function machineConfig(agentName: string): Record<string, unknown> {
   const result = readMachineRuntimeCredentialConfig(agentName)
@@ -58,7 +73,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   const acceptanceRead = <TArgs extends unknown[], TResult>(toolName: string, read: (...args: TArgs) => Promise<TResult>) => async (...args: TArgs): Promise<TResult> => {
     try {
       const result = await read(...args)
-      emitNervesEvent({ component: "senses", event: "senses.sanctuary_read_receipt", message: "Sanctuary live read completed", meta: { toolName, success: true, resultDigest: createHash("sha256").update(JSON.stringify(result)).digest("hex"), ...sanctuaryAcceptanceEventMeta(agentName) } })
+      emitNervesEvent({ component: "senses", event: "senses.sanctuary_read_receipt", message: "Sanctuary live read completed", meta: { toolName, success: true, resultDigest: collectToolResult(result), ...sanctuaryAcceptanceEventMeta(agentName) } })
       return result
     } catch (error) {
       emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_read_receipt_error", message: "Sanctuary live read failed", meta: { toolName, success: false, category: error instanceof Error ? error.name : "unknown", ...sanctuaryAcceptanceEventMeta(agentName) } })
@@ -84,7 +99,11 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
       getDisks: acceptanceRead("unraid_get_disks", reads.getDisks),
       getNotifications: acceptanceRead("unraid_get_notifications", reads.getNotifications),
       getSystem: acceptanceRead("unraid_get_system", reads.getSystem),
-      restartContainer: restart,
+      restartContainer: async (args) => {
+        const result = await restart(args)
+        collectToolResult(result)
+        return result
+      },
     },
   }
 }

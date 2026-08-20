@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto"
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto"
 import {
   closeSync,
   constants as fsConstants,
@@ -20,7 +20,7 @@ import * as path from "node:path"
 import { FileFriendStore } from "@ouro.bot/friends"
 
 import { getAgentRoot } from "../heart/identity"
-import { sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
+import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
@@ -39,7 +39,7 @@ import {
   type TelegramUpdateInboxStore,
   type TelegramUpdate,
 } from "./telegram-client"
-import { createSanctuaryToolContext } from "./sanctuary-runtime"
+import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "./sanctuary-runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 
@@ -63,6 +63,21 @@ const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
+const TELEGRAM_TURN_RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v1"
+
+function appendSanctuaryTurnReceipt(agentRoot: string, receipt: Record<string, unknown>): void {
+  const filePath = path.join(agentRoot, "state", "acceptance", "telegram-turns.ndjson")
+  mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+  let existing: string[] = []
+  try { existing = readFileSync(filePath, "utf8").split("\n").filter(Boolean) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+  const lines = [...existing, JSON.stringify(receipt)].slice(-500)
+  const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
+  writeFileSync(temporary, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" })
+  const handle = openSync(temporary, "r")
+  try { fsyncSync(handle) } finally { closeSync(handle) }
+  renameSync(temporary, filePath)
+}
 
 export interface CreateTelegramSenseAppOptions {
   agentName: string
@@ -476,6 +491,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const onMessage = async (message: TelegramInboundMessage): Promise<void> => {
+    const acceptanceMarker = readSanctuaryAcceptanceMarker(options.agentName)
     const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
     emitNervesEvent({
       component: "senses",
@@ -484,8 +500,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       meta: { agentName: options.agentName, subject, ...acceptanceMeta },
     })
     let deliveryCount = 0
+    const deliveredMessageIds: number[] = []
     try {
-      const result = await runTurn({
+      const collected = await runWithSanctuaryToolReceiptCollection(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
         sessionKey: `telegram:${subject}`,
@@ -498,14 +515,31 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         userMessage: message.text,
         deliverySink: {
           onDelivery: async (delivery) => {
-            await deliver(delivery.text)
+            deliveredMessageIds.push(...await deliver(delivery.text))
             deliveryCount += 1
           },
         },
         ...(toolContext ? { toolContext } : {}),
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
-      })
-      if (deliveryCount === 0 && result.response.trim()) await deliver(result.response)
+      }))
+      const result = collected.result
+      if (deliveryCount === 0 && result.response.trim()) deliveredMessageIds.push(...await deliver(result.response))
+      if (acceptanceMarker) {
+        const deliveredText = [...result.deliveries.map((delivery) => delivery.text), result.response].filter((value) => value.trim()).join("\n")
+        appendSanctuaryTurnReceipt(agentRoot, {
+          schemaVersion: "sanctuary-telegram-turn-receipt-v1",
+          scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
+          updateDigest: createHash("sha256").update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0update\0${message.updateId}\0${message.messageId}`).digest("hex"),
+          sequenceDigest: createHash("sha256").update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0sequence\0${message.updateId}`).digest("hex"),
+          responseDigest: createHash("sha256").update(deliveredText).digest("hex"),
+          toolResultDigests: collected.toolResultDigests,
+          providerTurnCount: 1,
+          toolInvocationCount: collected.toolResultDigests.length,
+          deliveryCount: deliveredMessageIds.length,
+          telegramMessageIdDigests: deliveredMessageIds.map((id) => createHash("sha256").update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0delivery\0${id}`).digest("hex")),
+          completedAt: new Date().toISOString(),
+        })
+      }
       emitNervesEvent({
         component: "senses",
         event: "senses.telegram_turn_end",

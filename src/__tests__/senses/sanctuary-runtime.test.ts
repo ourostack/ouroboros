@@ -42,7 +42,7 @@ vi.mock("../../repertoire/unraid-restart", () => ({
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
 
 import type { UnraidRestartAttempt } from "../../repertoire/unraid-restart"
-import { createSanctuaryToolContext } from "../../senses/sanctuary-runtime"
+import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 
 function availableConfig(config: Record<string, unknown>) {
   return {
@@ -85,13 +85,21 @@ describe("Sanctuary runtime tool context", () => {
       apiKey: "synthetic-read-key",
     })
     expect(runtimeMocks.createUnraidReadTools).toHaveBeenCalledOnce()
-    expect(context.sanctuary).toMatchObject({ restartContainer: runtimeMocks.restart })
+    expect(context.sanctuary?.restartContainer).toEqual(expect.any(Function))
     for (const key of Object.keys(runtimeMocks.readTools)) expect(context.sanctuary?.[key as keyof typeof runtimeMocks.readTools]).toEqual(expect.any(Function))
     expect(runtimeMocks.readMachineRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
 
     runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 10 } })
     await expect(context.sanctuary!.getSystem()).resolves.toEqual({ ok: true, data: { uptime: 10 } })
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_read_receipt", meta: expect.objectContaining({ toolName: "unraid_get_system", success: true, resultDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) }) }))
+    runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 11 } })
+    await expect(runWithSanctuaryToolReceiptCollection(() => context.sanctuary!.getSystem())).resolves.toEqual({
+      result: { ok: true, data: { uptime: 11 } },
+      toolResultDigests: [expect.stringMatching(/^[0-9a-f]{64}$/u)],
+    })
+    runtimeMocks.restart.mockResolvedValueOnce({ ok: true, data: { container: { id: "Docker:a", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } })
+    await expect(context.sanctuary!.restartContainer({ container: "calibre-web" })).resolves.toMatchObject({ ok: true })
+    expect(runtimeMocks.restart).toHaveBeenCalledWith({ container: "calibre-web" })
 
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({
       unraidWriteApiKey: " rotated-synthetic-write-key ",
