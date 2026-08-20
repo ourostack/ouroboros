@@ -7,6 +7,7 @@ const bootstrapMocks = vi.hoisted(() => ({
   homeDir: "/tmp/container-bootstrap-default-home",
   persist: vi.fn(async () => true),
   apply: vi.fn(() => true),
+  validate: vi.fn(() => true),
   machineIdentity: vi.fn(() => ({ machineId: "machine_default" })),
 }))
 
@@ -17,6 +18,7 @@ vi.mock("node:os", async (importOriginal) => ({
 vi.mock("../../../heart/runtime-credentials", () => ({
   persistRuntimeCredentialBootstrapMessage: (...args: unknown[]) => bootstrapMocks.persist(...args),
   applyRuntimeCredentialBootstrapMessage: (...args: unknown[]) => bootstrapMocks.apply(...args),
+  isRuntimeCredentialBootstrapMessage: (...args: unknown[]) => bootstrapMocks.validate(...args),
 }))
 vi.mock("../../../heart/machine-identity", () => ({
   loadOrCreateMachineIdentity: () => bootstrapMocks.machineIdentity(),
@@ -40,6 +42,13 @@ describe("container credential bootstrap", () => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), "container-bootstrap-"))
     const file = path.join(directory, "credentials.json")
     fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, credentials: [message] }), { mode: 0o600 })
+    return file
+  }
+
+  function envelopeFixture(messages: Array<Record<string, unknown>>): string {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "container-bootstrap-"))
+    const file = path.join(directory, "credentials.json")
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, credentials: messages }), { mode: 0o600 })
     return file
   }
 
@@ -132,7 +141,7 @@ describe("container credential bootstrap", () => {
     expect(fs.existsSync(`${file}.consuming`)).toBe(true)
   })
 
-  it("rejects unsafe, oversized, duplicate, unknown-agent, and ambiguous bootstrap files without applying them", async () => {
+  it("rejects unsafe, oversized, duplicate, and unknown-agent bootstrap files without applying them", async () => {
     const message = { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} }
     const file = fixture(message)
     const persist = vi.fn(async () => true)
@@ -156,10 +165,6 @@ describe("container credential bootstrap", () => {
     fs.writeFileSync(file, "x".repeat(131_073), { mode: 0o600 })
     await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist, apply })).rejects.toThrow("too large")
     fs.rmSync(`${file}.consuming`)
-
-    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, credentials: [message] }), { mode: 0o600 })
-    fs.writeFileSync(`${file}.consuming`, JSON.stringify({ schemaVersion: 1, credentials: [message] }), { mode: 0o600 })
-    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist, apply })).rejects.toThrow("both source and claimed")
 
     expect(persist).not.toHaveBeenCalled()
     expect(apply).not.toHaveBeenCalled()
@@ -186,7 +191,71 @@ describe("container credential bootstrap", () => {
     await expect(loadContainerCredentialBootstrap(["sanctuary"])).resolves.toEqual(["sanctuary"])
     expect(bootstrapMocks.machineIdentity).toHaveBeenCalledTimes(1)
     expect(bootstrapMocks.persist).toHaveBeenCalledWith(expect.anything(), { machineId: "machine_default" })
-    expect(bootstrapMocks.apply).toHaveBeenCalledTimes(1)
+    expect(bootstrapMocks.apply).not.toHaveBeenCalled()
+  })
+
+  it("validates every message and machine binding before the first vault write", async () => {
+    const file = envelopeFixture([
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: { first: "secret" } },
+      { type: "ouro.runtimeCredentialBootstrap", agentName: "other", runtimeConfg: { typo: "secret" } },
+    ])
+    bootstrapMocks.validate.mockImplementation((message: unknown) => !(message as Record<string, unknown>).runtimeConfg)
+    const persist = vi.fn(async () => true)
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary", "other"], { path: file, persist }))
+      .rejects.toThrow("message is invalid")
+    expect(persist).not.toHaveBeenCalled()
+    expect(fs.existsSync(`${file}.consuming`)).toBe(true)
+
+    bootstrapMocks.validate.mockReturnValue(true)
+    fs.rmSync(`${file}.consuming`)
+    const mismatch = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "machine_other",
+      machineRuntimeConfig: { unraidReadApiKey: "secret" },
+    })
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: mismatch, persist }))
+      .rejects.toThrow("machineId does not match this machine")
+    expect(bootstrapMocks.machineIdentity).toHaveBeenCalledTimes(1)
+    expect(persist).not.toHaveBeenCalled()
+  })
+
+  it("durably discards only an identical redundant source and resumes the claimed envelope", async () => {
+    const file = fixture({ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: { token: "secret" } })
+    fs.copyFileSync(file, `${file}.consuming`)
+    fs.chmodSync(`${file}.consuming`, 0o600)
+    const persist = vi.fn(async () => true)
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist })).resolves.toEqual(["sanctuary"])
+    expect(persist).toHaveBeenCalledOnce()
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.existsSync(`${file}.consuming`)).toBe(false)
+  })
+
+  it("fails closed with human-required quarantine guidance when source and claim differ", async () => {
+    const file = fixture({ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: { token: "source-secret" } })
+    fs.writeFileSync(`${file}.consuming`, JSON.stringify({
+      schemaVersion: 1,
+      credentials: [{ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: { token: "claim-secret" } }],
+    }), { mode: 0o600 })
+    const persist = vi.fn(async () => true)
+
+    let failure: unknown
+    try {
+      await loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist })
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toContain("human-required")
+    expect((failure as Error).message).toContain("securely compare")
+    expect((failure as Error).message).toContain("quarantine")
+    expect((failure as Error).message).not.toContain("source-secret")
+    expect((failure as Error).message).not.toContain("claim-secret")
+    expect(fs.existsSync(file)).toBe(true)
+    expect(fs.existsSync(`${file}.consuming`)).toBe(true)
+    expect(persist).not.toHaveBeenCalled()
   })
 
   it("rejects invalid envelope shapes, unsupported fields, unsafe claimed files, and owner mismatch", async () => {
