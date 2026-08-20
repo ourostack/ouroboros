@@ -50,6 +50,7 @@ import {
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
+import { startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
 import { readAgentConfigForAgent } from "../auth/auth-flow"
 import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
@@ -671,7 +672,13 @@ function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Pro
 }
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
-void loadContainerCredentialBootstrap(managedAgents).then(() => daemon.start()).then(async () => {
+void startDaemonAfterContainerCredentialBootstrap({
+  loadBootstrap: () => loadContainerCredentialBootstrap(managedAgents),
+  startDaemon: () => daemon.start(),
+  markStartupFailure: () => { _tombstoneWritten = true },
+  exit: (code) => process.exit(code),
+}).then(async (started) => {
+  if (!started) return
   supercronicSupervisor?.start()
   const providerPreload = startProviderCredentialPoolPreload()
   const bundlesRoot = getAgentBundlesRoot()
