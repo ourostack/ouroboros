@@ -1,10 +1,12 @@
 import * as crypto from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "../repertoire/credential-access"
-import { getAgentName } from "./identity"
+import { getAgentName, PROVIDER_CREDENTIALS, type AgentProvider } from "./identity"
 import {
   cacheProviderCredentialRecords,
+  refreshProviderCredentialPool,
   upsertProviderCredential,
+  type ProviderCredentialProvenanceSource,
   type ProviderCredentialRecord,
 } from "./provider-credentials"
 
@@ -55,17 +57,32 @@ function isCredentialRecord(value: unknown): value is Record<string, string | nu
   return Object.values(value).every(isCredentialValue)
 }
 
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).sort().join(",") === [...keys].sort().join(",")
+}
+
+function isCanonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false
+  try {
+    return new Date(value).toISOString() === value
+  } catch {
+    return false
+  }
+}
+
 function isProviderCredentialRecord(value: unknown): value is ProviderCredentialRecord {
   if (!isRecord(value)) return false
-  if (typeof value.provider !== "string") return false
-  if (typeof value.revision !== "string" || value.revision.trim().length === 0) return false
-  if (typeof value.updatedAt !== "string" || value.updatedAt.trim().length === 0) return false
+  if (!hasExactKeys(value, ["provider", "revision", "updatedAt", "credentials", "config", "provenance"])) return false
+  if (typeof value.provider !== "string" || !(value.provider in PROVIDER_CREDENTIALS)) return false
+  if (typeof value.revision !== "string" || !/^vault_[0-9a-f]{16}$/u.test(value.revision)) return false
+  if (!isCanonicalTimestamp(value.updatedAt)) return false
   if (!isCredentialRecord(value.credentials)) return false
   if (!isCredentialRecord(value.config)) return false
   const provenance = value.provenance
   if (!isRecord(provenance)) return false
+  if (!hasExactKeys(provenance, ["source", "updatedAt"])) return false
   if (provenance.source !== "auth-flow" && provenance.source !== "manual") return false
-  if (typeof provenance.updatedAt !== "string" || provenance.updatedAt.trim().length === 0) return false
+  if (!isCanonicalTimestamp(provenance.updatedAt) || provenance.updatedAt !== value.updatedAt) return false
   return true
 }
 
@@ -75,6 +92,40 @@ function stableJson(value: unknown): string {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`
   }
   return JSON.stringify(value)
+}
+
+function reconcileBootstrapFields(
+  base: RuntimeCredentialConfig,
+  bootstrap: RuntimeCredentialConfig,
+  prefix: string,
+): RuntimeCredentialConfig {
+  const conflicts: string[] = []
+  const merge = (
+    current: RuntimeCredentialConfig,
+    incoming: RuntimeCredentialConfig,
+    pathPrefix: string,
+  ): RuntimeCredentialConfig => {
+    const next: RuntimeCredentialConfig = { ...current }
+    for (const [key, incomingValue] of Object.entries(incoming)) {
+      const fieldPath = `${pathPrefix}.${key}`
+      if (!Object.prototype.hasOwnProperty.call(current, key)) {
+        next[key] = incomingValue
+        continue
+      }
+      const currentValue = current[key]
+      if (isRecord(currentValue) && isRecord(incomingValue)) {
+        next[key] = merge(currentValue, incomingValue, fieldPath)
+      } else if (stableJson(currentValue) !== stableJson(incomingValue)) {
+        conflicts.push(fieldPath)
+      }
+    }
+    return next
+  }
+  const merged = merge(base, bootstrap, prefix)
+  if (conflicts.length > 0) {
+    throw new Error(`container credential bootstrap conflicts with existing fields: ${conflicts.sort().join(", ")}`)
+  }
+  return merged
 }
 
 function runtimeConfigVaultPath(agentName: string, itemName = RUNTIME_CONFIG_ITEM_NAME): string {
@@ -195,9 +246,17 @@ export function cacheMachineRuntimeCredentialConfig(
   return cacheMachineResult(agentName, resultFromPayloadForItem(agentName, machineRuntimeConfigItemName(machineId), payload))
 }
 
-function isRuntimeCredentialBootstrapMessage(value: unknown): value is RuntimeCredentialBootstrapMessage {
+export function isRuntimeCredentialBootstrapMessage(value: unknown): value is RuntimeCredentialBootstrapMessage {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
+  if (!Object.keys(record).every((key) => [
+    "type",
+    "agentName",
+    "runtimeConfig",
+    "machineRuntimeConfig",
+    "machineId",
+    "providerCredentialRecords",
+  ].includes(key))) return false
   if (record.type !== "ouro.runtimeCredentialBootstrap") return false
   if (typeof record.agentName !== "string" || record.agentName.trim().length === 0) return false
   if (record.runtimeConfig !== undefined && !isRecord(record.runtimeConfig)) return false
@@ -209,6 +268,15 @@ function isRuntimeCredentialBootstrapMessage(value: unknown): value is RuntimeCr
       !Array.isArray(record.providerCredentialRecords)
       || !record.providerCredentialRecords.every(isProviderCredentialRecord)
     )
+  ) return false
+  if (Array.isArray(record.providerCredentialRecords)) {
+    const providers = record.providerCredentialRecords.map((providerRecord) => providerRecord.provider)
+    if (new Set(providers).size !== providers.length) return false
+  }
+  if (
+    record.runtimeConfig === undefined
+    && record.machineRuntimeConfig === undefined
+    && (!Array.isArray(record.providerCredentialRecords) || record.providerCredentialRecords.length === 0)
   ) return false
   return true
 }
@@ -247,26 +315,90 @@ export async function persistRuntimeCredentialBootstrapMessage(
   if (!isRuntimeCredentialBootstrapMessage(message)) return false
   const agentName = message.agentName.trim()
   const now = options.now ?? new Date()
+  if (message.machineId !== undefined && message.machineId.trim() !== options.machineId.trim()) {
+    throw new Error("container credential bootstrap machineId does not match this machine")
+  }
+
+  let runtimePlan: RuntimeCredentialConfig | null = null
+  let machinePlan: RuntimeCredentialConfig | null = null
+  const providerPlans: Array<{
+    provider: AgentProvider
+    credentials: Record<string, string | number>
+    config: Record<string, string | number>
+    provenanceSource: ProviderCredentialProvenanceSource
+  }> = []
+
   if (message.runtimeConfig) {
-    await upsertRuntimeCredentialConfig(agentName, message.runtimeConfig, now)
+    const current = await refreshRuntimeCredentialConfig(agentName)
+    if (!current.ok && current.reason !== "missing") {
+      throw new Error(`cannot reconcile runtimeConfig at ${current.itemPath}: ${current.error}`)
+    }
+    const base = current.ok ? current.config : {}
+    const merged = reconcileBootstrapFields(base, message.runtimeConfig, "runtimeConfig")
+    if (stableJson(merged) !== stableJson(base)) runtimePlan = merged
   }
   if (message.machineRuntimeConfig) {
-    await upsertMachineRuntimeCredentialConfig(
-      agentName,
-      message.machineId ?? options.machineId,
-      message.machineRuntimeConfig,
-      now,
-    )
+    const machineId = message.machineId ?? options.machineId
+    const current = await refreshMachineRuntimeCredentialConfig(agentName, machineId)
+    if (!current.ok && current.reason !== "missing") {
+      throw new Error(`cannot reconcile machineRuntimeConfig at ${current.itemPath}: ${current.error}`)
+    }
+    const base = current.ok ? current.config : {}
+    const merged = reconcileBootstrapFields(base, message.machineRuntimeConfig, "machineRuntimeConfig")
+    if (stableJson(merged) !== stableJson(base)) machinePlan = merged
   }
   for (const record of message.providerCredentialRecords ?? []) {
+    const current = await refreshProviderCredentialPool(agentName, { providers: [record.provider], skipCache: true })
+    if (!current.ok && current.reason !== "missing") {
+      throw new Error(`cannot reconcile providerCredentialRecords.${record.provider} at ${current.poolPath}: ${current.error}`)
+    }
+    const existing = current.ok ? current.pool.providers[record.provider] : undefined
+    const credentials = reconcileBootstrapFields(
+      existing?.credentials ?? {},
+      record.credentials,
+      `providerCredentialRecords.${record.provider}.credentials`,
+    ) as Record<string, string | number>
+    const config = reconcileBootstrapFields(
+      existing?.config ?? {},
+      record.config,
+      `providerCredentialRecords.${record.provider}.config`,
+    ) as Record<string, string | number>
+    if (!existing || stableJson(credentials) !== stableJson(existing.credentials) || stableJson(config) !== stableJson(existing.config)) {
+      providerPlans.push({
+        provider: record.provider,
+        credentials,
+        config,
+        provenanceSource: existing?.provenance.source ?? record.provenance.source,
+      })
+    }
+  }
+
+  if (runtimePlan) await upsertRuntimeCredentialConfig(agentName, runtimePlan, now)
+  if (machinePlan) {
+    await upsertMachineRuntimeCredentialConfig(agentName, message.machineId ?? options.machineId, machinePlan, now)
+  }
+  for (const plan of providerPlans) {
     await upsertProviderCredential({
       agentName,
-      provider: record.provider,
-      credentials: record.credentials,
-      config: record.config,
-      provenance: { source: record.provenance.source },
-      now: new Date(record.updatedAt),
+      provider: plan.provider,
+      credentials: plan.credentials,
+      config: plan.config,
+      provenance: { source: plan.provenanceSource },
+      now,
     })
+  }
+
+  if (message.runtimeConfig) {
+    const refreshed = await refreshRuntimeCredentialConfig(agentName)
+    if (!refreshed.ok) throw new Error(`cannot read back runtimeConfig at ${refreshed.itemPath}: ${refreshed.error}`)
+  }
+  if (message.machineRuntimeConfig) {
+    const refreshed = await refreshMachineRuntimeCredentialConfig(agentName, message.machineId ?? options.machineId)
+    if (!refreshed.ok) throw new Error(`cannot read back machineRuntimeConfig at ${refreshed.itemPath}: ${refreshed.error}`)
+  }
+  if ((message.providerCredentialRecords?.length ?? 0) > 0) {
+    const refreshed = await refreshProviderCredentialPool(agentName)
+    if (!refreshed.ok) throw new Error(`cannot read back providerCredentialRecords at ${refreshed.poolPath}: ${refreshed.error}`)
   }
   emitNervesEvent({
     component: "config/identity",
