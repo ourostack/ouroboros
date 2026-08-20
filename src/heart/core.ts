@@ -453,6 +453,8 @@ export interface RunAgentOptions {
   flightRecorderResume?: import("../arc/flight-recorder").FlightRecorderResume;
 }
 
+export const MAX_PROVIDER_ITERATIONS = 8
+
 export interface ApprovalProposalRequest {
   toolCall: OpenAI.ChatCompletionMessageToolCall
   arguments: JsonObject
@@ -1418,6 +1420,7 @@ export async function runAgent(
   // a ponder packet created the return obligation in this turn.
   let noToolCallRetries = 0;
   const NO_TOOL_CALL_MAX_RETRIES = 2;
+  let providerIterations = 0;
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
   const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
@@ -1508,6 +1511,13 @@ export async function runAgent(
   providerRuntime.resetTurnState(messages);
 
   while (!done) {
+    if (providerIterations >= MAX_PROVIDER_ITERATIONS) {
+      finishTerminalProviderError(
+        new Error(`provider iteration limit exhausted after ${MAX_PROVIDER_ITERATIONS} accepted responses`),
+        "unknown",
+      )
+      break
+    }
     // Channel-based tool filtering:
     // - Private runtime: exclude send_message (delivery via surface), observe (no one to observe)
     // - All outward channels (1:1, group, reaction): observe available
@@ -1677,6 +1687,10 @@ export async function runAgent(
       }
 
       const result = attempt.value;
+      providerIterations += 1
+      if (providerIterations === MAX_PROVIDER_ITERATIONS && result.toolCalls.length > 0) {
+        throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} before tool execution`)
+      }
       const streamCallbackBuffer = turnCallbackBufferRef.current;
       turnCallbackBufferRef.current = null;
 
@@ -2139,8 +2153,7 @@ export async function runAgent(
         const validatedCalls: Array<
           | { call: (typeof result.toolCalls)[number]; advertised: OpenAI.ChatCompletionFunctionTool; validated: ValidatedToolArguments }
           | { call: (typeof result.toolCalls)[number]; error: string }
-        > | null = options?.approvalCoordinator
-          ? result.toolCalls.map((call) => {
+        > = result.toolCalls.map((call) => {
               const advertised = activeTools.find((tool) => tool.function.name === call.name)
               if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") {
                 return { call, error: "tool was not advertised with a valid argument schema" } as const
@@ -2150,7 +2163,6 @@ export async function runAgent(
                 ? { call, advertised, validated: validated.value } as const
                 : { call, error: validated.reason } as const
             })
-          : null
         const invalidApprovalCall = validatedCalls?.find((entry) => "error" in entry)
         if (invalidApprovalCall) {
           await streamCallbackBuffer?.flush()
@@ -2171,14 +2183,16 @@ export async function runAgent(
           continue
         }
 
-        const approvalCalls = (validatedCalls as Array<{
+        const validCalls = validatedCalls as Array<{
           call: (typeof result.toolCalls)[number]
           advertised: OpenAI.ChatCompletionFunctionTool
           validated: ValidatedToolArguments
-        }> | null)?.map((entry) => ({
+        }>
+        const validatedCallById = new Map(validCalls.map((entry) => [entry.call.id, entry.validated]))
+        const approvalCalls = options?.approvalCoordinator ? validCalls.map((entry) => ({
           ...entry,
           policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments),
-        })) ?? []
+        })) : []
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
           streamCallbackBuffer?.discard()
@@ -2279,12 +2293,7 @@ export async function runAgent(
             providerRuntime.appendToolOutput(tc.id, soleCallRejection);
             continue;
           }
-          let args: Record<string, string> = {};
-          try {
-            args = JSON.parse(tc.arguments);
-          } catch {
-            /* ignore */
-          }
+          const args = validatedCallById.get(tc.id)!.arguments as Record<string, string>
           if (tc.name === "send_message" && args.friendId === "self") {
             const latestUserText = latestUserMessageText(messages)
             if (!isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserText)) {

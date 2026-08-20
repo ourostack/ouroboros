@@ -20,6 +20,13 @@ function completion(content = "pong"): Response {
   }), { status: 200, headers: { "content-type": "application/json" } })
 }
 
+function responseWithChoice(choice: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ choices: [choice] }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })
+}
+
 describe("generic OpenAI-compatible provider", () => {
   it("sends the exact non-streaming GLM wire contract", async () => {
     let request: Request | undefined
@@ -73,6 +80,11 @@ describe("generic OpenAI-compatible provider", () => {
   })
 
   it.each([
+    ["openai-compatible", "http://api.z.ai/api/paas/v4/"],
+    ["openai-compatible", "https://api.z.ai:443/api/paas/v4/"],
+    ["openai-compatible", "https://user@api.z.ai/api/paas/v4/"],
+    ["openai-compatible", "https://api.z.ai/"],
+    ["openai-compatible", "https://api.z.ai/api/paas/v4/#fragment"],
     ["openai-compatible", "https://api.z.ai/api/paas/v4/extra"],
     ["openai-compatible", "https://api.z.ai.attacker.example/api/paas/v4/"],
     ["openai-compatible-gemini", "https://generativelanguage.googleapis.com/v1beta/openai/?x=1"],
@@ -87,5 +99,64 @@ describe("generic OpenAI-compatible provider", () => {
       baseUrl: "https://api.z.ai/api/paas/v4/",
     }, { fetch: vi.fn(async () => { throw new Error("failed with secret-never-print") }) })
     await expect(runtime.ping()).rejects.not.toThrow("secret-never-print")
+  })
+
+  it.each([
+    [401, "auth-failure"],
+    [403, "auth-failure"],
+    [429, "rate-limit"],
+    [500, "server-error"],
+    [503, "server-error"],
+  ] as const)("preserves HTTP %i for %s classification after redaction", async (status, classification) => {
+    const runtime = createOpenAICompatibleProviderRuntime("openai-compatible", "glm-5.2", {
+      apiKey: "secret-classification-key",
+      baseUrl: "https://api.z.ai/api/paas/v4/",
+    }, { fetch: vi.fn(async () => new Response("failure", { status })) })
+
+    const error = await runtime.ping().catch((caught: unknown) => caught as Error)
+    expect(runtime.classifyError(error)).toBe(classification)
+    expect((error as Error & { status?: number }).status).toBe(status)
+  })
+
+  it("rejects legacy function_call before emitting any response callbacks", async () => {
+    const fetch = vi.fn(async () => responseWithChoice({
+      finish_reason: "stop",
+      message: { role: "assistant", content: "looks fine", function_call: { name: "shell", arguments: "{}" } },
+    }))
+    const runtime = createOpenAICompatibleProviderRuntime("openai-compatible", "glm-5.2", {
+      apiKey: "secret",
+      baseUrl: "https://api.z.ai/api/paas/v4/",
+    }, { fetch })
+    const cb = callbacks()
+
+    await expect(runtime.streamTurn({ messages: [], activeTools: [], callbacks: cb })).rejects.toThrow("legacy function_call")
+    expect(cb.onModelStreamStart).not.toHaveBeenCalled()
+    expect(cb.onTextChunk).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["missing choices", {}],
+    ["multiple choices", { choices: [{}, {}] }],
+    ["missing message", { choices: [{ finish_reason: "stop" }] }],
+    ["null reason", { choices: [{ finish_reason: null, message: { content: "x" } }] }],
+    ["empty reason", { choices: [{ finish_reason: "", message: { content: "x" } }] }],
+    ["length", { choices: [{ finish_reason: "length", message: { content: "x" } }] }],
+    ["content filter", { choices: [{ finish_reason: "content_filter", message: { content: "x" } }] }],
+    ["stop with empty content", { choices: [{ finish_reason: "stop", message: { content: "" } }] }],
+    ["stop with calls", { choices: [{ finish_reason: "stop", message: { content: "x", tool_calls: [{ id: "c", type: "function", function: { name: "shell", arguments: "{}" } }] } }] }],
+    ["tool reason without calls", { choices: [{ finish_reason: "tool_calls", message: { content: "" } }] }],
+    ["tool reason with content", { choices: [{ finish_reason: "tool_calls", message: { content: "x", tool_calls: [{ id: "c", type: "function", function: { name: "shell", arguments: "{}" } }] } }] }],
+    ["nine calls", { choices: [{ finish_reason: "tool_calls", message: { content: "", tool_calls: Array.from({ length: 9 }, (_, index) => ({ id: `c${index}`, type: "function", function: { name: "shell", arguments: "{}" } })) } }] }],
+  ])("fails closed for %s", async (_label, payload) => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }))
+    const runtime = createOpenAICompatibleProviderRuntime("openai-compatible", "glm-5.2", {
+      apiKey: "secret",
+      baseUrl: "https://api.z.ai/api/paas/v4/",
+    }, { fetch })
+    const cb = callbacks()
+
+    await expect(runtime.streamTurn({ messages: [], activeTools: [], callbacks: cb })).rejects.toThrow()
+    expect(cb.onModelStreamStart).not.toHaveBeenCalled()
+    expect(cb.onTextChunk).not.toHaveBeenCalled()
   })
 })

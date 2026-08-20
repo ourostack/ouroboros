@@ -31,7 +31,7 @@ function canonicalBaseUrl(provider: OpenAICompatibleProviderId, value: string): 
     throw new Error(`${provider} requires its canonical base URL`)
   }
   const normalized = parsed.toString().replace(/\/+$/u, "/")
-  if (normalized !== CANONICAL_BASE_URLS[provider]) {
+  if (value !== CANONICAL_BASE_URLS[provider] || normalized !== CANONICAL_BASE_URLS[provider]) {
     throw new Error(`${provider} requires its canonical base URL ${CANONICAL_BASE_URLS[provider]}`)
   }
   return normalized
@@ -39,7 +39,13 @@ function canonicalBaseUrl(provider: OpenAICompatibleProviderId, value: string): 
 
 function safeError(error: unknown, apiKey: string): Error {
   const message = (error instanceof Error ? error.message : String(error)).split(apiKey).join("[redacted]")
-  return new Error(message, error instanceof Error ? { cause: error } : undefined)
+  const safe = new Error(message, error instanceof Error ? { cause: error } : undefined) as Error & { status?: number; code?: string }
+  if (error instanceof Error) {
+    const source = error as Error & { status?: unknown; code?: unknown }
+    if (typeof source.status === "number" && Number.isFinite(source.status)) safe.status = source.status
+    if (typeof source.code === "string") safe.code = source.code
+  }
+  return safe
 }
 
 function requiredString(value: unknown, label: string): string {
@@ -72,6 +78,9 @@ function parseCompletion(value: unknown, callbacks: ProviderTurnRequest["callbac
   const message = choice.message
   if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("OpenAI-compatible choice message is invalid")
   const record = message as Record<string, unknown>
+  if (Object.prototype.hasOwnProperty.call(record, "function_call")) {
+    throw new Error("OpenAI-compatible legacy function_call is unsupported")
+  }
   const rawCalls = record.tool_calls
   const calls = rawCalls === undefined || rawCalls === null ? [] : rawCalls
   if (!Array.isArray(calls)) throw new Error("OpenAI-compatible tool_calls must be an array")

@@ -1230,7 +1230,12 @@ describe("runAgent tool loop guard", () => {
             function: {
               name: terminalToolName,
               description: "cancel a habit",
-              parameters: { type: "object", properties: {}, additionalProperties: false },
+              parameters: {
+                type: "object",
+                properties: { habit: { type: "string" }, evidence: { type: "string" } },
+                required: ["habit", "evidence"],
+                additionalProperties: false,
+              },
             },
           },
           {
@@ -1255,6 +1260,84 @@ describe("runAgent tool loop guard", () => {
     )
     expect(execTool).not.toHaveBeenCalledWith(terminalToolName, expect.anything(), expect.anything())
     expect(result).toMatchObject({ outcome: "observed" })
+  })
+
+  it("rejects an entire malformed tool batch before any handler without an approval coordinator", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+      { index: 0, id: "call_valid_probe", function: { name: "probe", arguments: JSON.stringify({ value: "safe" }) } },
+      { index: 1, id: "call_invalid_probe", function: { name: "probe", arguments: "{" } },
+    ])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: "call_settle_after_invalid_batch",
+      function: { name: "settle", arguments: JSON.stringify({ answer: "rejected", intent: "complete" }) },
+    }])]))
+    const execTool = vi.fn()
+    const messages: any[] = [{ role: "user", content: "run both" }]
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "probe",
+          description: "test probe",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_valid_probe",
+      content: expect.stringContaining("another call in this batch had invalid arguments"),
+    }))
+  })
+
+  it("stops at eight accepted provider responses before resolving the eighth tool handler", async () => {
+    let response = 0
+    mockCreate.mockImplementation(() => {
+      response += 1
+      return makeStream([makeChunk(undefined, [{
+        index: 0,
+        id: `call_probe_${response}`,
+        function: { name: "probe", arguments: JSON.stringify({ value: `iteration-${response}` }) },
+      }])])
+    })
+    const execTool = vi.fn().mockResolvedValue("ok")
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "keep probing" }], makeCallbacks(), "cli", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "probe",
+          description: "test probe",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(8)
+    expect(execTool).toHaveBeenCalledTimes(7)
+    expect(execTool).not.toHaveBeenCalledWith("probe", { value: "iteration-8" }, expect.anything())
+    expect(result).toMatchObject({ outcome: "errored", error: expect.objectContaining({ message: expect.stringContaining("8") }) })
   })
 
   describe("approval suspension boundary", () => {
