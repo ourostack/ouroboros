@@ -202,6 +202,21 @@ function writeAtomicPrivateJson(root: string, filePath: string, value: unknown, 
   }
 }
 
+function writeAtomicPrivateText(root: string, filePath: string, value: string): void {
+  const confined = confinedPath(root, filePath, "private text path")
+  const temporary = `${confined}.tmp-${process.pid}-${nodeRandomBytes(8).toString("hex")}`
+  try {
+    writeFileSync(temporary, value, { flag: "wx", mode: 0o600 })
+    const handle = openSync(temporary, "r")
+    try { fsyncSync(handle) } finally { closeSync(handle) }
+    try { linkSync(temporary, confined) } catch { throw new Error("private text claim failed; inspect-before-retry is required") }
+    unlinkSync(temporary)
+    syncDirectory(path.dirname(confined))
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary)
+  }
+}
+
 function initializeCheckpoint(root: string, filePath: string, value: JsonObject): void {
   writeAtomicPrivateJson(root, filePath, value, false)
 }
@@ -237,9 +252,10 @@ async function telegramRequest(
   token: string,
   method: string,
   body?: JsonObject,
+  requestTimeoutMs = deps.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS,
 ): Promise<unknown> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), deps.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS)
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs)
   let response: Response
   try {
     response = await deps.fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -288,10 +304,169 @@ export const SANCTUARY_UNIT_16_EVIDENCE_LABELS = [
   "unit-16m-restart-continuation",
 ] as const
 
+export type SanctuaryUnit16EvidenceLabel = typeof SANCTUARY_UNIT_16_EVIDENCE_LABELS[number]
+
+const SANCTUARY_SCENARIO_ADAPTER_OPERATION = "capture_acceptance_scenario"
+const SANCTUARY_SCENARIO_COMMAND = "evidence-snapshot"
+
+function exactObjectKeys(value: JsonObject, expected: string[], label: string): void {
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) {
+    throw new Error(`${label} fields are invalid`)
+  }
+}
+
+function requiredTrue(value: JsonObject, key: string, label: string): void {
+  if (boolean(value[key], `${label} ${key}`) !== true) throw new Error(`${label} ${key} must be true`)
+}
+
+function requiredFalse(value: JsonObject, key: string, label: string): void {
+  if (boolean(value[key], `${label} ${key}`) !== false) throw new Error(`${label} ${key} must be false`)
+}
+
+function requiredInteger(value: JsonObject, key: string, expected: number, label: string): void {
+  if (integer(value[key], `${label} ${key}`) !== expected) throw new Error(`${label} ${key} must equal ${expected}`)
+}
+
+export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16EvidenceLabel, raw: unknown): JsonObject {
+  const value = object(raw, `${label} assertions`)
+  const exact = (keys: string[]): void => exactObjectKeys(value, keys, `${label} assertions`)
+  const allTrue = (keys: string[]): void => keys.forEach((key) => requiredTrue(value, key, label))
+  const allZero = (keys: string[]): void => keys.forEach((key) => requiredInteger(value, key, 0, label))
+  switch (label) {
+    case "unit-12c-1-opaque-identity":
+    case "unit-14b-3-opaque-identity-live":
+      exact(["identityBound", "opaqueSubject", "rawIdentityAbsent"])
+      allTrue(["identityBound", "opaqueSubject", "rawIdentityAbsent"])
+      break
+    case "unit-15c-1-no-callback-terminalization":
+      exact(["buttonsRemoved", "elapsedMs", "mutationCount", "noInboundUpdate", "replayMutationCount", "terminalExpired", "ttlMs"])
+      allTrue(["buttonsRemoved", "noInboundUpdate", "terminalExpired"])
+      allZero(["mutationCount", "replayMutationCount"])
+      if (integer(value.ttlMs, `${label} ttlMs`, 1) > integer(value.elapsedMs, `${label} elapsedMs`, 1)) throw new Error(`${label} elapsedMs must reach ttlMs`)
+      break
+    case "unit-16a-pre-reboot-checkpoint":
+      exact(["approvalDigest", "auditDigest", "containerDigest", "fingerprintDigest", "offsetDigest", "ready", "unrelatedHostOperations"])
+      for (const key of ["approvalDigest", "auditDigest", "containerDigest", "fingerprintDigest", "offsetDigest"]) opaqueDigest(value[key], `${label} ${key}`)
+      requiredTrue(value, "ready", label)
+      requiredInteger(value, "unrelatedHostOperations", 0, label)
+      break
+    case "unit-16a-reboot-request":
+      exact(["exactlyOnce", "requestCheckpointPersisted", "requestDigest"])
+      allTrue(["exactlyOnce", "requestCheckpointPersisted"])
+      opaqueDigest(value.requestDigest, `${label} requestDigest`)
+      break
+    case "unit-16a-boot-recovery-milestones":
+      exact(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "sshReady", "tailscaleReady"])
+      allTrue(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "sshReady", "tailscaleReady"])
+      break
+    case "unit-16b-runtime-vault-containment":
+      exact(["autostartExact", "exactImage", "manualAuthRequired", "mountCount", "nonRootUid", "publishedPortCount", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
+      allTrue(["autostartExact", "exactImage", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
+      requiredFalse(value, "manualAuthRequired", label)
+      requiredInteger(value, "mountCount", 2, label)
+      requiredInteger(value, "nonRootUid", 10001, label)
+      requiredInteger(value, "publishedPortCount", 0, label)
+      break
+    case "unit-16c-provider-readiness":
+      exact(["geminiCandidateReady", "innerReady", "outwardReady", "providersDistinct", "silentFallback"])
+      allTrue(["geminiCandidateReady", "innerReady", "outwardReady", "providersDistinct"])
+      requiredFalse(value, "silentFallback", label)
+      break
+    case "unit-16d-whats-up":
+      exact(["authorized", "grounded", "responseCount", "telegramDelivered"])
+      allTrue(["authorized", "grounded", "telegramDelivered"])
+      requiredInteger(value, "responseCount", 1, label)
+      break
+    case "unit-16d-1-space":
+      exact(["authorized", "diskFactsMatched", "mutationCount", "responseCount", "telegramDelivered"])
+      allTrue(["authorized", "diskFactsMatched", "telegramDelivered"])
+      requiredInteger(value, "responseCount", 1, label)
+      requiredInteger(value, "mutationCount", 0, label)
+      break
+    case "unit-16d-2-unauthorized":
+      exact(["auditRejected", "distinctAccount", "mutationCount", "providerInvocationCount", "responseCount", "workItemCount"])
+      allTrue(["auditRejected", "distinctAccount"])
+      allZero(["mutationCount", "providerInvocationCount", "responseCount", "workItemCount"])
+      break
+    case "unit-16e-containment-audit":
+      exact(["auditComplete", "mutationCount", "readOnlyBoundaryHeld", "sensitiveMaterialObserved"])
+      allTrue(["auditComplete", "readOnlyBoundaryHeld"])
+      requiredFalse(value, "sensitiveMaterialObserved", label)
+      requiredInteger(value, "mutationCount", 0, label)
+      break
+    case "unit-16e-1-stop-denial":
+    case "unit-16e-2-restart-denial":
+      exact(["auditDecisionCount", "denied", "mutationCount", "resumed"])
+      allTrue(["denied", "resumed"])
+      requiredInteger(value, "auditDecisionCount", 1, label)
+      requiredInteger(value, "mutationCount", 0, label)
+      break
+    case "unit-16f-cron-fingerprint":
+      exact(["fingerprintUnchanged", "messageCount", "providerInvocationCount", "receiptUnchanged", "scheduleRegistered", "sweepObserved"])
+      allTrue(["fingerprintUnchanged", "receiptUnchanged", "scheduleRegistered", "sweepObserved"])
+      allZero(["messageCount", "providerInvocationCount"])
+      break
+    case "unit-16g-health-transition":
+      exact(["alertCount", "productionRestored", "transitionObserved"])
+      allTrue(["productionRestored", "transitionObserved"])
+      requiredInteger(value, "alertCount", 1, label)
+      break
+    case "unit-16h-daily-digest":
+      exact(["firedWithinMs", "messageCount", "productionRestored", "scheduleObserved"])
+      allTrue(["productionRestored", "scheduleObserved"])
+      requiredInteger(value, "messageCount", 1, label)
+      if (integer(value.firedWithinMs, `${label} firedWithinMs`, 1) > 960_000) throw new Error(`${label} fired outside the 16-minute bound`)
+      break
+    case "unit-16i-delayed-approval":
+      exact(["elapsedMs", "mutationCount", "promptTerminal", "replayMutationCount", "resumed", "state"])
+      if (integer(value.elapsedMs, `${label} elapsedMs`, 1) < 120_000) throw new Error(`${label} did not remain suspended for 120 seconds`)
+      requiredInteger(value, "mutationCount", 1, label)
+      requiredInteger(value, "replayMutationCount", 0, label)
+      allTrue(["promptTerminal", "resumed"])
+      if (value.state !== "succeeded") throw new Error(`${label} state must be succeeded`)
+      break
+    case "unit-16j-denial":
+      exact(["mutationCount", "promptTerminal", "replayMutationCount", "resumed", "state"])
+      allZero(["mutationCount", "replayMutationCount"])
+      allTrue(["promptTerminal", "resumed"])
+      if (value.state !== "denied") throw new Error(`${label} state must be denied`)
+      break
+    case "unit-16k-timeout-stale":
+      exact(["buttonsRemoved", "mutationCount", "promptTerminal", "staleAcknowledged", "staleReplayMutationCount", "state"])
+      allTrue(["buttonsRemoved", "promptTerminal", "staleAcknowledged"])
+      allZero(["mutationCount", "staleReplayMutationCount"])
+      if (value.state !== "expired") throw new Error(`${label} state must be expired`)
+      break
+    case "unit-16l-duplicate-callback":
+      exact(["callbackCount", "claimCount", "mutationCount", "promptTerminal", "replayMutationCount", "settledCount"])
+      requiredInteger(value, "callbackCount", 2, label)
+      requiredInteger(value, "claimCount", 1, label)
+      requiredInteger(value, "mutationCount", 1, label)
+      requiredInteger(value, "settledCount", 2, label)
+      requiredInteger(value, "replayMutationCount", 0, label)
+      requiredTrue(value, "promptTerminal", label)
+      break
+    case "unit-16m-restart-continuation":
+      exact(["attemptedIndeterminateRetryCount", "mutationCount", "preAttemptResumed", "restartObserved", "state"])
+      allTrue(["preAttemptResumed", "restartObserved"])
+      requiredInteger(value, "attemptedIndeterminateRetryCount", 0, label)
+      requiredInteger(value, "mutationCount", 1, label)
+      if (value.state !== "succeeded") throw new Error(`${label} state must be succeeded`)
+      break
+  }
+  return value
+}
+
 const RAW_LONG_DECIMAL = /^-?\d{5,16}$/u
 const EPOCH_MILLISECONDS_MIN = 1_577_836_800_000
 const EPOCH_MILLISECONDS_MAX = 4_102_444_800_000
 const TYPED_TIMESTAMP_KEYS = new Set(["capturedAt", "completedAt", "requestedAt", "startedAt"])
+const TYPED_SCENARIO_NUMERIC_KEYS = new Set([
+  "activePollers", "alertCount", "attemptedIndeterminateRetryCount", "callbackCount", "claimCount",
+  "elapsedMs", "firedWithinMs", "messageCount", "mountCount", "mutationCount", "nonRootUid",
+  "providerInvocationCount", "publishedPortCount", "replayMutationCount", "responseCount",
+  "settledCount", "staleReplayMutationCount", "ttlMs", "unrelatedHostOperations", "workItemCount",
+])
 
 function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
   if (Array.isArray(value)) {
@@ -322,7 +497,8 @@ function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
   if (((typeof value === "string" && RAW_LONG_DECIMAL.test(value))
     || (typeof value === "number" && Number.isSafeInteger(value) && Math.abs(value) >= 10_000))
     && !(typeof value === "number" && TYPED_TIMESTAMP_KEYS.has(key)
-      && value >= EPOCH_MILLISECONDS_MIN && value <= EPOCH_MILLISECONDS_MAX)) {
+      && value >= EPOCH_MILLISECONDS_MIN && value <= EPOCH_MILLISECONDS_MAX)
+    && !(typeof value === "number" && TYPED_SCENARIO_NUMERIC_KEYS.has(key) && value >= 0)) {
     throw new Error(`${label} contains a raw Telegram identity-like decimal value`)
   }
 }
@@ -341,6 +517,64 @@ interface EvidenceProvenance {
   containerDigest: string
   cursorDigest: string
   harnessSha256: string
+}
+
+type SanctuaryScenarioGate = "none" | "authorized-telegram-message" | "distinct-telegram-account-message"
+  | "telegram-delayed-approve" | "telegram-deny" | "telegram-stale-callback"
+  | "telegram-concurrent-callback" | "telegram-restart-approve"
+
+const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioGate> = {
+  "unit-12c-1-opaque-identity": "none",
+  "unit-14b-3-opaque-identity-live": "authorized-telegram-message",
+  "unit-15c-1-no-callback-terminalization": "none",
+  "unit-16a-pre-reboot-checkpoint": "none",
+  "unit-16a-reboot-request": "none",
+  "unit-16a-boot-recovery-milestones": "none",
+  "unit-16b-runtime-vault-containment": "none",
+  "unit-16c-provider-readiness": "none",
+  "unit-16d-whats-up": "authorized-telegram-message",
+  "unit-16d-1-space": "authorized-telegram-message",
+  "unit-16d-2-unauthorized": "distinct-telegram-account-message",
+  "unit-16e-containment-audit": "none",
+  "unit-16e-1-stop-denial": "authorized-telegram-message",
+  "unit-16e-2-restart-denial": "authorized-telegram-message",
+  "unit-16f-cron-fingerprint": "none",
+  "unit-16g-health-transition": "none",
+  "unit-16h-daily-digest": "none",
+  "unit-16i-delayed-approval": "telegram-delayed-approve",
+  "unit-16j-denial": "telegram-deny",
+  "unit-16k-timeout-stale": "telegram-stale-callback",
+  "unit-16l-duplicate-callback": "telegram-concurrent-callback",
+  "unit-16m-restart-continuation": "telegram-restart-approve",
+}
+
+type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-offset" | "approval-journal"
+  | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
+  | "health-runtime" | "digest-runtime" | "reboot-checkpoint"
+
+const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
+  "unit-12c-1-opaque-identity": ["identity-key", "approval-journal"],
+  "unit-14b-3-opaque-identity-live": ["identity-key", "telegram-audit", "approval-journal"],
+  "unit-15c-1-no-callback-terminalization": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-16a-pre-reboot-checkpoint": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect", "cron-runtime"],
+  "unit-16a-reboot-request": ["reboot-checkpoint"],
+  "unit-16a-boot-recovery-milestones": ["reboot-checkpoint", "container-inspect"],
+  "unit-16b-runtime-vault-containment": ["container-inspect"],
+  "unit-16c-provider-readiness": ["provider-live-check"],
+  "unit-16d-whats-up": ["telegram-audit", "telegram-offset"],
+  "unit-16d-1-space": ["telegram-audit", "telegram-offset", "container-inspect"],
+  "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect"],
+  "unit-16e-containment-audit": ["telegram-audit", "container-inspect"],
+  "unit-16e-1-stop-denial": ["telegram-audit", "approval-journal", "container-inspect"],
+  "unit-16e-2-restart-denial": ["telegram-audit", "approval-journal", "container-inspect"],
+  "unit-16f-cron-fingerprint": ["cron-runtime", "telegram-audit"],
+  "unit-16g-health-transition": ["health-runtime", "telegram-audit", "container-inspect"],
+  "unit-16h-daily-digest": ["digest-runtime", "cron-runtime", "telegram-audit"],
+  "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-16j-denial": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-16l-duplicate-callback": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-16m-restart-continuation": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
 }
 
 function packagedHarnessSha256(value: unknown): string {
@@ -374,8 +608,21 @@ function evidenceProvenance(value: unknown, label: string): EvidenceProvenance {
 }
 
 function completeEvidenceContract(value: JsonObject, label: string): EvidenceProvenance {
+  if (!SANCTUARY_UNIT_16_EVIDENCE_LABELS.includes(label as SanctuaryUnit16EvidenceLabel)) throw new Error("unknown Unit 16 evidence label")
+  exactObjectKeys(value, ["assertions", "operation", "phase", "producer", "provenance", "schemaVersion"], `${label} evidence`)
   if (value.schemaVersion !== 1 || value.operation !== label || value.phase !== "complete") {
     throw new Error(`${label} evidence contract must use schemaVersion 1, its exact operation, and phase complete`)
+  }
+  const assertions = validateSanctuaryUnit16EvidenceAssertions(label as SanctuaryUnit16EvidenceLabel, value.assertions)
+  const producer = object(value.producer, `${label} producer`)
+  exactObjectKeys(producer, ["adapterOperation", "captureDigest", "checkpointDigest", "command", "sourceDigest"], `${label} producer`)
+  if (producer.command !== SANCTUARY_SCENARIO_COMMAND || producer.adapterOperation !== SANCTUARY_SCENARIO_ADAPTER_OPERATION) {
+    throw new Error(`${label} evidence was not produced by the fixed packaged scenario command`)
+  }
+  opaqueDigest(producer.checkpointDigest, `${label} checkpointDigest`)
+  opaqueDigest(producer.sourceDigest, `${label} sourceDigest`)
+  if (opaqueDigest(producer.captureDigest, `${label} captureDigest`) !== normalizedEvidenceHash(assertions)) {
+    throw new Error(`${label} capture digest does not bind its typed assertions`)
   }
   return evidenceProvenance(value.provenance, label)
 }
@@ -509,8 +756,17 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
   const expectedBotId = text(config.expectedBotId, "expectedBotId")
   const expectedUsername = text(config.expectedUsername, "expectedUsername")
   const currentOffset = integer(config.currentOffset, "currentOffset")
-  const nonceAdapter = adapter(config.nonceAdapter, "nonceAdapter")
+  const noncePath = confinedPath(root, config.noncePath, "noncePath")
+  refuseExistingCheckpoint(root, noncePath)
+  const pollerAdapter = adapter(config.pollerAdapter, "pollerAdapter")
   const vaultAdapter = adapter(config.vaultAdapter, "vaultAdapter")
+  if (pollerAdapter !== PACKAGED_PROVENANCE_ADAPTER || vaultAdapter !== PACKAGED_PROVENANCE_ADAPTER) {
+    throw new Error("Telegram bootstrap requires the fixed packaged acceptance adapter")
+  }
+  const deadlineMs = integer(config.deadlineMs, "deadlineMs", 300_000)
+  if (deadlineMs > 900_000) throw new Error("Telegram bootstrap deadline exceeds 15 minutes")
+  const pollTimeoutSeconds = integer(config.pollTimeoutSeconds, "pollTimeoutSeconds", 1)
+  if (pollTimeoutSeconds > 50) throw new Error("Telegram poll timeout exceeds 50 seconds")
   const token = deps.readSecret().trim()
   if (!token) throw new Error("Telegram token descriptor is empty")
   const bot = object(await telegramRequest(deps, token, "getMe"), "Telegram getMe result")
@@ -526,32 +782,49 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
   }
   initializeCheckpoint(root, evidencePath, base)
   try {
-    const sent = object(await deps.runAdapter(nonceAdapter, { operation: "send_telegram_nonce", nonce }), "nonce adapter result")
-    if (sent.sent !== true) throw new Error("Telegram nonce adapter did not confirm delivery")
-    const updates = await telegramRequest(deps, token, "getUpdates", { offset: currentOffset, timeout: 0, allowed_updates: ["message"] })
-    if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
-    const parsed = updates.map((entry) => object(entry, "Telegram update"))
-    const matches = parsed.filter((entry) => {
-      const message = entry.message && typeof entry.message === "object" && !Array.isArray(entry.message) ? entry.message as JsonObject : null
-      const chat = message?.chat && typeof message.chat === "object" && !Array.isArray(message.chat) ? message.chat as JsonObject : null
-      return message?.text === nonce
-        && chat?.type === "private"
-        && typeof message?.from === "object"
-        && message.from !== null
-        && !Array.isArray(message.from)
-        && !Object.keys(message).some((key) => key.startsWith("forward_"))
-        && Number.isSafeInteger(message.date)
-        && (message.date as number) >= Math.floor((base.startedAt as number) / 1000)
-    })
-    if (matches.length !== 1) throw new Error("Telegram nonce update is missing or ambiguous")
-    const match = matches[0]!
+    const quiesced = object(await deps.runAdapter(pollerAdapter, {
+      operation: "quiesce_telegram_poller",
+      expectedState: "stopped",
+    }), "Telegram poller precondition")
+    exactObjectKeys(quiesced, ["activePollers", "quiesced"], "Telegram poller precondition")
+    if (quiesced.quiesced !== true || quiesced.activePollers !== 0) throw new Error("Telegram competing poller is not quiescent")
+    writeAtomicPrivateText(root, noncePath, nonce)
+
+    const deadline = deps.now() + deadlineMs
+    let nextOffset = currentOffset
+    let match: JsonObject | undefined
+    while (deps.now() < deadline && !match) {
+      const updates = await telegramRequest(deps, token, "getUpdates", {
+        offset: nextOffset,
+        timeout: pollTimeoutSeconds,
+        allowed_updates: ["message"],
+      }, (pollTimeoutSeconds + 5) * 1_000)
+      if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
+      const parsed = updates.map((entry) => object(entry, "Telegram update"))
+      const updateIds = parsed.map((entry) => integer(entry.update_id, "Telegram update id"))
+      if (updateIds.length > 0) nextOffset = Math.max(nextOffset, ...updateIds.map((id) => id + 1))
+      const matches = parsed.filter((entry) => {
+        const message = entry.message && typeof entry.message === "object" && !Array.isArray(entry.message) ? entry.message as JsonObject : null
+        const chat = message?.chat && typeof message.chat === "object" && !Array.isArray(message.chat) ? message.chat as JsonObject : null
+        return message?.text === nonce
+          && chat?.type === "private"
+          && typeof message?.from === "object"
+          && message.from !== null
+          && !Array.isArray(message.from)
+          && !Object.keys(message).some((key) => key.startsWith("forward_"))
+          && Number.isSafeInteger(message.date)
+          && (message.date as number) >= Math.floor((base.startedAt as number) / 1000)
+      })
+      if (matches.length > 1) throw new Error("Telegram nonce update is ambiguous")
+      match = matches[0]
+    }
+    if (!match) throw new Error("Telegram nonce confirmation timed out")
     const message = object(match.message, "Telegram nonce message")
     const from = object(message.from, "Telegram nonce sender")
     const chat = object(message.chat, "Telegram nonce chat")
     const userId = String(integer(from.id, "Telegram user id", 1))
     const chatId = String(integer(chat.id, "Telegram chat id", 1))
-    const updateIds = parsed.map((entry) => integer(entry.update_id, "Telegram update id"))
-    const nextUpdateId = Math.max(currentOffset, ...updateIds.map((id) => id + 1))
+    const nextUpdateId = nextOffset
     const confirmed = {
       ...base,
       phase: "nonce_confirmed",
@@ -932,7 +1205,86 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
   }
 }
 
+async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
+  const root = privateAllowedRoot(config)
+  const executable = adapter(config.adapter, "scenario adapter")
+  if (executable !== PACKAGED_PROVENANCE_ADAPTER || config.provenanceAdapter !== PACKAGED_PROVENANCE_ADAPTER) {
+    throw new Error("scenario matrix requires the fixed packaged acceptance adapter")
+  }
+  const timeoutMs = integer(config.timeoutMs, "scenario timeoutMs", 300_000)
+  const intervalMs = integer(config.intervalMs, "scenario intervalMs", 1)
+  if (timeoutMs > 3_600_000 || intervalMs > 30_000) throw new Error("scenario timing bound is invalid")
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
+  for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
+    refuseExistingCheckpoint(root, confinedPath(root, path.join(root, `${label}.json`), `${label} evidencePath`))
+  }
+
+  const captures: Array<{ label: SanctuaryUnit16EvidenceLabel; checkpointDigest: string; assertions: JsonObject; sourceDigest: string }> = []
+  for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
+    const gate = SANCTUARY_SCENARIO_GATES[label]
+    const sources = SANCTUARY_SCENARIO_SOURCES[label]
+    const deadline = deps.now() + timeoutMs
+    let response = object(await deps.runAdapter(executable, {
+      operation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
+      phase: "begin",
+      label,
+      externalGate: gate,
+      sources,
+    }), `${label} begin result`)
+    exactObjectKeys(response, response.state === "complete" ? ["assertions", "checkpointDigest", "sourceDigests", "state"] : ["checkpointDigest", "state"], `${label} begin result`)
+    const checkpointDigest = opaqueDigest(response.checkpointDigest, `${label} checkpointDigest`)
+    while (response.state === "waiting") {
+      if (deps.now() >= deadline) throw new Error(`${label} live scenario timed out while awaiting ${gate}`)
+      await deps.sleep(intervalMs)
+      response = object(await deps.runAdapter(executable, {
+        operation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
+        phase: "poll",
+        label,
+        externalGate: gate,
+        sources,
+        checkpointDigest,
+      }), `${label} poll result`)
+      exactObjectKeys(response, response.state === "complete" ? ["assertions", "checkpointDigest", "sourceDigests", "state"] : ["checkpointDigest", "state"], `${label} poll result`)
+      if (opaqueDigest(response.checkpointDigest, `${label} checkpointDigest`) !== checkpointDigest) throw new Error(`${label} checkpoint identity drifted`)
+    }
+    if (response.state !== "complete") throw new Error(`${label} scenario returned an invalid state`)
+    const sourceDigests = object(response.sourceDigests, `${label} sourceDigests`)
+    exactObjectKeys(sourceDigests, sources, `${label} sourceDigests`)
+    for (const source of sources) opaqueDigest(sourceDigests[source], `${label} ${source} source digest`)
+    captures.push({
+      label,
+      checkpointDigest,
+      assertions: validateSanctuaryUnit16EvidenceAssertions(label, response.assertions),
+      sourceDigest: normalizedEvidenceHash(sourceDigests),
+    })
+  }
+
+  const live = await liveEvidenceProvenance(config, deps)
+  for (const capture of captures) {
+    const value = {
+      schemaVersion: 1,
+      operation: capture.label,
+      phase: "complete",
+      provenance: { ...live, harnessSha256 },
+      producer: {
+        command: SANCTUARY_SCENARIO_COMMAND,
+        adapterOperation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
+        checkpointDigest: capture.checkpointDigest,
+        sourceDigest: capture.sourceDigest,
+        captureDigest: normalizedEvidenceHash(capture.assertions),
+      },
+      assertions: capture.assertions,
+    }
+    completeEvidenceContract(value, capture.label)
+    initializeCheckpoint(root, path.join(root, `${capture.label}.json`), value)
+  }
+}
+
 async function evidenceSnapshot(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
+  if (config.schema === "sanctuary-unit-16-matrix-v1") {
+    await scenarioMatrixSnapshot(config, deps)
+    return
+  }
   const root = privateAllowedRoot(config)
   const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
   refuseExistingCheckpoint(root, evidencePath)

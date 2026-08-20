@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   createSanctuaryAcceptanceHarnessDependencies,
   executeSanctuaryAcceptanceHarness as executeHarness,
+  validateSanctuaryUnit16EvidenceAssertions,
   type AcceptanceHarnessDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-harness"
 import {
@@ -71,6 +72,14 @@ function executeSanctuaryAcceptanceHarness(command: string, rawConfig: unknown, 
 }
 
 describe("Sanctuary acceptance harness", () => {
+  const fixedAdapter = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+  const telegramBootstrapFields = (dir: string, name = "bootstrap") => ({
+    noncePath: path.join(dir, `${name}-nonce.txt`),
+    pollerAdapter: fixedAdapter,
+    vaultAdapter: fixedAdapter,
+    deadlineMs: 300_000,
+    pollTimeoutSeconds: 20,
+  })
   const completeEvidenceLabels = [
     "unit-12c-1-opaque-identity",
     "unit-14b-3-opaque-identity-live",
@@ -110,14 +119,44 @@ describe("Sanctuary acceptance harness", () => {
     return capture
   } })
 
-  const completeEvidence = (label: string, harnessSha256: string, extra: Record<string, unknown> = {}) => ({
+  const validAssertions = (label: string): Record<string, unknown> => {
+    switch (label) {
+      case "unit-12c-1-opaque-identity": case "unit-14b-3-opaque-identity-live": return { identityBound: true, opaqueSubject: true, rawIdentityAbsent: true }
+      case "unit-15c-1-no-callback-terminalization": return { buttonsRemoved: true, elapsedMs: 60_000, mutationCount: 0, noInboundUpdate: true, replayMutationCount: 0, terminalExpired: true, ttlMs: 60_000 }
+      case "unit-16a-pre-reboot-checkpoint": return { approvalDigest: "d".repeat(64), auditDigest: "d".repeat(64), containerDigest: "d".repeat(64), fingerprintDigest: "d".repeat(64), offsetDigest: "d".repeat(64), ready: true, unrelatedHostOperations: 0 }
+      case "unit-16a-reboot-request": return { exactlyOnce: true, requestCheckpointPersisted: true, requestDigest: "d".repeat(64) }
+      case "unit-16a-boot-recovery-milestones": return { arrayReady: true, bootIdentityChanged: true, butlerReady: true, dockerReady: true, hostReady: true, sshReady: true, tailscaleReady: true }
+      case "unit-16b-runtime-vault-containment": return { autostartExact: true, exactImage: true, manualAuthRequired: false, mountCount: 2, nonRootUid: 10001, publishedPortCount: 0, readOnlyRoot: true, updaterDisabled: true, vaultUnlocked: true }
+      case "unit-16c-provider-readiness": return { geminiCandidateReady: true, innerReady: true, outwardReady: true, providersDistinct: true, silentFallback: false }
+      case "unit-16d-whats-up": return { authorized: true, grounded: true, responseCount: 1, telegramDelivered: true }
+      case "unit-16d-1-space": return { authorized: true, diskFactsMatched: true, mutationCount: 0, responseCount: 1, telegramDelivered: true }
+      case "unit-16d-2-unauthorized": return { auditRejected: true, distinctAccount: true, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
+      case "unit-16e-containment-audit": return { auditComplete: true, mutationCount: 0, readOnlyBoundaryHeld: true, sensitiveMaterialObserved: false }
+      case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { auditDecisionCount: 1, denied: true, mutationCount: 0, resumed: true }
+      case "unit-16f-cron-fingerprint": return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
+      case "unit-16g-health-transition": return { alertCount: 1, productionRestored: true, transitionObserved: true }
+      case "unit-16h-daily-digest": return { firedWithinMs: 900_000, messageCount: 1, productionRestored: true, scheduleObserved: true }
+      case "unit-16i-delayed-approval": return { elapsedMs: 120_000, mutationCount: 1, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "succeeded" }
+      case "unit-16j-denial": return { mutationCount: 0, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "denied" }
+      case "unit-16k-timeout-stale": return { buttonsRemoved: true, mutationCount: 0, promptTerminal: true, staleAcknowledged: true, staleReplayMutationCount: 0, state: "expired" }
+      case "unit-16l-duplicate-callback": return { callbackCount: 2, claimCount: 1, mutationCount: 1, promptTerminal: true, replayMutationCount: 0, settledCount: 2 }
+      case "unit-16m-restart-continuation": return { attemptedIndeterminateRetryCount: 0, mutationCount: 1, preAttemptResumed: true, restartObserved: true, state: "succeeded" }
+      default: throw new Error(`unknown label ${label}`)
+    }
+  }
+
+  const completeEvidence = (label: string, harnessSha256: string, extra: Record<string, unknown> = {}) => {
+    const assertions = validAssertions(label)
+    return ({
     schemaVersion: 1,
     operation: label,
     phase: "complete",
     provenance: { ...evidenceProvenance, harnessSha256 },
-    evidenceDigest: sha(label),
+    producer: { command: "evidence-snapshot", adapterOperation: "capture_acceptance_scenario", checkpointDigest: "e".repeat(64), sourceDigest: "f".repeat(64), captureDigest: sha(assertions) },
+    assertions,
     ...extra,
-  })
+    })
+  }
 
   it("builds and verifies one complete redacted Unit 16 evidence bundle", async () => {
     const dir = root()
@@ -164,6 +203,124 @@ describe("Sanctuary acceptance harness", () => {
     })
     expect((bundle.entries as Array<{ label: string }>).map((entry) => entry.label)).toEqual(completeEvidenceLabels)
     expect(fs.statSync(bundlePath).mode & 0o777).toBe(0o600)
+  })
+
+  it("runs the fixed live scenario matrix and authors all 22 typed evidence files", async () => {
+    const dir = root()
+    const harnessPath = path.join(dir, "packaged-harness.sh")
+    fs.writeFileSync(harnessPath, "fixed harness bytes\n", { mode: 0o700 })
+    const calls: Array<Record<string, unknown>> = []
+    let firstWaiting = true
+    await executeSanctuaryAcceptanceHarness("evidence-snapshot", {
+      allowedRoot: dir,
+      schema: "sanctuary-unit-16-matrix-v1",
+      adapter: fixedAdapter,
+      provenanceAdapter: fixedAdapter,
+      harnessPath,
+      timeoutMs: 300_000,
+      intervalMs: 1,
+    }, dependencies({
+      adapter: async (_executable, rawPayload) => {
+        const payload = rawPayload as Record<string, unknown>
+        calls.push(payload)
+        if (payload.operation === "capture_evidence_provenance") return evidenceProvenance
+        const label = String(payload.label)
+        if (label === completeEvidenceLabels[0] && payload.phase === "begin" && firstWaiting) {
+          firstWaiting = false
+          return { state: "waiting", checkpointDigest: "d".repeat(64) }
+        }
+        return {
+          state: "complete",
+          checkpointDigest: "d".repeat(64),
+          sourceDigests: Object.fromEntries((payload.sources as string[]).map((source) => [source, "f".repeat(64)])),
+          assertions: validAssertions(label),
+        }
+      },
+    }))
+
+    for (const label of completeEvidenceLabels) {
+      const captured = evidence(path.join(dir, `${label}.json`))
+      expect(captured).toMatchObject({
+        operation: label,
+        phase: "complete",
+        assertions: validAssertions(label),
+        producer: {
+          command: "evidence-snapshot",
+          adapterOperation: "capture_acceptance_scenario",
+          checkpointDigest: "d".repeat(64),
+          sourceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        },
+      })
+    }
+    expect(calls).toContainEqual(expect.objectContaining({
+      operation: "capture_acceptance_scenario",
+      phase: "begin",
+      label: "unit-16d-2-unauthorized",
+      externalGate: "distinct-telegram-account-message",
+    }))
+    expect(calls).toContainEqual(expect.objectContaining({
+      operation: "capture_acceptance_scenario",
+      phase: "begin",
+      label: "unit-16i-delayed-approval",
+      externalGate: "telegram-delayed-approve",
+    }))
+    expect(calls).toContainEqual(expect.objectContaining({ phase: "poll", checkpointDigest: "d".repeat(64) }))
+  })
+
+  it("rejects every material semantic failure instead of accepting self-attestation", () => {
+    const reject = (label: string, patch: Record<string, unknown>, pattern: RegExp) => expect(() => validateSanctuaryUnit16EvidenceAssertions(
+      label as Parameters<typeof validateSanctuaryUnit16EvidenceAssertions>[0],
+      { ...validAssertions(label), ...patch },
+    )).toThrow(pattern)
+    reject("unit-12c-1-opaque-identity", { identityBound: false }, /must be true/u)
+    reject("unit-15c-1-no-callback-terminalization", { elapsedMs: 59_999 }, /reach ttlMs/u)
+    reject("unit-16b-runtime-vault-containment", { manualAuthRequired: true }, /must be false/u)
+    reject("unit-16d-whats-up", { responseCount: 0 }, /must equal 1/u)
+    reject("unit-16h-daily-digest", { firedWithinMs: 960_001 }, /16-minute/u)
+    reject("unit-16i-delayed-approval", { elapsedMs: 119_999 }, /120 seconds/u)
+    reject("unit-16i-delayed-approval", { state: "failed" }, /succeeded/u)
+    reject("unit-16j-denial", { state: "succeeded" }, /denied/u)
+    reject("unit-16k-timeout-stale", { state: "denied" }, /expired/u)
+    reject("unit-16m-restart-continuation", { state: "failed" }, /succeeded/u)
+    reject("unit-16g-health-transition", { unexpected: true }, /fields/u)
+  })
+
+  it("fails closed on scenario authority, timing, timeout, state, and checkpoint drift", async () => {
+    const config = (dir: string, overrides: Record<string, unknown> = {}) => {
+      const harnessPath = path.join(dir, "harness.sh")
+      fs.writeFileSync(harnessPath, "harness\n", { mode: 0o700 })
+      return {
+        allowedRoot: dir,
+        schema: "sanctuary-unit-16-matrix-v1",
+        adapter: fixedAdapter,
+        provenanceAdapter: fixedAdapter,
+        harnessPath,
+        timeoutMs: 300_000,
+        intervalMs: 1,
+        ...overrides,
+      }
+    }
+    let dir = root()
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir, { adapter: "/untrusted" }), dependencies())).rejects.toThrow(/fixed packaged/u)
+    dir = root()
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir, { timeoutMs: 3_600_001 }), dependencies())).rejects.toThrow(/timing bound/u)
+    dir = root()
+    let clock = 1_800_000_000_000
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir), dependencies({
+      now: () => { clock += 300_000; return clock },
+      adapter: async () => ({ state: "waiting", checkpointDigest: "d".repeat(64) }),
+    }))).rejects.toThrow(/timed out/u)
+    dir = root()
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir), dependencies({
+      adapter: async () => ({ state: "bogus", checkpointDigest: "d".repeat(64) }),
+    }))).rejects.toThrow(/invalid state/u)
+    dir = root()
+    let call = 0
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir), dependencies({
+      adapter: async () => (++call === 1
+        ? { state: "waiting", checkpointDigest: "d".repeat(64) }
+        : { state: "complete", checkpointDigest: "e".repeat(64), sourceDigests: {}, assertions: validAssertions(completeEvidenceLabels[0]!) }),
+    }))).rejects.toThrow(/identity drifted/u)
   })
 
   it("refuses incomplete, duplicate, unsafe, and tampered Unit 16 evidence bundles", async () => {
@@ -235,8 +392,10 @@ describe("Sanctuary acceptance harness", () => {
       ["container-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.containerDigest = "e".repeat(64) }],
       ["cursor-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.cursorDigest = "f".repeat(64) }],
       ["harness-attestation-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.harnessSha256 = "f".repeat(64) }],
+      ["producer-command", (value: Record<string, any>, index: number) => { if (index === 0) value.producer.command = "operator-authored" }],
+      ["capture-digest", (value: Record<string, any>, index: number) => { if (index === 0) value.producer.captureDigest = "f".repeat(64) }],
     ] as const) {
-      await expect(run(name, createEntries(mutate))).rejects.toThrow(/contract|provenance|harness/u)
+      await expect(run(name, createEntries(mutate))).rejects.toThrow(/contract|fields|provenance|harness|produced|capture digest/u)
     }
 
     await expect(run("fabricated-consensus", createEntries((value) => {
@@ -307,11 +466,11 @@ describe("Sanctuary acceptance harness", () => {
       ["false-timestamp", { capturedAt: 8541786263 }],
     ] as const) await expect(run(name, extra)).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("counter-string-smuggling", { evidenceCounters: { processed: "8541786263" } })).rejects.toThrow(/raw Telegram identity/u)
-    await expect(run("safe-operational-values", {
+    await expect(run("extra-operational-fields", {
       capturedAt: 1_800_000_000_000,
       evidenceCounters: { arbitrary: 8541786263, retries: 123_456 },
       nested: { completedAt: "2026-08-20T12:34:56.789Z", events: [] },
-    })).resolves.toBeUndefined()
+    })).rejects.toThrow(/fields/u)
   })
 
   it("revalidates evidence contracts, continuity, and packaged bytes from the sealed bundle", async () => {
@@ -394,8 +553,7 @@ describe("Sanctuary acceptance harness", () => {
       expectedBotId: "8541786263",
       expectedUsername: "MendelowCloudButlerBot",
       currentOffset: 0,
-      nonceAdapter: "/nonce",
-      vaultAdapter: "/vault",
+      ...telegramBootstrapFields(dir, "network-error"),
     }, dependencies({
       secret: "descriptor-secret",
       fetch: async () => { throw new Error("network unavailable") },
@@ -421,6 +579,12 @@ describe("Sanctuary acceptance harness", () => {
       "callback-inject": expect.objectContaining({ operation: "callback-inject" }),
       "reboot-request": expect.objectContaining({ operation: "reboot-request" }),
       "unraid-key-rotate": expect.objectContaining({ operation: "unraid-key-rotate" }),
+      "scenario-capture": expect.objectContaining({ operation: "capture_acceptance_scenario", modelReachable: false }),
+    }))
+    expect(contract.scenarioSources).toEqual(expect.objectContaining({
+      "telegram-audit": expect.objectContaining({ kind: "fixed-ndjson", path: expect.stringContaining("telegram.ndjson") }),
+      "container-inspect": expect.objectContaining({ kind: "fixed-host-snapshot", path: "/run/ouro-acceptance/container-inspect.json" }),
+      "provider-live-check": expect.objectContaining({ kind: "fixed-runtime-api", operation: "sanctuary-provider-readiness" }),
     }))
     expect(wrapper).toContain("--config")
     expect(wrapper).toContain("--contract")
@@ -466,8 +630,7 @@ describe("Sanctuary acceptance harness", () => {
         expectedBotId: "8541786263",
         expectedUsername: "MendelowCloudButlerBot",
         currentOffset: 0,
-        nonceAdapter: "/safe/send",
-        vaultAdapter: "/safe/vault",
+        ...telegramBootstrapFields(dir, "timeout"),
       }, deps)
       const assertion = expect(pending).rejects.toThrow(/timed out/u)
       await vi.advanceTimersByTimeAsync(25)
@@ -706,8 +869,8 @@ describe("Sanctuary acceptance harness", () => {
       secret: `${token}\n`,
       adapter: async (executable, payload) => {
         adapterCalls.push({ executable, payload })
-        if (executable === "/safe/send-nonce") return { sent: true }
-        if (executable === "/safe/store-vault") return { stored: true }
+        if ((payload as any).operation === "quiesce_telegram_poller") return { activePollers: 0, quiesced: true }
+        if ((payload as any).operation === "store_telegram_bootstrap") return { stored: true }
         throw new Error("unexpected adapter")
       },
       fetch: async (input, init) => {
@@ -730,17 +893,16 @@ describe("Sanctuary acceptance harness", () => {
       expectedBotId: "8541786263",
       expectedUsername: "MendelowCloudButlerBot",
       currentOffset: 40,
-      nonceAdapter: "/safe/send-nonce",
-      vaultAdapter: "/safe/store-vault",
+      ...telegramBootstrapFields(dir, "success"),
     }, deps)
 
     expect(requests).toHaveLength(2)
     expect(requests[0]!.url).toBe(`https://api.telegram.org/bot${token}/getMe`)
     expect(requests[1]!.url).toBe(`https://api.telegram.org/bot${token}/getUpdates`)
-    expect(JSON.parse(String(requests[1]!.init?.body))).toEqual({ offset: 40, timeout: 0, allowed_updates: ["message"] })
+    expect(JSON.parse(String(requests[1]!.init?.body))).toEqual({ offset: 40, timeout: 20, allowed_updates: ["message"] })
     expect(adapterCalls).toEqual([
-      { executable: "/safe/send-nonce", payload: { operation: "send_telegram_nonce", nonce: "0123456789abcdef0123456789abcdef" } },
-      { executable: "/safe/store-vault", payload: { operation: "store_telegram_bootstrap", botToken: token, authorizedUserId: "111", authorizedChatId: "222" } },
+      { executable: fixedAdapter, payload: { operation: "quiesce_telegram_poller", expectedState: "stopped" } },
+      { executable: fixedAdapter, payload: { operation: "store_telegram_bootstrap", botToken: token, authorizedUserId: "111", authorizedChatId: "222" } },
     ])
     expect(JSON.parse(fs.readFileSync(offsetPath, "utf8"))).toEqual({ nextUpdateId: 42 })
     expect(fs.statSync(offsetPath).mode & 0o777).toBe(0o600)
@@ -750,7 +912,66 @@ describe("Sanctuary acceptance harness", () => {
     expect(rawEvidence).not.toContain("111")
     expect(rawEvidence).not.toContain("222")
     expect(rawEvidence).not.toContain("0123456789abcdef0123456789abcdef")
+    expect(fs.readFileSync(path.join(dir, "success-nonce.txt"), "utf8")).toBe("0123456789abcdef0123456789abcdef")
     expect(evidence(evidencePath)).toMatchObject({ operation: "telegram-bootstrap", phase: "complete", offsetDigest: sha(42) })
+  })
+
+  it("long-polls for a delayed nonce and times out without storing coordinates", async () => {
+    const delayedRoot = root()
+    let updatePolls = 0
+    const operations: string[] = []
+    await executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
+      allowedRoot: delayedRoot,
+      evidencePath: path.join(delayedRoot, "evidence.json"),
+      offsetPath: path.join(delayedRoot, "offset.json"),
+      expectedBotId: "8541786263",
+      expectedUsername: "MendelowCloudButlerBot",
+      currentOffset: 5,
+      ...telegramBootstrapFields(delayedRoot, "delayed"),
+    }, dependencies({
+      secret: "rotated-candidate-token",
+      adapter: async (_executable, payload) => {
+        operations.push((payload as any).operation)
+        return (payload as any).operation === "quiesce_telegram_poller"
+          ? { activePollers: 0, quiesced: true }
+          : { stored: true }
+      },
+      fetch: async (request) => {
+        if (String(request).endsWith("/getMe")) return jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } })
+        updatePolls += 1
+        return jsonResponse({ ok: true, result: updatePolls === 1 ? [] : [{
+          update_id: 8,
+          message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 9 }, chat: { id: 10, type: "private" } },
+        }] })
+      },
+    }))
+    expect(updatePolls).toBe(2)
+    expect(operations).toEqual(["quiesce_telegram_poller", "store_telegram_bootstrap"])
+
+    const timeoutRoot = root()
+    let clock = 1_800_000_000_000
+    const timeoutOperations: string[] = []
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
+      allowedRoot: timeoutRoot,
+      evidencePath: path.join(timeoutRoot, "evidence.json"),
+      offsetPath: path.join(timeoutRoot, "offset.json"),
+      expectedBotId: "8541786263",
+      expectedUsername: "MendelowCloudButlerBot",
+      currentOffset: 0,
+      ...telegramBootstrapFields(timeoutRoot, "deadline"),
+    }, dependencies({
+      secret: "rotated-candidate-token",
+      now: () => { clock += 100_000; return clock },
+      adapter: async (_executable, payload) => {
+        timeoutOperations.push((payload as any).operation)
+        return { activePollers: 0, quiesced: true }
+      },
+      fetch: async (request) => String(request).endsWith("/getMe")
+        ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } })
+        : jsonResponse({ ok: true, result: [] }),
+    }))).rejects.toThrow(/confirmation timed out/u)
+    expect(timeoutOperations).toEqual(["quiesce_telegram_poller"])
+    expect(fs.existsSync(path.join(timeoutRoot, "offset.json"))).toBe(false)
   })
 
   it("fails Telegram bootstrap before mutation on identity, nonce, or checkpoint ambiguity", async () => {
@@ -762,19 +983,24 @@ describe("Sanctuary acceptance harness", () => {
     for (const testCase of cases) {
       const dir = root()
       const mutations: string[] = []
+      let clock = 1_800_000_000_000
       const deps = dependencies({
         secret: "token",
-        adapter: async (executable) => { mutations.push(executable); return { sent: true } },
+        adapter: async (_executable, payload) => {
+          mutations.push((payload as any).operation)
+          return { activePollers: 0, quiesced: true }
+        },
         fetch: async (request) => String(request).endsWith("/getMe")
           ? jsonResponse({ ok: true, result: testCase.getMe })
           : jsonResponse({ ok: true, result: testCase.updates }),
+        now: () => { clock += 60_000; return clock },
       })
       await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
         evidencePath: path.join(dir, "evidence.json"), offsetPath: path.join(dir, "offset.json"),
         expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 0,
-        nonceAdapter: "/safe/send", vaultAdapter: "/safe/vault",
+        ...telegramBootstrapFields(dir, testCase.label),
       }, deps), testCase.label).rejects.toThrow()
-      expect(mutations).not.toContain("/safe/vault")
+      expect(mutations).not.toContain("store_telegram_bootstrap")
       expect(fs.existsSync(path.join(dir, "offset.json"))).toBe(false)
     }
 
@@ -783,7 +1009,7 @@ describe("Sanctuary acceptance harness", () => {
     await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
       evidencePath: path.join(dir, "evidence.json"), offsetPath: path.join(dir, "offset.json"),
       expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 0,
-      nonceAdapter: "/safe/send", vaultAdapter: "/safe/vault",
+      ...telegramBootstrapFields(dir, "checkpoint"),
     }, dependencies({ secret: "token" }))).rejects.toThrow(/inspect-before-retry/u)
   })
 
@@ -1129,36 +1355,40 @@ describe("Sanctuary acceptance harness", () => {
     const telegramConfig = (name: string) => ({
       evidencePath: path.join(dir, `${name}.json`), offsetPath: path.join(dir, `${name}-offset.json`),
       expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 0,
-      nonceAdapter: "/send", vaultAdapter: "/vault",
+      ...telegramBootstrapFields(dir, name),
     })
     await reject("telegram-bootstrap", telegramConfig("empty-token"), dependencies({ secret: "" }), /empty/u)
     await reject("telegram-bootstrap", telegramConfig("bad-json"), dependencies({ secret: "t", fetch: async () => new Response("nope") }), /invalid JSON/u)
     await reject("telegram-bootstrap", telegramConfig("api-fail"), dependencies({ secret: "t", fetch: async () => jsonResponse({ ok: false }, 401) }), /request failed/u)
-    await reject("telegram-bootstrap", telegramConfig("send-fail"), dependencies({
+    await reject("telegram-bootstrap", telegramConfig("poller-fail"), dependencies({
       secret: "t", fetch: async () => jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }),
-      adapter: async () => ({ sent: false }),
-    }), /did not confirm/u)
+      adapter: async () => ({ activePollers: 1, quiesced: false }),
+    }), /competing poller/u)
     await reject("telegram-bootstrap", telegramConfig("updates-shape"), dependencies({
       secret: "t", fetch: async (request) => String(request).endsWith("/getMe") ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }) : jsonResponse({ ok: true, result: {} }),
-      adapter: async () => ({ sent: true }),
+      adapter: async () => ({ activePollers: 0, quiesced: true }),
     }), /must be an array/u)
+    let invalidShapeClock = 1_800_000_000_000
     await reject("telegram-bootstrap", telegramConfig("invalid-update-shapes"), dependencies({
       secret: "t", fetch: async (request) => String(request).endsWith("/getMe")
         ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } })
         : jsonResponse({ ok: true, result: [{ update_id: 1, message: null }, { update_id: 2, message: { chat: null } }] }),
-      adapter: async () => ({ sent: true }),
-    }), /missing or ambiguous/u)
+      adapter: async () => ({ activePollers: 0, quiesced: true }),
+      now: () => { invalidShapeClock += 100_000; return invalidShapeClock },
+    }), /timed out/u)
     await reject("telegram-bootstrap", telegramConfig("vault-fail"), dependencies({
       secret: "t",
       fetch: async (request) => String(request).endsWith("/getMe") ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }) : jsonResponse({ ok: true, result: [{ update_id: 1, message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 1 }, chat: { id: 2, type: "private" } } }] }),
-      adapter: async (executable) => executable === "/send" ? { sent: true } : { stored: false },
+      adapter: async (_executable, payload) => (payload as any).operation === "quiesce_telegram_poller"
+        ? { activePollers: 0, quiesced: true }
+        : { stored: false },
     }), /did not attest/u)
     const offsetDirectory = telegramConfig("offset-cleanup")
     await reject("telegram-bootstrap", offsetDirectory, dependencies({
       secret: "t",
       fetch: async (request) => String(request).endsWith("/getMe") ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }) : jsonResponse({ ok: true, result: [{ update_id: 1, message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 1 }, chat: { id: 2, type: "private" } } }] }),
-      adapter: async (executable) => {
-        if (executable === "/send") return { sent: true }
+      adapter: async (_executable, payload) => {
+        if ((payload as any).operation === "quiesce_telegram_poller") return { activePollers: 0, quiesced: true }
         fs.mkdirSync(offsetDirectory.offsetPath)
         return { stored: true }
       },
@@ -1307,10 +1537,12 @@ describe("Sanctuary acceptance harness", () => {
     await executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
       allowedRoot: dir, evidencePath: file, offsetPath: path.join(dir, "offset.json"),
       expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 40,
-      nonceAdapter: "/send", vaultAdapter: "/vault",
+      ...telegramBootstrapFields(dir, "opaque"),
     }, dependencies({
       secret: "token",
-      adapter: async (executable) => executable === "/send" ? { sent: true } : { stored: true },
+      adapter: async (_executable, payload) => (payload as any).operation === "quiesce_telegram_poller"
+        ? { activePollers: 0, quiesced: true }
+        : { stored: true },
       fetch: async (request) => String(request).endsWith("/getMe")
         ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } })
         : jsonResponse({ ok: true, result: [{ update_id: 41, message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 111 }, chat: { id: 222, type: "private" } } }] }),
