@@ -137,7 +137,7 @@ beforeEach(() => {
   runtimeMocks.createTelegramApprovalTransport.mockReturnValue(runtimeMocks.transport)
   runtimeMocks.transport.sendApproval.mockResolvedValue({ messageId: "99" })
   runtimeMocks.transport.listPendingDeliveries.mockReturnValue([])
-  runtimeMocks.transport.terminalizeOrphaned.mockResolvedValue(undefined)
+  runtimeMocks.transport.terminalizeOrphaned.mockResolvedValue({ terminalEditSucceeded: true })
   runtimeMocks.transport.terminalizeRecovered.mockResolvedValue(undefined)
   runtimeMocks.commitApprovalProposal.mockReturnValue({
     record: { ...baseRecord, state: "awaiting_prompt_binding" },
@@ -474,9 +474,9 @@ describe("Telegram approval runtime orchestration", () => {
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       component: "senses",
       event: "senses.telegram_approval_orphan_recovered",
-      meta: { agentName: "sanctuary", recovery: "missing_journal" },
+      meta: { agentName: "sanctuary", recovery: "missing_journal", terminalEditSucceeded: true },
     }))
-    expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain("missing")
+    expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain('\"approvalId\":\"missing\"')
   })
 
   it("isolates every startup recovery record and surfaces one sanitized aggregate after processing later work", async () => {

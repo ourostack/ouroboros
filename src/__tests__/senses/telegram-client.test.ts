@@ -433,6 +433,33 @@ describe("Telegram approval callback transport", () => {
     expect(JSON.stringify(indeterminate.transport.listPendingDeliveries())).not.toContain("secret")
   })
 
+  it("removes an orphaned transport row without invoking canonical expiry", async () => {
+    const onExpire = vi.fn()
+    const fixture = approvalFixture({
+      records: [{ approvalId: "orphan", messageId: "99", deliveryState: "bound", approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }],
+      onExpire,
+    })
+
+    await expect(fixture.transport.terminalizeOrphaned("orphan", "no journal")).resolves.toEqual({ terminalEditSucceeded: true })
+
+    expect(fixture.calls).toEqual([expect.objectContaining({ method: "editMessageText" })])
+    expect(fixture.transport.listPendingDeliveries()).toEqual([])
+    expect(fixture.records()).toEqual([])
+    expect(onExpire).not.toHaveBeenCalled()
+    await expect(fixture.transport.terminalizeOrphaned("absent", "no journal")).resolves.toEqual({ terminalEditSucceeded: true })
+  })
+
+  it("durably removes an orphan even when its terminal edit fails", async () => {
+    const fixture = approvalFixture({
+      records: [{ approvalId: "orphan", messageId: "99", deliveryState: "bound", approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }],
+      apiRequest: async () => { throw new TelegramApiError("upstream unavailable", { status: 503 }) },
+    })
+
+    await expect(fixture.transport.terminalizeOrphaned("orphan", "no journal")).resolves.toEqual({ terminalEditSucceeded: false })
+    expect(fixture.transport.listPendingDeliveries()).toEqual([])
+    expect(fixture.records()).toEqual([])
+  })
+
   it("uses the wall clock by default and leaves live approvals pending during reconciliation", async () => {
     const future = Date.now() + 60_000
     let records = [{ approvalId: "a", messageId: "1", deliveryState: "bound" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: future }]
@@ -591,12 +618,15 @@ describe("Telegram durable authorized long poll", () => {
       update_id: updateId,
       message: { message_id: updateId, from: { id: 10 }, chat: { id: 10, type: "private" }, text: `message-${updateId}` },
     })
-    for (const updateId of [1, 2, 3]) {
-      now += 1
+    for (const updateId of [1, 2]) {
       expect(store.capture(update(updateId))).toBe(true)
       expect(store.claim(update(updateId))).toBe(true)
-      expect(store.quarantineStranded()).toHaveLength(1)
     }
+    expect(store.quarantineStranded()).toHaveLength(2)
+    now += 1
+    expect(store.capture(update(3))).toBe(true)
+    expect(store.claim(update(3))).toBe(true)
+    expect(store.quarantineStranded()).toHaveLength(1)
 
     expect(store.loadIndeterminate()).toHaveLength(2)
     expect(store.capture(update(1))).toBe(true)
@@ -620,6 +650,18 @@ describe("Telegram durable authorized long poll", () => {
       version: 3,
       indeterminate: [expect.objectContaining({ quarantinedAt: 2_000, warningAcknowledged: true })],
     })
+
+    writeFileSync(inboxPath, JSON.stringify({
+      pending: [update, { ...update, update_id: 5 }],
+      dispatching: [],
+      completedUpdateIds: [],
+    }))
+    const legacyRaw = new FileTelegramUpdateInboxStore(inboxPath, {
+      now: () => 3_000,
+      maxIndeterminateReceipts: 1,
+    })
+    expect(legacyRaw.loadIndeterminate()).toHaveLength(1)
+    expect(JSON.parse(readFileSync(inboxPath, "utf8")).indeterminate).toHaveLength(1)
   })
 
   it("does not durably capture unauthorized callback identities or data", async () => {
@@ -849,6 +891,12 @@ describe("Telegram durable authorized long poll", () => {
     const legacyInboxPath = join(directory, "legacy-inbox.json")
     writeFileSync(legacyInboxPath, JSON.stringify({ pending: [], completedUpdateIds: [] }))
     expect(new FileTelegramUpdateInboxStore(legacyInboxPath).load()).toEqual([])
+    expect(() => new FileTelegramUpdateInboxStore(inboxPath, { indeterminateRetentionMs: 0 })).toThrow("retention")
+    expect(() => new FileTelegramUpdateInboxStore(inboxPath, { indeterminateRetentionMs: 1.5 })).toThrow("retention")
+    expect(() => new FileTelegramUpdateInboxStore(inboxPath, { maxIndeterminateReceipts: 0 })).toThrow("limit")
+    expect(() => new FileTelegramUpdateInboxStore(inboxPath, { maxIndeterminateReceipts: 1.5 })).toThrow("limit")
+    writeFileSync(inboxPath, JSON.stringify({ version: 3, pending: [], dispatching: [], indeterminate: [] }))
+    expect(() => new FileTelegramUpdateInboxStore(inboxPath, { now: () => 1.5 }).load()).toThrow("inbox state is corrupt")
   })
 
   it.each([
@@ -861,6 +909,7 @@ describe("Telegram durable authorized long poll", () => {
     { version: 2, pending: {}, dispatching: [], indeterminate: [] },
     { version: 2, pending: [{}], dispatching: [], indeterminate: [] },
     { version: 2, pending: [], dispatching: [], indeterminate: [], raw: "forbidden" },
+    { version: 3, pending: [], dispatching: [], indeterminate: [{}] },
   ])("rejects corrupt inbox state %j", (state) => {
     const directory = makeTempDirectory("ouro-telegram-inbox-invalid-")
     const inboxPath = join(directory, "inbox.json")

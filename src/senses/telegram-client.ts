@@ -127,12 +127,26 @@ export interface TelegramUpdateReceipt {
   updateClass: "callback" | "message" | "other"
 }
 
+interface TelegramIndeterminateUpdateReceipt extends TelegramUpdateReceipt {
+  quarantinedAt: number
+  warningAcknowledged: boolean
+}
+
 interface TelegramUpdateInboxState {
-  version: 2
+  version: 3
   pending: TelegramUpdateReceipt[]
   dispatching: TelegramUpdateReceipt[]
-  indeterminate: TelegramUpdateReceipt[]
+  indeterminate: TelegramIndeterminateUpdateReceipt[]
 }
+
+export interface FileTelegramUpdateInboxStoreOptions {
+  now?: () => number
+  indeterminateRetentionMs?: number
+  maxIndeterminateReceipts?: number
+}
+
+const DEFAULT_TELEGRAM_INDETERMINATE_RETENTION_MS = 24 * 60 * 60 * 1_000
+const DEFAULT_TELEGRAM_MAX_INDETERMINATE_RECEIPTS = 1_000
 
 const TELEGRAM_UPDATE_DIGEST_DOMAIN = "ouroboros.telegram.update.v1"
 const TELEGRAM_UPDATE_SEQUENCE_DOMAIN = "ouroboros.telegram.update-sequence.v1"
@@ -156,24 +170,87 @@ function uniqueReceipts(records: readonly TelegramUpdateReceipt[]): TelegramUpda
 }
 
 export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
-  constructor(private readonly path: string) {}
+  private readonly now: () => number
+  private readonly indeterminateRetentionMs: number
+  private readonly maxIndeterminateReceipts: number
+
+  constructor(private readonly path: string, options: FileTelegramUpdateInboxStoreOptions = {}) {
+    this.now = options.now ?? Date.now
+    this.indeterminateRetentionMs = options.indeterminateRetentionMs ?? DEFAULT_TELEGRAM_INDETERMINATE_RETENTION_MS
+    this.maxIndeterminateReceipts = options.maxIndeterminateReceipts ?? DEFAULT_TELEGRAM_MAX_INDETERMINATE_RECEIPTS
+    if (!Number.isSafeInteger(this.indeterminateRetentionMs) || this.indeterminateRetentionMs < 1) {
+      throw new Error("Telegram indeterminate receipt retention must be a positive safe integer")
+    }
+    if (!Number.isSafeInteger(this.maxIndeterminateReceipts) || this.maxIndeterminateReceipts < 1) {
+      throw new Error("Telegram indeterminate receipt limit must be a positive safe integer")
+    }
+  }
+
+  private timestamp(): number {
+    const value = this.now()
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("Telegram inbox clock must return a non-negative safe integer")
+    return value
+  }
+
+  private prune(records: readonly TelegramIndeterminateUpdateReceipt[], timestamp: number): TelegramIndeterminateUpdateReceipt[] {
+    const cutoff = timestamp - this.indeterminateRetentionMs
+    return [...records]
+      .filter((record) => record.quarantinedAt >= cutoff)
+      .sort((left, right) => left.quarantinedAt - right.quarantinedAt || left.digest.localeCompare(right.digest))
+      .slice(-this.maxIndeterminateReceipts)
+  }
 
   private read(): TelegramUpdateInboxState {
     try {
       const value = JSON.parse(readFileSync(this.path, "utf8")) as Record<string, unknown>
+      const validReceipt = (record: unknown): record is TelegramUpdateReceipt => Boolean(record)
+        && typeof record === "object"
+        && !Array.isArray(record)
+        && Object.keys(record as object).sort().join(",") === "digest,sequenceDigest,updateClass"
+        && TELEGRAM_UPDATE_DIGEST.test((record as TelegramUpdateReceipt).digest)
+        && TELEGRAM_UPDATE_SEQUENCE_DIGEST.test((record as TelegramUpdateReceipt).sequenceDigest)
+        && ["callback", "message", "other"].includes((record as TelegramUpdateReceipt).updateClass)
+      const validIndeterminate = (record: unknown): record is TelegramIndeterminateUpdateReceipt => Boolean(record)
+        && typeof record === "object"
+        && !Array.isArray(record)
+        && Object.keys(record as object).sort().join(",") === "digest,quarantinedAt,sequenceDigest,updateClass,warningAcknowledged"
+        && TELEGRAM_UPDATE_DIGEST.test((record as TelegramIndeterminateUpdateReceipt).digest)
+        && TELEGRAM_UPDATE_SEQUENCE_DIGEST.test((record as TelegramIndeterminateUpdateReceipt).sequenceDigest)
+        && ["callback", "message", "other"].includes((record as TelegramIndeterminateUpdateReceipt).updateClass)
+        && Number.isSafeInteger((record as TelegramIndeterminateUpdateReceipt).quarantinedAt)
+        && (record as TelegramIndeterminateUpdateReceipt).quarantinedAt >= 0
+        && typeof (record as TelegramIndeterminateUpdateReceipt).warningAcknowledged === "boolean"
+      if (value.version === 3) {
+        if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,version"
+          || !Array.isArray(value.pending) || !Array.isArray(value.dispatching) || !Array.isArray(value.indeterminate)
+          || !value.pending.every(validReceipt) || !value.dispatching.every(validReceipt)
+          || !value.indeterminate.every(validIndeterminate)) throw new Error("invalid bounded inbox shape")
+        const state = structuredClone(value) as unknown as TelegramUpdateInboxState
+        const pruned = this.prune(state.indeterminate, this.timestamp())
+        if (pruned.length !== state.indeterminate.length) {
+          state.indeterminate = pruned
+          this.write(state)
+        }
+        return state
+      }
       if (value.version === 2) {
         if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,version") throw new Error("invalid opaque inbox shape")
         const arrays = [value.pending, value.dispatching, value.indeterminate]
         if (!arrays.every(Array.isArray)) throw new Error("invalid opaque inbox shape")
-        const valid = (record: unknown): record is TelegramUpdateReceipt => Boolean(record)
-          && typeof record === "object"
-          && !Array.isArray(record)
-          && Object.keys(record as object).sort().join(",") === "digest,sequenceDigest,updateClass"
-          && TELEGRAM_UPDATE_DIGEST.test((record as TelegramUpdateReceipt).digest)
-          && TELEGRAM_UPDATE_SEQUENCE_DIGEST.test((record as TelegramUpdateReceipt).sequenceDigest)
-          && ["callback", "message", "other"].includes((record as TelegramUpdateReceipt).updateClass)
-        if (!arrays.flat().every(valid)) throw new Error("invalid opaque inbox receipt")
-        return structuredClone(value) as unknown as TelegramUpdateInboxState
+        if (!arrays.flat().every(validReceipt)) throw new Error("invalid opaque inbox receipt")
+        const timestamp = this.timestamp()
+        const migrated: TelegramUpdateInboxState = {
+          version: 3,
+          pending: structuredClone(value.pending) as TelegramUpdateReceipt[],
+          dispatching: structuredClone(value.dispatching) as TelegramUpdateReceipt[],
+          indeterminate: this.prune((value.indeterminate as TelegramUpdateReceipt[]).map((record) => ({
+            ...record,
+            quarantinedAt: timestamp,
+            warningAcknowledged: false,
+          })), timestamp),
+        }
+        this.write(migrated)
+        return migrated
       }
       const pending = value.pending
       const dispatching = value.dispatching ?? []
@@ -185,16 +262,21 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         && (update as TelegramUpdate).update_id >= 0
       if (![...pending, ...dispatching].every(validLegacy)
         || !completed.every((id) => Number.isSafeInteger(id) && (id as number) >= 0)) throw new Error("invalid legacy inbox record")
+      const timestamp = this.timestamp()
       const migrated: TelegramUpdateInboxState = {
-        version: 2,
+        version: 3,
         pending: [],
         dispatching: [],
-        indeterminate: uniqueReceipts([...pending, ...dispatching].map(updateReceipt)),
+        indeterminate: this.prune(uniqueReceipts([...pending, ...dispatching].map(updateReceipt)).map((record) => ({
+          ...record,
+          quarantinedAt: timestamp,
+          warningAcknowledged: false,
+        })), timestamp),
       }
       this.write(migrated)
       return migrated
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { version: 2, pending: [], dispatching: [], indeterminate: [] }
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { version: 3, pending: [], dispatching: [], indeterminate: [] }
       throw new Error("Telegram update inbox state is corrupt", { cause: error })
     }
   }
@@ -219,12 +301,23 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
   quarantineStranded(): TelegramUpdateReceipt[] {
     const state = this.read()
     const stranded = uniqueReceipts([...state.pending, ...state.dispatching])
-    if (stranded.length === 0) return state.indeterminate
+    const timestamp = this.timestamp()
     state.pending = []
     state.dispatching = []
-    state.indeterminate = uniqueReceipts([...state.indeterminate, ...stranded])
-    this.write(state)
-    return state.indeterminate
+    const combined = [...state.indeterminate, ...stranded.map((record) => ({
+      ...record,
+      quarantinedAt: timestamp,
+      warningAcknowledged: false,
+    }))]
+    state.indeterminate = this.prune(combined.filter((record, index) => (
+      combined.findIndex((candidate) => sameReceipt(candidate, record)) === index
+    )), timestamp)
+    const warnings = state.indeterminate.filter((record) => !record.warningAcknowledged)
+    if (stranded.length > 0 || warnings.length > 0) {
+      for (const warning of warnings) warning.warningAcknowledged = true
+      this.write(state)
+    }
+    return warnings.map(({ quarantinedAt: _quarantinedAt, warningAcknowledged: _warningAcknowledged, ...receipt }) => receipt)
   }
 
   capture(update: TelegramUpdate): boolean {
@@ -428,6 +521,7 @@ export interface TelegramApprovalTransport {
   }>
   handleUpdate(update: TelegramUpdate): Promise<{ handled: boolean; accepted: boolean; reason: string }>
   reconcileExpired(): Promise<void>
+  terminalizeOrphaned(approvalId: string, terminalText: string): Promise<{ terminalEditSucceeded: boolean }>
   terminalizeRecovered(approvalId: string, terminalText: string): Promise<void>
   listPendingDeliveries(): TelegramPersistedPendingApproval[]
 }
@@ -680,6 +774,19 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       }
     },
     reconcileExpired,
+    async terminalizeOrphaned(approvalId, terminalText) {
+      const pending = uniquePending().find((record) => record.approvalId === approvalId)
+      if (!pending) return { terminalEditSucceeded: true }
+      let terminalEditSucceeded = true
+      try {
+        await editTerminal(pending, terminalText)
+      } catch {
+        terminalEditSucceeded = false
+      }
+      remove(pending)
+      persist()
+      return { terminalEditSucceeded }
+    },
     async terminalizeRecovered(approvalId, terminalText) {
       const pending = uniquePending().find((record) => record.approvalId === approvalId)
       if (!pending) return

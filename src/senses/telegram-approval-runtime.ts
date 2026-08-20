@@ -259,7 +259,23 @@ export function createTelegramApprovalRuntime(options: {
           continue
         }
         const existing = store.read(pending.approvalId)
-        if (!existing) continue
+        if (!existing) {
+          const orphanRecovery = await transport.terminalizeOrphaned(
+            pending.approvalId,
+            "⚠️ Approval record is unavailable — no action was taken",
+          )
+          emitNervesEvent({
+            component: "senses",
+            event: "senses.telegram_approval_orphan_recovered",
+            message: "orphaned Telegram approval transport state was removed",
+            meta: {
+              agentName: options.agentName,
+              recovery: "missing_journal",
+              terminalEditSucceeded: orphanRecovery.terminalEditSucceeded,
+            },
+          })
+          continue
+        }
         const deliveryState = pending.deliveryState ?? "bound"
         if (existing.state === "awaiting_prompt_binding" && deliveryState !== "bound") {
           const record = store.abandonPromptBinding({
