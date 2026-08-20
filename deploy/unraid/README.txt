@@ -33,13 +33,26 @@ Update:
       --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
       "$IMAGE_ID" /audit/sanctuary.xml /audit/container-runtime.json "$IMAGE_ID"
+  Before starting any same-token staging container, stop production and retain
+  that known-good container as the rollback target:
+    docker stop ouro-butler
+    docker rm ouro-butler-rollback  # only if this is the prior stopped rollback
+    docker rename ouro-butler ouro-butler-rollback
   Create ouro-butler-staging from "$IMAGE_ID", with autostart disabled and the
-  same two binds. After its health and Telegram checks pass, stop production,
-  retain it as the stopped ouro-butler-rollback container, recreate
-  ouro-butler from the same exact local image ID, and enable only ouro-butler
-  among Butler containers for Unraid array autostart. Never run two active
-  butlers against the same Telegram token. Never create a container from the
-  mutable lookup tag.
+  same two binds, then start it:
+    docker start ouro-butler-staging
+  At no point may production and staging run together against the same Telegram token.
+  If staging fails its health or Telegram checks, stop and remove staging,
+  then restore the stopped known-good container:
+    docker stop ouro-butler-staging
+    docker rm ouro-butler-staging
+    docker rename ouro-butler-rollback ouro-butler
+    docker start ouro-butler
+  If staging passes, stop and remove staging,
+  recreate ouro-butler from the same exact local image ID, enable only
+  ouro-butler for Unraid array autostart, and keep ouro-butler-rollback stopped
+  until the new production container is proven. Never create a container from
+  the mutable lookup tag.
 
 Backup:
   Stop ouro-butler, then snapshot both of these directories together:
