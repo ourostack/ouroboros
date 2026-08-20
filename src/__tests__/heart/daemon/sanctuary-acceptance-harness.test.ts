@@ -14,6 +14,7 @@ import {
 import {
   createSanctuaryAcceptanceAdapterDependencies,
   executeSanctuaryAcceptanceAdapter,
+  executeSanctuaryAcceptanceVaultProbe,
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
@@ -305,6 +306,31 @@ describe("Sanctuary acceptance harness", () => {
     fs.symlinkSync("missing.json", path.join(unsafeDirectory, "unexpected.json"))
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" },
       createSanctuaryAcceptanceAdapterDependencies(3, { keyDirectory: unsafeDirectory }))).rejects.toThrow(/unexpected key directory entry/u)
+  })
+
+  it("runs the packaged inner vault probe through injected vault and network boundaries", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    const refresh = vi.fn(async () => ({
+      ok: true as const,
+      itemPath: "vault:opaque",
+      revision: "opaque",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      config: { unraidGraphqlUrl: "http://127.0.0.1:2378/graphql", unraidReadApiKey: "read-descriptor", unraidWriteApiKey: "write-descriptor" },
+    }))
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init })
+      return jsonResponse({ data: { info: { os: { hostname: "opaque" } } } })
+    }) as typeof fetch
+    await expect(executeSanctuaryAcceptanceVaultProbe("read-id", "read-only", { refresh, fetch: fetchImpl })).resolves.toEqual({ valid: true, keyId: "read-id", capability: "read-only" })
+    await expect(executeSanctuaryAcceptanceVaultProbe("write-id", "bounded-write", { refresh, fetch: fetchImpl })).resolves.toEqual({ valid: true, keyId: "write-id", capability: "bounded-write" })
+    expect(requests.map((request) => request.init?.headers)).toEqual([
+      { "content-type": "application/json", "x-api-key": "read-descriptor" },
+      { "content-type": "application/json", "x-api-key": "write-descriptor" },
+    ])
+    expect(requests[0]).toMatchObject({
+      url: "http://127.0.0.1:2378/graphql",
+      init: { method: "POST", body: JSON.stringify({ query: "query AcceptanceAuthProbe { info { os { hostname } } }", variables: {} }), signal: expect.any(AbortSignal) },
+    })
   })
 
   it("performs a Telegram identity/nonce/vault/offset transaction without persisting secrets", async () => {
