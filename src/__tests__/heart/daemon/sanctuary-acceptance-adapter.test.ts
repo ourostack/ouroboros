@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import { describe, expect, it, vi } from "vitest"
 
 import {
+  createSanctuaryAcceptanceVaultProbeDependencies,
   executeSanctuaryAcceptanceRevokedProbe,
   executeSanctuaryAcceptanceVaultProbe,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
@@ -28,6 +29,24 @@ function refreshed(config: Record<string, unknown>) {
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it("loads only the selected mounted key record for vault proof", () => {
+    const root = fs.mkdtempSync("/tmp/ouro-selected-unraid-key-")
+    const selected = `${root}/selected.json`
+    fs.writeFileSync(selected, JSON.stringify({
+      id: "read-id",
+      name: "Butler RO",
+      permissions: READ_PERMISSIONS,
+      roles: [],
+      key: "read-descriptor",
+    }))
+    try {
+      const deps = createSanctuaryAcceptanceVaultProbeDependencies({ keyRecordPath: selected })
+      expect(deps.readKeyRecords()).toEqual([expect.objectContaining({ id: "read-id", key: "read-descriptor" })])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("binds the read-only vault descriptor to the exact key ID and proves write denial", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ data: { info: { os: { hostname: "opaque" } } } }))

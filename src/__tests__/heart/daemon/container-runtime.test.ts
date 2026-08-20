@@ -912,6 +912,57 @@ retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
     }
   })
 
+  it("ships a complete exact-image host launcher for every Unit 16 harness command", () => {
+    const launcherPath = "deploy/unraid/sanctuary-unit16-run.sh"
+    expect(fs.existsSync(launcherPath)).toBe(true)
+    const launcher = fs.readFileSync(launcherPath, "utf8")
+    const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as {
+      commands: Record<string, unknown>
+    }
+    expect(spawnSync("/bin/sh", ["-n", launcherPath]).status).toBe(0)
+    expect(launcher).toContain("/usr/bin/timeout -s KILL 30 /usr/bin/docker run")
+    expect(launcher).toContain("--pull=never --network host")
+    expect(launcher).toContain("--user 10001:10001 --read-only")
+    expect(launcher).toContain("type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly")
+    expect(launcher).toContain("type=bind,src=$EVIDENCE_ROOT,dst=/evidence")
+    expect(launcher).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli,readonly")
+    expect(launcher).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly")
+    expect(launcher).toContain("/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh")
+    expect(launcher).toContain('"$COMMAND" --config /run/ouro-acceptance/config.json')
+    expect(launcher).not.toContain("/var/run/docker.sock")
+    for (const command of Object.keys(contract.commands)) expect(launcher).toContain(command)
+
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    expect(runbook).toContain("/mnt/user/appdata/ouro-butler/acceptance/configs")
+    expect(runbook).toContain("/mnt/user/appdata/ouro-butler/acceptance/evidence")
+    expect(runbook).toContain("sanctuary-unit16-run.sh \"$IMAGE_ID\"")
+    for (const command of Object.keys(contract.commands)) expect(runbook).toContain(`${command}.json`)
+  })
+
+  it("narrows capability proof authority to read-only roots and one exact key record", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const verify = extractRunbookFunction(runbook, "verify_vault_backed_unraid_key")
+    expect(verify).toContain("KEY_TARGET=$(resolve_sanctuary_unraid_key")
+    expect(verify).toContain("type=bind,src=$KEY_PATH,dst=/run/ouro-acceptance/unraid-key.json,readonly")
+    expect(verify).toContain("dst=/home/ouro/.ouro-cli,readonly")
+    expect(verify).toContain("dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly")
+    expect(verify).not.toContain("src=/boot/config/plugins/dynamix.my.servers/keys,dst=")
+    expect(verify).not.toContain("/var/run/docker.sock")
+  })
+
+  it("retains a private revoked descriptor for bounded retry and removes it only after proof", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const revoke = extractRunbookFunction(runbook, "revoke_unraid_key_exact")
+    const rejected = extractRunbookFunction(runbook, "verify_revoked_unraid_key_rejected")
+    expect(revoke).toContain("preserve_sanctuary_revoked_key")
+    expect(rejected).toContain("REVOKED_KEY_RECOVERY_PATH=$(sanctuary_revoked_key_recovery_path")
+    expect(rejected).toContain("while test \"$REJECT_ATTEMPT\" -lt 3")
+    expect(rejected).toContain("sleep 2")
+    expect(rejected).toContain("clear_sanctuary_revoked_key")
+    expect(rejected.indexOf("clear_sanctuary_revoked_key")).toBeGreaterThan(rejected.indexOf("value.rejected !== true"))
+    expect(rejected).not.toContain("exec 9<&-")
+  })
+
   it("rejects update topology before effective audit can create a container", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
