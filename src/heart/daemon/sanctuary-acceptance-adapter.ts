@@ -3,11 +3,12 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { readFileSync, readdirSync } from "node:fs"
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import { createTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
-import { createTelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
-import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey } from "../../senses/telegram"
+import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
+import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
+import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, type TelegramSenseCredentials } from "../../senses/telegram"
 import { createSanctuaryToolContext } from "../../senses/sanctuary-runtime"
 import { getAgentRoot } from "../identity"
+import { SANCTUARY_UNIT_16_EVIDENCE_LABELS } from "./sanctuary-acceptance-harness"
 import {
   mergeMachineRuntimeCredentialConfig,
   mergeRuntimeCredentialConfig,
@@ -36,10 +37,10 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   execFile(executable: string, args: string[]): Promise<{ status: number; stdout: string }>
   fetch: typeof fetch
   readFixedFile?(path: string): string
-  refreshRuntime?(): Promise<RuntimeCredentialConfigReadResult>
-  mergeRuntime?(patch: JsonObject): Promise<RuntimeCredentialConfigReadResult>
-  refreshMachine?(): Promise<RuntimeCredentialConfigReadResult>
-  mergeMachine?(patch: JsonObject): Promise<RuntimeCredentialConfigReadResult>
+  refreshRuntime?(agentName: string): Promise<RuntimeCredentialConfigReadResult>
+  mergeRuntime?(agentName: string, patch: JsonObject): Promise<RuntimeCredentialConfigReadResult>
+  refreshMachine?(agentName: string, machineId: string): Promise<RuntimeCredentialConfigReadResult>
+  mergeMachine?(agentName: string, machineId: string, patch: JsonObject): Promise<RuntimeCredentialConfigReadResult>
   callbackProbe?(update: JsonObject, replay: boolean): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }>
 }
 
@@ -63,6 +64,8 @@ const IMAGE_DIGEST_FILE = "/run/ouro-acceptance/image-digest"
 const CONTAINER_DIGEST_FILE = "/run/ouro-acceptance/container-digest"
 const POSTBOOT_HEALTH_FILE = "/run/ouro-acceptance/postboot-health.json"
 const BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id"
+const CONTRACT_FILE = "/opt/ouro/deploy/unraid/sanctuary-acceptance-contract.json"
+const CLOSED_INVENTORY_FILE = "/run/ouro-acceptance/closed-inventory.json"
 const TARGET_SERVER_ID = "sanctuary-unraid"
 const TARGET_ID = "sanctuary"
 const SHA256 = /^[0-9a-f]{64}$/u
@@ -156,11 +159,11 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     execFile: (executable, args) => defaultExecFile(executable, args, adapterTimeoutMs),
     fetch,
     readFixedFile: (filePath) => readFileSync(filePath, "utf8"),
-    refreshRuntime: () => refreshRuntimeCredentialConfig(TARGET_ID),
-    mergeRuntime: (patch) => mergeRuntimeCredentialConfig(TARGET_ID, patch),
-    refreshMachine: () => refreshMachineRuntimeCredentialConfig(TARGET_ID, TARGET_ID),
-    mergeMachine: (patch) => mergeMachineRuntimeCredentialConfig(TARGET_ID, TARGET_ID, patch),
-    callbackProbe: (update, replay) => executeSanctuaryAcceptanceCallbackProbe(update, replay),
+    refreshRuntime: refreshRuntimeCredentialConfig,
+    mergeRuntime: mergeRuntimeCredentialConfig,
+    refreshMachine: refreshMachineRuntimeCredentialConfig,
+    mergeMachine: mergeMachineRuntimeCredentialConfig,
+    callbackProbe: executeSanctuaryAcceptanceCallbackProbe,
   }
 }
 
@@ -255,7 +258,10 @@ async function exactIdRevoke(payload: JsonObject, deps: SanctuaryAcceptanceAdapt
   return { revoked: true, id }
 }
 
-async function revokedKeyAuthRejection(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
+async function revokedKeyAuthRejection(
+  payload: JsonObject,
+  deps: Pick<SanctuaryAcceptanceAdapterDependencies, "readDescriptor" | "fetch">,
+): Promise<unknown> {
   const id = keyId(payload.keyId)
   const endpoint = exactLoopbackGraphqlEndpoint(payload.endpoint)
   const descriptorPayload = object(JSON.parse(deps.readDescriptor()) as unknown, "revoked-key descriptor")
@@ -297,10 +303,11 @@ function fixedFile(deps: SanctuaryAcceptanceAdapterDependencies, filePath: strin
 }
 
 async function runtimeConfig(
-  reader: (() => Promise<RuntimeCredentialConfigReadResult>) | undefined,
+  reader: ((...args: string[]) => Promise<RuntimeCredentialConfigReadResult>) | undefined,
   label: string,
+  ...args: string[]
 ): Promise<JsonObject> {
-  const result = await dependency(reader, label)()
+  const result = await dependency(reader, label)(...args)
   if (!result.ok) throw new Error(`${label} is unavailable`)
   return result.config
 }
@@ -308,7 +315,7 @@ async function runtimeConfig(
 async function sendTelegramNonce(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   const nonce = text(payload.nonce, "nonce")
   if (!/^[0-9a-f]{32}$/u.test(nonce)) throw new Error("nonce is invalid")
-  const config = await runtimeConfig(deps.refreshRuntime, "Sanctuary runtime config")
+  const config = await runtimeConfig(deps.refreshRuntime, "Sanctuary runtime config", TARGET_ID)
   const token = text(config.telegramBotToken, "Telegram bot credential")
   const chatId = positiveDecimal(config.telegramAuthorizedChatId, "Telegram authorized chat")
   let response: Response
@@ -331,7 +338,7 @@ async function storeTelegramBootstrap(payload: JsonObject, deps: SanctuaryAccept
     telegramAuthorizedUserId: positiveDecimal(payload.authorizedUserId, "Telegram authorized user"),
     telegramAuthorizedChatId: positiveDecimal(payload.authorizedChatId, "Telegram authorized chat"),
   }
-  const stored = await dependency(deps.mergeRuntime, "runtime vault writer")(patch)
+  const stored = await dependency(deps.mergeRuntime, "runtime vault writer")(TARGET_ID, patch)
   if (!stored.ok || Object.entries(patch).some(([key, value]) => stored.config[key] !== value)) {
     throw new Error("Telegram bootstrap vault readback failed")
   }
@@ -406,7 +413,7 @@ async function createKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDe
   const key = text(created.key, "created Unraid key credential")
   if (created.name !== name || JSON.stringify(permissionStrings(created.permissions)) !== JSON.stringify(permissions)
     || !Array.isArray(created.roles) || created.roles.length !== 0) throw new Error("created Unraid key scope mismatch")
-  const stored = await dependency(deps.mergeMachine, "machine vault writer")({
+  const stored = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, {
     [field]: key,
     sanctuaryAcceptanceKeyHandles: { [id]: key },
   })
@@ -421,7 +428,7 @@ async function storeKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
   if (field !== "unraidReadApiKey" && field !== "unraidWriteApiKey") throw new Error("vaultField is invalid")
   const handle = text(payload.key, "Unraid key handle")
   if (handle !== `unraid-key:${id}:${field}`) throw new Error("Unraid key handle is invalid")
-  const stored = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config")
+  const stored = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", TARGET_ID, TARGET_ID)
   const handles = object(stored.sanctuaryAcceptanceKeyHandles, "vault-backed acceptance key handles")
   if (text(handles[id], "vault-backed Unraid credential") !== text(stored[field], "vault-backed Unraid credential")) {
     throw new Error("Unraid key handle does not bind to the active vault field")
@@ -433,7 +440,7 @@ async function probeKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
   requireTargetServer(payload)
   const id = keyId(payload.id)
   const handle = text(payload.key, "Unraid key handle")
-  const config = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config")
+  const config = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", TARGET_ID, TARGET_ID)
   const handleMatch = /^unraid-key:([A-Za-z0-9._:-]+):(unraidReadApiKey|unraidWriteApiKey)$/u.exec(handle)
   if (!handleMatch || handleMatch[1] !== id) throw new Error("Unraid key handle is invalid")
   const handles = object(config.sanctuaryAcceptanceKeyHandles, "vault-backed acceptance key handles")
@@ -460,7 +467,7 @@ async function readOldKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterD
   const id = keyId(payload.id)
   const matches = keyRecords(deps).filter((record) => record.id === id)
   if (matches.length !== 1) throw new Error("old Unraid key ID is absent or ambiguous")
-  const stored = await dependency(deps.mergeMachine, "machine vault writer")({ sanctuaryAcceptanceKeyHandles: { [id]: matches[0]!.key } })
+  const stored = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, { sanctuaryAcceptanceKeyHandles: { [id]: matches[0]!.key } })
   if (!stored.ok) throw new Error("old Unraid key recovery storage failed")
   return { key: `unraid-key:${id}:legacy` }
 }
@@ -475,7 +482,7 @@ async function probeRevokedKey(payload: JsonObject, deps: SanctuaryAcceptanceAda
   const id = keyId(payload.id)
   const handle = text(payload.key, "revoked Unraid key handle")
   if (handle !== `unraid-key:${id}:legacy` && !handle.startsWith(`unraid-key:${id}:unraid`)) throw new Error("revoked Unraid key handle is invalid")
-  const config = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config")
+  const config = await runtimeConfig(deps.refreshMachine, "Sanctuary machine runtime config", TARGET_ID, TARGET_ID)
   const handles = object(config.sanctuaryAcceptanceKeyHandles, "vault-backed acceptance key handles")
   const key = text(handles[id], "revoked Unraid key credential")
   const endpoint = exactLoopbackGraphqlEndpoint(config.unraidGraphqlUrl)
@@ -484,7 +491,7 @@ async function probeRevokedKey(payload: JsonObject, deps: SanctuaryAcceptanceAda
     body: JSON.stringify({ query: AUTH_PROBE, variables: {} }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
   })
   if (response.status !== 401 && response.status !== 403) throw new Error("revoked Unraid key still authenticates")
-  const cleared = await dependency(deps.mergeMachine, "machine vault writer")({ sanctuaryAcceptanceKeyHandles: { [id]: "" } })
+  const cleared = await dependency(deps.mergeMachine, "machine vault writer")(TARGET_ID, TARGET_ID, { sanctuaryAcceptanceKeyHandles: { [id]: "" } })
   if (!cleared.ok) throw new Error("revoked Unraid key recovery cleanup failed")
   return { valid: false, status: response.status, id }
 }
@@ -530,6 +537,33 @@ function pollReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDepende
   return { targetId: TARGET_ID, requestId, state: "ready", bootId: bootId(deps) }
 }
 
+function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+  const command = text(payload.command, "materializer command")
+  const contract = object(JSON.parse(fixedFile(deps, CONTRACT_FILE)) as unknown, "acceptance contract")
+  const templates = object(contract.configTemplates, "acceptance config templates")
+  const template = object(templates[command], "acceptance config template")
+  const config = { ...object(template.fixed, "acceptance fixed config") }
+  const adapterPath = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+  if (command === "telegram-bootstrap") {
+    const offset = object(JSON.parse(fixedFile(deps, TELEGRAM_OFFSET)) as unknown, "Telegram offset")
+    if (!Number.isSafeInteger(offset.nextUpdateId) || (offset.nextUpdateId as number) < 0) throw new Error("Telegram offset is invalid")
+    Object.assign(config, { expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: offset.nextUpdateId })
+  } else if (command === "cursor-snapshot") {
+    const phase = text(payload.phase, "cursor snapshot phase")
+    if (phase !== "before" && phase !== "after") throw new Error("cursor snapshot phase is invalid")
+    config.evidencePath = `/evidence/cursor-${phase}.json`
+  } else if (command === "unraid-key-rotate") {
+    const closed = object(JSON.parse(fixedFile(deps, CLOSED_INVENTORY_FILE)) as unknown, "closed Unraid inventory")
+    if (!Array.isArray(closed.keys) || closed.keys.length === 0) throw new Error("closed Unraid inventory is empty")
+    const ids = closed.keys.map((raw) => keyId(object(raw, "closed Unraid key").id))
+    if (new Set(ids).size !== ids.length) throw new Error("closed Unraid inventory IDs are ambiguous")
+    config.oldKeys = ids.sort().map((id) => ({ id, secretAdapter: adapterPath }))
+  } else if (command === "evidence-bundle-index") {
+    config.entries = SANCTUARY_UNIT_16_EVIDENCE_LABELS.map((label) => ({ label, path: `/evidence/${label}.json` }))
+  }
+  return config
+}
+
 export async function executeSanctuaryAcceptanceAdapter(
   rawPayload: unknown,
   deps: SanctuaryAcceptanceAdapterDependencies = createSanctuaryAcceptanceAdapterDependencies(),
@@ -560,6 +594,7 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "capture_evidence_provenance": result = provenance(payload, deps); break
       case "request_reboot": result = await requestReboot(payload, deps); break
       case "poll_reboot": result = pollReboot(payload, deps); break
+      case "materialize_config": result = materializeConfig(payload, deps); break
       default: throw new Error("unknown Sanctuary acceptance adapter operation")
     }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_adapter_end", message: "Sanctuary acceptance adapter completed", meta: { operation } })
@@ -637,37 +672,51 @@ export async function executeSanctuaryAcceptanceRevokedProbe(
   if (keyId(raw.id) !== id) throw new Error("revoked Unraid key file ID mismatch")
   const descriptor = text(raw.key, "revoked Unraid key descriptor")
   return revokedKeyAuthRejection({ keyId: id, endpoint: endpointValue }, {
-    readKeyFiles: () => [],
     readDescriptor: () => JSON.stringify({ keyId: id, descriptor }),
-    execFile: async () => ({ status: 0, stdout: "" }),
     fetch: deps.fetch,
   })
 }
 
-/* v8 ignore start -- live packaged boundary: exercised on the deployed approval journal with a saved Telegram callback */
+export interface SanctuaryAcceptanceCallbackProbeDependencies {
+  refresh(agentName: string): Promise<RuntimeCredentialConfigReadResult>
+  credentials(agentName: string): TelegramSenseCredentials
+  identityKey(agentRoot: string): string
+  createApi(options: { token: string }): TelegramBotApi
+  createRuntime(input: Parameters<typeof createTelegramApprovalRuntime>[0]): Pick<TelegramApprovalRuntime, "transport" | "close">
+  toolContext(agentName: string): ReturnType<typeof createSanctuaryToolContext>
+}
+
 export async function executeSanctuaryAcceptanceCallbackProbe(
   rawUpdate: unknown,
   _replay: boolean,
+  deps: SanctuaryAcceptanceCallbackProbeDependencies = {
+    refresh: refreshRuntimeCredentialConfig,
+    credentials: loadTelegramSenseCredentials,
+    identityKey: readOrCreateTelegramIdentityKey,
+    createApi: createTelegramBotApi,
+    createRuntime: createTelegramApprovalRuntime,
+    toolContext: createSanctuaryToolContext,
+  },
 ): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }> {
   const update = callbackUpdate(rawUpdate) as unknown as TelegramUpdate
-  const refreshed = await refreshRuntimeCredentialConfig(TARGET_ID)
+  const refreshed = await deps.refresh(TARGET_ID)
   if (!refreshed.ok) throw new Error("Telegram runtime credentials are unavailable")
-  const credentials = loadTelegramSenseCredentials(TARGET_ID)
-  const identityKey = readOrCreateTelegramIdentityKey(getAgentRoot(TARGET_ID))
+  const credentials = deps.credentials(TARGET_ID)
+  const identityKey = deps.identityKey(getAgentRoot(TARGET_ID))
   const payload = [
     TELEGRAM_SUBJECT_DOMAIN,
     `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`,
     `chat:${credentials.authorizedChatId.length}:${credentials.authorizedChatId}`,
   ].join("\0")
   const subject = `tg_${createHmac("sha256", identityKey).update(payload, "utf8").digest("base64url")}`
-  const api = createTelegramBotApi({ token: credentials.botToken })
-  const runtime = createTelegramApprovalRuntime({
+  const api = deps.createApi({ token: credentials.botToken })
+  const runtime = deps.createRuntime({
     agentName: TARGET_ID,
     api,
     authorizedUserId: credentials.authorizedUserId,
     authorizedChatId: credentials.authorizedChatId,
     subject,
-    toolContext: createSanctuaryToolContext(TARGET_ID),
+    toolContext: deps.toolContext(TARGET_ID),
   })
   try {
     const result = await runtime.transport.handleUpdate(update)
@@ -681,4 +730,3 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     api.stop()
   }
 }
-/* v8 ignore stop */
