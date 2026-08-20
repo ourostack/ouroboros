@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import * as fs from "node:fs"
 
 import { getChannelCapabilities } from "@ouro.bot/friends"
+import { resetIdentity, setAgentName } from "../../heart/identity"
 import { approvalPolicyForToolName, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
 
 describe("Sanctuary active tool profile", () => {
+  afterEach(() => resetIdentity())
+
   it("advertises exactly the locked Telegram surface", () => {
+    setAgentName("sanctuary")
     const names = getToolsForChannel(getChannelCapabilities("telegram")).map((tool) => tool.function.name)
     expect(names).toEqual([
       "unraid_list_containers",
@@ -22,6 +26,23 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     expect(packaged.profiles["sanctuary-telegram"]).toEqual(names)
     expect(packaged.profiles["sanctuary-health-private"]).toEqual(["send_message", "rest"])
+  })
+
+  it("keeps non-Sanctuary Telegram agents on the generic tool profile", () => {
+    setAgentName("slugger")
+    const names = getToolsForChannel(getChannelCapabilities("telegram")).map((tool) => tool.function.name)
+
+    expect(names).toContain("shell")
+    expect(names).toContain("read_file")
+    expect(names).not.toContain("unraid_list_containers")
+    expect(names).not.toContain("unraid_restart_container")
+  })
+
+  it("fails closed to the generic Telegram profile when agent identity is unavailable", () => {
+    const names = getToolsForChannel(getChannelCapabilities("telegram")).map((tool) => tool.function.name)
+
+    expect(names).toContain("shell")
+    expect(names).not.toContain("unraid_list_containers")
   })
 
   it("marks restart as sole-call approval-required and all reads as non-mutating", () => {

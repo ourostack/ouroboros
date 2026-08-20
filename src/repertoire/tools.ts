@@ -10,7 +10,7 @@ import type { ChannelCapabilities, ResolvedContext } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
-import { getAgentRoot } from "../heart/identity";
+import { getAgentName, getAgentRoot } from "../heart/identity";
 import { releaseReservedCommerceAuthority, reserveCommerceAuthority } from "../commerce/store";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpManager } from "./mcp-manager";
@@ -26,6 +26,14 @@ function safeGetAgentRoot(): string | undefined {
     return getAgentRoot()
   } catch {
     return undefined
+  }
+}
+
+function isSanctuaryAgent(): boolean {
+  try {
+    return getAgentName() === "sanctuary"
+  } catch {
+    return false
   }
 }
 
@@ -92,7 +100,7 @@ export function getToolsForChannel(
   mcpManager?: McpManager,
   _chatModel?: string,
 ): OpenAI.ChatCompletionFunctionTool[] {
-  if (capabilities?.channel === "telegram") {
+  if (capabilities?.channel === "telegram" && isSanctuaryAgent()) {
     return [
       ...unraidToolDefinitions.map((definition) => definition.tool),
       ponderTool,
