@@ -53,6 +53,7 @@ import {
   machineRuntimeConfigItemName,
   mergeRuntimeCredentialConfig,
   mergeMachineRuntimeCredentialConfig,
+  persistRuntimeCredentialBootstrapMessage,
   readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
   refreshMachineRuntimeCredentialConfig,
@@ -193,6 +194,68 @@ describe("runtime credentials vault config", () => {
       },
     })
     expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
+  })
+
+  it("durably imports every bootstrap credential class into canonical vault items", async () => {
+    emitTestEvent("runtime credentials durable container bootstrap")
+    const providerRecord = createProviderCredentialRecord({
+      provider: "openai-compatible",
+      credentials: { apiKey: "provider-secret" },
+      config: { baseUrl: "https://api.z.ai/api/paas/v4/" },
+      provenance: { source: "auth-flow" },
+      now: new Date("2026-04-14T12:00:00.000Z"),
+    })
+
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      runtimeConfig: { telegramBotToken: "telegram-secret" },
+      machineRuntimeConfig: { unraidReadApiKey: "read-secret", unraidWriteApiKey: "write-secret" },
+      providerCredentialRecords: [providerRecord],
+    }, {
+      machineId: "machine_sanctuary",
+      now: new Date("2026-04-14T13:00:00.000Z"),
+    })).resolves.toBe(true)
+
+    expect([...mockCredentialStore.items.keys()].sort()).toEqual([
+      "providers/openai-compatible",
+      "runtime/config",
+      "runtime/machines/machine_sanctuary/config",
+    ])
+    expect(JSON.parse(mockCredentialStore.items.get("runtime/config")!.password)).toMatchObject({
+      kind: "runtime-config",
+      config: { telegramBotToken: "telegram-secret" },
+    })
+    expect(JSON.parse(mockCredentialStore.items.get("runtime/machines/machine_sanctuary/config")!.password)).toMatchObject({
+      kind: "runtime-config",
+      config: { unraidReadApiKey: "read-secret", unraidWriteApiKey: "write-secret" },
+    })
+    expect(JSON.parse(mockCredentialStore.items.get("providers/openai-compatible")!.password)).toMatchObject({
+      kind: "provider-credential",
+      provider: "openai-compatible",
+      credentials: { apiKey: "provider-secret" },
+      config: { baseUrl: "https://api.z.ai/api/paas/v4/" },
+    })
+  })
+
+  it("uses an explicit message machine id and rejects invalid bootstrap without vault writes", async () => {
+    emitTestEvent("runtime credentials durable bootstrap validation")
+
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "machine_from_envelope",
+      machineRuntimeConfig: { unraidReadApiKey: "read-secret" },
+    }, { machineId: "machine_fallback" })).resolves.toBe(true)
+    expect(mockCredentialStore.items.has("runtime/machines/machine_from_envelope/config")).toBe(true)
+
+    mockCredentialStore.items.clear()
+    await expect(persistRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "",
+      runtimeConfig: {},
+    }, { machineId: "machine_fallback" })).resolves.toBe(false)
+    expect(mockCredentialStore.store.store).not.toHaveBeenCalled()
   })
 
   it("rejects malformed runtime credential bootstrap messages without touching cache", () => {
