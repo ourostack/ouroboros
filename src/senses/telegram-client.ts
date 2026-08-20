@@ -115,7 +115,8 @@ export interface TelegramUpdateInboxStore {
   load(): TelegramUpdateReceipt[]
   loadPending(): TelegramUpdateReceipt[]
   loadIndeterminate(): TelegramUpdateReceipt[]
-  quarantineStranded(options?: { acknowledgeWarnings?: boolean }): TelegramUpdateReceipt[]
+  quarantineStranded(): TelegramUpdateReceipt[]
+  acknowledgeIndeterminateWarning(receipt: TelegramUpdateReceipt): boolean
   capture(update: TelegramUpdate): boolean
   claim(update: TelegramUpdate): boolean
   complete(update: TelegramUpdate): void
@@ -298,7 +299,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
     return this.read().indeterminate
   }
 
-  quarantineStranded(options: { acknowledgeWarnings?: boolean } = {}): TelegramUpdateReceipt[] {
+  quarantineStranded(): TelegramUpdateReceipt[] {
     const state = this.read()
     const stranded = uniqueReceipts([...state.pending, ...state.dispatching])
     const timestamp = this.timestamp()
@@ -313,16 +314,17 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
       combined.findIndex((candidate) => sameReceipt(candidate, record)) === index
     )), timestamp)
     const warnings = state.indeterminate.filter((record) => !record.warningAcknowledged)
-    const acknowledgeWarnings = options.acknowledgeWarnings !== false
-    if (stranded.length > 0 || (acknowledgeWarnings && warnings.length > 0)) {
-      if (acknowledgeWarnings) {
-        for (const warning of warnings) warning.warningAcknowledged = true
-      }
-      this.write(state)
-    }
-    return acknowledgeWarnings
-      ? warnings.map(({ quarantinedAt: _quarantinedAt, warningAcknowledged: _warningAcknowledged, ...receipt }) => receipt)
-      : []
+    if (stranded.length > 0) this.write(state)
+    return warnings.map(({ quarantinedAt: _quarantinedAt, warningAcknowledged: _warningAcknowledged, ...receipt }) => receipt)
+  }
+
+  acknowledgeIndeterminateWarning(receipt: TelegramUpdateReceipt): boolean {
+    const state = this.read()
+    const warning = state.indeterminate.find((candidate) => sameReceipt(candidate, receipt))
+    if (!warning || warning.warningAcknowledged) return false
+    warning.warningAcknowledged = true
+    this.write(state)
+    return true
   }
 
   capture(update: TelegramUpdate): boolean {
@@ -423,6 +425,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
         message: "Telegram update dispatch outcome is indeterminate after restart",
         meta: { updateClass: indeterminate.updateClass, reason: "dispatch_indeterminate" },
       })
+      options.inboxStore?.acknowledgeIndeterminateWarning(indeterminate)
     }
     const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
       offset: nextUpdateId,
@@ -443,7 +446,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
           await dispatch(update)
           if (requiresDurableDispatch) options.inboxStore?.complete(update)
         } catch (error) {
-          options.inboxStore?.quarantineStranded?.({ acknowledgeWarnings: false })
+          options.inboxStore?.quarantineStranded?.()
           throw error
         }
       }

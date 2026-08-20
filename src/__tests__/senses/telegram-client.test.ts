@@ -625,11 +625,15 @@ describe("Telegram durable authorized long poll", () => {
       expect(store.capture(update(updateId))).toBe(true)
       expect(store.claim(update(updateId))).toBe(true)
     }
-    expect(store.quarantineStranded()).toHaveLength(2)
+    const initialWarnings = store.quarantineStranded()
+    expect(initialWarnings).toHaveLength(2)
+    for (const warning of initialWarnings) expect(store.acknowledgeIndeterminateWarning(warning)).toBe(true)
     now += 1
     expect(store.capture(update(3))).toBe(true)
     expect(store.claim(update(3))).toBe(true)
-    expect(store.quarantineStranded()).toHaveLength(1)
+    const thirdWarning = store.quarantineStranded()
+    expect(thirdWarning).toHaveLength(1)
+    expect(store.acknowledgeIndeterminateWarning(thirdWarning[0]!)).toBe(true)
 
     expect(store.loadIndeterminate()).toHaveLength(2)
     expect(store.capture(update(1))).toBe(true)
@@ -672,6 +676,7 @@ describe("Telegram durable authorized long poll", () => {
   it("does not durably capture unauthorized callback identities or data", async () => {
     const inboxStore = {
       loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      acknowledgeIndeterminateWarning: vi.fn(() => true),
       capture: vi.fn(() => true), claim: vi.fn(() => true), complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
     }
     const callback = { update_id: 7, callback_query: { id: "foreign-query", from: { id: 99 }, data: "a:foreign", message: { message_id: 8, chat: { id: 99 } } } }
@@ -688,6 +693,7 @@ describe("Telegram durable authorized long poll", () => {
   it("durably claims authorized callbacks by opaque receipt and skips an unclaimable duplicate", async () => {
     const inboxStore = {
       quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      acknowledgeIndeterminateWarning: vi.fn(() => true),
       capture: vi.fn(() => true), claim: vi.fn(() => false), complete: vi.fn(), load: vi.fn(),
     }
     const callback = { update_id: 7, callback_query: { id: "query", from: { id: 10 }, data: "a:opaque", message: { message_id: 8, chat: { id: 10 } } } }
@@ -932,6 +938,7 @@ describe("Telegram durable authorized long poll", () => {
     const inboxStore = {
       quarantineStranded: vi.fn(() => [{ digest: `tgu_${"a".repeat(43)}`, sequenceDigest: `tgs_${"b".repeat(43)}`, updateClass: "callback" as const }]),
       loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      acknowledgeIndeterminateWarning: vi.fn(() => true),
       claim: vi.fn((id: number) => id === 1),
       complete: vi.fn(), capture: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
     }
@@ -952,6 +959,7 @@ describe("Telegram durable authorized long poll", () => {
     const onMessage = vi.fn()
     const inboxStore = {
       quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      acknowledgeIndeterminateWarning: vi.fn(() => true),
       capture: vi.fn(() => true), claim: vi.fn(() => false), complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
     }
     const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => [null, { update_id: 1 }, { update_id: 2.5 }, {
