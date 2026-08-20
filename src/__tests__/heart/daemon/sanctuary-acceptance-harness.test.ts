@@ -11,6 +11,10 @@ import {
   executeSanctuaryAcceptanceHarness as executeHarness,
   type AcceptanceHarnessDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-harness"
+import {
+  executeSanctuaryAcceptanceAdapter,
+  type SanctuaryAcceptanceAdapterDependencies,
+} from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
 const roots: string[] = []
 
@@ -218,6 +222,63 @@ describe("Sanctuary acceptance harness", () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("uses fixed outgoing argv and requests for the four legacy-key lifecycle operations", async () => {
+    const calls: Array<{ executable: string; args: string[] }> = []
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    const keyFiles = [
+      { id: "read-id", name: "Butler RO", permissions: ["DOCKER:READ_ANY"], roles: [] },
+      { id: "write-id", name: "Butler RW", permissions: ["DOCKER:READ_ANY", "DOCKER:UPDATE_ANY"], roles: [] },
+      { id: "legacy-id", name: "Legacy", permissions: ["DOCKER:UPDATE_ANY"], roles: [] },
+    ]
+    const adapterDeps: SanctuaryAcceptanceAdapterDependencies = {
+      readKeyFiles: () => keyFiles,
+      readDescriptor: () => "revoked-secret",
+      execFile: async (executable, args) => {
+        calls.push({ executable, args })
+        return args.includes("--delete")
+          ? { status: 0, stdout: JSON.stringify({ deleted: 1, keys: [{ id: "legacy-id", name: "Legacy" }] }) }
+          : { status: 0, stdout: JSON.stringify({ valid: true, keyId: args.at(-2), capability: args.at(-1) }) }
+      },
+      fetch: async (input, init) => {
+        requests.push({ url: String(input), init })
+        return jsonResponse({ errors: [{ message: "Unauthorized" }] }, 401)
+      },
+    }
+    await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "vault-backed-capability-verify", keyId: "read-id", capability: "read-only",
+    }, adapterDeps)).resolves.toEqual({ verified: true, keyId: "read-id", capability: "read-only" })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, adapterDeps)).resolves.toEqual({
+      keys: [
+        { id: "legacy-id", scope: "legacy-write", roles: "none" },
+        { id: "read-id", scope: "read-only", roles: "none" },
+        { id: "write-id", scope: "bounded-write", roles: "none" },
+      ],
+    })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "exact-id-revoke", keyId: "legacy-id" }, adapterDeps)).resolves.toEqual({ revoked: true, id: "legacy-id" })
+    await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "revoked-key-auth-rejection", keyId: "legacy-id", endpoint: "http://127.0.0.1:2378/graphql",
+    }, adapterDeps)).resolves.toEqual({ rejected: true, id: "legacy-id", status: 401 })
+
+    expect(calls).toContainEqual({
+      executable: "/usr/bin/docker",
+      args: ["exec", "ouro-butler-staging", "node", "/opt/ouro/dist/heart/daemon/sanctuary-acceptance-adapter.js", "vault-probe", "read-id", "read-only"],
+    })
+    expect(calls).toContainEqual({
+      executable: "/usr/local/sbin/unraid-api",
+      args: ["apikey", "--name", "Legacy", "--delete", "--json"],
+    })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({
+      url: "http://127.0.0.1:2378/graphql",
+      init: {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": "revoked-secret" },
+        body: JSON.stringify({ query: "query AcceptanceAuthProbe { info { os { hostname } } }", variables: {} }),
+        signal: expect.any(AbortSignal),
+      },
+    })
   })
 
   it("performs a Telegram identity/nonce/vault/offset transaction without persisting secrets", async () => {
