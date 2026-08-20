@@ -719,7 +719,8 @@ describe("Telegram durable authorized long poll", () => {
     await expect(poll.pollOnce()).rejects.toThrow("synthetic turn crash")
     expect(offset).toBe(12)
     expect(inboxStore.loadIndeterminate()).toHaveLength(1)
-    const persisted = readFileSync(inboxPath, "utf8")
+    let persisted = readFileSync(inboxPath, "utf8")
+    expect(JSON.parse(persisted).indeterminate[0].warningAcknowledged).toBe(false)
     for (const raw of ["update_id", "message_id", '"from"', '"chat"', "restart"]) expect(persisted).not.toContain(raw)
 
     const recoveredMessage = vi.fn(async () => undefined)
@@ -735,6 +736,8 @@ describe("Telegram durable authorized long poll", () => {
     await recovered.pollOnce()
     expect(recoveredMessage).not.toHaveBeenCalled()
     expect(inboxStore.loadIndeterminate()).toHaveLength(1)
+    persisted = readFileSync(inboxPath, "utf8")
+    expect(JSON.parse(persisted).indeterminate[0].warningAcknowledged).toBe(true)
   })
 
   it("rejects a conflicting durable update with the same update id", () => {

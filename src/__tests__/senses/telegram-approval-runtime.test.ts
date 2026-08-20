@@ -446,11 +446,14 @@ describe("Telegram approval runtime orchestration", () => {
     runtimeMocks.transport.listPendingDeliveries.mockReturnValue([
       { approvalId: "terminal", terminal: { terminalText: "already terminal" } },
       { approvalId: "missing" },
+      { approvalId: "missing-terminal", deliveryState: "delivery_indeterminate", terminal: { terminalText: "interrupted" } },
       { approvalId: "pending-prompt", deliveryState: "pending" },
       { approvalId: "indeterminate-prompt", deliveryState: "delivery_indeterminate" },
     ])
     runtimeMocks.store.read.mockImplementation((approvalId) => ({
+      "terminal": { ...baseRecord, approvalId, state: "succeeded" },
       "missing": undefined,
+      "missing-terminal": undefined,
       "pending-prompt": { ...baseRecord, approvalId, state: "awaiting_prompt_binding" },
       "indeterminate-prompt": { ...baseRecord, approvalId, state: "awaiting_prompt_binding" },
     })[approvalId])
@@ -470,6 +473,10 @@ describe("Telegram approval runtime orchestration", () => {
       "missing",
       "⚠️ Approval record is unavailable — no action was taken",
     )
+    expect(runtimeMocks.transport.terminalizeOrphaned).toHaveBeenCalledWith(
+      "missing-terminal",
+      "⚠️ Approval record is unavailable — no action was taken",
+    )
     expect(runtimeMocks.store.expire).not.toHaveBeenCalled()
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       component: "senses",
@@ -477,6 +484,7 @@ describe("Telegram approval runtime orchestration", () => {
       meta: { agentName: "sanctuary", recovery: "missing_journal", terminalEditSucceeded: true },
     }))
     expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain('\"approvalId\":\"missing\"')
+    expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain("missing-terminal")
   })
 
   it("isolates every startup recovery record and surfaces one sanitized aggregate after processing later work", async () => {
