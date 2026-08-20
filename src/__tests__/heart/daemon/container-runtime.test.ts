@@ -75,6 +75,7 @@ describe("container runtime policy", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const auditor = fs.readFileSync("deploy/unraid/audit-container-spec.sh", "utf8")
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
       habitPaidTurnsPerDay?: number
     }
@@ -96,6 +97,12 @@ describe("container runtime policy", () => {
     expect(runbook).toContain("docker image inspect \"$IMAGE_ID\"")
     expect(runbook).toContain("staged template")
     expect(runbook).not.toContain("repository digest")
+    expect(runbook).toContain("docker run --rm --pull=never --network=none \\")
+    expect(runbook).toContain("--entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \\")
+    expect(runbook).toContain('--mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \\')
+    expect(runbook).toContain('--mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \\')
+    expect(runbook).toContain('"$IMAGE_ID" /audit/sanctuary.xml /audit/container-runtime.json "$IMAGE_ID"')
+    expect(auditor).toContain("exec node /opt/ouro/dist/heart/daemon/container-spec-auditor-main.js")
     expect(agent.habitPaidTurnsPerDay).toBe(24)
     expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.734", bundleSchemaVersion: 3 })
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/arc/README.md")).toBe(true)
