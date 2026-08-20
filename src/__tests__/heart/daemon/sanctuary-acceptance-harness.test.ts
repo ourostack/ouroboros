@@ -395,6 +395,8 @@ describe("Sanctuary acceptance harness", () => {
 
   it("runs the packaged inner vault probe through injected vault and network boundaries", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
+    const readPermissions = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+      .map((resource) => ({ resource, actions: ["READ_ANY"] }))
     const refresh = vi.fn(async () => ({
       ok: true as const,
       itemPath: "vault:opaque",
@@ -404,12 +406,29 @@ describe("Sanctuary acceptance harness", () => {
     }))
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init })
+      const body = JSON.parse(String(init?.body)) as { query: string }
+      if (body.query.startsWith("mutation") && (init?.headers as Record<string, string>)["x-api-key"] === "read-descriptor") {
+        return jsonResponse({ errors: [{ extensions: { code: "FORBIDDEN" } }] })
+      }
+      if (body.query.startsWith("mutation")) return jsonResponse({ errors: [{ extensions: { code: "NOT_FOUND" } }] })
       return jsonResponse({ data: { info: { os: { hostname: "opaque" } } } })
     }) as typeof fetch
-    await expect(executeSanctuaryAcceptanceVaultProbe("read-id", "read-only", { refresh, fetch: fetchImpl })).resolves.toEqual({ valid: true, keyId: "read-id", capability: "read-only" })
-    await expect(executeSanctuaryAcceptanceVaultProbe("write-id", "bounded-write", { refresh, fetch: fetchImpl })).resolves.toEqual({ valid: true, keyId: "write-id", capability: "bounded-write" })
+    const readKeyRecords = () => [
+      { id: "read-id", name: "Butler RO", permissions: readPermissions, roles: [], key: "read-descriptor" },
+      { id: "write-id", name: "Butler RW", permissions: readPermissions.map((permission) => permission.resource === "DOCKER"
+        ? { ...permission, actions: ["READ_ANY", "UPDATE_ANY"] }
+        : permission), roles: [], key: "write-descriptor" },
+    ]
+    await expect(executeSanctuaryAcceptanceVaultProbe("read-id", "read-only", { refresh, readKeyRecords, fetch: fetchImpl })).resolves.toEqual({
+      valid: true, keyId: "read-id", capability: "read-only", proof: "read-authorized-write-denied",
+    })
+    await expect(executeSanctuaryAcceptanceVaultProbe("write-id", "bounded-write", { refresh, readKeyRecords, fetch: fetchImpl })).resolves.toEqual({
+      valid: true, keyId: "write-id", capability: "bounded-write", proof: "read-authorized-write-reached-not-found",
+    })
     expect(requests.map((request) => request.init?.headers)).toEqual([
       { "content-type": "application/json", "x-api-key": "read-descriptor" },
+      { "content-type": "application/json", "x-api-key": "read-descriptor" },
+      { "content-type": "application/json", "x-api-key": "write-descriptor" },
       { "content-type": "application/json", "x-api-key": "write-descriptor" },
     ])
     expect(requests[0]).toMatchObject({
@@ -489,8 +508,16 @@ describe("Sanctuary acceptance harness", () => {
 
   it("fails closed across inner vault-probe readiness and response branches", async () => {
     const ready = { ok: true as const, itemPath: "vault:opaque", revision: "opaque", updatedAt: "2026-08-20T00:00:00.000Z", config: { unraidGraphqlUrl: "http://127.0.0.1/graphql", unraidReadApiKey: "r", unraidWriteApiKey: "w" } }
+    const readPermissions = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+      .map((resource) => ({ resource, actions: ["READ_ANY"] }))
     const run = (capability: string, refreshResult: any = ready, response = jsonResponse({ data: {} })) => executeSanctuaryAcceptanceVaultProbe("key", capability, {
       refresh: async () => refreshResult,
+      readKeyRecords: () => [
+        { id: "key", name: "Butler RO", permissions: readPermissions, roles: [], key: "r" },
+        { id: "key", name: "Butler RW", permissions: readPermissions.map((permission) => permission.resource === "DOCKER"
+          ? { ...permission, actions: ["READ_ANY", "UPDATE_ANY"] }
+          : permission), roles: [], key: "w" },
+      ],
       fetch: async () => response,
     })
     await expect(executeSanctuaryAcceptanceVaultProbe("key", "invalid")).rejects.toThrow(/capability/u)
