@@ -171,6 +171,7 @@ describe("Sanctuary acceptance harness", () => {
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("missing", createEntries(completeEvidenceLabels.slice(1))), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("duplicate", createEntries([...completeEvidenceLabels, completeEvidenceLabels[0]!])), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
     await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("unsafe", createEntries(completeEvidenceLabels, true)), dependencies())).rejects.toThrow(/raw Telegram identity|sensitive/u)
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", { ...config("nonarray", []), entries: null }, dependencies())).rejects.toThrow(/must be an array/u)
 
     const bundlePath = path.join(dir, "tampered.json")
     await executeSanctuaryAcceptanceHarness("evidence-bundle-index", { ...config("unused", createEntries(completeEvidenceLabels)), evidencePath: bundlePath }, dependencies())
@@ -210,6 +211,7 @@ describe("Sanctuary acceptance harness", () => {
       ["schema", (value: Record<string, any>, index: number) => { if (index === 0) value.schemaVersion = 2 }],
       ["operation", (value: Record<string, any>, index: number) => { if (index === 0) value.operation = completeEvidenceLabels[1] }],
       ["phase", (value: Record<string, any>, index: number) => { if (index === 0) value.phase = "requested" }],
+      ["provenance-shape", (value: Record<string, any>, index: number) => { if (index === 0) delete value.provenance.imageDigest }],
       ["image-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.imageDigest = "d".repeat(64) }],
       ["container-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.containerDigest = "e".repeat(64) }],
       ["cursor-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.cursorDigest = "f".repeat(64) }],
@@ -221,6 +223,19 @@ describe("Sanctuary acceptance harness", () => {
     const changedHarness = path.join(dir, "changed-harness.js")
     fs.writeFileSync(changedHarness, "different packaged bytes\n", { mode: 0o700 })
     await expect(run("changed-harness", createEntries(() => {}), changedHarness)).rejects.toThrow(/harness/u)
+
+    await expect(run("relative-harness", createEntries(() => {}), "relative-harness.js")).rejects.toThrow(/absolute/u)
+    const writableHarness = path.join(dir, "writable-harness.js")
+    fs.writeFileSync(writableHarness, "writable\n", { mode: 0o722 })
+    fs.chmodSync(writableHarness, 0o722)
+    await expect(run("writable-harness", createEntries(() => {}), writableHarness)).rejects.toThrow(/writable/u)
+    const directoryHarness = path.join(dir, "directory-harness")
+    fs.mkdirSync(directoryHarness, { mode: 0o700 })
+    await expect(run("directory-harness", createEntries(() => {}), directoryHarness)).rejects.toThrow(/regular file/u)
+    const harnessAlias = harnessPath.startsWith("/private/") ? harnessPath.slice("/private".length) : harnessPath
+    if (harnessAlias !== harnessPath) {
+      await expect(run("alias-harness", createEntries(() => {}), harnessAlias)).rejects.toThrow(/canonical/u)
+    }
   })
 
   it("redacts neutral-key Telegram IDs without rejecting counters or timestamps", async () => {
@@ -242,11 +257,97 @@ describe("Sanctuary acceptance harness", () => {
 
     await expect(run("numeric-string", { neutral: "8541786263" })).rejects.toThrow(/raw Telegram identity/u)
     await expect(run("numeric-value", { neutral: 8541786263 })).rejects.toThrow(/raw Telegram identity/u)
+    await expect(run("sensitive-key", { nested: [{ telegramUserId: "opaque-looking" }] })).rejects.toThrow(/raw Telegram identity/u)
+    await expect(run("token-shape", { nested: ["12345:abcdefghijklmnopqrstuvwxyz"] })).rejects.toThrow(/sensitive material/u)
     await expect(run("safe-operational-values", {
       arbitraryCounter: 8541786263,
       capturedAt: 1_800_000_000_000,
-      nested: { retryCount: 123_456, completedAt: "2026-08-20T12:34:56.789Z" },
+      nested: { retryCount: 123_456, completedAt: "2026-08-20T12:34:56.789Z", events: [] },
     })).resolves.toBeUndefined()
+  })
+
+  it("revalidates evidence contracts, continuity, and packaged bytes from the sealed bundle", async () => {
+    const dir = root()
+    const harnessPath = path.join(dir, "packaged-harness.js")
+    fs.writeFileSync(harnessPath, "packaged acceptance harness bytes\n", { mode: 0o700 })
+    const harnessSha256 = createHash("sha256").update(fs.readFileSync(harnessPath)).digest("hex")
+    const entries = completeEvidenceLabels.map((label, index) => {
+      const file = path.join(dir, `verify-source-${index}.json`)
+      fs.writeFileSync(file, `${JSON.stringify(completeEvidence(label, harnessSha256))}\n`, { mode: 0o600 })
+      return { label, path: file }
+    })
+    const originalPath = path.join(dir, "original-bundle.json")
+    await executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
+      allowedRoot: dir, evidencePath: originalPath, entries, harnessPath,
+    }, dependencies())
+    const original = evidence(originalPath) as Record<string, any>
+    const seal = (value: Record<string, any>) => {
+      const core = {
+        schemaVersion: value.schemaVersion,
+        operation: value.operation,
+        phase: value.phase,
+        imageDigest: value.imageDigest,
+        containerDigest: value.containerDigest,
+        cursorDigest: value.cursorDigest,
+        harnessSha256: value.harnessSha256,
+        entries: value.entries,
+      }
+      value.bundleDigest = sha(core)
+    }
+    const verifyMutation = async (name: string, mutate: (value: Record<string, any>) => void, pattern: RegExp) => {
+      const value = structuredClone(original) as Record<string, any>
+      mutate(value)
+      seal(value)
+      const file = path.join(dir, `verify-${name}.json`)
+      fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 })
+      await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
+        allowedRoot: dir, evidencePath: file, harnessPath,
+      }, dependencies())).rejects.toThrow(pattern)
+    }
+
+    await verifyMutation("header", (value) => { value.phase = "requested" }, /header/u)
+    await verifyMutation("entries-shape", (value) => { value.entries = null }, /entries/u)
+    await verifyMutation("label-set", (value) => { value.entries = value.entries.slice(1) }, /complete Unit 16 evidence matrix/u)
+    await verifyMutation("entry-contract", (value) => {
+      value.entries[0].evidence.operation = "wrong-operation"
+      value.entries[0].sha256 = sha(value.entries[0].evidence)
+    }, /evidence contract/u)
+    await verifyMutation("entry-provenance", (value) => {
+      value.entries[1].evidence.provenance.cursorDigest = "f".repeat(64)
+      value.entries[1].sha256 = sha(value.entries[1].evidence)
+    }, /provenance/u)
+    await verifyMutation("continuity", (value) => { value.imageDigest = "f".repeat(64) }, /continuity coordinates/u)
+
+    const digestMismatch = structuredClone(original) as Record<string, any>
+    digestMismatch.bundleDigest = "0".repeat(64)
+    const digestMismatchPath = path.join(dir, "verify-bundle-digest.json")
+    fs.writeFileSync(digestMismatchPath, `${JSON.stringify(digestMismatch)}\n`, { mode: 0o600 })
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
+      allowedRoot: dir, evidencePath: digestMismatchPath, harnessPath,
+    }, dependencies())).rejects.toThrow(/bundle digest/u)
+
+    const changedHarness = path.join(dir, "verify-changed-harness.js")
+    fs.writeFileSync(changedHarness, "changed packaged bytes\n", { mode: 0o700 })
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
+      allowedRoot: dir, evidencePath: originalPath, harnessPath: changedHarness,
+    }, dependencies())).rejects.toThrow(/harness/u)
+  })
+
+  it("preserves a non-timeout Telegram transport failure category", async () => {
+    const dir = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
+      allowedRoot: dir,
+      evidencePath: path.join(dir, "network-error.json"),
+      offsetPath: path.join(dir, "offset.json"),
+      expectedBotId: "8541786263",
+      expectedUsername: "MendelowCloudButlerBot",
+      currentOffset: 0,
+      nonceAdapter: "/nonce",
+      vaultAdapter: "/vault",
+    }, dependencies({
+      secret: "descriptor-secret",
+      fetch: async () => { throw new Error("network unavailable") },
+    }))).rejects.toThrow(/network unavailable/u)
   })
 
   it("packages an exact operator-only adapter contract and config-file invocation", () => {
