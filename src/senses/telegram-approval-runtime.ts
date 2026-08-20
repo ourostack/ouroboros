@@ -154,40 +154,42 @@ export function createTelegramApprovalRuntime(options: {
     }
   }
 
-  const continueTerminalRecord = (record: ApprovalRecord): Promise<{ accepted: boolean; terminalText: string }> => withSessionTurnLease(record.sessionPath, async (lease) => {
-    const checkpoint = checkpoints.read(record.approvalId)
-    if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
-    const continuationOwnerId = `telegram-continuation-${randomUUID()}`
-    let continuationEpoch = 0
-    const continuationCoordinator: ApprovalCoordinator = {
-      propose: (request) => coordinator({
-        sessionPath: record.sessionPath,
-        baseSessionRevision: readSessionTransaction(record.sessionPath, lease).revision,
-      }).propose(request),
-    }
-    await resumeApprovalContinuation({
-      record,
-      checkpoint,
-      currentSessionRevision: readSessionTransaction(record.sessionPath, lease).revision,
-      sessionMessages: checkpoint.preCallMessages,
-      callbacks: {},
-      channel: "telegram",
-      claimContinuation: () => {
-        const claim = store.claimContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId })
-        continuationEpoch = claim.record.continuationEpoch
-        return claim
-      },
-      markContinuationMaterialized: () => { store.markContinuationMaterialized({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-      markContinuationAttempted: () => { store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-      completeContinuation: () => { store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-      runAgent,
-      runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
-      persist: (messages, result) => saveSession(record.sessionPath, messages, result?.usage, undefined, lease),
-      deliver: async (text) => { await sendTelegramText(options.api, options.authorizedChatId, text) },
-    })
+  const continueTerminalRecord = (record: ApprovalRecord): Promise<{ accepted: boolean; terminalText: string }> => {
     tokens.remove(record.approvalId)
-    return terminalOutcome(record)
-  })
+    return withSessionTurnLease(record.sessionPath, async (lease) => {
+      const checkpoint = checkpoints.read(record.approvalId)
+      if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
+      const continuationOwnerId = `telegram-continuation-${randomUUID()}`
+      let continuationEpoch = 0
+      const continuationCoordinator: ApprovalCoordinator = {
+        propose: (request) => coordinator({
+          sessionPath: record.sessionPath,
+          baseSessionRevision: readSessionTransaction(record.sessionPath, lease).revision,
+        }).propose(request),
+      }
+      await resumeApprovalContinuation({
+        record,
+        checkpoint,
+        currentSessionRevision: readSessionTransaction(record.sessionPath, lease).revision,
+        sessionMessages: checkpoint.preCallMessages,
+        callbacks: {},
+        channel: "telegram",
+        claimContinuation: () => {
+          const claim = store.claimContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId })
+          continuationEpoch = claim.record.continuationEpoch
+          return claim
+        },
+        markContinuationMaterialized: () => { store.markContinuationMaterialized({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
+        markContinuationAttempted: () => { store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
+        completeContinuation: () => { store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
+        runAgent,
+        runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
+        persist: (messages, result) => saveSession(record.sessionPath, messages, result?.usage, undefined, lease),
+        deliver: async (text) => { await sendTelegramText(options.api, options.authorizedChatId, text) },
+      })
+      return terminalOutcome(record)
+    })
+  }
 
   transport = createTelegramApprovalTransport({
     api: options.api,
