@@ -223,6 +223,39 @@ Effective-spec audit helper:
       assert_only_running_butler ouro-butler || return $?
       )
     }
+    prepare_canonical_sanctuary_roots() {
+      PREPARE_IMAGE_ID=$1
+      validate_exact_image_id "$PREPARE_IMAGE_ID" || return $?
+      PREPARE_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
+      PREPARE_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      install -d -m 0700 -o 10001 -g 10001 "$PREPARE_RUNTIME_ROOT" || return $?
+      install -d -m 0700 -o 10001 -g 10001 "$PREPARE_AGENT_ROOT" || return $?
+      if test ! -f "$PREPARE_AGENT_ROOT/agent.json"; then
+        PREPARE_EXISTING_ENTRY=$(find "$PREPARE_AGENT_ROOT" -mindepth 1 -print -quit) || return $?
+        test -z "$PREPARE_EXISTING_ENTRY" || return $?
+        ! docker container inspect ouro-butler-bundle-bootstrap >/dev/null 2>&1 || return 1
+        docker run --rm --pull=never --network=none --name ouro-butler-bundle-bootstrap --user 10001:10001 \
+          --mount "type=bind,src=$PREPARE_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+          --mount "type=bind,src=$PREPARE_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --entrypoint /bin/sh "$PREPARE_IMAGE_ID" -ceu '
+            cp -R /opt/ouro/deploy/unraid/sanctuary.ouro/. /home/ouro/AgentBundles/sanctuary.ouro/
+            find /home/ouro/AgentBundles/sanctuary.ouro -type d -exec chmod 0700 {} +
+            find /home/ouro/AgentBundles/sanctuary.ouro -type f -exec chmod 0600 {} +
+          ' || return $?
+        ! docker container inspect ouro-butler-bundle-bootstrap >/dev/null 2>&1 || return 1
+      fi
+      for PREPARE_REQUIRED_FILE in \
+        agent.json bundle-meta.json provider-readiness.json tool-profiles.json \
+        psyche/SOUL.md habits/sanctuary-health.md; do
+        test -f "$PREPARE_AGENT_ROOT/$PREPARE_REQUIRED_FILE" || return $?
+      done
+      PREPARE_WRONG_OWNER=$(find "$PREPARE_RUNTIME_ROOT" "$PREPARE_AGENT_ROOT" \( ! -user 10001 -o ! -group 10001 \) -print -quit) || return $?
+      test -z "$PREPARE_WRONG_OWNER" || return $?
+      PREPARE_WRONG_DIR_MODE=$(find "$PREPARE_RUNTIME_ROOT" "$PREPARE_AGENT_ROOT" -type d ! -perm 0700 -print -quit) || return $?
+      test -z "$PREPARE_WRONG_DIR_MODE" || return $?
+      PREPARE_WRONG_FILE_MODE=$(find "$PREPARE_RUNTIME_ROOT" "$PREPARE_AGENT_ROOT" -type f ! -perm 0600 -print -quit) || return $?
+      test -z "$PREPARE_WRONG_FILE_MODE" || return $?
+    }
     install_from_legacy_staging() {
       ADOPTION_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
       ADOPTION_NAME_COUNTS=$(printf '%s\n' "$ADOPTION_CONTAINER_NAMES" | awk '
@@ -239,10 +272,10 @@ Effective-spec audit helper:
       LEGACY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
       validate_exact_image_id "$LEGACY_STAGING_IMAGE_ID" || return $?
       validate_exact_image_id "$IMAGE_ID" || return $?
+      prepare_canonical_sanctuary_roots "$IMAGE_ID" || return $?
+      bootstrap_sanctuary_vault "$IMAGE_ID" || return $?
       LEGACY_EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/legacy-evidence
       LEGACY_EVIDENCE_DIR="$LEGACY_EVIDENCE_ROOT/${LEGACY_STAGING_IMAGE_ID#sha256:}"
-      install -d -m 0700 -o 10001 -g 10001 /mnt/user/appdata/ouro-butler/runtime/.ouro-cli || return $?
-      install -d -m 0700 -o 10001 -g 10001 /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro || return $?
       install -d -m 0700 -o 0 -g 0 "$LEGACY_EVIDENCE_ROOT" || return $?
       mkdir -m 0700 "$LEGACY_EVIDENCE_DIR" || return $?
       docker container inspect ouro-butler-staging >"$LEGACY_EVIDENCE_DIR/container.json" || return $?
@@ -325,19 +358,42 @@ ouro-butler-staging
       return "$ADOPTION_STATUS"
     }
     bootstrap_sanctuary_vault() {
-      VAULT_STATUS=$(ouro vault status --agent sanctuary) || return $?
+      BOOTSTRAP_IMAGE_ID=$1
+      validate_exact_image_id "$BOOTSTRAP_IMAGE_ID" || return $?
+      BOOTSTRAP_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
+      BOOTSTRAP_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      for BOOTSTRAP_CONTAINER in ouro-butler-vault-status ouro-butler-vault-bootstrap ouro-butler-auth-verify; do
+        ! docker container inspect "$BOOTSTRAP_CONTAINER" >/dev/null 2>&1 || return 1
+      done
+      VAULT_STATUS=$(docker run --rm --pull=never --network host --name ouro-butler-vault-status --user 10001:10001 \
+        --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
+        vault status --agent sanctuary --store plaintext-file) || return $?
+      ! docker container inspect ouro-butler-vault-status >/dev/null 2>&1 || return 1
       case "
 $VAULT_STATUS
 " in
         *"
 vault locator: not configured in agent.json
-"*) ouro vault create --agent sanctuary || return $? ;;
+"*) VAULT_ACTION=create ;;
         *"
 vault locator: agent.json
-"*) ouro vault unlock --agent sanctuary || return $? ;;
+"*) VAULT_ACTION=unlock ;;
         *) return 1 ;;
       esac
-      VERIFIED_VAULT_STATUS=$(ouro vault status --agent sanctuary) || return $?
+      docker run --rm -it --pull=never --network host --name ouro-butler-vault-bootstrap --user 10001:10001 \
+        --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
+        vault "$VAULT_ACTION" --agent sanctuary --store plaintext-file || return $?
+      ! docker container inspect ouro-butler-vault-bootstrap >/dev/null 2>&1 || return 1
+      VERIFIED_VAULT_STATUS=$(docker run --rm --pull=never --network host --name ouro-butler-vault-status --user 10001:10001 \
+        --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
+        vault status --agent sanctuary --store plaintext-file) || return $?
+      ! docker container inspect ouro-butler-vault-status >/dev/null 2>&1 || return 1
       case "
 $VERIFIED_VAULT_STATUS
 " in
@@ -354,7 +410,12 @@ local unlock: available
 "*) ;;
         *) return 1 ;;
       esac
-      ouro auth verify --agent sanctuary || return $?
+      docker run --rm --pull=never --network host --name ouro-butler-auth-verify --user 10001:10001 \
+        --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint node "$BOOTSTRAP_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
+        auth verify --agent sanctuary || return $?
+      ! docker container inspect ouro-butler-auth-verify >/dev/null 2>&1 || return 1
     }
     retire_legacy_unraid_key() {
       NEW_READ_KEY_ID=$1
@@ -391,6 +452,8 @@ local unlock: available
         END { printf "%d %d %d %d", read_count + 0, write_count + 0, legacy_count + 0, unexpected_write + 0 }
       ') || return $?
       test "$KEY_COUNTS_AFTER" = "1 1 0 0" || return $?
+      verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
+      verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
     }
 
 Update:
@@ -420,9 +483,12 @@ Update:
     install_from_legacy_staging
   That function never applies the canonical auditor to the known-noncanonical
   legacy container or restarts it. It verifies and pins the legacy image,
-  provisions the absent canonical roots, and durably snapshots both exact
-  container and image inspect records before disabling autostart or stopping
-  anything. It then stops and rechecks the legacy container and renames it to
+  provisions the absent canonical roots from the exact target image's packaged
+  Sanctuary skeleton, proves required files plus exact ownership/modes, and runs
+  same-image vault bootstrap and provider readiness before durably snapshotting
+  both exact container and image inspect records. Any preparation, vault, or
+  readiness failure returns while legacy remains running with autostart
+  untouched. It then stops and rechecks the legacy container and renames it to
   stopped ouro-butler-legacy-evidence. A fresh canonical staging container is
   created from exact IMAGE_ID and canonical binds, audited, started, proven to
   be the only running Butler, readiness-checked, then stopped and removed only
@@ -441,13 +507,13 @@ Update:
   lookup failure cannot strand a renamed container:
     ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$ROLLBACK_IMAGE_ID"
-    audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
     if assert_update_topology "$ROLLBACK_IMAGE_ID"; then
       :
     else
       UPDATE_PREFLIGHT_STATUS=$?
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
+    audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
   Guard the atomic autostart disable separately. If it fails, production has not
   been touched and the captured status is propagated:
     if disable_butler_autostart; then
@@ -677,7 +743,10 @@ Credential recovery:
   username `MendelowCloudButlerBot`, numeric bot ID `8541786263`. Treat any
   different display name, username, numeric ID, or fallback handle as a hard
   preflight failure; do not start polling or send a test message.
-  Run bootstrap_sanctuary_vault interactively before installing credentials.
+  Run `bootstrap_sanctuary_vault "$IMAGE_ID"` interactively before installing
+  credentials. It uses only fresh `--rm` containers from that exact image as
+  UID/GID 10001 with the canonical two binds; create/unlock is the sole `-it`
+  action so the master secret remains on the hidden terminal prompt.
   Its first read-only `vault status` is authoritative: it runs `vault create`
   only when the locator is absent, runs `vault unlock` only when the locator
   already exists, then requires the configured locator, available local unlock,

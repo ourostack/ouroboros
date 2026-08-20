@@ -346,6 +346,8 @@ audit_effective() { return 0; }
 disable_butler_autostart() { return 0; }
 enable_butler_autostart() { return 0; }
 wait_butler_ready() { return 0; }
+prepare_canonical_sanctuary_roots() { return 0; }
+bootstrap_sanctuary_vault() { return 0; }
 ${imageValidator}
 ${onlyRunning}
 ${adoption}
@@ -425,14 +427,61 @@ install_from_legacy_staging`
     }
   })
 
+  it("installs the packaged Sanctuary skeleton from the exact image with locked modes", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
+    const prepare = extractRunbookFunction(runbook, "prepare_canonical_sanctuary_roots").replaceAll("/mnt/user/appdata/ouro-butler", "$TEST_ROOT/appdata")
+    const image = `sha256:${"6".repeat(64)}`
+    const script = String.raw`set -u
+docker() {
+  command printf '%s\n' "$*" >>"$CALL_LOG"
+  case "$*" in
+    "image inspect "*) return 0 ;;
+    "container inspect ouro-butler-bundle-bootstrap") return 1 ;;
+    "run --rm --pull=never --network=none --name ouro-butler-bundle-bootstrap "*)
+      for FILE in agent.json bundle-meta.json provider-readiness.json tool-profiles.json psyche/SOUL.md habits/sanctuary-health.md; do
+        command mkdir -p "$TEST_ROOT/appdata/agent/sanctuary.ouro/$(command dirname "$FILE")"
+        command printf '{}\n' >"$TEST_ROOT/appdata/agent/sanctuary.ouro/$FILE"
+      done
+      command find "$TEST_ROOT/appdata" -type d -exec chmod 0700 {} +
+      command find "$TEST_ROOT/appdata" -type f -exec chmod 0600 {} +
+      ;;
+    *) return 23 ;;
+  esac
+}
+find() { case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac; }
+install() { eval "INSTALL_LAST=\${$#}"; command mkdir -p "$INSTALL_LAST"; command chmod 0700 "$INSTALL_LAST"; }
+${imageValidator}
+${prepare}
+prepare_canonical_sanctuary_roots "$IMAGE_ID"`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-canonical-roots-"))
+    try {
+      const callLog = path.join(testRoot, "calls.log")
+      const result = runConditionalHelper(script, "safe", { CALL_LOG: callLog, TEST_ROOT: testRoot, IMAGE_ID: image })
+      expect(result.status, result.stderr).toBe(0)
+      const calls = fs.readFileSync(callLog, "utf8")
+      const copyCall = calls.split("\n").find((line) => line.startsWith("run --rm --pull=never --network=none --name ouro-butler-bundle-bootstrap "))
+      expect(copyCall).toContain("--user 10001:10001")
+      expect(copyCall).toContain(`--entrypoint /bin/sh ${image} -ceu`)
+      expect(calls).toContain("/opt/ouro/deploy/unraid/sanctuary.ouro/.")
+      expect(calls).toContain("/home/ouro/AgentBundles/sanctuary.ouro/")
+      expect(fs.statSync(path.join(testRoot, "appdata", "agent", "sanctuary.ouro", "agent.json")).mode & 0o777).toBe(0o600)
+      expect(fs.statSync(path.join(testRoot, "appdata", "agent", "sanctuary.ouro", "psyche")).mode & 0o777).toBe(0o700)
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it("branches vault bootstrap through same-image canonical interactive containers", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
     const helper = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
     const script = String.raw`set -u
 SCENARIO=$1
 docker() {
   command printf '%s\n' "$*" >>"$CALL_LOG"
   case "$*" in
+    "image inspect "*) return 0 ;;
     "container inspect "*) return 1 ;;
     *"ouro-entry.js vault status --agent sanctuary --store plaintext-file")
       if [ "$SCENARIO" = status-failure ]; then return 23; fi
@@ -444,6 +493,7 @@ docker() {
     *) return 23 ;;
   esac
 }
+${imageValidator}
 ${helper}
 bootstrap_sanctuary_vault "$IMAGE_ID"`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-vault-bootstrap-"))
