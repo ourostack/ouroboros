@@ -369,7 +369,6 @@ const healthMonitor = new HealthMonitor({
 
 let entryRuntimeStopPromise: Promise<void> | null = null
 let stopCommandExitScheduled = false
-let stopHealthHeartbeat = (): void => undefined
 
 function stopEntryRuntime(): Promise<void> {
   if (entryRuntimeStopPromise) return entryRuntimeStopPromise
@@ -548,7 +547,7 @@ function emitAwaitSetupError(agent: string, error: unknown): void {
 const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
 const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
 registerGlobalLogSink(healthSink)
-stopHealthHeartbeat = startDaemonHealthHeartbeat(healthWriter, buildDaemonHealthState)
+const stopHealthHeartbeat = startDaemonHealthHeartbeat(healthWriter, buildDaemonHealthState)
 /* v8 ignore stop */
 
 function writeStopCommandHealthState(): void {
