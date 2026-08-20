@@ -381,42 +381,95 @@ if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; f
     }
   })
 
-  it("branches vault bootstrap only from a successful locator status", () => {
+  it("prepares and bootstraps canonical roots from the exact image before stopping legacy", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
+    const prepare = adoption.indexOf('prepare_canonical_sanctuary_roots "$IMAGE_ID"')
+    const bootstrap = adoption.indexOf('bootstrap_sanctuary_vault "$IMAGE_ID"', prepare)
+    const stopLegacy = adoption.indexOf("docker stop ouro-butler-staging", bootstrap)
+
+    expect(prepare).toBeGreaterThan(-1)
+    expect(bootstrap).toBeGreaterThan(prepare)
+    expect(stopLegacy).toBeGreaterThan(bootstrap)
+
+    const script = String.raw`set -u
+SCENARIO=$1
+docker() {
+  command printf '%s\n' "$*" >>"$CALL_LOG"
+  case "$*" in
+    "container ls -a --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
+    "container ls --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
+    "inspect --format {{.Image}} ouro-butler-staging") command printf '%s\n' "$TARGET_IMAGE" ;;
+    "image inspect "*) return 0 ;;
+    *) return 0 ;;
+  esac
+}
+prepare_canonical_sanctuary_roots() { command printf 'prepare %s\n' "$1" >>"$CALL_LOG"; }
+bootstrap_sanctuary_vault() { command printf 'bootstrap %s\n' "$1" >>"$CALL_LOG"; return 23; }
+validate_exact_image_id() { return 0; }
+assert_only_running_butler() { return 0; }
+${adoption}
+install_from_legacy_staging`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-prestop-"))
+    try {
+      const callLog = path.join(testRoot, "calls.log")
+      const image = `sha256:${"f".repeat(64)}`
+      const result = runConditionalHelper(script, "bootstrap-failure", { CALL_LOG: callLog, TARGET_IMAGE: image, IMAGE_ID: image })
+      expect(result.status, result.stderr).toBe(23)
+      const calls = fs.readFileSync(callLog, "utf8")
+      expect(calls).toContain(`prepare ${image}`)
+      expect(calls).toContain(`bootstrap ${image}`)
+      expect(calls).not.toContain("stop ouro-butler-staging")
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("branches vault bootstrap through same-image canonical interactive containers", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const helper = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
     const script = String.raw`set -u
 SCENARIO=$1
-ouro() {
+docker() {
   command printf '%s\n' "$*" >>"$CALL_LOG"
   case "$*" in
-    "vault status --agent sanctuary")
+    "container inspect "*) return 1 ;;
+    *"ouro-entry.js vault status --agent sanctuary --store plaintext-file")
       if [ "$SCENARIO" = status-failure ]; then return 23; fi
-      if [ "$(command grep -c '^vault \(create\|unlock\) --agent sanctuary$' "$CALL_LOG")" -gt 0 ]; then
+      if command grep -q 'ouro-entry.js vault \(create\|unlock\) --agent sanctuary --store plaintext-file' "$CALL_LOG"; then
         command printf 'vault locator: agent.json\nlocal unlock: available\n'
       elif [ "$SCENARIO" = absent ]; then command printf 'vault locator: not configured in agent.json\nlocal unlock: not checked\n'
       else command printf 'vault locator: agent.json\nlocal unlock: missing\n'; fi ;;
-    "vault create --agent sanctuary"|"vault unlock --agent sanctuary"|"auth verify --agent sanctuary") return 0 ;;
+    *"ouro-entry.js vault create --agent sanctuary --store plaintext-file"|*"ouro-entry.js vault unlock --agent sanctuary --store plaintext-file"|*"ouro-entry.js auth verify --agent sanctuary") return 0 ;;
     *) return 23 ;;
   esac
 }
 ${helper}
-bootstrap_sanctuary_vault`
+bootstrap_sanctuary_vault "$IMAGE_ID"`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-vault-bootstrap-"))
+    const image = `sha256:${"7".repeat(64)}`
     try {
       for (const scenario of ["absent", "existing"]) {
         const callLog = path.join(testRoot, `${scenario}.log`)
-        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog })
+        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, IMAGE_ID: image })
         expect(result.status, `${scenario}\n${result.stderr}`).toBe(0)
         const calls = fs.readFileSync(callLog, "utf8")
-        expect(calls).toContain(scenario === "absent" ? "vault create --agent sanctuary" : "vault unlock --agent sanctuary")
-        expect(calls).not.toContain(scenario === "absent" ? "vault unlock --agent sanctuary" : "vault create --agent sanctuary")
-        expect(calls.lastIndexOf("vault status --agent sanctuary")).toBeGreaterThan(calls.indexOf(`vault ${scenario === "absent" ? "create" : "unlock"} --agent sanctuary`))
-        expect(calls).toContain("auth verify --agent sanctuary")
+        const action = scenario === "absent" ? "create" : "unlock"
+        const opposite = scenario === "absent" ? "unlock" : "create"
+        const actionCall = calls.split("\n").find((line) => line.includes(`ouro-entry.js vault ${action} --agent sanctuary --store plaintext-file`))
+        expect(actionCall).toContain("run --rm -it --pull=never --network host")
+        expect(actionCall).toContain("--user 10001:10001")
+        expect(actionCall).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli")
+        expect(actionCall).toContain("type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro")
+        expect(actionCall).toContain(`--entrypoint node ${image} /opt/ouro/dist/heart/daemon/ouro-entry.js`)
+        expect(calls).not.toContain(`ouro-entry.js vault ${opposite} --agent sanctuary`)
+        expect(calls.lastIndexOf("ouro-entry.js vault status --agent sanctuary --store plaintext-file")).toBeGreaterThan(calls.indexOf(`ouro-entry.js vault ${action} --agent sanctuary --store plaintext-file`))
+        expect(calls).toContain("ouro-entry.js auth verify --agent sanctuary")
       }
       const callLog = path.join(testRoot, "failure.log")
-      const failure = runConditionalHelper(script, "status-failure", { CALL_LOG: callLog })
+      const failure = runConditionalHelper(script, "status-failure", { CALL_LOG: callLog, IMAGE_ID: image })
       expect(failure.status).toBe(23)
-      expect(fs.readFileSync(callLog, "utf8")).not.toMatch(/vault (?:create|unlock)/u)
+      expect(fs.readFileSync(callLog, "utf8")).not.toMatch(/ouro-entry\.js vault (?:create|unlock)/u)
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -463,9 +516,22 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$LEGACY_ID"`
       expect(calls).toContain(`revoke ${ids.LEGACY_ID}`)
       expect(calls).toContain(`rejected ${ids.LEGACY_ID}`)
       expect(calls.match(/^inventory$/gmu)).toHaveLength(2)
+      expect(calls.match(new RegExp(`^verify ${ids.READ_ID} read-only$`, "gmu"))).toHaveLength(2)
+      expect(calls.match(new RegExp(`^verify ${ids.WRITE_ID} bounded-write$`, "gmu"))).toHaveLength(2)
+      expect(calls.lastIndexOf(`verify ${ids.READ_ID} read-only`)).toBeGreaterThan(calls.indexOf(`rejected ${ids.LEGACY_ID}`))
+      expect(calls.lastIndexOf(`verify ${ids.WRITE_ID} bounded-write`)).toBeGreaterThan(calls.indexOf(`rejected ${ids.LEGACY_ID}`))
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
+  })
+
+  it("rejects update topology before effective audit can create a container", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
+    const topology = update.indexOf('if assert_update_topology "$ROLLBACK_IMAGE_ID"; then')
+    const audit = update.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+    expect(topology).toBeGreaterThan(-1)
+    expect(audit).toBeGreaterThan(topology)
   })
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
