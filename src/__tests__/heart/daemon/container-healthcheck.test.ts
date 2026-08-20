@@ -12,7 +12,7 @@ vi.mock("node:fs", () => ({ statSync, readFileSync, existsSync }))
 vi.mock("node:os", () => ({ homedir }))
 vi.mock("node:child_process", () => ({ execFileSync }))
 
-import { runContainerHealthcheck } from "../../../heart/daemon/container-healthcheck"
+import { runContainerHealthcheck, runContainerHealthcheckMain } from "../../../heart/daemon/container-healthcheck"
 
 const NOW = 1_800_000_000_000
 const TELEGRAM = "node /opt/ouro/dist/senses/telegram-entry.js --agent sanctuary"
@@ -83,5 +83,15 @@ describe("container healthcheck", () => {
       process.argv = originalArgv
       now.mockRestore()
     }
+  })
+
+  it("runs only when invoked as the container entrypoint", () => {
+    const runner = vi.fn()
+
+    runContainerHealthcheckMain(false, runner)
+    expect(runner).not.toHaveBeenCalled()
+
+    runContainerHealthcheckMain(true, runner)
+    expect(runner).toHaveBeenCalledTimes(1)
   })
 })

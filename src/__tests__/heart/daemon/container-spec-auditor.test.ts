@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import { auditSanctuaryContainerSpec, auditSanctuaryStagedFiles } from "../../../heart/daemon/container-spec-auditor"
-import { runContainerSpecAuditorCli } from "../../../heart/daemon/container-spec-auditor-main"
+import { runContainerSpecAuditorCli, runContainerSpecAuditorMain } from "../../../heart/daemon/container-spec-auditor-main"
 
 function validInspect() {
   return {
@@ -63,6 +63,20 @@ function stagedTemplate(): string {
 }
 
 describe("Sanctuary pre-activation container auditor", () => {
+  it("runs the CLI only when invoked as the packaged entrypoint", () => {
+    const runner = vi.fn(() => 7)
+    process.exitCode = undefined
+
+    runContainerSpecAuditorMain(false, ["ignored"], runner)
+    expect(runner).not.toHaveBeenCalled()
+    expect(process.exitCode).toBeUndefined()
+
+    runContainerSpecAuditorMain(true, ["audit"], runner)
+    expect(runner).toHaveBeenCalledWith(["audit"])
+    expect(process.exitCode).toBe(7)
+    process.exitCode = undefined
+  })
+
   it("accepts only the exact released effective spec", () => {
     expect(auditSanctuaryContainerSpec(validInspect(), {
       expectedImage: "sha256:" + "a".repeat(64),

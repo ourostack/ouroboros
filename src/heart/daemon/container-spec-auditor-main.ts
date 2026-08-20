@@ -116,7 +116,12 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   return result.ok ? 0 : 1
 }
 
-/* v8 ignore next 3 -- exercised by the packaged auditor CLI entrypoint */
-if (require.main === module) {
-  process.exitCode = runContainerSpecAuditorCli(process.argv.slice(2))
+export function runContainerSpecAuditorMain(
+  isMain: boolean,
+  args: string[],
+  runner: (cliArgs: string[]) => number,
+): void {
+  if (isMain) process.exitCode = runner(args)
 }
+
+runContainerSpecAuditorMain(require.main === module, process.argv.slice(2), runContainerSpecAuditorCli)

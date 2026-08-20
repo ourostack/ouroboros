@@ -95,9 +95,8 @@ export async function loadContainerCredentialBootstrap(
     deleteDurably(filePath)
     sourceStat = null
   }
-  if (!sourceStat && !claimedStat) return []
   if (claimedStat) assertSafeBootstrapFile(claimedStat, "consuming state")
-  let stat = claimedStat
+  let stat: fs.Stats
   if (sourceStat) {
     if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
       throw new Error("container credential bootstrap must be a regular file")
@@ -105,9 +104,11 @@ export async function loadContainerCredentialBootstrap(
     fs.renameSync(filePath, consumingPath)
     fsyncDirectory(path.dirname(filePath))
     stat = sourceStat
+  } else if (claimedStat) {
+    stat = claimedStat
+  } else {
+    return []
   }
-  /* v8 ignore next -- source/claimed absence returns above, so a stat always exists here @preserve */
-  if (!stat) throw new Error("container credential bootstrap claim is unavailable")
   assertSafeBootstrapFile(stat, claimedStat ? "consuming state" : "bootstrap")
 
   const envelope = parseEnvelope(fs.readFileSync(consumingPath, "utf8"))

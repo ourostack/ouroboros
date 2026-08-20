@@ -39,7 +39,8 @@ export function runContainerHealthcheck(options: { argv?: string[]; now?: () => 
   emitNervesEvent({ component: "daemon", event: "daemon.container_healthcheck_end", message: "container healthcheck passed", meta: { agent } })
 }
 
-/* v8 ignore next 3 -- exercised by the container HEALTHCHECK entrypoint */
-if (require.main === module) {
-  runContainerHealthcheck()
+export function runContainerHealthcheckMain(isMain: boolean, runner: () => void): void {
+  if (isMain) runner()
 }
+
+runContainerHealthcheckMain(require.main === module, runContainerHealthcheck)
