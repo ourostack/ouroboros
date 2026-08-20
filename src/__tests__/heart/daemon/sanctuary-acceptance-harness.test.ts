@@ -227,10 +227,13 @@ describe("Sanctuary acceptance harness", () => {
   it("uses fixed outgoing argv and requests for the four legacy-key lifecycle operations", async () => {
     const calls: Array<{ executable: string; args: string[] }> = []
     const requests: Array<{ url: string; init?: RequestInit }> = []
+    const readPermissions = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+      .map((resource) => ({ resource, actions: ["READ_ANY"] }))
     const keyFiles = [
-      { id: "read-id", name: "Butler RO", permissions: ["DOCKER:READ_ANY"], roles: [] },
-      { id: "write-id", name: "Butler RW", permissions: ["DOCKER:READ_ANY", "DOCKER:UPDATE_ANY"], roles: [] },
-      { id: "legacy-id", name: "Legacy", permissions: ["DOCKER:UPDATE_ANY"], roles: [] },
+      { id: "read-id", name: "Butler RO", permissions: readPermissions, roles: [] },
+      { id: "write-id", name: "Butler RW", permissions: readPermissions.map((permission) => permission.resource === "DOCKER" ? { ...permission, actions: ["READ_ANY", "UPDATE_ANY"] } : permission), roles: [] },
+      { id: "legacy-id", name: "Legacy Write", permissions: [{ resource: "API_KEY", actions: ["DELETE_ANY"] }], roles: [] },
+      { id: "legacy-read-id", name: "Legacy Read", permissions: readPermissions, roles: [] },
     ]
     const adapterDeps: SanctuaryAcceptanceAdapterDependencies = {
       readKeyFiles: () => keyFiles,
@@ -238,7 +241,7 @@ describe("Sanctuary acceptance harness", () => {
       execFile: async (executable, args) => {
         calls.push({ executable, args })
         return args.includes("--delete")
-          ? { status: 0, stdout: JSON.stringify({ deleted: 1, keys: [{ id: "legacy-id", name: "Legacy" }] }) }
+          ? { status: 0, stdout: JSON.stringify({ deleted: 1, keys: [{ id: args.includes("Legacy Read") ? "legacy-read-id" : "legacy-id", name: args.at(-3) }] }) }
           : { status: 0, stdout: JSON.stringify({ valid: true, keyId: args.at(-2), capability: args.at(-1) }) }
       },
       fetch: async (input, init) => {
@@ -252,11 +255,13 @@ describe("Sanctuary acceptance harness", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, adapterDeps)).resolves.toEqual({
       keys: [
         { id: "legacy-id", scope: "legacy-write", roles: "none" },
+        { id: "legacy-read-id", scope: "read-only", roles: "none" },
         { id: "read-id", scope: "read-only", roles: "none" },
         { id: "write-id", scope: "bounded-write", roles: "none" },
       ],
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "exact-id-revoke", keyId: "legacy-id" }, adapterDeps)).resolves.toEqual({ revoked: true, id: "legacy-id" })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "exact-id-revoke", keyId: "legacy-read-id" }, adapterDeps)).resolves.toEqual({ revoked: true, id: "legacy-read-id" })
     await expect(executeSanctuaryAcceptanceAdapter({
       operation: "revoked-key-auth-rejection", keyId: "legacy-id", endpoint: "http://127.0.0.1:2378/graphql",
     }, adapterDeps)).resolves.toEqual({ rejected: true, id: "legacy-id", status: 401 })
@@ -267,7 +272,11 @@ describe("Sanctuary acceptance harness", () => {
     })
     expect(calls).toContainEqual({
       executable: "/usr/local/sbin/unraid-api",
-      args: ["apikey", "--name", "Legacy", "--delete", "--json"],
+      args: ["apikey", "--name", "Legacy Write", "--delete", "--json"],
+    })
+    expect(calls).toContainEqual({
+      executable: "/usr/local/sbin/unraid-api",
+      args: ["apikey", "--name", "Legacy Read", "--delete", "--json"],
     })
     expect(requests).toHaveLength(1)
     expect(requests[0]).toMatchObject({
@@ -279,6 +288,16 @@ describe("Sanctuary acceptance harness", () => {
         signal: expect.any(AbortSignal),
       },
     })
+
+    for (const permissions of [
+      [{ resource: "DOCKER", actions: ["EXEC_ANY"] }],
+      [{ resource: "DOCKER", actions: ["READ_ANY"], addedAuthority: true }],
+    ]) {
+      await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, {
+        ...adapterDeps,
+        readKeyFiles: () => [{ id: "bad", name: "Bad", permissions, roles: [] }],
+      })).rejects.toThrow(/permission/u)
+    }
   })
 
   it("performs a Telegram identity/nonce/vault/offset transaction without persisting secrets", async () => {
