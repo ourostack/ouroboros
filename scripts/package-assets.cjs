@@ -11,6 +11,7 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "RepairGuide.ouro/skills/diagnose-sync-blocked.md",
   "RepairGuide.ouro/skills/diagnose-vault-expired.md",
   "deploy/unraid/Dockerfile",
+  "deploy/unraid/audit-container-spec.sh",
   "deploy/unraid/README.txt",
   "deploy/unraid/container-runtime.json",
   "deploy/unraid/sanctuary.xml",
