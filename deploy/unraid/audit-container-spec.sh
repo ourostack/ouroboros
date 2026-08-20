@@ -2,5 +2,6 @@
 set -eu
 
 exec node /opt/ouro/dist/heart/daemon/container-spec-auditor-main.js \
-  --inspect "$1" \
-  --expected-image "$2"
+  --template "$1" \
+  --runtime-policy "$2" \
+  --expected-image "$3"

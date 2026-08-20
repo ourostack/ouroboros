@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import * as fs from "node:fs"
 
 import { getChannelCapabilities } from "@ouro.bot/friends"
 import { approvalPolicyForToolName, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
@@ -18,6 +19,9 @@ describe("Sanctuary active tool profile", () => {
       "settle",
       "speak",
     ])
+    const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
+    expect(packaged.profiles["sanctuary-telegram"]).toEqual(names)
+    expect(packaged.profiles["sanctuary-health-private"]).toEqual(["send_message", "rest"])
   })
 
   it("marks restart as sole-call approval-required and all reads as non-mutating", () => {

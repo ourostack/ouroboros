@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { auditSanctuaryContainerSpec } from "./container-spec-auditor"
+import { auditSanctuaryStagedFiles } from "./container-spec-auditor"
 
 export interface ContainerSpecAuditorCliDeps {
   readFile?: (filePath: string) => string
@@ -15,10 +15,11 @@ function valueAfter(args: string[], flag: string): string | undefined {
 export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAuditorCliDeps = {}): number {
   const readFile = deps.readFile ?? ((filePath: string) => fs.readFileSync(filePath, "utf8"))
   const write = deps.write ?? ((text: string) => process.stdout.write(text))
-  const inspectPath = valueAfter(args, "--inspect")
+  const templatePath = valueAfter(args, "--template")
+  const runtimePolicyPath = valueAfter(args, "--runtime-policy")
   const expectedImage = valueAfter(args, "--expected-image")
-  if (!inspectPath || !expectedImage || args.length !== 4) {
-    write(JSON.stringify({ ok: false, error: "usage: --inspect <path> --expected-image <digest>" }) + "\n")
+  if (!templatePath || !runtimePolicyPath || !expectedImage || args.length !== 6) {
+    write(JSON.stringify({ ok: false, error: "usage: --template <path> --runtime-policy <path> --expected-image <digest>" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",
@@ -28,21 +29,23 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     })
     return 2
   }
-  let value: unknown
+  let templateXml: string
+  let runtimePolicyText: string
   try {
-    value = JSON.parse(readFile(inspectPath))
+    templateXml = readFile(templatePath)
+    runtimePolicyText = readFile(runtimePolicyPath)
   } catch (error) {
-    write(JSON.stringify({ ok: false, error: "inspect payload is unreadable JSON" }) + "\n")
+    write(JSON.stringify({ ok: false, error: "staged audit inputs are unreadable" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",
       event: "daemon.container_spec_auditor_cli_error",
-      message: "container spec auditor could not read inspect JSON",
+      message: "container spec auditor could not read staged files",
       meta: { reason: error instanceof Error ? error.message : String(error) },
     })
     return 2
   }
-  const result = auditSanctuaryContainerSpec(value, { expectedImage })
+  const result = auditSanctuaryStagedFiles({ templateXml, runtimePolicyText, expectedImage })
   write(JSON.stringify(result) + "\n")
   return result.ok ? 0 : 1
 }

@@ -41,6 +41,25 @@ describe("container runtime policy", () => {
 
     expect(agent.humanFacing).toEqual({ provider: "openai-compatible", model: "glm-5.2" })
     expect(agent.agentFacing).toEqual({ provider: "openai-compatible", model: "glm-5.2" })
+    const readiness = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/provider-readiness.json", "utf8"))
+    expect(readiness).toEqual({
+      version: 1,
+      selectionPolicy: "explicit-same-lane-only",
+      providers: [
+        {
+          provider: "openai-compatible",
+          model: "glm-5.2",
+          vaultItem: "providers/openai-compatible",
+          baseUrl: "https://api.z.ai/api/paas/v4/",
+        },
+        {
+          provider: "openai-compatible-gemini",
+          model: "gemini-3.6-flash",
+          vaultItem: "providers/openai-compatible-gemini",
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+        },
+      ],
+    })
   })
 
   it("ships Mendelow Cloud Butler with the exact persistent roots and complete bootstrap bundle", () => {

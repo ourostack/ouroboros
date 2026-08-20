@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { auditSanctuaryContainerSpec } from "../../../heart/daemon/container-spec-auditor"
+import { auditSanctuaryContainerSpec, auditSanctuaryStagedFiles } from "../../../heart/daemon/container-spec-auditor"
 import { runContainerSpecAuditorCli } from "../../../heart/daemon/container-spec-auditor-main"
 
 function validInspect() {
@@ -30,6 +30,19 @@ function validInspect() {
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true },
     ],
   }
+}
+
+function stagedTemplate(): string {
+  return [
+    "<Container>",
+    `<Repository>ouro-butler@sha256:${"a".repeat(64)}</Repository>`,
+    "<Network>host</Network>",
+    "<Privileged>false</Privileged>",
+    "<ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>",
+    '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>',
+    '<Config Target="/home/ouro/AgentBundles/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>',
+    "</Container>",
+  ].join("\n")
 }
 
 describe("Sanctuary pre-activation container auditor", () => {
@@ -71,23 +84,44 @@ describe("Sanctuary pre-activation container auditor", () => {
   it("runs the packaged file-based auditor without echoing the inspect payload", () => {
     const output: string[] = []
     const exitCode = runContainerSpecAuditorCli([
-      "--inspect", "/tmp/inspect.json",
+      "--template", "/tmp/template.xml",
+      "--runtime-policy", "/tmp/runtime.json",
       "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
     ], {
-      readFile: () => JSON.stringify(validInspect()),
+      readFile: (filePath) => filePath.endsWith(".xml") ? stagedTemplate() : JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
       write: (text) => output.push(text),
     })
 
     expect(exitCode).toBe(0)
     expect(output.join("")).toContain('"ok":true')
-    expect(output.join("")).not.toContain("HOME=/home/ouro")
+    expect(output.join("")).not.toContain("/mnt/user")
   })
 
   it("fails closed for missing arguments and unreadable JSON", () => {
     expect(runContainerSpecAuditorCli([], { readFile: () => "{}", write: () => undefined })).toBe(2)
     expect(runContainerSpecAuditorCli([
-      "--inspect", "/tmp/inspect.json",
+      "--template", "/tmp/template.xml",
+      "--runtime-policy", "/tmp/runtime.json",
       "--expected-image", "ouro-butler@sha256:" + "a".repeat(64),
-    ], { readFile: () => "not json", write: () => undefined })).toBe(2)
+    ], { readFile: () => { throw new Error("missing") }, write: () => undefined })).toBe(2)
+  })
+
+  it("audits staged template equality and updater-off policy before creation", () => {
+    const expectedImage = "ouro-butler@sha256:" + "a".repeat(64)
+    expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate(),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage,
+    })).toEqual({ ok: true, violations: [] })
+    expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate(),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "enabled" }),
+      expectedImage,
+    }).ok).toBe(false)
+    expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace("Type=\"Path\"", "Type=\"Port\""),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage,
+    }).ok).toBe(false)
   })
 })

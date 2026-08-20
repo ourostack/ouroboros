@@ -19,6 +19,12 @@ export interface SanctuaryContainerAuditResult {
   violations: string[]
 }
 
+export interface SanctuaryStagedAuditInput {
+  templateXml: string
+  runtimePolicyText: string
+  expectedImage: string
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -83,4 +89,56 @@ export function auditSanctuaryContainerSpec(
     meta: { violationCount: violations.length },
   })
   return result
+}
+
+function tag(xml: string, name: string): string | undefined {
+  const match = xml.match(new RegExp(`<${name}>([^<]*)</${name}>`, "u"))
+  return match?.[1]
+}
+
+export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): SanctuaryContainerAuditResult {
+  const violations: string[] = []
+  let runtimePolicy: unknown
+  try {
+    runtimePolicy = JSON.parse(input.runtimePolicyText)
+  } catch {
+    runtimePolicy = null
+  }
+  const policy = record(runtimePolicy)
+  if (policy?.scheduler !== "supercronic" || policy.updates !== "disabled" || Object.keys(policy).sort().join(",") !== "scheduler,updates") {
+    violations.push("container runtime policy must be exactly scheduler=supercronic and updates=disabled")
+  }
+  const pathConfigs = [...input.templateXml.matchAll(/<Config\b([^>]*)>([^<]*)<\/Config>/gu)]
+    .filter((match) => /\bType="Path"/u.test(match[1]!))
+    .map((match) => {
+      const target = match[1]!.match(/\bTarget="([^"]+)"/u)?.[1]
+      const mode = match[1]!.match(/\bMode="([^"]+)"/u)?.[1]
+      return target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
+    })
+  if (input.templateXml.match(/<Config\b[^>]*\bType="(?:Port|Device)"/u)) violations.push("template must not declare ports or devices")
+  const spec = {
+    Config: {
+      User: /(?:^|\s)--user=10001:10001(?:\s|$)/u.test(tag(input.templateXml, "ExtraParams") ?? "") ? "10001:10001" : "",
+      Image: tag(input.templateXml, "Repository"),
+      Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"],
+      Cmd: [],
+      Env: ["HOME=/home/ouro"],
+      ExposedPorts: null,
+    },
+    HostConfig: {
+      NetworkMode: tag(input.templateXml, "Network"),
+      Privileged: tag(input.templateXml, "Privileged") === "true",
+      RestartPolicy: { Name: /(?:^|\s)--restart=unless-stopped(?:\s|$)/u.test(tag(input.templateXml, "ExtraParams") ?? "") ? "unless-stopped" : "", MaximumRetryCount: 0 },
+      Binds: pathConfigs,
+      PortBindings: {},
+      Devices: [],
+      CapAdd: null,
+    },
+    Mounts: pathConfigs.map((bind) => {
+      const [source, destination, mode] = bind.split(":")
+      return { Type: "bind", Source: source, Destination: destination, RW: mode === "rw" }
+    }),
+  }
+  const specResult = auditSanctuaryContainerSpec(spec, { expectedImage: input.expectedImage })
+  return { ok: violations.length === 0 && specResult.ok, violations: [...violations, ...specResult.violations] }
 }

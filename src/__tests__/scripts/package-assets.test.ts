@@ -51,9 +51,12 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/skills/diagnose-vault-expired.md")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/agent.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/bundle-meta.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/provider-readiness.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/tool-profiles.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.xml")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/README.txt")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/SOUL.md")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/IDENTITY.md")
   })
 
   it("declares stale nested Mailbox UI dist as disallowed", () => {
