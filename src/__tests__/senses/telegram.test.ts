@@ -3,12 +3,16 @@ import { describe, expect, it, vi } from "vitest"
 import { createTelegramSenseApp } from "../../senses/telegram"
 import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll } from "../../senses/telegram-client"
 
-function fixture(input: { healthSweep?: any; approvalRuntime?: any } = {}) {
+function fixture(input: {
+  healthSweep?: any
+  approvalRuntime?: any
+  pollRun?: () => Promise<void>
+} = {}) {
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
   const poll: TelegramLongPoll = {
     pollOnce: vi.fn(async () => 0),
-    run: vi.fn(async () => undefined),
+    run: vi.fn(input.pollRun ?? (async () => undefined)),
     stop: vi.fn(),
   }
   const api: TelegramBotApi = {
@@ -84,6 +88,48 @@ describe("Telegram sense", () => {
     f.app.stop()
     expect(f.poll.stop).toHaveBeenCalledOnce()
     expect(f.api.stop).toHaveBeenCalledOnce()
+  })
+
+  it("reconciles expired approvals while polling stays up and stops scheduling on shutdown", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({
+      pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }),
+    })
+
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
+
+    f.app.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
+    finishPolling()
+    await running
+    vi.useRealTimers()
+  })
+
+  it("keeps expiry reconciliation alive after redacted Error and non-Error failures", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    f.approvalTransport.reconcileExpired
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("synthetic expiry failure"))
+      .mockRejectedValueOnce("synthetic non-error failure")
+      .mockResolvedValue(undefined)
+
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
+
+    f.app.stop()
+    finishPolling()
+    await running
+    vi.useRealTimers()
   })
 
   it("recovers interrupted approval decisions before expiring prompts or polling", async () => {

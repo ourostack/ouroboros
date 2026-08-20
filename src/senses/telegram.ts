@@ -37,6 +37,7 @@ export interface TelegramSenseApp {
 
 type TelegramTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 type TelegramLongPollFactory = (options: TelegramLongPollOptions) => TelegramLongPoll
+const APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS = 1_000
 
 export interface CreateTelegramSenseAppOptions {
   agentName: string
@@ -96,6 +97,29 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }) : undefined)
   const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
   const healthSweep = options.healthSweep
+  let approvalReconcileTimer: ReturnType<typeof setTimeout> | undefined
+  let approvalReconciliationActive = false
+
+  const clearApprovalReconcileTimer = (): void => {
+    if (approvalReconcileTimer) clearTimeout(approvalReconcileTimer)
+    approvalReconcileTimer = undefined
+  }
+
+  const scheduleApprovalReconcile = (): void => {
+    if (!approvalTransport || !approvalReconciliationActive) return
+    approvalReconcileTimer = setTimeout(() => {
+      approvalReconcileTimer = undefined
+      void approvalTransport.reconcileExpired().catch((error) => {
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.telegram_approval_reconcile_error",
+          message: "Telegram approval expiry reconciliation failed",
+          meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) },
+        })
+      }).finally(scheduleApprovalReconcile)
+    }, APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS)
+  }
 
   const runHealthSweep = async (): Promise<void> => {
     if (!healthSweep) return
@@ -196,12 +220,21 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         message: "Telegram long poll started",
         meta: { agentName: options.agentName },
       })
-      await poll.run(signal)
+      approvalReconciliationActive = true
+      scheduleApprovalReconcile()
+      try {
+        await poll.run(signal)
+      } finally {
+        approvalReconciliationActive = false
+        clearApprovalReconcileTimer()
+      }
     },
     async sendProactive(text, signal) {
       await deliver(requiredText(text, "proactive message"), signal)
     },
     stop() {
+      approvalReconciliationActive = false
+      clearApprovalReconcileTimer()
       poll.stop()
       api.stop()
       approvalRuntime?.close()
