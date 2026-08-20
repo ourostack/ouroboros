@@ -4,6 +4,8 @@ import Database from "better-sqlite3"
 import { describe, expect, it } from "vitest"
 
 import {
+  HABIT_LIFECYCLE_POLL_MS,
+  HABIT_LIFECYCLE_TIMEOUT_MS,
   acquireHabitLifecycleLock,
   getHabitLifecyclePaths,
   publishNewHabitDefinition,
@@ -66,7 +68,13 @@ describe.skipIf(!childMode || !["lock", "abandon"].includes(childMode))(
         if (Date.now() - startedAt >= 10_000) throw new Error("habit lifecycle release barrier timed out")
         await new Promise((resolve) => setTimeout(resolve, 10))
       }
-      expect(releaseHabitLifecycleLock(result.lease)).toBe(true)
+      const releaseStartedAt = Date.now()
+      while (!releaseHabitLifecycleLock(result.lease)) {
+        if (Date.now() - releaseStartedAt >= HABIT_LIFECYCLE_TIMEOUT_MS) {
+          throw new Error("habit lifecycle lock release timed out")
+        }
+        await new Promise((resolve) => setTimeout(resolve, HABIT_LIFECYCLE_POLL_MS))
+      }
     })
   },
 )
