@@ -65,6 +65,161 @@ function executeSanctuaryAcceptanceHarness(command: string, rawConfig: unknown, 
 }
 
 describe("Sanctuary acceptance harness", () => {
+  const completeEvidenceLabels = [
+    "unit-12c-1-opaque-identity",
+    "unit-14b-3-opaque-identity-live",
+    "unit-15c-1-no-callback-terminalization",
+    "unit-16a-pre-reboot-checkpoint",
+    "unit-16a-reboot-request",
+    "unit-16a-boot-recovery-milestones",
+    "unit-16b-runtime-vault-containment",
+    "unit-16c-provider-readiness",
+    "unit-16d-whats-up",
+    "unit-16d-1-space",
+    "unit-16d-2-unauthorized",
+    "unit-16e-containment-audit",
+    "unit-16e-1-stop-denial",
+    "unit-16e-2-restart-denial",
+    "unit-16f-cron-fingerprint",
+    "unit-16g-health-transition",
+    "unit-16h-daily-digest",
+    "unit-16i-delayed-approval",
+    "unit-16j-denial",
+    "unit-16k-timeout-stale",
+    "unit-16l-duplicate-callback",
+    "unit-16m-restart-continuation",
+  ]
+
+  it("builds and verifies one complete redacted Unit 16 evidence bundle", async () => {
+    const dir = root()
+    const entries = completeEvidenceLabels.map((label, index) => {
+      const file = path.join(dir, `${index}.json`)
+      fs.writeFileSync(file, `${JSON.stringify({ schemaVersion: 1, phase: "complete", evidenceDigest: sha(label) })}\n`, { mode: 0o600 })
+      return { label, path: file }
+    })
+    const bundlePath = path.join(dir, "unit-16-evidence-bundle.json")
+
+    await executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
+      allowedRoot: dir,
+      evidencePath: bundlePath,
+      entries,
+      imageDigest: "a".repeat(64),
+      containerDigest: "b".repeat(64),
+      cursorDigest: "c".repeat(64),
+    }, dependencies())
+    await executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
+      allowedRoot: dir,
+      evidencePath: bundlePath,
+    }, dependencies())
+
+    const bundle = evidence(bundlePath)
+    expect(bundle).toMatchObject({
+      schemaVersion: 1,
+      operation: "sanctuary-unit-16-evidence-bundle",
+      phase: "complete",
+      imageDigest: "a".repeat(64),
+      containerDigest: "b".repeat(64),
+      cursorDigest: "c".repeat(64),
+      bundleDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    })
+    expect((bundle.entries as Array<{ label: string }>).map((entry) => entry.label)).toEqual(completeEvidenceLabels)
+    expect(fs.statSync(bundlePath).mode & 0o777).toBe(0o600)
+  })
+
+  it("refuses incomplete, duplicate, unsafe, and tampered Unit 16 evidence bundles", async () => {
+    const dir = root()
+    const createEntries = (labels: string[], unsafe = false) => labels.map((label, index) => {
+      const file = path.join(dir, `refusal-${index}-${Math.random()}.json`)
+      fs.writeFileSync(file, `${JSON.stringify(unsafe && index === 0
+        ? { phase: "complete", telegramUserId: "123456789" }
+        : { phase: "complete", evidenceDigest: sha(label) })}\n`, { mode: 0o600 })
+      return { label, path: file }
+    })
+    const config = (name: string, entries: Array<{ label: string; path: string }>) => ({
+      allowedRoot: dir,
+      evidencePath: path.join(dir, `${name}.json`),
+      entries,
+      imageDigest: "a".repeat(64),
+      containerDigest: "b".repeat(64),
+      cursorDigest: "c".repeat(64),
+    })
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("missing", createEntries(completeEvidenceLabels.slice(1))), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("duplicate", createEntries([...completeEvidenceLabels, completeEvidenceLabels[0]!])), dependencies())).rejects.toThrow(/complete Unit 16 evidence matrix/u)
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-index", config("unsafe", createEntries(completeEvidenceLabels, true)), dependencies())).rejects.toThrow(/raw Telegram identity|sensitive/u)
+
+    const bundlePath = path.join(dir, "tampered.json")
+    await executeSanctuaryAcceptanceHarness("evidence-bundle-index", { ...config("unused", createEntries(completeEvidenceLabels)), evidencePath: bundlePath }, dependencies())
+    const tampered = evidence(bundlePath)
+    ;(tampered.entries as Array<Record<string, unknown>>)[0]!.sha256 = "f".repeat(64)
+    fs.writeFileSync(bundlePath, `${JSON.stringify(tampered)}\n`, { mode: 0o600 })
+    await expect(executeSanctuaryAcceptanceHarness("evidence-bundle-verify", {
+      allowedRoot: dir,
+      evidencePath: bundlePath,
+    }, dependencies())).rejects.toThrow(/bundle digest|entry hash/u)
+  })
+
+  it("packages an exact operator-only adapter contract and config-file invocation", () => {
+    const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as Record<string, any>
+    const wrapper = fs.readFileSync("deploy/unraid/sanctuary-acceptance-harness.sh", "utf8")
+    const adapterWrapper = fs.readFileSync("deploy/unraid/sanctuary-acceptance-adapter.sh", "utf8")
+    expect(contract).toMatchObject({
+      schemaVersion: 1,
+      harnessExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+      adapterExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+      adapterTimeoutMs: 15_000,
+      telegramTimeoutMs: 10_000,
+    })
+    expect(Object.keys(contract.commands).sort()).toEqual([
+      "callback-inject", "cursor-delta", "cursor-snapshot", "evidence-bundle-index", "evidence-bundle-verify",
+      "evidence-snapshot", "reboot-request", "reboot-resume", "telegram-bootstrap", "unraid-key-rotate",
+    ])
+    expect(contract.adapters).toEqual(expect.objectContaining({
+      "callback-inject": expect.objectContaining({ operation: "callback-inject" }),
+      "reboot-request": expect.objectContaining({ operation: "reboot-request" }),
+      "unraid-key-rotate": expect.objectContaining({ operation: "unraid-key-rotate" }),
+    }))
+    expect(wrapper).toContain("--config")
+    expect(wrapper).toContain("--contract")
+    expect(adapterWrapper).toContain("sanctuary-acceptance-adapter.js")
+    expect(`${wrapper}\n${adapterWrapper}\n${JSON.stringify(contract)}`).not.toMatch(/token|password|api[_-]?key/iu)
+  })
+
+  it("hard-times-out packaged adapters and Telegram network requests", async () => {
+    const dir = root()
+    const sleeper = path.join(dir, "sleeper.sh")
+    fs.writeFileSync(sleeper, "#!/bin/sh\nsleep 2\nprintf '{}\\n'\n", { mode: 0o700 })
+    const bounded = createSanctuaryAcceptanceHarnessDependencies(3, { adapterTimeoutMs: 25 })
+    const started = Date.now()
+    await expect(bounded.runAdapter(sleeper, {})).rejects.toThrow(/timed out/u)
+    expect(Date.now() - started).toBeLessThan(1_000)
+
+    vi.useFakeTimers()
+    try {
+      const evidencePath = path.join(dir, "telegram-timeout.json")
+      const deps = dependencies({ secret: "descriptor-secret" }) as AcceptanceHarnessDependencies & { telegramTimeoutMs: number }
+      deps.telegramTimeoutMs = 25
+      deps.fetch = vi.fn(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal)
+        init!.signal!.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true })
+      })) as typeof fetch
+      const pending = executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
+        allowedRoot: dir,
+        evidencePath,
+        offsetPath: path.join(dir, "offset.json"),
+        expectedBotId: "8541786263",
+        expectedUsername: "MendelowCloudButlerBot",
+        currentOffset: 0,
+        nonceAdapter: "/safe/send",
+        vaultAdapter: "/safe/vault",
+      }, deps)
+      const assertion = expect(pending).rejects.toThrow(/timed out/u)
+      await vi.advanceTimersByTimeAsync(25)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("performs a Telegram identity/nonce/vault/offset transaction without persisting secrets", async () => {
     const dir = root()
     const evidencePath = path.join(dir, "telegram-evidence.json")
