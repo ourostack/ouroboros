@@ -439,6 +439,8 @@ export interface RunAgentOptions {
    */
   captureGeneratedMessages?: (messages: OpenAI.ChatCompletionMessageParam[]) => void;
   approvalCoordinator?: ApprovalCoordinator;
+  /** Exact runtime-owned profile for deterministic private work. */
+  toolProfile?: "sanctuary-health-private";
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -1536,7 +1538,7 @@ export async function runAgent(
     const filteredBaseTools = isPrivateRuntimeChannel
       ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
-    const activeTools = [
+    const ordinaryActiveTools = [
         ...filteredBaseTools,
         ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
         ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
@@ -1545,6 +1547,15 @@ export async function runAgent(
         ...(!isPrivateRuntimeChannel ? [settleTool] : []),
         ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
       ];
+    const activeTools = options?.toolProfile === "sanctuary-health-private"
+      ? (() => {
+          const sendTools = baseTools.filter((tool) => tool.function.name === "send_message")
+          if (channel !== "inner" || sendTools.length !== 1 || baseTools.length !== 1) {
+            throw new Error("sanctuary-health-private requires inner channel with exactly one canonical send_message definition")
+          }
+          return [sendTools[0]!, restTool]
+        })()
+      : ordinaryActiveTools;
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {

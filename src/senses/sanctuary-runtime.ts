@@ -8,6 +8,7 @@ import { createApprovedUnraidRestartExecutor, type UnraidRestartAttempt } from "
 import { UnraidClient } from "../repertoire/unraid-client"
 import { createUnraidReadTools } from "../repertoire/tools-unraid"
 import type { ToolContext } from "../repertoire/tools-base"
+import { emitNervesEvent } from "../nerves/runtime"
 
 function machineConfig(agentName: string): Record<string, unknown> {
   const result = readMachineRuntimeCredentialConfig(agentName)
@@ -29,6 +30,12 @@ function persistAttempt(filePath: string, attempt: UnraidRestartAttempt): void {
 }
 
 export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "sanctuary"> {
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.sanctuary_runtime_create",
+    message: "creating typed Sanctuary tool context",
+    meta: { agentName },
+  })
   const initial = machineConfig(agentName)
   const endpoint = required(initial, "unraidGraphqlUrl")
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })

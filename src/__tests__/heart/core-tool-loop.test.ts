@@ -233,6 +233,41 @@ describe("runAgent tool loop guard", () => {
     expect(innerToolNames).toContain("rest")
   })
 
+  it("advertises exactly send_message and rest for the Sanctuary health private profile", async () => {
+    let names: string[] = []
+    mockCreate.mockImplementation((request: any) => {
+      names = request.tools.map((tool: any) => tool.function.name)
+      return makeStream([makeChunk(undefined, [{
+        index: 0,
+        id: "call_health_rest",
+        function: { name: "rest", arguments: JSON.stringify({ status: "HEARTBEAT_OK" }) },
+      }])])
+    })
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "summarize the health event" }], makeCallbacks(), "inner", undefined, {
+      toolProfile: "sanctuary-health-private",
+      tools: [{
+        type: "function",
+        function: {
+          name: "send_message",
+          description: "send the health alert",
+          parameters: {
+            type: "object",
+            properties: { friendId: { type: "string" }, channel: { type: "string" }, content: { type: "string" } },
+            required: ["friendId", "channel", "content"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool: vi.fn(),
+      toolContext: { signin: async () => undefined },
+    } as any)
+
+    expect(names).toEqual(["send_message", "rest"])
+    expect(result.outcome).toBe("rested")
+  })
+
   it("rejects a fabricated tool call outside the active Telegram profile before any handler runs", async () => {
     mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
       index: 0,

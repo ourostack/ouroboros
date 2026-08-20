@@ -10,6 +10,7 @@ import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
 import { execTool, resolveToolDefinition } from "../repertoire/tools"
 import type { ToolContext } from "../repertoire/tools-base"
+import { emitNervesEvent } from "../nerves/runtime"
 import {
   createTelegramApprovalTransport,
   FileTelegramPendingApprovalStore,
@@ -82,6 +83,12 @@ export function createTelegramApprovalRuntime(options: {
   authorizedChatId: string
   toolContext: Partial<ToolContext>
 }): TelegramApprovalRuntime {
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.telegram_approval_runtime_create",
+    message: "creating durable Telegram approval runtime",
+    meta: { agentName: options.agentName },
+  })
   const stateRoot = path.join(getAgentRoot(options.agentName), "state", "approvals")
   const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite") })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))

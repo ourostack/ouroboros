@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 
 describe("native Sanctuary health habit", () => {
-  it("runs deterministic checks and fences Telegram delivery without a model turn", async () => {
+  it("enqueues one private turn and fences its single Telegram delivery", async () => {
     const order: string[] = []
     const sweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", incidents: [{ id: "array", summary: "degraded" }], deliveryId: "delivery-1" })),
@@ -21,9 +21,56 @@ describe("native Sanctuary health habit", () => {
       createSweep: () => sweep,
       createApi: () => api,
       credentials: () => ({ botToken: "token", authorizedChatId: "42" }),
+      runPrivateTurn: vi.fn(async ({ eventId, payload, deliver }) => {
+        order.push(`private:${eventId}:${payload}`)
+        await deliver("summarized alert")
+        return { delivered: true }
+      }),
     })).resolves.toMatchObject({ ok: true, data: { incidentCount: 1, delivered: true } })
 
-    expect(order).toEqual(["attempting", "send", "delivered:71"])
+    expect(order).toEqual(["private:delivery-1:Array degraded", "attempting", "send", "delivered:71"])
     expect(api.stop).toHaveBeenCalledOnce()
+  })
+
+  it("stops unchanged sweeps before credentials, provider, or Telegram work", async () => {
+    const sweep = Object.assign(
+      vi.fn(async () => ({ message: null, incidents: [] })),
+      { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
+    )
+    const credentials = vi.fn()
+    const createApi = vi.fn()
+    const runPrivateTurn = vi.fn()
+
+    await expect(runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => sweep,
+      credentials,
+      createApi,
+      runPrivateTurn,
+    })).resolves.toMatchObject({ ok: true, data: { incidentCount: 0, delivered: false } })
+
+    expect(credentials).not.toHaveBeenCalled()
+    expect(createApi).not.toHaveBeenCalled()
+    expect(runPrivateTurn).not.toHaveBeenCalled()
+  })
+
+  it("permits at most one Telegram attempt per private turn", async () => {
+    const sweep = Object.assign(
+      vi.fn(async () => ({ message: "degraded", incidents: [], deliveryId: "delivery-2" })),
+      { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
+    )
+    const api = { request: vi.fn(async () => ({ message_id: 72 })), stop: vi.fn() }
+
+    await expect(runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => sweep,
+      createApi: () => api,
+      credentials: () => ({ botToken: "token", authorizedChatId: "42" }),
+      runPrivateTurn: async ({ deliver }) => {
+        await deliver("first")
+        await expect(deliver("second")).rejects.toThrow("already attempted")
+        return { delivered: true }
+      },
+    })).resolves.toMatchObject({ ok: true, data: { delivered: true } })
+
+    expect(api.request).toHaveBeenCalledOnce()
   })
 })
