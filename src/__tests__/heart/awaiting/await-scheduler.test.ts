@@ -752,6 +752,32 @@ describe("AwaitScheduler", () => {
       expect(scheduler.getDegradedAwaits()).toEqual([])
     })
 
+    it("falls back safely when injected verification rejects and no shell verifier exists", () => {
+      vi.useFakeTimers()
+      try {
+        deps = makeDeps({ readdir: vi.fn(() => ["x.md"]), readFile: vi.fn(() => "content") })
+        mockParseAwaitFile.mockReturnValue(makePending())
+        const scheduler = new AwaitScheduler({
+          agent: "slugger",
+          awaitsDir: "/x",
+          osCronManager: cronManager,
+          onAwaitFire,
+          onAwaitExpire,
+          deps,
+          verifyJobs: () => false,
+          platform: "linux",
+        })
+
+        scheduler.start()
+        expect(scheduler.getDegradedAwaits()).toEqual([
+          { name: "hey_export", reason: "cron registration failed — using timer fallback" },
+        ])
+        scheduler.stop()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("creates timer fallback when launchd verification fails (darwin)", () => {
       vi.useFakeTimers()
       try {
