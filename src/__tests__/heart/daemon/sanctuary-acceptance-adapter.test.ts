@@ -2,7 +2,10 @@ import * as fs from "node:fs"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { executeSanctuaryAcceptanceVaultProbe } from "../../../heart/daemon/sanctuary-acceptance-adapter"
+import {
+  executeSanctuaryAcceptanceRevokedProbe,
+  executeSanctuaryAcceptanceVaultProbe,
+} from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
 const READ_QUERY = "query AcceptanceAuthProbe { info { os { hostname } } }"
 const WRITE_QUERY = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { restart(id: $id) { id } } }"
@@ -115,5 +118,26 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(wrapper).toContain("revoked-probe")
     expect(wrapper).toContain("3<&0")
     expect(wrapper).not.toMatch(/descriptor.*\$[234]/u)
+  })
+
+  it("binds a revoked raw key file from fd3 to argv ID without returning its descriptor", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ errors: [{ extensions: { code: "UNAUTHENTICATED" } }] }, 401)) as typeof fetch
+    const rawKeyFile = JSON.stringify({ id: "revoked-id", name: "Legacy", key: "revoked-descriptor" })
+
+    await expect(executeSanctuaryAcceptanceRevokedProbe(
+      "revoked-id",
+      "http://127.0.0.1:2378/graphql",
+      rawKeyFile,
+      { fetch: fetchImpl },
+    )).resolves.toEqual({ rejected: true, id: "revoked-id", status: 401 })
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:2378/graphql", expect.objectContaining({
+      headers: { "content-type": "application/json", "x-api-key": "revoked-descriptor" },
+    }))
+    await expect(executeSanctuaryAcceptanceRevokedProbe(
+      "other-id",
+      "http://127.0.0.1:2378/graphql",
+      rawKeyFile,
+      { fetch: fetchImpl },
+    )).rejects.toThrow(/ID mismatch/u)
   })
 })
