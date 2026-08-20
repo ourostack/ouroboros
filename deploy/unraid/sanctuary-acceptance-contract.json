@@ -17,12 +17,26 @@
     "evidence-bundle-verify": { "invocation": "sanctuary-acceptance-harness.sh evidence-bundle-verify --config <private-json>" }
   },
   "adapters": {
-    "vault-backed-capability-verify": { "operation": "vault-backed-capability-verify", "authority": "fixed-container-vault-probe" },
-    "closed-inventory": { "operation": "closed-inventory", "authority": "fixed-unraid-key-directory-read" },
-    "exact-id-revoke": { "operation": "exact-id-revoke", "authority": "fixed-unraid-cli-delete" },
-    "revoked-key-auth-rejection": { "operation": "revoked-key-auth-rejection", "authority": "fixed-loopback-auth-probe" },
-    "callback-inject": { "operation": "callback-inject", "authority": "existing-harness-command" },
-    "reboot-request": { "operation": "reboot-request", "authority": "existing-harness-command" },
-    "unraid-key-rotate": { "operation": "unraid-key-rotate", "authority": "existing-harness-command" }
+    "telegram-nonce": { "operation": "send_telegram_nonce", "authority": "fixed-telegram-vault-delivery", "modelReachable": false, "timeoutMs": 15000 },
+    "telegram-vault-store": { "operation": "store_telegram_bootstrap", "authority": "fixed-runtime-vault-merge", "modelReachable": false, "timeoutMs": 15000 },
+    "cursor-snapshot": { "operation": "snapshot", "authority": "fixed-telegram-state-read", "modelReachable": false, "timeoutMs": 15000 },
+    "callback-live": { "operation": "inject_callbacks_concurrently|inject_callback_replay", "authority": "fixed-live-telegram-callback-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "key-inventory": { "operation": "inventory_keys", "authority": "fixed-unraid-key-directory-read", "modelReachable": false, "timeoutMs": 15000 },
+    "key-create": { "operation": "create_key", "authority": "fixed-unraid-cli-create-and-vault-store", "modelReachable": false, "timeoutMs": 15000 },
+    "key-store": { "operation": "store_key", "authority": "fixed-machine-vault-readback", "modelReachable": false, "timeoutMs": 15000 },
+    "key-probe": { "operation": "probe_new_key", "authority": "fixed-loopback-readiness-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "key-read-old": { "operation": "read_old_key", "authority": "fixed-unraid-key-record-read", "modelReachable": false, "timeoutMs": 15000 },
+    "key-revoke": { "operation": "revoke_key", "authority": "fixed-unraid-cli-delete", "modelReachable": false, "timeoutMs": 15000 },
+    "evidence-snapshot": { "operation": "evidence_snapshot", "authority": "fixed-postboot-state-read", "modelReachable": false, "timeoutMs": 15000 },
+    "capture-evidence-provenance": { "operation": "capture_evidence_provenance", "authority": "fixed-live-continuity-read", "modelReachable": false, "timeoutMs": 15000 },
+    "reboot-live-request": { "operation": "request_reboot", "authority": "fixed-sanctuary-host-reboot", "modelReachable": false, "timeoutMs": 15000 },
+    "reboot-poll": { "operation": "poll_reboot", "authority": "fixed-linux-boot-identity-read", "modelReachable": false, "timeoutMs": 15000 },
+    "vault-backed-capability-verify": { "operation": "vault-backed-capability-verify", "authority": "fixed-container-vault-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "closed-inventory": { "operation": "closed-inventory", "authority": "fixed-unraid-key-directory-read", "modelReachable": false, "timeoutMs": 15000 },
+    "exact-id-revoke": { "operation": "exact-id-revoke", "authority": "fixed-unraid-cli-delete", "modelReachable": false, "timeoutMs": 15000 },
+    "revoked-key-auth-rejection": { "operation": "revoked-key-auth-rejection", "authority": "fixed-loopback-auth-probe", "modelReachable": false, "timeoutMs": 15000 }
+    ,"callback-inject": { "operation": "callback-inject", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 15000 }
+    ,"reboot-request": { "operation": "reboot-request", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 15000 }
+    ,"unraid-key-rotate": { "operation": "unraid-key-rotate", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 15000 }
   }
 }
