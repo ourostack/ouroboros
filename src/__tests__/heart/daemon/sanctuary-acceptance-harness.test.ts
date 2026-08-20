@@ -582,4 +582,104 @@ describe("Sanctuary acceptance harness", () => {
       adapter: async () => ({ state: "wrong", targetId: "t", requestId: "r" }),
     }))).rejects.toThrow(/invalid state/u)
   })
+
+  it("persists only opaque Telegram identity and offset evidence", async () => {
+    const dir = root()
+    const file = path.join(dir, "telegram-opaque.json")
+    await executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
+      allowedRoot: dir, evidencePath: file, offsetPath: path.join(dir, "offset.json"),
+      expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 40,
+      nonceAdapter: "/send", vaultAdapter: "/vault",
+    }, dependencies({
+      secret: "token",
+      adapter: async (executable) => executable === "/send" ? { sent: true } : { stored: true },
+      fetch: async (request) => String(request).endsWith("/getMe")
+        ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } })
+        : jsonResponse({ ok: true, result: [{ update_id: 41, message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 111 }, chat: { id: 222, type: "private" } } }] }),
+    }))
+    const raw = fs.readFileSync(file, "utf8")
+    for (const forbidden of ["8541786263", "MendelowCloudButlerBot", "111", "222", "41", "42", "0123456789abcdef0123456789abcdef"]) expect(raw).not.toContain(forbidden)
+    expect(evidence(file)).toMatchObject({ phase: "complete", botIdentityDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), offsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "offset.json"), "utf8"))).toEqual({ nextUpdateId: 42 })
+  })
+
+  it("locks callback totals and requires an unclaimed nonmutating replay", async () => {
+    const dir = root()
+    const update = JSON.stringify({ update_id: 1, callback_query: { id: "x", from: { id: 1 }, data: "x" } })
+    let call = 0
+    await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
+      allowedRoot: dir, evidencePath: path.join(dir, "callback.json"), adapter: "/inject", concurrency: 2,
+      expectedClaims: 0, expectedMutations: 0, replay: false,
+    }, dependencies({ secret: update, adapter: async () => (++call === 1
+      ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
+      : { settled: true, claimed: true, mutated: false }) }))).rejects.toThrow(/replay/u)
+  })
+
+  it("rejects ambiguous Unraid identities and reconciles immediately before exact revoke", async () => {
+    const dir = root()
+    const base = {
+      allowedRoot: dir, evidencePath: path.join(dir, "keys.json"), targetServerId: "target",
+      inventoryAdapter: "/inventory", createAdapter: "/create", storeAdapter: "/store", revokeAdapter: "/revoke", probeAdapter: "/probe",
+      keys: [{ name: "Butler RO", vaultField: "same", permissions: ["READ"] }, { name: "Butler RW", vaultField: "same", permissions: ["READ", "WRITE"] }], oldKeys: [],
+    }
+    let calls = 0
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", base, dependencies({ adapter: async () => { calls += 1; return { keys: [] } } }))).rejects.toThrow(/vault fields.*unique/u)
+    expect(calls).toBe(0)
+
+    const operations: string[] = []
+    let inventoryCall = 0
+    await executeSanctuaryAcceptanceHarness("unraid-key-rotate", {
+      ...base, evidencePath: path.join(dir, "reconciled.json"), keys: [{ name: "Butler RO", vaultField: "read", permissions: ["READ"] }], oldKeys: [{ id: "old", secretAdapter: "/old" }],
+    }, dependencies({ adapter: async (executable, payload: any) => {
+      operations.push(payload.operation)
+      if (executable === "/inventory") return ++inventoryCall < 3
+        ? { keys: [{ id: "old", name: "Legacy", permissions: ["READ"], roles: [] }] }
+        : { keys: [{ id: "new", name: "Butler RO", permissions: ["READ"], roles: [] }] }
+      if (executable === "/create") return { id: "new", name: "Butler RO", permissions: ["READ"], roles: [], key: "raw" }
+      if (executable === "/store") return { stored: true, keyId: "new" }
+      if (executable === "/old") return { key: "old-raw" }
+      if (executable === "/revoke") return { revoked: true, id: "old" }
+      return payload.operation === "probe_new_key" ? { valid: true } : { valid: false, status: 401 }
+    } }))
+    expect(operations.lastIndexOf("inventory_keys")).toBeGreaterThan(operations.indexOf("revoke_key"))
+    expect(operations[operations.indexOf("revoke_key") - 2]).toBe("inventory_keys")
+  })
+
+  it("uses fixed evidence schemas without hashing untrusted adapter responses", async () => {
+    const dir = root()
+    const file = path.join(dir, "health-fixed.json")
+    await executeSanctuaryAcceptanceHarness("evidence-snapshot", {
+      allowedRoot: dir, evidencePath: file, schema: "postboot-health-v1", adapter: "/health",
+    }, dependencies({ adapter: async () => ({ healthy: true, containerImageDigest: "image-digest", telegramOffsetDigest: "offset-digest", value: "raw-secret" }) }))
+    expect(evidence(file)).toMatchObject({ schema: "postboot-health-v1", values: { healthy: true, containerImageDigest: "image-digest", telegramOffsetDigest: "offset-digest" } })
+    expect(fs.readFileSync(file, "utf8")).not.toContain("raw-secret")
+    expect(evidence(file)).not.toHaveProperty("payloadDigest")
+  })
+
+  it("confines atomic private checkpoints to an owned nonsymlink allowed root", async () => {
+    const dir = root()
+    const outside = root()
+    let adapterCalls = 0
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", {
+      allowedRoot: dir, evidencePath: path.join(outside, "escape.json"), schema: "postboot-health-v1", adapter: "/health",
+    }, dependencies({ adapter: async () => { adapterCalls += 1; return { healthy: true, containerImageDigest: "x", telegramOffsetDigest: "y" } } }))).rejects.toThrow(/allowed root/u)
+    expect(adapterCalls).toBe(0)
+    const link = path.join(dir, "link")
+    fs.symlinkSync(outside, link)
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", {
+      allowedRoot: dir, evidencePath: path.join(link, "evidence.json"), schema: "postboot-health-v1", adapter: "/health",
+    }, dependencies())).rejects.toThrow(/symlink/u)
+  })
+
+  it("requires reboot resume to observe a different opaque boot identity", async () => {
+    const dir = root()
+    const file = path.join(dir, "reboot-identity.json")
+    await executeSanctuaryAcceptanceHarness("reboot-request", { allowedRoot: dir, evidencePath: file, targetId: "sanctuary", adapter: "/reboot" }, dependencies({
+      adapter: async () => ({ accepted: true, targetId: "sanctuary", requestId: "r", prebootId: "boot-a" }),
+    }))
+    await expect(executeSanctuaryAcceptanceHarness("reboot-resume", { allowedRoot: dir, evidencePath: file, adapter: "/poll", timeoutMs: 10, intervalMs: 1 }, dependencies({
+      adapter: async () => ({ state: "ready", targetId: "sanctuary", requestId: "r", bootId: "boot-a" }),
+    }))).rejects.toThrow(/boot identity did not change/u)
+    expect(fs.readFileSync(file, "utf8")).not.toContain("boot-a")
+  })
 })
