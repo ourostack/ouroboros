@@ -1163,8 +1163,9 @@ Packaged Unit 16 acceptance execution:
   tmpfs inbox, then use this single fail-closed helper. It opens the input once,
   validates the opened descriptor and its original path refer to the same
   root-owned mode-0600 regular file, and invokes the launcher only afterward.
-  Success overwrites, fsyncs, and unlinks the raw input. Launcher failure moves
-  it out of `/run` into a mode-000 persistent private quarantine for diagnosis;
+  Success overwrites, fsyncs, and unlinks the raw input. Any failure allocates a
+  collision-free quarantine file atomically, copies and fsyncs the input into it,
+  locks it to mode 000, then overwrites and removes the tmpfs source;
   no raw callback update remains loose in `/root` or the inbox.
     UNIT16_CALLBACK_INBOX=/run/ouro-unit16-callback-input
     UNIT16_CALLBACK_FILE=$UNIT16_CALLBACK_INBOX/callback-update.json
@@ -1174,27 +1175,35 @@ Packaged Unit 16 acceptance execution:
       (
       UNIT16_CALLBACK_VALIDATED=no
       UNIT16_CALLBACK_STATUS=1
-      UNIT16_CALLBACK_QUARANTINE_FILE=$UNIT16_CALLBACK_QUARANTINE_ROOT/failed-$$.json
       unit16_callback_cleanup() {
         UNIT16_CALLBACK_STATUS=$?
         trap - EXIT HUP INT TERM
-        if test "$UNIT16_CALLBACK_VALIDATED" = yes; then
-          if test "$UNIT16_CALLBACK_STATUS" -eq 0; then
-            if ! truncate -s 0 /proc/self/fd/3 \
-              || ! sync -f /proc/self/fd/3 \
-              || ! rm -f -- "$UNIT16_CALLBACK_FILE" \
-              || ! sync -f "$UNIT16_CALLBACK_INBOX"; then
+        if test -e "$UNIT16_CALLBACK_FILE" || test -L "$UNIT16_CALLBACK_FILE"; then
+          if test "$UNIT16_CALLBACK_STATUS" -eq 0 && test "$UNIT16_CALLBACK_VALIDATED" = yes; then
+            if ! truncate -s 0 /proc/self/fd/3 || ! sync -f /proc/self/fd/3 \
+              || ! rm -f -- "$UNIT16_CALLBACK_FILE" || ! sync -f "$UNIT16_CALLBACK_INBOX"; then
+              UNIT16_CALLBACK_STATUS=1
+            fi
+          elif test -f "$UNIT16_CALLBACK_FILE" && test ! -L "$UNIT16_CALLBACK_FILE"; then
+            UNIT16_CALLBACK_QUARANTINE_FILE=$(mktemp "$UNIT16_CALLBACK_QUARANTINE_ROOT/failed.XXXXXX") || UNIT16_CALLBACK_QUARANTINE_FILE=
+            if test -n "$UNIT16_CALLBACK_QUARANTINE_FILE" \
+              && chmod 0600 "$UNIT16_CALLBACK_QUARANTINE_FILE" \
+              && cp -- "$UNIT16_CALLBACK_FILE" "$UNIT16_CALLBACK_QUARANTINE_FILE" \
+              && sync -f "$UNIT16_CALLBACK_QUARANTINE_FILE" \
+              && chmod 000 "$UNIT16_CALLBACK_QUARANTINE_FILE" \
+              && sync -f "$UNIT16_CALLBACK_QUARANTINE_ROOT"; then
+              :
+            else
+              test -z "${UNIT16_CALLBACK_QUARANTINE_FILE-}" || rm -f -- "$UNIT16_CALLBACK_QUARANTINE_FILE"
+              UNIT16_CALLBACK_STATUS=1
+            fi
+            if ! truncate -s 0 "$UNIT16_CALLBACK_FILE" || ! sync -f "$UNIT16_CALLBACK_FILE" \
+              || ! rm -f -- "$UNIT16_CALLBACK_FILE" || ! sync -f "$UNIT16_CALLBACK_INBOX"; then
               UNIT16_CALLBACK_STATUS=1
             fi
           else
-            if mv -- "$UNIT16_CALLBACK_FILE" "$UNIT16_CALLBACK_QUARANTINE_FILE"; then
-              chmod 000 "$UNIT16_CALLBACK_QUARANTINE_FILE" || UNIT16_CALLBACK_STATUS=1
-              sync -f "$UNIT16_CALLBACK_QUARANTINE_FILE" || UNIT16_CALLBACK_STATUS=1
-              sync -f "$UNIT16_CALLBACK_QUARANTINE_ROOT" || UNIT16_CALLBACK_STATUS=1
-            else
-              chmod 000 "$UNIT16_CALLBACK_FILE" 2>/dev/null || true
-              UNIT16_CALLBACK_STATUS=1
-            fi
+            rm -f -- "$UNIT16_CALLBACK_FILE" || UNIT16_CALLBACK_STATUS=1
+            sync -f "$UNIT16_CALLBACK_INBOX" || UNIT16_CALLBACK_STATUS=1
           fi
         fi
         exec 3<&-
@@ -1214,7 +1223,6 @@ Packaged Unit 16 acceptance execution:
       test "$(stat -c '%d:%i' "$UNIT16_CALLBACK_FILE")" = "$(stat -Lc '%d:%i' /proc/self/fd/3)" || exit 1
       UNIT16_CALLBACK_VALIDATED=yes
       test "$(stat -Lc '%F %u:%g %a' /proc/self/fd/3)" = "regular file 0:0 600" || exit 1
-      test ! -e "$UNIT16_CALLBACK_QUARANTINE_FILE" || exit 1
       "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json 3<&3
       )
     }
@@ -1273,9 +1281,12 @@ Packaged Unit 16 acceptance execution:
   also receives a freshly generated, redacted typed container-inspect snapshot;
   raw container environment or credential values are never captured.
   Evidence-snapshot keeps the bundle mount read-only and overlays only the exact
-  canonical `state/acceptance` directory as writable after proving it is a
-  non-symlink, UID/GID 10001, mode-0700 directory. The production daemon sees the
-  same canonical subpath through its existing bundle mount for marker correlation.
+  canonical `state/acceptance` directory as writable. The launcher bind-pins its
+  verified inode behind a root-only alias, bind-pins that inode back onto the
+  canonical path against rename swaps, and compares the alias, canonical path,
+  and production container's inode before and after capture. Cleanup unmounts the
+  canonical pin and then the alias. The production daemon therefore sees the same
+  inode used by the one-shot for marker correlation.
 
 Audit and safety verification:
   Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and

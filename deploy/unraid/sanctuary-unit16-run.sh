@@ -12,6 +12,10 @@ BROKER_PID=
 PRIVATE_ROOT=
 PRODUCTION_STOPPED=no
 HOST_REBOOT_COMMITTED=no
+ACCEPTANCE_ALIAS_MOUNTED=no
+ACCEPTANCE_CANONICAL_PINNED=no
+ACCEPTANCE_PIN_ROOT=
+ACCEPTANCE_STATE_ROOT=
 
 cleanup_unit16() {
   CLEANUP_STATUS=$?
@@ -20,7 +24,19 @@ cleanup_unit16() {
     if ! restore_production_container; then CLEANUP_STATUS=1; fi
     PRODUCTION_STOPPED=no
   fi
-  if test -n "$PRIVATE_ROOT" && test -d "$PRIVATE_ROOT"; then rm -rf -- "$PRIVATE_ROOT"; fi
+  if test "$ACCEPTANCE_CANONICAL_PINNED" = yes; then
+    if /usr/bin/timeout -s KILL 10 /bin/umount "$ACCEPTANCE_STATE_ROOT"; then
+      ACCEPTANCE_CANONICAL_PINNED=no
+    else CLEANUP_STATUS=1
+    fi
+  fi
+  if test "$ACCEPTANCE_ALIAS_MOUNTED" = yes; then
+    if /usr/bin/timeout -s KILL 10 /bin/umount "$ACCEPTANCE_PIN_ROOT"; then
+      ACCEPTANCE_ALIAS_MOUNTED=no
+    else CLEANUP_STATUS=1
+    fi
+  fi
+  if test "$ACCEPTANCE_ALIAS_MOUNTED" = no && test -n "$PRIVATE_ROOT" && test -d "$PRIVATE_ROOT"; then rm -rf -- "$PRIVATE_ROOT"; fi
   return "$CLEANUP_STATUS"
 }
 trap cleanup_unit16 EXIT HUP INT TERM
@@ -53,8 +69,8 @@ case "$COMMAND" in
 esac
 
 PRIVATE_ROOT=$(mktemp -d /run/ouro-unit16.XXXXXX)
-chmod 0750 "$PRIVATE_ROOT"
-chown 0:10001 "$PRIVATE_ROOT"
+chmod 0700 "$PRIVATE_ROOT"
+chown 0:0 "$PRIVATE_ROOT"
 SOCKET_ROOT=$PRIVATE_ROOT/socket
 install -d -m 0750 -o 0 -g 10001 "$SOCKET_ROOT"
 BROKER_SOCKET=$SOCKET_ROOT/adapter.sock
@@ -66,7 +82,6 @@ CONTAINER_FACT=$PRIVATE_ROOT/container-digest
 HEALTH_FACT=$PRIVATE_ROOT/postboot-health.json
 POLLER_FACT=$PRIVATE_ROOT/telegram-poller-count.json
 CONTAINER_INSPECT_FACT=$PRIVATE_ROOT/container-inspect.json
-ACCEPTANCE_STATE_ROOT=
 
 start_broker() {
   /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
@@ -222,6 +237,13 @@ case "$COMMAND" in
   *) TIME_LIMIT=120; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
 esac
 
+assert_acceptance_state_inode() {
+  ACCEPTANCE_PIN_INODE=$(stat -Lc '%d:%i' "$ACCEPTANCE_PIN_ROOT") || return 1
+  test "$(stat -Lc '%d:%i' "$ACCEPTANCE_STATE_ROOT")" = "$ACCEPTANCE_PIN_INODE" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$PRODUCTION_CONTAINER" stat -Lc '%d:%i' /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance)" = "$ACCEPTANCE_PIN_INODE" || return 1
+}
+
 if test "$COMMAND" = evidence-snapshot; then
   BUNDLE_STATE_ROOT=$BUNDLE_ROOT/state
   test -d "$BUNDLE_STATE_ROOT" && test ! -L "$BUNDLE_STATE_ROOT" || exit 1
@@ -232,6 +254,16 @@ if test "$COMMAND" = evidence-snapshot; then
   fi
   test -d "$ACCEPTANCE_STATE_ROOT" && test ! -L "$ACCEPTANCE_STATE_ROOT" || exit 1
   test "$(stat -c '%u:%g %a' "$ACCEPTANCE_STATE_ROOT")" = "10001:10001 700" || exit 1
+  ACCEPTANCE_PIN_ROOT=$PRIVATE_ROOT/pinned-acceptance-state
+  install -d -m 0700 -o 0 -g 0 "$ACCEPTANCE_PIN_ROOT"
+  ! /bin/mountpoint -q "$ACCEPTANCE_PIN_ROOT" || exit 1
+  ! /bin/mountpoint -q "$ACCEPTANCE_STATE_ROOT" || exit 1
+  ACCEPTANCE_ALIAS_MOUNTED=yes
+  /usr/bin/timeout -s KILL 10 /bin/mount --bind "$ACCEPTANCE_STATE_ROOT" "$ACCEPTANCE_PIN_ROOT"
+  test "$(stat -Lc '%d:%i' "$ACCEPTANCE_STATE_ROOT")" = "$(stat -Lc '%d:%i' "$ACCEPTANCE_PIN_ROOT")" || exit 1
+  ACCEPTANCE_CANONICAL_PINNED=yes
+  /usr/bin/timeout -s KILL 10 /bin/mount --bind "$ACCEPTANCE_PIN_ROOT" "$ACCEPTANCE_STATE_ROOT"
+  assert_acceptance_state_inode
 fi
 
 run_harness() {
@@ -274,7 +306,7 @@ run_harness() {
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
       --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
-      --mount "type=bind,src=$ACCEPTANCE_STATE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance" \
+      --mount "type=bind,src=$ACCEPTANCE_PIN_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance" \
       --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
@@ -316,6 +348,7 @@ run_harness() {
 }
 
 run_harness
+if test "$COMMAND" = evidence-snapshot; then assert_acceptance_state_inode; fi
 
 if test "$COMMAND" = reboot-request; then
   /usr/local/bin/node -e '
