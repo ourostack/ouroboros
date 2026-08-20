@@ -25,6 +25,7 @@ const runtimeMocks = vi.hoisted(() => {
     listPendingDeliveries: vi.fn(),
     reconcileExpired: vi.fn(),
     sendApproval: vi.fn(),
+    terminalizeOrphaned: vi.fn(),
     terminalizeRecovered: vi.fn(),
   }
   return {
@@ -136,6 +137,7 @@ beforeEach(() => {
   runtimeMocks.createTelegramApprovalTransport.mockReturnValue(runtimeMocks.transport)
   runtimeMocks.transport.sendApproval.mockResolvedValue({ messageId: "99" })
   runtimeMocks.transport.listPendingDeliveries.mockReturnValue([])
+  runtimeMocks.transport.terminalizeOrphaned.mockResolvedValue(undefined)
   runtimeMocks.transport.terminalizeRecovered.mockResolvedValue(undefined)
   runtimeMocks.commitApprovalProposal.mockReturnValue({
     record: { ...baseRecord, state: "awaiting_prompt_binding" },
@@ -464,6 +466,17 @@ describe("Telegram approval runtime orchestration", () => {
       reason: "approval prompt delivery was indeterminate; action was not executed",
     })
     expect(runtimeMocks.transport.terminalizeRecovered).toHaveBeenCalledTimes(3)
+    expect(runtimeMocks.transport.terminalizeOrphaned).toHaveBeenCalledWith(
+      "missing",
+      "⚠️ Approval record is unavailable — no action was taken",
+    )
+    expect(runtimeMocks.store.expire).not.toHaveBeenCalled()
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      component: "senses",
+      event: "senses.telegram_approval_orphan_recovered",
+      meta: { agentName: "sanctuary", recovery: "missing_journal" },
+    }))
+    expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain("missing")
   })
 
   it("isolates every startup recovery record and surfaces one sanitized aggregate after processing later work", async () => {

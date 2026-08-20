@@ -547,6 +547,81 @@ describe("Telegram durable authorized long poll", () => {
     }
   })
 
+  it("warns once durably and retains indeterminate receipts through the exact accepted window", () => {
+    const directory = makeTempDirectory("ouro-telegram-inbox-retention-")
+    const inboxPath = join(directory, "inbox.json")
+    let now = 1_000
+    const store = new FileTelegramUpdateInboxStore(inboxPath, {
+      now: () => now,
+      indeterminateRetentionMs: 100,
+      maxIndeterminateReceipts: 2,
+    })
+    const update = { update_id: 7, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } }
+
+    expect(store.capture(update)).toBe(true)
+    expect(store.claim(update)).toBe(true)
+    expect(store.quarantineStranded()).toHaveLength(1)
+    expect(store.quarantineStranded()).toEqual([])
+    expect(JSON.parse(readFileSync(inboxPath, "utf8")).indeterminate[0]).toMatchObject({
+      quarantinedAt: 1_000,
+      warningAcknowledged: true,
+    })
+
+    const restarted = new FileTelegramUpdateInboxStore(inboxPath, {
+      now: () => now,
+      indeterminateRetentionMs: 100,
+      maxIndeterminateReceipts: 2,
+    })
+    expect(restarted.quarantineStranded()).toEqual([])
+    now = 1_100
+    expect(restarted.capture(update)).toBe(false)
+    now = 1_101
+    expect(restarted.capture(update)).toBe(true)
+  })
+
+  it("prunes indeterminate receipts deterministically at the count boundary", () => {
+    const directory = makeTempDirectory("ouro-telegram-inbox-count-")
+    let now = 1_000
+    const store = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"), {
+      now: () => now,
+      indeterminateRetentionMs: 1_000,
+      maxIndeterminateReceipts: 2,
+    })
+    const update = (updateId: number) => ({
+      update_id: updateId,
+      message: { message_id: updateId, from: { id: 10 }, chat: { id: 10, type: "private" }, text: `message-${updateId}` },
+    })
+    for (const updateId of [1, 2, 3]) {
+      now += 1
+      expect(store.capture(update(updateId))).toBe(true)
+      expect(store.claim(update(updateId))).toBe(true)
+      expect(store.quarantineStranded()).toHaveLength(1)
+    }
+
+    expect(store.loadIndeterminate()).toHaveLength(2)
+    expect(store.capture(update(1))).toBe(true)
+    expect(store.capture(update(2))).toBe(false)
+    expect(store.capture(update(3))).toBe(false)
+  })
+
+  it("migrates version-two opaque receipts into bounded one-shot warning tombstones", () => {
+    const directory = makeTempDirectory("ouro-telegram-inbox-v2-")
+    const inboxPath = join(directory, "inbox.json")
+    const seed = new FileTelegramUpdateInboxStore(inboxPath)
+    const update = { update_id: 4, message: { message_id: 4, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "legacy opaque" } }
+    seed.capture(update)
+    const receipt = seed.loadPending()[0]!
+    writeFileSync(inboxPath, JSON.stringify({ version: 2, pending: [], dispatching: [], indeterminate: [receipt] }))
+
+    const migrated = new FileTelegramUpdateInboxStore(inboxPath, { now: () => 2_000 })
+    expect(migrated.quarantineStranded()).toEqual([expect.objectContaining({ digest: receipt.digest })])
+    expect(migrated.quarantineStranded()).toEqual([])
+    expect(JSON.parse(readFileSync(inboxPath, "utf8"))).toMatchObject({
+      version: 3,
+      indeterminate: [expect.objectContaining({ quarantinedAt: 2_000, warningAcknowledged: true })],
+    })
+  })
+
   it("does not durably capture unauthorized callback identities or data", async () => {
     const inboxStore = {
       loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
