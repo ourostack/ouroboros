@@ -49,7 +49,14 @@ function defaultFixture() {
     sendApproval: vi.fn(), handleUpdate: vi.fn(async () => ({ handled: true })), reconcileExpired: vi.fn(),
     terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []),
   }
-  const runtime = { transport, coordinator: vi.fn(), recover: vi.fn(), close: vi.fn() }
+  const runtime = {
+    transport,
+    coordinator: vi.fn(),
+    legacySubjects: vi.fn(() => []),
+    migrateIdentity: vi.fn(),
+    recover: vi.fn(),
+    close: vi.fn(),
+  }
   mocks.createTelegramBotApi.mockReturnValue(api)
   mocks.createTelegramLongPoll.mockImplementation((options: any) => {
     onMessage = options.onMessage
@@ -121,6 +128,45 @@ describe("Telegram sense coverage contracts", () => {
       fs.rmSync(root, { recursive: true, force: true })
       fs.rmSync(symlinkRoot, { recursive: true, force: true })
       fs.rmSync(symlinkTarget, { recursive: true, force: true })
+    }
+  })
+
+  it("cleans unpublished identity-key temporaries and rejects non-directory or non-regular identity paths", () => {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-temp-cleanup-"))
+    const linkFailureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-link-failure-"))
+    const fileRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-file-root-"))
+    const keyDirectoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-key-directory-"))
+    try {
+      expect(() => readOrCreateTelegramIdentityKey(temporaryRoot, {
+        afterCreateTemporary: () => { throw new Error("synthetic temporary failure") },
+      })).toThrow("synthetic temporary failure")
+      expect(fs.readdirSync(path.join(temporaryRoot, "state", "senses", "telegram"))).toEqual([])
+
+      expect(() => readOrCreateTelegramIdentityKey(linkFailureRoot, {
+        beforePublish: (temporaryPath) => { fs.unlinkSync(temporaryPath) },
+      })).toThrow()
+
+      const telegramFile = path.join(fileRoot, "state", "senses", "telegram")
+      fs.mkdirSync(path.dirname(telegramFile), { recursive: true })
+      fs.writeFileSync(telegramFile, "not a directory")
+      expect(() => readOrCreateTelegramIdentityKey(fileRoot)).toThrow("not a directory")
+
+      const keyDirectory = path.join(keyDirectoryRoot, "state", "senses", "telegram", "identity.key")
+      fs.mkdirSync(keyDirectory, { recursive: true })
+      expect(() => readOrCreateTelegramIdentityKey(keyDirectoryRoot)).toThrow("permissions are invalid")
+
+      const permissionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-directory-permission-"))
+      try {
+        expect(() => readOrCreateTelegramIdentityKey(permissionRoot, {
+          afterOpenDirectory: (handle) => { fs.fchmodSync(handle, 0o755) },
+        })).toThrow("directory permissions are invalid")
+      } finally {
+        fs.rmSync(permissionRoot, { recursive: true, force: true })
+      }
+    } finally {
+      for (const root of [temporaryRoot, linkFailureRoot, fileRoot, keyDirectoryRoot]) {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
     }
   })
 
@@ -223,12 +269,16 @@ describe("Telegram sense coverage contracts", () => {
     }
     try {
       makeLegacySession(root, legacySubject)
+      fs.mkdirSync(path.join(root, "state", "sessions", "unrelated"))
+      fs.mkdirSync(path.join(root, "state", "sessions", "telegram-user:tg_short"))
+      fs.writeFileSync(path.join(root, "state", "sessions", "unrelated.txt"), "ignored")
       mocks.getAgentRoot.mockReturnValue(root)
       const fixture = defaultFixture()
-      const app = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) })
+      const app = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime })
       await app.run()
 
       const migratedNames = fs.readdirSync(path.join(root, "state", "sessions"))
+        .filter((name) => /^telegram-user:tg_[A-Za-z0-9_-]{43}$/u.test(name))
       expect(migratedNames).toHaveLength(1)
       expect(migratedNames[0]).toMatch(/^telegram-user:tg_[A-Za-z0-9_-]{43}$/u)
       expect(migratedNames[0]).not.toBe(`telegram-user:${legacySubject}`)
@@ -244,7 +294,7 @@ describe("Telegram sense coverage contracts", () => {
       makeLegacySession(ambiguousRoot, secondLegacySubject)
       mocks.getAgentRoot.mockReturnValue(ambiguousRoot)
       const ambiguousFixture = defaultFixture()
-      const ambiguous = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) })
+      const ambiguous = createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: ambiguousFixture.runtime })
       await expect(ambiguous.run()).rejects.toThrow("ambiguous")
       expect(ambiguousFixture.runtime.migrateIdentity).not.toHaveBeenCalled()
       expect(fs.readdirSync(path.join(ambiguousRoot, "state", "sessions")).sort()).toEqual([
@@ -256,6 +306,138 @@ describe("Telegram sense coverage contracts", () => {
       fs.rmSync(root, { recursive: true, force: true })
       fs.rmSync(ambiguousRoot, { recursive: true, force: true })
     }
+  })
+
+  it("reads only canonical mode-0600 opaque subject indexes and rejects malformed or redirected indexes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-subject-validation-"))
+    const target = path.join(root, "redirected.json")
+    try {
+      mocks.getAgentRoot.mockReturnValue(root)
+      const firstFixture = defaultFixture()
+      await createTelegramSenseApp({
+        agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: firstFixture.runtime,
+      }).run()
+      const indexPath = path.join(root, "state", "senses", "telegram", "identity-subjects.json")
+      const canonical = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { subject: string }
+
+      const validFixture = defaultFixture()
+      await expect(createTelegramSenseApp({
+        agentName: "butler", credentials: { ...credentials, botToken: "rotated-again" }, identityKey: "k".repeat(43), approvalRuntime: validFixture.runtime,
+      }).run()).resolves.toBeUndefined()
+
+      const invalidRecords: unknown[] = [
+        null,
+        [],
+        { version: 2, subject: canonical.subject, legacySubjects: [] },
+        { version: 1, subject: "tg_wrong", legacySubjects: [] },
+        { version: 1, subject: canonical.subject, legacySubjects: "not-an-array" },
+        { version: 1, subject: canonical.subject, legacySubjects: [], extra: true },
+        { version: 1, subject: canonical.subject, legacySubjects: [null] },
+        { version: 1, subject: canonical.subject, legacySubjects: ["tg_short"] },
+      ]
+      for (const invalid of invalidRecords) {
+        fs.writeFileSync(indexPath, `${JSON.stringify(invalid)}\n`, { mode: 0o600 })
+        fs.chmodSync(indexPath, 0o600)
+        const fixture = defaultFixture()
+        await expect(createTelegramSenseApp({
+          agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime,
+        }).run()).rejects.toThrow("identity subject index is invalid")
+      }
+
+      fs.writeFileSync(indexPath, `${JSON.stringify({ version: 1, subject: canonical.subject, legacySubjects: [] })}\n`)
+      fs.chmodSync(indexPath, 0o644)
+      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run())
+        .rejects.toThrow("permissions are invalid")
+
+      fs.rmSync(indexPath)
+      fs.writeFileSync(target, "{}\n", { mode: 0o600 })
+      fs.symlinkSync(target, indexPath)
+      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run())
+        .rejects.toThrow()
+    } finally {
+      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("discovers a prior opaque subject from a canonical Friend record while ignoring unrelated entries", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-friend-subject-discovery-"))
+    const legacySubject = `tg_${"f".repeat(43)}`
+    try {
+      const friendsRoot = path.join(root, "friends")
+      fs.mkdirSync(path.join(friendsRoot, "ignored-directory"), { recursive: true })
+      fs.writeFileSync(path.join(friendsRoot, "ignored.txt"), "ignored")
+      fs.writeFileSync(path.join(friendsRoot, "legacy.json"), JSON.stringify({
+        id: "legacy", name: `Telegram user ${legacySubject}`, role: "friend", trustLevel: "family",
+        externalIds: [
+          { provider: "local", externalId: "unrelated", linkedAt: "2026-01-01T00:00:00.000Z" },
+          { provider: "telegram-user", externalId: legacySubject, linkedAt: "2026-01-01T00:00:00.000Z" },
+        ],
+        tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z", schemaVersion: 1,
+      }))
+      mocks.getAgentRoot.mockReturnValue(root)
+      const fixture = defaultFixture()
+      await createTelegramSenseApp({
+        agentName: "butler", credentials, identityKey: "k".repeat(43), approvalRuntime: fixture.runtime,
+      }).run()
+
+      const friend = fs.readFileSync(path.join(friendsRoot, "legacy.json"), "utf8")
+      expect(friend).not.toContain(legacySubject)
+      expect(fixture.runtime.migrateIdentity).toHaveBeenCalledWith([legacySubject])
+    } finally {
+      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed on unreadable legacy-subject roots and cleans an interrupted subject-index write", async () => {
+    const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-subject-session-error-"))
+    const friendsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-subject-friend-error-"))
+    const indexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-subject-index-error-"))
+    try {
+      const sessionPath = path.join(sessionRoot, "state", "sessions")
+      fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+      fs.writeFileSync(sessionPath, "not a directory")
+      mocks.getAgentRoot.mockReturnValue(sessionRoot)
+      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run()).rejects.toThrow()
+
+      const friendPath = path.join(friendsRoot, "friends")
+      fs.writeFileSync(friendPath, "not a directory")
+      mocks.getAgentRoot.mockReturnValue(friendsRoot)
+      await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run()).rejects.toThrow()
+
+      mocks.getAgentRoot.mockReturnValue(indexRoot)
+      await expect(createTelegramSenseApp({
+        agentName: "butler",
+        credentials,
+        identityKey: "k".repeat(43),
+        subjectIndexHooks: { afterCreateTemporary: () => { throw new Error("synthetic index write failure") } },
+      }).run()).rejects.toThrow("synthetic index write failure")
+      expect(fs.readdirSync(path.join(indexRoot, "state", "senses", "telegram"))).toEqual([])
+    } finally {
+      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      for (const root of [sessionRoot, friendsRoot, indexRoot]) fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("fails closed on malformed Friend identity records during subject discovery", async () => {
+    for (const [name, friend] of [
+      ["record", { id: "malformed" }],
+      ["external", { externalIds: [null] }],
+    ] as const) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `ouro-telegram-friend-${name}-`))
+      try {
+        fs.mkdirSync(path.join(root, "friends"), { recursive: true })
+        fs.writeFileSync(path.join(root, "friends", "malformed.json"), JSON.stringify(friend))
+        mocks.getAgentRoot.mockReturnValue(root)
+        await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run())
+          .rejects.toThrow(/Friend/u)
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    }
+    mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
   })
 
   it("migrates a Friend already linked to both identities and rejects colliding session artifacts", async () => {

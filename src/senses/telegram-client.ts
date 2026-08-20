@@ -292,7 +292,11 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     pollOnce,
     async run(signal?: AbortSignal) {
       const runSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
-      while (!runSignal.aborted) await pollOnce(runSignal)
+      try {
+        while (!runSignal.aborted) await pollOnce(runSignal)
+      } catch (error) {
+        if (!shutdown.signal.aborted && !signal?.aborted) throw error
+      }
     },
     stop() {
       shutdown.abort(new Error("Telegram long poll stopped"))
@@ -448,7 +452,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const reconcileExpired = async (): Promise<void> => {
     let firstFailure: unknown
     for (const pending of uniquePending()) {
-      if (now() < pending.expiresAt) continue
+      if (!pending.terminal && now() < pending.expiresAt) continue
       try {
         if (pending.terminal) {
           await editTerminal(pending, pending.terminal.terminalText)

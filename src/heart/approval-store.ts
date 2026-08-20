@@ -152,6 +152,7 @@ export interface ApprovalStore {
   markContinuationAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
   completeContinuation(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord & ApprovalContinuationRecord
   read(approvalId: string): ApprovalRecord | null
+  listTelegramIdentitySubjects?(): string[]
   migrateTelegramIdentity?(input: { legacyUserId: string; legacyChatId: string; subject: string }): number
   close(): void
 }
@@ -909,6 +910,24 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     },
 
     read(approvalId) { return observeRead(() => rawRead(approvalId)) },
+    listTelegramIdentitySubjects() {
+      const subjects = new Set<string>()
+      const add = (value: string): void => {
+        if (/^tg_[A-Za-z0-9_-]{43}$/u.test(value)) subjects.add(value)
+      }
+      const rows = database.prepare("SELECT record_json FROM approval_actions ORDER BY approval_id")
+        .all() as Array<{ record_json: string }>
+      for (const row of rows) {
+        const record = parseApprovalRecord(JSON.parse(row.record_json))
+        if (record.transport !== "telegram") continue
+        add(record.requesterId)
+        add(record.transportUserId)
+        add(record.transportChatId)
+        if (record.sessionKey.startsWith("telegram:")) add(record.sessionKey.slice("telegram:".length))
+        for (const match of record.sessionPath.matchAll(/tg_[A-Za-z0-9_-]{43}/gu)) add(match[0])
+      }
+      return [...subjects].sort()
+    },
     migrateTelegramIdentity(input) {
       if (!isNonEmpty(input.legacyUserId) || !isNonEmpty(input.legacyChatId) || !/^tg_[A-Za-z0-9_-]{43}$/u.test(input.subject)) {
         fail("invalid_telegram_identity_migration")

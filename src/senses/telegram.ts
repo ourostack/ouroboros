@@ -1,5 +1,21 @@
 import { createHmac, randomBytes } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import * as path from "node:path"
 import { FileFriendStore } from "@ouro.bot/friends"
 
@@ -44,6 +60,8 @@ const APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS = 1_000
 const APPROVAL_EXPIRY_MAX_CONSECUTIVE_FAILURES = 5
 const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
+const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
+const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
 
 export interface CreateTelegramSenseAppOptions {
   agentName: string
@@ -61,6 +79,7 @@ export interface CreateTelegramSenseAppOptions {
   }
   identityKey?: string
   migrateIdentity?: () => Promise<void>
+  subjectIndexHooks?: { afterCreateTemporary?: (temporaryPath: string) => void }
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -82,41 +101,87 @@ function canonicalTelegramIdentityKey(value: string): string {
   return key
 }
 
-export function readOrCreateTelegramIdentityKey(agentRoot: string, hooks: { beforeCreate?: (keyPath: string) => void } = {}): string {
-  const directory = path.join(agentRoot, "state", "senses", "telegram")
-  const keyPath = path.join(directory, "identity.key")
-  const validate = (value: string): string => {
-    const key = canonicalTelegramIdentityKey(value)
-    const metadata = statSync(keyPath)
-    if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) throw new Error("Telegram opaque identity key permissions are invalid")
-    return key
-  }
+function errorCode(error: unknown): string | undefined {
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined
+}
+
+function openSecureTelegramDirectory(directory: string, afterOpen?: (handle: number) => void): number {
   try {
-    return validate(readFileSync(keyPath, "utf8"))
+    const existing = lstatSync(directory)
+    if (existing.isSymbolicLink()) throw new Error("Telegram state directory must not be a symbolic link")
+    if (!existing.isDirectory()) throw new Error("Telegram state directory is not a directory")
   } catch (error) {
-    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error
+    if (errorCode(error) !== "ENOENT") throw error
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
   }
-  mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const key = randomBytes(32).toString("base64url")
-  hooks.beforeCreate?.(keyPath)
-  let handle: number
+  const handle = openSync(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW)
   try {
-    handle = openSync(keyPath, "wx", 0o600)
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
-      return validate(readFileSync(keyPath, "utf8"))
+    fchmodSync(handle, 0o700)
+    afterOpen?.(handle)
+    const metadata = fstatSync(handle)
+    if (!metadata.isDirectory() || (metadata.mode & 0o777) !== 0o700) {
+      throw new Error("Telegram state directory permissions are invalid")
     }
+    return handle
+  } catch (error) {
+    closeSync(handle)
     throw error
   }
-  try {
-    writeFileSync(handle, `${key}\n`)
-    fsyncSync(handle)
-  } finally {
-    closeSync(handle)
+}
+
+export function readOrCreateTelegramIdentityKey(agentRoot: string, hooks: {
+  beforeCreate?: (keyPath: string) => void
+  afterOpenDirectory?: (handle: number) => void
+  afterCreateTemporary?: (temporaryPath: string, keyPath: string) => void
+  beforePublish?: (temporaryPath: string, keyPath: string) => void
+} = {}): string {
+  const directory = path.join(agentRoot, "state", "senses", "telegram")
+  const keyPath = path.join(directory, "identity.key")
+  const directoryHandle = openSecureTelegramDirectory(directory, hooks.afterOpenDirectory)
+  const readKey = (): string => {
+    const handle = openSync(keyPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    try {
+      const metadata = fstatSync(handle)
+      if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) throw new Error("Telegram opaque identity key permissions are invalid")
+      return canonicalTelegramIdentityKey(readFileSync(handle, "utf8"))
+    } finally {
+      closeSync(handle)
+    }
   }
-  const directoryHandle = openSync(directory, "r")
-  try { fsyncSync(directoryHandle) } finally { closeSync(directoryHandle) }
-  return key
+  try {
+    try {
+      return readKey()
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") throw error
+    }
+    const key = randomBytes(32).toString("base64url")
+    hooks.beforeCreate?.(keyPath)
+    const temporaryPath = path.join(directory, `.identity.key.${randomBytes(12).toString("base64url")}.tmp`)
+    let temporaryHandle: number | undefined
+    try {
+      temporaryHandle = openSync(temporaryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600)
+      hooks.afterCreateTemporary?.(temporaryPath, keyPath)
+      writeFileSync(temporaryHandle, `${key}\n`)
+      fsyncSync(temporaryHandle)
+      closeSync(temporaryHandle)
+      temporaryHandle = undefined
+      hooks.beforePublish?.(temporaryPath, keyPath)
+      try {
+        linkSync(temporaryPath, keyPath)
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error
+        return readKey()
+      }
+      fsyncSync(directoryHandle)
+      return key
+    } finally {
+      if (temporaryHandle !== undefined) closeSync(temporaryHandle)
+      if (existsSync(temporaryPath)) unlinkSync(temporaryPath)
+      fsyncSync(directoryHandle)
+    }
+  } finally {
+    closeSync(directoryHandle)
+  }
 }
 
 function opaqueTelegramSubject(identityKey: string, authorizedUserId: string, authorizedChatId: string): string {
@@ -126,6 +191,108 @@ function opaqueTelegramSubject(identityKey: string, authorizedUserId: string, au
     `chat:${authorizedChatId.length}:${authorizedChatId}`,
   ].join("\0")
   return `tg_${createHmac("sha256", identityKey).update(payload, "utf8").digest("base64url")}`
+}
+
+function readTelegramSubjectIndex(agentRoot: string, subject: string): string[] {
+  const indexPath = path.join(agentRoot, "state", "senses", "telegram", TELEGRAM_SUBJECT_INDEX)
+  let text: string
+  let handle: number | undefined
+  try {
+    handle = openSync(indexPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const metadata = fstatSync(handle)
+    if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) throw new Error("Telegram identity subject index permissions are invalid")
+    text = readFileSync(handle, "utf8")
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return []
+    throw error
+  } finally {
+    if (handle !== undefined) closeSync(handle)
+  }
+  const parsed: unknown = JSON.parse(text)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Telegram identity subject index is invalid")
+  const record = parsed as Record<string, unknown>
+  if (record.version !== 1 || record.subject !== subject || !Array.isArray(record.legacySubjects)
+    || Object.keys(record).sort().join(",") !== "legacySubjects,subject,version") {
+    throw new Error("Telegram identity subject index is invalid")
+  }
+  const legacySubjects = record.legacySubjects
+  if (!legacySubjects.every((candidate): candidate is string => typeof candidate === "string" && TELEGRAM_SUBJECT.test(candidate))) {
+    throw new Error("Telegram identity subject index is invalid")
+  }
+  return [...new Set(legacySubjects)]
+}
+
+function discoverTelegramFilesystemSubjects(agentRoot: string): string[] {
+  const subjects = new Set<string>()
+  const addFriendDirectorySubjects = (root: string): void => {
+    let entries
+    try {
+      entries = readdirSync(root, { withFileTypes: true })
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return
+      throw error
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith("telegram-user:")) continue
+      const candidate = entry.name.slice("telegram-user:".length)
+      if (TELEGRAM_SUBJECT.test(candidate)) subjects.add(candidate)
+    }
+  }
+  addFriendDirectorySubjects(path.join(agentRoot, "state", "sessions"))
+  addFriendDirectorySubjects(path.join(agentRoot, "state", "pending"))
+  addFriendDirectorySubjects(path.join(agentRoot, "state", "pending-returns"))
+
+  const friendsRoot = path.join(agentRoot, "friends")
+  let friendFiles
+  try {
+    friendFiles = readdirSync(friendsRoot, { withFileTypes: true })
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return [...subjects]
+    throw error
+  }
+  for (const entry of friendFiles) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue
+    const friend: unknown = JSON.parse(readFileSync(path.join(friendsRoot, entry.name), "utf8"))
+    if (!friend || typeof friend !== "object" || !Array.isArray((friend as { externalIds?: unknown }).externalIds)) {
+      throw new Error("Telegram Friend identity record is invalid")
+    }
+    for (const external of (friend as { externalIds: unknown[] }).externalIds) {
+      if (!external || typeof external !== "object") throw new Error("Telegram Friend external identity is invalid")
+      const identity = external as { provider?: unknown; externalId?: unknown }
+      if (identity.provider === "telegram-user" && typeof identity.externalId === "string" && TELEGRAM_SUBJECT.test(identity.externalId)) {
+        subjects.add(identity.externalId)
+      }
+    }
+  }
+  return [...subjects]
+}
+
+function writeTelegramSubjectIndex(
+  agentRoot: string,
+  subject: string,
+  legacySubjects: readonly string[],
+  hooks: { afterCreateTemporary?: (temporaryPath: string) => void } = {},
+): void {
+  const directory = path.join(agentRoot, "state", "senses", "telegram")
+  const indexPath = path.join(directory, TELEGRAM_SUBJECT_INDEX)
+  const directoryHandle = openSecureTelegramDirectory(directory)
+  const temporaryPath = path.join(directory, `.identity-subjects.${randomBytes(12).toString("base64url")}.tmp`)
+  let temporaryHandle: number | undefined
+  try {
+    temporaryHandle = openSync(temporaryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600)
+    hooks.afterCreateTemporary?.(temporaryPath)
+    const contents = `${JSON.stringify({ version: 1, subject, legacySubjects: [...legacySubjects] }, null, 2)}\n`
+    writeFileSync(temporaryHandle, contents)
+    fsyncSync(temporaryHandle)
+    closeSync(temporaryHandle)
+    temporaryHandle = undefined
+    renameSync(temporaryPath, indexPath)
+    fsyncSync(directoryHandle)
+  } finally {
+    if (temporaryHandle !== undefined) closeSync(temporaryHandle)
+    if (existsSync(temporaryPath)) unlinkSync(temporaryPath)
+    closeSync(directoryHandle)
+  }
 }
 
 export async function migrateTelegramFriendIdentity(agentRoot: string, legacyUserId: string, subject: string): Promise<void> {
@@ -198,7 +365,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     ? readOrCreateTelegramIdentityKey(agentRoot)
     : canonicalTelegramIdentityKey(options.identityKey)
   const subject = opaqueTelegramSubject(identityKey, authorizedUserId, authorizedChatId)
-  const legacyTokenSubject = opaqueTelegramSubject(botToken, authorizedUserId, authorizedChatId)
   const transportError = (error: unknown): string => redactTelegramPrivateValues(
     error,
     [botToken, authorizedUserId, authorizedChatId],
@@ -219,22 +385,34 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     authorizedUserId,
     authorizedChatId,
     subject,
-    legacySubject: legacyTokenSubject,
     toolContext: toolContext ?? {},
   }) : undefined)
   const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
   const healthSweep = options.healthSweep
   const migrateIdentity = options.migrateIdentity ?? (async () => {
-    migrateTelegramSessionIdentity(agentRoot, legacyTokenSubject, legacyTokenSubject, subject)
-    await migrateTelegramFriendIdentity(agentRoot, legacyTokenSubject, subject)
+    const legacySubjects = new Set([
+      ...readTelegramSubjectIndex(agentRoot, subject),
+      ...discoverTelegramFilesystemSubjects(agentRoot),
+      ...(approvalRuntime?.legacySubjects?.() ?? []),
+    ])
+    legacySubjects.delete(subject)
+    if (legacySubjects.size > 1) throw new Error("Telegram legacy identity subject migration is ambiguous")
+    const migrationSubjects = [...legacySubjects]
+    for (const legacySubject of migrationSubjects) {
+      migrateTelegramSessionIdentity(agentRoot, legacySubject, legacySubject, subject)
+      await migrateTelegramFriendIdentity(agentRoot, legacySubject, subject)
+    }
     migrateTelegramSessionIdentity(agentRoot, authorizedUserId, authorizedChatId, subject)
     await migrateTelegramFriendIdentity(agentRoot, authorizedUserId, subject)
+    approvalRuntime?.migrateIdentity?.(migrationSubjects)
+    writeTelegramSubjectIndex(agentRoot, subject, migrationSubjects, options.subjectIndexHooks)
   })
   let approvalReconcileTimer: ReturnType<typeof setTimeout> | undefined
   let approvalReconciliationActive = false
   let approvalReconcileInFlight: Promise<void> | undefined
   let approvalReconcileFailures = 0
   let stopPromise: Promise<void> | undefined
+  let runPromise: Promise<void> | undefined
 
   const clearApprovalReconcileTimer = (): void => {
     if (approvalReconcileTimer) clearTimeout(approvalReconcileTimer)
@@ -362,26 +540,30 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   })
 
   return {
-    async run(signal) {
-      await migrateIdentity()
-      await approvalRuntime?.recover()
-      await approvalTransport?.reconcileExpired()
-      await runHealthSweep()
-      emitNervesEvent({
-        component: "senses",
-        event: "senses.telegram_poll_start",
-        message: "Telegram long poll started",
-        meta: { agentName: options.agentName, subject },
-      })
-      approvalReconciliationActive = true
-      scheduleApprovalReconcile()
-      try {
-        await poll.run(signal)
-      } finally {
-        approvalReconciliationActive = false
-        clearApprovalReconcileTimer()
-        await approvalReconcileInFlight
-      }
+    run(signal) {
+      if (runPromise) return runPromise
+      runPromise = (async () => {
+        await migrateIdentity()
+        await approvalRuntime?.recover()
+        await approvalTransport?.reconcileExpired()
+        await runHealthSweep()
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.telegram_poll_start",
+          message: "Telegram long poll started",
+          meta: { agentName: options.agentName, subject },
+        })
+        approvalReconciliationActive = true
+        scheduleApprovalReconcile()
+        try {
+          await poll.run(signal)
+        } finally {
+          approvalReconciliationActive = false
+          clearApprovalReconcileTimer()
+          await approvalReconcileInFlight
+        }
+      })()
+      return runPromise
     },
     async sendProactive(text, signal) {
       await deliver(requiredText(text, "proactive message"), signal)
@@ -392,6 +574,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         approvalReconciliationActive = false
         clearApprovalReconcileTimer()
         poll.stop()
+        await runPromise?.catch(() => undefined)
         await approvalReconcileInFlight
         api.stop()
         approvalRuntime?.close()

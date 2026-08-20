@@ -22,6 +22,8 @@ import {
 export interface TelegramApprovalRuntime {
   transport: TelegramApprovalTransport
   coordinator(context: { sessionPath: string; baseSessionRevision: string }): ApprovalCoordinator
+  legacySubjects(): string[]
+  migrateIdentity(legacySubjects: readonly string[]): void
   recover(): Promise<void>
   close(): void
 }
@@ -86,7 +88,6 @@ export function createTelegramApprovalRuntime(options: {
   authorizedUserId: string
   authorizedChatId: string
   subject: string
-  legacySubject: string
   toolContext: Partial<ToolContext>
 }): TelegramApprovalRuntime {
   emitNervesEvent({
@@ -97,16 +98,6 @@ export function createTelegramApprovalRuntime(options: {
   })
   const stateRoot = path.join(getAgentRoot(options.agentName), "state", "approvals")
   const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite") })
-  store.migrateTelegramIdentity?.({
-    legacyUserId: options.legacySubject,
-    legacyChatId: options.legacySubject,
-    subject: options.subject,
-  })
-  store.migrateTelegramIdentity?.({
-    legacyUserId: options.authorizedUserId,
-    legacyChatId: options.authorizedChatId,
-    subject: options.subject,
-  })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
   const pendingStore = new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json"))
@@ -300,5 +291,23 @@ export function createTelegramApprovalRuntime(options: {
     }
   }
 
-  return { transport, coordinator, recover, close: () => store.close() }
+  const legacySubjects = (): string[] => (store.listTelegramIdentitySubjects?.() ?? [])
+    .filter((candidate) => candidate !== options.subject)
+
+  const migrateIdentity = (subjects: readonly string[]): void => {
+    for (const legacySubject of subjects) {
+      store.migrateTelegramIdentity?.({
+        legacyUserId: legacySubject,
+        legacyChatId: legacySubject,
+        subject: options.subject,
+      })
+    }
+    store.migrateTelegramIdentity?.({
+      legacyUserId: options.authorizedUserId,
+      legacyChatId: options.authorizedChatId,
+      subject: options.subject,
+    })
+  }
+
+  return { transport, coordinator, legacySubjects, migrateIdentity, recover, close: () => store.close() }
 }

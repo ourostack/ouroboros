@@ -633,6 +633,38 @@ describe("Telegram durable authorized long poll", () => {
     await expect(poll.pollOnce()).rejects.toThrow("stopped")
   })
 
+  it("propagates a non-shutdown polling failure from the joined run lifecycle", async () => {
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => { throw new Error("synthetic poll failure") }), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+    })
+    await expect(poll.run()).rejects.toThrow("synthetic poll failure")
+  })
+
+  it("joins cleanly when an external lifecycle signal aborts an active request", async () => {
+    const controller = new AbortController()
+    const request = vi.fn(async (_method: string, _body: Record<string, unknown>, signal?: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("synthetic external abort")), { once: true })
+      })
+      return []
+    })
+    const poll = createTelegramLongPoll({
+      api: { request, stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+    })
+    const running = poll.run(controller.signal)
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce())
+    controller.abort()
+    await expect(running).resolves.toBeUndefined()
+  })
+
   it("validates, atomically saves, and defaults missing durable stores", () => {
     const directory = makeTempDirectory("ouro-telegram-stores-")
     const offsetPath = join(directory, "nested", "offset.json")

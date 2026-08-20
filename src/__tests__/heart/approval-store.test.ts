@@ -112,7 +112,7 @@ describe("approval store", () => {
       databasePath: path.join(root, "approvals.sqlite"),
       now: () => new Date(NOW),
       randomUUID: (() => {
-        const values = [UUID, "33333333-3333-4333-8333-333333333333"]
+        const values = [UUID, "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]
         return () => values.shift()!
       })(),
       randomBytes: (size) => Buffer.alloc(size, 0xab),
@@ -127,11 +127,18 @@ describe("approval store", () => {
       sessionPath: `/bundle/state/sessions/telegram-user:${first}/telegram/telegram_${first}.json`,
     }))
     store.prepare(proposalInput({
-      requesterId: second,
+      requesterId: "raw-requester",
       transportUserId: second,
-      transportChatId: second,
-      sessionKey: `telegram:${second}`,
+      transportChatId: "raw-chat",
+      sessionKey: "other:session",
       sessionPath: `/bundle/state/sessions/telegram-user:${second}/telegram/telegram_${second}.json`,
+    }))
+    store.prepare(proposalInput({
+      transport: "cli",
+      requesterId: `tg_${"c".repeat(43)}`,
+      transportUserId: `tg_${"c".repeat(43)}`,
+      transportChatId: `tg_${"c".repeat(43)}`,
+      sessionKey: `telegram:tg_${"c".repeat(43)}`,
     }))
 
     expect(store.listTelegramIdentitySubjects?.()).toEqual([first, second])

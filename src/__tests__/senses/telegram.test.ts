@@ -125,10 +125,11 @@ describe("Telegram sense", () => {
     await vi.advanceTimersByTimeAsync(3_000)
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
 
-    await f.app.stop()
+    const stopping = f.app.stop()
     await vi.advanceTimersByTimeAsync(2_000)
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
     finishPolling()
+    await stopping
     await running
     vi.useRealTimers()
   })
@@ -147,8 +148,9 @@ describe("Telegram sense", () => {
     await vi.advanceTimersByTimeAsync(3_000)
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
 
-    await f.app.stop()
+    const stopping = f.app.stop()
     finishPolling()
+    await stopping
     await running
     vi.useRealTimers()
   })
@@ -210,6 +212,43 @@ describe("Telegram sense", () => {
     expect(approvalRuntime.close).toHaveBeenCalledOnce()
   })
 
+  it("deduplicates concurrent run calls and still closes after a failed startup lifecycle", async () => {
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    const first = f.app.run()
+    const second = f.app.run()
+    expect(second).toBe(first)
+    await vi.waitFor(() => expect(f.poll.run).toHaveBeenCalledOnce())
+    const stopping = f.app.stop()
+    finishPolling()
+    await stopping
+    await first
+
+    const approvalRuntime = {
+      transport: {
+        sendApproval: vi.fn(), handleUpdate: vi.fn(), terminalizeRecovered: vi.fn(), reconcileExpired: vi.fn(),
+      },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+    }
+    const failed = createTelegramSenseApp({
+      agentName: "butler",
+      credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43),
+      migrateIdentity: async () => { throw new Error("synthetic startup failure") },
+      api: { request: vi.fn(), stop: vi.fn() },
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
+      approvalRuntime,
+    })
+    await expect(failed.run()).rejects.toThrow("synthetic startup failure")
+    await expect(failed.stop()).resolves.toBeUndefined()
+    expect(approvalRuntime.close).toHaveBeenCalledOnce()
+
+    const neverStarted = fixture()
+    await expect(neverStarted.app.stop()).resolves.toBeUndefined()
+    expect(neverStarted.api.stop).toHaveBeenCalledOnce()
+  })
+
   it("caps persistent reconciliation retries with exponential backoff", async () => {
     vi.useFakeTimers()
     let finishPolling!: () => void
@@ -220,8 +259,9 @@ describe("Telegram sense", () => {
     const running = f.app.run()
     await vi.advanceTimersByTimeAsync(40_000)
     expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(6)
-    await f.app.stop()
+    const stopping = f.app.stop()
     finishPolling()
+    await stopping
     await running
     vi.useRealTimers()
   })

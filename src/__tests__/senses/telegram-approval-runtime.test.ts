@@ -122,7 +122,6 @@ function makeRuntime() {
     authorizedUserId: "10",
     authorizedChatId: "20",
     subject: "tg_stable-subject",
-    legacySubject: `tg_${"l".repeat(43)}`,
     toolContext: { agentName: "sanctuary" },
   })
 }
@@ -216,6 +215,16 @@ describe("Telegram approval runtime safety", () => {
 })
 
 describe("Telegram approval runtime orchestration", () => {
+  it("defaults legacy approval subjects to empty for a compatibility store without discovery", () => {
+    const discover = runtimeMocks.store.listTelegramIdentitySubjects
+    ;(runtimeMocks.store as any).listTelegramIdentitySubjects = undefined
+    try {
+      expect(makeRuntime().legacySubjects()).toEqual([])
+    } finally {
+      runtimeMocks.store.listTelegramIdentitySubjects = discover
+    }
+  })
+
   it("creates durable stores, proposes only function calls, sends a prompt, and binds its message", async () => {
     const runtime = makeRuntime()
     const coordinator = runtime.coordinator({ sessionPath: "/sessions/telegram.json", baseSessionRevision: "base-revision" })
