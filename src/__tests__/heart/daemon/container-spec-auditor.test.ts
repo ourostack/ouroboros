@@ -193,6 +193,11 @@ describe("Sanctuary pre-activation container auditor", () => {
       expectedImage,
     })).toEqual({ ok: true, violations: [] })
     expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace("<PostArgs></PostArgs>", "<PostArgs/>"),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage,
+    })).toEqual({ ok: true, violations: [] })
+    expect(auditSanctuaryStagedFiles({
       templateXml: stagedTemplate(),
       runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "enabled" }),
       expectedImage,
@@ -207,6 +212,14 @@ describe("Sanctuary pre-activation container auditor", () => {
       runtimePolicyText: "not-json",
       expectedImage,
     }).ok).toBe(false)
+    expect(auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace(expectedImage, "mutable"),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "mutable",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      violations: expect.arrayContaining(["expected image must be an exact local Docker image ID"]),
+    }))
   })
 
   it.each([

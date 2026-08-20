@@ -102,9 +102,14 @@ export function auditSanctuaryContainerSpec(
   return result
 }
 
-function tag(xml: string, name: string): string | undefined {
-  const match = xml.match(new RegExp(`<${name}>([^<]*)</${name}>`, "u"))
-  return match?.[1]
+function tagValues(xml: string, name: string): string[] {
+  return [...xml.matchAll(new RegExp(`<${name}>([^<]*)</${name}>`, "gu"))]
+    .map((match) => match[1]!)
+}
+
+function singleTag(xml: string, name: string): string | undefined {
+  const values = tagValues(xml, name)
+  return values.length === 1 ? values[0] : undefined
 }
 
 export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): SanctuaryContainerAuditResult {
@@ -119,39 +124,33 @@ export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): San
   if (policy?.scheduler !== "supercronic" || policy.updates !== "disabled" || Object.keys(policy).sort().join(",") !== "scheduler,updates") {
     violations.push("container runtime policy must be exactly scheduler=supercronic and updates=disabled")
   }
-  const pathConfigs = [...input.templateXml.matchAll(/<Config\b([^>]*)>([^<]*)<\/Config>/gu)]
-    .filter((match) => /\bType="Path"/u.test(match[1]!))
+  const configOpenCount = [...input.templateXml.matchAll(/<Config\b/gu)].length
+  const configEntries = [...input.templateXml.matchAll(/<Config\b([^>]*)>([^<]*)<\/Config>/gu)]
+  const pathConfigs = configEntries
     .map((match) => {
+      const type = match[1]!.match(/\bType="([^"]+)"/u)?.[1]
       const target = match[1]!.match(/\bTarget="([^"]+)"/u)?.[1]
       const mode = match[1]!.match(/\bMode="([^"]+)"/u)?.[1]
-      return target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
+      return type === "Path" && target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
     })
-  if (input.templateXml.match(/<Config\b[^>]*\bType="(?:Port|Device)"/u)) violations.push("template must not declare ports or devices")
-  const extraParams = tag(input.templateXml, "ExtraParams")
-  if (extraParams !== EXPECTED_EXTRA_PARAMS) violations.push("template ExtraParams must equal the canonical user and restart flags")
-  const spec = {
-    Config: {
-      User: extraParams === EXPECTED_EXTRA_PARAMS ? "10001:10001" : "",
-      Image: tag(input.templateXml, "Repository"),
-      Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"],
-      Cmd: [],
-      Env: ["HOME=/home/ouro"],
-      ExposedPorts: null,
-    },
-    HostConfig: {
-      NetworkMode: tag(input.templateXml, "Network"),
-      Privileged: tag(input.templateXml, "Privileged") === "true",
-      RestartPolicy: { Name: extraParams === EXPECTED_EXTRA_PARAMS ? "unless-stopped" : "", MaximumRetryCount: 0 },
-      Binds: pathConfigs,
-      PortBindings: {},
-      Devices: [],
-      CapAdd: null,
-    },
-    Mounts: pathConfigs.map((bind) => {
-      const [source, destination, mode] = bind.split(":")
-      return { Type: "bind", Source: source, Destination: destination, RW: mode === "rw" }
-    }),
+  if (
+    configOpenCount !== 2
+    || configEntries.length !== 2
+    || JSON.stringify([...pathConfigs].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())
+  ) {
+    violations.push("template Config entries must equal the canonical two path binds")
   }
-  const specResult = auditSanctuaryContainerSpec(spec, { expectedImage: input.expectedImage })
-  return { ok: violations.length === 0 && specResult.ok, violations: [...violations, ...specResult.violations] }
+  const postArgsOpenCount = [...input.templateXml.matchAll(/<PostArgs\b/gu)].length
+  const postArgs = [...input.templateXml.matchAll(/<PostArgs(?:(?:\s*\/>)|>([^<]*)<\/PostArgs>)/gu)]
+  if (postArgsOpenCount !== 1 || postArgs.length !== 1 || (postArgs[0]?.[1] ?? "") !== "") {
+    violations.push("template PostArgs must be present exactly once and empty")
+  }
+  const extraParams = singleTag(input.templateXml, "ExtraParams")
+  if (extraParams !== EXPECTED_EXTRA_PARAMS) violations.push("template ExtraParams must equal the canonical user and restart flags")
+  const repository = singleTag(input.templateXml, "Repository")
+  if (!/^sha256:[a-f0-9]{64}$/u.test(input.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
+  if (repository !== input.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
+  if (singleTag(input.templateXml, "Network") !== "host") violations.push("network mode must be host")
+  if (singleTag(input.templateXml, "Privileged") !== "false") violations.push("container must not be privileged")
+  return { ok: violations.length === 0, violations }
 }
