@@ -796,58 +796,6 @@ local unlock: available
       done
       return 1
     }
-    retire_legacy_unraid_key() {
-      NEW_READ_KEY_ID=$1
-      NEW_WRITE_KEY_ID=$2
-      OLD_READ_KEY_ID=$3
-      OLD_WRITE_KEY_ID=$4
-      for KEY_ID in "$NEW_READ_KEY_ID" "$NEW_WRITE_KEY_ID" "$OLD_READ_KEY_ID" "$OLD_WRITE_KEY_ID"; do
-        test -n "$KEY_ID" || return 1
-        case "$KEY_ID" in *[!A-Za-z0-9._:-]*) return 1 ;; esac
-      done
-      test "$NEW_READ_KEY_ID" != "$NEW_WRITE_KEY_ID" || return $?
-      test "$OLD_READ_KEY_ID" != "$OLD_WRITE_KEY_ID" || return $?
-      for NEW_KEY_ID in "$NEW_READ_KEY_ID" "$NEW_WRITE_KEY_ID"; do
-        test "$NEW_KEY_ID" != "$OLD_READ_KEY_ID" || return $?
-        test "$NEW_KEY_ID" != "$OLD_WRITE_KEY_ID" || return $?
-      done
-      verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
-      verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
-      KEY_INVENTORY_BEFORE=$(inventory_unraid_key_ids) || return $?
-      KEY_COUNTS_BEFORE=$(printf '%s\n' "$KEY_INVENTORY_BEFORE" | awk -F '\t' \
-        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" \
-        -v old_read_id="$OLD_READ_KEY_ID" -v old_write_id="$OLD_WRITE_KEY_ID" '
-        NF != 3 || $1 !~ /^[A-Za-z0-9._:-]+$/ { invalid++; next }
-        $2 != "read-only" && $2 != "bounded-write" && $2 != "legacy-write" { invalid++; next }
-        $3 != "none" { invalid++; next }
-        $1 == read_id && $2 == "read-only" { read_count++; next }
-        $1 == write_id && $2 == "bounded-write" { write_count++; next }
-        $1 == old_read_id && $2 == "read-only" { old_read_count++; next }
-        $1 == old_write_id && $2 == "bounded-write" { old_write_count++; next }
-        { invalid++ }
-        END { printf "%d %d %d %d %d %d", read_count + 0, write_count + 0, old_read_count + 0, old_write_count + 0, invalid + 0, NR + 0 }
-      ') || return $?
-      test "$KEY_COUNTS_BEFORE" = "1 1 1 1 0 4" || return $?
-      revoke_unraid_key_exact "$OLD_READ_KEY_ID" || return $?
-      verify_revoked_unraid_key_rejected "$OLD_READ_KEY_ID" || return $?
-      revoke_unraid_key_exact "$OLD_WRITE_KEY_ID" || return $?
-      verify_revoked_unraid_key_rejected "$OLD_WRITE_KEY_ID" || return $?
-      KEY_INVENTORY_AFTER=$(inventory_unraid_key_ids) || return $?
-      KEY_COUNTS_AFTER=$(printf '%s\n' "$KEY_INVENTORY_AFTER" | awk -F '\t' \
-        -v read_id="$NEW_READ_KEY_ID" -v write_id="$NEW_WRITE_KEY_ID" '
-        NF != 3 || $1 !~ /^[A-Za-z0-9._:-]+$/ { invalid++; next }
-        $2 != "read-only" && $2 != "bounded-write" && $2 != "legacy-write" { invalid++; next }
-        $3 != "none" { invalid++; next }
-        $1 == read_id && $2 == "read-only" { read_count++; next }
-        $1 == write_id && $2 == "bounded-write" { write_count++; next }
-        { invalid++ }
-        END { printf "%d %d %d %d", read_count + 0, write_count + 0, invalid + 0, NR + 0 }
-      ') || return $?
-      test "$KEY_COUNTS_AFTER" = "1 1 0 2" || return $?
-      verify_vault_backed_unraid_key "$NEW_READ_KEY_ID" read-only || return $?
-      verify_vault_backed_unraid_key "$NEW_WRITE_KEY_ID" bounded-write || return $?
-    }
-
 Update:
   Build and verify a new ouro-butler:<version> image first. The tag is only a
   lookup handle and never authorizes container creation. Resolve and validate
@@ -1211,27 +1159,25 @@ Audit and safety verification:
   reviewed local image ID, not the build tag. The read key must reject Docker
   stop and restart mutations; only the separate write key may perform the one
   typed approved restart action.
-  Inventory Unraid API keys by exact immutable key ID before changing any key.
-  Record only IDs, names, and permission sets; never raw key values. Verify the
-  new read-only and bounded-write keys through their vault-backed Butler paths
-  first: the read key must perform required reads and reject a harmless Docker
-  mutation, while the write key must perform its one typed approved action and
-  reject out-of-scope writes. Fail closed if inventory deltas are ambiguous,
-  either expected key is missing/duplicated, or any unintended key exists. The
-  live legacy state has one compromised read key and one compromised write key;
-  pass both exact recorded old IDs. Only after the preflight proves an inventory
-  containing exactly the new and old RO/RW pairs may the operator revoke each
-  old ID and prove its old credential receives an authentication rejection.
-  Re-inventory and require exactly the new RO/RW pair, with no additional key of
-  any capability. Do not pass raw keys in argv, files, shell history, or logs;
-  verification adapters must read them directly from the Sanctuary vault.
-  The adapters used by retire_legacy_unraid_key must emit only tab-separated
-  `<id>\t<capability-class>\t<role-class>` inventory rows. Capability class is
-  the closed set `read-only|bounded-write|legacy-write`; role class must be
-  exactly `none`. The adapter derives these classes from Unraid's nested
-  `{resource, actions[]}` permission records, never from stringified permission
-  guesses. Unknown classes, malformed rows, roles, and any additional row fail
-  before revocation and again after revocation. Adapters verify capability by
-  reading credentials inside the vault adapter, revoke only the ID argument,
-  and return success from the revoked-key probe only for an authentication
-  rejection. Never substitute names for IDs.
+  The packaged `unraid-key-rotate` command is the only canonical key-rotation
+  authority. It inventories the two occupied canonical names by exact immutable
+  ID, creates collision-safe `Butler RO Rotation <suffix>` and
+  `Butler RW Rotation <suffix>` keys, stores and capability-probes both through
+  the Sanctuary machine vault, and requires an exact four-key inventory. It then
+  revokes both old IDs and proves each old credential receives a 401 or 403.
+  Only after an exact inventory contains the temporary pair alone does it create,
+  store, and probe the canonical `Butler RO` and `Butler RW` pair. It requires an
+  exact four-key temporary-plus-canonical inventory, revokes and rejection-probes
+  both temporary IDs, and finally requires exactly the canonical pair. Every
+  unexpected key, duplicate, malformed permission set, role, name, inventory
+  delta, or probe response fails closed.
+
+  Record only IDs, names, and permission sets in evidence; never raw key values.
+  Raw credentials must not appear in argv, shell history, logs, sockets, or
+  acceptance evidence. The narrow revocation-retry recovery records under
+  `/mnt/user/appdata/ouro-butler/acceptance/revoked-key-proof` are the sole file
+  exception: they are root-owned mode 0600 beneath a root-owned mode 0700
+  directory, excluded from backup/evidence, streamed only on standard input to
+  the bounded rejection probe, retained across failed retries, and durably
+  deleted only after the exact authentication rejection is validated. Never
+  substitute names for IDs when revoking keys.

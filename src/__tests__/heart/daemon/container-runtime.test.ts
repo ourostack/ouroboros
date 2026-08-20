@@ -779,66 +779,6 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     }
   })
 
-  it("revokes the exact compromised key set after unambiguous vault-backed verification", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const helper = extractRunbookFunction(runbook, "retire_legacy_unraid_key")
-    const script = String.raw`set -u
-SCENARIO=$1
-verify_vault_backed_unraid_key() {
-  command printf 'verify %s %s\n' "$1" "$2" >>"$CALL_LOG"
-  test "$SCENARIO" != verify-failure || return 23
-}
-inventory_unraid_key_ids() {
-  command printf 'inventory\n' >>"$CALL_LOG"
-  if command grep -q '^revoke ' "$CALL_LOG"; then
-    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n' "$READ_ID" "$WRITE_ID"
-  elif [ "$SCENARIO" = duplicate ]; then
-    command printf '%s\tread-only\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n' "$READ_ID" "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
-  elif [ "$SCENARIO" = unknown-class ]; then
-    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\nrogue\tadmin-write\tnone\n' "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
-  elif [ "$SCENARIO" = unexpected-role ]; then
-    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\nrogue\tread-only\tadmin\n' "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
-  else
-    command printf '%s\tread-only\tnone\n%s\tbounded-write\tnone\n%s\tread-only\tnone\n%s\tbounded-write\tnone\n' "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"
-  fi
-}
-revoke_unraid_key_exact() { command printf 'revoke %s\n' "$1" >>"$CALL_LOG"; }
-verify_revoked_unraid_key_rejected() { command printf 'rejected %s\n' "$1" >>"$CALL_LOG"; }
-${helper}
-retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-key-retirement-"))
-    const ids = { READ_ID: "key-ro-new", WRITE_ID: "key-rw-new", OLD_READ_ID: "key-ro-compromised", OLD_WRITE_ID: "key-rw-compromised" }
-    try {
-      for (const scenario of ["verify-failure", "duplicate", "unknown-class", "unexpected-role"]) {
-        const callLog = path.join(testRoot, `${scenario}.log`)
-        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, ...ids })
-        expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
-        expect(fs.readFileSync(callLog, "utf8")).not.toContain("revoke ")
-      }
-      const callLog = path.join(testRoot, "safe.log")
-      const success = runConditionalHelper(script, "safe", { CALL_LOG: callLog, ...ids })
-      expect(success.status, success.stderr).toBe(0)
-      const calls = fs.readFileSync(callLog, "utf8")
-      expect(calls).toContain(`verify ${ids.READ_ID} read-only`)
-      expect(calls).toContain(`verify ${ids.WRITE_ID} bounded-write`)
-      expect(calls).toContain(`revoke ${ids.OLD_READ_ID}`)
-      expect(calls).toContain(`revoke ${ids.OLD_WRITE_ID}`)
-      expect(calls).toContain(`rejected ${ids.OLD_READ_ID}`)
-      expect(calls).toContain(`rejected ${ids.OLD_WRITE_ID}`)
-      expect(calls.match(/^revoke /gmu)).toHaveLength(2)
-      expect(calls.match(/^inventory$/gmu)).toHaveLength(2)
-      expect(calls.match(new RegExp(`^verify ${ids.READ_ID} read-only$`, "gmu"))).toHaveLength(2)
-      expect(calls.match(new RegExp(`^verify ${ids.WRITE_ID} bounded-write$`, "gmu"))).toHaveLength(2)
-      const oldReadRejected = calls.indexOf(`rejected ${ids.OLD_READ_ID}`)
-      const oldWriteRejected = calls.indexOf(`rejected ${ids.OLD_WRITE_ID}`)
-      expect(oldWriteRejected).toBeGreaterThan(oldReadRejected)
-      expect(calls.lastIndexOf(`verify ${ids.READ_ID} read-only`)).toBeGreaterThan(oldWriteRejected)
-      expect(calls.lastIndexOf(`verify ${ids.WRITE_ID} bounded-write`)).toBeGreaterThan(oldWriteRejected)
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
   it("defines bounded host adapters instead of relying on test-only retirement stubs", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const verify = extractRunbookFunction(runbook, "verify_vault_backed_unraid_key")
@@ -875,89 +815,15 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
     expect(rejected).not.toContain("/var/run/docker.sock")
   })
 
-  it("runs the exact retirement helper through real packaged adapter functions", () => {
+  it("documents only the executable collision-safe packaged key rotation", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const functions = [
-      "verify_vault_backed_unraid_key",
-      "inventory_unraid_key_ids",
-      "revoke_unraid_key_exact",
-      "verify_revoked_unraid_key_rejected",
-      "retire_legacy_unraid_key",
-    ].map((name) => extractRunbookFunction(runbook, name)).join("\n")
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-key-adapter-topology-"))
-    const keyPath = path.join(testRoot, "legacy.json")
-    const callLog = path.join(testRoot, "calls.log")
-    fs.writeFileSync(keyPath, JSON.stringify({ id: "old-ro", key: "must-not-appear", name: "old ro" }), { mode: 0o600 })
-    const script = String.raw`set -u
-run_sanctuary_node() { "$NODE_BIN" "$@"; }
-run_sanctuary_docker() {
-  command printf 'docker' >>"$CALL_LOG"
-  for argument in "$@"; do command printf '\t%s' "$argument" >>"$CALL_LOG"; done
-  command printf '\n' >>"$CALL_LOG"
-  PROBE_ID=
-  PROBE_CAPABILITY=
-  PREVIOUS=
-  for argument in "$@"; do
-    if [ "$PREVIOUS" = vault-probe ]; then PROBE_ID=$argument; PREVIOUS=vault-id; continue; fi
-    if [ "$PREVIOUS" = vault-id ]; then PROBE_CAPABILITY=$argument; PREVIOUS=; continue; fi
-    if [ "$PREVIOUS" = revoked-probe ]; then PROBE_ID=$argument; PREVIOUS=; continue; fi
-    case "$argument" in vault-probe|revoked-probe) PREVIOUS=$argument ;; old-ro|old-rw) PROBE_ID=$argument ;; esac
-  done
-  case "$*" in
-    *'image inspect'*) command printf '%s\n' "$IMAGE_ID" ;;
-    *'vault-probe'*)
-      if [ "$PROBE_CAPABILITY" = read-only ]; then PROBE_PROOF=read-authorized-write-denied; else PROBE_PROOF=read-authorized-write-reached-not-found; fi
-      command printf '{"valid":true,"keyId":"%s","capability":"%s","proof":"%s"}' "$PROBE_ID" "$PROBE_CAPABILITY" "$PROBE_PROOF"
-    ;;
-    *'revoked-probe'*) command cat >/dev/null; command printf '{"rejected":true,"id":"%s","status":401}' "$PROBE_ID" ;;
-    *)
-      if command grep -q '^unraid-api' "$CALL_LOG"; then
-        command printf '{"keys":[{"id":"new-ro","scope":"read-only","roles":"none"},{"id":"new-rw","scope":"bounded-write","roles":"none"}]}'
-      else
-        command printf '{"keys":[{"id":"new-ro","scope":"read-only","roles":"none"},{"id":"new-rw","scope":"bounded-write","roles":"none"},{"id":"old-ro","scope":"read-only","roles":"none"},{"id":"old-rw","scope":"bounded-write","roles":"none"}]}'
-      fi
-    ;;
-  esac
-}
-run_sanctuary_unraid_api() {
-  command printf 'unraid-api' >>"$CALL_LOG"
-  for argument in "$@"; do command printf '\t%s' "$argument" >>"$CALL_LOG"; done
-  command printf '\n' >>"$CALL_LOG"
-  case "$3" in 'old ro') CURRENT_KEY_ID=old-ro ;; 'old rw') CURRENT_KEY_ID=old-rw ;; *) return 1 ;; esac
-  command printf '{"deleted":1,"keys":[{"id":"%s","name":"%s"}]}' "$CURRENT_KEY_ID" "$3"
-}
-resolve_sanctuary_unraid_key() {
-  case "$1" in new-ro) CURRENT_KEY_NAME='new ro' ;; new-rw) CURRENT_KEY_NAME='new rw' ;; old-ro) CURRENT_KEY_NAME='old ro' ;; old-rw) CURRENT_KEY_NAME='old rw' ;; *) return 1 ;; esac
-  command printf '%s\t%s' "$KEY_PATH" "$CURRENT_KEY_NAME"
-}
-sanctuary_revoked_key_recovery_path() { command printf '%s/%s.json' "$RECOVERY_ROOT" "$1"; }
-validate_sanctuary_revoked_key_recovery() { test -f "$1"; }
-preserve_sanctuary_revoked_key() { command cp "$2" "$RECOVERY_ROOT/$1.json"; }
-clear_sanctuary_revoked_key() { command rm -f "$RECOVERY_ROOT/$1.json"; }
-sleep() { :; }
-${functions}
-retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
-    try {
-      const result = runConditionalHelper(script, "unused", {
-        CALL_LOG: callLog,
-        KEY_PATH: keyPath,
-        NODE_BIN: process.execPath,
-        RECOVERY_ROOT: testRoot,
-        IMAGE_ID: `sha256:${"a".repeat(64)}`,
-      })
-      const calls = fs.readFileSync(callLog, "utf8")
-      expect(result.status, `${result.stderr}\n${calls}`).toBe(0)
-      expect(calls).toContain(`--mount\ttype=bind,src=${keyPath},dst=/run/ouro-acceptance/unraid-key.json,readonly`)
-      expect(calls).toContain("--entrypoint\t/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh")
-      expect(calls).toContain("unraid-api\tapikey\t--name\told ro\t--delete\t--json")
-      expect(calls).toContain("unraid-api\tapikey\t--name\told rw\t--delete\t--json")
-      expect(calls).toContain("revoked-probe")
-      expect(calls).not.toContain("must-not-appear")
-      expect(result.stdout).not.toContain("must-not-appear")
-      expect(result.stderr).not.toContain("must-not-appear")
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
+    expect(runbook).not.toContain("retire_legacy_unraid_key")
+    expect(runbook).not.toContain("exactly the new and old RO/RW pairs")
+    expect(runbook).toMatch(/The packaged `unraid-key-rotate` command is the only canonical key-rotation\s+authority/u)
+    expect(runbook).toContain("Butler RO Rotation <suffix>")
+    expect(runbook).toContain("requires exactly the canonical pair")
+    expect(runbook).toContain("revoked-key-proof")
+    expect(runbook).toContain("retained across failed retries")
   })
 
   it("ships a complete exact-image host launcher for every Unit 16 harness command", () => {
@@ -1028,9 +894,9 @@ retire_legacy_unraid_key new-ro new-rw old-ro old-rw`
     expect(runbook).toContain("MendelowCloudButlerBot")
     expect(runbook).toContain("8541786263")
     expect(runbook).not.toContain("Sanctuary Butler")
-    expect(runbook).toContain("exact immutable key ID")
-    expect(runbook).toContain("old credential receives an authentication rejection")
-    expect(runbook).toMatch(/no additional key of\s+any capability/u)
+    expect(runbook).toMatch(/exact immutable\s+ID/u)
+    expect(runbook).toContain("proves each old credential receives a 401 or 403")
+    expect(runbook).toContain("requires exactly the canonical pair")
     expect(runbook).toContain("never raw key values")
   })
 
