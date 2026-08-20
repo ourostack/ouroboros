@@ -5,11 +5,11 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
-  mkdirSync,
+  lstatSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
@@ -17,8 +17,9 @@ import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 
-const SECRET_SELECTOR = /(?:token|secret|password|credential|authorization|api.?key)/iu
 const MAX_ADAPTER_OUTPUT = 1_048_576
+const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
+type FixedEvidenceSchema = "telegram-cursor-v1" | "postboot-health-v1"
 
 type JsonObject = Record<string, unknown>
 
@@ -99,11 +100,50 @@ function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
-function ensurePrivateParent(filePath: string): void {
-  const parent = path.dirname(filePath)
-  mkdirSync(parent, { recursive: true, mode: 0o700 })
-  const mode = statSync(parent).mode & 0o777
-  if ((mode & 0o077) !== 0) throw new Error("evidence parent directory must not be group/world accessible")
+function processUid(): number {
+  const uid = process.getuid?.()
+  if (uid === undefined) throw new Error("acceptance harness requires an operating-system user identity")
+  return uid
+}
+
+function privateAllowedRoot(config: JsonObject): string {
+  const configured = text(config.allowedRoot, "allowedRoot")
+  if (!path.isAbsolute(configured)) throw new Error("allowed root must be absolute")
+  const resolved = path.resolve(configured)
+  const metadata = lstatSync(resolved)
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error("allowed root must be a nonsymlink directory")
+  if (metadata.uid !== processUid()) throw new Error("allowed root must be owned by the harness user")
+  if ((metadata.mode & 0o077) !== 0) throw new Error("allowed root must be private")
+  if (realpathSync(resolved) !== resolved) throw new Error("allowed root must be canonical")
+  return resolved
+}
+
+function confinedPath(root: string, value: unknown, label: string): string {
+  const configured = text(value, label)
+  if (!path.isAbsolute(configured)) throw new Error(`${label} must be absolute`)
+  const resolved = path.resolve(configured)
+  const relative = path.relative(root, resolved)
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${label} must remain within the allowed root`)
+  }
+  let cursor = root
+  for (const segment of path.dirname(relative).split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment)
+    const metadata = lstatSync(cursor)
+    if (metadata.isSymbolicLink()) throw new Error(`${label} ancestor must not be a symlink`)
+    if (!metadata.isDirectory() || metadata.uid !== processUid() || (metadata.mode & 0o077) !== 0) {
+      throw new Error(`${label} ancestor must be an owned private directory`)
+    }
+  }
+  return resolved
+}
+
+function requirePrivateRegularFile(root: string, value: unknown, label: string): string {
+  const filePath = confinedPath(root, value, label)
+  const metadata = lstatSync(filePath)
+  if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error(`${label} must be a nonsymlink regular file`)
+  if (metadata.uid !== processUid() || (metadata.mode & 0o777) !== 0o600) throw new Error(`${label} must be an owned private file`)
+  return filePath
 }
 
 function syncDirectory(directory: string): void {
@@ -111,50 +151,39 @@ function syncDirectory(directory: string): void {
   try { fsyncSync(handle) } finally { closeSync(handle) }
 }
 
-function initializeCheckpoint(filePath: string, value: JsonObject): void {
-  ensurePrivateParent(filePath)
-  let handle: number
-  try {
-    handle = openSync(filePath, "wx", 0o600)
-  } catch (error) {
-    /* v8 ignore next 3 -- TOCTOU race after the explicit preflight existence check; preserves inspect-before-retry semantics @preserve */
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error("acceptance checkpoint exists; inspect-before-retry is required")
-    }
-    throw error
-  }
-  try {
-    writeFileSync(handle, `${JSON.stringify(value)}\n`)
-    fsyncSync(handle)
-  } finally {
-    closeSync(handle)
-  }
-  chmodSync(filePath, 0o600)
-  syncDirectory(path.dirname(filePath))
-}
-
-function refuseExistingCheckpoint(filePath: string): void {
-  if (existsSync(filePath)) throw new Error("acceptance checkpoint exists; inspect-before-retry is required")
-}
-
-function replaceCheckpoint(filePath: string, value: JsonObject): void {
-  const temporary = `${filePath}.tmp-${process.pid}-${nodeRandomBytes(8).toString("hex")}`
+function writeAtomicPrivateJson(root: string, filePath: string, value: unknown, replace: boolean): void {
+  const confined = confinedPath(root, filePath, "checkpoint path")
+  const temporary = `${confined}.tmp-${process.pid}-${nodeRandomBytes(8).toString("hex")}`
   try {
     writeFileSync(temporary, `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 })
     const handle = openSync(temporary, "r")
     try { fsyncSync(handle) } finally { closeSync(handle) }
-    renameSync(temporary, filePath)
-    chmodSync(filePath, 0o600)
-    syncDirectory(path.dirname(filePath))
+    if (replace) requirePrivateRegularFile(root, confined, "checkpoint path")
+    else if (existsSync(confined)) throw new Error("acceptance checkpoint exists; inspect-before-retry is required")
+    renameSync(temporary, confined)
+    chmodSync(confined, 0o600)
+    syncDirectory(path.dirname(confined))
   } finally {
     if (existsSync(temporary)) unlinkSync(temporary)
   }
 }
 
-function readCheckpoint(filePath: string): JsonObject {
-  const mode = statSync(filePath).mode & 0o777
-  if ((mode & 0o077) !== 0) throw new Error("acceptance checkpoint must be private")
-  return object(JSON.parse(readFileSync(filePath, "utf8")) as unknown, "acceptance checkpoint")
+function initializeCheckpoint(root: string, filePath: string, value: JsonObject): void {
+  writeAtomicPrivateJson(root, filePath, value, false)
+}
+
+function refuseExistingCheckpoint(root: string, filePath: string): void {
+  const confined = confinedPath(root, filePath, "checkpoint path")
+  if (existsSync(confined)) throw new Error("acceptance checkpoint exists; inspect-before-retry is required")
+}
+
+function replaceCheckpoint(root: string, filePath: string, value: JsonObject): void {
+  writeAtomicPrivateJson(root, filePath, value, true)
+}
+
+function readCheckpoint(root: string, filePath: unknown): JsonObject {
+  const confined = requirePrivateRegularFile(root, filePath, "acceptance checkpoint")
+  return object(JSON.parse(readFileSync(confined, "utf8")) as unknown, "acceptance checkpoint")
 }
 
 function safeErrorCategory(error: unknown): string {
@@ -165,8 +194,8 @@ function safeErrorCategory(error: unknown): string {
   return "validation"
 }
 
-function failedCheckpoint(filePath: string, base: JsonObject, error: unknown): void {
-  replaceCheckpoint(filePath, { ...base, phase: "failed", errorCategory: safeErrorCategory(error) })
+function failedCheckpoint(root: string, filePath: string, base: JsonObject, error: unknown): void {
+  replaceCheckpoint(root, filePath, { ...base, phase: "failed", errorCategory: safeErrorCategory(error) })
 }
 
 async function telegramRequest(
@@ -188,9 +217,10 @@ async function telegramRequest(
 }
 
 async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  refuseExistingCheckpoint(evidencePath)
-  const offsetPath = text(config.offsetPath, "offsetPath")
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
+  const offsetPath = confinedPath(root, config.offsetPath, "offsetPath")
   const expectedBotId = text(config.expectedBotId, "expectedBotId")
   const expectedUsername = text(config.expectedUsername, "expectedUsername")
   const currentOffset = integer(config.currentOffset, "currentOffset")
@@ -206,11 +236,10 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
     schemaVersion: 1,
     operation: "telegram-bootstrap",
     phase: "preflight",
-    botId: expectedBotId,
-    botUsername: expectedUsername,
+    botIdentityDigest: digest({ id: expectedBotId, username: expectedUsername }),
     startedAt: deps.now(),
   }
-  initializeCheckpoint(evidencePath, base)
+  initializeCheckpoint(root, evidencePath, base)
   try {
     const sent = object(await deps.runAdapter(nonceAdapter, { operation: "send_telegram_nonce", nonce }), "nonce adapter result")
     if (sent.sent !== true) throw new Error("Telegram nonce adapter did not confirm delivery")
@@ -243,9 +272,9 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
       phase: "nonce_confirmed",
       updateDigest: digest(match),
       coordinateDigest: digest({ userId, chatId }),
-      nextUpdateId,
+      offsetDigest: digest(nextUpdateId),
     }
-    replaceCheckpoint(evidencePath, confirmed)
+    replaceCheckpoint(root, evidencePath, confirmed)
     const stored = object(await deps.runAdapter(vaultAdapter, {
       operation: "store_telegram_bootstrap",
       botToken: token,
@@ -253,89 +282,89 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
       authorizedChatId: chatId,
     }), "vault adapter result")
     if (stored.stored !== true) throw new Error("Telegram vault adapter did not attest storage")
-    replaceCheckpoint(evidencePath, { ...confirmed, phase: "vault_committed" })
-    atomicPrivateJson(offsetPath, { nextUpdateId })
-    replaceCheckpoint(evidencePath, { ...confirmed, phase: "complete", completedAt: deps.now() })
+    replaceCheckpoint(root, evidencePath, { ...confirmed, phase: "vault_committed" })
+    atomicPrivateJson(root, offsetPath, { nextUpdateId })
+    replaceCheckpoint(root, evidencePath, { ...confirmed, phase: "complete", completedAt: deps.now() })
   } catch (error) {
-    failedCheckpoint(evidencePath, base, error)
+    failedCheckpoint(root, evidencePath, base, error)
     throw error
   }
 }
 
-function atomicPrivateJson(filePath: string, value: unknown): void {
-  ensurePrivateParent(filePath)
-  const temporary = `${filePath}.tmp-${process.pid}-${nodeRandomBytes(8).toString("hex")}`
-  try {
-    writeFileSync(temporary, `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 })
-    const handle = openSync(temporary, "r")
-    try { fsyncSync(handle) } finally { closeSync(handle) }
-    renameSync(temporary, filePath)
-    chmodSync(filePath, 0o600)
-    syncDirectory(path.dirname(filePath))
-  } finally {
-    if (existsSync(temporary)) unlinkSync(temporary)
-  }
+function atomicPrivateJson(root: string, filePath: string, value: unknown): void {
+  writeAtomicPrivateJson(root, filePath, value, existsSync(filePath))
 }
 
-function selectedValues(payload: unknown, selectors: string[], prefix = ""): Record<string, string | number | boolean | null> {
-  const result: Record<string, string | number | boolean | null> = {}
-  for (const selector of selectors) {
-    if (!selector || SECRET_SELECTOR.test(selector)) throw new Error("secret-bearing selector is forbidden")
-    let value: unknown = payload
-    for (const segment of selector.split(".")) value = object(value, `selector ${selector}`)[segment]
-    if (!(value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean")) {
-      throw new Error(`selector ${selector} must resolve to a scalar`)
-    }
-    if (typeof value === "number" && !Number.isFinite(value)) throw new Error(`selector ${selector} must resolve to a finite scalar`)
-    result[prefix ? `${prefix}.${selector}` : selector] = value
-  }
+function opaqueDigest(value: unknown, label: string): string {
+  const result = text(value, label)
+  if (!OPAQUE_DIGEST.test(result)) throw new Error(`${label} must be an opaque sha256 digest`)
   return result
 }
 
+function fixedEvidenceValues(schema: FixedEvidenceSchema, payload: unknown): Record<string, string | boolean> {
+  const value = object(payload, `${schema} evidence`)
+  switch (schema) {
+    case "telegram-cursor-v1":
+      return {
+        offsetDigest: opaqueDigest(value.offsetDigest, "telegram cursor offsetDigest"),
+        auditCursorDigest: opaqueDigest(value.auditCursorDigest, "telegram cursor auditCursorDigest"),
+      }
+    case "postboot-health-v1":
+      return {
+        healthy: boolean(value.healthy, "postboot healthy"),
+        containerImageDigest: opaqueDigest(value.containerImageDigest, "postboot containerImageDigest"),
+        telegramOffsetDigest: opaqueDigest(value.telegramOffsetDigest, "postboot telegramOffsetDigest"),
+      }
+  }
+}
+
 async function cursorSnapshot(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  refuseExistingCheckpoint(evidencePath)
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
   if (!Array.isArray(config.adapters) || config.adapters.length === 0) throw new Error("snapshot adapters must be nonempty")
-  const values: Record<string, string | number | boolean | null> = {}
+  const values: Record<string, string | boolean> = {}
+  const schemas = new Set<string>()
   for (const raw of config.adapters) {
     const spec = object(raw, "snapshot adapter")
-    const name = text(spec.name, "snapshot adapter name")
-    if (SECRET_SELECTOR.test(name)) throw new Error("secret-bearing snapshot name is forbidden")
+    const schema = text(spec.schema, "snapshot adapter schema")
+    if (schema !== "telegram-cursor-v1") throw new Error("unsupported cursor snapshot evidence schema")
+    if (schemas.has(schema)) throw new Error("snapshot adapter schemas must be unique")
+    schemas.add(schema)
     const executable = adapter(spec.executable, "snapshot adapter executable")
-    const select = stringArray(spec.select, "snapshot selectors")
-    const payload = await deps.runAdapter(executable, { operation: "snapshot", name })
-    Object.assign(values, selectedValues(payload, select, name))
+    const payload = await deps.runAdapter(executable, { operation: "snapshot", schema })
+    const selected = fixedEvidenceValues(schema, payload)
+    for (const [name, value] of Object.entries(selected)) values[`${schema}.${name}`] = value
   }
-  initializeCheckpoint(evidencePath, { schemaVersion: 1, operation: "cursor-snapshot", phase: "complete", capturedAt: deps.now(), values })
+  initializeCheckpoint(root, evidencePath, { schemaVersion: 1, operation: "cursor-snapshot", phase: "complete", capturedAt: deps.now(), values })
 }
 
 async function cursorDelta(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  refuseExistingCheckpoint(evidencePath)
-  const before = object(readCheckpoint(text(config.beforePath, "beforePath")).values, "before values")
-  const after = object(readCheckpoint(text(config.afterPath, "afterPath")).values, "after values")
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
+  const before = object(readCheckpoint(root, config.beforePath).values, "before values")
+  const after = object(readCheckpoint(root, config.afterPath).values, "after values")
   const changes: Record<string, { before: unknown; after: unknown }> = {}
   for (const key of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
     if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) changes[key] = { before: before[key] ?? null, after: after[key] ?? null }
   }
-  initializeCheckpoint(evidencePath, { schemaVersion: 1, operation: "cursor-delta", phase: "complete", capturedAt: deps.now(), changes })
+  initializeCheckpoint(root, evidencePath, { schemaVersion: 1, operation: "cursor-delta", phase: "complete", capturedAt: deps.now(), changes })
 }
 
 async function callbackInject(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  refuseExistingCheckpoint(evidencePath)
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
   const executable = adapter(config.adapter, "callback adapter")
-  const concurrency = integer(config.concurrency, "concurrency", 1)
+  const concurrency = integer(config.concurrency, "concurrency", 2)
   if (concurrency > 16) throw new Error("callback concurrency exceeds 16")
-  const replay = boolean(config.replay, "replay")
-  const expectedClaims = integer(config.expectedClaims, "expectedClaims")
-  const expectedMutations = integer(config.expectedMutations, "expectedMutations")
   let update: JsonObject
   try { update = object(JSON.parse(deps.readSecret()) as unknown, "saved callback update") }
   catch { throw new Error("saved callback update must be valid JSON") }
   object(update.callback_query, "saved callback update callback_query")
-  const base = { schemaVersion: 1, operation: "callback-inject", phase: "preflight", updateDigest: digest(update), concurrency, replay }
-  initializeCheckpoint(evidencePath, base)
+  const base = { schemaVersion: 1, operation: "callback-inject", phase: "preflight", updateDigest: digest(update), concurrency, replay: true }
+  initializeCheckpoint(root, evidencePath, base)
   try {
     const batch = object(await deps.runAdapter(executable, { operation: "inject_callbacks_concurrently", update, concurrency }), "callback batch result")
     if (!Array.isArray(batch.results) || batch.results.length !== concurrency) throw new Error("callback batch result count mismatch")
@@ -350,18 +379,16 @@ async function callbackInject(config: JsonObject, deps: AcceptanceHarnessDepende
       if (result.mutated === true) mutations += 1
       else if (result.mutated !== false) throw new Error("callback adapter mutation must be boolean")
     }
-    if (claims !== expectedClaims) throw new Error("callback claim total mismatch")
-    if (mutations !== expectedMutations) throw new Error("callback mutation total mismatch")
-    let replayMutated = false
-    if (replay) {
-      const replayResult = object(await deps.runAdapter(executable, { operation: "inject_callback_replay", update }), "callback replay result")
-      if (replayResult.settled !== true || typeof replayResult.mutated !== "boolean") throw new Error("callback replay did not settle canonically")
-      replayMutated = replayResult.mutated
-      if (replayMutated) throw new Error("callback replay mutated state")
+    if (claims !== 1) throw new Error("callback claim total must be exactly one")
+    if (mutations !== 1) throw new Error("callback mutation total must be exactly one")
+    const replayResult = object(await deps.runAdapter(executable, { operation: "inject_callback_replay", update }), "callback replay result")
+    if (replayResult.settled !== true || typeof replayResult.claimed !== "boolean" || typeof replayResult.mutated !== "boolean") {
+      throw new Error("callback replay did not settle canonically")
     }
-    replaceCheckpoint(evidencePath, { ...base, phase: "complete", claims, mutations, replayMutated, completedAt: deps.now() })
+    if (replayResult.claimed || replayResult.mutated) throw new Error("callback replay was claimed or mutated state")
+    replaceCheckpoint(root, evidencePath, { ...base, phase: "complete", claims, mutations, replayClaimed: false, replayMutated: false, completedAt: deps.now() })
   } catch (error) {
-    failedCheckpoint(evidencePath, base, error)
+    failedCheckpoint(root, evidencePath, base, error)
     throw error
   }
 }
@@ -371,7 +398,7 @@ interface InventoryKey { id: string; name: string; permissions: string[]; roles:
 function inventory(value: unknown): InventoryKey[] {
   const root = object(value, "Unraid inventory")
   if (!Array.isArray(root.keys)) throw new Error("Unraid inventory keys must be an array")
-  return root.keys.map((raw) => {
+  const keys = root.keys.map((raw) => {
     const key = object(raw, "Unraid inventory key")
     return {
       id: text(key.id, "Unraid key id"),
@@ -380,15 +407,30 @@ function inventory(value: unknown): InventoryKey[] {
       roles: Array.isArray(key.roles) ? stringArray(key.roles, "Unraid key roles").sort() : (() => { throw new Error("Unraid key roles must be an array") })(),
     }
   })
+  if (new Set(keys.map((key) => key.id)).size !== keys.length) throw new Error("Unraid inventory key IDs must be unique")
+  if (new Set(keys.map((key) => key.name)).size !== keys.length) throw new Error("Unraid inventory key names must be unique")
+  return keys
 }
 
 function sameStrings(left: string[], right: string[]): boolean {
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort())
 }
 
+function sameInventoryKey(left: InventoryKey, right: InventoryKey): boolean {
+  return left.id === right.id && left.name === right.name && sameStrings(left.permissions, right.permissions) && sameStrings(left.roles, right.roles)
+}
+
+function sameInventory(left: InventoryKey[], right: InventoryKey[]): boolean {
+  const sorted = (keys: InventoryKey[]) => [...keys].sort((a, b) => a.id.localeCompare(b.id))
+  const expected = sorted(left)
+  const actual = sorted(right)
+  return expected.length === actual.length && expected.every((key, index) => sameInventoryKey(key, actual[index]!))
+}
+
 async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  refuseExistingCheckpoint(evidencePath)
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
   const targetServerId = text(config.targetServerId, "targetServerId")
   const inventoryAdapter = adapter(config.inventoryAdapter, "inventoryAdapter")
   const createAdapter = adapter(config.createAdapter, "createAdapter")
@@ -403,17 +445,19 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
     return { name: text(key.name, "desired key name"), vaultField: text(key.vaultField, "desired vault field"), permissions: permissions.sort() }
   })
   if (new Set(desired.map((key) => key.name)).size !== desired.length) throw new Error("desired key names must be unique")
+  if (new Set(desired.map((key) => key.vaultField)).size !== desired.length) throw new Error("desired key vault fields must be unique")
   if (!Array.isArray(config.oldKeys)) throw new Error("oldKeys must be an array")
   const oldKeys = config.oldKeys.map((raw) => {
     const old = object(raw, "old Unraid key")
     return { id: text(old.id, "old key id"), secretAdapter: adapter(old.secretAdapter, "old key secretAdapter") }
   })
+  if (new Set(oldKeys.map((key) => key.id)).size !== oldKeys.length) throw new Error("old key IDs must be unique")
   const initial = inventory(await deps.runAdapter(inventoryAdapter, { operation: "inventory_keys", targetServerId }))
   for (const key of desired) if (initial.some((entry) => entry.name === key.name)) throw new Error(`Unraid key ${key.name} already exists`)
   for (const old of oldKeys) if (!initial.some((entry) => entry.id === old.id)) throw new Error(`old Unraid key ${old.id} is absent`)
 
   const base: JsonObject = { schemaVersion: 1, operation: "unraid-key-rotate", phase: "preflight", targetServerId, initialInventoryDigest: digest(initial), createdKeyIds: [], revokedKeyIds: [] }
-  initializeCheckpoint(evidencePath, base)
+  initializeCheckpoint(root, evidencePath, base)
   const createdKeyIds: string[] = []
   const revokedKeyIds: string[] = []
   try {
@@ -423,15 +467,24 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
       const rawKey = text(created.key, "created raw key")
       if (created.name !== key.name || !sameStrings(stringArray(created.permissions, "created permissions"), key.permissions)
         || !Array.isArray(created.roles) || created.roles.length !== 0) throw new Error("created Unraid key scope mismatch")
+      if (initial.some((entry) => entry.id === id) || oldKeys.some((entry) => entry.id === id) || createdKeyIds.includes(id)) {
+        throw new Error("created Unraid key ID is preexisting or reused")
+      }
       createdKeyIds.push(id)
-      replaceCheckpoint(evidencePath, { ...base, phase: "key_created", createdKeyIds, revokedKeyIds })
+      replaceCheckpoint(root, evidencePath, { ...base, phase: "key_created", createdKeyIds, revokedKeyIds })
       const stored = object(await deps.runAdapter(storeAdapter, { operation: "store_key", targetServerId, vaultField: key.vaultField, keyId: id, key: rawKey }), "key store result")
       if (stored.stored !== true || stored.keyId !== id) throw new Error("vault did not attest exact key storage")
       const probe = object(await deps.runAdapter(probeAdapter, { operation: "probe_new_key", targetServerId, id, key: rawKey }), "new key probe")
       if (probe.valid !== true) throw new Error("new Unraid key readiness failed")
-      replaceCheckpoint(evidencePath, { ...base, phase: "key_attested", createdKeyIds, revokedKeyIds })
+      replaceCheckpoint(root, evidencePath, { ...base, phase: "key_attested", createdKeyIds, revokedKeyIds })
     }
     for (const old of oldKeys) {
+      const reconciled = inventory(await deps.runAdapter(inventoryAdapter, { operation: "inventory_keys", targetServerId }))
+      const expected = [
+        ...initial.filter((entry) => !revokedKeyIds.includes(entry.id)),
+        ...desired.map((key, index): InventoryKey => ({ id: createdKeyIds[index]!, name: key.name, permissions: key.permissions, roles: [] })),
+      ]
+      if (!sameInventory(reconciled, expected)) throw new Error("Unraid inventory changed ambiguously before exact revoke")
       const secretResult = object(await deps.runAdapter(old.secretAdapter, { operation: "read_old_key", targetServerId, id: old.id }), "old key secret result")
       const rawOldKey = text(secretResult.key, "old raw key")
       const revoked = object(await deps.runAdapter(revokeAdapter, { operation: "revoke_key", targetServerId, id: old.id }), "key revoke result")
@@ -439,7 +492,7 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
       const probe = object(await deps.runAdapter(probeAdapter, { operation: "probe_revoked_key", targetServerId, id: old.id, key: rawOldKey }), "revoked key probe")
       if (probe.valid !== false || (probe.status !== 401 && probe.status !== 403)) throw new Error("revoked Unraid key still authenticates")
       revokedKeyIds.push(old.id)
-      replaceCheckpoint(evidencePath, { ...base, phase: "old_key_revoked", createdKeyIds, revokedKeyIds })
+      replaceCheckpoint(root, evidencePath, { ...base, phase: "old_key_revoked", createdKeyIds, revokedKeyIds })
     }
     const final = inventory(await deps.runAdapter(inventoryAdapter, { operation: "inventory_keys", targetServerId }))
     for (let index = 0; index < desired.length; index++) {
@@ -449,57 +502,61 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
       if (!found || found.roles.length !== 0 || !sameStrings(found.permissions, key.permissions)) throw new Error("final Unraid key inventory mismatch")
     }
     if (oldKeys.some((old) => final.some((entry) => entry.id === old.id))) throw new Error("revoked Unraid key remains in inventory")
-    replaceCheckpoint(evidencePath, { ...base, phase: "complete", createdKeyIds, revokedKeyIds, finalInventoryDigest: digest(final), completedAt: deps.now() })
+    replaceCheckpoint(root, evidencePath, { ...base, phase: "complete", createdKeyIds, revokedKeyIds, finalInventoryDigest: digest(final), completedAt: deps.now() })
   } catch (error) {
-    failedCheckpoint(evidencePath, { ...base, createdKeyIds, revokedKeyIds }, error)
+    failedCheckpoint(root, evidencePath, { ...base, createdKeyIds, revokedKeyIds }, error)
     throw error
   }
 }
 
 async function evidenceSnapshot(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  refuseExistingCheckpoint(evidencePath)
-  const name = text(config.name, "snapshot name")
-  if (SECRET_SELECTOR.test(name)) throw new Error("secret-bearing snapshot name is forbidden")
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
+  const schema = text(config.schema, "snapshot schema")
+  if (schema !== "postboot-health-v1") throw new Error("unsupported standalone evidence schema")
   const executable = adapter(config.adapter, "snapshot adapter")
-  const selectors = stringArray(config.select, "snapshot selectors")
-  const payload = await deps.runAdapter(executable, { operation: "evidence_snapshot", name })
-  initializeCheckpoint(evidencePath, {
+  const payload = await deps.runAdapter(executable, { operation: "evidence_snapshot", schema })
+  const values = fixedEvidenceValues(schema, payload)
+  initializeCheckpoint(root, evidencePath, {
     schemaVersion: 1,
     operation: "evidence-snapshot",
     phase: "complete",
-    name,
+    schema,
     capturedAt: deps.now(),
-    payloadDigest: digest(payload),
-    values: selectedValues(payload, selectors),
+    values,
   })
 }
 
 async function rebootRequest(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  refuseExistingCheckpoint(evidencePath)
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  refuseExistingCheckpoint(root, evidencePath)
   const targetId = text(config.targetId, "targetId")
   const executable = adapter(config.adapter, "reboot adapter")
   const idempotencyKey = deps.randomBytes(16).toString("hex")
   const base = { schemaVersion: 1, operation: "reboot", phase: "preflight", targetId, idempotencyDigest: digest(idempotencyKey), requestedAt: deps.now() }
-  initializeCheckpoint(evidencePath, base)
+  initializeCheckpoint(root, evidencePath, base)
   try {
     const response = object(await deps.runAdapter(executable, { operation: "request_reboot", targetId, idempotencyKey }), "reboot adapter result")
     if (response.accepted !== true || response.targetId !== targetId) throw new Error("reboot adapter did not accept the exact target")
     const requestId = text(response.requestId, "reboot requestId")
-    replaceCheckpoint(evidencePath, { ...base, phase: "requested", requestId })
+    const prebootDigest = digest(text(response.prebootId, "reboot prebootId"))
+    replaceCheckpoint(root, evidencePath, { ...base, phase: "requested", requestId, prebootDigest })
   } catch (error) {
-    failedCheckpoint(evidencePath, base, error)
+    failedCheckpoint(root, evidencePath, base, error)
     throw error
   }
 }
 
 async function rebootResume(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const evidencePath = text(config.evidencePath, "evidencePath")
-  const checkpoint = readCheckpoint(evidencePath)
+  const root = privateAllowedRoot(config)
+  const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
+  const checkpoint = readCheckpoint(root, evidencePath)
   if (checkpoint.operation !== "reboot" || checkpoint.phase !== "requested") throw new Error("reboot checkpoint is not resumable")
   const targetId = text(checkpoint.targetId, "checkpoint targetId")
   const requestId = text(checkpoint.requestId, "checkpoint requestId")
+  const prebootDigest = opaqueDigest(checkpoint.prebootDigest, "checkpoint prebootDigest")
   const executable = adapter(config.adapter, "reboot poll adapter")
   const timeoutMs = integer(config.timeoutMs, "timeoutMs", 1)
   const intervalMs = integer(config.intervalMs, "intervalMs", 1)
@@ -509,7 +566,9 @@ async function rebootResume(config: JsonObject, deps: AcceptanceHarnessDependenc
     if (response.targetId !== targetId || response.requestId !== requestId) throw new Error("reboot target drift")
     if (response.state === "ready") {
       const bootId = text(response.bootId, "reboot bootId")
-      replaceCheckpoint(evidencePath, { ...checkpoint, phase: "complete", bootId, completedAt: deps.now() })
+      const postbootDigest = digest(bootId)
+      if (postbootDigest === prebootDigest) throw new Error("reboot boot identity did not change")
+      replaceCheckpoint(root, evidencePath, { ...checkpoint, phase: "complete", postbootDigest, completedAt: deps.now() })
       return
     }
     if (response.state !== "booting" && response.state !== "offline") throw new Error("reboot poll returned an invalid state")

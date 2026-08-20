@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   createSanctuaryAcceptanceHarnessDependencies,
-  executeSanctuaryAcceptanceHarness,
+  executeSanctuaryAcceptanceHarness as executeHarness,
   type AcceptanceHarnessDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-harness"
 
@@ -18,7 +18,7 @@ afterEach(() => {
 })
 
 function root(): string {
-  const created = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-acceptance-"))
+  const created = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-acceptance-")))
   roots.push(created)
   return created
 }
@@ -46,6 +46,20 @@ function dependencies(input: {
 
 function evidence(file: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>
+}
+
+function sha(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex")
+}
+
+function executeSanctuaryAcceptanceHarness(command: string, rawConfig: unknown, deps?: AcceptanceHarnessDependencies): Promise<void> {
+  if (rawConfig && typeof rawConfig === "object" && !Array.isArray(rawConfig)) {
+    const config = rawConfig as Record<string, unknown>
+    if (typeof config.evidencePath === "string" && config.evidencePath.trim() && config.allowedRoot === undefined) {
+      return executeHarness(command, { allowedRoot: fs.realpathSync(path.dirname(config.evidencePath)), ...config }, deps)
+    }
+  }
+  return executeHarness(command, rawConfig, deps)
 }
 
 describe("Sanctuary acceptance harness", () => {
@@ -104,7 +118,7 @@ describe("Sanctuary acceptance harness", () => {
     expect(rawEvidence).not.toContain("111")
     expect(rawEvidence).not.toContain("222")
     expect(rawEvidence).not.toContain("0123456789abcdef0123456789abcdef")
-    expect(evidence(evidencePath)).toMatchObject({ operation: "telegram-bootstrap", phase: "complete", nextUpdateId: 42 })
+    expect(evidence(evidencePath)).toMatchObject({ operation: "telegram-bootstrap", phase: "complete", offsetDigest: sha(42) })
   })
 
   it("fails Telegram bootstrap before mutation on identity, nonce, or checkpoint ambiguity", async () => {
@@ -149,16 +163,16 @@ describe("Sanctuary acceptance harness", () => {
     let offset = 10
     const deps = dependencies({ adapter: async (executable, payload) => {
       expect(executable).toBe("/safe/snapshot")
-      expect(payload).toEqual({ operation: "snapshot", name: "telegram" })
-      return { offset, nested: { auditCursor: offset + 5 }, ignoredToken: "must-not-persist" }
+      expect(payload).toEqual({ operation: "snapshot", schema: "telegram-cursor-v1" })
+      return { offsetDigest: createHash("sha256").update(String(offset)).digest("hex"), auditCursorDigest: createHash("sha256").update(String(offset + 5)).digest("hex"), ignoredToken: "must-not-persist" }
     } })
-    const config = { adapters: [{ name: "telegram", executable: "/safe/snapshot", select: ["offset", "nested.auditCursor"] }] }
+    const config = { adapters: [{ schema: "telegram-cursor-v1", executable: "/safe/snapshot" }] }
     await executeSanctuaryAcceptanceHarness("cursor-snapshot", { evidencePath: before, ...config }, deps)
     offset = 11
     await executeSanctuaryAcceptanceHarness("cursor-snapshot", { evidencePath: after, ...config }, deps)
     await executeSanctuaryAcceptanceHarness("cursor-delta", { evidencePath: delta, beforePath: before, afterPath: after }, deps)
-    expect(evidence(before)).toMatchObject({ operation: "cursor-snapshot", values: { "telegram.offset": 10, "telegram.nested.auditCursor": 15 } })
-    expect(evidence(delta)).toMatchObject({ operation: "cursor-delta", changes: { "telegram.offset": { before: 10, after: 11 }, "telegram.nested.auditCursor": { before: 15, after: 16 } } })
+    expect(evidence(before)).toMatchObject({ operation: "cursor-snapshot", values: { "telegram-cursor-v1.offsetDigest": createHash("sha256").update("10").digest("hex"), "telegram-cursor-v1.auditCursorDigest": createHash("sha256").update("15").digest("hex") } })
+    expect(evidence(delta)).toMatchObject({ operation: "cursor-delta", changes: { "telegram-cursor-v1.offsetDigest": expect.any(Object), "telegram-cursor-v1.auditCursorDigest": expect.any(Object) } })
     expect(fs.readFileSync(before, "utf8")).not.toContain("must-not-persist")
   })
 
@@ -168,7 +182,6 @@ describe("Sanctuary acceptance harness", () => {
     const update = { update_id: 99, callback_query: { id: "opaque", from: { id: 111 }, data: "a:opaque", message: { message_id: 4, chat: { id: 222 } } } }
     await executeSanctuaryAcceptanceHarness("callback-inject", {
       evidencePath: path.join(dir, "callback.json"), adapter: "/safe/inject", concurrency: 2,
-      replay: true, expectedClaims: 1, expectedMutations: 1,
     }, dependencies({
       secret: JSON.stringify(update),
       adapter: async (executable, payload) => {
@@ -191,17 +204,15 @@ describe("Sanctuary acceptance harness", () => {
   it("rejects malformed callback material and unexpected callback totals before claiming success", async () => {
     const dir = root()
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: path.join(dir, "bad.json"), adapter: "/safe/inject", concurrency: 1,
-      replay: false, expectedClaims: 0, expectedMutations: 0,
+      evidencePath: path.join(dir, "bad.json"), adapter: "/safe/inject", concurrency: 2,
     }, dependencies({ secret: "{}" }))).rejects.toThrow(/callback_query/u)
 
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: path.join(dir, "totals.json"), adapter: "/safe/inject", concurrency: 1,
-      replay: false, expectedClaims: 0, expectedMutations: 0,
+      evidencePath: path.join(dir, "totals.json"), adapter: "/safe/inject", concurrency: 2,
     }, dependencies({
       secret: JSON.stringify({ update_id: 1, callback_query: { id: "x", from: { id: 1 }, data: "x" } }),
-      adapter: async () => ({ results: [{ settled: true, claimed: true, mutated: false }] }),
-    }))).rejects.toThrow(/claim total/u)
+      adapter: async () => ({ results: [{ settled: true, claimed: true, mutated: false }, { settled: true, claimed: false, mutated: false }] }),
+    }))).rejects.toThrow(/mutation total/u)
     expect(evidence(path.join(dir, "totals.json"))).toMatchObject({ phase: "failed" })
   })
 
@@ -223,7 +234,13 @@ describe("Sanctuary acceptance harness", () => {
       calls.push({ executable, payload })
       if (executable === "/safe/inventory") {
         inventoryCount += 1
-        return inventoryCount === 1 ? { keys: [{ id: "legacy-read", name: "Legacy", permissions: permissions, roles: [] }] } : {
+        if (inventoryCount === 1) return { keys: [{ id: "legacy-read", name: "Legacy", permissions: permissions, roles: [] }] }
+        if (inventoryCount === 2) return { keys: [
+          { id: "legacy-read", name: "Legacy", permissions, roles: [] },
+          { id: "ro-id", name: "Butler RO", permissions, roles: [] },
+          { id: "rw-id", name: "Butler RW", permissions: [...permissions, "DOCKER:UPDATE_ANY"], roles: [] },
+        ] }
+        return {
           keys: [
             { id: "ro-id", name: "Butler RO", permissions, roles: [] },
             { id: "rw-id", name: "Butler RW", permissions: [...permissions, "DOCKER:UPDATE_ANY"], roles: [] },
@@ -281,15 +298,14 @@ describe("Sanctuary acceptance harness", () => {
     const dir = root()
     const file = path.join(dir, "health.json")
     await executeSanctuaryAcceptanceHarness("evidence-snapshot", {
-      evidencePath: file, name: "postboot-health", adapter: "/safe/health",
-      select: ["healthy", "container.image", "telegram.offset"],
+      evidencePath: file, schema: "postboot-health-v1", adapter: "/safe/health",
     }, dependencies({ adapter: async (_executable, payload) => {
-      expect(payload).toEqual({ operation: "evidence_snapshot", name: "postboot-health" })
-      return { healthy: true, container: { image: "sha256:abc" }, telegram: { offset: 44 }, apiToken: "secret" }
+      expect(payload).toEqual({ operation: "evidence_snapshot", schema: "postboot-health-v1" })
+      return { healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64), apiToken: "secret" }
     } }))
     const saved = evidence(file)
-    expect(saved).toMatchObject({ operation: "evidence-snapshot", name: "postboot-health", values: { healthy: true, "container.image": "sha256:abc", "telegram.offset": 44 } })
-    expect(saved).toHaveProperty("payloadDigest", createHash("sha256").update(JSON.stringify({ healthy: true, container: { image: "sha256:abc" }, telegram: { offset: 44 }, apiToken: "secret" })).digest("hex"))
+    expect(saved).toMatchObject({ operation: "evidence-snapshot", schema: "postboot-health-v1", values: { healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) } })
+    expect(saved).not.toHaveProperty("payloadDigest")
     expect(fs.readFileSync(file, "utf8")).not.toContain('"secret"')
   })
 
@@ -301,7 +317,7 @@ describe("Sanctuary acceptance harness", () => {
     const deps = dependencies({
       adapter: async (executable, payload) => {
         calls.push({ executable, payload })
-        if (executable === "/safe/reboot") return { accepted: true, targetId: "sanctuary", requestId: "request-1" }
+        if (executable === "/safe/reboot") return { accepted: true, targetId: "sanctuary", requestId: "request-1", prebootId: "boot-1" }
         poll += 1
         return poll === 1
           ? { state: "booting", targetId: "sanctuary", requestId: "request-1" }
@@ -313,19 +329,19 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: file, targetId: "sanctuary", adapter: "/safe/reboot",
     }, deps)
     const requested = evidence(file)
-    expect(requested).toMatchObject({ phase: "requested", targetId: "sanctuary", requestId: "request-1" })
+    expect(requested).toMatchObject({ phase: "requested", targetId: "sanctuary", requestId: "request-1", prebootDigest: sha("boot-1") })
     await executeSanctuaryAcceptanceHarness("reboot-resume", {
       evidencePath: file, adapter: "/safe/poll", timeoutMs: 100, intervalMs: 1,
     }, deps)
     expect(calls.filter((call) => call.executable === "/safe/reboot")).toHaveLength(1)
     expect(calls.filter((call) => call.executable === "/safe/poll")[0]!.payload).toEqual({ operation: "poll_reboot", targetId: "sanctuary", requestId: "request-1" })
-    expect(evidence(file)).toMatchObject({ phase: "complete", targetId: "sanctuary", requestId: "request-1", bootId: "boot-2" })
+    expect(evidence(file)).toMatchObject({ phase: "complete", targetId: "sanctuary", requestId: "request-1", postbootDigest: sha("boot-2") })
   })
 
   it("refuses duplicate reboot requests and fails resume on target drift or timeout", async () => {
     const dir = root()
     const file = path.join(dir, "reboot.json")
-    fs.writeFileSync(file, JSON.stringify({ operation: "reboot", phase: "requested", targetId: "sanctuary", requestId: "r" }), { mode: 0o600 })
+    fs.writeFileSync(file, JSON.stringify({ operation: "reboot", phase: "requested", targetId: "sanctuary", requestId: "r", prebootDigest: sha("before") }), { mode: 0o600 })
     await expect(executeSanctuaryAcceptanceHarness("reboot-request", { evidencePath: file, targetId: "sanctuary", adapter: "/reboot" }, dependencies())).rejects.toThrow(/inspect-before-retry/u)
     await expect(executeSanctuaryAcceptanceHarness("reboot-resume", { evidencePath: file, adapter: "/poll", timeoutMs: 10, intervalMs: 1 }, dependencies({
       adapter: async () => ({ state: "ready", targetId: "other", requestId: "r", bootId: "b" }),
@@ -338,11 +354,11 @@ describe("Sanctuary acceptance harness", () => {
     }))).rejects.toThrow(/timed out/u)
   })
 
-  it("rejects secret-looking snapshot selectors and unknown commands", async () => {
+  it("rejects unsupported snapshot schemas and unknown commands", async () => {
     const dir = root()
     await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", {
-      evidencePath: path.join(dir, "bad.json"), name: "bad", adapter: "/adapter", select: ["apiToken"],
-    }, dependencies())).rejects.toThrow(/secret-bearing selector/u)
+      evidencePath: path.join(dir, "bad.json"), schema: "unsupported", adapter: "/adapter",
+    }, dependencies())).rejects.toThrow(/unsupported standalone evidence schema/u)
     await expect(executeSanctuaryAcceptanceHarness("nope", {}, dependencies())).rejects.toThrow(/unknown Sanctuary acceptance command/u)
   })
 
@@ -394,29 +410,28 @@ describe("Sanctuary acceptance harness", () => {
       else await expect(promise).rejects.toThrow()
     }
     await reject("cursor-snapshot", null, undefined, /object/u)
-    await reject("cursor-snapshot", { evidencePath: "", adapters: [] }, undefined, /nonempty text/u)
+    await reject("cursor-snapshot", { allowedRoot: dir, evidencePath: "", adapters: [] }, undefined, /nonempty text/u)
     await reject("cursor-snapshot", { evidencePath: path.join(dir, "empty.json"), adapters: [] }, undefined, /nonempty/u)
-    await reject("cursor-snapshot", { evidencePath: path.join(dir, "bad-adapter.json"), adapters: [{ name: "x", executable: "relative", select: ["x"] }] }, undefined, /absolute/u)
-    await reject("cursor-snapshot", { evidencePath: path.join(dir, "bad-name.json"), adapters: [{ name: "apiToken", executable: "/x", select: ["x"] }] }, undefined, /secret-bearing/u)
-    await reject("cursor-snapshot", { evidencePath: path.join(dir, "bad-select.json"), adapters: [{ name: "x", executable: "/x", select: [""] }] }, undefined, /nonempty strings/u)
+    await reject("cursor-snapshot", { evidencePath: path.join(dir, "bad-adapter.json"), adapters: [{ schema: "telegram-cursor-v1", executable: "relative" }] }, undefined, /absolute/u)
+    await reject("cursor-snapshot", { evidencePath: path.join(dir, "duplicate-schema.json"), adapters: [{ schema: "telegram-cursor-v1", executable: "/x" }, { schema: "telegram-cursor-v1", executable: "/y" }] }, dependencies({ adapter: async () => ({ offsetDigest: "a".repeat(64), auditCursorDigest: "b".repeat(64) }) }), /unique/u)
+    await reject("cursor-snapshot", { evidencePath: path.join(dir, "bad-schema.json"), adapters: [{ schema: "postboot-health-v1", executable: "/x" }] }, undefined, /unsupported/u)
     const existingSnapshot = path.join(dir, "existing-snapshot.json")
     fs.writeFileSync(existingSnapshot, "{}\n", { mode: 0o600 })
     let existingEvidenceAdapterCalls = 0
     const existingEvidenceDeps = dependencies({ adapter: async () => { existingEvidenceAdapterCalls += 1; return { ok: true } } })
-    await reject("cursor-snapshot", { evidencePath: existingSnapshot, adapters: [{ name: "x", executable: "/x", select: ["ok"] }] }, existingEvidenceDeps, /inspect-before-retry/u)
-    await reject("evidence-snapshot", { evidencePath: existingSnapshot, name: "x", adapter: "/x", select: ["ok"] }, existingEvidenceDeps, /inspect-before-retry/u)
+    await reject("cursor-snapshot", { evidencePath: existingSnapshot, adapters: [{ schema: "telegram-cursor-v1", executable: "/x" }] }, existingEvidenceDeps, /inspect-before-retry/u)
+    await reject("evidence-snapshot", { evidencePath: existingSnapshot, schema: "postboot-health-v1", adapter: "/x" }, existingEvidenceDeps, /inspect-before-retry/u)
     expect(existingEvidenceAdapterCalls).toBe(0)
-    await reject("evidence-snapshot", { evidencePath: path.join(dir, "object-select.json"), name: "x", adapter: "/x", select: ["nested"] }, dependencies({ adapter: async () => ({ nested: {} }) }), /scalar/u)
-    await reject("evidence-snapshot", { evidencePath: path.join(dir, "nan-select.json"), name: "x", adapter: "/x", select: ["number"] }, dependencies({ adapter: async () => ({ number: Number.NaN }) }), /finite/u)
-    await reject("evidence-snapshot", { evidencePath: path.join(dir, "bad-snapshot-name.json"), name: "apiToken", adapter: "/x", select: ["ok"] }, dependencies({ adapter: async () => ({ ok: true }) }), /secret-bearing snapshot name/u)
+    await reject("evidence-snapshot", { evidencePath: path.join(dir, "invalid-digest.json"), schema: "postboot-health-v1", adapter: "/x" }, dependencies({ adapter: async () => ({ healthy: true, containerImageDigest: "raw", telegramOffsetDigest: "b".repeat(64) }) }), /opaque sha256/u)
+    await reject("evidence-snapshot", { evidencePath: path.join(dir, "invalid-health.json"), schema: "postboot-health-v1", adapter: "/x" }, dependencies({ adapter: async () => ({ healthy: "yes", containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) }) }), /boolean/u)
     const publicDir = path.join(dir, "public")
     fs.mkdirSync(publicDir, { mode: 0o755 })
-    await reject("evidence-snapshot", { evidencePath: path.join(publicDir, "evidence.json"), name: "x", adapter: "/x", select: ["ok"] }, dependencies({ adapter: async () => ({ ok: true }) }), /group\/world/u)
+    await reject("evidence-snapshot", { allowedRoot: publicDir, evidencePath: path.join(publicDir, "evidence.json"), schema: "postboot-health-v1", adapter: "/x" }, dependencies(), /allowed root must be private/u)
     const privateFile = path.join(dir, "not-private.json")
     fs.writeFileSync(privateFile, JSON.stringify({ values: {} }), { mode: 0o644 })
-    await reject("cursor-delta", { evidencePath: path.join(dir, "delta-private.json"), beforePath: privateFile, afterPath: privateFile }, undefined, /must be private/u)
+    await reject("cursor-delta", { evidencePath: path.join(dir, "delta-private.json"), beforePath: privateFile, afterPath: privateFile }, undefined, /owned private file/u)
     const longPath = path.join(dir, "x".repeat(300))
-    await reject("evidence-snapshot", { evidencePath: longPath, name: "x", adapter: "/x", select: ["ok"] }, dependencies({ adapter: async () => ({ ok: true }) }))
+    await reject("evidence-snapshot", { evidencePath: longPath, schema: "postboot-health-v1", adapter: "/x" }, dependencies({ adapter: async () => ({ healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) }) }))
 
     const telegramConfig = (name: string) => ({
       evidencePath: path.join(dir, `${name}.json`), offsetPath: path.join(dir, `${name}-offset.json`),
@@ -467,38 +482,40 @@ describe("Sanctuary acceptance harness", () => {
     const dir = root()
     const update = JSON.stringify({ update_id: 1, callback_query: { id: "x", from: { id: 1 }, data: "x" } })
     const run = async (name: string, response: unknown, overrides: Record<string, unknown> = {}) => executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: path.join(dir, `${name}.json`), adapter: "/inject", concurrency: 1, replay: false,
-      expectedClaims: 0, expectedMutations: 0, ...overrides,
-    }, dependencies({ secret: update, adapter: async () => ({ results: [response] }) }))
+      evidencePath: path.join(dir, `${name}.json`), adapter: "/inject", concurrency: 2, ...overrides,
+    }, dependencies({ secret: update, adapter: async (_executable, payload) => (payload as { operation: string }).operation === "inject_callbacks_concurrently"
+      ? { results: [response, { settled: true, claimed: false, mutated: false }] }
+      : { settled: true, claimed: false, mutated: false } }))
     await expect(run("settled", { settled: false, claimed: false, mutated: false })).rejects.toThrow(/did not settle/u)
     await expect(run("claim", { settled: true, claimed: "no", mutated: false })).rejects.toThrow(/claim must be boolean/u)
     await expect(run("mutation", { settled: true, claimed: false, mutated: "no" })).rejects.toThrow(/mutation must be boolean/u)
-    await expect(run("mutation-total", { settled: true, claimed: false, mutated: true })).rejects.toThrow(/mutation total/u)
+    await expect(run("claim-total", { settled: true, claimed: false, mutated: false })).rejects.toThrow(/claim total/u)
+    await expect(run("mutation-total", { settled: true, claimed: true, mutated: false })).rejects.toThrow(/mutation total/u)
     await expect(run("concurrency", { settled: true, claimed: false, mutated: false }, { concurrency: 17 })).rejects.toThrow(/exceeds/u)
     await expect(run("integer", { settled: true, claimed: false, mutated: false }, { concurrency: "one" })).rejects.toThrow(/safe integer/u)
-    await expect(run("boolean", { settled: true, claimed: false, mutated: false }, { replay: "no" })).rejects.toThrow(/must be boolean/u)
+    await expect(run("minimum", { settled: true, claimed: false, mutated: false }, { concurrency: 1 })).rejects.toThrow(/>= 2/u)
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: path.join(dir, "json.json"), adapter: "/inject", concurrency: 1, replay: false, expectedClaims: 0, expectedMutations: 0,
+      evidencePath: path.join(dir, "json.json"), adapter: "/inject", concurrency: 2,
     }, dependencies({ secret: "{" }))).rejects.toThrow(/valid JSON/u)
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: path.join(dir, "replay-shape.json"), adapter: "/inject", concurrency: 1, replay: true, expectedClaims: 0, expectedMutations: 0,
+      evidencePath: path.join(dir, "replay-shape.json"), adapter: "/inject", concurrency: 2,
     }, dependencies({ secret: update, adapter: async (_executable, payload) => (payload as { operation: string }).operation === "inject_callbacks_concurrently"
-      ? { results: [{ settled: true, claimed: false, mutated: false }] }
-      : { settled: true, mutated: undefined } }))).rejects.toThrow(/did not settle canonically/u)
+      ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
+      : { settled: true, claimed: false, mutated: undefined } }))).rejects.toThrow(/did not settle canonically/u)
     let call = 0
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: path.join(dir, "replay-mutated.json"), adapter: "/inject", concurrency: 1, replay: true, expectedClaims: 0, expectedMutations: 0,
-    }, dependencies({ secret: update, adapter: async () => (++call === 1 ? { results: [{ settled: true, claimed: false, mutated: false }] } : { settled: true, mutated: true }) }))).rejects.toThrow(/replay mutated/u)
+      evidencePath: path.join(dir, "replay-mutated.json"), adapter: "/inject", concurrency: 2,
+    }, dependencies({ secret: update, adapter: async () => (++call === 1 ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] } : { settled: true, claimed: false, mutated: true }) }))).rejects.toThrow(/replay was claimed or mutated/u)
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: path.join(dir, "batch-count.json"), adapter: "/inject", concurrency: 2, replay: false, expectedClaims: 0, expectedMutations: 0,
+      evidencePath: path.join(dir, "batch-count.json"), adapter: "/inject", concurrency: 2,
     }, dependencies({ secret: update, adapter: async () => ({ results: [] }) }))).rejects.toThrow(/result count/u)
     const cleanupPath = path.join(dir, "cleanup.json")
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
-      evidencePath: cleanupPath, adapter: "/inject", concurrency: 1, replay: false, expectedClaims: 0, expectedMutations: 0,
+      evidencePath: cleanupPath, adapter: "/inject", concurrency: 2,
     }, dependencies({ secret: update, adapter: async () => {
       fs.unlinkSync(cleanupPath)
       fs.mkdirSync(cleanupPath)
-      return { results: [{ settled: true, claimed: false, mutated: false }] }
+      return { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
     } }))).rejects.toThrow()
   })
 
@@ -530,8 +547,11 @@ describe("Sanctuary acceptance harness", () => {
     await run("existing", async () => ({ keys: [] }), existing)
 
     let phase = 0
+    let revokeInventory = 0
     await run("revoke", async (executable, payload) => {
-      if (executable === "/inventory") return { keys: [{ id: "old", name: "Old", permissions: ["P"], roles: [] }] }
+      if (executable === "/inventory") return ++revokeInventory === 1
+        ? { keys: [{ id: "old", name: "Old", permissions: ["P"], roles: [] }] }
+        : { keys: [{ id: "old", name: "Old", permissions: ["P"], roles: [] }, { id: "new", name: "Butler RO", permissions: ["DOCKER:READ_ANY"], roles: [] }] }
       if (executable === "/create") return { id: "new", name: "Butler RO", permissions: ["DOCKER:READ_ANY"], roles: [], key: "raw-secret" }
       if (executable === "/store") return { stored: true, keyId: "new" }
       if (executable === "/probe") return { valid: true }
@@ -539,8 +559,11 @@ describe("Sanctuary acceptance harness", () => {
       if (executable === "/revoke") return { revoked: false, id: payload.id }
       return {}
     }, { ...base("revoke"), oldKeys: [{ id: "old", secretAdapter: "/old" }] })
+    let probeInventory = 0
     await run("revoked-probe", async (executable) => {
-      if (executable === "/inventory") return { keys: [{ id: "old", name: "Old", permissions: ["P"], roles: [] }] }
+      if (executable === "/inventory") return ++probeInventory === 1
+        ? { keys: [{ id: "old", name: "Old", permissions: ["P"], roles: [] }] }
+        : { keys: [{ id: "old", name: "Old", permissions: ["P"], roles: [] }, { id: "new", name: "Butler RO", permissions: ["DOCKER:READ_ANY"], roles: [] }] }
       if (executable === "/create") return { id: "new", name: "Butler RO", permissions: ["DOCKER:READ_ANY"], roles: [], key: "raw-secret" }
       if (executable === "/store") return { stored: true, keyId: "new" }
       if (executable === "/old") return { key: "raw-old" }
@@ -577,7 +600,7 @@ describe("Sanctuary acceptance harness", () => {
     fs.writeFileSync(invalid, JSON.stringify({ operation: "other", phase: "requested" }), { mode: 0o600 })
     await expect(executeSanctuaryAcceptanceHarness("reboot-resume", { evidencePath: invalid, adapter: "/poll", timeoutMs: 1, intervalMs: 1 }, dependencies())).rejects.toThrow(/not resumable/u)
     const state = path.join(dir, "state.json")
-    fs.writeFileSync(state, JSON.stringify({ operation: "reboot", phase: "requested", targetId: "t", requestId: "r" }), { mode: 0o600 })
+    fs.writeFileSync(state, JSON.stringify({ operation: "reboot", phase: "requested", targetId: "t", requestId: "r", prebootDigest: sha("boot-before") }), { mode: 0o600 })
     await expect(executeSanctuaryAcceptanceHarness("reboot-resume", { evidencePath: state, adapter: "/poll", timeoutMs: 20, intervalMs: 1 }, dependencies({
       adapter: async () => ({ state: "wrong", targetId: "t", requestId: "r" }),
     }))).rejects.toThrow(/invalid state/u)
@@ -632,9 +655,12 @@ describe("Sanctuary acceptance harness", () => {
       ...base, evidencePath: path.join(dir, "reconciled.json"), keys: [{ name: "Butler RO", vaultField: "read", permissions: ["READ"] }], oldKeys: [{ id: "old", secretAdapter: "/old" }],
     }, dependencies({ adapter: async (executable, payload: any) => {
       operations.push(payload.operation)
-      if (executable === "/inventory") return ++inventoryCall < 3
-        ? { keys: [{ id: "old", name: "Legacy", permissions: ["READ"], roles: [] }] }
-        : { keys: [{ id: "new", name: "Butler RO", permissions: ["READ"], roles: [] }] }
+      if (executable === "/inventory") {
+        inventoryCall += 1
+        if (inventoryCall === 1) return { keys: [{ id: "old", name: "Legacy", permissions: ["READ"], roles: [] }] }
+        if (inventoryCall === 2) return { keys: [{ id: "old", name: "Legacy", permissions: ["READ"], roles: [] }, { id: "new", name: "Butler RO", permissions: ["READ"], roles: [] }] }
+        return { keys: [{ id: "new", name: "Butler RO", permissions: ["READ"], roles: [] }] }
+      }
       if (executable === "/create") return { id: "new", name: "Butler RO", permissions: ["READ"], roles: [], key: "raw" }
       if (executable === "/store") return { stored: true, keyId: "new" }
       if (executable === "/old") return { key: "old-raw" }
@@ -650,8 +676,8 @@ describe("Sanctuary acceptance harness", () => {
     const file = path.join(dir, "health-fixed.json")
     await executeSanctuaryAcceptanceHarness("evidence-snapshot", {
       allowedRoot: dir, evidencePath: file, schema: "postboot-health-v1", adapter: "/health",
-    }, dependencies({ adapter: async () => ({ healthy: true, containerImageDigest: "image-digest", telegramOffsetDigest: "offset-digest", value: "raw-secret" }) }))
-    expect(evidence(file)).toMatchObject({ schema: "postboot-health-v1", values: { healthy: true, containerImageDigest: "image-digest", telegramOffsetDigest: "offset-digest" } })
+    }, dependencies({ adapter: async () => ({ healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64), value: "raw-secret" }) }))
+    expect(evidence(file)).toMatchObject({ schema: "postboot-health-v1", values: { healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) } })
     expect(fs.readFileSync(file, "utf8")).not.toContain("raw-secret")
     expect(evidence(file)).not.toHaveProperty("payloadDigest")
   })
@@ -681,5 +707,71 @@ describe("Sanctuary acceptance harness", () => {
       adapter: async () => ({ state: "ready", targetId: "sanctuary", requestId: "r", bootId: "boot-a" }),
     }))).rejects.toThrow(/boot identity did not change/u)
     expect(fs.readFileSync(file, "utf8")).not.toContain("boot-a")
+  })
+
+  it("covers every path confinement and identity uniqueness refusal branch", async () => {
+    const dir = root()
+    const snapshot = (evidencePath: string, allowedRoot: string = dir) => executeHarness("evidence-snapshot", {
+      allowedRoot, evidencePath, schema: "postboot-health-v1", adapter: "/health",
+    }, dependencies({ adapter: async () => ({ healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) }) }))
+
+    await expect(snapshot(path.join(dir, "relative-root.json"), "relative")).rejects.toThrow(/allowed root must be absolute/u)
+    const getuid = process.getuid!()
+    vi.spyOn(process, "getuid").mockReturnValue(getuid + 1)
+    await expect(snapshot(path.join(dir, "wrong-owner.json"))).rejects.toThrow(/owned by the harness user/u)
+    vi.restoreAllMocks()
+    vi.spyOn(process, "getuid").mockReturnValue(undefined as never)
+    await expect(snapshot(path.join(dir, "missing-identity.json"))).rejects.toThrow(/operating-system user identity/u)
+    vi.restoreAllMocks()
+    const rootFile = path.join(dir, "root-file")
+    fs.writeFileSync(rootFile, "x", { mode: 0o600 })
+    await expect(snapshot(path.join(dir, "root-file-evidence.json"), rootFile)).rejects.toThrow(/nonsymlink directory/u)
+    await expect(executeHarness("evidence-snapshot", {
+      allowedRoot: dir, evidencePath: "relative.json", schema: "postboot-health-v1", adapter: "/health",
+    }, dependencies())).rejects.toThrow(/evidencePath must be absolute/u)
+    const publicAncestor = path.join(dir, "public-ancestor")
+    fs.mkdirSync(publicAncestor, { mode: 0o755 })
+    await expect(snapshot(path.join(publicAncestor, "evidence.json"))).rejects.toThrow(/owned private directory/u)
+    const canonicalAlias = dir.startsWith("/private/") ? dir.slice("/private".length) : dir
+    if (canonicalAlias !== dir) await expect(snapshot(path.join(dir, "canonical.json"), canonicalAlias)).rejects.toThrow(/canonical/u)
+
+    const raced = path.join(dir, "raced.json")
+    await expect(executeHarness("evidence-snapshot", {
+      allowedRoot: dir, evidencePath: raced, schema: "postboot-health-v1", adapter: "/health",
+    }, dependencies({ adapter: async () => {
+      fs.writeFileSync(raced, "{}\n", { mode: 0o600 })
+      return { healthy: true, containerImageDigest: "a".repeat(64), telegramOffsetDigest: "b".repeat(64) }
+    } }))).rejects.toThrow(/inspect-before-retry/u)
+
+    const base = (name: string) => ({
+      allowedRoot: dir, evidencePath: path.join(dir, `${name}.json`), targetServerId: "target",
+      inventoryAdapter: "/inventory", createAdapter: "/create", storeAdapter: "/store", revokeAdapter: "/revoke", probeAdapter: "/probe",
+      keys: [{ name: "New", vaultField: "new", permissions: ["READ"] }], oldKeys: [],
+    })
+    await expect(executeHarness("unraid-key-rotate", base("inventory-id"), dependencies({ adapter: async () => ({ keys: [
+      { id: "same", name: "one", permissions: ["READ"], roles: [] }, { id: "same", name: "two", permissions: ["READ"], roles: [] },
+    ] }) }))).rejects.toThrow(/IDs must be unique/u)
+    await expect(executeHarness("unraid-key-rotate", base("inventory-name"), dependencies({ adapter: async () => ({ keys: [
+      { id: "one", name: "same", permissions: ["READ"], roles: [] }, { id: "two", name: "same", permissions: ["READ"], roles: [] },
+    ] }) }))).rejects.toThrow(/names must be unique/u)
+    await expect(executeHarness("unraid-key-rotate", { ...base("old-id"), oldKeys: [{ id: "old", secretAdapter: "/old" }, { id: "old", secretAdapter: "/old" }] }, dependencies())).rejects.toThrow(/old key IDs must be unique/u)
+    await expect(executeHarness("unraid-key-rotate", {
+      ...base("created-reuse"), oldKeys: [{ id: "old", secretAdapter: "/old" }],
+    }, dependencies({ adapter: async (executable) => {
+      if (executable === "/inventory") return { keys: [{ id: "old", name: "Old", permissions: ["READ"], roles: [] }] }
+      return { id: "old", name: "New", permissions: ["READ"], roles: [], key: "raw" }
+    } }))).rejects.toThrow(/preexisting or reused/u)
+    let inventoryCalls = 0
+    await expect(executeHarness("unraid-key-rotate", {
+      ...base("reconcile-drift"), oldKeys: [{ id: "old", secretAdapter: "/old" }],
+    }, dependencies({ adapter: async (executable) => {
+      if (executable === "/inventory") return ++inventoryCalls === 1
+        ? { keys: [{ id: "old", name: "Old", permissions: ["READ"], roles: [] }] }
+        : { keys: [{ id: "old", name: "Changed", permissions: ["READ"], roles: [] }, { id: "new", name: "New", permissions: ["READ"], roles: [] }] }
+      if (executable === "/create") return { id: "new", name: "New", permissions: ["READ"], roles: [], key: "raw" }
+      if (executable === "/store") return { stored: true, keyId: "new" }
+      return { valid: true }
+    } }))).rejects.toThrow(/changed ambiguously/u)
+    await expect(executeHarness("unraid-key-rotate", { ...base("bad-permissions"), keys: [{ name: "New", vaultField: "new", permissions: [1] }] }, dependencies())).rejects.toThrow(/nonempty strings/u)
   })
 })
