@@ -130,9 +130,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       rawKeyFile,
       { fetch: fetchImpl },
     )).resolves.toEqual({ rejected: true, id: "revoked-id", status: 401 })
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:2378/graphql", expect.objectContaining({
-      headers: { "content-type": "application/json", "x-api-key": "revoked-descriptor" },
-    }))
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://127.0.0.1:2378/graphql")
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toEqual({
+      "content-type": "application/json",
+      "x-api-key": "revoked-descriptor",
+    })
     await expect(executeSanctuaryAcceptanceRevokedProbe(
       "other-id",
       "http://127.0.0.1:2378/graphql",

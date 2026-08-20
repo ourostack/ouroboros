@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process"
+import { timingSafeEqual } from "node:crypto"
 import { readFileSync, readdirSync } from "node:fs"
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -14,6 +15,10 @@ export interface SanctuaryAcceptanceKeyMetadata {
   roles: string[]
 }
 
+export interface SanctuaryAcceptanceKeyRecord extends SanctuaryAcceptanceKeyMetadata {
+  key: string
+}
+
 export interface SanctuaryAcceptanceAdapterDependencies {
   readKeyFiles(): SanctuaryAcceptanceKeyMetadata[]
   readDescriptor(): string
@@ -23,11 +28,14 @@ export interface SanctuaryAcceptanceAdapterDependencies {
 
 export interface SanctuaryAcceptanceVaultProbeDependencies {
   refresh(agentName: string, machineId: string): Promise<RuntimeCredentialConfigReadResult>
+  readKeyRecords(): SanctuaryAcceptanceKeyRecord[]
   fetch: typeof fetch
 }
 
 const KEY_ID = /^[A-Za-z0-9._:-]+$/u
 const AUTH_PROBE = "query AcceptanceAuthProbe { info { os { hostname } } }"
+const WRITE_PROBE = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { restart(id: $id) { id } } }"
+const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
 const ADAPTER_TIMEOUT_MS = 15_000
 const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
@@ -57,19 +65,24 @@ function keyId(value: unknown): string {
   return result
 }
 
-function readKeyDirectory(keyDirectory: string): SanctuaryAcceptanceKeyMetadata[] {
+function readRawKeyDirectory(keyDirectory: string): JsonObject[] {
   return readdirSync(keyDirectory, { withFileTypes: true })
     .map((entry) => {
       if (!entry.isFile() || !entry.name.endsWith(".json")) throw new Error("unexpected key directory entry")
       return entry
     })
-    .map((entry) => {
-      const raw = object(JSON.parse(readFileSync(`${keyDirectory}/${entry.name}`, "utf8")) as unknown, "Unraid key file")
-      const permissions = raw.permissions
-      const roles = raw.roles
-      if (!Array.isArray(roles) || !roles.every((item) => typeof item === "string")) throw new Error("Unraid key roles are invalid")
-      return normalizeKey({ id: raw.id, name: raw.name, permissions, roles })
-    })
+    .map((entry) => object(JSON.parse(readFileSync(`${keyDirectory}/${entry.name}`, "utf8")) as unknown, "Unraid key file"))
+}
+
+function readKeyDirectory(keyDirectory: string): SanctuaryAcceptanceKeyMetadata[] {
+  return readRawKeyDirectory(keyDirectory).map(normalizeKey)
+}
+
+function readKeyRecords(keyDirectory: string): SanctuaryAcceptanceKeyRecord[] {
+  return readRawKeyDirectory(keyDirectory).map((raw) => ({
+    ...normalizeKey(raw),
+    key: text(raw.key, "Unraid key descriptor"),
+  }))
 }
 
 async function defaultExecFile(executable: string, args: string[], timeoutMs: number): Promise<{ status: number; stdout: string }> {
@@ -130,6 +143,22 @@ function scope(key: SanctuaryAcceptanceKeyMetadata): "read-only" | "bounded-writ
   return "legacy-write"
 }
 
+function sameSecret(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8")
+  const rightBytes = Buffer.from(right, "utf8")
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes)
+}
+
+function exactLoopbackGraphqlEndpoint(value: unknown): URL {
+  const endpoint = new URL(text(value, "endpoint"))
+  if ((endpoint.protocol !== "http:" && endpoint.protocol !== "https:")
+    || (endpoint.hostname !== "127.0.0.1" && endpoint.hostname !== "localhost" && endpoint.hostname !== "::1")
+    || endpoint.pathname !== "/graphql" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new Error("probe endpoint must be an exact loopback GraphQL endpoint")
+  }
+  return endpoint
+}
+
 function inventory(deps: SanctuaryAcceptanceAdapterDependencies): SanctuaryAcceptanceKeyMetadata[] {
   const keys = deps.readKeyFiles().map(normalizeKey)
   if (new Set(keys.map((key) => key.id)).size !== keys.length) throw new Error("Unraid key inventory contains duplicate IDs")
@@ -177,18 +206,13 @@ async function exactIdRevoke(payload: JsonObject, deps: SanctuaryAcceptanceAdapt
 
 async function revokedKeyAuthRejection(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   const id = keyId(payload.keyId)
-  const endpoint = new URL(text(payload.endpoint, "endpoint"))
-  if ((endpoint.protocol !== "http:" && endpoint.protocol !== "https:")
-    || (endpoint.hostname !== "127.0.0.1" && endpoint.hostname !== "localhost" && endpoint.hostname !== "::1")
-    || endpoint.pathname !== "/graphql" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-    throw new Error("revoked-key probe endpoint must be an exact loopback GraphQL endpoint")
-  }
+  const endpoint = exactLoopbackGraphqlEndpoint(payload.endpoint)
   const descriptorPayload = object(JSON.parse(deps.readDescriptor()) as unknown, "revoked-key descriptor")
   if (JSON.stringify(Object.keys(descriptorPayload).sort()) !== JSON.stringify(["descriptor", "keyId"])) throw new Error("revoked-key descriptor shape is invalid")
   if (keyId(descriptorPayload.keyId) !== id) throw new Error("revoked-key descriptor ID mismatch")
   const descriptor = text(descriptorPayload.descriptor, "revoked-key descriptor value")
   const signal = AbortSignal.timeout(NETWORK_TIMEOUT_MS)
-  const response = await deps.fetch(endpoint, {
+  const response = await deps.fetch(endpoint.href, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": descriptor },
     body: JSON.stringify({ query: AUTH_PROBE, variables: {} }),
@@ -225,24 +249,77 @@ export async function executeSanctuaryAcceptanceAdapter(
 export async function executeSanctuaryAcceptanceVaultProbe(
   keyIdValue: unknown,
   capabilityValue: unknown,
-  deps: SanctuaryAcceptanceVaultProbeDependencies = { refresh: refreshMachineRuntimeCredentialConfig, fetch },
+  deps: SanctuaryAcceptanceVaultProbeDependencies = {
+    refresh: refreshMachineRuntimeCredentialConfig,
+    readKeyRecords: () => readKeyRecords(KEY_DIRECTORY),
+    fetch,
+  },
 ): Promise<unknown> {
   const id = keyId(keyIdValue)
   const capability = text(capabilityValue, "capability")
   if (capability !== "read-only" && capability !== "bounded-write") throw new Error("capability is invalid")
   const refreshed = await deps.refresh("sanctuary", "machine_sanctuary")
   if (!refreshed.ok) throw new Error("Sanctuary machine runtime credentials are unavailable")
-  const endpoint = text(refreshed.config.unraidGraphqlUrl, "vault-backed Unraid endpoint")
+  const endpoint = exactLoopbackGraphqlEndpoint(refreshed.config.unraidGraphqlUrl)
   const field = capability === "read-only" ? "unraidReadApiKey" : "unraidWriteApiKey"
   const descriptor = text(refreshed.config[field], "vault-backed Unraid descriptor")
-  const response = await deps.fetch(endpoint, {
+  const matches = deps.readKeyRecords().filter((record) => sameSecret(record.key, descriptor))
+  if (matches.length !== 1 || matches[0]!.id !== id) throw new Error("vault descriptor does not bind to the exact key ID")
+  const matched = matches[0]!
+  const expectedName = capability === "read-only" ? "Butler RO" : "Butler RW"
+  if (matched.name !== expectedName || matched.roles.length !== 0 || scope(matched) !== capability) {
+    throw new Error("vault-backed Unraid key metadata scope is invalid")
+  }
+  const headers = { "content-type": "application/json", "x-api-key": descriptor }
+  const readResponse = await deps.fetch(endpoint.href, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": descriptor },
+    headers,
     body: JSON.stringify({ query: AUTH_PROBE, variables: {} }),
     signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
   })
-  if (!response.ok) throw new Error("vault-backed Unraid capability probe failed")
-  const envelope = object(await response.json(), "vault-backed Unraid response")
-  if (!envelope.data || envelope.errors) throw new Error("vault-backed Unraid capability probe was rejected")
-  return { valid: true, keyId: id, capability }
+  if (!readResponse.ok) throw new Error("vault-backed Unraid capability probe failed")
+  const readEnvelope = object(await readResponse.json(), "vault-backed Unraid response")
+  if (!readEnvelope.data || readEnvelope.errors) throw new Error("vault-backed Unraid capability probe was rejected")
+  const writeResponse = await deps.fetch(endpoint.href, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ query: WRITE_PROBE, variables: { id: MISSING_CONTAINER_ID } }),
+    signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+  })
+  const writeEnvelope = object(await writeResponse.json(), "vault-backed Unraid write response")
+  const errors = Array.isArray(writeEnvelope.errors) ? writeEnvelope.errors.map((value) => object(value, "GraphQL error")) : []
+  const codes = errors.map((error) => {
+    const extensions = error.extensions && typeof error.extensions === "object" && !Array.isArray(error.extensions)
+      ? error.extensions as JsonObject
+      : {}
+    return typeof extensions.code === "string" ? extensions.code : ""
+  })
+  if (capability === "read-only") {
+    if (writeEnvelope.data || (writeResponse.status !== 403 && !codes.includes("FORBIDDEN") && !codes.includes("PERMISSION_DENIED"))) {
+      throw new Error("read-only Unraid key did not prove write permission denial")
+    }
+    return { valid: true, keyId: id, capability, proof: "read-authorized-write-denied" }
+  }
+  if (writeEnvelope.data || !writeResponse.ok || !codes.includes("NOT_FOUND")) {
+    throw new Error("bounded-write Unraid key did not reach deterministic not-found")
+  }
+  return { valid: true, keyId: id, capability, proof: "read-authorized-write-reached-not-found" }
+}
+
+export async function executeSanctuaryAcceptanceRevokedProbe(
+  keyIdValue: unknown,
+  endpointValue: unknown,
+  rawKeyFile: string,
+  deps: Pick<SanctuaryAcceptanceAdapterDependencies, "fetch"> = { fetch },
+): Promise<unknown> {
+  const id = keyId(keyIdValue)
+  const raw = object(JSON.parse(rawKeyFile) as unknown, "revoked Unraid key file")
+  if (keyId(raw.id) !== id) throw new Error("revoked Unraid key file ID mismatch")
+  const descriptor = text(raw.key, "revoked Unraid key descriptor")
+  return revokedKeyAuthRejection({ keyId: id, endpoint: endpointValue }, {
+    readKeyFiles: () => [],
+    readDescriptor: () => JSON.stringify({ keyId: id, descriptor }),
+    execFile: async () => ({ status: 0, stdout: "" }),
+    fetch: deps.fetch,
+  })
 }
