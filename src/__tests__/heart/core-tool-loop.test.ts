@@ -268,6 +268,129 @@ describe("runAgent tool loop guard", () => {
     expect(result.outcome).toBe("rested")
   })
 
+  it.each([
+    ["an outward channel", "telegram", ["send_message"]],
+    ["no send_message definition", "inner", []],
+    ["an extra definition", "inner", ["send_message", "read_file"]],
+    ["duplicate send_message definitions", "inner", ["send_message", "send_message"]],
+  ])("rejects the Sanctuary health private profile with %s", async (_label, channel, names) => {
+    const tools = names.map((name) => ({
+      type: "function" as const,
+      function: {
+        name,
+        description: `synthetic ${name}`,
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    }))
+    const { runAgent } = await import("../../heart/core")
+
+    await expect(runAgent(
+      [{ role: "user", content: "summarize the health event" }],
+      makeCallbacks(),
+      channel,
+      undefined,
+      {
+        toolProfile: "sanctuary-health-private",
+        tools,
+        execTool: vi.fn(),
+        toolContext: { signin: async () => undefined },
+      } as any,
+    )).rejects.toThrow("sanctuary-health-private requires inner channel with exactly one canonical send_message definition")
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("gates private settle on held work, then accepts it after the queue is cleared", async () => {
+    const delegatedOrigins = [{ delegationId: "held-1" }]
+    mockCreate
+      .mockReturnValueOnce(makeStream([makeChunk("premature", [{
+        index: 0,
+        id: "call_private_settle_gated",
+        function: { name: "settle", arguments: JSON.stringify({ answer: "not yet", intent: "complete" }) },
+      }])]))
+      .mockImplementationOnce(() => {
+        delegatedOrigins.splice(0)
+        return makeStream([makeChunk(undefined, [{
+          index: 0,
+          id: "call_private_settle_accepted",
+          function: { name: "settle", arguments: JSON.stringify({ answer: "now complete", intent: "complete" }) },
+        }])])
+      })
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "user", content: "finish held work" }]
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent(messages, callbacks, "inner", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "settle",
+          description: "synthetic private settle",
+          parameters: {
+            type: "object",
+            properties: {
+              answer: { type: "string" },
+              intent: { type: "string", enum: ["complete", "blocked", "direct_reply"] },
+            },
+            required: ["answer"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      toolContext: { signin: async () => undefined, delegatedOrigins } as any,
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(callbacks.onToolEnd).toHaveBeenNthCalledWith(1, "settle", expect.any(String), false)
+    expect(callbacks.onToolEnd).toHaveBeenNthCalledWith(2, "settle", expect.any(String), true)
+    expect(callbacks.onClearText).toHaveBeenCalled()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_private_settle_gated",
+      content: expect.stringContaining("unsurfaced items"),
+    }))
+    expect(messages).toContainEqual({ role: "tool", tool_call_id: "call_private_settle_accepted", content: "(settled)" })
+  })
+
+  it("stops at the eighth accepted provider response before executing its tool call", async () => {
+    let response = 0
+    mockCreate.mockImplementation(() => {
+      response += 1
+      return makeStream([makeChunk(undefined, [{
+        index: 0,
+        id: `call_iteration_${response}`,
+        function: { name: "read_file", arguments: JSON.stringify({ path: `/tmp/${response}` }) },
+      }])])
+    })
+    const execTool = vi.fn().mockResolvedValue("read")
+    const callbacks = makeCallbacks()
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "keep reading" }], callbacks, "cli", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "read a file",
+          parameters: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(8)
+    expect(execTool).toHaveBeenCalledTimes(7)
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "provider iteration limit exhausted at response 8 before tool execution",
+    }), "terminal")
+    expect(result.outcome).toBe("errored")
+  })
+
   it("rejects a fabricated tool call outside the active Telegram profile before any handler runs", async () => {
     mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
       index: 0,
@@ -1140,6 +1263,66 @@ describe("runAgent tool loop guard", () => {
     expect(callbacks.onClearText).not.toHaveBeenCalled()
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith(terminalToolName, expect.anything())
     expect(result.outcome).toBe("observed")
+  })
+
+  it("flushes ordinary buffered output and reports a string rejection from a terminal default handler", async () => {
+    const terminalToolName = "synthetic_terminal_projection_string_failure"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const handler = vi.fn(async () => Promise.reject("opaque terminal failure"))
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic terminal string failure",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      },
+      handler,
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: false,
+      },
+    })
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("ordinary buffered prose"),
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_terminal_string_failure",
+        function: { name: terminalToolName, arguments: "{}" },
+      }]),
+    ]))
+    const callbacks = makeCallbacks()
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent(
+      [{ role: "user", content: "run it" }],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [{
+          type: "function",
+          function: {
+            name: terminalToolName,
+            description: "synthetic terminal string failure",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        }],
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(callbacks.onClearText).not.toHaveBeenCalled()
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), false)
+    expect(callbacks.onTextChunk).toHaveBeenLastCalledWith("error: opaque terminal failure")
+    expect(result).toMatchObject({
+      outcome: "blocked",
+      completion: { answer: "error: opaque terminal failure", intent: "blocked" },
+    })
   })
 
   it("fails closed before terminal side effects when buffered-text clearing fails", async () => {

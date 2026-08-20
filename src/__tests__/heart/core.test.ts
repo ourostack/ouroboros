@@ -2071,6 +2071,7 @@ describe("runAgent", () => {
         return makeStream([
           makeChunk(undefined, [
             { index: 0, id: "tc_send", function: { name: "send_message", arguments: '{"friendId":"casey","channel":"bluebubbles","key":"chat","content":"checking in"}' } },
+            { index: 1, id: "tc_read_companion", function: { name: "read_file", arguments: '{"path":"safe.txt"}' } },
           ]),
         ])
       }
@@ -2115,10 +2116,14 @@ describe("runAgent", () => {
       type: "function" as const,
       function: { name: "send_message", description: "send", parameters: { type: "object", properties: {} } },
     }
+    const readTool = {
+      type: "function" as const,
+      function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
+    }
     const recordSurfaceAttempt = vi.fn()
 
     await (runAgent as any)(messages, callbacks, "inner", undefined, {
-      tools: [sendTool],
+      tools: [sendTool, readTool],
       execTool,
       habitSession: {
         permissionEnvelope: {
@@ -2130,7 +2135,7 @@ describe("runAgent", () => {
         },
         toolPolicy: {
           requestedTools: null,
-          grantedTools: ["send_message"],
+          grantedTools: ["send_message", "read_file"],
           deniedTools: [],
           outwardMessagingAllowed: true,
         },
@@ -2144,6 +2149,7 @@ describe("runAgent", () => {
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_send", content: expect.stringContaining("family") }),
+      expect.objectContaining({ tool_call_id: "tc_read_companion", content: expect.stringContaining("blocked") }),
     ]))
     expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
       recipient: "casey",
@@ -5299,6 +5305,27 @@ describe("provider abstraction contract", () => {
 
     expect(runtime?.id).toBe("github-copilot")
     expect(runtime?.model).toBe("claude-sonnet-4.6")
+  })
+
+  it.each([
+    ["openai-compatible", "glm-5.2", "https://api.z.ai/api/paas/v4/"],
+    ["openai-compatible-gemini", "gemini-3.6-flash", "https://generativelanguage.googleapis.com/v1beta/openai/"],
+  ] as const)("registry constructs %s runtimes from exact vault records", async (provider, model, baseUrl) => {
+    vi.resetModules()
+    const core = await import("../../heart/core")
+    const { createProviderCredentialRecord } = await import("../../heart/provider-credentials")
+    const record = createProviderCredentialRecord({
+      provider,
+      credentials: { apiKey: "private-test-key" },
+      config: { baseUrl },
+      provenance: { source: "manual" },
+      now: new Date("2026-08-20T12:00:00.000Z"),
+    })
+
+    const runtime = core.createProviderRegistry().resolve(provider, model, record)
+
+    expect(runtime?.id).toBe(provider)
+    expect(runtime?.model).toBe(model)
   })
 
   it("azure provider runtime safely ignores tool output before turn state initialization", async () => {
@@ -10696,6 +10723,21 @@ describe("facing-aware provider runtime", () => {
 
     expect(core.getProviderDisplayLabel("human")).toBe("minimax (mm-display)")
     expect(core.getProviderDisplayLabel("agent")).toBe("anthropic (claude-display)")
+  })
+
+  it.each([
+    ["openai-compatible", "glm-5.2", "z.ai openai-compatible (glm-5.2)"],
+    ["openai-compatible-gemini", "gemini-3.6-flash", "gemini openai-compatible (gemini-3.6-flash)"],
+  ] as const)("renders the %s provider label from the selected lane", async (provider, model, expected) => {
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      humanFacing: { provider, model },
+      agentFacing: { provider, model },
+    })
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    expect(core.getProviderDisplayLabel("human")).toBe(expected)
   })
 
   it("createSummarize(facing) uses correct provider runtime", async () => {
