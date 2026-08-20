@@ -888,6 +888,67 @@ describe("Sanctuary acceptance harness", () => {
     expect(evidence(path.join(dir, "keys.json"))).toMatchObject({ phase: "complete", createdKeyIds: ["ro-id", "rw-id"], revokedKeyIds: ["legacy-read"] })
   })
 
+  it("rotates occupied canonical Unraid names through exact temporary keys and ends with only the canonical pair", async () => {
+    const dir = root()
+    const readPermissions = ["ARRAY:READ_ANY", "DOCKER:READ_ANY"]
+    const writePermissions = [...readPermissions, "DOCKER:UPDATE_ANY"]
+    const state = new Map([
+      ["old-ro", { id: "old-ro", name: "Butler RO", permissions: readPermissions, roles: [] as string[] }],
+      ["old-rw", { id: "old-rw", name: "Butler RW", permissions: writePermissions, roles: [] as string[] }],
+    ])
+    const operations: Array<{ operation: string; id?: string; name?: string }> = []
+    let created = 0
+    await executeSanctuaryAcceptanceHarness("unraid-key-rotate", {
+      evidencePath: path.join(dir, "canonical-rotation.json"), targetServerId: "sanctuary-unraid",
+      inventoryAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+      createAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+      storeAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+      revokeAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+      probeAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+      keys: [
+        { name: "Butler RO", vaultField: "unraidReadApiKey", permissions: readPermissions },
+        { name: "Butler RW", vaultField: "unraidWriteApiKey", permissions: writePermissions },
+      ],
+      oldKeys: [
+        { id: "old-ro", secretAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" },
+        { id: "old-rw", secretAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" },
+      ],
+    }, dependencies({ adapter: async (_executable, rawPayload: any) => {
+      operations.push(rawPayload)
+      if (rawPayload.operation === "inventory_keys") return { keys: [...state.values()] }
+      if (rawPayload.operation === "create_key") {
+        if ([...state.values()].some((key) => key.name === rawPayload.name)) throw new Error("name collision")
+        const id = `created-${++created}`
+        state.set(id, { id, name: rawPayload.name, permissions: rawPayload.permissions, roles: [] })
+        return { id, name: rawPayload.name, permissions: rawPayload.permissions, roles: [], key: `unraid-key:${id}` }
+      }
+      if (rawPayload.operation === "store_key") return { stored: true, keyId: rawPayload.keyId }
+      if (rawPayload.operation === "probe_new_key") return { valid: true }
+      if (rawPayload.operation === "read_old_key") return { key: `unraid-key:${rawPayload.id}` }
+      if (rawPayload.operation === "revoke_key") {
+        state.delete(rawPayload.id)
+        return { revoked: true, id: rawPayload.id }
+      }
+      if (rawPayload.operation === "probe_revoked_key") return { valid: false, status: 401 }
+      throw new Error(`unexpected ${rawPayload.operation}`)
+    } }))
+
+    expect([...state.values()].map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "created-3", name: "Butler RO" },
+      { id: "created-4", name: "Butler RW" },
+    ])
+    const creates = operations.filter((entry) => entry.operation === "create_key")
+    expect(creates.slice(0, 2).every((entry) => entry.name?.startsWith("Butler ") && entry.name.includes(" Rotation "))).toBe(true)
+    expect(creates.slice(2).map((entry) => entry.name)).toEqual(["Butler RO", "Butler RW"])
+    const revokes = operations.filter((entry) => entry.operation === "revoke_key").map((entry) => entry.id)
+    expect(revokes).toEqual(["old-ro", "old-rw", "created-1", "created-2"])
+    expect(evidence(path.join(dir, "canonical-rotation.json"))).toMatchObject({
+      phase: "complete",
+      createdKeyIds: ["created-1", "created-2", "created-3", "created-4"],
+      revokedKeyIds: ["old-ro", "old-rw", "created-1", "created-2"],
+    })
+  })
+
   it("refuses Unraid mutation before checkpoint on existing labels and leaves a failed checkpoint after adapter error", async () => {
     const dir = root()
     const mutations: string[] = []
