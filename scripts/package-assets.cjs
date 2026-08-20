@@ -10,6 +10,15 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "RepairGuide.ouro/skills/diagnose-stacked-typed-issues.md",
   "RepairGuide.ouro/skills/diagnose-sync-blocked.md",
   "RepairGuide.ouro/skills/diagnose-vault-expired.md",
+  "deploy/unraid/Dockerfile",
+  "deploy/unraid/README.txt",
+  "deploy/unraid/container-runtime.json",
+  "deploy/unraid/sanctuary.xml",
+  "deploy/unraid/sanctuary.ouro/agent.json",
+  "deploy/unraid/sanctuary.ouro/bundle-meta.json",
+  "deploy/unraid/sanctuary.ouro/tool-profiles.json",
+  "deploy/unraid/sanctuary.ouro/arc/README.md",
+  "deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md",
 ]
 
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [

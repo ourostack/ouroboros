@@ -18,6 +18,7 @@ COPY assets ./assets
 COPY skills ./skills
 COPY changelog.json ./changelog.json
 COPY deploy/unraid/container-runtime.json ./container-runtime.json
+COPY deploy/unraid /opt/ouro/deploy/unraid
 RUN chown -R 10001:10001 /opt/ouro /home/ouro
 
 USER 10001:10001

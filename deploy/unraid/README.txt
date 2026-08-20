@@ -1,4 +1,4 @@
-Sanctuary Ouro Butler operator runbook
+Mendelow Cloud Butler operator runbook
 
 The production container is ouro-butler. It runs as UID/GID 10001, publishes no
 ports, uses host networking only so its loopback-only Unraid GraphQL client can
@@ -23,8 +23,8 @@ Update:
 
 Backup:
   Stop ouro-butler, then snapshot both of these directories together:
-    /mnt/user/appdata/ouro-butler/runtime
-    /mnt/user/appdata/ouro-butler/AgentBundles/sanctuary.ouro
+    /mnt/user/appdata/ouro-butler/runtime/.ouro-cli
+    /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
   The backup must not contain container-credentials.json; that file is a
   single-use migration import deleted durably before the daemon applies it.
 
@@ -35,7 +35,8 @@ Restore:
 
 Credential recovery:
   Restore or unlock the Sanctuary agent vault, then run provider refresh.
-  runtime/container-credentials.json exists only for a one-time migration: if
+  /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/container-credentials.json
+  exists only for a one-time migration: if
   used, install it atomically as root with ownership 10001:10001 and mode 0600.
   Startup claims and durably deletes it before applying anything; it is never
   a credential source of truth and must not be recreated for routine boots.

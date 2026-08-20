@@ -43,6 +43,32 @@ describe("container runtime policy", () => {
     expect(agent.agentFacing).toEqual({ provider: "openai-compatible", model: "glm-5.2" })
   })
 
+  it("ships Mendelow Cloud Butler with the exact persistent roots and complete bootstrap bundle", () => {
+    const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
+    const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
+      habitPaidTurnsPerDay?: number
+    }
+    const meta = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/bundle-meta.json", "utf8")) as {
+      runtimeVersion: string
+      bundleSchemaVersion: number
+    }
+
+    expect(template).toContain("<Overview>Mendelow Cloud Butler</Overview>")
+    expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"')
+    expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
+    expect(template).not.toContain('/mnt/user/appdata/ouro-butler/AgentBundles')
+    expect(runbook).toContain("Mendelow Cloud Butler operator runbook")
+    expect(runbook).toContain("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli")
+    expect(runbook).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
+    expect(agent.habitPaidTurnsPerDay).toBe(24)
+    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.734", bundleSchemaVersion: 3 })
+    expect(fs.existsSync("deploy/unraid/sanctuary.ouro/arc/README.md")).toBe(true)
+    expect(fs.existsSync("deploy/unraid/sanctuary.ouro/tool-profiles.json")).toBe(true)
+    expect(dockerfile).toContain("COPY deploy/unraid /opt/ouro/deploy/unraid")
+  })
+
   it("requires exactly one matching managed Telegram process", () => {
     const telegram = "node /opt/ouro/dist/senses/telegram-entry.js --agent sanctuary"
     expect(hasManagedTelegramProcess(`node daemon-entry.js\n${telegram}\n`, "sanctuary")).toBe(true)

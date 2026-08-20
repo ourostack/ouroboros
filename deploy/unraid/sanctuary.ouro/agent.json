@@ -5,6 +5,7 @@
   "agentFacing": { "provider": "openai-compatible", "model": "glm-5.2" },
   "context": { "maxTokens": 80000, "contextMargin": 20 },
   "privateRuntime": { "autoStart": true },
+  "habitPaidTurnsPerDay": 24,
   "phrases": {
     "thinking": ["checking sanctuary"],
     "tool": ["checking the server"],

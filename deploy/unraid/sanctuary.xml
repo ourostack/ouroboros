@@ -8,7 +8,7 @@
   <Privileged>false</Privileged>
   <Support/>
   <Project/>
-  <Overview>Sanctuary Telegram server butler</Overview>
+  <Overview>Mendelow Cloud Butler</Overview>
   <Category>Tools:</Category>
   <WebUI/>
   <TemplateURL/>
@@ -20,6 +20,6 @@
   <DonateText/>
   <DonateLink/>
   <Requires/>
-  <Config Name="Runtime state" Target="/home/ouro/.ouro-cli" Default="/mnt/user/appdata/ouro-butler/runtime" Mode="rw" Description="Machine-scoped runtime" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/runtime</Config>
-  <Config Name="Agent bundle" Target="/home/ouro/AgentBundles/sanctuary.ouro" Default="/mnt/user/appdata/ouro-butler/AgentBundles/sanctuary.ouro" Mode="rw" Description="Sanctuary bundle" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/AgentBundles/sanctuary.ouro</Config>
+  <Config Name="Runtime state" Target="/home/ouro/.ouro-cli" Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli" Mode="rw" Description="Machine-scoped runtime" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>
+  <Config Name="Agent bundle" Target="/home/ouro/AgentBundles/sanctuary.ouro" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" Mode="rw" Description="Sanctuary bundle" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>
 </Container>
