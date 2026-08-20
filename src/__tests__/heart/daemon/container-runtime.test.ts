@@ -797,6 +797,36 @@ retire_legacy_unraid_key "$READ_ID" "$WRITE_ID" "$OLD_READ_ID" "$OLD_WRITE_ID"`
     }
   })
 
+  it("defines bounded host adapters instead of relying on test-only retirement stubs", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const verify = extractRunbookFunction(runbook, "verify_vault_backed_unraid_key")
+    const inventory = extractRunbookFunction(runbook, "inventory_unraid_key_ids")
+    const revoke = extractRunbookFunction(runbook, "revoke_unraid_key_exact")
+    const rejected = extractRunbookFunction(runbook, "verify_revoked_unraid_key_rejected")
+
+    expect(verify).toContain('docker image inspect --format \'{{.Id}}\' "$IMAGE_ID"')
+    expect(verify).toContain("/usr/bin/timeout -s KILL 20 /usr/bin/docker run")
+    expect(verify).toContain("--pull=never --network host")
+    expect(verify).toContain("--entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh")
+    expect(verify).not.toMatch(/unraid(Read|Write)ApiKey|x-api-key/u)
+
+    expect(inventory).toContain("type=bind,src=/boot/config/plugins/dynamix.my.servers/keys,dst=/boot/config/plugins/dynamix.my.servers/keys,readonly")
+    expect(inventory).toContain("--pull=never --network none")
+    expect(inventory).toContain('{"operation":"closed-inventory"}')
+    expect(inventory).not.toContain("/var/run/docker.sock")
+
+    expect(revoke).toContain("/usr/local/sbin/unraid-api apikey --name")
+    expect(revoke).toContain("--delete --json")
+    expect(revoke).toContain("exec 9<")
+    expect(revoke).not.toMatch(/\.key\b|x-api-key/u)
+
+    expect(rejected).toContain("revoked-probe")
+    expect(rejected).toContain("3<&0")
+    expect(rejected).toContain("<&9")
+    expect(rejected).toContain("http://127.0.0.1/graphql")
+    expect(rejected).not.toContain("/var/run/docker.sock")
+  })
+
   it("rejects update topology before effective audit can create a container", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
