@@ -587,11 +587,11 @@ describe("Telegram durable authorized long poll", () => {
 
     expect(store.capture(update)).toBe(true)
     expect(store.claim(update)).toBe(true)
+    const warning = store.quarantineStranded()[0]!
     expect(store.quarantineStranded()).toHaveLength(1)
-    expect(store.quarantineStranded()).toEqual([])
     expect(JSON.parse(readFileSync(inboxPath, "utf8")).indeterminate[0]).toMatchObject({
       quarantinedAt: 1_000,
-      warningAcknowledged: true,
+      warningAcknowledged: false,
     })
 
     const restarted = new FileTelegramUpdateInboxStore(inboxPath, {
@@ -599,6 +599,9 @@ describe("Telegram durable authorized long poll", () => {
       indeterminateRetentionMs: 100,
       maxIndeterminateReceipts: 2,
     })
+    expect(restarted.quarantineStranded()).toHaveLength(1)
+    expect(restarted.acknowledgeIndeterminateWarning(warning)).toBe(true)
+    expect(restarted.acknowledgeIndeterminateWarning(warning)).toBe(false)
     expect(restarted.quarantineStranded()).toEqual([])
     now = 1_100
     expect(restarted.capture(update)).toBe(false)
@@ -644,7 +647,9 @@ describe("Telegram durable authorized long poll", () => {
     writeFileSync(inboxPath, JSON.stringify({ version: 2, pending: [], dispatching: [], indeterminate: [receipt] }))
 
     const migrated = new FileTelegramUpdateInboxStore(inboxPath, { now: () => 2_000 })
-    expect(migrated.quarantineStranded()).toEqual([expect.objectContaining({ digest: receipt.digest })])
+    const migratedWarning = migrated.quarantineStranded()[0]!
+    expect(migratedWarning).toEqual(expect.objectContaining({ digest: receipt.digest }))
+    expect(migrated.acknowledgeIndeterminateWarning(migratedWarning)).toBe(true)
     expect(migrated.quarantineStranded()).toEqual([])
     expect(JSON.parse(readFileSync(inboxPath, "utf8"))).toMatchObject({
       version: 3,
