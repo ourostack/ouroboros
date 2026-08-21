@@ -154,7 +154,6 @@ describe("packaged Sanctuary health acceptance probe", () => {
     const fixture = setup("unit-16g-health-transition")
     const signals: NodeJS.Signals[] = []
     try {
-      registerSanctuaryHealthAcceptanceProbeProcess(fixture.input, { agentRoot: fixture.agentRoot, pid: 4321 })
       await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
         agentRoot: fixture.agentRoot,
         listPids: () => [4321],
@@ -164,6 +163,25 @@ describe("packaged Sanctuary health acceptance probe", () => {
         sleep: async () => {},
       })).rejects.toThrow(/process identity/u)
       expect(signals).toEqual([])
+    } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("does not SIGKILL a reused pid after the exact probe process exits", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    let command = processCommand(fixture.input)
+    const signals: NodeJS.Signals[] = []
+    try {
+      await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
+        agentRoot: fixture.agentRoot,
+        listPids: () => [4321],
+        processAlive: () => true,
+        readCommandLine: () => command,
+        signal: (_pid, signal) => { signals.push(signal); command = "/usr/local/bin/node\0unrelated.js" },
+        sleep: async () => {},
+      }, { termGraceMs: 1, killGraceMs: 1 })).resolves.toEqual({ stopped: true })
+      expect(signals).toEqual(["SIGTERM"])
     } finally {
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
     }
