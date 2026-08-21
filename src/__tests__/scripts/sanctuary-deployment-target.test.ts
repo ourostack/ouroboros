@@ -136,12 +136,25 @@ describe("Sanctuary fixed deployment target", () => {
     let captured: { input?: RequestInfo | URL; init?: RequestInit } = {}
     const fetchImpl: typeof fetch = async (input, init) => {
       captured = { input, init }
-      return new Response(JSON.stringify({ data: { docker: { containers: [{ id: `${"f".repeat(64)}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }] } } }), { status: 200, headers: { "content-type": "application/json" } })
+      return new Response(JSON.stringify({ data: { vars: { id: `${"f".repeat(64)}:vars` }, docker: { containers: [{ id: `${"f".repeat(64)}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }] } } }), { status: 200, headers: { "content-type": "application/json" } })
     }
     await expect(queryGraphqlAutostart(fetchImpl, () => "private-descriptor")).resolves.toEqual(new Map([["ouro-butler-staging", { containerId: stagingId, autoStart: true }]]))
     expect(captured.input).toBe("http://127.0.0.1/graphql")
     expect(captured.init).toMatchObject({ method: "POST", headers: { "content-type": "application/json", "x-api-key": "private-descriptor" } })
-    expect(JSON.parse(String(captured.init?.body))).toEqual({ query: "query AcceptanceContainerTopology { docker { containers(skipCache: true) { id names autoStart } } }", variables: {} })
+    expect(JSON.parse(String(captured.init?.body))).toEqual({ query: "query AcceptanceContainerTopology { vars { id } docker { containers(skipCache: true) { id names autoStart } } }", variables: {} })
+  })
+
+  it("rejects canonical GraphQL records whose PrefixedID is not from the current Unraid server", async () => {
+    const { queryGraphqlAutostart } = await load()
+    const serverPrefix = "f".repeat(64)
+    const otherPrefix = "e".repeat(64)
+    const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({
+      data: {
+        vars: { id: `${serverPrefix}:vars` },
+        docker: { containers: [{ id: `${otherPrefix}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }] },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } })
+    await expect(queryGraphqlAutostart(fetchImpl, () => "private-descriptor")).rejects.toThrow(/server|identity/u)
   })
 
   it("requires GraphQL presence and exact false autostart for the retained rollback", async () => {
@@ -268,6 +281,21 @@ describe("Sanctuary effective listener containment", () => {
     const parsed = parseProcUnix(`${header}\n${datagram}\n`)
     expect(parsed).toEqual([{ inode: "900", path: "/tmp/undocumented-dgram.sock", flags: "00000000", type: "0002", state: "01" }])
     expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["900"], socketInodesAfter: ["900"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: parsed, unixSocketsAfter: parsed })).toThrow(/Unix/u)
+  })
+
+  it("inventories pathname-less Unix rows, rejects unnamed listeners, and permits unnamed non-listening socketpairs", async () => {
+    const { attestOwnedListeners, parseProcUnix } = await load()
+    const header = "Num       RefCount Protocol Flags    Type St Inode Path"
+    const listener = "0000000000000000: 00000002 00000000 00010000 0001 01 900"
+    const socketpair = "0000000000000000: 00000002 00000000 00000000 0001 03 901"
+    const parsed = parseProcUnix(`${header}\n${listener}\n${socketpair}\n`)
+    expect(parsed).toEqual([
+      { inode: "900", path: "", flags: "00010000", type: "0001", state: "01" },
+      { inode: "901", path: "", flags: "00000000", type: "0001", state: "03" },
+    ])
+    const baseline = { rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [] }
+    expect(() => attestOwnedListeners({ ...baseline, socketInodesBefore: ["900"], socketInodesAfter: ["900"], unixSocketsBefore: [parsed[0]], unixSocketsAfter: [parsed[0]] })).toThrow(/Unix/u)
+    expect(attestOwnedListeners({ ...baseline, socketInodesBefore: ["901"], socketInodesAfter: ["901"], unixSocketsBefore: [parsed[1]], unixSocketsAfter: [parsed[1]] })).toMatchObject({ ownedSocketCount: 1, unixControlSocketCount: 0 })
   })
 
   it.each([

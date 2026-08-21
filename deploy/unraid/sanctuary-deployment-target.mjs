@@ -65,13 +65,16 @@ async function queryGraphqlAutostart(fetchImpl = fetch, readDescriptor = readCan
   const response = await fetchImpl(GRAPHQL_ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": readDescriptor() },
-    body: JSON.stringify({ query: "query AcceptanceContainerTopology { docker { containers(skipCache: true) { id names autoStart } } }", variables: {} }),
+    body: JSON.stringify({ query: "query AcceptanceContainerTopology { vars { id } docker { containers(skipCache: true) { id names autoStart } } }", variables: {} }),
     signal: AbortSignal.timeout(10_000),
   })
   if (!response.ok) throw new Error("Unraid container topology query failed")
   const envelope = object(await response.json(), "Unraid container topology response")
   if (envelope.errors || !envelope.data) throw new Error("Unraid container topology query was rejected")
-  const containers = object(object(envelope.data, "Unraid topology data").docker, "Unraid topology docker").containers
+  const data = object(envelope.data, "Unraid topology data")
+  const serverIdentity = /^([0-9a-f]{64}):vars$/u.exec(object(data.vars, "Unraid topology vars").id)
+  if (!serverIdentity) throw new Error("Unraid server identity is invalid")
+  const containers = object(data.docker, "Unraid topology docker").containers
   if (!Array.isArray(containers)) throw new Error("Unraid container topology is invalid")
   const result = new Map()
   for (const raw of containers) {
@@ -79,7 +82,7 @@ async function queryGraphqlAutostart(fetchImpl = fetch, readDescriptor = readCan
     if (!Array.isArray(container.names) || container.names.some((name) => typeof name !== "string")) throw new Error("Unraid container topology identity is invalid")
     const canonical = container.names.map((name) => name.replace(/^\//u, "")).filter((name) => CANONICAL_NAMES.includes(name))
     const identity = typeof container.id === "string" ? /^([0-9a-f]{64}):([0-9a-f]{64})$/u.exec(container.id) : null
-    if (canonical.length > 1 || (canonical.length === 1 && !identity)) throw new Error("Unraid container topology identity is ambiguous")
+    if (canonical.length > 1 || (canonical.length === 1 && (!identity || identity[1] !== serverIdentity[1]))) throw new Error("Unraid container topology identity is ambiguous or belongs to another server")
     if (canonical.length === 1 && typeof container.autoStart !== "boolean") throw new Error("Unraid container autostart state is invalid")
     if (canonical.length === 1) {
       if (result.has(canonical[0])) throw new Error("Unraid autostart topology is ambiguous")
@@ -165,10 +168,13 @@ function attestOwnedListeners(input) {
     if (listener.localAddress !== "127.0.0.1" || !DOCUMENTED_LOOPBACK_TCP_CONTROLS.has(listener.port)) throw new Error("target runtime owns an inbound TCP listener")
   }
   if (udp.length !== 0) throw new Error("target runtime owns an inbound UDP listener")
+  let unixControlSocketCount = 0
   for (const socket of unix) {
+    if (socket.path === "" && socket.flags !== "00010000") continue
     if (!DOCUMENTED_UNIX_CONTROLS.includes(socket.path) || socket.flags !== "00010000" || socket.type !== "0001" || socket.state !== "01") throw new Error("target runtime owns an undocumented Unix endpoint")
+    unixControlSocketCount += 1
   }
-  return { schemaVersion: "sanctuary-listener-containment-v1", targetRootPid: value.rootPid, networkNamespace: value.netnsBefore, processCount: processIdsAfter.length, ownedSocketCount: owned.size, inboundTcpListenerCount: 0, inboundUdpListenerCount: 0, loopbackTcpControlCount: tcp.length, unixControlSocketCount: unix.length }
+  return { schemaVersion: "sanctuary-listener-containment-v1", targetRootPid: value.rootPid, networkNamespace: value.netnsBefore, processCount: processIdsAfter.length, ownedSocketCount: owned.size, inboundTcpListenerCount: 0, inboundUdpListenerCount: 0, loopbackTcpControlCount: tcp.length, unixControlSocketCount }
 }
 
 function runDocker(args) {
@@ -281,7 +287,7 @@ function ownedSocketInodes(threadIds, dependencies = {}) {
 
 function parseProcUnix(content) {
   return content.split(/\r?\n/u).slice(1).filter(Boolean).map((line) => line.trim().split(/\s+/u))
-    .filter((fields) => /^[0-9]+$/u.test(fields[6] ?? "") && typeof fields[7] === "string" && fields[7].length > 0)
+    .filter((fields) => /^[0-9]+$/u.test(fields[6] ?? ""))
     .map((fields) => ({ inode: fields[6], path: fields.slice(7).join(" "), flags: fields[3], type: fields[4], state: fields[5] }))
 }
 
