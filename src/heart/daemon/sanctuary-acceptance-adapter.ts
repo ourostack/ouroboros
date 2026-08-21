@@ -1101,15 +1101,18 @@ export async function readDefaultSanctuaryScenarioFacts(
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
     const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
     const identityKey = identityRaw.trim()
-    const approvalEvidenceKeys: Record<string, string[]> = {
-      "senses.telegram_approval_prompt_bound": ["actionDigest", "approvalId", "boundAt", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest"],
-      "telegram.callback_settled": ["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "targetDigest"],
-      "telegram.approval_prompt_terminalized": ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalizedAt"],
-      "senses.telegram_approval_continuation_delivered": ["actionDigest", "approvalId", "boundAt", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "targetDigest"],
+    const approvalEvidenceKeys: Record<string, string[][]> = {
+      "senses.telegram_approval_prompt_bound": [["actionDigest", "approvalId", "boundAt", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest"]],
+      "telegram.callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "targetDigest"]],
+      "telegram.approval_prompt_terminalized": [
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalizedAt"],
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalizedAt"],
+      ],
+      "senses.telegram_approval_continuation_delivered": [["actionDigest", "approvalId", "boundAt", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "targetDigest"]],
     }
     for (const entry of auditEntries.filter((candidate) => candidate.event in approvalEvidenceKeys
       && candidate.meta.scenarioHandleDigest === scenarioHandleDigest && typeof candidate.meta.approvalId === "string")) {
-      if (JSON.stringify(Object.keys(entry.meta).sort()) !== JSON.stringify(approvalEvidenceKeys[entry.event]!.sort())
+      if (!approvalEvidenceKeys[entry.event]!.some((keys) => JSON.stringify(Object.keys(entry.meta).sort()) === JSON.stringify([...keys].sort()))
         || typeof entry.meta.evidenceMac !== "string" || !SHA256.test(entry.meta.evidenceMac)
         || entry.meta.evidenceMac !== sanctuaryTelegramApprovalEvidenceMac(identityKey, entry.event, entry.meta)) {
         throw new Error("Telegram approval evidence MAC is invalid")

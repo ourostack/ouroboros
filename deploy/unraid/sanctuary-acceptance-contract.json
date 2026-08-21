@@ -143,7 +143,7 @@
         "timeoutMs": 4890000,
         "intervalMs": 2000
       },
-      "timing": { "execution": "sequential", "cleanupReservePerScenarioMs": 5000, "approvalReconciliationJitterMs": 1000, "noneMs": 35000, "externalGateMs": 305000, "noCallbackMs": 365000, "dailyDigestMs": 1025000, "delayedApprovalMs": 185000, "timeoutStaleMs": 875000, "timeoutStaleBreakdown": { "promptCreationAdapterMs": 210000, "approvalTtlMs": 300000, "staleCallbackInjectionMs": 120000, "pollIntervalReserveMs": 30000, "reconciliationPollAdapterMs": 210000, "cleanupReserveMs": 5000 }, "scenarioSumMs": 4865000, "totalMs": 4890000 }
+      "timing": { "execution": "sequential", "cleanupReservePerScenarioMs": 5000, "approvalReconciliationJitterMs": 1000, "approvalTerminalEditMaxMs": 30000, "noneMs": 35000, "externalGateMs": 305000, "noCallbackMs": 365000, "dailyDigestMs": 1025000, "delayedApprovalMs": 185000, "timeoutStaleMs": 875000, "timeoutStaleBreakdown": { "promptCreationAdapterMs": 210000, "approvalTtlMs": 300000, "staleCallbackInjectionMs": 120000, "pollIntervalReserveMs": 30000, "reconciliationPollAdapterMs": 210000, "cleanupReserveMs": 5000 }, "scenarioSumMs": 4865000, "totalMs": 4890000 }
     },
     "reboot-request": {
       "fixed": {

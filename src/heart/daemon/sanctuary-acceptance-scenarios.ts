@@ -16,11 +16,13 @@ import {
 } from "./sanctuary-acceptance-marker"
 import { validateSanctuaryUnit16EvidenceAssertions, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { sanctuaryGroundedResponseAccurate, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
+import { TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS, TELEGRAM_APPROVAL_TTL_MS } from "../../senses/telegram-client"
 
 type JsonObject = Record<string, unknown>
 const SHA256 = /^[0-9a-f]{64}$/u
-export const SANCTUARY_APPROVAL_TTL_MS = 300_000
+export const SANCTUARY_APPROVAL_TTL_MS = TELEGRAM_APPROVAL_TTL_MS
 export const SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS = 1_000
+export const SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS = TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS
 const CANONICAL_RESTART_TARGET = "calibre-web"
 
 export interface SanctuaryScenarioEvent {
@@ -459,6 +461,7 @@ function exactApprovalEvidence(
   boundAt: number
   callback: SanctuaryScenarioEvent | null
   continuation: SanctuaryScenarioEvent | null
+  expiryObservedAt: number | null
   terminalizedAt: number
 } | null {
   const fresh = recordsAdded(before.events, after.events, (entry) => hash(entry))
@@ -480,30 +483,36 @@ function exactApprovalEvidence(
     && entry.meta.messageIdDigest === promptMessageIdDigest)) return null
   const boundAt = Number(prompt[0]!.meta.boundAt)
   const terminalizedAt = Number(terminals[0]!.meta.terminalizedAt)
+  const expiryObservedAt = terminals[0]!.meta.expiryObservedAt === undefined ? null : Number(terminals[0]!.meta.expiryObservedAt)
   if (!Number.isSafeInteger(boundAt) || boundAt < 0
     || !Number.isSafeInteger(terminalizedAt) || terminalizedAt < boundAt
     || terminals[0]!.meta.boundAt !== boundAt || terminals[0]!.meta.buttonsRemoved !== true
     || approval.expiresAt !== boundAt + SANCTUARY_APPROVAL_TTL_MS) return null
+  if (approval.state === "expired") {
+    if (expiryObservedAt === null || !Number.isSafeInteger(expiryObservedAt) || expiryObservedAt < boundAt
+      || terminalizedAt < expiryObservedAt || terminalizedAt - expiryObservedAt > SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS) return null
+  } else if (expiryObservedAt !== null) return null
   const callback = callbacks[0] ?? null
   if (callback) {
     const callbackAt = Number(callback.meta.callbackAt)
-    if (!Number.isSafeInteger(callbackAt) || callbackAt < boundAt
+    if (!Number.isSafeInteger(callbackAt) || callbackAt < boundAt || callbackAt > terminalizedAt
       || callback.meta.boundAt !== boundAt || callback.meta.acknowledged !== true) return null
   }
   const continuation = continuations[0] ?? null
   if (continuation) {
     const deliveredAt = Number(continuation.meta.deliveredAt)
-    if (!Number.isSafeInteger(deliveredAt) || deliveredAt < boundAt
+    if (!Number.isSafeInteger(deliveredAt) || deliveredAt < boundAt || deliveredAt > terminalizedAt
       || continuation.meta.boundAt !== boundAt || typeof continuation.meta.resultDigest !== "string" || !SHA256.test(continuation.meta.resultDigest)
       || continuation.meta.resultDigest !== approval.resultDigest
       || typeof continuation.meta.deliveryDigest !== "string" || !SHA256.test(continuation.meta.deliveryDigest)
       || typeof continuation.meta.deliveryMessageIdDigest !== "string" || !SHA256.test(continuation.meta.deliveryMessageIdDigest)) return null
   }
-  return { boundAt, callback, continuation, terminalizedAt }
+  return { boundAt, callback, continuation, expiryObservedAt, terminalizedAt }
 }
 
-function terminalizedWithinTtlJitter(evidence: { boundAt: number; terminalizedAt: number }): boolean {
-  const elapsed = evidence.terminalizedAt - evidence.boundAt
+function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null }): boolean {
+  if (evidence.expiryObservedAt === null) return false
+  const elapsed = evidence.expiryObservedAt - evidence.boundAt
   return elapsed >= SANCTUARY_APPROVAL_TTL_MS && elapsed <= SANCTUARY_APPROVAL_TTL_MS + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS
 }
 
