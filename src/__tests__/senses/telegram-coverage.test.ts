@@ -544,7 +544,7 @@ describe("Telegram sense coverage contracts", () => {
       for (let index = 0; index < 1_000; index += 1) emitGlobal({ ...acceptanceEvent("daemon.unrelated_noise"), meta: { index } })
       expect(fs.readFileSync(ledgerPath, "utf8")).toBe("")
       const requiredEvents = [
-        "approval.acceptance_transition", "senses.sanctuary_health_delivered", "senses.sanctuary_read_receipt",
+        "approval.acceptance_continuation_transition", "approval.acceptance_transition", "senses.sanctuary_health_delivered", "senses.sanctuary_read_receipt",
         "senses.telegram_approved_restart_end", "senses.telegram_approved_restart_error", "senses.telegram_approved_restart_start",
         "senses.telegram_turn_end", "senses.telegram_turn_error", "senses.telegram_turn_start",
         "telegram.approval_prompt_terminalized", "telegram.callback_settled", "telegram.update_dropped",
