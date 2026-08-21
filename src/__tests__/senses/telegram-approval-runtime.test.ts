@@ -277,7 +277,7 @@ describe("Telegram approval runtime orchestration", () => {
     })
 
     expect(runtimeMocks.getAgentRoot).toHaveBeenCalledWith("sanctuary")
-    expect(runtimeMocks.openApprovalStore).toHaveBeenCalledWith({ databasePath: "/agents/sanctuary.ouro/state/approvals/approvals.sqlite" })
+    expect(runtimeMocks.openApprovalStore).toHaveBeenCalledWith({ databasePath: "/agents/sanctuary.ouro/state/approvals/approvals.sqlite", now: expect.any(Function) })
     expect(runtimeMocks.store.migrateTelegramIdentity).not.toHaveBeenCalled()
     runtimeMocks.store.listTelegramIdentitySubjects.mockReturnValue([`tg_${"l".repeat(43)}`, "tg_stable-subject"])
     expect(runtime.legacySubjects()).toEqual([`tg_${"l".repeat(43)}`])

@@ -117,6 +117,14 @@ export function createTelegramApprovalRuntime(options: {
   subject: string
   identityKey: string
   toolContext: Partial<ToolContext>
+  dependencies?: {
+    agentRoot?: string
+    now?: () => number
+    acceptanceMarker?: () => { scenarioHandleDigest: string } | null
+    runProvider?: typeof runAgent
+    resolveTool?: typeof resolveToolDefinition
+    executeTool?: typeof execTool
+  }
 }): TelegramApprovalRuntime {
   emitNervesEvent({
     component: "senses",
@@ -124,8 +132,13 @@ export function createTelegramApprovalRuntime(options: {
     message: "creating durable Telegram approval runtime",
     meta: { agentName: options.agentName },
   })
-  const stateRoot = path.join(getAgentRoot(options.agentName), "state", "approvals")
-  const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite") })
+  const now = options.dependencies?.now ?? Date.now
+  const acceptanceMarker = options.dependencies?.acceptanceMarker ?? (() => readSanctuaryAcceptanceMarker(options.agentName))
+  const provider = options.dependencies?.runProvider ?? runAgent
+  const resolveTool = options.dependencies?.resolveTool ?? resolveToolDefinition
+  const executeTool = options.dependencies?.executeTool ?? execTool
+  const stateRoot = path.join(options.dependencies?.agentRoot ?? getAgentRoot(options.agentName), "state", "approvals")
+  const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite"), now: () => new Date(now()) })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
   const pendingStore = new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json"))
@@ -134,7 +147,7 @@ export function createTelegramApprovalRuntime(options: {
   const coordinator = (context: { sessionPath: string; baseSessionRevision: string }): ApprovalCoordinator => ({
     propose: async (request) => {
       if (request.toolCall.type !== "function") throw new Error("approval requires a function tool call")
-      const scenarioHandleDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
+      const scenarioHandleDigest = acceptanceMarker()?.scenarioHandleDigest
       const committed = commitApprovalProposal({
         approvalStore: store,
         checkpointStore: checkpoints,
@@ -155,7 +168,7 @@ export function createTelegramApprovalRuntime(options: {
           transport: "telegram",
           transportUserId: options.subject,
           transportChatId: options.subject,
-          expiresAt: new Date(Date.now() + 300_000).toISOString(),
+          expiresAt: new Date(now() + 300_000).toISOString(),
           frozenAssistantMessage: request.frozenAssistantMessage as never,
           ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}),
         },
@@ -241,7 +254,7 @@ export function createTelegramApprovalRuntime(options: {
         markContinuationMaterialized: () => { store.markContinuationMaterialized({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         markContinuationAttempted: () => { store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         completeContinuation: () => { store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-        runAgent,
+        runAgent: provider,
         runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
         persist: (messages, result) => saveSession(record.sessionPath, messages, result?.usage, undefined, lease),
         deliver: async (text) => {
@@ -250,7 +263,7 @@ export function createTelegramApprovalRuntime(options: {
             const unsigned = {
               approvalId: record.approvalId,
               ...acceptanceBinding,
-              deliveredAt: Date.now(),
+              deliveredAt: now(),
               resultDigest: createHash("sha256").update(JSON.stringify({ state: record.state, result: record.result })).digest("hex"),
               deliveryDigest: createHash("sha256").update(text, "utf8").digest("hex"),
               deliveryMessageIdDigest: createHash("sha256").update(JSON.stringify(messageIds ?? [])).digest("hex"),
@@ -275,19 +288,20 @@ export function createTelegramApprovalRuntime(options: {
     pendingStore,
     createOpaqueHandle: () => randomBytes(12).toString("base64url"),
     acceptanceEventMeta: () => {
-      const scenarioHandleDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
+      const scenarioHandleDigest = acceptanceMarker()?.scenarioHandleDigest
       const meta: Record<string, string> = scenarioHandleDigest ? { scenarioHandleDigest } : {}
       return meta
     },
     signAcceptanceEvidence: (event, meta) => sanctuaryTelegramApprovalEvidenceMac(options.identityKey, event, meta),
     acceptanceMessageIdDigest: (messageId) => createHash("sha256").update(opaqueTelegramMessageBinding(options.subject, messageId), "utf8").digest("hex"),
+    now,
     resolveDecisionToken: async (approvalId) => tokens.get(approvalId) ?? "",
     onExpire: async (approvalId) => {
       store.expire({ approvalId })
       tokens.remove(approvalId)
     },
     onDecision: async (decision) => {
-      const decisionScenarioDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
+      const decisionScenarioDigest = acceptanceMarker()?.scenarioHandleDigest
       const existing = store.read(decision.approvalId)
       if (!existing) return { accepted: false, terminalText: "⚠️ Approval is no longer valid" }
       let record: ApprovalRecord
@@ -310,14 +324,14 @@ export function createTelegramApprovalRuntime(options: {
             },
             ownerId,
             currentSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
-            resolveTool: resolveToolDefinition,
+            resolveTool,
             liveGuard: async () => ({ ok: true }),
             liveRisk: async () => ({ ok: true }),
             execute: (name, args) => {
               const execute = () => executeApprovedTelegramTool(
                 name,
                 args,
-                (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
+                (toolName, toolArgs) => executeTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
                 decisionScenarioDigest,
                 existing.approvalId,
               )
@@ -392,6 +406,10 @@ export function createTelegramApprovalRuntime(options: {
           continue
         }
         if (existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
+        if (existing.state === "expired" && !pending.terminal) {
+          await transport.reconcileExpired()
+          continue
+        }
         let record = existing
         if (record.state === "claimed") {
           record = recoverClaimedApproval({ approvalStore: store, approvalId: record.approvalId, reason: "decision interrupted before action attempt; action was not executed" })

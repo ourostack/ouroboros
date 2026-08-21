@@ -10,8 +10,8 @@ import { setRuntimeLogger } from "../../nerves/runtime"
 import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 import { resolveToolDefinition } from "../../repertoire/tools"
 import { createTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
-import { sanctuaryTelegramApprovalEvidenceMac, type TelegramUpdate } from "../../senses/telegram"
-import { TelegramApiError, type TelegramBotApi } from "../../senses/telegram-client"
+import { sanctuaryTelegramApprovalEvidenceMac } from "../../senses/telegram"
+import { TelegramApiError, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 
 const identityKey = "k".repeat(43)
 const scenarioHandleDigest = "a".repeat(64)
@@ -95,12 +95,19 @@ describe("production-composed Telegram approval lifecycle", () => {
     const suspension = await runtime.coordinator({ sessionPath, baseSessionRevision: emptyRevision }).propose(proposalRequest() as never)
     const bound = pending(agentRoot)[0]!
     expect(bound).toMatchObject({ approvalId: suspension.approvalId, deliveryState: "bound", messageId: "101" })
+    const approvalStateRoot = path.join(agentRoot, "state", "approvals")
+    expect(JSON.parse(fs.readFileSync(path.join(approvalStateRoot, "checkpoints.json"), "utf8"))[suspension.approvalId]).toMatchObject({
+      checkpointDigest: suspension.checkpointDigest,
+      suspendedSessionRevision: suspension.suspendedSessionRevision,
+    })
+    expect(JSON.parse(fs.readFileSync(path.join(approvalStateRoot, "tokens.json"), "utf8"))).toHaveProperty(suspension.approvalId)
 
     clock.value = Number(bound.expiresAt) - 120_000
     const result = await runtime.transport.handleUpdate(callback(String(bound.approveCallbackData)))
     expect(result).toMatchObject({ accepted: true, reason: "accepted" })
     expect(mutationCount).toBe(1)
     expect(pending(agentRoot)).toEqual([])
+    expect(JSON.parse(fs.readFileSync(path.join(approvalStateRoot, "tokens.json"), "utf8"))).not.toHaveProperty(suspension.approvalId)
 
     const byName = (name: string) => events.find((event) => event.event === name)!
     const prompt = byName("senses.telegram_approval_prompt_bound")
@@ -115,6 +122,7 @@ describe("production-composed Telegram approval lifecycle", () => {
     expect(Number(settled.meta.callbackAt)).toBeLessThanOrEqual(Number(continuation.meta.deliveredAt))
     expect(Number(continuation.meta.deliveredAt)).toBeLessThanOrEqual(Number(terminal.meta.terminalEditStartedAt))
     expect(Number(terminal.meta.terminalEditStartedAt)).toBeLessThanOrEqual(Number(terminal.meta.terminalizedAt))
+    expect([prompt, continuation, terminal, settled].map((event) => events.indexOf(event))).toEqual([...[prompt, continuation, terminal, settled].map((event) => events.indexOf(event))].sort((left, right) => left - right))
     await runtime.transport.handleUpdate(callback(String(bound.approveCallbackData), "query-duplicate"))
     expect(mutationCount).toBe(1)
     runtime.close()
