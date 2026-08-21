@@ -5,7 +5,8 @@ CONFIG_ROOT=/mnt/user/appdata/ouro-butler/acceptance/configs
 EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/acceptance/evidence
 RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
 BUNDLE_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
-PRODUCTION_CONTAINER=ouro-butler
+TARGET_PROFILE=staging
+PRODUCTION_CONTAINER=ouro-butler-staging
 IMAGE_ID=${1:-}
 MODE=${2:-}
 BROKER_PID=
@@ -91,6 +92,7 @@ BROKER_SOCKET=$SOCKET_ROOT/adapter.sock
 CLOSED_INVENTORY=$PRIVATE_ROOT/closed-inventory.json
 BROKER_SNAPSHOT=$PRIVATE_ROOT/broker-container-inspect.json
 BROKER_PROGRAM=$PRIVATE_ROOT/sanctuary-unit16-host-broker.mjs
+TARGET_AUDITOR=$PRIVATE_ROOT/sanctuary-deployment-target.mjs
 IMAGE_FACT=$PRIVATE_ROOT/image-digest
 CONTAINER_FACT=$PRIVATE_ROOT/container-digest
 HEALTH_FACT=$PRIVATE_ROOT/postboot-health.json
@@ -99,10 +101,15 @@ CONTAINER_INSPECT_FACT=$PRIVATE_ROOT/container-inspect.json
 
 start_broker() {
   /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
+    --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-deployment-target.mjs >"$TARGET_AUDITOR"
+  /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
     --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit16-host-broker.mjs >"$BROKER_PROGRAM"
-  chmod 0500 "$BROKER_PROGRAM"
-  chown 0:0 "$BROKER_PROGRAM"
-  /usr/local/bin/node "$BROKER_PROGRAM" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
+  chmod 0500 "$BROKER_PROGRAM" "$TARGET_AUDITOR"
+  chown 0:0 "$BROKER_PROGRAM" "$TARGET_AUDITOR"
+  /usr/local/bin/node "$TARGET_AUDITOR" "$TARGET_PROFILE" "$IMAGE_ID" >"$PRIVATE_ROOT/deployment-target.json"
+  chmod 0400 "$PRIVATE_ROOT/deployment-target.json"
+  chown 0:0 "$PRIVATE_ROOT/deployment-target.json"
+  /usr/local/bin/node "$BROKER_PROGRAM" "$TARGET_PROFILE" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
   BROKER_PID=$!
   ATTEMPT=0
   while test "$ATTEMPT" -lt 600 && { test ! -S "$BROKER_SOCKET" || test ! -f "$CLOSED_INVENTORY" || test ! -f "$BROKER_SNAPSHOT"; }; do

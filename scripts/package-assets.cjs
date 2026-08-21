@@ -16,6 +16,8 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/container-runtime.json",
   "deploy/unraid/sanctuary-acceptance-harness.sh",
   "deploy/unraid/sanctuary-unit16-host-broker.mjs",
+  "deploy/unraid/sanctuary-deployment-target.mjs",
+  "deploy/unraid/sanctuary-unit18-target-audit.sh",
   "deploy/unraid/sanctuary-unit16-run.sh",
   "deploy/unraid/sanctuary-acceptance-adapter.sh",
   "deploy/unraid/sanctuary-acceptance-contract.json",
