@@ -60,7 +60,7 @@ function validHealthProbeReceipt(scenarioHandleDigest: string, patch: Record<str
     beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64),
     cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false,
     fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503, 503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z",
-    phases, privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+    phases, privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null,
     ...patch,
   }
 }
@@ -441,7 +441,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   })
 
   it("declares the exact after-owner source set for every health scenario", () => {
-    expect(SANCTUARY_SCENARIO_SOURCES["unit-16f-cron-fingerprint"]).toEqual(["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
+    expect(SANCTUARY_SCENARIO_SOURCES["unit-16f-cron-fingerprint"]).toEqual(["health-probe-receipt", "scheduler-liveness-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
     expect(SANCTUARY_SCENARIO_SOURCES["unit-16g-health-transition"]).toEqual(["health-probe-receipt", "telegram-audit", "container-inspect"])
     expect(SANCTUARY_SCENARIO_SOURCES["unit-16h-daily-digest"]).toEqual(["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
   })

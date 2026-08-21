@@ -40,7 +40,7 @@ const HEALTH_PROBE_RECEIPT_KEYS = [
   "cronFingerprintBefore", "cronFingerprintAfter", "cronRegisteredBefore", "cronRegisteredAfter",
   "cronDegradedBefore", "cronDegradedAfter", "fixtureSequenceDigest", "clockMode", "effectiveNow", "phases",
   "providerInvocationCount", "privateTurnCount", "deliveryCount", "workspaceAbsent", "socketAbsent",
-  "snapshotAbsent", "realCheckEquivalent", "productionRestored",
+  "snapshotAbsent", "realCheckEquivalent", "productionRestored", "schedulerReceipt",
 ]
 const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
@@ -621,13 +621,18 @@ function requireHealthProbeCompleteAttestation(receipt, snapshot, input) {
   const value = object(receipt, "health probe receipt")
   exactKeys(value, HEALTH_PROBE_RECEIPT_KEYS, "health probe receipt")
   const observed = object(snapshot, "health probe complete owner")
+  const schedulerReceiptValid = request.label === "unit-16f-cron-fingerprint"
+    ? value.schedulerReceipt && object(value.schedulerReceipt, "scheduler liveness receipt").schemaVersion === "sanctuary-scheduler-liveness-receipt-v1"
+      && value.schedulerReceipt.trigger === "cron" && value.schedulerReceipt.scenarioHandleDigest === request.scenarioHandleDigest
+      && value.schedulerReceipt.sweepDelta === 1 && value.schedulerReceipt.deliveryDelta === 0 && value.schedulerReceipt.nonReplay === true
+    : value.schedulerReceipt === null
   if (value.schemaVersion !== "sanctuary-health-probe-receipt-v1" || value.label !== request.label
     || value.scenarioHandleDigest !== request.scenarioHandleDigest
     || !SHA256.test(value.ownerImageDigestBefore) || !SHA256.test(value.ownerContainerDigestBefore)
     || !SHA256.test(value.ownerImageDigestAfter) || !SHA256.test(value.ownerContainerDigestAfter)
     || value.ownerImageDigestBefore !== value.ownerImageDigestAfter || value.ownerContainerDigestBefore !== value.ownerContainerDigestAfter
     || observed.imageId !== `sha256:${value.ownerImageDigestAfter}` || observed.containerId !== value.ownerContainerDigestAfter
-    || observed.running !== true || observed.health !== "healthy") {
+    || observed.running !== true || observed.health !== "healthy" || !schedulerReceiptValid) {
     throw new Error("health probe complete attestation is invalid")
   }
 }

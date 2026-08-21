@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { SanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
 import { getAgentRoot } from "../identity"
 import {
   clearSanctuaryAcceptanceGateStatus,
@@ -264,6 +265,7 @@ export interface SanctuaryHealthProbeReceipt {
   snapshotAbsent: boolean
   realCheckEquivalent: boolean
   productionRestored: boolean
+  schedulerReceipt: SanctuarySchedulerLivenessReceipt | null
 }
 
 export interface SanctuaryScenarioFacts {
@@ -512,7 +514,7 @@ function interactiveReceiptBindsApproval(receipt: SanctuaryInteractiveDriverRece
 function healthProbeRestored(probe: SanctuaryHealthProbeReceipt, currentCron: SanctuaryScenarioFacts["cron"]): boolean {
   return probe.ownerImageDigestBefore === probe.ownerImageDigestAfter
     && probe.ownerContainerDigestBefore === probe.ownerContainerDigestAfter
-    && probe.beforeStateDigest === probe.restoredStateDigest
+    && (probe.schedulerReceipt !== null || probe.beforeStateDigest === probe.restoredStateDigest)
     && probe.cronFingerprintBefore === probe.cronFingerprintAfter
     && probe.cronRegisteredBefore && probe.cronRegisteredAfter && !probe.cronDegradedBefore && !probe.cronDegradedAfter
     && currentCron?.fingerprint === probe.cronFingerprintAfter && currentCron.registered === probe.cronRegisteredAfter
@@ -653,6 +655,9 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16f-cron-fingerprint":
       if (!after.container?.running || !after.container.healthy || !after.healthProbe || !healthProbeRestored(after.healthProbe, after.cron) || after.healthProbe.clockMode !== "ambient" || after.healthProbe.phases.length !== 1
+        || !after.healthProbe.schedulerReceipt || after.healthProbe.schedulerReceipt.trigger !== "cron" || after.healthProbe.schedulerReceipt.sweepDelta !== 1
+        || after.healthProbe.schedulerReceipt.deliveryDelta !== 0 || after.healthProbe.schedulerReceipt.nonReplay !== true
+        || after.healthProbe.schedulerReceipt.sweep.recordDigest !== after.healthProbe.phases[0]?.sweepReceiptDigest
         || after.healthProbe.phases[0]?.name !== "cron-unchanged" || after.healthProbe.phases[0].trigger !== "cron" || after.healthProbe.phases[0].fixtureStatus !== null
         || after.healthProbe.phases[0].opened !== 0 || after.healthProbe.phases[0].recovered !== 0 || after.healthProbe.phases[0].digestDue
         || after.healthProbe.phases[0].deliveryKind !== null || after.healthProbe.phases[0].deliveryReceiptDigest !== null

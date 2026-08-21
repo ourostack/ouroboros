@@ -817,7 +817,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
       cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
       clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
-      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null,
     }
     const snapshot = { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy", ...mutation }
     expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request)).toThrow(/complete attestation/u)
@@ -836,7 +836,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
       cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
       clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
-      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, ...mutation,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null, ...mutation,
     }
     expect(() => completeHealthProbeFromReceipt(request, {
       imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy",

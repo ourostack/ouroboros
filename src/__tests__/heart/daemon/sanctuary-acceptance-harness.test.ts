@@ -713,7 +713,7 @@ describe("Sanctuary acceptance harness", () => {
       "health-probe-receipt": expect.objectContaining({ kind: "fixed-private-json", path: expect.stringContaining("health-probe-receipts") }),
     }))
     expect(contract.configTemplates["evidence-snapshot"]).toMatchObject({
-      fixed: { timeoutMs: 4_890_000 },
+      fixed: { timeoutMs: 5_610_000 },
       timing: {
         execution: "sequential",
         cleanupReservePerScenarioMs: 5_000,
@@ -726,8 +726,9 @@ describe("Sanctuary acceptance harness", () => {
           reconciliationPollAdapterMs: 210_000,
           cleanupReserveMs: 5_000,
         },
-        scenarioSumMs: 4_865_000,
-        totalMs: 4_890_000,
+        cronLivenessMs: 1_025_000,
+        scenarioSumMs: 5_585_000,
+        totalMs: 5_610_000,
       },
     })
     expect(contract.configTemplates["reboot-request"].fixed).toMatchObject({

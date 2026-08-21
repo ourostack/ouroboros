@@ -336,6 +336,7 @@ export function sanctuaryScenarioTimeoutBudget(label: SanctuaryUnit16EvidenceLab
   if (REBOOT_SCENARIO_LABELS.has(label)) return 125_000
   if (label === "unit-15c-1-no-callback-terminalization") return 365_000
   if (label === "unit-16h-daily-digest") return 1_025_000
+  if (label === "unit-16f-cron-fingerprint") return 1_025_000
   if (label === "unit-16i-delayed-approval") return 185_000
   if (label === "unit-16k-timeout-stale") return TIMEOUT_STALE_SCENARIO_MS
   return SANCTUARY_SCENARIO_GATES[label] === "none" ? 35_000 : 305_000
@@ -621,7 +622,7 @@ export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, Sanc
 
 type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-offset" | "approval-journal"
   | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
-  | "health-runtime" | "digest-runtime" | "health-probe-receipt" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit" | "interactive-driver-receipt"
+  | "health-runtime" | "digest-runtime" | "health-probe-receipt" | "scheduler-liveness-receipt" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit" | "interactive-driver-receipt"
   | "live-grounding-read"
 
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
@@ -639,7 +640,7 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16e-containment-audit": ["telegram-audit", "container-inspect", "containment-audit"],
   "unit-16e-1-stop-denial": ["read-only-denial-receipt", "container-inspect"],
   "unit-16e-2-restart-denial": ["read-only-denial-receipt", "container-inspect"],
-  "unit-16f-cron-fingerprint": ["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
+  "unit-16f-cron-fingerprint": ["health-probe-receipt", "scheduler-liveness-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
   "unit-16g-health-transition": ["health-probe-receipt", "telegram-audit", "container-inspect"],
   "unit-16h-daily-digest": ["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
   "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
