@@ -12,7 +12,9 @@ import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../h
 import {
   createSanctuaryAcceptanceAdapterDependencies,
   createSanctuaryInteractiveAcceptanceScenarioDriver,
+  createSanctuaryReadOnlyDenialScenarioDriver,
   createSanctuaryAcceptanceVaultProbeDependencies,
+  auditContainsSensitiveMaterial,
   executeSanctuaryAcceptanceCallbackProbe,
   executeSanctuaryInteractiveRuntimeOperation,
   executeSanctuaryAcceptanceAdapter,
@@ -87,6 +89,19 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
   }
 }
 
+function validDenialReceipt(label: "unit-16e-1-stop-denial" | "unit-16e-2-restart-denial", scenarioHandleDigest: string) {
+  const boundary = {
+    ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7,
+    auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64),
+    sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64),
+  }
+  return {
+    schemaVersion: "sanctuary-read-only-denial-receipt-v1", phase: "complete", label, scenarioHandleDigest,
+    operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart", targetDigest: "7".repeat(64),
+    attemptCount: 1, httpStatus: 403, errorCode: "FORBIDDEN", before: boundary, after: { ...boundary },
+  }
+}
+
 function validInteractiveReceipt(label: "unit-16k-timeout-stale" | "unit-16l-duplicate-callback" | "unit-16m-restart-continuation", scenarioHandleDigest: string) {
   const common = {
     schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", label, scenarioHandleDigest,
@@ -108,6 +123,53 @@ function validInteractiveReceipt(label: "unit-16k-timeout-stale" | "unit-16l-dup
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it("persists one denial attempt and never reissues it after success or an indeterminate interruption", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-denial-driver-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const runProbe = vi.fn(async () => validDenialReceipt("unit-16e-1-stop-denial", scenarioHandleDigest))
+    const driver = createSanctuaryReadOnlyDenialScenarioDriver({ agentRoot: root, runProbe })
+    try {
+      await expect(driver.poll("unit-16e-1-stop-denial", scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
+      await expect(driver.poll("unit-16e-1-stop-denial", scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
+      expect(runProbe).toHaveBeenCalledOnce()
+      expect(fs.readFileSync(path.join(root, "state/acceptance/denial-receipts", `${scenarioHandleDigest}.json`), "utf8")).not.toContain("private")
+
+      const interruptedDigest = "b".repeat(64)
+      const interruptedProbe = vi.fn(async () => { throw new Error("transport interrupted after attempt") })
+      const interrupted = createSanctuaryReadOnlyDenialScenarioDriver({ agentRoot: root, runProbe: interruptedProbe })
+      await expect(interrupted.poll("unit-16e-2-restart-denial", interruptedDigest)).rejects.toThrow("transport interrupted")
+      await expect(interrupted.poll("unit-16e-2-restart-denial", interruptedDigest)).rejects.toThrow(/inspect-before-retry/u)
+      expect(interruptedProbe).toHaveBeenCalledOnce()
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it("exact-parses a scenario-bound denial receipt and rejects any restart or cursor drift", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-denial-receipt-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const receiptPath = path.join(root, "state/acceptance/denial-receipts", `${scenarioHandleDigest}.json`)
+    const receipt = validDenialReceipt("unit-16e-2-restart-denial", scenarioHandleDigest)
+    const deps = unit16Deps({
+      readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(receipt); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      hostRequest: async () => validOwnerSnapshot(),
+    })
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16e-2-restart-denial", scenarioHandleDigest, deps, root)
+      expect((facts as any).denial).toEqual(receipt)
+      const drifted = { ...receipt, after: { ...receipt.after, targetRestartCount: 8 } }
+      deps.readFixedFile = (file) => { if (file === receiptPath) return JSON.stringify(drifted); throw Object.assign(new Error("missing"), { code: "ENOENT" }) }
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16e-2-restart-denial", scenarioHandleDigest, deps, root)).rejects.toThrow(/boundary drift/u)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it.each([
+    ['{"meta":{"update_id":8541786263}}', undefined],
+    ['{"meta":{"messageId":"8541786263"}}', undefined],
+    ['{"meta":{"error":"provider rejected bearer sk-live-secret-material"}}', undefined],
+    ['{"meta":{"note":"authorized subject 123456789"}}', { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "987654321" }],
+  ] as const)("detects forbidden Telegram/provider material in audit text %#", (raw, credentials) => {
+    expect(auditContainsSensitiveMaterial(raw, credentials)).toBe(true)
+  })
+
   it.each([
     ["unit-16e-1-stop-denial", "mutation AcceptanceStopDenial"],
     ["unit-16e-2-restart-denial", "mutation AcceptanceWriteProbe"],

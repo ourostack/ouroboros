@@ -14,7 +14,7 @@ import {
   finalizeSanctuaryScenarioCapture,
   type SanctuaryScenarioFacts,
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
-import { SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
+import { SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker, secureRenameBoundInodeSync } from "../../../heart/daemon/sanctuary-acceptance-marker"
 import { createSanctuaryAcceptanceScenarioFinalizer } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
@@ -124,6 +124,19 @@ const base = (): SanctuaryScenarioFacts => ({
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
 describe("Sanctuary live scenario capture", () => {
+  it("captures a denial baseline without mutation and drives exactly one persisted denial attempt on poll", async () => {
+    const receipts = path.join(root, "denial-driver-receipts")
+    const gate = path.join(root, "denial-driver-gate.json")
+    const denialDriver = { poll: vi.fn(async () => ({ state: "driven" as const })), complete: vi.fn(async () => undefined) }
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base(), denialDriver } as any)
+    const sources = SANCTUARY_SCENARIO_SOURCES["unit-16e-1-stop-denial"]
+    const begin = await capture({ phase: "begin", label: "unit-16e-1-stop-denial", externalGate: "none", sources })
+    expect(denialDriver.poll).not.toHaveBeenCalled()
+    await expect(capture({ phase: "poll", label: "unit-16e-1-stop-denial", externalGate: "none", sources, checkpointDigest: String(begin.checkpointDigest) })).resolves.toMatchObject({ state: "complete" })
+    expect(denialDriver.poll).toHaveBeenCalledOnce()
+    expect(denialDriver.complete).toHaveBeenCalledOnce()
+  })
+
   it("derives every Unit 16 assertion contract from event, journal, and runtime facts", () => {
     for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
       const before = base()

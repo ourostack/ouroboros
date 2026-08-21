@@ -134,12 +134,12 @@ describe("Sanctuary acceptance harness", () => {
       case "unit-16d-1-space": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: 0, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
       case "unit-16d-2-unauthorized": return { auditRejected: true, distinctAccount: true, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
       case "unit-16e-containment-audit": return {
-        schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "d".repeat(64), writeScopeDigest: "d".repeat(64), keyRoleAssignmentCount: 0,
-        telegramToolCount: 10, telegramProfileDigest: "d".repeat(64), telegramSchemaDigest: "d".repeat(64), privateToolCount: 2, privateProfileDigest: "d".repeat(64), privateSchemaDigest: "d".repeat(64), resolvedHandlerCount: 12,
+        schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e", writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec", keyRoleAssignmentCount: 0,
+        telegramToolCount: 10, telegramProfileDigest: "a7f26934c5e60737582b9d13c78944b8bcbb941366899d82d58c01ca296e14e2", telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6", privateToolCount: 2, privateProfileDigest: "a100ffcaf436842bf9fceaf3d2fd1a1b766c04238300487474d6e9fcb7946369", privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70", resolvedHandlerCount: 12,
         excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0,
-        auditPathDigest: "d".repeat(64), auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
+        auditPathDigest: "2c69993987cd9d9a32ff64447d403044bbfd14b0fcbd0db3fbb78391d3320505", auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
         containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
-        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "d".repeat(64), sensitiveMaterialObserved: false, mutationCount: 0,
+        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b", sensitiveMaterialObserved: false, mutationCount: 0,
       }
       case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { auditDecisionCount: 1, denied: true, mutationCount: 0, resumed: true }
       case "unit-16f-cron-fingerprint": return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
@@ -304,6 +304,8 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-16e-containment-audit", { fabricatedHandlerInvocationCount: 1 }, /must equal 0/u)
     reject("unit-16e-containment-audit", { writableKeyExposure: true }, /must be false/u)
     reject("unit-16e-containment-audit", { networkMode: "bridge" }, /network/u)
+    reject("unit-16e-containment-audit", { telegramSchemaDigest: "e".repeat(64) }, /telegramSchemaDigest/u)
+    reject("unit-16e-containment-audit", { readScopeDigest: "e".repeat(64) }, /readScopeDigest/u)
     reject("unit-16h-daily-digest", { firedWithinMs: 960_001 }, /16-minute/u)
     expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16h-daily-digest", {
       ...validAssertions("unit-16h-daily-digest"), firedWithinMs: 0,
