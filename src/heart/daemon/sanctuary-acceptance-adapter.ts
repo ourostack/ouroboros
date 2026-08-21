@@ -229,11 +229,12 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     hostRequest: (payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs),
     telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
   }
+  const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
   dependencies.captureScenario = createSanctuaryScenarioCapture({
     now: Date.now,
-    readFacts: (label, scenarioHandleDigest) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies),
+    readFacts: (label, scenarioHandleDigest, readOptions) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies, undefined, readOptions),
+    healthDriver,
   }) as (payload: JsonObject) => Promise<unknown>
-  const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
   dependencies.finalizeScenarios = createSanctuaryAcceptanceScenarioFinalizer({
     readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID),
     recoverHealthScenario: healthDriver.recover,

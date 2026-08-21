@@ -16,6 +16,7 @@ import {
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 import { SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker, secureRenameBoundInodeSync } from "../../../heart/daemon/sanctuary-acceptance-marker"
+import { createSanctuaryAcceptanceScenarioFinalizer } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
@@ -185,15 +186,27 @@ describe("Sanctuary live scenario capture", () => {
     const gate = path.join(root, "failed-start-gate.json")
     const marker = path.join(root, "sanctuary.ouro", "state", "acceptance", "active-scenario.json")
     const failure = new Error("start failed")
+    const recover = vi.fn(async () => {})
     const capture = createSanctuaryScenarioCapture({
       now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate,
       readFacts: async () => base(),
-      healthDriver: { begin: async () => { throw failure }, poll: async () => ({ state: "waiting" }), recover: async () => {} },
+      healthDriver: { begin: async () => { throw failure }, poll: async () => ({ state: "waiting" }), recover },
     })
     await expect(capture({ phase: "begin", label: "unit-16f-cron-fingerprint", externalGate: "cron", sources: ["cron-runtime"] })).rejects.toBe(failure)
     expect(fs.existsSync(marker)).toBe(true)
     expect(fs.readdirSync(receipts)).toHaveLength(1)
     expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "waiting" })
+    const active = readSanctuaryAcceptanceMarker("sanctuary")!
+    const finalize = createSanctuaryAcceptanceScenarioFinalizer({
+      readActiveScenario: () => readSanctuaryAcceptanceMarker("sanctuary"),
+      recoverHealthScenario: recover,
+      finalizeLocal: () => finalizeSanctuaryScenarioCapture(gate, receipts),
+    })
+    await finalize()
+    expect(recover).toHaveBeenCalledWith(active.label, active.scenarioHandleDigest)
+    expect(fs.existsSync(marker)).toBe(false)
+    expect(fs.readdirSync(receipts)).toEqual([])
+    expect(fs.existsSync(gate)).toBe(false)
   })
 
   it("retains health state when recovery fails before completion publication", async () => {

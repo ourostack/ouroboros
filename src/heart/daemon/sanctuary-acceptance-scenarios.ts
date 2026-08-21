@@ -136,10 +136,25 @@ export interface SanctuaryScenarioFacts {
 
 export interface SanctuaryScenarioCaptureDependencies {
   now(): number
-  readFacts(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<SanctuaryScenarioFacts>
+  readFacts(
+    label: SanctuaryUnit16EvidenceLabel,
+    scenarioHandleDigest: string,
+    options?: { skipContainerSnapshot?: boolean; containerSnapshot?: JsonObject },
+  ): Promise<SanctuaryScenarioFacts>
+  healthDriver?: {
+    begin(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<void>
+    poll(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<{ state: "waiting" } | { state: "ready"; containerSnapshot: JsonObject }>
+    recover(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<void>
+  }
   receiptRoot?: string
   gateStatusPath?: string
 }
+
+const HEALTH_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
+  "unit-16f-cron-fingerprint",
+  "unit-16g-health-transition",
+  "unit-16h-daily-digest",
+])
 
 interface Receipt {
   schemaVersion: "sanctuary-acceptance-receipt-v1"
@@ -307,7 +322,7 @@ export function deriveSanctuaryScenarioAssertions(
       return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount: scenarioMutationCount, resumed: after.containment.denialProbeCompleted }
     }
     case "unit-16f-cron-fingerprint":
-      if (!after.healthProbe || !healthProbeRestored(after.healthProbe, after.cron) || after.healthProbe.clockMode !== "ambient" || after.healthProbe.phases.length !== 1
+      if (!after.container?.running || !after.container.healthy || !after.healthProbe || !healthProbeRestored(after.healthProbe, after.cron) || after.healthProbe.clockMode !== "ambient" || after.healthProbe.phases.length !== 1
         || after.healthProbe.phases[0]?.name !== "cron-unchanged" || after.healthProbe.phases[0].trigger !== "cron" || after.healthProbe.phases[0].fixtureStatus !== null
         || after.healthProbe.phases[0].opened !== 0 || after.healthProbe.phases[0].recovered !== 0 || after.healthProbe.phases[0].digestDue
         || after.healthProbe.phases[0].deliveryKind !== null || after.healthProbe.phases[0].deliveryReceiptDigest !== null
@@ -319,7 +334,7 @@ export function deriveSanctuaryScenarioAssertions(
         ["live-baseline", null, 0, 0, null], ["live-repeat", null, 0, 0, null], ["fixture-fail", 503, 1, 0, "transition"],
         ["fixture-repeat", 503, 0, 0, null], ["fixture-recover", 200, 0, 1, "transition"], ["fixture-refail", 503, 1, 0, "transition"],
       ] as const
-      if (!probe || !healthProbeRestored(probe, after.cron) || probe.clockMode !== "ambient" || probe.privateTurnCount !== 3
+      if (!after.container?.running || !after.container.healthy || !probe || !healthProbeRestored(probe, after.cron) || probe.clockMode !== "ambient" || probe.privateTurnCount !== 3
         || probe.providerInvocationCount < probe.privateTurnCount || probe.providerInvocationCount > 1_000 || probe.deliveryCount !== 3 || probe.phases.length !== exactPhases.length
         || !probe.phases.every((phase, index) => phase.ordinal === index + 1 && phase.name === exactPhases[index]![0] && phase.trigger === "acceptance"
           && phase.fixtureStatus === exactPhases[index]![1] && phase.opened === exactPhases[index]![2] && phase.recovered === exactPhases[index]![3]
@@ -328,7 +343,7 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16h-daily-digest": {
       const probe = after.healthProbe
-      if (!probe || !healthProbeRestored(probe, after.cron) || probe.clockMode !== "local-daily-boundary" || probe.privateTurnCount !== 1
+      if (!after.container?.running || !after.container.healthy || !probe || !healthProbeRestored(probe, after.cron) || probe.clockMode !== "local-daily-boundary" || probe.privateTurnCount !== 1
         || probe.providerInvocationCount < probe.privateTurnCount || probe.providerInvocationCount > 1_000 || probe.deliveryCount !== 1 || probe.phases.length !== 2
         || probe.phases[0]?.ordinal !== 1 || probe.phases[0].name !== "digest-first" || probe.phases[0].trigger !== "acceptance" || probe.phases[0].fixtureStatus !== 503
         || !probe.phases[0].digestDue || probe.phases[0].deliveryKind !== "digest" || probe.phases[0].deliveryReceiptDigest === null
@@ -366,12 +381,17 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
       const startedAt = new Date(deps.now()).toISOString()
       const scenarioHandleDigest = createHash("sha256").update(randomBytes(32)).digest("hex")
       const checkpointDigest = hash({ label: input.label, gate: input.externalGate, sources: input.sources, startedAt, scenarioHandleDigest })
-      const capturedBefore = await deps.readFacts(input.label, scenarioHandleDigest)
+      const healthScenario = HEALTH_SCENARIO_LABELS.has(input.label)
+      const capturedBefore = await deps.readFacts(input.label, scenarioHandleDigest, healthScenario ? { skipContainerSnapshot: true } : undefined)
       const before = { ...capturedBefore, sourceValues: Object.fromEntries(Object.entries(capturedBefore.sourceValues).map(([source, value]) => [source, hash(value)])) }
       const receipt: Receipt = { schemaVersion: "sanctuary-acceptance-receipt-v1", label: input.label, gate: input.externalGate, sources: [...input.sources], checkpointDigest, scenarioHandleDigest, startedAt, before }
       writeSanctuaryAcceptanceMarker("sanctuary", { schemaVersion: "sanctuary-acceptance-marker-v1", label: input.label, scenarioHandleDigest, startedAt })
       atomicPrivateJson(receiptPath(checkpointDigest), receipt)
       publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "waiting", startedAt }, deps.gateStatusPath)
+      if (healthScenario) {
+        if (!deps.healthDriver) throw new Error("health scenario driver is unavailable")
+        await deps.healthDriver.begin(input.label, scenarioHandleDigest)
+      }
       emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_scenario_begin", message: "Sanctuary live acceptance scenario began", meta: { label: input.label, gate: input.externalGate, scenarioHandleDigest } })
       return { state: "waiting", checkpointDigest }
     }
@@ -379,7 +399,14 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
     const filePath = receiptPath(input.checkpointDigest)
     const receipt = JSON.parse(fs.readFileSync(filePath, "utf8")) as Receipt
     if (receipt.checkpointDigest !== input.checkpointDigest || receipt.label !== input.label || receipt.gate !== input.externalGate || JSON.stringify(receipt.sources) !== JSON.stringify(input.sources)) throw new Error("scenario checkpoint binding mismatch")
-    const after = await deps.readFacts(input.label, receipt.scenarioHandleDigest)
+    let factOptions: { containerSnapshot: JsonObject } | undefined
+    if (HEALTH_SCENARIO_LABELS.has(input.label)) {
+      if (!deps.healthDriver) throw new Error("health scenario driver is unavailable")
+      const probe = await deps.healthDriver.poll(input.label, receipt.scenarioHandleDigest)
+      if (probe.state === "waiting") return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
+      factOptions = { containerSnapshot: probe.containerSnapshot }
+    }
+    const after = await deps.readFacts(input.label, receipt.scenarioHandleDigest, factOptions)
     if (input.label === "unit-15c-1-no-callback-terminalization" && !receipt.noCallbackBaseline) {
       const activeApproval = after.approvals.find((approval) => approval.state === "proposed" || approval.state === "claimed")
       if (activeApproval) {
@@ -398,6 +425,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
     if (!candidate) return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
     const assertions = validateSanctuaryUnit16EvidenceAssertions(input.label, candidate)
     const sourceDigests = Object.fromEntries(input.sources.map((source) => [source, hash(after.sourceValues[source])]))
+    if (HEALTH_SCENARIO_LABELS.has(input.label)) await deps.healthDriver!.recover(input.label, receipt.scenarioHandleDigest)
     publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "complete", startedAt: receipt.startedAt }, deps.gateStatusPath)
     clearSanctuaryAcceptanceMarker("sanctuary", receipt.scenarioHandleDigest)
     fs.unlinkSync(filePath)
