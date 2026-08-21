@@ -239,6 +239,29 @@ describe("Sanctuary fixed deployment target", () => {
     }
   })
 
+  it("retries thaw after a pre-effect command failure and accepts post-effect command failure only after resumed-state proof", async () => {
+    const { withPausedTarget } = await load()
+    for (const commandFailure of ["before-effect", "after-effect"]) {
+      let paused = false
+      let unpauseCalls = 0
+      const result = withPausedTarget({ targetContainerId: stagingId, targetPid: 321 }, () => "contained", {
+        runDocker: (args: string[]) => {
+          if (args[0] === "inspect") return JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+          if (args[0] === "pause") paused = true
+          if (args[0] === "unpause") {
+            unpauseCalls += 1
+            if (commandFailure === "after-effect" || unpauseCalls > 1) paused = false
+            if (unpauseCalls === 1) throw new Error("unpause transport failed")
+          }
+          return ""
+        },
+      })
+      expect(result).toBe("contained")
+      expect(paused).toBe(false)
+      expect(unpauseCalls).toBe(commandFailure === "before-effect" ? 2 : 1)
+    }
+  })
+
   it("rejects paused, stopped, restarting, dead, PID-drifted, and foreign target state before scanning", async () => {
     const { withPausedTarget } = await load()
     const invalid = [
