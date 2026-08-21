@@ -79,19 +79,112 @@ export interface SanctuaryHealthSweep {
 }
 
 const healthLockTails = new Map<string, Promise<void>>()
+const healthLeaseBrand = Symbol("sanctuary-health-state-lease")
+const activeHealthLeases = new Set<SanctuaryHealthStateLease>()
 
-async function withHealthLock<T>(statePath: string, operation: () => Promise<T> | T): Promise<T> {
+export interface SanctuaryHealthStateLease {
+  readonly statePath: string
+  readonly nonce: string
+  readonly [healthLeaseBrand]: true
+}
+
+interface HealthLeaseOwner {
+  schemaVersion: 1
+  pid: number
+  nonce: string
+}
+
+function healthLeaseOwner(value: unknown): HealthLeaseOwner {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Sanctuary health lease ownership is invalid")
+  const owner = value as Partial<HealthLeaseOwner>
+  if (JSON.stringify(Object.keys(owner).sort()) !== JSON.stringify(["nonce", "pid", "schemaVersion"])
+    || owner.schemaVersion !== 1 || !Number.isSafeInteger(owner.pid) || Number(owner.pid) < 1
+    || typeof owner.nonce !== "string" || !/^[0-9a-f]{64}$/u.test(owner.nonce)) {
+    throw new Error("Sanctuary health lease ownership is invalid")
+  }
+  return owner as HealthLeaseOwner
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM" }
+}
+
+async function acquireHealthFileLease(statePath: string, timeoutMs: number): Promise<SanctuaryHealthStateLease> {
+  const leasePath = `${statePath}.lease`
+  const ownerPath = path.join(leasePath, "owner.json")
+  const deadline = Date.now() + timeoutMs
+  const nonce = createHash("sha256").update(randomUUID()).digest("hex")
+  for (;;) {
+    try {
+      fs.mkdirSync(leasePath, { recursive: false, mode: 0o700 })
+      fs.writeFileSync(ownerPath, `${JSON.stringify({ schemaVersion: 1, pid: process.pid, nonce })}\n`, { flag: "wx", mode: 0o600 })
+      return { statePath, nonce, [healthLeaseBrand]: true }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        try { if (fs.existsSync(leasePath) && !fs.existsSync(ownerPath)) fs.rmdirSync(leasePath) } catch { /* preserve the original failure */ }
+        throw error
+      }
+      let owner: HealthLeaseOwner
+      try { owner = healthLeaseOwner(JSON.parse(fs.readFileSync(ownerPath, "utf8")) as unknown) }
+      catch (ownerError) {
+        if ((ownerError as NodeJS.ErrnoException).code === "ENOENT" && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          continue
+        }
+        if (ownerError instanceof Error && ownerError.message.includes("ownership is invalid")) throw ownerError
+        throw new Error("Sanctuary health lease ownership is invalid", { cause: ownerError })
+      }
+      if (!processIsAlive(owner.pid)) {
+        fs.rmSync(leasePath, { recursive: true, force: false })
+        continue
+      }
+      if (Date.now() >= deadline) throw new Error("Sanctuary health state lease timed out")
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+}
+
+function releaseHealthFileLease(lease: SanctuaryHealthStateLease): void {
+  const leasePath = `${lease.statePath}.lease`
+  const owner = healthLeaseOwner(JSON.parse(fs.readFileSync(path.join(leasePath, "owner.json"), "utf8")) as unknown)
+  if (owner.nonce !== lease.nonce || owner.pid !== process.pid) throw new Error("Sanctuary health lease ownership changed")
+  fs.rmSync(leasePath, { recursive: true, force: false })
+}
+
+export async function withSanctuaryHealthStateLease<T>(
+  statePath: string,
+  operation: (lease: SanctuaryHealthStateLease) => Promise<T> | T,
+  options: { timeoutMs?: number } = {},
+): Promise<T> {
   const previous = healthLockTails.get(statePath) ?? Promise.resolve()
-  let release!: () => void
-  const current = new Promise<void>((resolve) => { release = resolve })
+  let releaseProcess!: () => void
+  const current = new Promise<void>((resolve) => { releaseProcess = resolve })
   healthLockTails.set(statePath, current)
   await previous
+  let lease: SanctuaryHealthStateLease | undefined
   try {
-    return await operation()
+    lease = await acquireHealthFileLease(statePath, options.timeoutMs ?? 30_000)
+    activeHealthLeases.add(lease)
+    return await operation(lease)
   } finally {
-    release()
+    if (lease) {
+      activeHealthLeases.delete(lease)
+      releaseHealthFileLease(lease)
+    }
+    releaseProcess()
     if (healthLockTails.get(statePath) === current) healthLockTails.delete(statePath)
   }
+}
+
+async function withHealthLock<T>(statePath: string, operation: () => Promise<T> | T, lease?: SanctuaryHealthStateLease): Promise<T> {
+  if (lease) {
+    if (lease.statePath !== statePath || !activeHealthLeases.has(lease) || lease[healthLeaseBrand] !== true) {
+      throw new Error("Sanctuary health state lease is invalid")
+    }
+    return await operation()
+  }
+  return withSanctuaryHealthStateLease(statePath, async () => operation())
 }
 
 function load(filePath: string): HealthState {
@@ -196,6 +289,7 @@ export function createSanctuaryHealthSweep(options: {
   fetch?: typeof fetch
   now?: () => Date
   acceptanceEventMeta?: () => Record<string, string>
+  lease?: SanctuaryHealthStateLease
 }): SanctuaryHealthSweep {
   const fetchImpl = options.fetch ?? fetch
   const now = options.now ?? (() => new Date())
@@ -305,7 +399,7 @@ export function createSanctuaryHealthSweep(options: {
     return { message, incidents: Object.values(current), ...(delivery ? { deliveryId: delivery.id } : {}) }
   }
 
-  const sweep = (() => withHealthLock(options.statePath, runSweep)) as SanctuaryHealthSweep
+  const sweep = (() => withHealthLock(options.statePath, runSweep, options.lease)) as SanctuaryHealthSweep
 
   sweep.markDeliveryAttempting = (deliveryId: string): Promise<void> => withHealthLock(options.statePath, () => {
     const state = load(options.statePath)
@@ -313,7 +407,7 @@ export function createSanctuaryHealthSweep(options: {
     state.outbox.status = "attempting"
     state.updatedAt = now().toISOString()
     save(options.statePath, state)
-  })
+  }, options.lease)
 
   sweep.cacheDeliveryPayload = (deliveryId: string, message: string): Promise<void> => withHealthLock(options.statePath, () => {
     if (typeof message !== "string" || message.trim().length === 0 || Buffer.byteLength(message) > MAX_HEALTH_TEXT_BYTES) throw new Error("Sanctuary health cached delivery payload must be nonempty and bounded")
@@ -322,7 +416,7 @@ export function createSanctuaryHealthSweep(options: {
     state.outbox.summarizedMessage = message
     state.updatedAt = now().toISOString()
     save(options.statePath, state)
-  })
+  }, options.lease)
 
   sweep.markDelivered = (deliveryId: string, messageIds: number[]): Promise<void> => withHealthLock(options.statePath, () => {
     if (!Array.isArray(messageIds) || messageIds.length < 1 || messageIds.length > 100 || !messageIds.every((id) => Number.isSafeInteger(id) && id > 0)) {
@@ -334,7 +428,7 @@ export function createSanctuaryHealthSweep(options: {
     state.outbox = null
     state.updatedAt = now().toISOString()
     save(options.statePath, state)
-  })
+  }, options.lease)
 
   return sweep
 }

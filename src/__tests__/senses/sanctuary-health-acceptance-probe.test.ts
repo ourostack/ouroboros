@@ -12,6 +12,7 @@ import {
 } from "../../senses/sanctuary-health-acceptance-probe"
 
 const sha = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+const shaBytes = (value: string): string => createHash("sha256").update(value).digest("hex")
 
 function healthyContext() {
   return { sanctuary: {
@@ -86,8 +87,8 @@ describe("packaged Sanctuary health acceptance probe", () => {
         ownerImageDigestAfter: fixture.input.ownerImageDigest,
         ownerContainerDigestBefore: fixture.input.ownerContainerDigest,
         ownerContainerDigestAfter: fixture.input.ownerContainerDigest,
-        beforeStateDigest: sha(fixture.before),
-        restoredStateDigest: sha(fixture.before),
+        beforeStateDigest: shaBytes(fixture.before),
+        restoredStateDigest: shaBytes(fixture.before),
         clockMode,
         providerInvocationCount: providers,
         deliveryCount: deliveries,
