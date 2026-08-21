@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url"
+import { EventEmitter } from "node:events"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
@@ -18,6 +19,21 @@ interface BrokerModule {
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
   healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
   requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
+  terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
+  recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
+}
+
+interface HealthProbeChild extends EventEmitter {
+  exitCode: number | null
+  signalCode: NodeJS.Signals | null
+  kill(signal: NodeJS.Signals): boolean
+}
+
+interface HealthProbeRecord {
+  child: HealthProbeChild
+  state: string
+  exitCode: number | null
+  terminationPromise?: Promise<void>
 }
 
 async function broker(): Promise<BrokerModule> {
@@ -27,6 +43,8 @@ async function broker(): Promise<BrokerModule> {
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
     healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
     requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
+    terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
+    recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
   }>
 }
 
@@ -119,6 +137,75 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(() => requireStableHealthProbeOwner(before, { ...before, ownerImageDigest: "d".repeat(64) })).toThrow(/owner binding drifted/u)
     expect(() => requireStableHealthProbeOwner(before, { ...before, ownerContainerDigest: "e".repeat(64) })).toThrow(/owner binding drifted/u)
     expect(() => requireStableHealthProbeOwner(before, before)).not.toThrow()
+  })
+
+  it("waits for a running health probe child to exit before recovery starts", async () => {
+    const { recoverAfterHealthProbeTermination } = await broker()
+    const child = new EventEmitter() as HealthProbeChild
+    child.exitCode = null
+    child.signalCode = null
+    const signals: NodeJS.Signals[] = []
+    child.kill = (signal) => { signals.push(signal); return true }
+    const record: HealthProbeRecord = { child, state: "running", exitCode: null }
+    let recoveryStarted = false
+
+    const recovered = recoverAfterHealthProbeTermination(record, () => {
+      recoveryStarted = true
+      return "restored"
+    }, { termGraceMs: 100, killGraceMs: 100 })
+    await Promise.resolve()
+
+    expect(signals).toEqual(["SIGTERM"])
+    expect(record.state).toBe("terminating")
+    expect(recoveryStarted).toBe(false)
+    child.signalCode = "SIGTERM"
+    child.emit("exit", null, "SIGTERM")
+    await expect(recovered).resolves.toBe("restored")
+    expect(record.state).toBe("terminated")
+    expect(recoveryStarted).toBe(true)
+  })
+
+  it("uses an exact SIGKILL after the bounded graceful termination window", async () => {
+    const { terminateHealthProbeChild } = await broker()
+    const child = new EventEmitter() as HealthProbeChild
+    child.exitCode = null
+    child.signalCode = null
+    const signals: NodeJS.Signals[] = []
+    child.kill = (signal) => {
+      signals.push(signal)
+      if (signal === "SIGKILL") {
+        child.signalCode = signal
+        queueMicrotask(() => child.emit("exit", null, signal))
+      }
+      return true
+    }
+    const record: HealthProbeRecord = { child, state: "running", exitCode: null }
+
+    await expect(terminateHealthProbeChild(record, { termGraceMs: 1, killGraceMs: 100 })).resolves.toBeUndefined()
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"])
+    expect(record.state).toBe("terminated")
+  })
+
+  it("shares termination state safely across concurrent recovery attempts", async () => {
+    const { terminateHealthProbeChild } = await broker()
+    const child = new EventEmitter() as HealthProbeChild
+    child.exitCode = null
+    child.signalCode = null
+    const signals: NodeJS.Signals[] = []
+    child.kill = (signal) => { signals.push(signal); return true }
+    const record: HealthProbeRecord = { child, state: "running", exitCode: null }
+
+    const first = terminateHealthProbeChild(record, { termGraceMs: 100, killGraceMs: 100 })
+    const second = terminateHealthProbeChild(record, { termGraceMs: 100, killGraceMs: 100 })
+    expect(record.state).toBe("terminating")
+    expect(record.terminationPromise).toBe(first)
+    expect(second).toBe(first)
+    expect(signals).toEqual(["SIGTERM"])
+
+    child.signalCode = "SIGTERM"
+    child.emit("exit", null, "SIGTERM")
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    expect(record.state).toBe("terminated")
   })
 
   it("reads GraphQL autostart through the exact canonical RO credential and query", async () => {
