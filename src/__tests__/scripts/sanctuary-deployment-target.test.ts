@@ -185,6 +185,50 @@ describe("Sanctuary fixed deployment target", () => {
     ])
   })
 
+  it("prevents the target from executing inter-scan process, thread, and socket birth/death schedules", async () => {
+    const { runDeploymentTargetAudit, withPausedTarget } = await load()
+    const records = input("staging").topologyBefore
+    let paused = false
+    let membershipReads = 0
+    let tcpReads = 0
+    let blockedTransientSchedules = 0
+    const result = await runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => records,
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => {
+        membershipReads += 1
+        if (membershipReads > 2) {
+          expect(paused).toBe(true)
+          blockedTransientSchedules += 1
+        }
+        return { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321] }
+      },
+      ownedSocketInodes: () => [],
+      readTcpListeners: () => {
+        tcpReads += 1
+        if (tcpReads > 2) {
+          expect(paused).toBe(true)
+          blockedTransientSchedules += 1
+        }
+        return []
+      },
+      readUdpListeners: () => [],
+      readUnixSockets: () => [],
+      quiesceTarget: <T>(target: { targetContainerId: string; targetPid: number }, operation: () => T) => withPausedTarget(target, operation, {
+        runDocker: (args: string[]) => {
+          if (args[0] === "pause") paused = true
+          if (args[0] === "unpause") paused = false
+          return args[0] === "inspect"
+            ? JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+            : ""
+        },
+      }),
+    })
+    expect(result).toMatchObject({ deployment: { targetContainerId: stagingId } })
+    expect(blockedTransientSchedules).toBe(6)
+    expect(paused).toBe(false)
+  })
+
   it.each([
     ["pause command", "pause"],
     ["paused-state inspection", "paused-inspect"],
