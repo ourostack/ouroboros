@@ -15,7 +15,7 @@ type TargetModule = {
   cgroupProcessIds(rootPid: number, containerId: string, dependencies: Record<string, unknown>): { path: string; processIds: number[]; threadIds: number[] }
   ownedSocketInodes(threadIds: number[], dependencies?: Record<string, unknown>): string[]
   queryGraphqlAutostart(fetchImpl: typeof fetch, readDescriptor: () => string): Promise<Map<string, { containerId: string; autoStart: boolean }>>
-  withPausedTarget<T>(target: { targetContainerId: string; targetPid: number }, operation: () => T, dependencies: { runDocker(args: string[]): string }): T
+  withPausedTarget<T>(target: { targetContainerId: string; targetPid: number }, operation: () => T, dependencies: Record<string, unknown>): T
 }
 
 async function load(): Promise<TargetModule> {
@@ -188,6 +188,54 @@ describe("Sanctuary fixed deployment target", () => {
       ["unpause", stagingId],
       ["inspect", "--format", template, stagingId],
     ])
+  })
+
+  it("arms an independent exact-ID/PID thaw lease before pause and disarms only after restored proof", async () => {
+    const { withPausedTarget } = await load()
+    const order: string[] = []
+    let paused = false
+    const target = { targetContainerId: stagingId, targetPid: 321 }
+    const result = withPausedTarget(target, () => { order.push("scan"); return "ok" }, {
+      armWatchdog: (bound: typeof target) => {
+        expect(bound).toEqual(target)
+        order.push("arm")
+        return { disarm: () => { expect(paused).toBe(false); order.push("disarm"); return { status: "disarmed", containerId: stagingId, pid: 321 } } }
+      },
+      runDocker: (args: string[]) => {
+        if (args[0] === "pause") { paused = true; order.push("pause"); return "" }
+        if (args[0] === "unpause") { paused = false; order.push("unpause"); return "" }
+        order.push(paused ? "inspect-paused" : "inspect-running")
+        return JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+      },
+    })
+    expect(result).toBe("ok")
+    expect(order).toEqual(["inspect-running", "arm", "pause", "inspect-paused", "scan", "unpause", "inspect-running", "disarm"])
+  })
+
+  it("preserves both scan and restoration failures", async () => {
+    const { withPausedTarget } = await load()
+    let paused = false
+    expect(() => withPausedTarget({ targetContainerId: stagingId, targetPid: 321 }, () => { throw new Error("scan failed") }, {
+      armWatchdog: () => ({ disarm: () => ({ status: "disarmed" }) }),
+      runDocker: (args: string[]) => {
+        if (args[0] === "inspect") return JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+        if (args[0] === "pause") { paused = true; return "" }
+        if (args[0] === "unpause") throw new Error("thaw failed")
+        return ""
+      },
+    })).toThrow(AggregateError)
+  })
+
+  it("ships a detached parent-death watchdog with exact-ID/PID refusal and no lifecycle mutation", () => {
+    const source = fs.readFileSync(path.join(process.cwd(), "deploy/unraid/sanctuary-deployment-target.mjs"), "utf8")
+    expect(source).toContain("--thaw-watchdog")
+    expect(source).toContain("detached: true")
+    expect(source).toContain("parentPid")
+    expect(source).toContain("targetPid")
+    expect(source).toContain("watchdog-terminal.json")
+    const watchdog = source.slice(source.indexOf("async function runThawWatchdog"), source.indexOf("async function runDeploymentTargetAudit"))
+    expect(watchdog).toContain('["unpause", targetContainerId]')
+    expect(watchdog).not.toMatch(/\["(?:start|restart|update)"/u)
   })
 
   it("prevents the target from executing inter-scan process, thread, and socket birth/death schedules", async () => {
