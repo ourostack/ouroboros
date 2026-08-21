@@ -28,6 +28,14 @@ const restartContinuationDriver = () => ({
   approvalEpochBefore: 0, approvalEpochAfterRestart: 0, continuationEpochAfter: 1,
   ownerLifecycleDigestBefore: "3".repeat(64), ownerLifecycleDigestAfter: "4".repeat(64),
   restartInvocationCount: 1, pendingRestored: true, callbackAttempts: 1,
+  indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
+})
+const duplicateCallbackDriver = () => ({
+  schemaVersion: "sanctuary-interactive-driver-receipt-v1" as const,
+  label: "unit-16l-duplicate-callback" as const, scenarioHandleDigest: "a".repeat(64),
+  approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64), approvalEpochBefore: 0,
+  callbackAttempts: 2, settledCount: 2, claimCount: 1, mutationCount: 1,
+  staleReplaySettled: true, staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false,
 })
 const successfulRestart = () => ([
   { state: "attempt_not_started" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 1_000, mutationAcknowledged: false, afterState: null },
@@ -100,7 +108,7 @@ describe("Sanctuary live scenario capture", () => {
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart() }
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.events.push(event("telegram.update_dropped")) }
-      if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
+      if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
       if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
       const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000)
       expect(assertions, label).not.toBeNull()
@@ -124,6 +132,21 @@ describe("Sanctuary live scenario capture", () => {
     })
     after.interactiveDriver = { ...restartContinuationDriver(), pendingRestored: false }
     expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
+    after.interactiveDriver = { ...restartContinuationDriver(), indeterminateRecoveryObserved: false }
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
+  })
+
+  it("requires broker-attested current duplicate callbacks, stale replay, and absent write credential for unit-16l", () => {
+    const before = base()
+    const after = base()
+    after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]
+    after.restartAttempts = successfulRestart()
+    after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition"))
+    expect(deriveSanctuaryScenarioAssertions("unit-16l-duplicate-callback", before, after, 400_000)).toBeNull()
+    after.interactiveDriver = duplicateCallbackDriver()
+    expect(deriveSanctuaryScenarioAssertions("unit-16l-duplicate-callback", before, after, 400_000)).toMatchObject({ staleReplaySettled: true, writeCredentialAbsent: true })
+    after.interactiveDriver = { ...duplicateCallbackDriver(), writeCredentialObserved: true }
+    expect(deriveSanctuaryScenarioAssertions("unit-16l-duplicate-callback", before, after, 400_000)).toBeNull()
   })
 
   it.each([
@@ -233,6 +256,18 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.existsSync(marker)).toBe(false)
     expect(fs.readdirSync(receipts)).toEqual([])
     expect(fs.existsSync(gate)).toBe(false)
+  })
+
+  it("preserves an incomplete interactive receipt and active marker for inspect-before-retry", async () => {
+    const localFinalize = vi.fn()
+    const finalize = createSanctuaryAcceptanceScenarioFinalizer({
+      readActiveScenario: () => ({ label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }),
+      recoverHealthScenario: vi.fn(),
+      finalizeInteractiveScenario: async () => "preserve" as const,
+      finalizeLocal: localFinalize,
+    })
+    await expect(finalize()).rejects.toThrow(/inspect-before-retry/u)
+    expect(localFinalize).not.toHaveBeenCalled()
   })
 
   it("retains health state when recovery fails before completion publication", async () => {

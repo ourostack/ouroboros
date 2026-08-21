@@ -85,7 +85,7 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
-  it("drives exact current duplicate callbacks and a restart-before-decision from durable proposal coordinates", async () => {
+  it("delegates exact current duplicate and restart-continuation proposals to the production-owner broker", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-interactive-driver-"))
     const scenarioHandleDigest = "a".repeat(64)
     const approvalRecord = {
@@ -93,35 +93,25 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       checkpointDigest: "b".repeat(64), epoch: 0, suspendedSessionRevision: "c".repeat(64),
     }
     const pending = [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound", approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }]
-    const callbackUpdates: Array<Record<string, unknown>> = []
     const hostRequests: Array<Record<string, unknown>> = []
     let currentLabel = "unit-16l-duplicate-callback"
-    let continuation: null | { continuationState: "completed"; continuationEpoch: number } = null
     const driver = createSanctuaryInteractiveAcceptanceScenarioDriver({
       agentRoot: root,
-      readApprovals: () => [{ approval: approvalRecord as never, continuation: continuation as never }],
+      readApprovals: () => [{ approval: approvalRecord as never, continuation: null }],
       readPending: () => pending,
-      credentials: () => ({ botToken: "unused", authorizedUserId: "123", authorizedChatId: "123" }),
-      callbackProbe: async (update) => { callbackUpdates.push(update); if (currentLabel === "unit-16m-restart-continuation") continuation = { continuationState: "completed", continuationEpoch: 1 }; return { settled: true, claimed: callbackUpdates.length === 1, mutated: callbackUpdates.length === 1 } },
       hostRequest: async (payload) => {
         hostRequests.push(payload)
-        return { restarted: true, beforeLifecycleDigest: "1".repeat(64), afterLifecycleDigest: "2".repeat(64), restartInvocationCount: 1 }
+        return { state: "complete" }
       },
     })
     try {
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
-      expect(callbackUpdates).toHaveLength(2)
-      expect(callbackUpdates[0]).toEqual(callbackUpdates[1])
-      expect(callbackUpdates[0]).toMatchObject({ callback_query: { from: { id: 123 }, data: "a:opaque", message: { message_id: 42, chat: { id: 123 } } } })
-      driver.complete(currentLabel as never, scenarioHandleDigest)
-
-      callbackUpdates.length = 0
       currentLabel = "unit-16m-restart-continuation"
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
-      expect(hostRequests).toEqual([{ operation: "restart_butler_for_acceptance", targetId: "sanctuary", label: currentLabel, scenarioHandleDigest, approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0 }])
-      expect(callbackUpdates).toHaveLength(1)
-      const receipt = JSON.parse(fs.readFileSync(path.join(root, "state/acceptance/interactive-driver-receipts", `${scenarioHandleDigest}.json`), "utf8"))
-      expect(receipt).toMatchObject({ label: currentLabel, pendingRestored: true, approvalEpochBefore: 0, approvalEpochAfterRestart: 0, callbackAttempts: 1 })
+      expect(hostRequests).toEqual([
+        { operation: "drive_duplicate_callbacks", targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest, approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0 },
+        { operation: "drive_restart_continuation", targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest, approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0 },
+      ])
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
   it("composes the default health capture through exact start, running, complete, and recovery calls", async () => {
