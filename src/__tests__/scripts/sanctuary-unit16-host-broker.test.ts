@@ -14,10 +14,15 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  createDispatchDrain(): {
+    run<T>(operation: () => T | Promise<T>): Promise<T>
+    stopAndDrain(): Promise<void>
+  }
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
-  healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
+  healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
+  healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
   requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
   terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
   recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
@@ -38,10 +43,12 @@ interface HealthProbeRecord {
 
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
+    createDispatchDrain(): { run<T>(operation: () => T | Promise<T>): Promise<T>; stopAndDrain(): Promise<void> }
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
-    healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
+    healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
+    healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
     requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
     terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
     recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
@@ -116,6 +123,39 @@ describe("Sanctuary Unit 16 host broker", () => {
       "exec", "ouro-butler", "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run",
       "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
+    expect(healthProbeDockerArgs("stop", {
+      label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
+    })).toEqual([
+      "exec", "ouro-butler", "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
+      "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
+    ])
+  })
+
+  it("drains an accepted delayed start before shutdown recovery can snapshot active probes", async () => {
+    const { createDispatchDrain } = await broker()
+    const drain = createDispatchDrain()
+    let releaseSnapshot!: () => void
+    const delayedSnapshot = new Promise<void>((resolve) => { releaseSnapshot = resolve })
+    const events: string[] = []
+    const accepted = drain.run(async () => {
+      events.push("snapshot-start")
+      await delayedSnapshot
+      events.push("probe-started")
+    })
+    const draining = drain.stopAndDrain().then(() => { events.push("recovery-snapshot") })
+    await Promise.resolve()
+    expect(events).toEqual(["snapshot-start"])
+    await expect(drain.run(() => { events.push("late-start") })).rejects.toThrow(/shutting down/u)
+    releaseSnapshot()
+    await Promise.all([accepted, draining])
+    expect(events).toEqual(["snapshot-start", "probe-started", "recovery-snapshot"])
+  })
+
+  it("classifies a pending-only probe as recovery-required and fail-closed", async () => {
+    const { healthProbeArtifactDisposition } = await broker()
+    expect(healthProbeArtifactDisposition({ receipt: null, workspace: null, pending: { isFile: () => true } })).toBe("recovery_required")
+    expect(healthProbeArtifactDisposition({ receipt: null, workspace: null, pending: null })).toBe("absent")
+    expect(healthProbeArtifactDisposition({ receipt: { isFile: () => true }, workspace: null, pending: null })).toBe("complete")
   })
 
   it("rejects health probes for drifted owners and invalid labels before launch", async () => {
