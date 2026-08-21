@@ -115,6 +115,103 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.existsSync(gate)).toBe(false)
   })
 
+  it("drives a health capture start through running and ready before recovery and local completion", async () => {
+    const receipts = path.join(root, "health-receipts")
+    const gate = path.join(root, "health-evidence", "current-scenario-gate.json")
+    const marker = path.join(root, "sanctuary.ouro", "state", "acceptance", "active-scenario.json")
+    const ownerSnapshot = { independentlyAttested: true }
+    const calls: string[] = []
+    let readCount = 0
+    let pollCount = 0
+    const before = base()
+    const after = base(); after.healthProbe = healthProbe("unit-16g-health-transition")
+    const healthDriver = {
+      begin: vi.fn(async () => {
+        calls.push("begin")
+        expect(fs.existsSync(marker)).toBe(true)
+        expect(fs.readdirSync(receipts)).toHaveLength(1)
+        expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "waiting" })
+      }),
+      poll: vi.fn(async () => {
+        calls.push("poll")
+        pollCount += 1
+        return pollCount === 1 ? { state: "waiting" as const } : { state: "ready" as const, containerSnapshot: ownerSnapshot }
+      }),
+      recover: vi.fn(async () => {
+        calls.push("recover")
+        expect(fs.existsSync(marker)).toBe(true)
+        expect(fs.readdirSync(receipts)).toHaveLength(1)
+        expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "waiting" })
+      }),
+    }
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, healthDriver,
+      readFacts: async (_label, _handle, options) => {
+        calls.push(`facts:${JSON.stringify(options ?? {})}`)
+        readCount += 1
+        return readCount === 1 ? before : after
+      },
+    })
+
+    const begin = await capture({ phase: "begin", label: "unit-16g-health-transition", externalGate: "health-transition", sources: ["health-runtime", "health-probe-receipt"] })
+    expect(calls).toEqual(["facts:{\"skipContainerSnapshot\":true}", "begin"])
+    await expect(capture({ phase: "poll", label: "unit-16g-health-transition", externalGate: "health-transition", sources: ["health-runtime", "health-probe-receipt"], checkpointDigest: begin.checkpointDigest as string })).resolves.toEqual(begin)
+    expect(readCount).toBe(1)
+    const complete = await capture({ phase: "poll", label: "unit-16g-health-transition", externalGate: "health-transition", sources: ["health-runtime", "health-probe-receipt"], checkpointDigest: begin.checkpointDigest as string })
+    expect(complete).toMatchObject({ state: "complete", checkpointDigest: begin.checkpointDigest })
+    expect(calls).toEqual([
+      "facts:{\"skipContainerSnapshot\":true}", "begin", "poll", "poll",
+      `facts:${JSON.stringify({ containerSnapshot: ownerSnapshot })}`, "recover",
+    ])
+    expect(fs.existsSync(marker)).toBe(false)
+    expect(fs.readdirSync(receipts)).toEqual([])
+    expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "complete" })
+  })
+
+  it("retains durable health cleanup coordinates when broker start fails", async () => {
+    const receipts = path.join(root, "failed-start-receipts")
+    const gate = path.join(root, "failed-start-gate.json")
+    const marker = path.join(root, "sanctuary.ouro", "state", "acceptance", "active-scenario.json")
+    const failure = new Error("start failed")
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate,
+      readFacts: async () => base(),
+      healthDriver: { begin: async () => { throw failure }, poll: async () => ({ state: "waiting" }), recover: async () => {} },
+    })
+    await expect(capture({ phase: "begin", label: "unit-16f-cron-fingerprint", externalGate: "cron", sources: ["cron-runtime"] })).rejects.toBe(failure)
+    expect(fs.existsSync(marker)).toBe(true)
+    expect(fs.readdirSync(receipts)).toHaveLength(1)
+    expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "waiting" })
+  })
+
+  it("retains health state when recovery fails before completion publication", async () => {
+    const receipts = path.join(root, "failed-recovery-receipts")
+    const gate = path.join(root, "failed-recovery-gate.json")
+    const marker = path.join(root, "sanctuary.ouro", "state", "acceptance", "active-scenario.json")
+    const failure = new Error("recover failed")
+    const after = base(); after.healthProbe = healthProbe("unit-16h-daily-digest")
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate,
+      readFacts: async (_label, _handle, options) => options?.skipContainerSnapshot ? base() : after,
+      healthDriver: { begin: async () => {}, poll: async () => ({ state: "ready", containerSnapshot: {} }), recover: async () => { throw failure } },
+    })
+    const begin = await capture({ phase: "begin", label: "unit-16h-daily-digest", externalGate: "digest", sources: ["digest-runtime", "health-probe-receipt"] })
+    await expect(capture({ phase: "poll", label: "unit-16h-daily-digest", externalGate: "digest", sources: ["digest-runtime", "health-probe-receipt"], checkpointDigest: begin.checkpointDigest as string })).rejects.toBe(failure)
+    expect(fs.existsSync(marker)).toBe(true)
+    expect(fs.readdirSync(receipts)).toHaveLength(1)
+    expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "waiting" })
+  })
+
+  it("never invokes the health driver for a non-health scenario", async () => {
+    const healthDriver = { begin: vi.fn(), poll: vi.fn(), recover: vi.fn() }
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: path.join(root, "ordinary"), gateStatusPath: path.join(root, "ordinary-gate.json"), healthDriver, readFacts: async () => base() })
+    const begin = await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })
+    await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"], checkpointDigest: begin.checkpointDigest as string })
+    expect(healthDriver.begin).not.toHaveBeenCalled()
+    expect(healthDriver.poll).not.toHaveBeenCalled()
+    expect(healthDriver.recover).not.toHaveBeenCalled()
+  })
+
   it("finalizes the exact active private marker, receipt, and public gate", async () => {
     const receipts = path.join(root, "cleanup-receipts")
     const gate = path.join(root, "cleanup-evidence", "current-scenario-gate.json")
