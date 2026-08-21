@@ -817,11 +817,12 @@ function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit1
       || receipt.staleReplayAttempts !== 1 || receipt.staleReplaySettled !== true || receipt.staleReplayMutationCount !== 0
       || receipt.promptTerminal !== true || receipt.writeCredentialObserved !== false) throw new Error("duplicate callback driver receipt is invalid")
   } else if (label === "unit-16m-restart-continuation") {
-    exactKeys(receipt, [...common, "approvalEpochAfterRestart", "continuationEpochAfter", "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore", "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved", "indeterminateRetryCount"], "restart continuation driver receipt")
-    if (![receipt.ownerImageDigest, receipt.ownerContainerDigest, receipt.pendingDigestBefore, receipt.pendingDigestAfter].every((value) => typeof value === "string" && SHA256.test(value))
+    exactKeys(receipt, [...common, "approvalEpochAfterRestart", "continuationEpochAfter", "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore", "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved", "attemptedRecoveryReopened", "attemptedRecordDigest", "recoveredRecordDigest", "indeterminateRetryCount"], "restart continuation driver receipt")
+    if (![receipt.ownerImageDigest, receipt.ownerContainerDigest, receipt.pendingDigestBefore, receipt.pendingDigestAfter, receipt.attemptedRecordDigest, receipt.recoveredRecordDigest].every((value) => typeof value === "string" && SHA256.test(value))
       || ![receipt.approvalEpochAfterRestart, receipt.continuationEpochAfter, receipt.restartCountBefore, receipt.restartCountAfter].every((value) => Number.isSafeInteger(value) && Number(value) >= 0)
       || receipt.pendingRestored !== true || receipt.callbackAttempts !== 1 || receipt.mutationCount !== 1
-      || receipt.indeterminateRecoveryObserved !== true || receipt.indeterminateRetryCount !== 0) throw new Error("restart continuation driver receipt is invalid")
+      || receipt.indeterminateRecoveryObserved !== true || receipt.attemptedRecoveryReopened !== true
+      || receipt.attemptedRecordDigest === receipt.recoveredRecordDigest || receipt.indeterminateRetryCount !== 0) throw new Error("restart continuation driver receipt is invalid")
   } else return undefined
   const { phase: _phase, ...validated } = receipt
   return validated as unknown as SanctuaryInteractiveDriverReceipt
@@ -1106,6 +1107,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       "senses.telegram_approval_prompt_bound": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.approval_stale_callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "staleAt", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.approval_expiry_observed": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "expiryDeadlineAt", "expiryObservationSchemaVersion", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.approval_prompt_terminalized": [
         ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "checkpointDigest", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
         ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "checkpointDigest", "evidenceMac", "expiryDeadlineAt", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
@@ -1953,9 +1955,9 @@ export async function executeSanctuaryInteractiveRuntimeOperation(
     readApprovals: supplied.readApprovals ?? ((digest) => readApprovalsByScenarioHandleDigest(path.join(agentRoot, "state", "approvals", "approvals.sqlite"), digest)),
     readPending: dependency(supplied.readPending, "daemon-owned pending approval reader"),
     createSession: supplied.createSession ?? (async () => { throw new Error("daemon-owned interactive callback session is unavailable") }),
-    proveIndeterminateRecovery: supplied.proveIndeterminateRecovery ?? proveSanctuaryAttemptedRecoveryWithoutRetry,
+    proveIndeterminateRecovery: supplied.proveIndeterminateRecovery
+      ?? ((approval, scenarioHandleDigest) => proveSanctuaryAttemptedRecoveryWithoutRetry(agentRoot, scenarioHandleDigest, approval)),
     writeCredentialObserved: supplied.writeCredentialObserved ?? (() => /credential|api[_-]?key|token|secret/iu.test(JSON.stringify(rawPayload))),
-    timeoutCoordinates: supplied.timeoutCoordinates ?? new Map(),
   }
   return executeSanctuaryInteractiveEngine(rawPayload, deps)
 }

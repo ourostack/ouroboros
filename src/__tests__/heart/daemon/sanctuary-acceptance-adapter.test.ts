@@ -123,7 +123,8 @@ function validInteractiveReceipt(label: "unit-16k-timeout-stale" | "unit-16l-dup
   } : {
     ...common, approvalEpochAfterRestart: 0, continuationEpochAfter: 1, ownerImageDigest: "4".repeat(64), ownerContainerDigest: "5".repeat(64),
     restartCountBefore: 7, restartCountAfter: 8, pendingDigestBefore: "6".repeat(64), pendingDigestAfter: "6".repeat(64), pendingRestored: true,
-    callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
+    callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, attemptedRecoveryReopened: true,
+    attemptedRecordDigest: "7".repeat(64), recoveredRecordDigest: "8".repeat(64), indeterminateRetryCount: 0,
   }
 }
 
@@ -150,10 +151,16 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
       files[auditPath] = `${JSON.stringify({ ...entry, meta: { ...entry.meta, action: "restart" } })}\n`
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
+      const observationUnsigned = { ...unsigned, expiryObservationSchemaVersion: "telegram-approval-expiry-observation-v1", expiryDeadlineAt: 301_000, expiryObservedAt: 301_000 }
+      const observationEvent = "telegram.approval_expiry_observed"
+      const observationEntry = { ts: "2026-08-20T16:05:01.000Z", event: observationEvent, meta: { ...observationUnsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, observationEvent, observationUnsigned) } }
       const expiryUnsigned = { ...unsigned, expiryDeadlineAt: 301_000, expiryObservedAt: 301_000, terminalEditStartedAt: 302_000, terminalizedAt: 306_000, buttonsRemoved: true }
       const expiryEvent = "telegram.approval_prompt_terminalized"
-      files[auditPath] = `${JSON.stringify({ ts: "2026-08-20T16:05:06.000Z", event: expiryEvent, meta: { ...expiryUnsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, expiryEvent, expiryUnsigned) } })}\n`
-      await expect(readDefaultSanctuaryScenarioFacts("unit-16k-timeout-stale", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).resolves.toMatchObject({ events: [{ event: expiryEvent }] })
+      const expiryEntry = { ts: "2026-08-20T16:05:06.000Z", event: expiryEvent, meta: { ...expiryUnsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, expiryEvent, expiryUnsigned) } }
+      files[auditPath] = `${JSON.stringify(observationEntry)}\n${JSON.stringify(expiryEntry)}\n`
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16k-timeout-stale", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).resolves.toMatchObject({ events: [{ event: observationEvent }, { event: expiryEvent }] })
+      files[auditPath] = `${JSON.stringify({ ...observationEntry, meta: { ...observationEntry.meta, expiryObservedAt: 301_001 } })}\n${JSON.stringify(expiryEntry)}\n`
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16k-timeout-stale", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
       files[auditPath] = `${JSON.stringify({ ts: "2026-08-20T16:05:06.000Z", event: expiryEvent, meta: { ...expiryUnsigned, terminalEditStartedAt: 302_001, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, expiryEvent, expiryUnsigned) } })}\n`
       await expect(readDefaultSanctuaryScenarioFacts("unit-16k-timeout-stale", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
       files[auditPath] = `${JSON.stringify({ ts: "2026-08-20T16:05:06.000Z", event: expiryEvent, meta: { ...expiryUnsigned, expiryObservedAt: 301_001, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, expiryEvent, expiryUnsigned) } })}\n`
@@ -362,7 +369,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       readApprovals: () => [{ approval: { ...approval, ...(terminal ? { state: "succeeded", epoch: 1 } : {}) } as never, continuation: terminal ? { continuationEpoch: 1, continuationState: "completed" } as never : null }],
       readPending: () => [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound" as const, approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }],
     }
-    const proveIndeterminateRecovery = vi.fn(() => ({ observed: true, retryCount: 0 }))
+    const proveIndeterminateRecovery = vi.fn(() => ({ observed: true, retryCount: 0, reopened: true, attemptedRecordDigest: "7".repeat(64), recoveredRecordDigest: "8".repeat(64) }))
     await expect(executeSanctuaryInteractiveRuntimeOperation({
       operation: "prepare_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest,
     }, { ...common, proveIndeterminateRecovery })).resolves.toMatchObject({ phase: "prepared", pendingDigestBefore: expect.stringMatching(/^[0-9a-f]{64}$/u), indeterminateRecoveryObserved: true })
@@ -378,11 +385,17 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   })
 
   it("proves attempted recovery with the production transition and makes the second recovery ineligible", () => {
-    const result = proveAttemptedRecoveryWithoutRetry({
-      approvalId: "approval-isolated", state: "proposed", ownerId: null, epoch: 0, attemptedAt: null,
-      updatedAt: "2026-08-20T00:00:00.000Z",
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-attempted-recovery-"))
+    const toolCallId = "call_restart_1"
+    const result = proveAttemptedRecoveryWithoutRetry(agentRoot, "a".repeat(64), {
+      approvalId: "approval-isolated", state: "proposed", toolCallId, toolName: "unraid_restart_container",
+      arguments: { container: "calibre-web" }, schemaDigest: "b".repeat(64), toolDigest: "c".repeat(64),
+      policyDigest: "d".repeat(64), policyId: "unraid.restart.v1", baseSessionRevision: "e".repeat(64),
+      checkpointDigest: "f".repeat(64), suspendedSessionRevision: "1".repeat(64),
+      frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [{ id: toolCallId, type: "function", function: { name: "unraid_restart_container", arguments: "{\"container\":\"calibre-web\"}" } }] },
     } as never)
-    expect(result).toEqual({ observed: true, retryCount: 0 })
+    expect(result).toMatchObject({ observed: true, retryCount: 0, reopened: true,
+      attemptedRecordDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), recoveredRecordDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
   })
 
   it("executes the fixed in-container interactive operations without accepting extra coordinates", async () => {
@@ -856,7 +869,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64), suspendedSessionRevisionDigest: "3".repeat(64), approvalEpochBefore: 0,
       approvalEpochAfterRestart: 0, continuationEpochAfter: 1, ownerImageDigest: "4".repeat(64), ownerContainerDigest: "5".repeat(64),
       restartCountBefore: 7, restartCountAfter: 8, pendingDigestBefore: "6".repeat(64), pendingDigestAfter: "6".repeat(64), pendingRestored: true,
-      callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
+      callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, attemptedRecoveryReopened: true,
+      attemptedRecordDigest: "7".repeat(64), recoveredRecordDigest: "8".repeat(64), indeterminateRetryCount: 0,
     }
     const deps = unit16Deps({
       readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(receipt); if (file.endsWith("/state/senses/telegram/identity.key")) return `${"k".repeat(43)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },

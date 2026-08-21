@@ -554,10 +554,11 @@ describe("Telegram sense", () => {
 
     const stopping = f.app.stop()
     await vi.advanceTimersByTimeAsync(2_000)
-    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(6)
     finishPolling()
     await stopping
     await running
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(7)
     vi.useRealTimers()
   })
 
@@ -790,7 +791,7 @@ describe("Telegram sense", () => {
 
     await f.app.run()
 
-    expect(order).toEqual(["recover", "reconcile", "poll"])
+    expect(order).toEqual(["recover", "reconcile", "poll", "reconcile"])
   })
 
   it("supports proactive private delivery through the same bounded formatter", async () => {

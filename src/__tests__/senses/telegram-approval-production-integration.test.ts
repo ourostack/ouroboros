@@ -161,7 +161,10 @@ describe("production-composed Telegram approval lifecycle", () => {
     const bound = pending(agentRoot)[0]!
     clock.value = Number(bound.expiresAt)
     await expect(first.transport.reconcileExpired()).rejects.toThrow("fallback unavailable")
-    expect(pending(agentRoot)[0]).toMatchObject({ deliveryState: "bound" })
+    expect(pending(agentRoot)[0]).toMatchObject({ deliveryState: "bound", expiryObservation: {
+      schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: Number(bound.expiresAt), observedAt: Number(bound.expiresAt),
+      evidenceMac: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    } })
     first.close()
 
     const second = createTelegramApprovalRuntime({ agentName: "sanctuary", api: api(true), authorizedUserId: "42", authorizedChatId: "43", subject, identityKey, toolContext: {}, dependencies })
@@ -171,7 +174,9 @@ describe("production-composed Telegram approval lifecycle", () => {
     const stale = events.filter((event) => event.event === "telegram.approval_stale_callback_settled")
     expect(stale).toHaveLength(1)
     expect(stale[0]!.meta.evidenceMac).toBe(sanctuaryTelegramApprovalEvidenceMac(identityKey, stale[0]!.event, stale[0]!.meta))
-    expect(pending(agentRoot)).toEqual([])
+    expect(pending(agentRoot)).toEqual([expect.objectContaining({ deliveryState: "terminal_tombstone", staleTap: expect.objectContaining({
+      schemaVersion: "telegram-approval-stale-tap-v1", state: "consumed", consumedAt: clock.value,
+    }) })])
     await second.transport.handleUpdate(callback(String(bound.approveCallbackData), "query-stale-again"))
     expect(events.filter((event) => event.event === "telegram.approval_stale_callback_settled")).toHaveLength(1)
     expect(mutationCount).toBe(0)

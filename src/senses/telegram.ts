@@ -821,6 +821,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           nextApprovalReconcileDeadline = undefined
           clearApprovalReconcileTimer()
           await Promise.all([...approvalReconciliationsInFlight])
+          try {
+            await approvalTransport?.reconcileExpired()
+          } catch (error) {
+            emitNervesEvent({
+              level: "error",
+              component: "senses",
+              event: "senses.telegram_approval_reconcile_error",
+              message: "Telegram approval expiry reconciliation failed",
+              meta: { agentName: options.agentName, subject, error: transportError(error) },
+            })
+          }
           await interactiveControl?.stop()
         }
       })()
@@ -832,9 +843,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     stop() {
       if (stopPromise) return stopPromise
       stopPromise = (async () => {
-        approvalReconciliationActive = false
-        nextApprovalReconcileDeadline = undefined
-        clearApprovalReconcileTimer()
         poll.stop()
         await runPromise?.catch(() => undefined)
         await Promise.all([...approvalReconciliationsInFlight])

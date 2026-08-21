@@ -278,7 +278,10 @@ describe("Telegram approval callback transport", () => {
     expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_stale_callback_settled", meta: {
       ...binding, approvalId: "approval-1", staleAt: clock, acknowledged: true, accepted: false, reason: "stale_callback", evidenceMac: "f".repeat(64),
     } })
-    expect(records).toEqual([])
+    expect(records).toEqual([expect.objectContaining({
+      approvalId: "approval-1", deliveryState: "terminal_tombstone",
+      staleTap: expect.objectContaining({ schemaVersion: "telegram-approval-stale-tap-v1", state: "consumed", consumedAt: clock }),
+    })])
     await transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-2" }))
     expect(evidence.filter((entry) => entry.event === "telegram.approval_stale_callback_settled")).toHaveLength(1)
     expect(onDecision).not.toHaveBeenCalled()

@@ -110,6 +110,9 @@ export interface SanctuaryRestartContinuationDriverReceipt extends SanctuaryInte
   callbackAttempts: number
   mutationCount: number
   indeterminateRecoveryObserved: boolean
+  attemptedRecoveryReopened: boolean
+  attemptedRecordDigest: string
+  recoveredRecordDigest: string
   indeterminateRetryCount: number
 }
 
@@ -472,7 +475,11 @@ function exactApprovalEvidence(
   const callbacks = fresh.filter((entry) => entry.event === "telegram.callback_settled" && entry.meta.approvalId === approval.approvalId)
   const continuations = fresh.filter((entry) => entry.event === "senses.telegram_approval_continuation_delivered" && entry.meta.approvalId === approval.approvalId)
   const staleCallbacks = fresh.filter((entry) => entry.event === "telegram.approval_stale_callback_settled" && entry.meta.approvalId === approval.approvalId)
+  const expiryObservations = fresh.filter((entry) => entry.event === "telegram.approval_expiry_observed" && entry.meta.approvalId === approval.approvalId)
   if (prompt.length !== 1 || terminals.length !== 1 || callbacks.length > 1 || continuations.length > 1 || staleCallbacks.length > 1) return null
+  if ((approval.state === "expired" && (expiryObservations.length < 1
+      || new Set(expiryObservations.map((entry) => hash({ event: entry.event, meta: entry.meta }))).size !== 1))
+    || (approval.state !== "expired" && expiryObservations.length !== 0)) return null
   const expected = approvalEvidenceCoordinates(approval)
   const coordinatesMatch = (entry: SanctuaryScenarioEvent): boolean => entry.meta.scenarioHandleDigest !== undefined
     && typeof entry.meta.scenarioHandleDigest === "string" && SHA256.test(entry.meta.scenarioHandleDigest)
@@ -482,16 +489,17 @@ function exactApprovalEvidence(
     && entry.meta.suspendedSessionRevisionDigest === createHash("sha256").update(approval.suspendedSessionRevision, "utf8").digest("hex")
     && typeof entry.meta.messageIdDigest === "string" && SHA256.test(entry.meta.messageIdDigest)
     && typeof entry.meta.evidenceMac === "string" && SHA256.test(entry.meta.evidenceMac)
-  if (![...prompt, ...terminals, ...callbacks, ...continuations, ...staleCallbacks].every(coordinatesMatch)) return null
+  if (![...prompt, ...terminals, ...callbacks, ...continuations, ...staleCallbacks, ...expiryObservations].every(coordinatesMatch)) return null
   const promptScenarioHandleDigest = prompt[0]!.meta.scenarioHandleDigest
   const promptMessageIdDigest = prompt[0]!.meta.messageIdDigest
-  if (![...terminals, ...callbacks, ...continuations, ...staleCallbacks].every((entry) => entry.meta.scenarioHandleDigest === promptScenarioHandleDigest
+  if (![...terminals, ...callbacks, ...continuations, ...staleCallbacks, ...expiryObservations].every((entry) => entry.meta.scenarioHandleDigest === promptScenarioHandleDigest
     && entry.meta.messageIdDigest === promptMessageIdDigest)) return null
   const boundAt = Number(prompt[0]!.meta.boundAt)
   const terminalEditStartedAt = Number(terminals[0]!.meta.terminalEditStartedAt)
   const terminalizedAt = Number(terminals[0]!.meta.terminalizedAt)
-  const expiryObservedAt = terminals[0]!.meta.expiryObservedAt === undefined ? null : Number(terminals[0]!.meta.expiryObservedAt)
-  const expiryDeadlineAt = terminals[0]!.meta.expiryDeadlineAt === undefined ? null : Number(terminals[0]!.meta.expiryDeadlineAt)
+  const expiryObservation = expiryObservations[0] ?? null
+  const expiryObservedAt = expiryObservation === null ? null : Number(expiryObservation.meta.expiryObservedAt)
+  const expiryDeadlineAt = expiryObservation === null ? null : Number(expiryObservation.meta.expiryDeadlineAt)
   if (!Number.isSafeInteger(boundAt) || boundAt < 0
     || !Number.isSafeInteger(terminalEditStartedAt) || terminalEditStartedAt < boundAt
     || !Number.isSafeInteger(terminalizedAt) || terminalizedAt < terminalEditStartedAt
@@ -500,9 +508,11 @@ function exactApprovalEvidence(
     || approval.expiresAt !== boundAt + SANCTUARY_APPROVAL_TTL_MS) return null
   if (approval.state === "expired") {
     if (expiryObservedAt === null || !Number.isSafeInteger(expiryObservedAt) || expiryObservedAt < boundAt
-      || expiryDeadlineAt !== null && expiryDeadlineAt !== approval.expiresAt
-      || terminalEditStartedAt < expiryObservedAt) return null
-  } else if (expiryObservedAt !== null) return null
+      || expiryDeadlineAt !== approval.expiresAt || expiryObservation?.meta.expiryObservationSchemaVersion !== "telegram-approval-expiry-observation-v1"
+      || expiryObservation.meta.boundAt !== boundAt
+      || terminals[0]!.meta.expiryObservedAt !== expiryObservedAt || terminals[0]!.meta.expiryDeadlineAt !== expiryDeadlineAt
+      || terminalEditStartedAt < expiryObservedAt || terminalizedAt - expiryObservedAt > SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS) return null
+  } else if (expiryObservedAt !== null || terminals[0]!.meta.expiryObservedAt !== undefined || terminals[0]!.meta.expiryDeadlineAt !== undefined) return null
   const callback = callbacks[0] ?? null
   if (callback) {
     const callbackAt = Number(callback.meta.callbackAt)
@@ -770,7 +780,10 @@ export function deriveSanctuaryScenarioAssertions(
         || after.interactiveDriver.continuationEpochAfter <= after.interactiveDriver.approvalEpochAfterRestart
         || approval.continuationEpoch !== after.interactiveDriver.continuationEpochAfter || approval.continuationState !== "completed"
         || after.interactiveDriver.restartCountAfter !== after.interactiveDriver.restartCountBefore + 1
-        || !after.interactiveDriver.indeterminateRecoveryObserved || after.interactiveDriver.indeterminateRetryCount !== 0) return null
+        || !after.interactiveDriver.indeterminateRecoveryObserved || !after.interactiveDriver.attemptedRecoveryReopened
+        || !SHA256.test(after.interactiveDriver.attemptedRecordDigest) || !SHA256.test(after.interactiveDriver.recoveredRecordDigest)
+        || after.interactiveDriver.attemptedRecordDigest === after.interactiveDriver.recoveredRecordDigest
+        || after.interactiveDriver.indeterminateRetryCount !== 0) return null
       return {
         attemptedIndeterminateRetryCount, mutationCount, preAttemptResumed: after.interactiveDriver.pendingRestored,
         butlerRestartObserved: true, checkpointEpochPreserved: true, continuationEpochAdvanced: true,

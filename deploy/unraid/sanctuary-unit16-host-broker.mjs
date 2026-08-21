@@ -929,11 +929,12 @@ const RESTART_RECEIPT_KEYS = [
   "suspendedSessionRevisionDigest", "approvalEpochBefore", "approvalEpochAfterRestart", "continuationEpochAfter",
   "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore",
   "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved",
-  "indeterminateRetryCount",
+  "attemptedRecoveryReopened", "attemptedRecordDigest", "recoveredRecordDigest", "indeterminateRetryCount",
 ]
 const PREPARED_RESTART_RECEIPT_KEYS = [
   "schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest",
   "suspendedSessionRevisionDigest", "approvalEpochBefore", "pendingDigestBefore", "indeterminateRecoveryObserved",
+  "attemptedRecoveryReopened", "attemptedRecordDigest", "recoveredRecordDigest",
   "ownerImageDigest", "ownerContainerDigest", "restartCountBefore",
 ]
 
@@ -957,7 +958,9 @@ function requireInteractiveReceipt(receipt, input) {
     || value.approvalEpochAfterRestart !== value.approvalEpochBefore || !Number.isSafeInteger(value.continuationEpochAfter)
     || value.continuationEpochAfter <= value.approvalEpochAfterRestart || !Number.isSafeInteger(value.restartCountBefore)
     || value.restartCountAfter !== value.restartCountBefore + 1 || value.pendingRestored !== true || value.callbackAttempts !== 1
-    || value.mutationCount !== 1 || value.indeterminateRecoveryObserved !== true || value.indeterminateRetryCount !== 0) {
+    || value.mutationCount !== 1 || value.indeterminateRecoveryObserved !== true || value.attemptedRecoveryReopened !== true
+    || !SHA256.test(value.attemptedRecordDigest) || !SHA256.test(value.recoveredRecordDigest)
+    || value.attemptedRecordDigest === value.recoveredRecordDigest || value.indeterminateRetryCount !== 0) {
     throw new Error("interactive driver receipt is invalid")
   }
   return value
@@ -984,8 +987,9 @@ function requirePreparedRestartReceipt(receipt, input) {
   if (value.schemaVersion !== "sanctuary-interactive-driver-receipt-v2" || (value.phase !== "prepared" && value.phase !== "attempted_or_indeterminate")
     || value.label !== input.label || value.scenarioHandleDigest !== input.scenarioHandleDigest
     || ![value.approvalIdDigest, value.checkpointDigest, value.suspendedSessionRevisionDigest, value.pendingDigestBefore,
-      value.ownerImageDigest, value.ownerContainerDigest].every((item) => typeof item === "string" && SHA256.test(item))
+      value.ownerImageDigest, value.ownerContainerDigest, value.attemptedRecordDigest, value.recoveredRecordDigest].every((item) => typeof item === "string" && SHA256.test(item))
     || !Number.isSafeInteger(value.approvalEpochBefore) || value.approvalEpochBefore < 0 || value.indeterminateRecoveryObserved !== true
+    || value.attemptedRecoveryReopened !== true || value.attemptedRecordDigest === value.recoveredRecordDigest
     || !Number.isSafeInteger(value.restartCountBefore) || value.restartCountBefore < 0) throw new Error("restart continuation prepared receipt is invalid")
   return value
 }
@@ -1173,11 +1177,13 @@ async function driveRestartContinuation(input, dependencies = {
   let prepared
   try {
     prepared = object(await dependencies.runtime("prepare_restart_continuation", value), "restart continuation prepared receipt")
-    const expected = ["schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest", "suspendedSessionRevisionDigest", "approvalEpochBefore", "pendingDigestBefore", "indeterminateRecoveryObserved"]
+    const expected = ["schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest", "suspendedSessionRevisionDigest", "approvalEpochBefore", "pendingDigestBefore", "indeterminateRecoveryObserved", "attemptedRecoveryReopened", "attemptedRecordDigest", "recoveredRecordDigest"]
     exactKeys(prepared, expected, "restart continuation prepared receipt")
     if (prepared.schemaVersion !== "sanctuary-interactive-driver-receipt-v2" || prepared.phase !== "prepared" || prepared.label !== value.label
       || prepared.scenarioHandleDigest !== value.scenarioHandleDigest || ![prepared.approvalIdDigest, prepared.checkpointDigest, prepared.suspendedSessionRevisionDigest, prepared.pendingDigestBefore].every((item) => typeof item === "string" && SHA256.test(item))
-      || !Number.isSafeInteger(prepared.approvalEpochBefore) || prepared.approvalEpochBefore < 0 || prepared.indeterminateRecoveryObserved !== true) throw new Error("restart continuation prepared receipt is invalid")
+      || !Number.isSafeInteger(prepared.approvalEpochBefore) || prepared.approvalEpochBefore < 0 || prepared.indeterminateRecoveryObserved !== true
+      || prepared.attemptedRecoveryReopened !== true || !SHA256.test(prepared.attemptedRecordDigest) || !SHA256.test(prepared.recoveredRecordDigest)
+      || prepared.attemptedRecordDigest === prepared.recoveredRecordDigest) throw new Error("restart continuation prepared receipt is invalid")
     const ownerBefore = object(await dependencies.snapshot(), "restart continuation owner before")
     if (!IMAGE_ID.test(ownerBefore.imageId) || !SHA256.test(ownerBefore.containerId) || ownerBefore.running !== true || ownerBefore.health !== "healthy"
       || !Number.isSafeInteger(ownerBefore.restartCount) || ownerBefore.restartCount < 0) throw new Error("restart continuation owner before is invalid")
