@@ -6,6 +6,7 @@ import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import {
+  finalizeSanctuaryHealthAcceptanceProbe,
   recoverSanctuaryHealthAcceptanceProbe,
   runSanctuaryHealthAcceptanceProbe,
   type SanctuaryHealthAcceptanceProbeInput,
@@ -60,8 +61,9 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
     runnerOptions: {
       credentials: () => ({ botToken: "test-token", authorizedChatId: "42" }),
       createApi: () => ({ request: vi.fn(async () => ({ message_id: ++messageId })), stop: vi.fn() }),
-      runPrivateTurn: async ({ payload, deliver }: { payload: string; deliver(content: string): Promise<void> }) => {
+      runPrivateTurn: async ({ payload, deliver, onProviderInvocation }: { payload: string; deliver(content: string): Promise<void>; onProviderInvocation?: () => void }) => {
         privateTurns += 1
+        onProviderInvocation?.()
         await deliver(payload)
         return { delivered: true }
       },
@@ -91,6 +93,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
         restoredStateDigest: shaBytes(fixture.before),
         clockMode,
         providerInvocationCount: providers,
+        privateTurnCount: providers,
         deliveryCount: deliveries,
         cronRegisteredBefore: true,
         cronRegisteredAfter: true,
@@ -145,6 +148,29 @@ describe("packaged Sanctuary health acceptance probe", () => {
       fs.writeFileSync(path.join(workspace, "snapshot.json"), "{}\n", { mode: 0o600 })
       fs.writeFileSync(path.join(workspace, "checkpoint.json"), `${JSON.stringify({ schemaVersion: 1, ownerImageDigest: "d".repeat(64), ownerContainerDigest: fixture.input.ownerContainerDigest })}\n`, { mode: 0o600 })
       await expect(recoverSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow(/owner binding/u)
+    } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("withholds the final receipt until an independently observed owner is attested", async () => {
+    const fixture = setup("unit-16f-cron-fingerprint")
+    const receiptPath = path.join(fixture.agentRoot, "state", "acceptance", "health-probe-receipts", `${fixture.input.scenarioHandleDigest}.json`)
+    const pendingPath = path.join(fixture.agentRoot, "state", "acceptance", "health-probe-pending", `${fixture.input.scenarioHandleDigest}.json`)
+    try {
+      await runSanctuaryHealthAcceptanceProbe(fixture.input, { ...fixture.deps, deferOwnerAttestation: true })
+      expect(fs.existsSync(receiptPath)).toBe(false)
+      expect(fs.existsSync(pendingPath)).toBe(true)
+      expect(() => finalizeSanctuaryHealthAcceptanceProbe(fixture.input, {
+        ownerImageDigest: "d".repeat(64), ownerContainerDigest: fixture.input.ownerContainerDigest,
+      }, { agentRoot: fixture.agentRoot })).toThrow(/owner drifted/u)
+      expect(fs.existsSync(receiptPath)).toBe(false)
+      const receipt = finalizeSanctuaryHealthAcceptanceProbe(fixture.input, {
+        ownerImageDigest: fixture.input.ownerImageDigest, ownerContainerDigest: fixture.input.ownerContainerDigest,
+      }, { agentRoot: fixture.agentRoot })
+      expect(receipt.productionRestored).toBe(true)
+      expect(fs.existsSync(receiptPath)).toBe(true)
+      expect(fs.existsSync(pendingPath)).toBe(false)
     } finally {
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
     }
