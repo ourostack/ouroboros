@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto"
 
+import { emitNervesEvent } from "../nerves/runtime"
+
 export type SanctuaryGroundingToolName = "unraid_get_system" | "unraid_get_storage"
 
 export interface SanctuaryToolGrounding {
@@ -83,17 +85,26 @@ function compactNumber(value: number): string {
 }
 
 export function renderSanctuaryGroundedResponse(toolName: SanctuaryGroundingToolName, facts: Record<string, unknown>): string {
+  let response: string
   if (toolName === "unraid_get_system") {
     if (typeof facts.serverName !== "string" || typeof facts.unraidVersion !== "string" || typeof facts.arrayState !== "string" || typeof facts.degraded !== "boolean") throw new Error("Sanctuary system response facts are invalid")
-    return `${facts.serverName} is running Unraid ${facts.unraidVersion} with the array ${facts.arrayState} and ${facts.degraded ? "degraded" : "not degraded"}.`
+    response = `${facts.serverName} is running Unraid ${facts.unraidVersion} with the array ${facts.arrayState} and ${facts.degraded ? "degraded" : "not degraded"}.`
+  } else {
+    const array = object(facts.array, "Sanctuary storage response facts")
+    if (typeof array.freeBytes !== "number" || typeof array.usedPercent !== "number") throw new Error("Sanctuary storage response facts are invalid")
+    const units: Array<[number, string]> = [[1_000_000_000_000, "TB"], [1_000_000_000, "GB"], [1, "bytes"]]
+    const freeBytes = Number(array.freeBytes)
+    const usedPercent = Number(array.usedPercent)
+    const [divisor, unit] = units.find(([candidate]) => freeBytes >= candidate) ?? units[units.length - 1]!
+    response = `There is ${compactNumber(freeBytes / divisor)} ${unit} free and the array is ${compactNumber(usedPercent)}% used.`
   }
-  const array = object(facts.array, "Sanctuary storage response facts")
-  if (typeof array.freeBytes !== "number" || typeof array.usedPercent !== "number") throw new Error("Sanctuary storage response facts are invalid")
-  const units: Array<[number, string]> = [[1_000_000_000_000, "TB"], [1_000_000_000, "GB"], [1, "bytes"]]
-  const freeBytes = Number(array.freeBytes)
-  const usedPercent = Number(array.usedPercent)
-  const [divisor, unit] = units.find(([candidate]) => freeBytes >= candidate) ?? units[units.length - 1]!
-  return `There is ${compactNumber(freeBytes / divisor)} ${unit} free and the array is ${compactNumber(usedPercent)}% used.`
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.sanctuary_grounded_response_rendered",
+    message: "Rendered a deterministic Sanctuary response from grounded facts",
+    meta: { toolName },
+  })
+  return response
 }
 
 export function sanctuaryGroundedResponseAccurate(toolName: SanctuaryGroundingToolName, facts: Record<string, unknown>, responseText: string): boolean {
