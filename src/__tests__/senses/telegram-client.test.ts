@@ -115,6 +115,7 @@ describe("Telegram approval callback transport", () => {
         stop: vi.fn(),
         request: vi.fn(async (method: string) => {
           if (method === "sendMessage") { clock += 37; return { message_id: 99 } }
+          if (method === "answerCallbackQuery") clock += 5_000
           return true
         }),
       },
@@ -139,7 +140,7 @@ describe("Telegram approval callback transport", () => {
       "telegram.approval_prompt_terminalized",
       "telegram.callback_settled",
     ])
-    expect(evidence[1]!.meta).toMatchObject({ terminalizedAt: 1_120_037, buttonsRemoved: true, evidenceMac: expect.stringMatching(/^mac:/u) })
+    expect(evidence[1]!.meta).toMatchObject({ terminalizedAt: 1_125_037, buttonsRemoved: true, evidenceMac: expect.stringMatching(/^mac:/u) })
     expect(evidence[2]!.meta).toMatchObject({ callbackAt: 1_120_037, acknowledged: true, accepted: true, reason: "accepted", evidenceMac: expect.stringMatching(/^mac:/u) })
   })
 

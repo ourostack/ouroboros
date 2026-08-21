@@ -787,10 +787,9 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
       remove(pending!)
       let decisionStarted = false
-      let callbackAt: number | null = null
+      const callbackAt = now()
       try {
         await acknowledge(callback.id, false)
-        callbackAt = now()
         let outcome = pending!.terminal
         if (!outcome) {
           const decisionToken = pending!.decisionToken ?? await options.resolveDecisionToken?.(pending!.approvalId)
