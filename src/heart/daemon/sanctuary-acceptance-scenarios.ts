@@ -20,6 +20,46 @@ import { sanctuaryGroundedResponseAccurate, sanctuaryGroundingDigest, type Sanct
 type JsonObject = Record<string, unknown>
 const SHA256 = /^[0-9a-f]{64}$/u
 
+export interface SanctuaryPostbootIntegritySnapshot {
+  schemaVersion: "sanctuary-postboot-integrity-v1"
+  telegramOffsetDigest: string
+  approvalStateDigest: string
+  approvalExecutionCount: number
+  fingerprintDigest: string
+  sweeps: Array<{ idDigest: string; scenarioHandleDigest: string | null; deliveryIdDigest: string | null }>
+  deliveries: Array<{ idDigest: string }>
+  audits: Array<{ idDigest: string; scenarioHandleDigest: string | null; scenarioRelevant: boolean }>
+}
+
+function uniqueDigests(rows: Array<{ idDigest: string }>): boolean {
+  return rows.every((row) => SHA256.test(row.idDigest)) && new Set(rows.map((row) => row.idDigest)).size === rows.length
+}
+
+function preservedPrefix<T extends { idDigest: string }>(before: T[], after: T[]): boolean {
+  return before.length <= after.length && before.every((row, index) => row.idDigest === after[index]?.idDigest)
+}
+
+export function verifySanctuaryPostbootIntegrity(
+  before: SanctuaryPostbootIntegritySnapshot,
+  after: SanctuaryPostbootIntegritySnapshot,
+  scenarioHandleDigest: string,
+  options: { preserveCursors?: boolean } = {},
+): { preserved: true; sweepDeltaCount: number; deliveryDeltaCount: number; auditDeltaCount: number } | null {
+  if (before.schemaVersion !== "sanctuary-postboot-integrity-v1" || after.schemaVersion !== before.schemaVersion || !SHA256.test(scenarioHandleDigest)) return null
+  if (options.preserveCursors !== false && (before.telegramOffsetDigest !== after.telegramOffsetDigest || before.approvalStateDigest !== after.approvalStateDigest
+    || before.approvalExecutionCount !== after.approvalExecutionCount || before.fingerprintDigest !== after.fingerprintDigest)) return null
+  if (![before.sweeps, after.sweeps, before.deliveries, after.deliveries, before.audits, after.audits].every(uniqueDigests)) return null
+  if (!preservedPrefix(before.sweeps, after.sweeps) || !preservedPrefix(before.deliveries, after.deliveries) || !preservedPrefix(before.audits, after.audits)) return null
+  const newSweeps = after.sweeps.slice(before.sweeps.length)
+  const newDeliveries = after.deliveries.slice(before.deliveries.length)
+  const newAudits = after.audits.slice(before.audits.length)
+  if (newSweeps.some((row) => row.scenarioHandleDigest !== scenarioHandleDigest)) return null
+  const boundDeliveryIds = new Set(newSweeps.flatMap((row) => row.deliveryIdDigest ? [row.deliveryIdDigest] : []))
+  if (newDeliveries.some((row) => !boundDeliveryIds.has(row.idDigest))) return null
+  if (newAudits.some((row) => row.scenarioRelevant && row.scenarioHandleDigest !== scenarioHandleDigest)) return null
+  return { preserved: true, sweepDeltaCount: newSweeps.length, deliveryDeltaCount: newDeliveries.length, auditDeltaCount: newAudits.length }
+}
+
 export interface SanctuaryScenarioEvent {
   event: string
   at: number
@@ -206,6 +246,8 @@ export interface SanctuaryHealthProbeReceipt {
 export interface SanctuaryScenarioFacts {
   capturedAt: number
   sourceValues: Record<string, unknown>
+  postbootIntegrity?: SanctuaryPostbootIntegritySnapshot
+  prebootIntegrity?: SanctuaryPostbootIntegritySnapshot
   events: SanctuaryScenarioEvent[]
   approvals: SanctuaryScenarioApproval[]
   restartAttempts: SanctuaryScenarioRestartAttempt[]
@@ -216,7 +258,7 @@ export interface SanctuaryScenarioFacts {
     mountCount: number; publishedPortCount: number; restartPolicy: string; restartCount: number
     autostartExact: boolean; updaterDisabled: boolean; vaultUnlocked: boolean; manualAuthRequired: boolean
   }
-  provider?: { outwardReady: boolean; innerReady: boolean; geminiCandidateReady: boolean; providersDistinct: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number; pingReceipts?: Array<Record<string, unknown>> }
+  provider?: { outwardReady: boolean; innerReady: boolean; geminiCandidateReady: boolean; providersDistinct: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number; modelsExact?: boolean; baseUrlsExact?: boolean; vaultCoordinatesExact?: boolean; credentialIdentitiesDistinct?: boolean; pingReceipts?: Array<Record<string, unknown>> }
   cron?: { registered: boolean; fingerprint: string; receiptDigest: string; sweepCount: number }
   health?: { transitionCount: number; alertCount: number; productionRestored: boolean }
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
@@ -483,6 +525,8 @@ export function deriveSanctuaryScenarioAssertions(
   const deliveredTurns = newTurns.filter((turn) => turn.status === "success" && turn.deliveryCount > 0)
   const telegramResponses = deliveredTurns.length
   const approvalTransitions = delta(after, before, "approval.acceptance_transition")
+  const postbootIntegrity = after.prebootIntegrity && after.postbootIntegrity
+    ? verifySanctuaryPostbootIntegrity(after.prebootIntegrity, after.postbootIntegrity, "0".repeat(64)) : null
   switch (label) {
     case "unit-12c-1-opaque-identity":
     case "unit-14b-3-opaque-identity-live":
@@ -511,8 +555,8 @@ export function deriveSanctuaryScenarioAssertions(
       if (!after.reboot || after.reboot.phase !== "requested" || after.reboot.requestCount !== 1 || !after.reboot.checkpointPersisted) return null
       return { exactlyOnce: true, requestCheckpointPersisted: true, requestDigest: after.reboot.requestDigest }
     case "unit-16a-boot-recovery-milestones":
-      if (!after.reboot || after.reboot.phase !== "complete" || !after.reboot.bootIdentityChanged || !after.reboot.arrayReady || !after.reboot.butlerReady || !after.reboot.dockerReady || !after.reboot.hostReady || !after.reboot.sshReady || !after.reboot.tailscaleReady) return null
-      return { arrayReady: after.reboot.arrayReady, bootIdentityChanged: true, butlerReady: after.reboot.butlerReady, dockerReady: after.reboot.dockerReady, hostReady: after.reboot.hostReady, sshReady: after.reboot.sshReady, tailscaleReady: after.reboot.tailscaleReady }
+      if (!after.reboot || after.reboot.phase !== "complete" || !after.reboot.bootIdentityChanged || !after.reboot.arrayReady || !after.reboot.butlerReady || !after.reboot.dockerReady || !after.reboot.hostReady || !after.reboot.sshReady || !after.reboot.tailscaleReady || !postbootIntegrity) return null
+      return { arrayReady: after.reboot.arrayReady, bootIdentityChanged: true, butlerReady: after.reboot.butlerReady, dockerReady: after.reboot.dockerReady, hostReady: after.reboot.hostReady, postbootIntegrityPreserved: true, sshReady: after.reboot.sshReady, tailscaleReady: after.reboot.tailscaleReady }
     case "unit-16b-runtime-vault-containment":
       if (!after.container) return null
       if (!after.container.autostartExact || !after.container.exactImage || after.container.manualAuthRequired
@@ -523,7 +567,8 @@ export function deriveSanctuaryScenarioAssertions(
     case "unit-16c-provider-readiness":
       return after.provider && after.provider.outwardReady && after.provider.innerReady && after.provider.geminiCandidateReady && after.provider.providersDistinct && !after.provider.silentFallback
         && after.provider.credentialRevisionsPresent === true && after.provider.requestSemanticsExact === true && after.provider.fallbackAttemptCount === 0
-        ? { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false } : null
+        && after.provider.modelsExact === true && after.provider.baseUrlsExact === true && after.provider.vaultCoordinatesExact === true && after.provider.credentialIdentitiesDistinct === true
+        ? { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false, modelsExact: true, baseUrlsExact: true, vaultCoordinatesExact: true, credentialIdentitiesDistinct: true } : null
     case "unit-16d-whats-up":
       if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_system")) return null
       return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }

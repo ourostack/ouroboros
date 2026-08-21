@@ -388,8 +388,8 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       opaqueDigest(value.requestDigest, `${label} requestDigest`)
       break
     case "unit-16a-boot-recovery-milestones":
-      exact(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "sshReady", "tailscaleReady"])
-      allTrue(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "sshReady", "tailscaleReady"])
+      exact(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "postbootIntegrityPreserved", "sshReady", "tailscaleReady"])
+      allTrue(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "postbootIntegrityPreserved", "sshReady", "tailscaleReady"])
       break
     case "unit-16b-runtime-vault-containment":
       exact(["autostartExact", "exactImage", "manualAuthRequired", "mountCount", "nonRootUid", "publishedPortCount", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
@@ -400,8 +400,8 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredInteger(value, "publishedPortCount", 0, label)
       break
     case "unit-16c-provider-readiness":
-      exact(["geminiCandidateReady", "innerReady", "outwardReady", "providersDistinct", "silentFallback"])
-      allTrue(["geminiCandidateReady", "innerReady", "outwardReady", "providersDistinct"])
+      exact(["baseUrlsExact", "credentialIdentitiesDistinct", "geminiCandidateReady", "innerReady", "modelsExact", "outwardReady", "providersDistinct", "silentFallback", "vaultCoordinatesExact"])
+      allTrue(["baseUrlsExact", "credentialIdentitiesDistinct", "geminiCandidateReady", "innerReady", "modelsExact", "outwardReady", "providersDistinct", "vaultCoordinatesExact"])
       requiredFalse(value, "silentFallback", label)
       break
     case "unit-16d-whats-up":
@@ -551,6 +551,7 @@ function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
     }
     for (const [key, item] of Object.entries(value as JsonObject)) {
       if (key === "writeCredentialAbsent" && item === true) continue
+      if (key === "credentialIdentitiesDistinct" && typeof item === "boolean") continue
       if (/(?:telegram)?(?:user|chat|update|message)[_-]?id|token|secret|password|credential|api[_-]?key/iu.test(key)) {
         throw new Error(`${label} contains a sensitive or raw Telegram identity field`)
       }
@@ -1448,13 +1449,17 @@ async function rebootRequest(config: JsonObject, deps: AcceptanceHarnessDependen
   const targetId = text(config.targetId, "targetId")
   const executable = adapter(config.adapter, "reboot adapter")
   const idempotencyKey = deps.randomBytes(16).toString("hex")
-  const base = { schemaVersion: 1, operation: "reboot", phase: "preflight", targetId, idempotencyDigest: digest(idempotencyKey), requestedAt: deps.now() }
+  const preflight = object(await deps.runAdapter(executable, { operation: "reboot_preflight_snapshot", targetId }), "reboot preflight adapter result")
+  const preflightDigest = opaqueDigest(preflight.digest, "reboot preflight digest")
+  if (preflight.safe !== true) throw new Error("reboot preflight is unsafe")
+  const prebootIntegrity = object(await deps.runAdapter(executable, { operation: "postboot_integrity_snapshot" }), "preboot integrity snapshot")
+  const base = { schemaVersion: 1, operation: "reboot", phase: "preflight", targetId, idempotencyDigest: digest(idempotencyKey), preflightDigest, prebootIntegrity, requestedAt: deps.now() }
   initializeCheckpoint(root, evidencePath, base)
   try {
     if (config.scenarioAdapter !== undefined) {
       await captureRebootScenario(config, root, "unit-16a-pre-reboot-checkpoint", deps)
     }
-    const response = object(await deps.runAdapter(executable, { operation: "request_reboot", targetId, idempotencyKey }), "reboot adapter result")
+    const response = object(await deps.runAdapter(executable, { operation: "request_reboot", targetId, idempotencyKey, preflightDigest }), "reboot adapter result")
     if (response.accepted !== true || response.targetId !== targetId) throw new Error("reboot adapter did not accept the exact target")
     const requestId = text(response.requestId, "reboot requestId")
     const prebootDigest = digest(text(response.prebootId, "reboot prebootId"))

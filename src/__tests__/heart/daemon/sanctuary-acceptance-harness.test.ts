@@ -45,9 +45,15 @@ function dependencies(input: {
   now?: () => number
   sleep?: (milliseconds: number) => Promise<void>
 } = {}): AcceptanceHarnessDependencies {
+  const emptyIntegrity = { schemaVersion: "sanctuary-postboot-integrity-v1", telegramOffsetDigest: "1".repeat(64), approvalStateDigest: "2".repeat(64), approvalExecutionCount: 0, fingerprintDigest: "3".repeat(64), sweeps: [], deliveries: [], audits: [] }
   return {
     readSecret: () => input.secret ?? "",
-    runAdapter: input.adapter ?? (async () => ({ ok: true })),
+    runAdapter: async (executable, payload, timeoutMs) => {
+      const operation = (payload as Record<string, unknown>).operation
+      if (operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64) }
+      if (operation === "postboot_integrity_snapshot") return emptyIntegrity
+      return input.adapter ? input.adapter(executable, payload, timeoutMs) : { ok: true }
+    },
     fetch: input.fetch ?? (async () => jsonResponse({ ok: true, result: [] })),
     now: input.now ?? (() => 1_800_000_000_000),
     randomBytes: () => Buffer.from("0123456789abcdef0123456789abcdef", "hex"),
@@ -127,9 +133,9 @@ describe("Sanctuary acceptance harness", () => {
       case "unit-15c-1-no-callback-terminalization": return { buttonsRemoved: true, elapsedMs: 60_000, mutationCount: 0, noInboundUpdate: true, replayMutationCount: 0, terminalExpired: true, ttlMs: 60_000 }
       case "unit-16a-pre-reboot-checkpoint": return { approvalDigest: "d".repeat(64), auditDigest: "d".repeat(64), containerDigest: "d".repeat(64), fingerprintDigest: "d".repeat(64), offsetDigest: "d".repeat(64), ready: true, unrelatedHostOperations: 0 }
       case "unit-16a-reboot-request": return { exactlyOnce: true, requestCheckpointPersisted: true, requestDigest: "d".repeat(64) }
-      case "unit-16a-boot-recovery-milestones": return { arrayReady: true, bootIdentityChanged: true, butlerReady: true, dockerReady: true, hostReady: true, sshReady: true, tailscaleReady: true }
+      case "unit-16a-boot-recovery-milestones": return { arrayReady: true, bootIdentityChanged: true, butlerReady: true, dockerReady: true, hostReady: true, postbootIntegrityPreserved: true, sshReady: true, tailscaleReady: true }
       case "unit-16b-runtime-vault-containment": return { autostartExact: true, exactImage: true, manualAuthRequired: false, mountCount: 2, nonRootUid: 10001, publishedPortCount: 0, readOnlyRoot: true, updaterDisabled: true, vaultUnlocked: true }
-      case "unit-16c-provider-readiness": return { geminiCandidateReady: true, innerReady: true, outwardReady: true, providersDistinct: true, silentFallback: false }
+      case "unit-16c-provider-readiness": return { baseUrlsExact: true, credentialIdentitiesDistinct: true, geminiCandidateReady: true, innerReady: true, modelsExact: true, outwardReady: true, providersDistinct: true, silentFallback: false, vaultCoordinatesExact: true }
       case "unit-16d-whats-up": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
       case "unit-16d-1-space": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: 0, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
       case "unit-16d-2-unauthorized": return { auditRejected: true, distinctAccount: true, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
@@ -1957,9 +1963,11 @@ executeSanctuaryAcceptanceHarness("reboot-request", {
   allowedRoot, evidencePath, targetId: "sanctuary", adapter: "/reboot",
 }, {
   readSecret: () => "",
-  runAdapter: async () => {
+  runAdapter: async (_executable, payload) => {
+    if (payload.operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64) }
+    if (payload.operation === "postboot_integrity_snapshot") return { schemaVersion: "sanctuary-postboot-integrity-v1", telegramOffsetDigest: "1".repeat(64), approvalStateDigest: "2".repeat(64), approvalExecutionCount: 0, fingerprintDigest: "3".repeat(64), sweeps: [], deliveries: [], audits: [] }
     fs.appendFileSync(mutationPath, process.pid + "\n")
-    return { accepted: true, targetId: "sanctuary", requestId: String(process.pid), prebootId: "boot-before" }
+    return { accepted: true, targetId: "sanctuary", requestId: String(process.pid), prebootId: "boot-before", preflightDigest: payload.preflightDigest }
   },
   fetch: globalThis.fetch,
   now: Date.now,

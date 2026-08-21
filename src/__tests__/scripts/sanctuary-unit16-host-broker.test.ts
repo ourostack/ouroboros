@@ -560,9 +560,11 @@ describe("Sanctuary Unit 16 host broker", () => {
       operation: "request_reboot",
       targetId: "sanctuary",
       idempotencyKey: "0123456789abcdef0123456789abcdef",
+      preflightDigest: "a".repeat(64),
     }, {
       readBootId: () => "11111111-2222-3333-4444-555555555555\n",
       containerSnapshot: () => { throw new Error("unexpected container snapshot") },
+      rebootPreflightSnapshot: () => ({ arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }),
     }) as Record<string, unknown>
 
     expect(result).toMatchObject({ accepted: true, targetId: "sanctuary", staged: true })
@@ -1003,6 +1005,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       operation: "request_reboot",
       targetId: "another-host",
       idempotencyKey: "0123456789abcdef0123456789abcdef",
+      preflightDigest: "a".repeat(64),
     })).rejects.toThrow(/target host is invalid/u)
   })
 

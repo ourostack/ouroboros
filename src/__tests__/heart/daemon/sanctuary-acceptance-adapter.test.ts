@@ -1137,7 +1137,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         return {
           accepted: true, staged: true, targetId: "sanctuary",
           requestId,
-          prebootId: "boot-after",
+          prebootId: "boot-after", preflightDigest: payload.preflightDigest,
         }
       },
     })
@@ -1145,10 +1145,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       imageDigest: "a".repeat(64), containerDigest: "b".repeat(64), cursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "evidence_snapshot", schema: "postboot-health-v1" }, deps)).resolves.toMatchObject({ healthy: true, containerImageDigest: "a".repeat(64) })
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32) }, deps)).resolves.toMatchObject({ accepted: true, targetId: "sanctuary", prebootId: "boot-after" })
-    const requested = await executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "d".repeat(32) }, deps) as any
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32), preflightDigest: "e".repeat(64) }, deps)).resolves.toMatchObject({ accepted: true, targetId: "sanctuary", prebootId: "boot-after" })
+    const requested = await executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "d".repeat(32), preflightDigest: "e".repeat(64) }, deps) as any
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "poll_reboot", targetId: "sanctuary", requestId: requested.requestId }, deps)).resolves.toEqual({ targetId: "sanctuary", requestId: requested.requestId, state: "ready", bootId: "boot-after" })
-    expect(calls).toContainEqual({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32) })
+    expect(calls).toContainEqual({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32), preflightDigest: "e".repeat(64) })
   })
 
   it("materializes executable configs from only fixed live state", async () => {

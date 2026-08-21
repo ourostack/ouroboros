@@ -20,7 +20,7 @@ import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
-import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
+import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryPostbootIntegritySnapshot, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import {
   mergeMachineRuntimeCredentialConfig,
   mergeRuntimeCredentialConfig,
@@ -76,6 +76,36 @@ export interface SanctuaryAcceptanceVaultProbeDependencies {
 const KEY_ID = /^[A-Za-z0-9._:-]+$/u
 const AUTH_PROBE = "query AcceptanceAuthProbe { info { os { hostname } } }"
 const WRITE_PROBE = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { restart(id: $id) { id } } }"
+
+interface SanctuaryProviderReadinessContractInput {
+  outward: { provider: string; model: string }
+  inner: { provider: string; model: string }
+  gemini: { provider: string; model: string; vaultItem: string }
+  glm: { baseUrl: string; vaultItem: string; apiKey: string }
+  geminiCredential: { baseUrl: string; apiKey: string }
+  selectionPolicy: string
+  identityKey: string
+}
+
+export function evaluateSanctuaryProviderReadinessContract(input: SanctuaryProviderReadinessContractInput): {
+  modelsExact: boolean; baseUrlsExact: boolean; vaultCoordinatesExact: boolean; credentialIdentitiesDistinct: boolean
+} {
+  const credentialIdentity = (_provider: string, secret: string): Buffer => createHmac("sha256", input.identityKey)
+    .update(`sanctuary-provider-credential-v1\0${secret}`).digest()
+  const glmIdentity = credentialIdentity("openai-compatible", input.glm.apiKey)
+  const geminiIdentity = credentialIdentity("openai-compatible-gemini", input.geminiCredential.apiKey)
+  return {
+    modelsExact: input.outward.provider === "openai-compatible" && input.outward.model === "glm-5.2"
+      && input.inner.provider === "openai-compatible" && input.inner.model === "glm-5.2"
+      && input.gemini.provider === "openai-compatible-gemini" && input.gemini.model === "gemini-3.6-flash",
+    baseUrlsExact: input.glm.baseUrl === "https://api.z.ai/api/paas/v4/"
+      && input.geminiCredential.baseUrl === "https://generativelanguage.googleapis.com/v1beta/openai/",
+    vaultCoordinatesExact: input.glm.vaultItem === "providers/openai-compatible"
+      && input.gemini.vaultItem === "providers/openai-compatible-gemini"
+      && input.selectionPolicy === "explicit-same-lane-only",
+    credentialIdentitiesDistinct: !timingSafeEqual(glmIdentity, geminiIdentity),
+  }
+}
 const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
 // container_snapshot may execute bounded 20s inspect + 30s vault + 30s recovery
 // probes + 10s GraphQL + 20s image-policy checks sequentially in the host broker.
@@ -508,7 +538,7 @@ function parseAuditLedger(raw: string): SanctuaryScenarioFacts["events"] {
   })
 }
 
-function parseRestartAttempts(raw: string, scenarioHandleDigest: string): SanctuaryScenarioFacts["restartAttempts"] {
+function parseRestartAttempts(raw: string, scenarioHandleDigest: string | null): SanctuaryScenarioFacts["restartAttempts"] {
   const exactKeys = ["actionDigest", "afterState", "approvalId", "argumentDigest", "attemptId", "beforeState", "container", "mutationAcknowledged", "observedAt", "scenarioHandleDigest", "state"].sort()
   return boundedLines(raw, "restart attempt ledger", { bytes: 4 * 1024 * 1024, rows: 500, rowBytes: 8 * 1024 }).flatMap((line) => {
     const attempt = object(JSON.parse(line) as unknown, "restart attempt")
@@ -524,7 +554,7 @@ function parseRestartAttempts(raw: string, scenarioHandleDigest: string): Sanctu
       || typeof attempt.attemptId !== "string" || attempt.attemptId.length < 1 || attempt.attemptId.length > 128
       || typeof attempt.beforeState !== "string" || attempt.beforeState.length > 64 || typeof attempt.mutationAcknowledged !== "boolean"
       || (attempt.afterState !== null && (typeof attempt.afterState !== "string" || attempt.afterState.length > 64))) throw new Error("restart attempt ledger row is invalid")
-    if (attempt.scenarioHandleDigest !== scenarioHandleDigest) return []
+    if (scenarioHandleDigest !== null && attempt.scenarioHandleDigest !== scenarioHandleDigest) return []
     return [{ state: attempt.state as SanctuaryScenarioFacts["restartAttempts"][number]["state"], actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt: Date.parse(attempt.observedAt), mutationAcknowledged: attempt.mutationAcknowledged, afterState: attempt.afterState as string | null }]
   })
 }
@@ -557,6 +587,25 @@ function parseHealthAcceptanceState(raw: string | null): JsonObject | null {
       && (receipt.scenarioHandleDigest === undefined || (typeof receipt.scenarioHandleDigest === "string" && SHA256.test(receipt.scenarioHandleDigest)))
   })) throw new Error("Sanctuary health sweep receipts are invalid")
   return health
+}
+
+function buildPostbootIntegritySnapshot(input: {
+  offsetRaw: string | null; checkpointsRaw: string | null; restartAttempts: SanctuaryScenarioFacts["restartAttempts"]
+  cronRaw: string | null; health: JsonObject | null; auditLedgerEntries: SanctuaryScenarioFacts["events"]
+}): SanctuaryPostbootIntegritySnapshot {
+  const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+  const sweeps = (input.health?.sweepReceipts as JsonObject[] | undefined ?? []).map((row) => ({
+    idDigest: digest(row.sweepId), scenarioHandleDigest: typeof row.scenarioHandleDigest === "string" ? row.scenarioHandleDigest : null,
+    deliveryIdDigest: typeof row.deliveryId === "string" ? digest(row.deliveryId) : null,
+  }))
+  const deliveries = (input.health?.deliveredReceipts as JsonObject[] | undefined ?? []).map((row) => ({ idDigest: digest(row.deliveryId) }))
+  const scenarioRelevantEvents = new Set(["telegram.callback_settled", "telegram.update_dropped", "approval.acceptance_transition", "senses.sanctuary_read_receipt", "senses.telegram_approved_restart_end"])
+  return {
+    schemaVersion: "sanctuary-postboot-integrity-v1", telegramOffsetDigest: digest(input.offsetRaw), approvalStateDigest: digest(input.checkpointsRaw),
+    approvalExecutionCount: new Set(input.restartAttempts.filter((row) => row.state !== "attempt_not_started").map((row) => row.attemptId)).size,
+    fingerprintDigest: digest(input.cronRaw), sweeps, deliveries,
+    audits: input.auditLedgerEntries.map((row) => ({ idDigest: digest(row), scenarioHandleDigest: typeof row.meta.scenarioHandleDigest === "string" ? row.meta.scenarioHandleDigest : null, scenarioRelevant: scenarioRelevantEvents.has(row.event) })),
+  }
 }
 
 function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryHealthProbeReceipt | undefined {
@@ -1133,6 +1182,9 @@ export async function readDefaultSanctuaryScenarioFacts(
     }
   }
   const health = parseHealthAcceptanceState(healthRaw)
+  const postbootIntegrity = buildPostbootIntegritySnapshot({ offsetRaw, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries })
+  const prebootIntegrity = rebootCheckpoint && typeof rebootCheckpoint.prebootIntegrity === "object" && !Array.isArray(rebootCheckpoint.prebootIntegrity)
+    ? rebootCheckpoint.prebootIntegrity as unknown as SanctuaryPostbootIntegritySnapshot : undefined
   const healthProbe = parseHealthProbeReceipt(healthProbeRaw, label, scenarioHandleDigest)
   const interactiveDriver = parseInteractiveDriverReceipt(interactiveDriverRaw, label, scenarioHandleDigest)
   const healthSweeps = health ? (health.sweepReceipts as JsonObject[]).filter((receipt) => receipt.scenarioHandleDigest === scenarioHandleDigest) : []
@@ -1145,7 +1197,9 @@ export async function readDefaultSanctuaryScenarioFacts(
   if (agentConfig && readinessPolicy && Array.isArray(readinessPolicy.providers)) {
     const outwardConfig = object(agentConfig.humanFacing, "outward provider")
     const innerConfig = object(agentConfig.agentFacing, "inner provider")
-    const candidate = readinessPolicy.providers.map((entry) => object(entry, "provider readiness candidate"))
+    const readinessProviders = readinessPolicy.providers.map((entry) => object(entry, "provider readiness candidate"))
+    const glmReadiness = readinessProviders.find((entry) => entry.provider === "openai-compatible")
+    const candidate = readinessProviders
       .find((entry) => entry.provider === "openai-compatible-gemini")
     if (candidate && outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible") {
       const readCredential = deps.readProviderCredential ?? readProviderCredentialRecord
@@ -1173,6 +1227,20 @@ export async function readDefaultSanctuaryScenarioFacts(
         && receipt.attempts.every((attempt) => attempt.provider === receipt.provider && attempt.model === receipt.model && attempt.operation === "ping" && typeof attempt.ok === "boolean")
         && receipt.attempts.at(-1)?.ok === true)
       const fallbackAttemptCount = pingReceipts.reduce((count, receipt) => count + receipt.attempts.filter((attempt) => attempt.provider !== receipt.provider || attempt.model !== receipt.model).length, 0)
+      const glmCredentials = glmRecord.ok ? glmRecord.record.credentials as Record<string, unknown> : {}
+      const geminiCredentials = geminiRecord.ok ? geminiRecord.record.credentials as Record<string, unknown> : {}
+      const glmRecordConfig = glmRecord.ok ? glmRecord.record.config as Record<string, unknown> : {}
+      const geminiRecordConfig = geminiRecord.ok ? geminiRecord.record.config as Record<string, unknown> : {}
+      const exactContract = typeof identityRaw === "string" && typeof glmCredentials.apiKey === "string" && typeof geminiCredentials.apiKey === "string"
+        ? evaluateSanctuaryProviderReadinessContract({
+            outward: { provider: text(outwardConfig.provider, "outward provider"), model: outwardModel },
+            inner: { provider: text(innerConfig.provider, "inner provider"), model: innerModel },
+            glm: { baseUrl: text(glmRecordConfig.baseUrl, "GLM credential base URL"), vaultItem: typeof glmReadiness?.vaultItem === "string" ? glmReadiness.vaultItem : "", apiKey: glmCredentials.apiKey },
+            gemini: { provider: text(candidate.provider, "Gemini provider"), model: geminiModel, vaultItem: text(candidate.vaultItem, "Gemini vault item") },
+            geminiCredential: { baseUrl: text(geminiRecordConfig.baseUrl, "Gemini credential base URL"), apiKey: geminiCredentials.apiKey },
+            selectionPolicy: text(readinessPolicy.selectionPolicy, "provider selection policy"), identityKey: identityRaw.trim(),
+          })
+        : { modelsExact: false, baseUrlsExact: false, vaultCoordinatesExact: false, credentialIdentitiesDistinct: false }
       liveProvider = {
         outwardReady: outwardPing.ok,
         innerReady: innerPing.ok,
@@ -1182,6 +1250,7 @@ export async function readDefaultSanctuaryScenarioFacts(
         credentialRevisionsPresent: glmRecord.ok && geminiRecord.ok && Boolean(glmRecord.record.revision) && Boolean(geminiRecord.record.revision),
         requestSemanticsExact,
         fallbackAttemptCount,
+        ...exactContract,
         pingReceipts,
       }
     }
@@ -1282,6 +1351,8 @@ export async function readDefaultSanctuaryScenarioFacts(
   return {
     capturedAt: deps.now?.() ?? Date.now(),
     sourceValues,
+    postbootIntegrity,
+    prebootIntegrity,
     events: auditEntries,
     approvals,
     restartAttempts,
@@ -1313,6 +1384,17 @@ export async function readDefaultSanctuaryScenarioFacts(
       stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,
     },
   }
+}
+
+function postbootIntegritySnapshot(deps: SanctuaryAcceptanceAdapterDependencies): SanctuaryPostbootIntegritySnapshot {
+  const agentRoot = getAgentRoot(TARGET_ID)
+  const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT) ?? ""
+  const restartAttemptsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")) ?? ""
+  return buildPostbootIntegritySnapshot({
+    offsetRaw: optionalFixedFile(deps, TELEGRAM_OFFSET), checkpointsRaw: optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json")),
+    restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw: optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"),
+    health: parseHealthAcceptanceState(optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))), auditLedgerEntries: parseAuditLedger(auditRaw),
+  })
 }
 
 function pathFor(root: string, suffix: string): string { return `${root}/${suffix}` }
@@ -1717,15 +1799,27 @@ function bootId(deps: SanctuaryAcceptanceAdapterDependencies): string {
 async function requestReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   if (text(payload.targetId, "targetId") !== TARGET_ID) throw new Error("targetId is invalid")
   const idempotencyKey = text(payload.idempotencyKey, "idempotencyKey")
+  const preflightDigest = text(payload.preflightDigest, "preflightDigest")
   if (!/^[0-9a-f]{32}$/u.test(idempotencyKey)) throw new Error("idempotencyKey is invalid")
+  if (!SHA256.test(preflightDigest)) throw new Error("preflightDigest is invalid")
   const response = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
-    operation: "request_reboot", targetId: TARGET_ID, idempotencyKey,
+    operation: "request_reboot", targetId: TARGET_ID, idempotencyKey, preflightDigest,
   }), "host reboot staging")
   const requestId = text(response.requestId, "host reboot requestId")
   const prebootId = text(response.prebootId, "host reboot prebootId")
-  if (response.accepted !== true || response.staged !== true || response.targetId !== TARGET_ID
+  if (response.accepted !== true || response.staged !== true || response.targetId !== TARGET_ID || response.preflightDigest !== preflightDigest
     || requestId !== sha256(`sanctuary-reboot\0${idempotencyKey}`)) throw new Error("host reboot staging attestation is invalid")
-  return { accepted: true, targetId: TARGET_ID, requestId, prebootId }
+  return { accepted: true, targetId: TARGET_ID, requestId, prebootId, preflightDigest }
+}
+
+async function rebootPreflight(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
+  if (text(payload.targetId, "targetId") !== TARGET_ID) throw new Error("targetId is invalid")
+  const result = object(await dependency(deps.hostRequest, "Sanctuary host broker")({ operation: "reboot_preflight_snapshot", targetId: TARGET_ID }), "host reboot preflight")
+  const digest = text(result.digest, "host reboot preflight digest")
+  if (!SHA256.test(digest) || result.safe !== true || result.arrayReady !== true || result.parityActive !== false || result.moverActive !== false || result.mutationActive !== false) {
+    throw new Error("host reboot preflight attestation is invalid")
+  }
+  return result
 }
 
 function pollReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
@@ -1802,6 +1896,8 @@ export async function executeSanctuaryAcceptanceAdapter(
         await deps.finalizeScenarios()
         result = { finalized: true }
         break
+      case "reboot_preflight_snapshot": result = await rebootPreflight(payload, deps); break
+      case "postboot_integrity_snapshot": result = postbootIntegritySnapshot(deps); break
       case "request_reboot": result = await requestReboot(payload, deps); break
       case "poll_reboot": result = pollReboot(payload, deps); break
       case "materialize_config": result = materializeConfig(payload, deps); break

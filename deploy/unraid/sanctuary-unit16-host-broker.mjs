@@ -66,6 +66,29 @@ function exactKeys(value, expected, label) {
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) throw new Error(`${label} shape is invalid`)
 }
 
+function observeRebootPreflight(dependencies = {
+  readArrayStatus: () => {
+    const result = spawnSync(MDCMD, ["status"], { cwd: "/", encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024, env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"] })
+    if (result.error || result.status !== 0) throw new Error("reboot preflight array state is unknown")
+    return result.stdout
+  },
+  readMoverStatus: () => spawnSync(PGREP, ["-x", "mover"], { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"] }),
+  mutationActive: () => healthOwnerMutationActive() || ownerMutationCoordinator.active(),
+}) {
+  const values = Object.fromEntries(String(dependencies.readArrayStatus()).split(/\r?\n/u).filter(Boolean).map((line) => {
+    const separator = line.indexOf("=")
+    if (separator < 1) throw new Error("reboot preflight array state is unknown")
+    return [line.slice(0, separator), line.slice(separator + 1)]
+  }))
+  if (values.mdState !== "STARTED" || !/^[0-9]+$/u.test(values.mdResync ?? "")) throw new Error("reboot preflight array state is unknown")
+  const mover = dependencies.readMoverStatus()
+  if (mover.error || (mover.status !== 0 && mover.status !== 1)) throw new Error("reboot preflight mover state is unknown")
+  const state = { arrayReady: true, parityActive: Number(values.mdResync) !== 0, moverActive: mover.status === 0, mutationActive: dependencies.mutationActive() === true }
+  if (state.parityActive || state.moverActive || state.mutationActive) throw new Error("reboot preflight found an active host operation")
+  const digest = createHash("sha256").update(JSON.stringify(state)).digest("hex")
+  return { ...state, safe: true, digest }
+}
+
 function readPrivateJson(file) {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
@@ -807,13 +830,18 @@ function createHealthProbeOperationCoordinator() {
 
 function createOwnerMutationCoordinator() {
   let ownerTail = Promise.resolve()
+  let activeOperations = 0
   const activeHealth = new Set()
   const enqueue = (operation) => {
-    const task = ownerTail.catch(() => {}).then(operation)
+    const task = ownerTail.catch(() => {}).then(async () => {
+      activeOperations += 1
+      try { return await operation() } finally { activeOperations -= 1 }
+    })
     ownerTail = task.then(() => {}, () => {})
     return task
   }
   return {
+    active() { return activeOperations > 0 },
     healthStart(scenario, operation) {
       text(scenario, "health owner scenario", SHA256)
       return enqueue(async () => {
@@ -1217,6 +1245,7 @@ async function dispatch(request, dependencies = {
   liveContainerProcessUser,
   liveContainerProcessIdentity,
   parseProcStartTime,
+  rebootPreflightSnapshot: observeRebootPreflight,
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
@@ -1280,11 +1309,20 @@ async function dispatch(request, dependencies = {
     return { valid: false, status: response.status, id }
   }
   if (operation === "request_reboot") {
-    exactKeys(payload, ["operation", "targetId", "idempotencyKey"], operation)
+    exactKeys(payload, ["operation", "targetId", "idempotencyKey", "preflightDigest"], operation)
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
     const key = text(payload.idempotencyKey, "idempotency key", /^[0-9a-f]{32}$/u)
+    const preflightDigest = text(payload.preflightDigest, "preflight digest", SHA256)
+    const preflight = object(dependencies.rebootPreflightSnapshot(), "reboot preflight")
+    if (preflight.digest !== preflightDigest) throw new Error("reboot preflight changed before commit")
+    if (preflight.safe !== true) throw new Error("reboot preflight is unsafe")
     const prebootId = text(dependencies.readBootId().trim(), "boot id", /^[A-Za-z0-9-]{4,128}$/u)
-    return { accepted: true, targetId: TARGET_HOST, requestId: createHash("sha256").update(`sanctuary-reboot\0${key}`).digest("hex"), prebootId, staged: true }
+    return { accepted: true, targetId: TARGET_HOST, requestId: createHash("sha256").update(`sanctuary-reboot\0${key}`).digest("hex"), prebootId, preflightDigest, staged: true }
+  }
+  if (operation === "reboot_preflight_snapshot") {
+    exactKeys(payload, ["operation", "targetId"], operation)
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    return dependencies.rebootPreflightSnapshot()
   }
   if (operation === "container_snapshot") {
     exactKeys(payload, ["operation", "targetId"], operation)
@@ -1429,6 +1467,7 @@ export {
   liveContainerProcessUser,
   liveContainerProcessIdentity,
   parseProcStartTime,
+  observeRebootPreflight,
   parseVaultStatus,
   queryGraphqlAutostart,
   readBoundedProcStatus,
