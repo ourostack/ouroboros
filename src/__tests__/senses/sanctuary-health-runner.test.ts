@@ -110,4 +110,27 @@ describe("native Sanctuary health habit", () => {
     })).resolves.toMatchObject({ message: "health event remains pending", data: { delivered: false } })
     expect(api.stop).toHaveBeenCalledOnce()
   })
+
+  it("observes private turns and every provider invocation independently from delivery", async () => {
+    const sweep = Object.assign(
+      vi.fn(async () => ({ message: "degraded", incidents: [], deliveryId: "delivery-metrics" })),
+      { cacheDeliveryPayload: vi.fn(), markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
+    )
+    const metrics = { onPrivateTurnStart: vi.fn(), onProviderInvocation: vi.fn() }
+    await runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => sweep,
+      createApi: () => ({ request: vi.fn(async () => ({ message_id: 91 })), stop: vi.fn() }),
+      credentials: () => ({ botToken: "token", authorizedChatId: "42" }),
+      acceptanceMetrics: metrics,
+      runPrivateTurn: async ({ deliver, onProviderInvocation }) => {
+        onProviderInvocation?.()
+        onProviderInvocation?.()
+        await deliver("summary")
+        return { delivered: true }
+      },
+    })
+    expect(metrics.onPrivateTurnStart).toHaveBeenCalledOnce()
+    expect(metrics.onProviderInvocation).toHaveBeenCalledTimes(2)
+    expect(sweep.markDelivered).toHaveBeenCalledOnce()
+  })
 })

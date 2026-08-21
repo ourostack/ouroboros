@@ -67,6 +67,7 @@ export interface SanctuaryHealthAcceptanceProbeReceipt {
   effectiveNow: string
   phases: SanctuaryHealthAcceptanceProbePhase[]
   providerInvocationCount: number
+  privateTurnCount: number
   deliveryCount: number
   workspaceAbsent: boolean
   socketAbsent: boolean
@@ -82,6 +83,7 @@ interface ProbeDependencies {
   ambientFetch: typeof fetch
   now(): Date
   runnerOptions?: SanctuaryHealthHabitRunnerOptions
+  deferOwnerAttestation?: boolean
 }
 
 interface HealthSnapshot { exists: boolean; bytes: string }
@@ -235,6 +237,7 @@ function defaultDependencies(): ProbeDependencies {
     toolContext: createSanctuaryToolContext("sanctuary"),
     ambientFetch: fetch,
     now: () => new Date(),
+    deferOwnerAttestation: true,
   }
 }
 
@@ -320,7 +323,8 @@ export async function runSanctuaryHealthAcceptanceProbe(
   const snapshotPath = path.join(workspace, "snapshot.json")
   const checkpointPath = path.join(workspace, "checkpoint.json")
   const receiptPath = path.join(acceptanceRoot, "health-probe-receipts", `${input.scenarioHandleDigest}.json`)
-  if (fs.existsSync(workspace) || fs.existsSync(receiptPath)) throw new Error("Sanctuary health acceptance probe requires inspect-before-retry")
+  const pendingPath = path.join(acceptanceRoot, "health-probe-pending", `${input.scenarioHandleDigest}.json`)
+  if (fs.existsSync(workspace) || fs.existsSync(receiptPath) || fs.existsSync(pendingPath)) throw new Error("Sanctuary health acceptance probe requires inspect-before-retry")
   fs.mkdirSync(workspace, { recursive: true, mode: 0o700 })
   fs.chmodSync(workspace, 0o700)
   const snapshot = snapshotState(statePath)
@@ -338,6 +342,8 @@ export async function runSanctuaryHealthAcceptanceProbe(
   let restoredStateDigest = ""
   let socketAbsent = true
   const phases: SanctuaryHealthAcceptanceProbePhase[] = []
+  let providerInvocationCount = 0
+  let privateTurnCount = 0
   emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_start", message: "Sanctuary health acceptance probe started", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest } })
   try {
     await withSanctuaryHealthStateLease(statePath, async (lease: SanctuaryHealthStateLease) => {
@@ -353,7 +359,14 @@ export async function runSanctuaryHealthAcceptanceProbe(
           toolContext: dependencies.toolContext, statePath, fetch: fetchImpl, now: () => now, lease,
           acceptanceEventMeta: () => ({ scenarioHandleDigest: input.scenarioHandleDigest }),
         })
-        await runSanctuaryHealthHabit("sanctuary", { ...dependencies.runnerOptions, createSweep: () => sweep })
+        await runSanctuaryHealthHabit("sanctuary", {
+          ...dependencies.runnerOptions,
+          createSweep: () => sweep,
+          acceptanceMetrics: {
+            onPrivateTurnStart: () => { privateTurnCount += 1 },
+            onProviderInvocation: () => { providerInvocationCount += 1 },
+          },
+        })
         phases.push(phaseFromState(statePath, input.scenarioHandleDigest, phases.length + 1, name, trigger, fixtureStatus))
       }
       if (input.label === "unit-16f-cron-fingerprint") {
@@ -401,7 +414,8 @@ export async function runSanctuaryHealthAcceptanceProbe(
       clockMode: input.label === "unit-16h-daily-digest" ? "local-daily-boundary" : "ambient",
       effectiveNow: effectiveNow.toISOString(),
       phases,
-      providerInvocationCount: phases.filter((phase) => phase.deliveryReceiptDigest !== null).length,
+      providerInvocationCount,
+      privateTurnCount,
       deliveryCount: phases.filter((phase) => phase.deliveryReceiptDigest !== null).length,
       workspaceAbsent: !fs.existsSync(workspace),
       socketAbsent,
@@ -410,7 +424,11 @@ export async function runSanctuaryHealthAcceptanceProbe(
       productionRestored: beforeStateDigest === restoredStateDigest && cronFingerprintBefore === cronFingerprintAfter
         && cronRegisteredBefore && cronRegisteredAfter && socketAbsent && realCheckEquivalent,
     }
-    atomicPrivateFile(receiptPath, `${JSON.stringify(receipt)}\n`)
+    if (dependencies.deferOwnerAttestation) {
+      atomicPrivateFile(pendingPath, `${JSON.stringify({ schemaVersion: "sanctuary-health-probe-pending-v1", receipt })}\n`)
+    } else {
+      atomicPrivateFile(receiptPath, `${JSON.stringify(receipt)}\n`)
+    }
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_end", message: "Sanctuary health acceptance probe completed", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest, phaseCount: phases.length } })
     return receipt
   } catch (error) {
@@ -422,14 +440,55 @@ export async function runSanctuaryHealthAcceptanceProbe(
   }
 }
 
+export function finalizeSanctuaryHealthAcceptanceProbe(
+  input: SanctuaryHealthAcceptanceProbeInput,
+  after: { ownerImageDigest: string; ownerContainerDigest: string },
+  dependencies: Pick<ProbeDependencies, "agentRoot"> = { agentRoot: getAgentRoot("sanctuary") },
+): SanctuaryHealthAcceptanceProbeReceipt {
+  canonicalInput(input)
+  if (!SHA256.test(after.ownerImageDigest) || !SHA256.test(after.ownerContainerDigest)) throw new Error("Sanctuary health acceptance final owner is invalid")
+  const acceptanceRoot = path.join(dependencies.agentRoot, "state", "acceptance")
+  const pendingPath = path.join(acceptanceRoot, "health-probe-pending", `${input.scenarioHandleDigest}.json`)
+  const receiptPath = path.join(acceptanceRoot, "health-probe-receipts", `${input.scenarioHandleDigest}.json`)
+  const envelope = JSON.parse(fs.readFileSync(pendingPath, "utf8")) as { schemaVersion?: unknown; receipt?: SanctuaryHealthAcceptanceProbeReceipt }
+  const pending = envelope.receipt
+  if (envelope.schemaVersion !== "sanctuary-health-probe-pending-v1" || !pending
+    || pending.label !== input.label || pending.scenarioHandleDigest !== input.scenarioHandleDigest
+    || pending.ownerImageDigestBefore !== input.ownerImageDigest || pending.ownerContainerDigestBefore !== input.ownerContainerDigest) {
+    throw new Error("Sanctuary health acceptance pending receipt binding is invalid")
+  }
+  const ownerStable = after.ownerImageDigest === input.ownerImageDigest && after.ownerContainerDigest === input.ownerContainerDigest
+  if (!ownerStable) throw new Error("Sanctuary health acceptance owner drifted")
+  const receipt = {
+    ...pending,
+    ownerImageDigestAfter: after.ownerImageDigest,
+    ownerContainerDigestAfter: after.ownerContainerDigest,
+    productionRestored: pending.productionRestored && ownerStable,
+  }
+  atomicPrivateFile(receiptPath, `${JSON.stringify(receipt)}\n`)
+  fs.unlinkSync(pendingPath)
+  emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_attested", message: "Sanctuary health acceptance owner continuity was attested", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest } })
+  return receipt
+}
+
 export async function recoverSanctuaryHealthAcceptanceProbe(
   input: SanctuaryHealthAcceptanceProbeInput,
   dependencies: ProbeDependencies = defaultDependencies(),
 ): Promise<{ recovered: boolean }> {
   canonicalInput(input)
   const statePath = path.join(dependencies.agentRoot, "state", "health", "sanctuary-health.json")
+  const pendingPath = path.join(dependencies.agentRoot, "state", "acceptance", "health-probe-pending", `${input.scenarioHandleDigest}.json`)
   const workspace = path.join(dependencies.agentRoot, "state", "acceptance", "health-probe-workspaces", input.scenarioHandleDigest)
-  if (!fs.existsSync(workspace)) return { recovered: false }
+  if (!fs.existsSync(workspace)) {
+    if (!fs.existsSync(pendingPath)) return { recovered: false }
+    const envelope = JSON.parse(fs.readFileSync(pendingPath, "utf8")) as { receipt?: SanctuaryHealthAcceptanceProbeReceipt }
+    if (!envelope.receipt || envelope.receipt.label !== input.label || envelope.receipt.scenarioHandleDigest !== input.scenarioHandleDigest
+      || envelope.receipt.ownerImageDigestBefore !== input.ownerImageDigest || envelope.receipt.ownerContainerDigestBefore !== input.ownerContainerDigest) {
+      throw new Error("Sanctuary health acceptance pending recovery binding is invalid")
+    }
+    fs.unlinkSync(pendingPath)
+    return { recovered: true }
+  }
   const checkpoint = JSON.parse(fs.readFileSync(path.join(workspace, "checkpoint.json"), "utf8")) as Record<string, unknown>
   if (checkpoint.schemaVersion !== 1 || checkpoint.ownerImageDigest !== input.ownerImageDigest || checkpoint.ownerContainerDigest !== input.ownerContainerDigest) {
     throw new Error("Sanctuary health acceptance recovery owner binding is invalid")
@@ -437,23 +496,32 @@ export async function recoverSanctuaryHealthAcceptanceProbe(
   const snapshot = JSON.parse(fs.readFileSync(path.join(workspace, "snapshot.json"), "utf8")) as HealthSnapshot
   await withSanctuaryHealthStateLease(statePath, async () => restoreState(statePath, snapshot))
   fs.rmSync(workspace, { recursive: true, force: false })
+  if (fs.existsSync(pendingPath)) fs.unlinkSync(pendingPath)
   emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_recovered", message: "Sanctuary health acceptance probe state was restored", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest } })
   return { recovered: true }
 }
 
-function parseCli(argv: string[]): { mode: "run" | "recover"; input: SanctuaryHealthAcceptanceProbeInput } {
-  if (argv.length !== 9 || (argv[0] !== "run" && argv[0] !== "recover")
+function parseCli(argv: string[]): { mode: "run" | "recover" | "finalize"; input: SanctuaryHealthAcceptanceProbeInput; after?: { ownerImageDigest: string; ownerContainerDigest: string } } {
+  if ((argv.length !== 9 && argv.length !== 13) || (argv[0] !== "run" && argv[0] !== "recover" && argv[0] !== "finalize")
     || argv[1] !== "--label" || argv[3] !== "--scenario" || argv[5] !== "--owner-image" || argv[7] !== "--owner-container") {
-    throw new Error("usage: sanctuary-health-acceptance-probe <run|recover> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest>")
+    throw new Error("usage: sanctuary-health-acceptance-probe <run|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]")
   }
   const input = { label: argv[2] as SanctuaryHealthAcceptanceProbeLabel, scenarioHandleDigest: argv[4]!, ownerImageDigest: argv[6]!, ownerContainerDigest: argv[8]! }
   canonicalInput(input)
+  if (argv[0] === "finalize") {
+    if (argv.length !== 13 || argv[9] !== "--owner-image-after" || argv[11] !== "--owner-container-after") throw new Error("Sanctuary health acceptance finalize coordinates are invalid")
+    return { mode: argv[0], input, after: { ownerImageDigest: argv[10]!, ownerContainerDigest: argv[12]! } }
+  }
+  if (argv.length !== 9) throw new Error("Sanctuary health acceptance probe coordinates are invalid")
   return { mode: argv[0], input }
 }
 
 if (require.main === module) {
-  const { mode, input } = parseCli(process.argv.slice(2))
-  void (mode === "run" ? runSanctuaryHealthAcceptanceProbe(input) : recoverSanctuaryHealthAcceptanceProbe(input)).catch((error) => {
+  const { mode, input, after } = parseCli(process.argv.slice(2))
+  const operation = mode === "run"
+    ? runSanctuaryHealthAcceptanceProbe(input)
+    : mode === "recover" ? recoverSanctuaryHealthAcceptanceProbe(input) : Promise.resolve(finalizeSanctuaryHealthAcceptanceProbe(input, after!))
+  void operation.catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
     process.exitCode = 1
   })

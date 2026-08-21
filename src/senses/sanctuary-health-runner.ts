@@ -25,6 +25,10 @@ export interface SanctuaryHealthHabitRunnerOptions {
   createApi?: (token: string) => TelegramBotApi
   credentials?: (agentName: string) => { botToken: string; authorizedChatId: string }
   runPrivateTurn?: (input: SanctuaryHealthPrivateTurnInput) => Promise<{ delivered: boolean }>
+  acceptanceMetrics?: {
+    onPrivateTurnStart(): void
+    onProviderInvocation(): void
+  }
 }
 
 export interface SanctuaryHealthPrivateTurnInput {
@@ -32,11 +36,12 @@ export interface SanctuaryHealthPrivateTurnInput {
   eventId: string
   payload: string
   deliver: (content: string) => Promise<void>
+  onProviderInvocation?: () => void
 }
 
-function privateTurnCallbacks(): ChannelCallbacks {
+function privateTurnCallbacks(onProviderInvocation?: () => void): ChannelCallbacks {
   return {
-    onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}, onReasoningChunk() {},
+    onModelStart() { onProviderInvocation?.() }, onModelStreamStart() {}, onTextChunk() {}, onReasoningChunk() {},
     onToolStart() {}, onToolEnd() {}, onError() {}, onClearText() {},
   }
 }
@@ -66,7 +71,7 @@ export async function runSanctuaryHealthPrivateTurn(input: SanctuaryHealthPrivat
         "Summarize it briefly for Ari. Call send_message exactly once with friendId=operator, channel=telegram, and the summary as content, then rest.",
       ].join("\n"),
     },
-  ], privateTurnCallbacks(), "inner", undefined, {
+  ], privateTurnCallbacks(input.onProviderInvocation), "inner", undefined, {
     toolProfile: "sanctuary-health-private",
     tools: [definition.tool],
     toolContext: { signin: async () => undefined },
@@ -102,6 +107,8 @@ export async function runSanctuaryHealthHabit(
   }
   const credentials = (options.credentials ?? loadTelegramSenseCredentials)(agentName)
   const api = (options.createApi ?? ((token) => createTelegramBotApi({ token })))(credentials.botToken)
+  const eventId = result.deliveryId
+  const payload = result.message
   let attempted = false
   try {
     const deliver = async (content: string): Promise<void> => {
@@ -114,12 +121,16 @@ export async function runSanctuaryHealthHabit(
       }
     const privateResult = result.cachedMessage
       ? (await deliver(result.cachedMessage), { delivered: true })
-      : await (options.runPrivateTurn ?? runSanctuaryHealthPrivateTurn)({
+      : await (async () => {
+        options.acceptanceMetrics?.onPrivateTurnStart()
+        return (options.runPrivateTurn ?? runSanctuaryHealthPrivateTurn)({
           agentName,
-          eventId: result.deliveryId,
-          payload: result.message,
+          eventId,
+          payload,
           deliver,
+          onProviderInvocation: options.acceptanceMetrics?.onProviderInvocation,
         })
+      })()
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_habit", message: "Sanctuary native health habit completed", meta: { agentName, incidentCount: result.incidents.length, delivered: privateResult.delivered } })
     return { ok: true, message: privateResult.delivered ? "health sweep completed and delivered" : "health event remains pending", data: { incidentCount: result.incidents.length, delivered: privateResult.delivered } }
   } finally {
