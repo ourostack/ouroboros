@@ -15,6 +15,7 @@ type TargetModule = {
   cgroupProcessIds(rootPid: number, containerId: string, dependencies: Record<string, unknown>): { path: string; processIds: number[]; threadIds: number[] }
   ownedSocketInodes(threadIds: number[], dependencies?: Record<string, unknown>): string[]
   queryGraphqlAutostart(fetchImpl: typeof fetch, readDescriptor: () => string): Promise<Map<string, { containerId: string; autoStart: boolean }>>
+  armThawWatchdog(target: { targetContainerId: string; targetPid: number }, dependencies: Record<string, unknown>): { disarm(): Record<string, unknown> }
   parseProcStatIdentity(content: string, expectedPid: number): { state: string; starttime: string }
   runThawWatchdog(targetContainerId: string, targetPid: number, parentPid: number, parentBootId: string, parentStarttime: string, root: string, dependencies: Record<string, unknown>): Promise<void>
   withPausedTarget<T>(target: { targetContainerId: string; targetPid: number }, operation: () => T, dependencies: Record<string, unknown>): T
@@ -234,6 +235,30 @@ describe("Sanctuary fixed deployment target", () => {
     expect(parseProcStatIdentity(`42 (auditor worker (phase two)) S ${fieldsFromPpidThroughStarttime.join(" ")} 0 0\n`, 42))
       .toEqual({ state: "S", starttime: "987654" })
     expect(() => parseProcStatIdentity(`43 (auditor) S ${fieldsFromPpidThroughStarttime.join(" ")}\n`, 42)).toThrow(/identity/u)
+  })
+
+  it("arms the detached child with the exact captured parent boot/start identity", async () => {
+    const { armThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    const spawned: Array<{ executable: string; args: string[]; options: Record<string, unknown> }> = []
+    const directories: string[] = []
+    armThawWatchdog({ targetContainerId: stagingId, targetPid: 321 }, {
+      now: () => 1_000,
+      readParentIdentity: () => ({ bootId, state: "S", starttime: "987654" }),
+      mkdirSync: (root: string) => { directories.push(root) },
+      spawn: (executable: string, args: string[], options: Record<string, unknown>) => {
+        spawned.push({ executable, args, options })
+        return { unref: () => undefined }
+      },
+      existsSync: (file: string) => file.endsWith("/ready"),
+    })
+    expect(directories).toEqual([expect.stringMatching(/^\/run\/ouro-thaw-watchdog\.[0-9]+\.1000$/u)])
+    const root = directories[0]!
+    expect(spawned).toEqual([{
+      executable: process.execPath,
+      args: [expect.stringContaining("sanctuary-deployment-target"), "--thaw-watchdog", stagingId, "321", String(process.pid), bootId, "987654", root],
+      options: { cwd: "/", detached: true, stdio: "ignore" },
+    }])
   })
 
   it("does not thaw while the exact parent boot/start identity remains alive and then disarms", async () => {
