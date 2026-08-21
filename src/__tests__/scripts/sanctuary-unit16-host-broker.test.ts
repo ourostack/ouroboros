@@ -97,7 +97,7 @@ interface BrokerModule {
   }
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; forbidden: string[] }): Promise<boolean>
+  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }): Promise<boolean>
   denialTargetSnapshot(dependencies?: {
     run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null; stdout?: string }
   }): Record<string, unknown>
@@ -147,7 +147,7 @@ async function broker(): Promise<BrokerModule> {
     createDispatchDrain(): { run<T>(operation: () => T | Promise<T>): Promise<T>; stopAndDrain(): Promise<void> }
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; forbidden: string[] }): Promise<boolean>
+    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }): Promise<boolean>
     denialTargetSnapshot: BrokerModule["denialTargetSnapshot"]
     assertStableContainerProcess: BrokerModule["assertStableContainerProcess"]
     readBoundedProcStatus: BrokerModule["readBoundedProcStatus"]
@@ -1168,8 +1168,12 @@ describe("Sanctuary Unit 16 host broker", () => {
       { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: false },
     ])
     await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], wrongSuffix, productionId)).resolves.toBe(false)
+    await expect(queryGraphqlAutostart(
+      [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
+      responseWith([{ id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true }]),
+      productionId,
+    )).resolves.toBe(true)
     for (const invalidTopology of [
-      [{ id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true }],
       [
         { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
         { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: true },
@@ -1182,7 +1186,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     ]) {
       await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], responseWith(invalidTopology), productionId)).resolves.toBe(false)
     }
-    const stagingProfile = { containerName: "ouro-butler-staging", requiredStopped: [], forbidden: ["ouro-butler", "ouro-butler-rollback"] }
+    const stagingProfile = { containerName: "ouro-butler-staging", requiredStopped: [], optionalStopped: [], forbidden: ["ouro-butler", "ouro-butler-rollback"] }
     await expect(queryGraphqlAutostart(
       [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
       responseWith([{ id: `${serverId}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }]),
