@@ -414,7 +414,7 @@ describe("Sanctuary deterministic health sweep", () => {
     const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
     expect(saved.deliveredReceipts).toHaveLength(100)
     expect(saved.deliveredReceipts[0].deliveryId).toBe("old-1")
-    expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", kind: "transition", messageIds: [9001, 9002] })
+    expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", kind: "legacy_unknown", messageIds: [9001, 9002] })
     expect(fs.statSync(filePath).mode & 0o777).toBe(0o600)
     expect(fs.readdirSync(path.dirname(filePath))).toEqual(["state.json"])
   })

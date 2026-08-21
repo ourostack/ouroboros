@@ -13,6 +13,15 @@ const ENDPOINTS = [
   "https://readarr.mendelow.cloud/",
 ]
 const REQUIRED_CONTAINERS = new Set(["calibre", "calibre-web", "Cloudflare-DDNS"])
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+const MAX_HEALTH_STATE_BYTES = 4 * 1024 * 1024
+const MAX_HEALTH_TEXT_BYTES = 50_000
+
+function canonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 30) return false
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
+}
 
 interface Incident { id: string; summary: string }
 interface HealthDelivery {
@@ -20,7 +29,7 @@ interface HealthDelivery {
   message: string
   status: "pending" | "attempting"
   createdAt: string
-  kind: "transition" | "digest" | "transition_and_digest"
+  kind: "transition" | "digest" | "transition_and_digest" | "legacy_unknown"
   summarizedMessage?: string
 }
 interface HealthState {
@@ -38,6 +47,7 @@ interface HealthState {
     opened: number
     recovered: number
     digestDue: boolean
+    deliveryId?: string
     scenarioHandleDigest?: string
   }>
 }
@@ -74,15 +84,16 @@ async function withHealthLock<T>(statePath: string, operation: () => Promise<T> 
 
 function load(filePath: string): HealthState {
   try {
+    if (fs.statSync(filePath).size > MAX_HEALTH_STATE_BYTES) throw new Error("health state exceeds its bound")
     const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<HealthState>
     const validDelivery = (delivery: unknown): delivery is HealthDelivery => Boolean(
       delivery && typeof delivery === "object"
-      && typeof (delivery as HealthDelivery).id === "string"
-      && typeof (delivery as HealthDelivery).message === "string"
+      && typeof (delivery as HealthDelivery).id === "string" && (delivery as HealthDelivery).id.length > 0 && (delivery as HealthDelivery).id.length <= 128
+      && typeof (delivery as HealthDelivery).message === "string" && Buffer.byteLength((delivery as HealthDelivery).message) <= MAX_HEALTH_TEXT_BYTES
       && ["pending", "attempting"].includes((delivery as HealthDelivery).status)
-      && typeof (delivery as HealthDelivery).createdAt === "string"
-      && ((delivery as Partial<HealthDelivery>).kind === undefined || ["transition", "digest", "transition_and_digest"].includes((delivery as HealthDelivery).kind))
-      && ((delivery as HealthDelivery).summarizedMessage === undefined || typeof (delivery as HealthDelivery).summarizedMessage === "string"),
+      && canonicalIsoTimestamp((delivery as HealthDelivery).createdAt)
+      && ((delivery as Partial<HealthDelivery>).kind === undefined || ["transition", "digest", "transition_and_digest", "legacy_unknown"].includes((delivery as HealthDelivery).kind))
+      && ((delivery as HealthDelivery).summarizedMessage === undefined || (typeof (delivery as HealthDelivery).summarizedMessage === "string" && Buffer.byteLength((delivery as HealthDelivery).summarizedMessage!) <= MAX_HEALTH_TEXT_BYTES)),
     )
     if (!value.incidents || typeof value.incidents !== "object" || Array.isArray(value.incidents)) throw new Error("invalid incidents")
     if (value.lastDigestDay !== null && typeof value.lastDigestDay !== "string") throw new Error("invalid digest day")
@@ -91,25 +102,28 @@ function load(filePath: string): HealthState {
     if (value.indeterminateDeliveries !== undefined && (
       !Array.isArray(value.indeterminateDeliveries) || !value.indeterminateDeliveries.every(validDelivery)
     )) throw new Error("invalid indeterminate deliveries")
-    if (value.deliveredReceipts !== undefined && (!Array.isArray(value.deliveredReceipts) || !value.deliveredReceipts.every((receipt) => (
-      receipt && typeof receipt.deliveryId === "string" && typeof receipt.deliveredAt === "string"
-      && (receipt.kind === undefined || ["transition", "digest", "transition_and_digest"].includes(receipt.kind))
-      && Array.isArray(receipt.messageIds) && receipt.messageIds.length > 0
+    if (value.deliveredReceipts !== undefined && (!Array.isArray(value.deliveredReceipts) || value.deliveredReceipts.length > 100 || !value.deliveredReceipts.every((receipt) => (
+      receipt && typeof receipt.deliveryId === "string" && receipt.deliveryId.length > 0 && receipt.deliveryId.length <= 128 && canonicalIsoTimestamp(receipt.deliveredAt)
+      && (receipt.kind === undefined || ["transition", "digest", "transition_and_digest", "legacy_unknown"].includes(receipt.kind))
+      && Array.isArray(receipt.messageIds) && receipt.messageIds.length > 0 && receipt.messageIds.length <= 100
       && receipt.messageIds.every((id) => Number.isSafeInteger(id) && id > 0)
     )))) throw new Error("invalid delivered receipts")
-    if (value.sweepReceipts !== undefined && (!Array.isArray(value.sweepReceipts) || !value.sweepReceipts.every((receipt) => (
-      receipt && typeof receipt.sweepId === "string" && typeof receipt.startedAt === "string" && typeof receipt.completedAt === "string"
+    if (value.sweepReceipts !== undefined && (!Array.isArray(value.sweepReceipts) || value.sweepReceipts.length > 500 || !value.sweepReceipts.every((receipt) => (
+      receipt && typeof receipt.sweepId === "string" && UUID_V4.test(receipt.sweepId)
+      && canonicalIsoTimestamp(receipt.startedAt)
+      && canonicalIsoTimestamp(receipt.completedAt)
       && /^[0-9a-f]{64}$/u.test(receipt.incidentDigest) && Number.isSafeInteger(receipt.opened) && receipt.opened >= 0
       && Number.isSafeInteger(receipt.recovered) && receipt.recovered >= 0 && typeof receipt.digestDue === "boolean"
+      && (receipt.deliveryId === undefined || (typeof receipt.deliveryId === "string" && receipt.deliveryId.length > 0 && receipt.deliveryId.length <= 128))
       && (receipt.scenarioHandleDigest === undefined || /^[0-9a-f]{64}$/u.test(receipt.scenarioHandleDigest))
     )))) throw new Error("invalid sweep receipts")
     return {
       incidents: value.incidents as Record<string, Incident>,
       lastDigestDay: value.lastDigestDay,
       updatedAt: value.updatedAt,
-      outbox: value.outbox ? { ...value.outbox, kind: value.outbox.kind ?? "transition" } : null,
-      indeterminateDeliveries: (value.indeterminateDeliveries ?? []).map((delivery) => ({ ...delivery, kind: delivery.kind ?? "transition" })),
-      deliveredReceipts: (value.deliveredReceipts ?? []).map((receipt) => ({ ...receipt, kind: receipt.kind ?? "transition" })),
+      outbox: value.outbox ? { ...value.outbox, kind: value.outbox.kind ?? "legacy_unknown" } : null,
+      indeterminateDeliveries: (value.indeterminateDeliveries ?? []).map((delivery) => ({ ...delivery, kind: delivery.kind ?? "legacy_unknown" })),
+      deliveredReceipts: (value.deliveredReceipts ?? []).map((receipt) => ({ ...receipt, kind: receipt.kind ?? "legacy_unknown" })),
       sweepReceipts: value.sweepReceipts ?? [],
     }
   }
@@ -260,6 +274,7 @@ export function createSanctuaryHealthSweep(options: {
       opened: opened.length,
       recovered: recovered.length,
       digestDue,
+      ...(delivery ? { deliveryId: delivery.id } : {}),
       ...(acceptanceMeta.scenarioHandleDigest ? { scenarioHandleDigest: acceptanceMeta.scenarioHandleDigest } : {}),
     }
     const next: HealthState = {
