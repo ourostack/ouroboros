@@ -733,7 +733,7 @@ describe("Telegram durable authorized long poll", () => {
     const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
     const onMessage = vi.fn(async () => {
       expect(inboxStore.load()).toHaveLength(1)
-      expect(offset).toBe(12)
+      expect(offset).toBe(0)
       throw new Error("synthetic turn crash")
     })
     const api: TelegramBotApi = {
@@ -745,7 +745,7 @@ describe("Telegram durable authorized long poll", () => {
     const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, inboxStore, onMessage })
 
     await expect(poll.pollOnce()).rejects.toThrow("synthetic turn crash")
-    expect(offset).toBe(12)
+    expect(offset).toBe(0)
     expect(inboxStore.loadIndeterminate()).toHaveLength(1)
     let persisted = readFileSync(inboxPath, "utf8")
     expect(JSON.parse(persisted).indeterminate[0].warningAcknowledged).toBe(false)
@@ -908,6 +908,75 @@ describe("Telegram durable authorized long poll", () => {
     expect(thrown).toBeInstanceOf(AggregateError)
     expect((thrown as AggregateError).errors).toEqual([dispatchFailure, auditFailure])
     expect(onDispatchSettled).toHaveBeenCalledOnce()
+  })
+
+  it("does not commit a dropped update offset until its audit settlement succeeds", async () => {
+    const update = { update_id: 7, message: { message_id: 8, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } }
+    let offset = 0
+    let settlementAttempts = 0
+    const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
+    const api = { stop: vi.fn(), request: vi.fn(async () => [update]) }
+    const first = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      onDispatchSettled: () => {
+        settlementAttempts += 1
+        throw new Error("synthetic audit append failure")
+      },
+    })
+
+    await expect(first.pollOnce()).rejects.toThrow("synthetic audit append failure")
+    expect(offset).toBe(0)
+
+    const restarted = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      onDispatchSettled: () => { settlementAttempts += 1 },
+    })
+    await expect(restarted.pollOnce()).resolves.toBe(8)
+    expect(offset).toBe(8)
+    expect(api.request).toHaveBeenCalledTimes(2)
+    expect(settlementAttempts).toBe(2)
+  })
+
+  it("suppresses an authorized side effect after audit settlement fails before offset commit", async () => {
+    const directory = makeTempDirectory("ouro-telegram-audit-settlement-")
+    const inboxPath = join(directory, "inbox.json")
+    const offsetPath = join(directory, "offset.json")
+    const update = { update_id: 7, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "status" } }
+    const api = { stop: vi.fn(), request: vi.fn(async () => [update]) }
+    const onMessage = vi.fn(async () => undefined)
+    const first = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: new FileTelegramOffsetStore(offsetPath),
+      inboxStore: new FileTelegramUpdateInboxStore(inboxPath),
+      onMessage,
+      onDispatchSettled: () => { throw new Error("synthetic audit append failure") },
+    })
+
+    await expect(first.pollOnce()).rejects.toThrow("synthetic audit append failure")
+    expect(new FileTelegramOffsetStore(offsetPath).load()).toBe(0)
+    expect(onMessage).toHaveBeenCalledOnce()
+
+    const restarted = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: new FileTelegramOffsetStore(offsetPath),
+      inboxStore: new FileTelegramUpdateInboxStore(inboxPath),
+      onMessage,
+    })
+    await expect(restarted.pollOnce()).resolves.toBe(8)
+    expect(new FileTelegramOffsetStore(offsetPath).load()).toBe(8)
+    expect(onMessage).toHaveBeenCalledOnce()
   })
 
   it("propagates a non-shutdown polling failure from the joined run lifecycle", async () => {

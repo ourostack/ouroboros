@@ -783,6 +783,89 @@ describe("Telegram sense coverage contracts", () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
+  it("poisons the audit lease when the active scenario changes during model delivery", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-model-drift-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const identityKey = "k".repeat(43)
+    const originalScenario = "a".repeat(64)
+    let activeScenario = originalScenario
+    const owner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", root)
+    mocks.runSenseTurn.mockImplementationOnce(async (turn: any) => {
+      activeScenario = "b".repeat(64)
+      emitGlobal({ ...acceptanceEvent("senses.telegram_turn_start"), meta: { scenarioHandleDigest: originalScenario, acceptanceAuditOwnerDigest: owner } })
+      await turn.deliverySink.onDelivery({ kind: "settle", text: "must not escape" })
+      return { response: "must not escape", deliveries: [], deliveryFailures: [], ponderDeferred: false }
+    })
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey,
+      acceptanceMarker: () => ({ scenarioHandleDigest: activeScenario }),
+    })
+
+    await expect(f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "hello" }))
+      .rejects.toThrow("scenario")
+    expect(mocks.sendTelegramText).not.toHaveBeenCalled()
+    await app.stop().catch(() => undefined)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("poisons the audit lease when the active scenario changes during tool receipt collection", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-tool-drift-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const identityKey = "k".repeat(43)
+    const originalScenario = "a".repeat(64)
+    let activeScenario = originalScenario
+    const owner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", root)
+    mocks.runWithSanctuaryToolReceiptCollection.mockImplementationOnce(async (operation: () => Promise<unknown>) => {
+      const result = await operation()
+      activeScenario = "b".repeat(64)
+      emitGlobal({ ...acceptanceEvent("approval.acceptance_transition"), meta: { scenarioHandleDigest: originalScenario, acceptanceAuditOwnerDigest: owner } })
+      return { result, toolResultDigests: [] }
+    })
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey,
+      acceptanceMarker: () => ({ scenarioHandleDigest: activeScenario }),
+    })
+
+    await expect(f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "hello" }))
+      .rejects.toThrow("scenario")
+    expect(mocks.sendTelegramText).not.toHaveBeenCalled()
+    await app.stop().catch(() => undefined)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("poisons the audit lease when the active scenario changes during callback handling", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-callback-drift-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const identityKey = "k".repeat(43)
+    const originalScenario = "a".repeat(64)
+    let activeScenario = originalScenario
+    const owner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", root)
+    f.transport.handleUpdate.mockImplementationOnce(async () => {
+      activeScenario = "b".repeat(64)
+      emitGlobal({ ...acceptanceEvent("telegram.callback_settled"), meta: { scenarioHandleDigest: originalScenario, acceptanceAuditOwnerDigest: owner } })
+      return { handled: true }
+    })
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey,
+      acceptanceMarker: () => ({ scenarioHandleDigest: activeScenario }),
+    })
+
+    await expect(f.getOnUpdate()({ callback_query: { id: "query" } })).rejects.toThrow("scenario")
+    await expect(app.sendProactive("must not escape")).rejects.toThrow("scenario")
+    expect(mocks.sendTelegramText).not.toHaveBeenCalled()
+    await app.stop().catch(() => undefined)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
   it("fails closed before a turn or delivery when the acceptance audit has no reserved capacity", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-exhausted-"))
     mocks.getAgentRoot.mockReturnValueOnce(root)
@@ -844,6 +927,64 @@ describe("Telegram sense coverage contracts", () => {
     expect(inboxStore.claim).not.toHaveBeenCalled()
     expect(inboxStore.complete).not.toHaveBeenCalled()
     await app.stop().catch(() => undefined)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("preserves unauthorized redelivery when the real MAC ledger fails after poll preflight", async () => {
+    const { createTelegramLongPoll } = await vi.importActual<typeof import("../../senses/telegram-client")>("../../senses/telegram-client")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-offset-atomic-"))
+    mocks.getAgentRoot.mockReturnValue(root)
+    const identityKey = "k".repeat(43)
+    const scenarioHandleDigest = "a".repeat(64)
+    const owner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", root)
+    let offset = 0
+    const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
+    const update = { update_id: 7, callback_query: { id: "foreign", from: { id: 99 }, data: "ignored", message: { message_id: 8, chat: { id: 99 } } } }
+
+    const firstFixture = defaultFixture()
+    firstFixture.api.request.mockResolvedValue([update])
+    firstFixture.transport.handleUpdate.mockImplementationOnce(async () => {
+      fs.appendFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "tampered-after-preflight\n")
+      emitGlobal({ ...acceptanceEvent("telegram.callback_settled"), meta: { scenarioHandleDigest, acceptanceAuditOwnerDigest: owner } })
+      return { handled: true }
+    })
+    let firstPoll: ReturnType<typeof createTelegramLongPoll> | undefined
+    mocks.createTelegramLongPoll.mockImplementationOnce((options: any) => {
+      firstPoll = createTelegramLongPoll(options)
+      return firstPoll
+    })
+    const firstApp = createTelegramSenseApp({
+      agentName: "sanctuary", credentials, identityKey, offsetStore,
+      acceptanceMarker: () => ({ scenarioHandleDigest }),
+    })
+
+    await expect(firstPoll!.pollOnce()).rejects.toThrow(/audit/iu)
+    expect(offset).toBe(0)
+    expect(firstFixture.transport.handleUpdate).toHaveBeenCalledOnce()
+    await firstApp.stop().catch(() => undefined)
+
+    fs.rmSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), { force: true })
+    fs.rmSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), { force: true })
+    const secondFixture = defaultFixture()
+    secondFixture.api.request.mockResolvedValue([update])
+    secondFixture.transport.handleUpdate.mockImplementationOnce(async () => {
+      emitGlobal({ ...acceptanceEvent("telegram.callback_settled"), meta: { scenarioHandleDigest, acceptanceAuditOwnerDigest: owner } })
+      return { handled: true }
+    })
+    let secondPoll: ReturnType<typeof createTelegramLongPoll> | undefined
+    mocks.createTelegramLongPoll.mockImplementationOnce((options: any) => {
+      secondPoll = createTelegramLongPoll(options)
+      return secondPoll
+    })
+    const secondApp = createTelegramSenseApp({
+      agentName: "sanctuary", credentials, identityKey, offsetStore,
+      acceptanceMarker: () => ({ scenarioHandleDigest }),
+    })
+
+    await expect(secondPoll!.pollOnce()).resolves.toBe(8)
+    expect(offset).toBe(8)
+    expect(secondFixture.transport.handleUpdate).toHaveBeenCalledOnce()
+    await secondApp.stop()
     fs.rmSync(root, { recursive: true, force: true })
   })
 
