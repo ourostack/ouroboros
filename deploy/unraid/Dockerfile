@@ -12,7 +12,7 @@ RUN apt-get update \
 
 WORKDIR /opt/ouro
 COPY package.json npm-shrinkwrap.json ./
-RUN npm ci --omit=dev --workspaces=false --no-audit --no-fund
+RUN npm ci --omit=dev --legacy-peer-deps --workspaces=false --no-audit --no-fund
 COPY dist ./dist
 COPY assets ./assets
 COPY skills ./skills

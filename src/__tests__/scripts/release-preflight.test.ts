@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest"
 
 const {
   assessChangelogFreshness,
+  assessLockfileVersionSync,
   assessWrapperPublishSync,
   collectChangedFiles,
   classifyOperationalContractChange,
@@ -36,6 +37,8 @@ type ExecResponse = {
 
 type ReadResponse = {
   cliVersion?: string
+  packageLockVersion?: string
+  shrinkwrapVersion?: string
   wrapperVersion?: string
   changelogVersion?: string
   changelogChanges?: string[]
@@ -124,6 +127,16 @@ function makeReadFileSyncImpl(response: ReadResponse = {}) {
       })
     }
 
+    if (filePath.endsWith("/package-lock.json")) {
+      const version = response.packageLockVersion ?? cliVersion
+      return JSON.stringify({ version, packages: { "": { version } } })
+    }
+
+    if (filePath.endsWith("/npm-shrinkwrap.json")) {
+      const version = response.shrinkwrapVersion ?? cliVersion
+      return JSON.stringify({ version, packages: { "": { version } } })
+    }
+
     if (filePath.endsWith("/.github/workflows/coverage.yml")) {
       return `
 publish:
@@ -177,6 +190,7 @@ describe("release-preflight", () => {
     expect(versionBumpRequired(["scripts/package-e2e.cjs"])).toBe(true)
     expect(versionBumpRequired(["scripts/release-preflight.cjs"])).toBe(true)
     expect(versionBumpRequired(["scripts/release-smoke.cjs"])).toBe(true)
+    expect(versionBumpRequired(["deploy/unraid/Dockerfile"])).toBe(true)
     expect(versionBumpRequired(["src/__tests__/scripts/changelog-gate.test.ts"])).toBe(false)
   })
 
@@ -184,9 +198,23 @@ describe("release-preflight", () => {
     expect(pathRequiresChangelogFreshness("src/heart/daemon/daemon-cli.ts")).toBe(true)
     expect(pathRequiresChangelogFreshness("scripts/release-preflight.cjs")).toBe(true)
     expect(pathRequiresChangelogFreshness("skills/work-planner/SKILL.md")).toBe(true)
+    expect(pathRequiresChangelogFreshness("deploy/unraid/Dockerfile")).toBe(true)
     expect(pathRequiresChangelogFreshness("packages/ouro.bot/index.js")).toBe(true)
     expect(pathRequiresChangelogFreshness("packages/ouro.bot/package.json")).toBe(false)
     expect(pathRequiresChangelogFreshness("src/__tests__/scripts/release-preflight.test.ts")).toBe(false)
+  })
+
+  it("requires both lockfiles and their root records to match the CLI version", () => {
+    const aligned = { version: "0.1.0-alpha.736", packages: { "": { version: "0.1.0-alpha.736" } } }
+    expect(assessLockfileVersionSync("0.1.0-alpha.736", aligned, aligned)).toEqual({
+      ok: true,
+      message: "lockfile versions aligned (0.1.0-alpha.736)",
+    })
+    expect(assessLockfileVersionSync(
+      "0.1.0-alpha.736",
+      aligned,
+      { version: "0.1.0-alpha.735", packages: { "": { version: "0.1.0-alpha.735" } } },
+    ).ok).toBe(false)
   })
 
   it("requires a value for --base-ref", () => {
