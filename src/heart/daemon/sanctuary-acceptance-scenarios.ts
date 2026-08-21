@@ -47,6 +47,8 @@ export interface SanctuaryScenarioApproval {
   staleAcknowledged: boolean
   argumentDigest: string
   target: string | null
+  resultDigest: string
+  resultTargetId: string | null
   checkpointDigest?: string
   approvalEpoch?: number
   continuationEpoch?: number | null
@@ -493,6 +495,7 @@ function exactApprovalEvidence(
     const deliveredAt = Number(continuation.meta.deliveredAt)
     if (!Number.isSafeInteger(deliveredAt) || deliveredAt < boundAt
       || continuation.meta.boundAt !== boundAt || typeof continuation.meta.resultDigest !== "string" || !SHA256.test(continuation.meta.resultDigest)
+      || continuation.meta.resultDigest !== approval.resultDigest
       || typeof continuation.meta.deliveryDigest !== "string" || !SHA256.test(continuation.meta.deliveryDigest)
       || typeof continuation.meta.deliveryMessageIdDigest !== "string" || !SHA256.test(continuation.meta.deliveryMessageIdDigest)) return null
   }
@@ -539,7 +542,8 @@ export function deriveSanctuaryScenarioAssertions(
   const attemptIsLinked = (attempt: SanctuaryScenarioRestartAttempt): boolean => {
     if (!approval || !intendedRestartApproval(approval) || attempt.approvalId !== approval.approvalId
       || attempt.argumentDigest !== approval.argumentDigest || attempt.target !== CANONICAL_RESTART_TARGET
-      || typeof attempt.targetId !== "string" || attempt.targetId.length < 1 || attempt.targetId.length > 128) return false
+      || typeof attempt.targetId !== "string" || attempt.targetId.length < 1 || attempt.targetId.length > 128
+      || approval.resultTargetId === null || attempt.targetId !== approval.resultTargetId) return false
     const expectedActionDigest = createHash("sha256").update(JSON.stringify({ operation: "restart", container: { id: attempt.targetId, name: CANONICAL_RESTART_TARGET } })).digest("hex")
     return attempt.actionDigest === expectedActionDigest
   }

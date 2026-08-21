@@ -150,6 +150,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
       files[auditPath] = `${JSON.stringify({ ...entry, meta: { ...entry.meta, action: "restart" } })}\n`
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
+      delete files[identityPath]
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow(/identity key/u)
+      files[identityPath] = "malformed\n"
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow(/identity key/u)
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 
@@ -828,7 +832,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const scenarioHandleDigest = "a".repeat(64)
     const audit = `${JSON.stringify({ ts: "2026-08-20T16:00:00.000Z", event: "senses.telegram_approved_restart_end", meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } })}\n`
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16m-restart-continuation", scenarioHandleDigest, unit16Deps({
-      readFixedFile: (file) => { if (file === "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson") return audit; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      readFixedFile: (file) => { if (file === "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson") return audit; if (file.endsWith("/state/senses/telegram/identity.key")) return `${"k".repeat(43)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "10", authorizedChatId: "10" }),
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }))
     expect(facts.events).toEqual([{ event: "senses.telegram_approved_restart_end", at: Date.parse("2026-08-20T16:00:00.000Z"), meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } }])
@@ -846,7 +851,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
     }
     const deps = unit16Deps({
-      readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(receipt); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(receipt); if (file.endsWith("/state/senses/telegram/identity.key")) return `${"k".repeat(43)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "10", authorizedChatId: "10" }),
       hostRequest: async () => validOwnerSnapshot(),
     })
     try {
@@ -854,7 +860,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       const { phase: _phase, ...expected } = receipt
       expect(facts.interactiveDriver).toEqual(expected)
       const withAlias = { ...receipt, restartObserved: true }
-      deps.readFixedFile = (file) => { if (file === receiptPath) return JSON.stringify(withAlias); throw Object.assign(new Error("missing"), { code: "ENOENT" }) }
+      deps.readFixedFile = (file) => { if (file === receiptPath) return JSON.stringify(withAlias); if (file.endsWith("/state/senses/telegram/identity.key")) return `${"k".repeat(43)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) }
       await expect(readDefaultSanctuaryScenarioFacts("unit-16m-restart-continuation", scenarioHandleDigest, deps, agentRoot)).rejects.toThrow(/shape is invalid/u)
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })

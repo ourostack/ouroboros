@@ -98,6 +98,10 @@ const MAX_BROKER_RESPONSE = 256 * 1024
 const TARGET_SERVER_ID = "sanctuary-unraid"
 const TARGET_ID = "sanctuary"
 const SHA256 = /^[0-9a-f]{64}$/u
+const APPROVAL_EVIDENCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
+  "unit-15c-1-no-callback-terminalization", "unit-16i-delayed-approval", "unit-16j-denial",
+  "unit-16k-timeout-stale", "unit-16l-duplicate-callback", "unit-16m-restart-continuation",
+])
 const HEALTH_ACCEPTANCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16f-cron-fingerprint",
   "unit-16g-health-transition",
@@ -1046,6 +1050,19 @@ export async function readDefaultSanctuaryScenarioFacts(
     const callbackEvents = boundEvents.filter((entry) => entry.event === "telegram.callback_settled")
     const claimCount = boundEvents.filter((entry) => entry.event === "approval.acceptance_transition" && entry.meta.state === "claimed").length
     const restartExecutionCount = boundEvents.filter((entry) => entry.event === "senses.telegram_approved_restart_end").length
+    const resultDigest = createHash("sha256").update(JSON.stringify({ state: record.state, result: record.result })).digest("hex")
+    let resultTargetId: string | null = null
+    if (record.toolName === "unraid_restart_container" && record.state === "succeeded") {
+      let parsed: unknown
+      try { parsed = JSON.parse(text(record.result, "approved restart result")) } catch { throw new Error("approved restart result binding is invalid") }
+      const result = object(parsed, "approved restart result")
+      const data = object(result.data, "approved restart result data")
+      const container = object(data.container, "approved restart result container")
+      if (result.ok !== true || container.name !== "calibre-web" || typeof data.beforeState !== "string" || typeof data.afterState !== "string"
+        || data.observedRestart !== true || data.degraded !== false) throw new Error("approved restart result binding is invalid")
+      resultTargetId = text(container.id, "approved restart result target id")
+      if (resultTargetId.length > 128) throw new Error("approved restart result binding is invalid")
+    }
     return ({
     approvalId: record.approvalId,
     state: record.state,
@@ -1064,6 +1081,8 @@ export async function readDefaultSanctuaryScenarioFacts(
     staleAcknowledged: callbackEvents.some((entry) => entry.meta.reason === "stale_callback" || entry.meta.reason === "expired"),
     argumentDigest: record.argumentDigest,
     target: typeof record.arguments.container === "string" ? record.arguments.container : null,
+    resultDigest,
+    resultTargetId,
     checkpointDigest: record.checkpointDigest,
     approvalEpoch: record.epoch,
     continuationEpoch: continuation?.continuationEpoch ?? null,
@@ -1076,6 +1095,9 @@ export async function readDefaultSanctuaryScenarioFacts(
   const groundingTool = label === "unit-16d-whats-up" ? "unraid_get_system" : label === "unit-16d-1-space" ? "unraid_get_storage" : null
   const liveGrounding = groundingTool && deps.readLiveGrounding ? await deps.readLiveGrounding(groundingTool) : undefined
   let identity: SanctuaryScenarioFacts["identity"]
+  if (APPROVAL_EVIDENCE_LABELS.has(label) && (!identityRaw || !/^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw))) {
+    throw new Error("Telegram approval identity key is missing or malformed")
+  }
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
     const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
     const identityKey = identityRaw.trim()
@@ -1085,7 +1107,8 @@ export async function readDefaultSanctuaryScenarioFacts(
       "telegram.approval_prompt_terminalized": ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalizedAt"],
       "senses.telegram_approval_continuation_delivered": ["actionDigest", "approvalId", "boundAt", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "targetDigest"],
     }
-    for (const entry of auditEntries.filter((candidate) => candidate.event in approvalEvidenceKeys && "evidenceMac" in candidate.meta)) {
+    for (const entry of auditEntries.filter((candidate) => candidate.event in approvalEvidenceKeys
+      && candidate.meta.scenarioHandleDigest === scenarioHandleDigest && typeof candidate.meta.approvalId === "string")) {
       if (JSON.stringify(Object.keys(entry.meta).sort()) !== JSON.stringify(approvalEvidenceKeys[entry.event]!.sort())
         || typeof entry.meta.evidenceMac !== "string" || !SHA256.test(entry.meta.evidenceMac)
         || entry.meta.evidenceMac !== sanctuaryTelegramApprovalEvidenceMac(identityKey, entry.event, entry.meta)) {
