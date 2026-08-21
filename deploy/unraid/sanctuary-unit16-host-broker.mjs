@@ -32,6 +32,7 @@ const ACCEPTANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter
 const HEALTH_PROBE_TERM_GRACE_MS = 5_000
 const HEALTH_PROBE_KILL_GRACE_MS = 5_000
 const HEALTH_PROBE_LABELS = new Set(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"])
+const ASYNC_RESTART_SCENARIO = Symbol("asyncRestartScenario")
 const HEALTH_PROBE_RECEIPT_KEYS = [
   "schemaVersion", "label", "scenarioHandleDigest", "ownerImageDigestBefore", "ownerImageDigestAfter",
   "ownerContainerDigestBefore", "ownerContainerDigestAfter", "beforeStateDigest", "restoredStateDigest",
@@ -731,10 +732,9 @@ function createOwnerMutationCoordinator() {
   }
 }
 
-function createInteractiveRestartDriver(options = {}) {
+function createInteractiveRestartDriver() {
   const records = new Map()
   const tasks = new Set()
-  const defer = options.defer ?? ((operation) => setTimeout(operation, 250))
   return {
     poll(input, operation) {
       const key = input.scenarioHandleDigest
@@ -742,17 +742,34 @@ function createInteractiveRestartDriver(options = {}) {
       if (existing?.state === "complete") return { state: "complete", receipt: existing.receipt }
       if (existing?.state === "failed") return { state: "failed", errorDigest: existing.errorDigest }
       if (existing) return { state: "waiting" }
+      records.set(key, { state: "waiting", operation })
+      return { state: "waiting" }
+    },
+    arm(key) {
+      const record = records.get(key)
+      if (!record || record.state !== "waiting" || !record.operation) return
+      const operation = record.operation
       records.set(key, { state: "waiting" })
-      const task = new Promise((resolve) => defer(resolve)).then(operation).then(
+      const task = Promise.resolve().then(operation).then(
           (receipt) => { records.set(key, { state: "complete", receipt }) },
           (error) => { records.set(key, { state: "failed", errorDigest: createHash("sha256").update(interactiveFailureCategory(error)).digest("hex") }) },
       )
       tasks.add(task)
       void task.finally(() => tasks.delete(task)).catch(() => {})
-      return { state: "waiting" }
     },
     async stopAndDrain() { await Promise.allSettled([...tasks]) },
   }
+}
+
+function armRestartAfterResponseClosed(connection, scenarioHandleDigest, driver = interactiveRestartDriver) {
+  let written = false
+  let closed = false
+  let armed = false
+  const maybeArm = () => {
+    if (!armed && written && closed) { armed = true; driver.arm(scenarioHandleDigest) }
+  }
+  connection.once("close", () => { closed = true; maybeArm() })
+  return () => { written = true; maybeArm() }
 }
 
 function interactiveFailureCategory(error) {
@@ -764,6 +781,17 @@ function interactiveFailureCategory(error) {
   if (/reconciliation/u.test(message)) return "reconciliation"
   if (/receipt/u.test(message)) return "receipt-validation"
   return "unknown"
+}
+
+async function waitForInteractiveRuntimeReady(input, dependencies) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const readiness = object(await dependencies.runtime("interactive_runtime_ready", input), "interactive runtime readiness")
+    exactKeys(readiness, ["ready"], "interactive runtime readiness")
+    if (readiness.ready === true) return
+    if (readiness.ready !== false) throw new Error("interactive runtime readiness is invalid")
+    await dependencies.sleep(1_000)
+  }
+  throw new Error("interactive production runtime readiness timed out")
 }
 
 function canonicalInteractiveRequest(input, expectedLabel) {
@@ -946,6 +974,7 @@ async function driveRestartContinuation(input, dependencies = {
   runtime: runInteractiveRuntimeOperation,
   restart: restartButlerForAcceptance,
   snapshot: () => containerRestartSnapshot(expectedImageId),
+  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }) {
   const value = canonicalInteractiveRequest(input, "unit-16m-restart-continuation")
   const existing = dependencies.readReceipt(value)
@@ -958,6 +987,7 @@ async function driveRestartContinuation(input, dependencies = {
       || observed.running !== true || observed.health !== "healthy" || observed.restartCount !== recoverable.restartCountBefore + 1) {
       throw new Error("restart continuation requires inspect-before-retry")
     }
+    await waitForInteractiveRuntimeReady(value, dependencies)
     const reconciled = object(await dependencies.runtime("reconcile_restart_continuation", value), "restart continuation reconciliation")
     const receipt = { ...recoverable, ...reconciled, phase: "complete", restartCountAfter: observed.restartCount }
     delete receipt.restarted
@@ -984,6 +1014,7 @@ async function driveRestartContinuation(input, dependencies = {
     if (restarted.restarted !== true || restarted.restartInvocationCount !== 1 || !SHA256.test(restarted.ownerImageDigest) || !SHA256.test(restarted.ownerContainerDigest)
       || restarted.ownerImageDigest !== prepared.ownerImageDigest || restarted.ownerContainerDigest !== prepared.ownerContainerDigest
       || restarted.restartCountBefore !== prepared.restartCountBefore || restarted.restartCountAfter !== restarted.restartCountBefore + 1) throw new Error("restart continuation owner restart is invalid")
+    await waitForInteractiveRuntimeReady(value, dependencies)
     const reconciled = object(await dependencies.runtime("reconcile_restart_continuation", value), "restart continuation reconciliation")
     const receipt = { ...prepared, ...reconciled, phase: "complete", ownerImageDigest: restarted.ownerImageDigest, ownerContainerDigest: restarted.ownerContainerDigest, restartCountBefore: restarted.restartCountBefore, restartCountAfter: restarted.restartCountAfter }
     requireInteractiveReceipt(receipt, value)
@@ -1123,7 +1154,9 @@ async function dispatch(request, dependencies = {
     if (operation === "drive_restart_continuation") {
       if (!dependencies.interactiveRestartDriver) throw new Error("interactive restart driver is unavailable")
       const owned = () => dependencies.ownerMutationCoordinator ? dependencies.ownerMutationCoordinator.interactive(execute) : execute()
-      return dependencies.interactiveRestartDriver.poll(input, owned)
+      const response = dependencies.interactiveRestartDriver.poll(input, owned)
+      if (response.state === "waiting") Object.defineProperty(response, ASYNC_RESTART_SCENARIO, { value: input.scenarioHandleDigest })
+      return response
     }
     return dependencies.ownerMutationCoordinator ? await dependencies.ownerMutationCoordinator.interactive(execute) : await execute()
   }
@@ -1158,7 +1191,9 @@ async function main() {
     connection.on("end", async () => {
       try {
         const result = await dispatchDrain.run(() => dispatch(JSON.parse(input)))
-        connection.end(`${JSON.stringify({ ok: true, result })}\n`)
+        const scenario = result?.[ASYNC_RESTART_SCENARIO]
+        const completed = scenario ? armRestartAfterResponseClosed(connection, scenario) : undefined
+        connection.end(`${JSON.stringify({ ok: true, result })}\n`, completed)
       } catch { connection.end(`${JSON.stringify({ ok: false, error: "host operation failed" })}\n`) }
     })
   })
@@ -1190,6 +1225,7 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
 
 export {
   attestHealthProbeProcessAbsent,
+  armRestartAfterResponseClosed,
   completeHealthProbeFromReceipt,
   createDispatchDrain,
   createHealthProbeOperationCoordinator,

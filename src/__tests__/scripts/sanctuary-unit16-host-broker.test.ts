@@ -31,10 +31,12 @@ interface BrokerModule {
     healthOperation<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     interactive<T>(operation: () => T | Promise<T>): Promise<T>
   }
-  createInteractiveRestartDriver(options?: { defer(operation: () => void): void }): {
+  createInteractiveRestartDriver(): {
     poll(input: Record<string, string>, operation: () => unknown | Promise<unknown>): Record<string, unknown>
+    arm(scenarioHandleDigest: string): void
     stopAndDrain(): Promise<void>
   }
+  armRestartAfterResponseClosed(connection: EventEmitter, scenarioHandleDigest: string, driver: { arm(scenarioHandleDigest: string): void }): () => void
   runInteractiveDriver(input: Record<string, string>, dependencies?: {
     run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string }
   }): Record<string, unknown>
@@ -44,6 +46,7 @@ interface BrokerModule {
     runtime(operation: string, input: Record<string, string>): Record<string, unknown> | Promise<Record<string, unknown>>
     restart(input: Record<string, string>): Record<string, unknown> | Promise<Record<string, unknown>>
     snapshot(): Record<string, unknown> | Promise<Record<string, unknown>>
+    sleep(milliseconds: number): Promise<void>
   }): Promise<Record<string, unknown>>
   driveDuplicateCallbacks(input: Record<string, string>, dependencies: {
     readReceipt(input: Record<string, string>): Record<string, unknown> | null
@@ -97,6 +100,7 @@ async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
     createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
     createInteractiveRestartDriver: BrokerModule["createInteractiveRestartDriver"]
+    armRestartAfterResponseClosed: BrokerModule["armRestartAfterResponseClosed"]
     runInteractiveDriver(input: Record<string, string>, dependencies?: { run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string } }): Record<string, unknown>
     driveRestartContinuation: BrokerModule["driveRestartContinuation"]
     driveDuplicateCallbacks: BrokerModule["driveDuplicateCallbacks"]
@@ -157,8 +161,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       pendingDigestBefore: "1".repeat(64), pendingDigestAfter: "1".repeat(64), pendingRestored: true,
       callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
     }
-    let begin!: () => void
-    const asyncDriver = createInteractiveRestartDriver({ defer: (operation) => { begin = operation } })
+    const asyncDriver = createInteractiveRestartDriver()
     const dependencies: BrokerDependencies = {
       readBootId: () => "unused", containerSnapshot: () => ({}),
       driveRestartContinuation: (input) => { calls.push(input); return result },
@@ -166,7 +169,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     }
     await expect(dispatch({ operation: "drive_restart_continuation", ...coordinates }, dependencies)).resolves.toEqual({ state: "waiting" })
     expect(calls).toEqual([])
-    begin()
+    asyncDriver.arm(coordinates.scenarioHandleDigest)
     await asyncDriver.stopAndDrain()
     await expect(dispatch({ operation: "drive_restart_continuation", ...coordinates }, dependencies)).resolves.toEqual({ state: "complete", receipt: result })
     expect(calls).toEqual([{ label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest }])
@@ -175,24 +178,42 @@ describe("Sanctuary Unit 16 host broker", () => {
 
   it("redacts async restart failures and never relaunches a failed host task", async () => {
     const { createInteractiveRestartDriver } = await broker()
-    let begin!: () => void
     let calls = 0
-    const driver = createInteractiveRestartDriver({ defer: (operation) => { begin = operation } })
+    const driver = createInteractiveRestartDriver()
     const input = { label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }
     expect(driver.poll(input, () => { calls += 1; throw new Error("secret raw failure") })).toEqual({ state: "waiting" })
-    begin()
+    driver.arm(input.scenarioHandleDigest)
     await driver.stopAndDrain()
     const failed = driver.poll(input, () => { calls += 1 })
     expect(failed).toEqual({ state: "failed", errorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
     expect(calls).toBe(1)
     expect(JSON.stringify(driver.poll(input, () => {}))).not.toContain("secret raw failure")
-    let beginRestart!: () => void
-    const restartDriver = createInteractiveRestartDriver({ defer: (operation) => { beginRestart = operation } })
+    const restartDriver = createInteractiveRestartDriver()
     const restartInput = { ...input, scenarioHandleDigest: "b".repeat(64) }
     restartDriver.poll(restartInput, () => { throw new Error("production butler restart failed") })
-    beginRestart()
+    restartDriver.arm(restartInput.scenarioHandleDigest)
     await restartDriver.stopAndDrain()
     expect((restartDriver.poll(restartInput, () => {}) as { errorDigest: string }).errorDigest).not.toBe((failed as { errorDigest: string }).errorDigest)
+  })
+
+  it("arms a restart only after both response write completion and socket close", async () => {
+    const { armRestartAfterResponseClosed } = await broker()
+    const connection = new EventEmitter()
+    const calls: string[] = []
+    const written = armRestartAfterResponseClosed(connection, "a".repeat(64), { arm: (scenario) => { calls.push(scenario) } })
+    written()
+    expect(calls).toEqual([])
+    connection.emit("close")
+    expect(calls).toEqual(["a".repeat(64)])
+
+    const reverse = new EventEmitter()
+    const reverseCalls: string[] = []
+    const reverseWritten = armRestartAfterResponseClosed(reverse, "b".repeat(64), { arm: (scenario) => { reverseCalls.push(scenario) } })
+    reverse.emit("close")
+    expect(reverseCalls).toEqual([])
+    reverseWritten()
+    reverseWritten()
+    expect(reverseCalls).toEqual(["b".repeat(64)])
   })
 
   it("coordinates owner mutation across health and interactive operations in both orderings", async () => {
@@ -340,28 +361,36 @@ describe("Sanctuary Unit 16 host broker", () => {
       approvalEpochAfterRestart: 0, continuationEpochAfter: 1, pendingDigestAfter: "1".repeat(64), pendingRestored: true,
       callbackAttempts: 1, mutationCount: 1, indeterminateRetryCount: 0,
     }
+    let readinessChecks = 0
     const result = await driveRestartContinuation(input, {
       readReceipt: () => null,
       persistReceipt: (_coordinates, receipt) => { writes.push(receipt) },
-      runtime: (operation) => { operations.push(operation); return operation === "prepare_restart_continuation" ? prepared : reconciled },
+      runtime: (operation) => {
+        operations.push(operation)
+        if (operation === "prepare_restart_continuation") return prepared
+        if (operation === "interactive_runtime_ready") return { ready: ++readinessChecks >= 2 }
+        return reconciled
+      },
       snapshot: () => ({ imageId: `sha256:${"e".repeat(64)}`, containerId: "f".repeat(64), running: true, health: "healthy", restartCount: 4 }),
       restart: () => ({ restarted: true, restartInvocationCount: 1, ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4, restartCountAfter: 5 }),
+      sleep: async () => {},
     })
-    expect(operations).toEqual(["prepare_restart_continuation", "reconcile_restart_continuation"])
+    expect(operations).toEqual(["prepare_restart_continuation", "interactive_runtime_ready", "interactive_runtime_ready", "reconcile_restart_continuation"])
     expect(writes.map((receipt) => receipt.phase)).toEqual(["attempting", "prepared", "complete"])
     expect(result).toMatchObject({ phase: "complete", callbackAttempts: 1, mutationCount: 1, indeterminateRetryCount: 0, restartCountBefore: 4, restartCountAfter: 5 })
 
     await expect(driveRestartContinuation(input, {
-      readReceipt: () => prepared, persistReceipt: () => {}, runtime: () => { throw new Error("must not retry") }, restart: () => { throw new Error("must not restart") }, snapshot: () => { throw new Error("must not inspect incomplete coordinates") },
+      readReceipt: () => prepared, persistReceipt: () => {}, runtime: () => { throw new Error("must not retry") }, restart: () => { throw new Error("must not restart") }, snapshot: () => { throw new Error("must not inspect incomplete coordinates") }, sleep: async () => {},
     })).rejects.toThrow(/inspect-before-retry/u)
 
     const recoveredWrites: Record<string, unknown>[] = []
     await expect(driveRestartContinuation(input, {
       readReceipt: () => ({ ...prepared, ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4 }),
       persistReceipt: (_coordinates, receipt) => { recoveredWrites.push(receipt) },
-      runtime: (operation) => { operations.push(operation); return reconciled },
+      runtime: (operation) => { operations.push(operation); return operation === "interactive_runtime_ready" ? { ready: true } : reconciled },
       restart: () => { throw new Error("recovery must not restart") },
       snapshot: () => ({ imageId: `sha256:${"e".repeat(64)}`, containerId: "f".repeat(64), running: true, health: "healthy", restartCount: 5 }),
+      sleep: async () => {},
     })).resolves.toMatchObject({ phase: "complete", restartCountBefore: 4, restartCountAfter: 5, indeterminateRetryCount: 0 })
     expect(recoveredWrites).toHaveLength(1)
 
@@ -370,7 +399,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       await expect(driveRestartContinuation(input, {
         readReceipt: () => ({ ...prepared, ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4, ...corruption }),
         persistReceipt: () => { calls.push("persist") }, runtime: () => { calls.push("runtime"); return reconciled },
-        restart: () => { calls.push("restart"); return {} }, snapshot: () => { calls.push("snapshot"); return {} },
+        restart: () => { calls.push("restart"); return {} }, snapshot: () => { calls.push("snapshot"); return {} }, sleep: async () => {},
       })).rejects.toThrow(/inspect-before-retry/u)
       expect(calls).toEqual([])
     }
