@@ -110,7 +110,7 @@ describe("Sanctuary fixed deployment target", () => {
     expect(events.filter((event) => event === "topology")).toHaveLength(2)
     expect(events.lastIndexOf("topology")).toBeLessThan(events.lastIndexOf("membership"))
     const completeTerminalSample = ["netns", "membership", "fds", "tcp", "udp", "unix", "membership", "fds", "netns"]
-    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual(["pause", ...completeTerminalSample, ...completeTerminalSample, "unpause", "topology"])
+    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual(["pause", ...completeTerminalSample, ...completeTerminalSample, "unpause"])
   })
 
   it("cannot discard a listener opened by a target thread between FD and protocol sampling", async () => {
