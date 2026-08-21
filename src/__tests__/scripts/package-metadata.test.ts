@@ -44,6 +44,7 @@ describe("package metadata", () => {
     const packageJob = workflow.slice(workflow.indexOf("  package-e2e:"), workflow.indexOf("  publish:"))
     expect(packageJob).toContain("npm run test:e2e:package")
     expect(packageJob).toContain("npm run test:e2e:ouro-bot-package")
+    expect(packageJob).toContain("docker build --pull --tag ouro-butler-package-smoke")
   })
 
   it("keeps current mail parsing fixes while overriding the vulnerable merge implementation", () => {

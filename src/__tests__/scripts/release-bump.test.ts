@@ -35,6 +35,17 @@ function makeReleaseRoot(): string {
       },
     },
   })
+  writeJson(path.join(root, "npm-shrinkwrap.json"), {
+    name: "@ouro.bot/cli",
+    version: "0.1.0-alpha.587",
+    lockfileVersion: 3,
+    packages: {
+      "": {
+        name: "@ouro.bot/cli",
+        version: "0.1.0-alpha.587",
+      },
+    },
+  })
   writeJson(path.join(root, "packages/ouro.bot/package.json"), {
     name: "ouro.bot",
     version: "0.1.0-alpha.587",
@@ -51,7 +62,7 @@ function makeReleaseRoot(): string {
 }
 
 describe("release-bump helper", () => {
-  it("moves cli, lockfile, wrapper, and changelog top entry together", () => {
+  it("moves cli, lockfiles, wrapper, and changelog top entry together", () => {
     const root = makeReleaseRoot()
     try {
       const result = bumpReleaseVersion({
@@ -68,6 +79,7 @@ describe("release-bump helper", () => {
         changedFiles: [
           "package.json",
           "package-lock.json",
+          "npm-shrinkwrap.json",
           "packages/ouro.bot/package.json",
           "changelog.json",
         ],
@@ -75,6 +87,8 @@ describe("release-bump helper", () => {
       expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.588")
       expect(readJson(path.join(root, "package-lock.json")).version).toBe("0.1.0-alpha.588")
       expect(readJson(path.join(root, "package-lock.json")).packages[""].version).toBe("0.1.0-alpha.588")
+      expect(readJson(path.join(root, "npm-shrinkwrap.json")).version).toBe("0.1.0-alpha.588")
+      expect(readJson(path.join(root, "npm-shrinkwrap.json")).packages[""].version).toBe("0.1.0-alpha.588")
       expect(readJson(path.join(root, "packages/ouro.bot/package.json")).version).toBe("0.1.0-alpha.588")
 
       const changelog = readJson(path.join(root, "changelog.json"))

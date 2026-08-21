@@ -99,6 +99,18 @@ jobs:
           npm run test:e2e:package
           npm run test:e2e:ouro-bot-package
 
+      - name: Build Packaged Unraid Image
+        run: |
+          PACKAGE_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$PACKAGE_ROOT"' EXIT
+          npm pack --pack-destination "$PACKAGE_ROOT" >/dev/null
+          PACKAGE_TARBALL="$(find "$PACKAGE_ROOT" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$PACKAGE_TARBALL"
+          tar -xzf "$PACKAGE_TARBALL" -C "$PACKAGE_ROOT"
+          node scripts/package-assets.cjs "$PACKAGE_ROOT/package"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          docker build --pull --tag ouro-butler-package-smoke:"$PACKAGE_VERSION" "$PACKAGE_ROOT/package"
+
   publish:
     needs:
       - coverage

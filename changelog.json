@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.736",
       "changes": [
-        "Fix the packaged Unraid image build to honor the repository peer dependency install contract."
+        "Fix the packaged Unraid image build to honor the repository peer dependency install contract.",
+        "Keep release lock metadata aligned and gate publication on building the packed Unraid image."
       ]
     },
     {

@@ -7,6 +7,7 @@ const semver = require("semver")
 const CHANGED_FILES = [
   "package.json",
   "package-lock.json",
+  "npm-shrinkwrap.json",
   "packages/ouro.bot/package.json",
   "changelog.json",
 ]
@@ -97,11 +98,13 @@ function bumpReleaseVersion(input) {
 
   const packageJsonPath = path.join(root, "package.json")
   const packageLockPath = path.join(root, "package-lock.json")
+  const shrinkwrapPath = path.join(root, "npm-shrinkwrap.json")
   const wrapperPackageJsonPath = path.join(root, "packages/ouro.bot/package.json")
   const changelogPath = path.join(root, "changelog.json")
 
   const packageJson = readJson(packageJsonPath)
   const packageLock = readJson(packageLockPath)
+  const shrinkwrap = readJson(shrinkwrapPath)
   const wrapperPackageJson = readJson(wrapperPackageJsonPath)
   const changelog = readJson(changelogPath)
 
@@ -111,11 +114,17 @@ function bumpReleaseVersion(input) {
     throw new Error('package-lock.json must contain packages[""] root metadata')
   }
   packageLock.packages[""].version = version
+  shrinkwrap.version = version
+  if (!shrinkwrap.packages || !shrinkwrap.packages[""]) {
+    throw new Error('npm-shrinkwrap.json must contain packages[""] root metadata')
+  }
+  shrinkwrap.packages[""].version = version
   wrapperPackageJson.version = version
   updateChangelog(changelog, version, changes)
 
   writeJson(packageJsonPath, packageJson)
   writeJson(packageLockPath, packageLock)
+  writeJson(shrinkwrapPath, shrinkwrap)
   writeJson(wrapperPackageJsonPath, wrapperPackageJson)
   writeJson(changelogPath, changelog)
 

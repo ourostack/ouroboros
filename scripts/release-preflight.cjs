@@ -37,6 +37,7 @@ function parseArgs(argv) {
 function versionBumpRequired(changedFiles) {
   return changedFiles.some(
     (file) => file === "package.json" ||
+      file.startsWith("deploy/unraid/") ||
       file.startsWith("skills/") ||
       file.startsWith("scripts/") ||
       (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
@@ -48,10 +49,27 @@ function wrapperPackageChanged(changedFiles) {
 }
 
 function pathRequiresChangelogFreshness(file) {
-  return file.startsWith("scripts/") ||
+  return file.startsWith("deploy/unraid/") ||
+    file.startsWith("scripts/") ||
     file.startsWith("skills/") ||
     (file.startsWith("src/") && !file.startsWith("src/__tests__/")) ||
     (file.startsWith("packages/ouro.bot/") && file !== "packages/ouro.bot/package.json")
+}
+
+function assessLockfileVersionSync(cliVersion, packageLock, shrinkwrap) {
+  const records = [
+    ["package-lock.json", packageLock],
+    ["npm-shrinkwrap.json", shrinkwrap],
+  ]
+  const mismatches = records.flatMap(([label, lockfile]) => {
+    const versions = [lockfile?.version, lockfile?.packages?.[""]?.version]
+    return versions.every((version) => version === cliVersion)
+      ? []
+      : [`${label} must match @ouro.bot/cli version ${cliVersion}`]
+  })
+  return mismatches.length === 0
+    ? { ok: true, message: `lockfile versions aligned (${cliVersion})` }
+    : { ok: false, message: mismatches.join("\n") }
 }
 
 function classifyOperationalContractChange(file) {
@@ -314,6 +332,8 @@ function runReleasePreflight(options = {}, deps = {}) {
   const execSyncImpl = deps.execSyncImpl ?? execSync
   const readFileSyncImpl = deps.readFileSyncImpl ?? fs.readFileSync
   const packageJsonPath = deps.packageJsonPath ?? path.resolve(__dirname, "../package.json")
+  const packageLockPath = deps.packageLockPath ?? path.resolve(__dirname, "../package-lock.json")
+  const shrinkwrapPath = deps.shrinkwrapPath ?? path.resolve(__dirname, "../npm-shrinkwrap.json")
   const packageRoot = deps.packageRoot ?? path.resolve(__dirname, "..")
   const wrapperPackageJsonPath =
     deps.wrapperPackageJsonPath ?? path.resolve(__dirname, "../packages/ouro.bot/package.json")
@@ -323,11 +343,20 @@ function runReleasePreflight(options = {}, deps = {}) {
   const changedFiles = collectChangedFiles(baseRef, execSyncImpl)
   const releasableChanged = versionBumpRequired(changedFiles)
   const packageJson = readJson(packageJsonPath, readFileSyncImpl)
+  const packageLock = readJson(packageLockPath, readFileSyncImpl)
+  const shrinkwrap = readJson(shrinkwrapPath, readFileSyncImpl)
   const wrapperPackageJson = readJson(wrapperPackageJsonPath, readFileSyncImpl)
   const changelog = readJson(changelogPath, readFileSyncImpl)
 
   const messages = []
   const errors = []
+
+  const lockfileResult = assessLockfileVersionSync(packageJson.version, packageLock, shrinkwrap)
+  if (lockfileResult.ok) {
+    messages.push(lockfileResult.message)
+  } else {
+    errors.push(lockfileResult.message)
+  }
 
   if (releasableChanged) {
     const publishedCliVersion = publishedVersionFor("@ouro.bot/cli", packageJson.version, execSyncImpl)
@@ -463,6 +492,7 @@ runReleasePreflightCliIfMain()
 
 module.exports = {
   assessChangelogFreshness,
+  assessLockfileVersionSync,
   assessWrapperPublishSync,
   classifyOperationalContractChange,
   collectChangedFiles,
