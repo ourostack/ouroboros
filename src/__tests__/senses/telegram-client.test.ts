@@ -205,6 +205,53 @@ describe("Telegram approval callback transport", () => {
     expect(onExpire.mock.calls.filter(([approvalId]) => approvalId === "first")).toHaveLength(1)
   })
 
+  it("persists and signs the first expiry observation before a failed edit, then reuses it after restart", async () => {
+    let clock = 301_000
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 300_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
+    }]
+    const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const store = { load: () => structuredClone(records), save: (next: typeof records) => { records = structuredClone(next) } }
+    const options = {
+      expectedUserId: "10", expectedChatId: "10", pendingStore: store, createOpaqueHandle: vi.fn(), onDecision: vi.fn(), onExpire: vi.fn(), now: () => clock,
+      signAcceptanceEvidence: () => "9".repeat(64), onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
+    }
+    const first = createTelegramApprovalTransport({ ...options, api: { stop: vi.fn(), request: vi.fn(async () => { throw new Error("edit unavailable") }) } } as never)
+    await expect(first.reconcileExpired()).rejects.toThrow("edit unavailable")
+    expect(records[0]).toMatchObject({ expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 300_000, observedAt: 301_000, evidenceMac: "9".repeat(64) } })
+    expect(evidence).toEqual([expect.objectContaining({ event: "telegram.approval_expiry_observed", meta: expect.objectContaining({ expiryDeadlineAt: 300_000, expiryObservedAt: 301_000, evidenceMac: "9".repeat(64) }) })])
+
+    clock = 320_000
+    const restarted = createTelegramApprovalTransport({ ...options, api: { stop: vi.fn(), request: vi.fn(async () => true) } } as never)
+    await restarted.reconcileExpired()
+    expect(evidence.filter(({ event }) => event === "telegram.approval_expiry_observed").every(({ meta }) => meta.expiryObservedAt === 301_000)).toBe(true)
+    expect(evidence.findLast(({ event }) => event === "telegram.approval_prompt_terminalized")?.meta).toMatchObject({ expiryObservedAt: 301_000, expiryDeadlineAt: 300_000 })
+  })
+
+  it("serializes an expired callback against proactive reconciliation for the same approval", async () => {
+    let releaseEdit!: () => void
+    const editBlocked = new Promise<void>((resolve) => { releaseEdit = resolve })
+    const onExpire = vi.fn()
+    const edits: number[] = []
+    const fixture = approvalFixture({
+      now: () => 2_000,
+      records: [{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000 }],
+      onExpire,
+      apiRequest: async (method) => { if (method === "editMessageText") { edits.push(1); await editBlocked }; return true },
+    })
+    const proactive = fixture.transport.reconcileExpired()
+    await vi.waitFor(() => expect(onExpire).toHaveBeenCalledOnce())
+    const callback = fixture.transport.handleUpdate(approvalCallback("a:approve", { id: "racing-expired" }))
+    await Promise.resolve()
+    expect(onExpire).toHaveBeenCalledOnce()
+    expect(edits).toHaveLength(1)
+    releaseEdit()
+    await Promise.allSettled([proactive, callback])
+    expect(onExpire).toHaveBeenCalledOnce()
+    expect(edits).toHaveLength(1)
+  })
+
   it("retains one authenticated callback tombstone after expiry and consumes it without replay", async () => {
     let clock = 1_000_000
     let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
@@ -235,6 +282,20 @@ describe("Telegram approval callback transport", () => {
     await transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-2" }))
     expect(evidence.filter((entry) => entry.event === "telegram.approval_stale_callback_settled")).toHaveLength(1)
     expect(onDecision).not.toHaveBeenCalled()
+  })
+
+  it("never emits stale-tap success when durable consumption cannot be persisted", async () => {
+    const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const tombstone = { approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 20_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 } }
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => [structuredClone(tombstone)], save: () => { throw new Error("disk unavailable") } },
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), now: () => 3_000,
+      signAcceptanceEvidence: () => "f".repeat(64), onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
+    } as never)
+    await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "stale-save-failure" }))).rejects.toThrow("disk unavailable")
+    expect(evidence.filter(({ event }) => event === "telegram.approval_stale_callback_settled")).toEqual([])
   })
 
   it("durably retires an unclaimed terminal tombstone at its bounded deadline", async () => {

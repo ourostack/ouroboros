@@ -672,6 +672,22 @@ describe("Telegram sense", () => {
     vi.useRealTimers()
   })
 
+  it("keeps the one-second expiry observer alive until polling shutdown joins and performs a final pass", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(0)
+    const stopping = f.app.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(f.approvalTransport.reconcileExpired.mock.calls.length).toBeGreaterThanOrEqual(3)
+    finishPolling()
+    await stopping
+    await running
+    expect(f.approvalTransport.reconcileExpired.mock.calls.length).toBeGreaterThanOrEqual(4)
+    vi.useRealTimers()
+  })
+
   it("joins an active callback dispatch before closing the approval journal or API", async () => {
     let releaseDecision!: () => void
     const approvalRuntime = {
