@@ -104,7 +104,55 @@ describe("Sanctuary fixed deployment target", () => {
     })
     expect(events.filter((event) => event === "topology")).toHaveLength(2)
     expect(events.lastIndexOf("topology")).toBeLessThan(events.lastIndexOf("membership"))
-    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual(["membership", "fds", "tcp", "udp", "unix"])
+    const completeTerminalSample = ["netns", "membership", "fds", "tcp", "udp", "unix", "membership", "fds", "netns"]
+    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual([...completeTerminalSample, ...completeTerminalSample])
+  })
+
+  it("cannot discard a listener opened by a target thread between FD and protocol sampling", async () => {
+    const { runDeploymentTargetAudit } = await load()
+    const records = input("staging").topologyBefore
+    let membershipReads = 0
+    let fdReads = 0
+    let tcpReads = 0
+    await expect(runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => records,
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => {
+        membershipReads += 1
+        return membershipReads >= 4
+          ? { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 402] }
+          : { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321] }
+      },
+      ownedSocketInodes: () => {
+        fdReads += 1
+        return fdReads >= 4 ? ["999"] : []
+      },
+      readTcpListeners: () => {
+        tcpReads += 1
+        return tcpReads >= 3 ? [{ inode: "999", localAddress: "0.0.0.0", port: 8080 }] : []
+      },
+      readUdpListeners: () => [],
+      readUnixSockets: () => [],
+    })).rejects.toThrow(/cgroup thread|listener|TCP/u)
+  })
+
+  it("fails closed when complete terminal containment snapshots do not converge", async () => {
+    const { runDeploymentTargetAudit } = await load()
+    const records = input("staging").topologyBefore
+    let terminalFdReads = 0
+    await expect(runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => records,
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => ({ path: `/docker/${stagingId}`, processIds: [321], threadIds: [321] }),
+      ownedSocketInodes: () => {
+        terminalFdReads += 1
+        if (terminalFdReads <= 2) return []
+        return Math.floor((terminalFdReads - 3) / 2) % 2 === 0 ? ["900"] : ["901"]
+      },
+      readTcpListeners: () => [],
+      readUdpListeners: () => [],
+      readUnixSockets: () => [],
+    })).rejects.toThrow(/did not converge/u)
   })
 
   it("pins canonical names to list-time IDs before the single inspect", async () => {

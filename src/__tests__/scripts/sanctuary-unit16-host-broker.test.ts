@@ -881,10 +881,15 @@ describe("Sanctuary Unit 16 host broker", () => {
     const { queryGraphqlAutostart } = await broker()
     const productionId = "b".repeat(64)
     const stagingId = "c".repeat(64)
+    const rollbackId = "d".repeat(64)
+    const serverId = "f".repeat(64)
     const calls: Array<{ input: string; init?: RequestInit }> = []
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       calls.push({ input: String(input), init })
-      return new Response(JSON.stringify({ data: { vars: { id: `${"f".repeat(64)}:vars` }, docker: { containers: [{ id: `${"f".repeat(64)}:${productionId}`, names: ["/ouro-butler"], autoStart: true }] } } }), {
+      return new Response(JSON.stringify({ data: { vars: { id: `${serverId}:vars` }, docker: { containers: [
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
+        { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: false },
+      ] } } }), {
         status: 200, headers: { "content-type": "application/json" },
       })
     }) as typeof fetch
@@ -899,8 +904,26 @@ describe("Sanctuary Unit 16 host broker", () => {
       query: "query AcceptanceContainerTopology { vars { id } docker { containers(skipCache: true) { id names autoStart } } }",
       variables: {},
     })
-    const wrongSuffix = (async () => new Response(JSON.stringify({ data: { vars: { id: `${"f".repeat(64)}:vars` }, docker: { containers: [{ id: `${"f".repeat(64)}:${stagingId}`, names: ["/ouro-butler"], autoStart: true }] } } }), { status: 200 })) as typeof fetch
+    const responseWith = (containers: unknown[]) => (async () => new Response(JSON.stringify({ data: { vars: { id: `${serverId}:vars` }, docker: { containers } } }), { status: 200 })) as typeof fetch
+    const wrongSuffix = responseWith([
+      { id: `${serverId}:${stagingId}`, names: ["/ouro-butler"], autoStart: true },
+      { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: false },
+    ])
     await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], wrongSuffix, productionId)).resolves.toBe(false)
+    for (const invalidTopology of [
+      [{ id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true }],
+      [
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
+        { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: true },
+      ],
+      [
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
+        { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: false },
+        { id: `${serverId}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: false },
+      ],
+    ]) {
+      await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], responseWith(invalidTopology), productionId)).resolves.toBe(false)
+    }
   })
 
   it("requires successful live runtime and both provider vault reads", async () => {
