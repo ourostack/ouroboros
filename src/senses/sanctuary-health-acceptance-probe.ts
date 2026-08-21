@@ -441,6 +441,7 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
     runtimeRoot: overrides.runtimeRoot ?? path.join(os.homedir(), ".ouro-cli"),
     ambientFetch: overrides.ambientFetch ?? fetch,
     now: overrides.now ?? (() => new Date()),
+    runnerOptions: overrides.runnerOptions,
     deferOwnerAttestation: overrides.deferOwnerAttestation ?? true,
     identityKey: overrides.identityKey ?? readOrCreateTelegramIdentityKey,
     waitForSchedulerReceipt: overrides.waitForSchedulerReceipt ?? (async (agentRoot, scenarioHandleDigest) => {
@@ -454,6 +455,8 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
       throw new Error("Sanctuary scheduler liveness receipt timed out")
     }),
     toolContext: overrides.toolContext ?? createSanctuaryToolContext("sanctuary"),
+    acceptanceFs: overrides.acceptanceFs,
+    createLoopbackServer: overrides.createLoopbackServer,
   }
   return defaults
 }

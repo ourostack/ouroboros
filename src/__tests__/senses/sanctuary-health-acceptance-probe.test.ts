@@ -329,6 +329,19 @@ describe("packaged Sanctuary health acceptance probe", () => {
       expect(normalized.identityKey).toEqual(expect.any(Function))
       expect(normalized.waitForSchedulerReceipt).toEqual(expect.any(Function))
       expect(normalized.deferOwnerAttestation).toBe(true)
+
+      const runnerOptions = { runPrivateTurn: vi.fn() }
+      const acceptanceFs = { copyFile: vi.fn(), readFile: vi.fn() }
+      const createLoopbackServer = vi.fn()
+      const configured = createSanctuaryHealthAcceptanceProbeDependencies({
+        ...overrides,
+        runnerOptions,
+        acceptanceFs,
+        createLoopbackServer: createLoopbackServer as never,
+      })
+      expect(configured.runnerOptions).toBe(runnerOptions)
+      expect(configured.acceptanceFs).toBe(acceptanceFs)
+      expect(configured.createLoopbackServer).toBe(createLoopbackServer)
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
