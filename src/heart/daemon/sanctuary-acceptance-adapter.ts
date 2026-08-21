@@ -1351,7 +1351,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     }
   }
   const health = parseHealthAcceptanceState(healthRaw)
-  const activeMarker = readSanctuaryAcceptanceMarker(TARGET_ID)
+  const activeMarker = readSanctuaryAcceptanceMarker(TARGET_ID, agentRoot)
   const postbootIntegrity = buildPostbootIntegritySnapshot({ offsetRaw, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries, activeScenarioHandleDigest: activeMarker?.scenarioHandleDigest ?? null })
   const prebootIntegrity = rebootCheckpoint && typeof rebootCheckpoint.prebootIntegrity === "object" && !Array.isArray(rebootCheckpoint.prebootIntegrity)
     ? rebootCheckpoint.prebootIntegrity as unknown as SanctuaryPostbootIntegritySnapshot : undefined

@@ -30,6 +30,7 @@ import {
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { sanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanctuary-scheduler-liveness"
+import { writeSanctuaryAcceptanceMarker } from "../../../heart/daemon/sanctuary-acceptance-marker"
 
 const READ_QUERY = "query AcceptanceAuthProbe { info { os { hostname } } }"
 const WRITE_QUERY = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { restart(id: $id) { id } } }"
@@ -1069,6 +1070,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("preserves approval correlation on restart lifecycle audit evidence", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-restart-correlation-"))
     const scenarioHandleDigest = "a".repeat(64)
+    writeSanctuaryAcceptanceMarker("sanctuary", {
+      schemaVersion: "sanctuary-acceptance-marker-v1",
+      label: "unit-16m-restart-continuation",
+      scenarioHandleDigest,
+      startedAt: "2026-08-20T15:59:00.000Z",
+    }, agentRoot)
     const audit = `${JSON.stringify({ ts: "2026-08-20T16:00:00.000Z", event: "senses.telegram_approved_restart_end", meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } })}\n`
     const files = chainedAuditFiles(agentRoot, audit)
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16m-restart-continuation", scenarioHandleDigest, unit16Deps({
@@ -1077,6 +1084,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
     expect(facts.events).toEqual([{ event: "senses.telegram_approved_restart_end", at: Date.parse("2026-08-20T16:00:00.000Z"), meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } }])
+    expect(facts.postbootIntegrity.activeScenarioHandleDigest).toBe(scenarioHandleDigest)
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
