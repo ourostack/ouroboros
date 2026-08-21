@@ -1123,6 +1123,42 @@ Credential recovery:
   Never print or place credential values in logs, templates, command arguments,
   backups, or this runbook.
 
+Packaged deployment-target containment gates:
+  Unit 16 is fixed to the `staging` profile and therefore targets only
+  `ouro-butler-staging`; it does not require `ouro-butler` to exist. Before the
+  broker starts, the packaged deployment auditor captures all present canonical
+  production/staging/rollback identities in one Docker inspect, verifies the
+  target image, `unless-stopped`, host networking, matching GraphQL and durable
+  file autostart identity/state for every present canonical container,
+  and exactly one running Butler, then repeats the canonical snapshot to reject
+  races. It binds the target PID and exact Docker cgroup-v2 path to the inspected
+  container ID; Unit 16 carries that immutable ID into every launcher and broker
+  Docker operation and binds it to the GraphQL PrefixedID suffix. It scans every
+  cgroup process and requires stable before/after process, owned-socket, and
+  listener inventories. Between the two canonical topology captures, it verifies
+  the exact immutable-ID target is running and unpaused, pauses that ID without
+  changing restart or autostart state, and performs every cgroup, all-thread
+  descriptor, TCP, UDP, and Unix observation inside that one quiesced window,
+  including two matching complete terminal snapshots; nonconvergence fails
+  closed after eight attempts. It always makes bounded exact-ID unpause attempts,
+  verifies the same ID and PID resumed their original running, unpaused state,
+  and only then performs the final full-profile topology capture. It
+  rejects every owned UDP listener and every externally reachable owned TCP listener. Only loopback
+  Mailbox port 6876 plus stream-listening endpoints at the fixed daemon and
+  acceptance Unix control paths are permitted; all other named Unix endpoint
+  types (including datagrams) fail closed. Inherited descriptors for the same
+  socket inode are deduplicated, while unknown loopback ports, wildcard/host-address
+  listeners, process/socket/listener drift, or ambiguous ownership fail closed.
+  Unit 18 uses the separately packaged fixed final command, after rollback has
+  been retained stopped:
+    UNIT18_TARGET_TMP=$(mktemp /run/sanctuary-unit18-target-audit.sh.XXXXXX)
+    /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
+      --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit18-target-audit.sh >"$UNIT18_TARGET_TMP"
+    chmod 0500 "$UNIT18_TARGET_TMP"
+    "$UNIT18_TARGET_TMP" "$IMAGE_ID"
+    rm -f -- "$UNIT18_TARGET_TMP"
+  Neither packaged command accepts a container name or an open-ended profile.
+
 Packaged Unit 16 acceptance execution:
   Use only the launcher packaged in the exact reviewed image. Install it without
   network access, then create the two private roots with the runtime UID/GID:
@@ -1263,16 +1299,17 @@ Packaged Unit 16 acceptance execution:
   image/container/health/boot fact files. Host-only operations cross an ephemeral
   root-owned private Unix socket (root:10001 mode 0660) to a root broker extracted
   from the same exact image. The broker accepts only fixed Unraid inventory/create/
-  exact-revoke/rejection operations, exact production-container snapshots, and a
+  exact-revoke/rejection operations, exact fixed-target snapshots, and a
   two-phase reboot reservation/final commit. Reservation drains queued owner
   mutations and rejects new ones; after the requested checkpoint is fsynced, the
   broker repeats the array/parity/mover/durable-health preflight and invokes the
-  fixed host reboot itself exactly once. The broker performs one atomic inspect of only
-  `ouro-butler`, requires its immutable image ID, writes that exact typed/redacted
+  fixed host reboot itself exactly once. The Unit 16 broker inspects only the
+  deployment profile's attested immutable container ID (staging is
+  `ouro-butler-staging`), requires its immutable image ID, writes that exact typed/redacted
   snapshot before accepting requests, and exposes a nonnegative Docker restart
   count. Both initial and refreshed snapshots share the same exact schema. The
   broker derives `autostartExact` from both the Unraid GraphQL `autoStart` value
-  and exactly one production entry in `/var/lib/docker/unraid-autostart`, derives
+  and exactly one staging entry in `/var/lib/docker/unraid-autostart`, derives
   `updaterDisabled` from `/opt/ouro/container-runtime.json` inside the exact image,
   and derives `vaultUnlocked`/`manualAuthRequired` from a bounded live Sanctuary
   vault-status command only when its non-secret summary proves the required
@@ -1280,7 +1317,7 @@ Packaged Unit 16 acceptance execution:
   Scenario handles remain private to the scenario adapter. The main one-shot
   never receives the Docker socket, Unraid key directory, or a host-root mount.
   Telegram bootstrap additionally brackets its one-shot with a host-controlled
-  poller quiescence guard: it verifies the exact healthy production container,
+  poller quiescence guard: it verifies the exact healthy staging container,
   assumes recovery responsibility before attempting the stop, stops it with a
   30-second grace bound, proves it is stopped, and mounts a
   root-owned typed zero-poller fact. Its exit/signal trap restarts that same exact
@@ -1290,13 +1327,13 @@ Packaged Unit 16 acceptance execution:
   raw container environment or credential values are never captured.
   Evidence-snapshot keeps the bundle mount read-only and overlays only the exact
   canonical `state/acceptance` directory as writable. It first stops the exact
-  healthy production container under recovery responsibility, then opens the
+  healthy staging container under recovery responsibility, then opens the
   directory with `O_DIRECTORY|O_NOFOLLOW` and bind-mounts from the inherited fd
   while no Sanctuary UID process is running. The launcher bind-pins that inode
   behind a root-only alias and back onto the canonical path against rename swaps,
   restarts the same exact image healthy, and compares the alias, canonical path,
-  and production container's inode before and after capture. Cleanup unmounts the
-  canonical pin and then the alias. The production daemon therefore sees the same
+  and staging container's inode before and after capture. Cleanup unmounts the
+  canonical pin and then the alias. The staging daemon therefore sees the same
   inode used by the one-shot for marker correlation.
 
 Audit and safety verification:

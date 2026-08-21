@@ -5,7 +5,9 @@ CONFIG_ROOT=/mnt/user/appdata/ouro-butler/acceptance/configs
 EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/acceptance/evidence
 RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
 BUNDLE_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
-PRODUCTION_CONTAINER=ouro-butler
+TARGET_PROFILE=staging
+PRODUCTION_CONTAINER=ouro-butler-staging
+TARGET_CONTAINER_ID=
 IMAGE_ID=${1:-}
 MODE=${2:-}
 BROKER_PID=
@@ -91,6 +93,7 @@ BROKER_SOCKET=$SOCKET_ROOT/adapter.sock
 CLOSED_INVENTORY=$PRIVATE_ROOT/closed-inventory.json
 BROKER_SNAPSHOT=$PRIVATE_ROOT/broker-container-inspect.json
 BROKER_PROGRAM=$PRIVATE_ROOT/sanctuary-unit16-host-broker.mjs
+TARGET_AUDITOR=$PRIVATE_ROOT/sanctuary-deployment-target.mjs
 IMAGE_FACT=$PRIVATE_ROOT/image-digest
 CONTAINER_FACT=$PRIVATE_ROOT/container-digest
 PROCESS_BINDING_FACT=$PRIVATE_ROOT/process-binding-digest
@@ -100,10 +103,23 @@ CONTAINER_INSPECT_FACT=$PRIVATE_ROOT/container-inspect.json
 
 start_broker() {
   /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
+    --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-deployment-target.mjs >"$TARGET_AUDITOR"
+  /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
     --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit16-host-broker.mjs >"$BROKER_PROGRAM"
-  chmod 0500 "$BROKER_PROGRAM"
-  chown 0:0 "$BROKER_PROGRAM"
-  /usr/local/bin/node "$BROKER_PROGRAM" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
+  chmod 0500 "$BROKER_PROGRAM" "$TARGET_AUDITOR"
+  chown 0:0 "$BROKER_PROGRAM" "$TARGET_AUDITOR"
+  /usr/local/bin/node "$TARGET_AUDITOR" "$TARGET_PROFILE" "$IMAGE_ID" >"$PRIVATE_ROOT/deployment-target.json"
+  chmod 0400 "$PRIVATE_ROOT/deployment-target.json"
+  chown 0:0 "$PRIVATE_ROOT/deployment-target.json"
+  TARGET_CONTAINER_ID=$(/usr/local/bin/node -e '
+    const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const deployment = value && value.deployment;
+    if (value?.schemaVersion !== "sanctuary-effective-deployment-v1" || deployment?.schemaVersion !== "sanctuary-deployment-target-v1"
+      || deployment.profile !== "staging" || deployment.targetContainerName !== "ouro-butler-staging"
+      || deployment.targetImageId !== process.argv[2] || !/^[0-9a-f]{64}$/.test(deployment.targetContainerId)) process.exit(1);
+    process.stdout.write(deployment.targetContainerId);
+  ' "$PRIVATE_ROOT/deployment-target.json" "$IMAGE_ID")
+  test -n "$TARGET_CONTAINER_ID" || return 1
+  /usr/local/bin/node "$BROKER_PROGRAM" "$TARGET_PROFILE" "$TARGET_CONTAINER_ID" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
   BROKER_PID=$!
   ATTEMPT=0
   while test "$ATTEMPT" -lt 600 && { test ! -S "$BROKER_SOCKET" || test ! -f "$CLOSED_INVENTORY" || test ! -f "$BROKER_SNAPSHOT"; }; do
@@ -171,6 +187,7 @@ refresh_live_facts() {
 
 restore_production_container() {
   EXPECTED_CONTAINER_ID=$(cat "$CONTAINER_FACT") || return 1
+  test "$EXPECTED_CONTAINER_ID" = "$TARGET_CONTAINER_ID" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}}' "$EXPECTED_CONTAINER_ID")" = "$EXPECTED_CONTAINER_ID" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}}' "$EXPECTED_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$EXPECTED_CONTAINER_ID")" = "$IMAGE_ID" || return 1
@@ -191,6 +208,7 @@ restore_production_container() {
 
 stop_exact_production_container() {
   EXPECTED_CONTAINER_ID=$(cat "$CONTAINER_FACT") || return 1
+  test "$EXPECTED_CONTAINER_ID" = "$TARGET_CONTAINER_ID" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}}' "$EXPECTED_CONTAINER_ID")" = "$EXPECTED_CONTAINER_ID" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}}' "$EXPECTED_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER" || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$EXPECTED_CONTAINER_ID")" = "$IMAGE_ID" || return 1
@@ -301,8 +319,8 @@ esac
 assert_acceptance_state_inode() {
   ACCEPTANCE_PIN_INODE=$(stat -Lc '%d:%i' "$ACCEPTANCE_PIN_ROOT") || return 1
   test "$(stat -Lc '%d:%i' "$ACCEPTANCE_STATE_ROOT")" = "$ACCEPTANCE_PIN_INODE" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$PRODUCTION_CONTAINER" stat -Lc '%d:%i' /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance)" = "$ACCEPTANCE_PIN_INODE" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}} {{.Image}}' "$TARGET_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER $IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$TARGET_CONTAINER_ID" stat -Lc '%d:%i' /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance)" = "$ACCEPTANCE_PIN_INODE" || return 1
 }
 
 if test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then

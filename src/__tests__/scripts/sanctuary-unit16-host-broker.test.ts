@@ -5,6 +5,8 @@ import * as path from "node:path"
 
 import { describe, expect, it } from "vitest"
 
+const defaultTargetId = "0".repeat(64)
+
 interface BrokerDependencies {
   readBootId(): string
   containerSnapshot(): unknown | Promise<unknown>
@@ -94,7 +96,7 @@ interface BrokerModule {
   }
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
+  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; forbidden: string[] }): Promise<boolean>
   denialTargetSnapshot(dependencies?: {
     run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null; stdout?: string }
   }): Record<string, unknown>
@@ -143,7 +145,7 @@ async function broker(): Promise<BrokerModule> {
     createDispatchDrain(): { run<T>(operation: () => T | Promise<T>): Promise<T>; stopAndDrain(): Promise<void> }
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
+    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; forbidden: string[] }): Promise<boolean>
     denialTargetSnapshot: BrokerModule["denialTargetSnapshot"]
     assertStableContainerProcess: BrokerModule["assertStableContainerProcess"]
     readBoundedProcStatus: BrokerModule["readBoundedProcStatus"]
@@ -507,7 +509,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(result).toEqual(receipt)
     expect(calls).toHaveLength(1)
     expect(calls[0]?.executable).toBe("/usr/bin/docker")
-    expect(calls[0]?.args).toEqual(["exec", "-i", "ouro-butler", "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"])
+    expect(calls[0]?.args).toEqual(["exec", "-i", defaultTargetId, "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"])
     expect(JSON.parse(String(calls[0]?.options.input))).toEqual({ operation: "drive_duplicate_callbacks", ...input })
     expect(String(calls[0]?.options.input)).not.toMatch(/approval-|query-|callback_data|credential/iu)
     for (const mutation of [{ distinctQueryCount: 1 }, { barrierObserved: false }, { staleReplayAttempts: 0 }, { writeCredentialObserved: true }]) {
@@ -733,7 +735,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       run: (executable, args) => { calls.push({ executable, args }); return { status: 0 } },
       sleep: async () => {},
     })
-    expect(calls).toEqual([{ executable: "/usr/bin/docker", args: ["restart", "ouro-butler"] }])
+    expect(calls).toEqual([{ executable: "/usr/bin/docker", args: ["restart", defaultTargetId] }])
     expect(result).toMatchObject({ restarted: true, restartInvocationCount: 1, ownerImageDigest: "d".repeat(64), ownerContainerDigest: "c".repeat(64), restartCountBefore: 4, restartCountAfter: 5 })
     expect(result.beforeLifecycleDigest).toMatch(/^[0-9a-f]{64}$/u)
     expect(result.afterLifecycleDigest).toMatch(/^[0-9a-f]{64}$/u)
@@ -848,13 +850,13 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(healthProbeDockerArgs("run", {
       label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
-      "exec", "ouro-butler", "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run",
+      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run",
       "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
     expect(healthProbeDockerArgs("stop", {
       label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
-      "exec", "ouro-butler", "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
+      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
       "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
   })
@@ -967,7 +969,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       markerPresent: () => false,
     })).not.toThrow()
     expect(calls).toEqual([{ executable: "/usr/bin/docker", args: [
-      "exec", "ouro-butler", "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
+      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
       "--label", input.label, "--scenario", input.scenarioHandleDigest, "--owner-image", input.ownerImageDigest, "--owner-container", input.ownerContainerDigest,
     ] }])
   })
@@ -1064,24 +1066,67 @@ describe("Sanctuary Unit 16 host broker", () => {
 
   it("reads GraphQL autostart through the exact canonical RO credential and query", async () => {
     const { queryGraphqlAutostart } = await broker()
+    const productionId = "b".repeat(64)
+    const stagingId = "c".repeat(64)
+    const rollbackId = "d".repeat(64)
+    const serverId = "f".repeat(64)
     const calls: Array<{ input: string; init?: RequestInit }> = []
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       calls.push({ input: String(input), init })
-      return new Response(JSON.stringify({ data: { docker: { containers: [{ id: "Docker:one", names: ["/ouro-butler"], autoStart: true }] } } }), {
+      return new Response(JSON.stringify({ data: { vars: { id: `${serverId}:vars` }, docker: { containers: [
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
+        { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: false },
+      ] } } }), {
         status: 200, headers: { "content-type": "application/json" },
       })
     }) as typeof fetch
     const permissions = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
       .map((resource) => ({ resource, actions: ["READ_ANY"] }))
-    await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], fetchImpl)).resolves.toBe(true)
+    await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], fetchImpl, productionId)).resolves.toBe(true)
     expect(calls).toHaveLength(1)
     expect(calls[0]?.input).toBe("http://127.0.0.1/graphql")
     expect(calls[0]?.init?.method).toBe("POST")
     expect(calls[0]?.init?.headers).toEqual({ "content-type": "application/json", "x-api-key": "private-descriptor" })
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
-      query: "query AcceptanceContainerTopology { docker { containers(skipCache: true) { id names autoStart } } }",
+      query: "query AcceptanceContainerTopology { vars { id } docker { containers(skipCache: true) { id names autoStart } } }",
       variables: {},
     })
+    const responseWith = (containers: unknown[]) => (async () => new Response(JSON.stringify({ data: { vars: { id: `${serverId}:vars` }, docker: { containers } } }), { status: 200 })) as typeof fetch
+    const wrongSuffix = responseWith([
+      { id: `${serverId}:${stagingId}`, names: ["/ouro-butler"], autoStart: true },
+      { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: false },
+    ])
+    await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], wrongSuffix, productionId)).resolves.toBe(false)
+    for (const invalidTopology of [
+      [{ id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true }],
+      [
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
+        { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: true },
+      ],
+      [
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
+        { id: `${serverId}:${rollbackId}`, names: ["/ouro-butler-rollback"], autoStart: false },
+        { id: `${serverId}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: false },
+      ],
+    ]) {
+      await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], responseWith(invalidTopology), productionId)).resolves.toBe(false)
+    }
+    const stagingProfile = { containerName: "ouro-butler-staging", requiredStopped: [], forbidden: ["ouro-butler", "ouro-butler-rollback"] }
+    await expect(queryGraphqlAutostart(
+      [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
+      responseWith([{ id: `${serverId}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }]),
+      stagingId,
+      stagingProfile,
+    )).resolves.toBe(true)
+    await expect(queryGraphqlAutostart(
+      [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
+      responseWith([
+        { id: `${serverId}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true },
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: false },
+      ]),
+      stagingId,
+      stagingProfile,
+    )).resolves.toBe(false)
   })
 
   it("requires successful live runtime and both provider vault reads", async () => {
@@ -1122,7 +1167,14 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('const UNRAID_API = "/usr/local/sbin/unraid-api"')
     expect(source).toContain('const DOCKER = "/usr/bin/docker"')
     expect(source).toContain('const TAILSCALE = "/usr/local/sbin/tailscale"')
-    expect(source).toContain('const PRODUCTION_CONTAINER = "ouro-butler"')
+    expect(source).toContain('let activeContainer = "ouro-butler"')
+    expect(source).toContain('let activeContainerId = "0".repeat(64)')
+    expect(source).toContain('activeProfile = targetProfile(profileName)')
+    expect(source).toContain('activeContainer = activeProfile.containerName')
+    expect(source).toContain('activeContainerId = text(targetContainerId, "attested target container id", SHA256)')
+    expect(source).toContain('["inspect", "--format", template, activeContainerId]')
+    expect(source).toContain('["restart", activeContainerId]')
+    expect(source).not.toContain('["restart", activeContainer]')
     expect(source).toContain('const AUTOSTART_FILE = "/var/lib/docker/unraid-autostart"')
     expect(source).toContain('const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"')
     expect(source).toContain('const PRODUCTION_RUNTIME_SOURCE = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"')

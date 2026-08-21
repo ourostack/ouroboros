@@ -56,6 +56,8 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.xml")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-acceptance-harness.sh")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit16-host-broker.mjs")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-deployment-target.mjs")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit18-target-audit.sh")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit16-run.sh")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/README.txt")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/SOUL.md")
