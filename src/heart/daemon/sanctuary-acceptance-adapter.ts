@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
-import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramSenseCredentials } from "../../senses/telegram"
+import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramSenseCredentials } from "../../senses/telegram"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
@@ -525,7 +525,7 @@ function parseRestartAttempts(raw: string, scenarioHandleDigest: string): Sanctu
       || typeof attempt.beforeState !== "string" || attempt.beforeState.length > 64 || typeof attempt.mutationAcknowledged !== "boolean"
       || (attempt.afterState !== null && (typeof attempt.afterState !== "string" || attempt.afterState.length > 64))) throw new Error("restart attempt ledger row is invalid")
     if (attempt.scenarioHandleDigest !== scenarioHandleDigest) return []
-    return [{ state: attempt.state as SanctuaryScenarioFacts["restartAttempts"][number]["state"], actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt: Date.parse(attempt.observedAt), mutationAcknowledged: attempt.mutationAcknowledged, afterState: attempt.afterState as string | null }]
+    return [{ state: attempt.state as SanctuaryScenarioFacts["restartAttempts"][number]["state"], actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, targetId: containerRecord.id, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt: Date.parse(attempt.observedAt), mutationAcknowledged: attempt.mutationAcknowledged, afterState: attempt.afterState as string | null }]
   })
 }
 
@@ -1079,6 +1079,19 @@ export async function readDefaultSanctuaryScenarioFacts(
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
     const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
     const identityKey = identityRaw.trim()
+    const approvalEvidenceKeys: Record<string, string[]> = {
+      "senses.telegram_approval_prompt_bound": ["actionDigest", "approvalId", "boundAt", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest"],
+      "telegram.callback_settled": ["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "targetDigest"],
+      "telegram.approval_prompt_terminalized": ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalizedAt"],
+      "senses.telegram_approval_continuation_delivered": ["actionDigest", "approvalId", "boundAt", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "targetDigest"],
+    }
+    for (const entry of auditEntries.filter((candidate) => candidate.event in approvalEvidenceKeys && "evidenceMac" in candidate.meta)) {
+      if (JSON.stringify(Object.keys(entry.meta).sort()) !== JSON.stringify(approvalEvidenceKeys[entry.event]!.sort())
+        || typeof entry.meta.evidenceMac !== "string" || !SHA256.test(entry.meta.evidenceMac)
+        || entry.meta.evidenceMac !== sanctuaryTelegramApprovalEvidenceMac(identityKey, entry.event, entry.meta)) {
+        throw new Error("Telegram approval evidence MAC is invalid")
+      }
+    }
     const identityPayload = [
       TELEGRAM_SUBJECT_DOMAIN,
       `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`,
@@ -1949,6 +1962,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     authorizedUserId: credentials.authorizedUserId,
     authorizedChatId: credentials.authorizedChatId,
     subject,
+    identityKey,
     toolContext: deps.toolContext(TARGET_ID),
   })
   try {

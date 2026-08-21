@@ -106,6 +106,62 @@ describe("Telegram approval callback transport", () => {
     expect(fixture.saves[0]?.[0]?.messageId).toBeNull()
   })
 
+  it("durably signs prompt binding, callback acknowledgement, and terminalization from the bound-message clock", async () => {
+    let clock = 1_000_000
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
+    const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const transport = createTelegramApprovalTransport({
+      api: {
+        stop: vi.fn(),
+        request: vi.fn(async (method: string) => {
+          if (method === "sendMessage") { clock += 37; return { message_id: 99 } }
+          return true
+        }),
+      },
+      expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: (() => { const values = ["approve", "deny"]; return () => values.shift()! })(),
+      onDecision: vi.fn(async () => ({ accepted: true, terminalText: "done" })),
+      now: () => clock,
+      signAcceptanceEvidence: (_event: string, meta: Record<string, unknown>) => `mac:${JSON.stringify(meta)}`,
+      onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
+    } as never)
+    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64) }
+    const sent = await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: binding } as never)
+    expect(sent.expiresAt).toBe(1_300_037)
+    expect(records[0]).toMatchObject({ expiresAt: 1_300_037, acceptanceBinding: { ...binding, boundAt: 1_000_037, messageIdDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) } })
+    expect(evidence[0]).toMatchObject({ event: "senses.telegram_approval_prompt_bound", meta: { ...binding, approvalId: "approval-1", boundAt: 1_000_037, evidenceMac: expect.stringMatching(/^mac:/u) } })
+
+    clock = 1_120_037
+    await transport.handleUpdate(approvalCallback(sent.approveCallbackData))
+    expect(evidence.map((entry) => entry.event)).toEqual([
+      "senses.telegram_approval_prompt_bound",
+      "telegram.approval_prompt_terminalized",
+      "telegram.callback_settled",
+    ])
+    expect(evidence[1]!.meta).toMatchObject({ terminalizedAt: 1_120_037, buttonsRemoved: true, evidenceMac: expect.stringMatching(/^mac:/u) })
+    expect(evidence[2]!.meta).toMatchObject({ callbackAt: 1_120_037, acknowledged: true, accepted: true, reason: "accepted", evidenceMac: expect.stringMatching(/^mac:/u) })
+  })
+
+  it("terminalizes expiry within the documented one-interval reconciliation jitter", async () => {
+    let clock = 1_000_000
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
+    const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async (method: string) => method === "sendMessage" ? { message_id: 99 } : true) },
+      expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: (() => { const values = ["approve", "deny"]; return () => values.shift()! })(),
+      onDecision: vi.fn(), onExpire: vi.fn(), now: () => clock,
+      signAcceptanceEvidence: () => "f".repeat(64),
+      onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
+    } as never)
+    await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64) } } as never)
+    clock = 1_301_000
+    await transport.reconcileExpired()
+    expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_prompt_terminalized", meta: { boundAt: 1_000_000, terminalizedAt: 1_301_000, buttonsRemoved: true } })
+  })
+
   it("persists an indeterminate prompt delivery when sendMessage may have escaped", async () => {
     const fixture = approvalFixture({ apiRequest: async () => { throw new Error("connection reset after write") } })
 

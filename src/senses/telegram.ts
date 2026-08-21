@@ -95,6 +95,15 @@ export function sanctuaryTelegramTurnReceiptMac(identityKey: string, value: Reco
   return sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "receipt", canonicalReceiptJson(unsigned))
 }
 
+export function sanctuaryTelegramApprovalEvidenceMac(
+  identityKey: string,
+  event: string,
+  meta: Record<string, unknown>,
+): string {
+  const unsigned = Object.fromEntries(Object.entries(meta).filter(([key]) => key !== "evidenceMac"))
+  return sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "approval-evidence", canonicalReceiptJson({ event, meta: unsigned }))
+}
+
 function sameTelegramLedgerMetadata(left: import("node:fs").BigIntStats, right: import("node:fs").BigIntStats): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
@@ -546,6 +555,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     authorizedUserId,
     authorizedChatId,
     subject,
+    identityKey,
     toolContext: toolContext ?? {},
   }) : undefined)
   const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport

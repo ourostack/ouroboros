@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import { createHmac, randomBytes, randomUUID } from "node:crypto"
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto"
 
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
 import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
@@ -7,6 +7,7 @@ import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDe
 import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval } from "../heart/daemon/sanctuary-acceptance-marker"
+import { sanctuaryTelegramApprovalEvidenceMac } from "./telegram"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
 import { execTool, resolveToolDefinition } from "../repertoire/tools"
@@ -114,6 +115,7 @@ export function createTelegramApprovalRuntime(options: {
   authorizedUserId: string
   authorizedChatId: string
   subject: string
+  identityKey: string
   toolContext: Partial<ToolContext>
 }): TelegramApprovalRuntime {
   emitNervesEvent({
@@ -160,12 +162,20 @@ export function createTelegramApprovalRuntime(options: {
         preCallMessages: request.preCallMessages,
       })
       const prompt = `Approve ${request.toolCall.function.name} with exact arguments ${JSON.stringify(request.arguments)}?`
-      const sent = await transport.sendApproval({ approvalId: committed.record.approvalId, decisionToken: committed.decisionToken, prompt })
+      const actionDigest = createHash("sha256").update(JSON.stringify({ toolName: committed.record.toolName, argumentDigest: committed.record.argumentDigest })).digest("hex")
+      const targetDigest = createHash("sha256").update(JSON.stringify({ container: committed.record.arguments.container })).digest("hex")
+      const sent = await transport.sendApproval({
+        approvalId: committed.record.approvalId,
+        decisionToken: committed.decisionToken,
+        prompt,
+        ...(scenarioHandleDigest ? { acceptanceBinding: { scenarioHandleDigest, actionDigest, targetDigest } } : {}),
+      })
       store.bindPrompt({
         approvalId: committed.record.approvalId,
         transport: "telegram",
         transportChatId: options.subject,
         transportMessageId: opaqueTelegramMessageBinding(options.subject, sent.messageId),
+        expiresAt: new Date(sent.expiresAt).toISOString(),
       })
       emitNervesEvent({
         component: "senses",
@@ -195,7 +205,9 @@ export function createTelegramApprovalRuntime(options: {
     }
   }
 
-  const continueTerminalRecord = (record: ApprovalRecord): Promise<{ accepted: boolean; terminalText: string }> => {
+  const continueTerminalRecord = (record: ApprovalRecord, acceptanceBinding?: {
+    scenarioHandleDigest: string; actionDigest: string; targetDigest: string; messageIdDigest: string; boundAt: number
+  }): Promise<{ accepted: boolean; terminalText: string }> => {
     tokens.remove(record.approvalId)
     return withSessionTurnLease(record.sessionPath, async (lease) => {
       const checkpoint = checkpoints.read(record.approvalId)
@@ -226,7 +238,25 @@ export function createTelegramApprovalRuntime(options: {
         runAgent,
         runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
         persist: (messages, result) => saveSession(record.sessionPath, messages, result?.usage, undefined, lease),
-        deliver: async (text) => { await sendTelegramText(options.api, options.authorizedChatId, text) },
+        deliver: async (text) => {
+          const messageIds = await sendTelegramText(options.api, options.authorizedChatId, text)
+          if (acceptanceBinding) {
+            const unsigned = {
+              approvalId: record.approvalId,
+              ...acceptanceBinding,
+              deliveredAt: Date.now(),
+              resultDigest: createHash("sha256").update(JSON.stringify({ state: record.state, result: record.result })).digest("hex"),
+              deliveryDigest: createHash("sha256").update(text, "utf8").digest("hex"),
+              deliveryMessageIdDigest: createHash("sha256").update(JSON.stringify(messageIds ?? [])).digest("hex"),
+            }
+            emitNervesEvent({
+              component: "senses",
+              event: "senses.telegram_approval_continuation_delivered",
+              message: "Telegram approval continuation result was delivered",
+              meta: { ...unsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(options.identityKey, "senses.telegram_approval_continuation_delivered", unsigned) },
+            })
+          }
+        },
       })
       return terminalOutcome(record)
     })
@@ -243,6 +273,8 @@ export function createTelegramApprovalRuntime(options: {
       const meta: Record<string, string> = scenarioHandleDigest ? { scenarioHandleDigest } : {}
       return meta
     },
+    signAcceptanceEvidence: (event, meta) => sanctuaryTelegramApprovalEvidenceMac(options.identityKey, event, meta),
+    acceptanceMessageIdDigest: (messageId) => createHash("sha256").update(opaqueTelegramMessageBinding(options.subject, messageId), "utf8").digest("hex"),
     resolveDecisionToken: async (approvalId) => tokens.get(approvalId) ?? "",
     onExpire: async (approvalId) => {
       store.expire({ approvalId })
@@ -302,7 +334,7 @@ export function createTelegramApprovalRuntime(options: {
         message: "Telegram approval reached a terminal decision state",
         meta: { state: record.state, ...(decisionScenarioDigest ? { scenarioHandleDigest: decisionScenarioDigest } : {}) },
       })
-      return continueTerminalRecord(record)
+      return continueTerminalRecord(record, decision.acceptanceBinding)
     },
   })
 

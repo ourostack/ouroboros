@@ -111,7 +111,7 @@ export interface ApprovalContinuationClaim {
 export interface ApprovalStore {
   prepare(input: PrepareApprovalInput): { record: ApprovalRecord; decisionToken: string }
   activate(input: { approvalId: string; checkpointDigest: string; suspendedSessionRevision: string }): ApprovalRecord
-  bindPrompt(input: { approvalId: string; transport: string; transportChatId: string; transportMessageId: string }): ApprovalRecord
+  bindPrompt(input: { approvalId: string; transport: string; transportChatId: string; transportMessageId: string; expiresAt?: string }): ApprovalRecord
   abandonPromptBinding(input: { approvalId: string; reason: string }): ApprovalRecord
   decide(input: {
     approvalId: string
@@ -750,8 +750,9 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
       return observeBindPrompt(() => {
         const previous = requireRecord(input.approvalId)
         if (previous.state !== "awaiting_prompt_binding" || input.transport !== previous.transport
-          || input.transportChatId !== previous.transportChatId || !isNonEmpty(input.transportMessageId)) fail("invalid_prompt_binding")
-        return cas(previous, { ...previous, state: "proposed", transportMessageId: input.transportMessageId, updatedAt: timestamp() })
+          || input.transportChatId !== previous.transportChatId || !isNonEmpty(input.transportMessageId)
+          || (input.expiresAt !== undefined && !isTimestamp(input.expiresAt))) fail("invalid_prompt_binding")
+        return cas(previous, { ...previous, state: "proposed", transportMessageId: input.transportMessageId, expiresAt: input.expiresAt ?? previous.expiresAt, updatedAt: timestamp() })
       })
     },
 

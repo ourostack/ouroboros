@@ -19,6 +19,9 @@ import { sanctuaryGroundedResponseAccurate, sanctuaryGroundingDigest, type Sanct
 
 type JsonObject = Record<string, unknown>
 const SHA256 = /^[0-9a-f]{64}$/u
+export const SANCTUARY_APPROVAL_TTL_MS = 300_000
+export const SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS = 1_000
+const CANONICAL_RESTART_TARGET = "calibre-web"
 
 export interface SanctuaryScenarioEvent {
   event: string
@@ -138,6 +141,7 @@ export interface SanctuaryScenarioRestartAttempt {
   actionDigest: string
   argumentDigest: string
   target: string
+  targetId: string
   approvalId: string
   attemptId: string
   observedAt: number
@@ -432,7 +436,72 @@ function intendedApproval(before: SanctuaryScenarioFacts, after: SanctuaryScenar
 }
 
 function intendedRestartApproval(approval: SanctuaryScenarioApproval | null): approval is SanctuaryScenarioApproval {
-  return approval?.toolName === "unraid_restart_container" && typeof approval.target === "string" && approval.target.length > 0
+  const argumentDigest = createHash("sha256").update(JSON.stringify({ container: CANONICAL_RESTART_TARGET })).digest("hex")
+  return approval?.toolName === "unraid_restart_container"
+    && approval.target === CANONICAL_RESTART_TARGET
+    && approval.argumentDigest === argumentDigest
+}
+
+function approvalEvidenceCoordinates(approval: SanctuaryScenarioApproval): { actionDigest: string; targetDigest: string } {
+  return {
+    actionDigest: createHash("sha256").update(JSON.stringify({ toolName: approval.toolName, argumentDigest: approval.argumentDigest })).digest("hex"),
+    targetDigest: createHash("sha256").update(JSON.stringify({ container: CANONICAL_RESTART_TARGET })).digest("hex"),
+  }
+}
+
+function exactApprovalEvidence(
+  before: SanctuaryScenarioFacts,
+  after: SanctuaryScenarioFacts,
+  approval: SanctuaryScenarioApproval,
+): {
+  boundAt: number
+  callback: SanctuaryScenarioEvent | null
+  continuation: SanctuaryScenarioEvent | null
+  terminalizedAt: number
+} | null {
+  const fresh = recordsAdded(before.events, after.events, (entry) => hash(entry))
+  const prompt = fresh.filter((entry) => entry.event === "senses.telegram_approval_prompt_bound" && entry.meta.approvalId === approval.approvalId)
+  const terminals = fresh.filter((entry) => entry.event === "telegram.approval_prompt_terminalized" && entry.meta.approvalId === approval.approvalId)
+  const callbacks = fresh.filter((entry) => entry.event === "telegram.callback_settled" && entry.meta.approvalId === approval.approvalId)
+  const continuations = fresh.filter((entry) => entry.event === "senses.telegram_approval_continuation_delivered" && entry.meta.approvalId === approval.approvalId)
+  if (prompt.length !== 1 || terminals.length !== 1 || callbacks.length > 1 || continuations.length > 1) return null
+  const expected = approvalEvidenceCoordinates(approval)
+  const coordinatesMatch = (entry: SanctuaryScenarioEvent): boolean => entry.meta.scenarioHandleDigest !== undefined
+    && typeof entry.meta.scenarioHandleDigest === "string" && SHA256.test(entry.meta.scenarioHandleDigest)
+    && entry.meta.actionDigest === expected.actionDigest && entry.meta.targetDigest === expected.targetDigest
+    && typeof entry.meta.messageIdDigest === "string" && SHA256.test(entry.meta.messageIdDigest)
+    && typeof entry.meta.evidenceMac === "string" && SHA256.test(entry.meta.evidenceMac)
+  if (![...prompt, ...terminals, ...callbacks, ...continuations].every(coordinatesMatch)) return null
+  const promptScenarioHandleDigest = prompt[0]!.meta.scenarioHandleDigest
+  const promptMessageIdDigest = prompt[0]!.meta.messageIdDigest
+  if (![...terminals, ...callbacks, ...continuations].every((entry) => entry.meta.scenarioHandleDigest === promptScenarioHandleDigest
+    && entry.meta.messageIdDigest === promptMessageIdDigest)) return null
+  const boundAt = Number(prompt[0]!.meta.boundAt)
+  const terminalizedAt = Number(terminals[0]!.meta.terminalizedAt)
+  if (!Number.isSafeInteger(boundAt) || boundAt < 0
+    || !Number.isSafeInteger(terminalizedAt) || terminalizedAt < boundAt
+    || terminals[0]!.meta.boundAt !== boundAt || terminals[0]!.meta.buttonsRemoved !== true
+    || approval.expiresAt !== boundAt + SANCTUARY_APPROVAL_TTL_MS) return null
+  const callback = callbacks[0] ?? null
+  if (callback) {
+    const callbackAt = Number(callback.meta.callbackAt)
+    if (!Number.isSafeInteger(callbackAt) || callbackAt < boundAt
+      || callback.meta.boundAt !== boundAt || callback.meta.acknowledged !== true) return null
+  }
+  const continuation = continuations[0] ?? null
+  if (continuation) {
+    const deliveredAt = Number(continuation.meta.deliveredAt)
+    if (!Number.isSafeInteger(deliveredAt) || deliveredAt < boundAt
+      || continuation.meta.boundAt !== boundAt || typeof continuation.meta.resultDigest !== "string" || !SHA256.test(continuation.meta.resultDigest)
+      || typeof continuation.meta.deliveryDigest !== "string" || !SHA256.test(continuation.meta.deliveryDigest)
+      || typeof continuation.meta.deliveryMessageIdDigest !== "string" || !SHA256.test(continuation.meta.deliveryMessageIdDigest)) return null
+  }
+  return { boundAt, callback, continuation, terminalizedAt }
+}
+
+function terminalizedWithinTtlJitter(evidence: { boundAt: number; terminalizedAt: number }): boolean {
+  const elapsed = evidence.terminalizedAt - evidence.boundAt
+  return elapsed >= SANCTUARY_APPROVAL_TTL_MS && elapsed <= SANCTUARY_APPROVAL_TTL_MS + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS
 }
 
 function interactiveReceiptBindsApproval(receipt: SanctuaryInteractiveDriverReceipt, approval: SanctuaryScenarioApproval): boolean {
@@ -458,7 +527,7 @@ export function deriveSanctuaryScenarioAssertions(
   label: SanctuaryUnit16EvidenceLabel,
   before: SanctuaryScenarioFacts,
   after: SanctuaryScenarioFacts,
-  now: number,
+  _now: number,
 ): JsonObject | null {
   const approval = intendedApproval(before, after)
   const newTurns = recordsAdded(before.telegramTurns, after.telegramTurns, (turn) => hash(turn))
@@ -467,9 +536,15 @@ export function deriveSanctuaryScenarioAssertions(
   const linkedAttempts = approval ? after.restartAttempts
     .filter((attempt) => approval.toolName === "unraid_restart_container" && attempt.approvalId === approval.approvalId && attempt.argumentDigest === approval.argumentDigest && attempt.target === approval.target)
     .sort((left, right) => left.observedAt - right.observedAt) : []
-  const attemptIsLinked = (attempt: SanctuaryScenarioRestartAttempt): boolean => Boolean(approval && approval.toolName === "unraid_restart_container"
-    && attempt.approvalId === approval.approvalId && attempt.argumentDigest === approval.argumentDigest && attempt.target === approval.target)
+  const attemptIsLinked = (attempt: SanctuaryScenarioRestartAttempt): boolean => {
+    if (!approval || !intendedRestartApproval(approval) || attempt.approvalId !== approval.approvalId
+      || attempt.argumentDigest !== approval.argumentDigest || attempt.target !== CANONICAL_RESTART_TARGET
+      || typeof attempt.targetId !== "string" || attempt.targetId.length < 1 || attempt.targetId.length > 128) return false
+    const expectedActionDigest = createHash("sha256").update(JSON.stringify({ operation: "restart", container: { id: attempt.targetId, name: CANONICAL_RESTART_TARGET } })).digest("hex")
+    return attempt.actionDigest === expectedActionDigest
+  }
   const completeAttemptLedgerLinked = newAttempts.every(attemptIsLinked) && linkedAttempts.length === newAttempts.length
+    && new Set(linkedAttempts.map((attempt) => attempt.targetId)).size <= 1
   const mutationAttemptIds = new Set(linkedAttempts.filter((attempt) => attempt.state === "attempting").map((attempt) => attempt.attemptId))
   const mutationCount = mutationAttemptIds.size
   const unsafeAttemptStates = new Set(["attempting", "succeeded", "attempted_or_indeterminate"])
@@ -490,8 +565,10 @@ export function deriveSanctuaryScenarioAssertions(
         || (label.includes("live") && (telegramResponses < 1 || !after.identity.liveSubjectObserved))) return null
       return { identityBound: after.identity.keyPresent, opaqueSubject: after.identity.subjectOpaque, rawIdentityAbsent: after.identity.rawIdentityAbsent }
     case "unit-15c-1-no-callback-terminalization": {
-      if (!intendedRestartApproval(approval) || approval.state !== "expired" || approval.createdAt < before.capturedAt || approval.expiresAt - approval.createdAt !== 300_000) return null
-      const elapsedMs = approval.updatedAt - approval.createdAt
+      if (!intendedRestartApproval(approval) || approval.state !== "expired" || approval.createdAt < before.capturedAt) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence || evidence.callback !== null || evidence.continuation !== null || !terminalizedWithinTtlJitter(evidence)) return null
+      const elapsedMs = evidence.terminalizedAt - evidence.boundAt
       if (!approval.buttonsRemoved || !approval.terminalPrompt) return null
       const baseline = before.sourceValues["no-callback-baseline"]
       if (!baseline || typeof baseline !== "object" || Array.isArray(baseline)) return null
@@ -502,7 +579,7 @@ export function deriveSanctuaryScenarioAssertions(
         && baselineRecord.inboundEventCount === inboundEventCount
         && approval.callbackCount === 0
       if (!noInboundUpdate || scenarioMutationCount !== 0 || !completeAttemptLedgerLinked) return null
-      return { buttonsRemoved: approval.buttonsRemoved, elapsedMs, mutationCount: 0, noInboundUpdate, replayMutationCount: approval.replayMutationCount, terminalExpired: approval.state === "expired", ttlMs: approval.expiresAt - approval.createdAt }
+      return { buttonsRemoved: approval.buttonsRemoved, elapsedMs, mutationCount: 0, noInboundUpdate, replayMutationCount: approval.replayMutationCount, terminalExpired: approval.state === "expired", ttlMs: SANCTUARY_APPROVAL_TTL_MS }
     }
     case "unit-16a-pre-reboot-checkpoint":
       if (!after.reboot || after.reboot.phase !== "preflight" || after.reboot.requestCount !== 0 || !after.container?.running || !after.container.healthy || after.reboot.unrelatedHostOperations !== 0) return null
@@ -612,16 +689,27 @@ export function deriveSanctuaryScenarioAssertions(
       return { firedWithinMs: 0, messageCount: 1, productionRestored: true, scheduleObserved: true }
     }
     case "unit-16i-delayed-approval":
-      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
-      return { elapsedMs: approval.updatedAt - approval.createdAt, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
-    case "unit-16j-denial":
+      {
+        const evidence = exactApprovalEvidence(before, after, approval)
+        const callbackAt = Number(evidence?.callback?.meta.callbackAt)
+        if (!evidence || !evidence.callback || !evidence.continuation || callbackAt - evidence.boundAt < 120_000
+          || evidence.callback.meta.accepted !== true || evidence.callback.meta.reason !== "accepted") return null
+        return { elapsedMs: callbackAt - evidence.boundAt, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
+      }
+    case "unit-16j-denial": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "denied" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence?.callback || !evidence.continuation || evidence.callback.meta.accepted !== false || evidence.callback.meta.reason !== "decision_refused") return null
       return { mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
+    }
     case "unit-16k-timeout-stale": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "expired" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0) return null
       if (!approval.buttonsRemoved || !approval.terminalPrompt || !approval.staleAcknowledged) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence || evidence.callback !== null || evidence.continuation !== null || !terminalizedWithinTtlJitter(evidence)) return null
       const driver = after.interactiveDriver
       if (!driver || driver.label !== "unit-16k-timeout-stale" || !interactiveReceiptBindsApproval(driver, approval)
         || driver.callbackAttempts !== 1 || driver.distinctQueryCount !== 1 || driver.settledCount !== 1
@@ -630,6 +718,8 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16l-duplicate-callback": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.callbackCount < 1 || approval.settledCount < 1 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence?.callback || !evidence.continuation || evidence.callback.meta.accepted !== true || evidence.callback.meta.reason !== "accepted") return null
       const driver = after.interactiveDriver
       if (!driver || driver.label !== "unit-16l-duplicate-callback"
         || !interactiveReceiptBindsApproval(driver, approval) || driver.callbackAttempts !== 2 || driver.distinctQueryCount !== 2
@@ -640,6 +730,7 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16m-restart-continuation":
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
+      if (!exactApprovalEvidence(before, after, approval)?.continuation) return null
       if (!after.interactiveDriver || after.interactiveDriver.label !== "unit-16m-restart-continuation"
         || !interactiveReceiptBindsApproval(after.interactiveDriver, approval)
         || !after.interactiveDriver.pendingRestored || after.interactiveDriver.pendingDigestBefore !== after.interactiveDriver.pendingDigestAfter || after.interactiveDriver.callbackAttempts !== 1 || after.interactiveDriver.mutationCount !== 1

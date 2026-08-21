@@ -457,8 +457,9 @@ describe("approval store", () => {
       transport: "telegram",
       transportChatId: "7",
       transportMessageId: "99",
+      expiresAt: "2026-08-17T17:25:01.000Z",
     })
-    expect(proposed).toMatchObject({ state: "proposed", transportMessageId: "99" })
+    expect(proposed).toMatchObject({ state: "proposed", transportMessageId: "99", expiresAt: "2026-08-17T17:25:01.000Z" })
     expect(() => store.bindPrompt({
       approvalId: record.approvalId,
       transport: "telegram",

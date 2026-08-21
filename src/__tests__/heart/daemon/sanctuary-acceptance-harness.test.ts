@@ -711,6 +711,7 @@ describe("Sanctuary acceptance harness", () => {
       timing: {
         execution: "sequential",
         cleanupReservePerScenarioMs: 5_000,
+        approvalReconciliationJitterMs: 1_000,
         timeoutStaleMs: 875_000,
         timeoutStaleBreakdown: {
           promptCreationAdapterMs: 210_000,

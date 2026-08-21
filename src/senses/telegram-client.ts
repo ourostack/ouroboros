@@ -484,6 +484,7 @@ export interface TelegramApprovalDecision {
   transport: "telegram"
   transportChatId: string
   transportMessageId: string
+  acceptanceBinding?: TelegramPersistedPendingApproval["acceptanceBinding"]
 }
 
 export interface TelegramPersistedPendingApproval {
@@ -494,6 +495,13 @@ export interface TelegramPersistedPendingApproval {
   denyCallbackData: string
   expiresAt: number
   prompt?: string
+  acceptanceBinding?: {
+    scenarioHandleDigest: string
+    actionDigest: string
+    targetDigest: string
+    messageIdDigest: string
+    boundAt: number
+  }
   terminal?: { accepted: boolean; terminalText: string }
 }
 
@@ -527,7 +535,7 @@ export class FileTelegramPendingApprovalStore implements TelegramPendingApproval
 }
 
 export interface TelegramApprovalTransport {
-  sendApproval(input: { approvalId: string; decisionToken: string; prompt: string }): Promise<{
+  sendApproval(input: { approvalId: string; decisionToken: string; prompt: string; acceptanceBinding?: { scenarioHandleDigest: string; actionDigest: string; targetDigest: string } }): Promise<{
     messageId: string
     approveCallbackData: string
     denyCallbackData: string
@@ -551,6 +559,9 @@ export interface TelegramApprovalTransportOptions {
   resolveDecisionToken?: (approvalId: string) => Promise<string>
   now?: () => number
   acceptanceEventMeta?: () => Record<string, string>
+  signAcceptanceEvidence?: (event: string, meta: Record<string, unknown>) => string
+  onAcceptanceEvidence?: (event: string, meta: Record<string, unknown>) => void
+  acceptanceMessageIdDigest?: (messageId: string) => string
 }
 
 function assertTelegramCallbackData(value: string): void {
@@ -571,6 +582,14 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const remove = (pending: TelegramPendingApproval): void => {
     pendingByCallback.delete(pending.approveCallbackData)
     pendingByCallback.delete(pending.denyCallbackData)
+  }
+  const emitAcceptanceEvidence = (event: string, pending: TelegramPendingApproval, fields: Record<string, unknown>): void => {
+    if (!pending.acceptanceBinding) return
+    if (!options.signAcceptanceEvidence) throw new Error("Telegram acceptance evidence signer is unavailable")
+    const unsigned = { ...options.acceptanceEventMeta?.(), approvalId: pending.approvalId, ...pending.acceptanceBinding, ...fields }
+    const meta = { ...unsigned, evidenceMac: options.signAcceptanceEvidence(event, unsigned) }
+    emitNervesEvent({ component: "senses", event, message: "Telegram approval acceptance evidence recorded", meta })
+    options.onAcceptanceEvidence?.(event, meta)
   }
 
   for (const loaded of options.pendingStore.load()) {
@@ -608,7 +627,9 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         }
       }
     }
-    emitNervesEvent({ component: "senses", event: "telegram.approval_prompt_terminalized", message: "Telegram approval prompt was terminalized", meta: { approvalId: pending.approvalId, buttonsRemoved: true, ...options.acceptanceEventMeta?.() } })
+    const terminalizedAt = now()
+    if (pending.acceptanceBinding) emitAcceptanceEvidence("telegram.approval_prompt_terminalized", pending, { terminalizedAt, buttonsRemoved: true })
+    else emitNervesEvent({ component: "senses", event: "telegram.approval_prompt_terminalized", message: "Telegram approval prompt was terminalized", meta: { approvalId: pending.approvalId, buttonsRemoved: true, ...options.acceptanceEventMeta?.() } })
   }
 
   const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<void> => {
@@ -710,7 +731,18 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         }
         pending.messageId = String(result.message_id)
         pending.deliveryState = "bound"
+        if (input.acceptanceBinding) {
+          const boundAt = now()
+          pending.acceptanceBinding = {
+            ...input.acceptanceBinding,
+            messageIdDigest: options.acceptanceMessageIdDigest?.(pending.messageId)
+              ?? createHash("sha256").update(pending.messageId, "utf8").digest("hex"),
+            boundAt,
+          }
+          pending.expiresAt = boundAt + 300_000
+        }
         persist()
+        emitAcceptanceEvidence("senses.telegram_approval_prompt_bound", pending, { boundAt: pending.acceptanceBinding?.boundAt })
       } catch (error) {
         pending.messageId = null
         pending.deliveryState = "delivery_indeterminate"
@@ -755,8 +787,10 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
       remove(pending!)
       let decisionStarted = false
+      let callbackAt: number | null = null
       try {
         await acknowledge(callback.id, false)
+        callbackAt = now()
         let outcome = pending!.terminal
         if (!outcome) {
           const decisionToken = pending!.decisionToken ?? await options.resolveDecisionToken?.(pending!.approvalId)
@@ -771,6 +805,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
             transport: "telegram",
             transportChatId: options.expectedChatId,
             transportMessageId: messageId,
+            ...(pending!.acceptanceBinding ? { acceptanceBinding: pending!.acceptanceBinding } : {}),
           })
           pending!.terminal = outcome
         }
@@ -780,7 +815,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         remove(pending!)
         persist()
         const reason = outcome.accepted ? "accepted" : "decision_refused"
-        emitNervesEvent({ component: "senses", event: "telegram.callback_settled", message: "Telegram approval callback settled", meta: { approvalId: pending!.approvalId, reason, accepted: outcome.accepted, ...options.acceptanceEventMeta?.() } })
+        if (pending!.acceptanceBinding) emitAcceptanceEvidence("telegram.callback_settled", pending!, { callbackAt, acknowledged: true, accepted: outcome.accepted, reason })
+        else emitNervesEvent({ component: "senses", event: "telegram.callback_settled", message: "Telegram approval callback settled", meta: { approvalId: pending!.approvalId, reason, accepted: outcome.accepted, ...options.acceptanceEventMeta?.() } })
         return { handled: true, accepted: outcome.accepted, reason }
       } catch (error) {
         if (decisionStarted && !pending!.terminal) {

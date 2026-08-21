@@ -6,7 +6,7 @@ import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
-import { sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
+import { sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
 
@@ -128,6 +128,31 @@ function validInteractiveReceipt(label: "unit-16k-timeout-stale" | "unit-16l-dup
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it("authenticates exact durable Telegram approval evidence and rejects tampering or aliases", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-approval-evidence-"))
+    const identityKey = "k".repeat(43)
+    const scenarioHandleDigest = "a".repeat(64)
+    const eventName = "senses.telegram_approval_prompt_bound"
+    const unsigned = { scenarioHandleDigest, approvalId: "approval-1", actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), messageIdDigest: "d".repeat(64), boundAt: 1_000 }
+    const entry = { ts: "2026-08-20T16:00:00.000Z", event: eventName, meta: { ...unsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, eventName, unsigned) } }
+    const identityPath = `${agentRoot}/state/senses/telegram/identity.key`
+    const auditPath = "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"
+    const files: Record<string, string> = { [identityPath]: `${identityKey}\n`, [auditPath]: `${JSON.stringify(entry)}\n` }
+    const deps = unit16Deps({
+      readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "10", authorizedChatId: "10" }),
+    })
+    try {
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).resolves.toMatchObject({ events: [{ event: eventName }] })
+      files[auditPath] += `${JSON.stringify({ ts: "2026-08-20T16:00:01.000Z", event: "telegram.callback_settled", meta: { scenarioHandleDigest, approvalId: null, accepted: false, reason: "stale_callback" } })}\n`
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).resolves.toMatchObject({ events: [{ event: eventName }, { event: "telegram.callback_settled" }] })
+      files[auditPath] = `${JSON.stringify({ ...entry, meta: { ...entry.meta, actionDigest: "e".repeat(64) } })}\n`
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
+      files[auditPath] = `${JSON.stringify({ ...entry, meta: { ...entry.meta, action: "restart" } })}\n`
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
   it("uses the production repertoire dispatcher for its valid boundary control", () => {
     const source = runSanctuaryProductionBoundaryProbe.toString()
     expect(source).not.toContain("execTool:")
