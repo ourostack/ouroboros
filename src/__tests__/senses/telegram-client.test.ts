@@ -867,6 +867,32 @@ describe("Telegram durable authorized long poll", () => {
     expect(onDispatchSettled).not.toHaveBeenCalled()
   })
 
+  it("checks audit health after a failed dispatch and preserves both failures", async () => {
+    const dispatchFailure = new Error("turn dispatch failed")
+    const auditFailure = new Error("Telegram audit ledger is corrupt")
+    const onDispatchSettled = vi.fn(() => { throw auditFailure })
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [
+        { update_id: 7, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } },
+      ]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore: {
+        quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+        acknowledgeIndeterminateWarning: vi.fn(() => true), capture: vi.fn(() => true), claim: vi.fn(() => true),
+        complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
+      },
+      onMessage: async () => { throw dispatchFailure },
+      onDispatchSettled,
+    })
+
+    const thrown = await poll.pollOnce().catch((error) => error as unknown)
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toEqual([dispatchFailure, auditFailure])
+    expect(onDispatchSettled).toHaveBeenCalledOnce()
+  })
+
   it("propagates a non-shutdown polling failure from the joined run lifecycle", async () => {
     const poll = createTelegramLongPoll({
       api: { request: vi.fn(async () => { throw new Error("synthetic poll failure") }), stop: vi.fn() },
