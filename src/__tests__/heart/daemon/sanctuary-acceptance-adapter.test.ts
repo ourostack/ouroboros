@@ -6,7 +6,7 @@ import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
-import { sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac } from "../../../senses/telegram"
+import { opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac } from "../../../senses/telegram"
 import { createTelegramAuditLedger } from "../../../senses/telegram-audit-ledger"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
@@ -836,8 +836,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const scenarioHandleDigest = "a".repeat(64)
     const identityKey = "k".repeat(43)
     const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "123456789" }
-    const subjectPayload = ["ouroboros.telegram.subject.v1", `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`, `chat:${credentials.authorizedChatId.length}:${credentials.authorizedChatId}`].join("\0")
-    const subject = `tg_${createHmac("sha256", identityKey).update(subjectPayload).digest("base64url")}`
+    const subject = opaqueTelegramSubject(identityKey, credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId)
     const canonicalSession = path.join(agentRoot, "state", "sessions", `telegram-user:${subject}`, "telegram", `telegram_${subject}.json`)
     fs.mkdirSync(path.dirname(canonicalSession), { recursive: true })
     fs.writeFileSync(canonicalSession, "{}\n")
@@ -1496,18 +1495,20 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
 
   it("maps live callback transport outcomes without exposing the approval runtime", async () => {
     const update = { callback_query: {} }
+    const runtimeInputs: Array<Record<string, unknown>> = []
     const base = (result: Record<string, unknown>, refresh = async () => refreshed({})) => ({
       refresh,
       credentials: () => ({ botToken: "secret", authorizedUserId: "1", authorizedChatId: "2" }),
       identityKey: () => "a".repeat(43),
       createApi: () => ({ stop: vi.fn() }) as any,
-      createRuntime: () => ({ transport: { handleUpdate: async () => result }, close: vi.fn() }) as any,
+      createRuntime: (input: Record<string, unknown>) => { runtimeInputs.push(input); return ({ transport: { handleUpdate: async () => result }, close: vi.fn() }) as any },
       toolContext: () => ({} as any),
     })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({ handled: true, accepted: true, reason: "accepted" }))).resolves.toEqual({ settled: true, claimed: true, mutated: true })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({ handled: true, accepted: false, reason: "decision_refused" }))).resolves.toEqual({ settled: true, claimed: true, mutated: false })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, true, base({ handled: true, accepted: false, reason: "stale_callback" }))).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({}, async () => ({ ok: false, reason: "missing", itemPath: "x", error: "x" })))).rejects.toThrow(/unavailable/u)
+    expect(runtimeInputs[0]?.subject).toBe(opaqueTelegramSubject("a".repeat(43), "secret", "1", "2"))
   })
 
   it("loads fixed default adapter records and files", () => {

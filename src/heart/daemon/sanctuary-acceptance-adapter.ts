@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
-import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
+import { loadTelegramSenseCredentials, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
@@ -141,7 +141,6 @@ const HEALTH_ACCEPTANCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16g-health-transition",
   "unit-16h-daily-digest",
 ])
-const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const PERMISSION_RESOURCES = new Set([
   "ACTIVATION_CODE", "API_KEY", "ARRAY", "CLOUD", "CONFIG", "CONNECT", "CONNECT__REMOTE_ACCESS",
   "CUSTOMIZATIONS", "DASHBOARD", "DISK", "DISPLAY", "DOCKER", "FLASH", "INFO", "LOGS", "ME",
@@ -1268,12 +1267,12 @@ export async function readDefaultSanctuaryScenarioFacts(
         throw new Error("Telegram approval evidence MAC is invalid")
       }
     }
-    const identityPayload = [
-      TELEGRAM_SUBJECT_DOMAIN,
-      `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`,
-      `chat:${credentials.authorizedChatId.length}:${credentials.authorizedChatId}`,
-    ].join("\0")
-    const expectedSubject = `tg_${createHmac("sha256", identityKey).update(identityPayload, "utf8").digest("base64url")}`
+    const expectedSubject = opaqueTelegramSubject(
+      identityKey,
+      credentials.botToken,
+      credentials.authorizedUserId,
+      credentials.authorizedChatId,
+    )
     const observedSubjects = auditEntries.flatMap((entry) => typeof entry.meta.subject === "string" ? [entry.meta.subject] : [])
     const approvalSubjects = approvalRecords.map((projection) => projection.approval).filter((record) => record.transport === "telegram").map((record) => record.requesterId)
     const rawValues = [...new Set([credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId])]
@@ -2245,12 +2244,12 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
   if (!refreshed.ok) throw new Error("Telegram runtime credentials are unavailable")
   const credentials = deps.credentials(TARGET_ID)
   const identityKey = deps.identityKey(getAgentRoot(TARGET_ID))
-  const payload = [
-    TELEGRAM_SUBJECT_DOMAIN,
-    `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`,
-    `chat:${credentials.authorizedChatId.length}:${credentials.authorizedChatId}`,
-  ].join("\0")
-  const subject = `tg_${createHmac("sha256", identityKey).update(payload, "utf8").digest("base64url")}`
+  const subject = opaqueTelegramSubject(
+    identityKey,
+    credentials.botToken,
+    credentials.authorizedUserId,
+    credentials.authorizedChatId,
+  )
   const api = deps.createApi({ token: credentials.botToken })
   const runtime = deps.createRuntime({
     agentName: TARGET_ID,

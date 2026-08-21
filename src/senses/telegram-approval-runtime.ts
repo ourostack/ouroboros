@@ -165,6 +165,25 @@ export function createTelegramApprovalRuntime(options: {
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
   const pendingStore = new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json"))
   let transport!: TelegramApprovalTransport
+  const commitAcceptanceEvidence = options.dependencies?.commitAcceptanceEvidence ?? (async (event: string, meta: Record<string, unknown>): Promise<void> => {
+    if (event === "telegram.callback_settled") {
+      await emitNervesEventDurable({
+        component: "senses",
+        event: "telegram.callback_settled",
+        message: "Telegram approval acceptance evidence durably recorded",
+        meta,
+      })
+    } else if (event === "telegram.callback_recovery_settled") {
+      await emitNervesEventDurable({
+        component: "senses",
+        event: "telegram.callback_recovery_settled",
+        message: "Telegram approval acceptance evidence durably recorded",
+        meta,
+      })
+    } else {
+      throw new Error("Telegram durable acceptance settlement event is unsupported")
+    }
+  })
 
   const coordinator = (context: { sessionPath: string; baseSessionRevision: string }): ApprovalCoordinator => ({
     propose: async (request) => {
@@ -323,12 +342,7 @@ export function createTelegramApprovalRuntime(options: {
     },
     effectBarrier,
     signAcceptanceEvidence: (event, meta) => sanctuaryTelegramApprovalEvidenceMac(options.identityKey, event, meta),
-    commitAcceptanceEvidence: options.dependencies?.commitAcceptanceEvidence ?? ((event, meta) => emitNervesEventDurable({
-      component: "senses",
-      event,
-      message: "Telegram approval acceptance evidence durably recorded",
-      meta,
-    })),
+    commitAcceptanceEvidence,
     onSettlementComplete: async (approvalId) => { tokens.remove(approvalId) },
     acceptanceMessageIdDigest: (messageId) => createHash("sha256").update(opaqueTelegramMessageBinding(options.subject, messageId), "utf8").digest("hex"),
     now,

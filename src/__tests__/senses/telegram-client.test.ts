@@ -1049,6 +1049,7 @@ describe("Telegram approval callback transport", () => {
     let durable: ReturnType<TelegramPendingApprovalStore["load"]> = [{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 10_000 }]
     let appendAttempts = 0
     const committed: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const onSettlementComplete = vi.fn()
     const onDecision = vi.fn(async () => ({ accepted: decision === "approve", terminalText: "done" }))
     const transport = createTelegramApprovalTransport({
       api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
@@ -1060,17 +1061,20 @@ describe("Telegram approval callback transport", () => {
         if (appendAttempts === 1) throw new Error("audit append unavailable")
         committed.push({ event, meta })
       },
+      onSettlementComplete,
     } as never)
 
     const callbackData = decision === "approve" ? "a:approve" : "d:deny"
     await expect(transport.handleUpdate(approvalCallback(callbackData, { id: "decision-query" }))).rejects.toThrow("audit append unavailable")
     expect(transport.listPendingDeliveries()).toHaveLength(1)
+    expect(onSettlementComplete).not.toHaveBeenCalled()
     await expect(transport.recoverDecisionAttempt("approval-1")).resolves.toBe(true)
 
     expect(onDecision).toHaveBeenCalledOnce()
     expect(committed).toHaveLength(1)
     expect(committed[0]?.event).toBe("telegram.callback_settled")
     expect(committed[0]?.meta).toMatchObject({ approvalId: "approval-1", evidenceMac: "f".repeat(64) })
+    expect(onSettlementComplete).toHaveBeenCalledOnce()
     expect(durable).toEqual([])
   })
 
