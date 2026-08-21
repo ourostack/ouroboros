@@ -230,6 +230,28 @@ describe("Telegram approval callback transport", () => {
     expect(evidence.findLast(({ event }) => event === "telegram.approval_prompt_terminalized")?.meta).toMatchObject({ expiryObservedAt: 301_000, expiryDeadlineAt: 300_000 })
   })
 
+  it("persists the callback's exact first expiry observation before acknowledging it", async () => {
+    let clock = 1_000
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
+    }]
+    let observationAtAck: unknown
+    const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async (method: string) => {
+        if (method === "answerCallbackQuery") { observationAtAck = records[0]?.expiryObservation; clock += 5 }
+        return true
+      }) }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), onExpire: vi.fn(), now: () => clock,
+      signAcceptanceEvidence: () => "f".repeat(64), onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
+    } as never)
+    await transport.handleUpdate(approvalCallback("a:approve"))
+    expect(observationAtAck).toMatchObject({ deadlineAt: 1_000, observedAt: 1_000, evidenceMac: "f".repeat(64) })
+    expect(evidence.find(({ event }) => event === "telegram.callback_settled")?.meta.callbackAt).toBe(1_000)
+  })
+
   it("serializes an expired callback against proactive reconciliation for the same approval", async () => {
     let releaseEdit!: () => void
     const editBlocked = new Promise<void>((resolve) => { releaseEdit = resolve })
@@ -312,13 +334,18 @@ describe("Telegram approval callback transport", () => {
       staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: createHash("sha256").update(queryId).digest("hex"), attemptedAt: 2_100, consumedAt: null },
     }]
     const evidence: string[] = []
+    let stateAtAck: unknown
     const transport = createTelegramApprovalTransport({
-      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
+      api: { stop: vi.fn(), request: vi.fn(async (method: string) => {
+        if (method === "answerCallbackQuery") stateAtAck = records[0]?.staleTap?.state
+        return true
+      }) }, expectedUserId: "10", expectedChatId: "10",
       pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
       createOpaqueHandle: vi.fn(), onDecision: vi.fn(), now: () => 2_200, signAcceptanceEvidence: () => "f".repeat(64),
       onAcceptanceEvidence: (event: string) => { evidence.push(event) },
     } as never)
     await expect(transport.handleUpdate(approvalCallback("a:approve", { id: queryId }))).resolves.toMatchObject({ reason: "stale_callback" })
+    expect(stateAtAck).toBe("consumed")
     expect(records[0]).toMatchObject({ staleTap: { state: "consumed", attemptedAt: 2_100, consumedAt: 2_200 } })
     expect(evidence.filter((event) => event === "telegram.approval_stale_callback_settled")).toHaveLength(1)
   })
@@ -340,6 +367,45 @@ describe("Telegram approval callback transport", () => {
       signAcceptanceEvidence: () => "f".repeat(64),
     } as never)
     await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "stale-resume" }))).rejects.toThrow(error)
+  })
+
+  it("keeps terminal tombstone purge inside the callback claim and rejects tampered tombstones", async () => {
+    const base = {
+      approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny",
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
+    }
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = [structuredClone(base)]
+    let releaseAck!: () => void
+    const ack = new Promise<void>((resolve) => { releaseAck = resolve })
+    let markAckStarted!: () => void
+    const ackStarted = new Promise<void>((resolve) => { markAckStarted = resolve })
+    let stateAtAck: unknown
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async (method: string) => {
+        if (method === "answerCallbackQuery") { stateAtAck = records[0]?.staleTap?.state; markAckStarted(); await ack }
+        return true
+      }) },
+      expectedUserId: "10", expectedChatId: "10", pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), now: () => 602_000, signAcceptanceEvidence: () => "f".repeat(64),
+    } as never)
+    const callback = transport.handleUpdate(approvalCallback("a:approve"))
+    await ackStarted
+    await transport.reconcileExpired()
+    releaseAck()
+    await callback
+    expect(stateAtAck).toBe("consumed")
+    expect(records).toHaveLength(1)
+
+    records = [{ ...structuredClone(base), expiryObservation: { ...base.expiryObservation, evidenceMac: "e".repeat(64) } }]
+    const tampered = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn() }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), now: () => 602_000, signAcceptanceEvidence: () => "f".repeat(64),
+    } as never)
+    await expect(tampered.reconcileExpired()).rejects.toThrow("terminal tombstone")
+    expect(records).toHaveLength(1)
   })
 
   it("durably retires an unclaimed terminal tombstone at its bounded deadline", async () => {
