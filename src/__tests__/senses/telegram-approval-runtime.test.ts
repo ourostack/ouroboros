@@ -116,7 +116,7 @@ const baseRecord = {
   continuationEpoch: 7,
 }
 
-function makeRuntime() {
+function makeRuntime(effectBarrier: () => void = vi.fn()) {
   return createTelegramApprovalRuntime({
     agentName: "sanctuary",
     api: { request: vi.fn(), stop: vi.fn() },
@@ -124,6 +124,7 @@ function makeRuntime() {
     authorizedChatId: "20",
     subject: "tg_stable-subject",
     toolContext: { agentName: "sanctuary" },
+    effectBarrier,
   })
 }
 
@@ -161,6 +162,27 @@ beforeEach(() => {
 })
 
 describe("Telegram approval runtime safety", () => {
+  it("checks the acceptance barrier before approval delivery and approved tool execution", async () => {
+    const barrierFailure = new Error("acceptance audit exhausted")
+    const barrier = vi.fn(() => { throw barrierFailure })
+    const runtime = makeRuntime(barrier)
+    runtimeMocks.commitApprovalProposal.mockReturnValue({
+      record: { ...baseRecord, state: "proposed", toolName: "unraid_restart_container" },
+      decisionToken: "decision-token",
+    })
+    const proposal = runtime.coordinator({ sessionPath: baseRecord.sessionPath, baseSessionRevision: "revision" })
+    await expect(proposal.propose({
+      toolCall: { type: "function", id: "tool-call", function: { name: "unraid_restart_container", arguments: "{}" } },
+      arguments: {}, schemaDigest: "s".repeat(64), toolDigest: "t".repeat(64), policyDigest: "p".repeat(64),
+      policyId: "policy", preCallMessages: [], frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [] },
+    } as any)).rejects.toBe(barrierFailure)
+    expect(runtimeMocks.transport.sendApproval).not.toHaveBeenCalled()
+
+    const execute = vi.fn(async () => "ok")
+    await expect(executeApprovedTelegramTool("unraid_restart_container", {}, execute, "a".repeat(64), "approval-1", barrier))
+      .rejects.toBe(barrierFailure)
+    expect(execute).not.toHaveBeenCalled()
+  })
   it("reuses the approval coordinator when the resumed provider turn requests another gated tool", () => {
     const approvalCoordinator = { propose: vi.fn() }
     const toolContext = { agentName: "sanctuary" }

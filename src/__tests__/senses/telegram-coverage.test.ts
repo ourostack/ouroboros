@@ -45,6 +45,7 @@ import {
   parseTelegramSenseCredentials,
   readOrCreateTelegramIdentityKey,
   startTelegramSenseApp,
+  telegramAcceptanceAuditOwnerDigest,
 } from "../../senses/telegram"
 
 const credentials = { botToken: "synthetic-test-token", authorizedUserId: "42", authorizedChatId: "43" }
@@ -698,7 +699,7 @@ describe("Telegram sense coverage contracts", () => {
 
     expect(subject).toMatch(/^tg_[A-Za-z0-9_-]{43}$/u)
     expect(repeated.identity.externalId).toBe(subject)
-    expect(otherToken.identity.externalId).toBe(subject)
+    expect(otherToken.identity.externalId).not.toBe(subject)
     expect(otherUser.identity.externalId).not.toBe(subject)
     expect(otherChat.identity.externalId).not.toBe(subject)
     expect(first).toMatchObject({
@@ -734,6 +735,105 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       meta: expect.objectContaining({ subject }),
     }))
+  })
+
+  it("fails closed before a turn or delivery when the acceptance audit becomes corrupt", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-effect-fence-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey: "k".repeat(43),
+      acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
+    })
+    fs.writeFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "{}\n")
+
+    await expect(f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "status" }))
+      .rejects.toThrow("audit head")
+    expect(mocks.runSenseTurn).not.toHaveBeenCalled()
+    expect(mocks.sendTelegramText).not.toHaveBeenCalled()
+    await expect(app.stop()).rejects.toThrow("audit head")
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("routes scenario audit events only to the exact owning app root", async () => {
+    const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-root-a-"))
+    const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-root-b-"))
+    const identityKey = "k".repeat(43)
+    mocks.getAgentRoot.mockReturnValueOnce(firstRoot).mockReturnValueOnce(secondRoot)
+    defaultFixture()
+    const first = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey,
+      acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
+    })
+    defaultFixture()
+    const second = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey,
+      acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
+    })
+    const firstOwner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", firstRoot)
+    emitGlobal({ ...acceptanceEvent(), meta: { scenarioHandleDigest: "a".repeat(64), acceptanceAuditOwnerDigest: firstOwner } })
+
+    const firstLedger = fs.readFileSync(path.join(firstRoot, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8").trim().split("\n").filter(Boolean)
+    const secondLedger = fs.readFileSync(path.join(secondRoot, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8").trim().split("\n").filter(Boolean)
+    expect(firstLedger).toHaveLength(1)
+    expect(secondLedger).toHaveLength(0)
+    await first.stop()
+    await second.stop()
+    fs.rmSync(firstRoot, { recursive: true, force: true })
+    fs.rmSync(secondRoot, { recursive: true, force: true })
+  })
+
+  it("attempts every stop cleanup and aggregates failures in deterministic order", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-stop-aggregate-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const stopFailure = new Error("poll stop failed")
+    const apiFailure = new Error("api stop failed")
+    const runtimeFailure = new Error("runtime close failed")
+    f.poll.stop.mockImplementationOnce(() => { throw stopFailure })
+    f.api.stop.mockImplementationOnce(() => { throw apiFailure })
+    f.runtime.close.mockImplementationOnce(() => { throw runtimeFailure })
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })
+
+    const error = await app.stop().catch((caught) => caught)
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([stopFailure, apiFailure, runtimeFailure])
+    expect(f.api.stop).toHaveBeenCalledOnce()
+    expect(f.runtime.close).toHaveBeenCalledOnce()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("aggregates constructor and audit-release failures without leaving the sink registered", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-constructor-aggregate-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    defaultFixture()
+    const primary = new Error("poll constructor failed")
+    const release = new Error("audit release failed")
+    mocks.createTelegramLongPoll.mockImplementationOnce(() => { throw primary })
+
+    let caught: unknown
+    try {
+      createTelegramSenseApp({
+        agentName: "sanctuary",
+        credentials,
+        identityKey: "k".repeat(43),
+        _acceptanceAuditReleaseHook: () => { throw release },
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(AggregateError)
+    expect((caught as AggregateError).errors).toEqual([primary, release])
+    const before = fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8")
+    emitGlobal(acceptanceEvent())
+    expect(fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8")).toBe(before)
+    fs.rmSync(root, { recursive: true, force: true })
   })
 
   it("passes default tool and approval context, then sends a response only when no streamed delivery occurred", async () => {
