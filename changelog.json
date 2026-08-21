@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.737",
       "changes": [
         "Ship the integrity-locked Bitwarden CLI in the non-root Unraid runtime so fresh Sanctuary vault access never depends on an impossible runtime install.",
-        "Add a closed final-production acceptance profile with isolated evidence roots while preserving the existing fixed staging path."
+        "Add a closed final-production acceptance profile with isolated evidence roots while preserving the existing fixed staging path.",
+        "Verify the packed Bitwarden CLI as the non-root runtime user with isolated temporary state, zero stderr, same-layer cleanup, and a read-only constrained-tmpfs image probe."
       ]
     },
     {
