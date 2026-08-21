@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { FileTelegramPendingApprovalStore, type TelegramApprovalTransport, type TelegramPersistedPendingApproval } from "./telegram-client"
 
 type JsonObject = Record<string, unknown>
-type InteractiveLabel = "unit-16l-duplicate-callback" | "unit-16m-restart-continuation"
+type InteractiveLabel = "unit-16k-timeout-stale" | "unit-16l-duplicate-callback" | "unit-16m-restart-continuation"
 const SHA256 = /^[0-9a-f]{64}$/u
 const MAX_CONTROL_REQUEST = 16 * 1024
 
@@ -26,6 +26,7 @@ export interface SanctuaryInteractiveEngineDependencies {
   createSession(): Promise<CallbackSession>
   proveIndeterminateRecovery(approval: ApprovalRecord): { observed: boolean; retryCount: number }
   writeCredentialObserved(): boolean
+  timeoutCoordinates: Map<string, TelegramPersistedPendingApproval>
 }
 
 function object(value: unknown, label: string): JsonObject {
@@ -84,11 +85,43 @@ export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: Sanc
   const label = payload.label as InteractiveLabel
   const scenarioHandleDigest = payload.scenarioHandleDigest
   if (typeof scenarioHandleDigest !== "string" || !SHA256.test(scenarioHandleDigest)
-    || (label !== "unit-16l-duplicate-callback" && label !== "unit-16m-restart-continuation")
-    || (operation !== "drive_duplicate_callbacks" && operation !== "prepare_restart_continuation" && operation !== "reconcile_restart_continuation")
+    || !["unit-16k-timeout-stale", "unit-16l-duplicate-callback", "unit-16m-restart-continuation"].includes(label)
+    || !["drive_timeout_stale", "drive_duplicate_callbacks", "prepare_restart_continuation", "reconcile_restart_continuation"].includes(String(operation))
+    || (operation === "drive_timeout_stale") !== (label === "unit-16k-timeout-stale")
     || (operation === "drive_duplicate_callbacks") !== (label === "unit-16l-duplicate-callback")) throw new Error("interactive runtime operation binding is invalid")
   const before = exactApproval(deps.readApprovals(scenarioHandleDigest))
-  if (before.approval.state !== "proposed" || !before.approval.suspendedSessionRevision) throw new Error("interactive production approval is not currently proposed")
+  if (!before.approval.suspendedSessionRevision) throw new Error("interactive production approval checkpoint is unavailable")
+  if (operation === "drive_timeout_stale") {
+    if (before.approval.state === "proposed") {
+      const pending = exactPending(deps.readPending(), before.approval.approvalId)
+      const existing = deps.timeoutCoordinates.get(scenarioHandleDigest)
+      if (existing && pendingDigest(existing) !== pendingDigest(pending)) throw new Error("timeout stale callback coordinates drifted")
+      deps.timeoutCoordinates.set(scenarioHandleDigest, structuredClone(pending))
+      return { state: "waiting" }
+    }
+    if (before.approval.state !== "expired" || before.approval.epoch !== 0) throw new Error("timeout stale approval is not expired without a claim")
+    const captured = deps.timeoutCoordinates.get(scenarioHandleDigest)
+    if (!captured || captured.approvalId !== before.approval.approvalId) throw new Error("timeout stale callback coordinates were not retained by this daemon")
+    const session = await deps.createSession()
+    try {
+      const queryId = randomBytes(18).toString("base64url")
+      const result = await session.handle({ callbackData: captured.approveCallbackData, queryId, messageId: captured.messageId! })
+      const after = exactApproval(deps.readApprovals(scenarioHandleDigest))
+      const promptTerminal = !session.pendingApprovalIds().includes(before.approval.approvalId)
+      if (!result.handled || result.accepted || result.reason !== "stale_callback" || after.approval.state !== "expired" || after.approval.epoch !== 0 || !promptTerminal) {
+        throw new Error("timeout stale callback proof failed")
+      }
+      deps.timeoutCoordinates.delete(scenarioHandleDigest)
+      return {
+        schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1", phase: "complete", label, scenarioHandleDigest,
+        approvalIdDigest: sha256(before.approval.approvalId), checkpointDigest: before.approval.checkpointDigest,
+        suspendedSessionRevisionDigest: sha256(before.approval.suspendedSessionRevision), approvalEpochBefore: before.approval.epoch,
+        callbackAttempts: 1, distinctQueryCount: 1, callbackDataDigest: sha256(captured.approveCallbackData),
+        settledCount: 1, claimCount: 0, mutationCount: 0, staleAcknowledged: true, promptTerminal,
+      }
+    } finally { session.close() }
+  }
+  if (before.approval.state !== "proposed") throw new Error("interactive production approval is not currently proposed")
   const pending = exactPending(deps.readPending(), before.approval.approvalId)
   const common = { approvalIdDigest: sha256(before.approval.approvalId), checkpointDigest: before.approval.checkpointDigest, suspendedSessionRevisionDigest: sha256(before.approval.suspendedSessionRevision), approvalEpochBefore: before.approval.epoch }
   if (operation === "prepare_restart_continuation") {
@@ -120,6 +153,7 @@ export function createSanctuaryInteractiveControl(options: { agentRoot: string; 
   const socketPath = path.join(options.agentRoot, "state", "acceptance", "telegram-control.sock")
   let server: Server | undefined
   let updateId = 2_100_000_000
+  const timeoutCoordinates = new Map<string, TelegramPersistedPendingApproval>()
   return {
     socketPath,
     async start() {
@@ -148,6 +182,7 @@ export function createSanctuaryInteractiveControl(options: { agentRoot: string; 
               createSession: async () => ({ handle: ({ callbackData, queryId, messageId }) => options.transport.handleUpdate({ update_id: updateId++, callback_query: { id: queryId, from: { id: Number(options.authorizedUserId) }, data: callbackData, message: { message_id: Number(messageId), chat: { id: Number(options.authorizedChatId) } } } }), pendingApprovalIds: () => options.transport.listPendingDeliveries().map(({ approvalId }) => approvalId), close: () => undefined }),
               proveIndeterminateRecovery: proveSanctuaryAttemptedRecoveryWithoutRetry,
               writeCredentialObserved: () => /credential|api[_-]?key|token|secret/iu.test(raw),
+              timeoutCoordinates,
             })
             connection.end(`${JSON.stringify({ ok: true, result })}\n`)
           } catch { connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }

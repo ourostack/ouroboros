@@ -3,7 +3,7 @@ import { createConnection } from "node:net"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { createSanctuaryInteractiveControl, sanctuaryInteractiveControlReady } from "../../senses/sanctuary-interactive-control"
+import { createSanctuaryInteractiveControl, executeSanctuaryInteractiveEngine, sanctuaryInteractiveControlReady } from "../../senses/sanctuary-interactive-control"
 
 function request(socketPath: string, payload: unknown): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -18,6 +18,34 @@ function request(socketPath: string, payload: unknown): Promise<Record<string, u
 }
 
 describe("Sanctuary interactive daemon control", () => {
+  it("retains one callback through expiry, settles it stale without a claim, and fails closed after daemon loss", async () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    let state: "proposed" | "expired" = "proposed"
+    const timeoutCoordinates = new Map()
+    const pending = { approvalId: "approval-1", messageId: "42", deliveryState: "bound" as const, approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: 300_000 }
+    const projection = () => [{ approval: {
+      approvalId: "approval-1", state, epoch: 0, toolName: "unraid_restart_container", arguments: { container: "calibre-web" },
+      checkpointDigest: "b".repeat(64), suspendedSessionRevision: "c".repeat(64),
+    } as never, continuation: null }]
+    const handle = vi.fn(async () => ({ handled: true, accepted: false, reason: "stale_callback" }))
+    const deps = {
+      agentRoot: "/unused", readApprovals: projection, readPending: () => state === "proposed" ? [pending] : [], timeoutCoordinates,
+      createSession: async () => ({ handle, pendingApprovalIds: () => [], close: vi.fn() }),
+      proveIndeterminateRecovery: vi.fn(), writeCredentialObserved: () => false,
+    }
+    const request = { operation: "drive_timeout_stale", label: "unit-16k-timeout-stale", scenarioHandleDigest }
+    await expect(executeSanctuaryInteractiveEngine(request, deps)).resolves.toEqual({ state: "waiting" })
+    expect(handle).not.toHaveBeenCalled()
+    state = "expired"
+    await expect(executeSanctuaryInteractiveEngine(request, deps)).resolves.toMatchObject({
+      schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1", phase: "complete", callbackAttempts: 1,
+      distinctQueryCount: 1, settledCount: 1, claimCount: 0, mutationCount: 0, staleAcknowledged: true, promptTerminal: true,
+    })
+    expect(handle).toHaveBeenCalledOnce()
+    await expect(executeSanctuaryInteractiveEngine(request, { ...deps, timeoutCoordinates: new Map() }))
+      .rejects.toThrow(/not retained by this daemon/iu)
+  })
+
   it("owns a private readiness-bound socket for the existing Telegram transport lifecycle", async () => {
     const agentRoot = fs.mkdtempSync("/tmp/oi-")
     const transport = {
