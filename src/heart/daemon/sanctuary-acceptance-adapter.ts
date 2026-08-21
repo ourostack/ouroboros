@@ -209,7 +209,13 @@ async function defaultHostRequest(payload: JsonObject, socketPath: string, timeo
 
 export function createSanctuaryAcceptanceAdapterDependencies(
   secretFd = 3,
-  options: { keyDirectory?: string; adapterTimeoutMs?: number; hostBrokerSocket?: string } = {},
+  options: {
+    keyDirectory?: string
+    adapterTimeoutMs?: number
+    hostBrokerSocket?: string
+    hostRequest?: (payload: JsonObject) => Promise<unknown>
+    scenarioCapture?: { agentRoot?: string; receiptRoot?: string; gateStatusPath?: string }
+  } = {},
 ): SanctuaryAcceptanceAdapterDependencies {
   const keyDirectory = options.keyDirectory ?? KEY_DIRECTORY
   const adapterTimeoutMs = options.adapterTimeoutMs ?? ADAPTER_TIMEOUT_MS
@@ -226,14 +232,16 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     refreshMachine: refreshMachineRuntimeCredentialConfig,
     mergeMachine: mergeMachineRuntimeCredentialConfig,
     callbackProbe: executeSanctuaryAcceptanceCallbackProbe,
-    hostRequest: (payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs),
+    hostRequest: options.hostRequest ?? ((payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs)),
     telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
   }
   const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
   dependencies.captureScenario = createSanctuaryScenarioCapture({
     now: Date.now,
-    readFacts: (label, scenarioHandleDigest, readOptions) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies, undefined, readOptions),
+    readFacts: (label, scenarioHandleDigest, readOptions) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies, options.scenarioCapture?.agentRoot, readOptions),
     healthDriver,
+    receiptRoot: options.scenarioCapture?.receiptRoot,
+    gateStatusPath: options.scenarioCapture?.gateStatusPath,
   }) as (payload: JsonObject) => Promise<unknown>
   dependencies.finalizeScenarios = createSanctuaryAcceptanceScenarioFinalizer({
     readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID),
@@ -793,11 +801,11 @@ export async function readDefaultSanctuaryScenarioFacts(
   const sourceValues: Record<string, unknown> = {
     "identity-key": identityRaw, "telegram-audit": auditEntries, "telegram-offset": offsetRaw,
     "approval-journal": approvals, "approval-checkpoints": checkpointsRaw, "container-inspect": container,
-    "provider-live-check": liveProvider, "cron-runtime": cronRaw, "health-runtime": health, "restart-attempt-ledger": restartAttempts,
+    "provider-live-check": liveProvider ?? null, "cron-runtime": cronRaw, "health-runtime": health, "restart-attempt-ledger": restartAttempts,
     "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt,
     "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, surfaceDigest: identity.surfaceDigest } : null,
     "containment-audit": { toolSurfaceExact, mountsExact: container?.mountsExact, securityExact: container?.securityExact, networkMode: container?.networkMode, writableKeyExposure: container?.writableKeyExposure },
-    "health-probe-receipt": healthProbe,
+    "health-probe-receipt": healthProbe ?? null,
   }
   return {
     capturedAt: deps.now?.() ?? Date.now(),

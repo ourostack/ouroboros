@@ -117,7 +117,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       if (file === "/run/ouro-acceptance/image-digest") return "1".repeat(64)
       if (file.includes("/health-probe-receipts/") && complete) {
         const handle = path.basename(file, ".json")
-        return `${JSON.stringify(validHealthProbeReceipt(handle))}\n`
+        const cronFingerprint = createHash("sha256").update(cron).digest("hex")
+        return `${JSON.stringify(validHealthProbeReceipt(handle, { cronFingerprintBefore: cronFingerprint, cronFingerprintAfter: cronFingerprint }))}\n`
       }
       throw Object.assign(new Error("missing fixture"), { code: "ENOENT" })
     }
