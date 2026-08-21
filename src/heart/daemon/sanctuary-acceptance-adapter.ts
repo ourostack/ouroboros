@@ -592,19 +592,36 @@ function parseHealthAcceptanceState(raw: string | null): JsonObject | null {
 function buildPostbootIntegritySnapshot(input: {
   offsetRaw: string | null; checkpointsRaw: string | null; restartAttempts: SanctuaryScenarioFacts["restartAttempts"]
   cronRaw: string | null; health: JsonObject | null; auditLedgerEntries: SanctuaryScenarioFacts["events"]
+  activeScenarioHandleDigest: string | null
 }): SanctuaryPostbootIntegritySnapshot {
-  const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
+    if (value && typeof value === "object") return `{${Object.keys(value as JsonObject).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as JsonObject)[key])}`).join(",")}}`
+    return JSON.stringify(value) ?? "null"
+  }
+  const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex")
+  const offset = input.offsetRaw === null ? { nextUpdateId: 0 } : object(JSON.parse(input.offsetRaw) as unknown, "Telegram offset state")
+  if (JSON.stringify(Object.keys(offset).sort()) !== JSON.stringify(["nextUpdateId"]) || !Number.isSafeInteger(offset.nextUpdateId) || Number(offset.nextUpdateId) < 0) {
+    throw new Error("Telegram offset state is invalid")
+  }
+  const checkpoints = input.checkpointsRaw === null ? {} : object(JSON.parse(input.checkpointsRaw) as unknown, "approval checkpoint state")
+  const approvalCheckpoints = Object.entries(checkpoints).map(([id, record]) => ({ idDigest: digest(id), recordDigest: digest(record) }))
+    .sort((left, right) => left.idDigest.localeCompare(right.idDigest))
   const sweeps = (input.health?.sweepReceipts as JsonObject[] | undefined ?? []).map((row) => ({
-    idDigest: digest(row.sweepId), scenarioHandleDigest: typeof row.scenarioHandleDigest === "string" ? row.scenarioHandleDigest : null,
+    idDigest: digest(row.sweepId), recordDigest: digest(row), scenarioHandleDigest: typeof row.scenarioHandleDigest === "string" ? row.scenarioHandleDigest : null,
     deliveryIdDigest: typeof row.deliveryId === "string" ? digest(row.deliveryId) : null,
   }))
-  const deliveries = (input.health?.deliveredReceipts as JsonObject[] | undefined ?? []).map((row) => ({ idDigest: digest(row.deliveryId) }))
+  const deliveries = (input.health?.deliveredReceipts as JsonObject[] | undefined ?? []).map((row) => ({ idDigest: digest(row.deliveryId), recordDigest: digest(row) }))
   const scenarioRelevantEvents = new Set(["telegram.callback_settled", "telegram.update_dropped", "approval.acceptance_transition", "senses.sanctuary_read_receipt", "senses.telegram_approved_restart_end"])
+  const restartAttempts = input.restartAttempts.map((row) => ({
+    idDigest: digest(row.attemptId), recordDigest: digest(row), execution: row.state === "attempting",
+  }))
   return {
-    schemaVersion: "sanctuary-postboot-integrity-v1", telegramOffsetDigest: digest(input.offsetRaw), approvalStateDigest: digest(input.checkpointsRaw),
-    approvalExecutionCount: new Set(input.restartAttempts.filter((row) => row.state !== "attempt_not_started").map((row) => row.attemptId)).size,
+    schemaVersion: "sanctuary-postboot-integrity-v2", activeScenarioHandleDigest: input.activeScenarioHandleDigest,
+    telegramNextUpdateId: Number(offset.nextUpdateId), approvalCheckpoints,
+    approvalExecutionCount: restartAttempts.filter((row) => row.execution).length, restartAttempts,
     fingerprintDigest: digest(input.cronRaw), sweeps, deliveries,
-    audits: input.auditLedgerEntries.map((row) => ({ idDigest: digest(row), scenarioHandleDigest: typeof row.meta.scenarioHandleDigest === "string" ? row.meta.scenarioHandleDigest : null, scenarioRelevant: scenarioRelevantEvents.has(row.event) })),
+    audits: input.auditLedgerEntries.map((row) => ({ idDigest: digest(row), recordDigest: digest(row), scenarioHandleDigest: typeof row.meta.scenarioHandleDigest === "string" ? row.meta.scenarioHandleDigest : null, scenarioRelevant: scenarioRelevantEvents.has(row.event) })),
   }
 }
 
@@ -1182,7 +1199,8 @@ export async function readDefaultSanctuaryScenarioFacts(
     }
   }
   const health = parseHealthAcceptanceState(healthRaw)
-  const postbootIntegrity = buildPostbootIntegritySnapshot({ offsetRaw, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries })
+  const activeMarker = readSanctuaryAcceptanceMarker(TARGET_ID)
+  const postbootIntegrity = buildPostbootIntegritySnapshot({ offsetRaw, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries, activeScenarioHandleDigest: activeMarker?.scenarioHandleDigest ?? null })
   const prebootIntegrity = rebootCheckpoint && typeof rebootCheckpoint.prebootIntegrity === "object" && !Array.isArray(rebootCheckpoint.prebootIntegrity)
     ? rebootCheckpoint.prebootIntegrity as unknown as SanctuaryPostbootIntegritySnapshot : undefined
   const healthProbe = parseHealthProbeReceipt(healthProbeRaw, label, scenarioHandleDigest)
@@ -1394,6 +1412,7 @@ function postbootIntegritySnapshot(deps: SanctuaryAcceptanceAdapterDependencies)
     offsetRaw: optionalFixedFile(deps, TELEGRAM_OFFSET), checkpointsRaw: optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json")),
     restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw: optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"),
     health: parseHealthAcceptanceState(optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))), auditLedgerEntries: parseAuditLedger(auditRaw),
+    activeScenarioHandleDigest: readSanctuaryAcceptanceMarker(TARGET_ID)?.scenarioHandleDigest ?? null,
   })
 }
 

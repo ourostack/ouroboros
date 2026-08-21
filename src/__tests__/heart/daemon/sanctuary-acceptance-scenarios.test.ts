@@ -131,14 +131,16 @@ const base = (): SanctuaryScenarioFacts => ({
 })
 
 const integritySnapshot = () => ({
-  schemaVersion: "sanctuary-postboot-integrity-v1" as const,
-  telegramOffsetDigest: "1".repeat(64),
-  approvalStateDigest: "2".repeat(64),
+  schemaVersion: "sanctuary-postboot-integrity-v2" as const,
+  activeScenarioHandleDigest: null,
+  telegramNextUpdateId: 10,
+  approvalCheckpoints: [{ idDigest: "1".repeat(64), recordDigest: "2".repeat(64) }],
   approvalExecutionCount: 1,
+  restartAttempts: [{ idDigest: "3".repeat(64), recordDigest: "4".repeat(64), execution: true }],
   fingerprintDigest: "3".repeat(64),
-  sweeps: [{ idDigest: "4".repeat(64), scenarioHandleDigest: null, deliveryIdDigest: null }],
-  deliveries: [{ idDigest: "5".repeat(64) }],
-  audits: [{ idDigest: "6".repeat(64), scenarioHandleDigest: null, scenarioRelevant: false }],
+  sweeps: [{ idDigest: "5".repeat(64), recordDigest: "6".repeat(64), scenarioHandleDigest: null, deliveryIdDigest: null }],
+  deliveries: [{ idDigest: "7".repeat(64), recordDigest: "8".repeat(64) }],
+  audits: [{ idDigest: "9".repeat(64), recordDigest: "a".repeat(64), scenarioHandleDigest: null, scenarioRelevant: false }],
 })
 
 describe("Sanctuary postboot relational integrity", () => {
@@ -147,9 +149,11 @@ describe("Sanctuary postboot relational integrity", () => {
     const before = integritySnapshot()
     const after = {
       ...before,
-      sweeps: [...before.sweeps, { idDigest: "7".repeat(64), scenarioHandleDigest, deliveryIdDigest: "8".repeat(64) }],
-      deliveries: [...before.deliveries, { idDigest: "8".repeat(64) }],
-      audits: [...before.audits, { idDigest: "9".repeat(64), scenarioHandleDigest, scenarioRelevant: true }],
+      activeScenarioHandleDigest: scenarioHandleDigest,
+      telegramNextUpdateId: 11,
+      sweeps: [...before.sweeps, { idDigest: "b".repeat(64), recordDigest: "c".repeat(64), scenarioHandleDigest, deliveryIdDigest: "d".repeat(64) }],
+      deliveries: [...before.deliveries, { idDigest: "d".repeat(64), recordDigest: "e".repeat(64) }],
+      audits: [...before.audits, { idDigest: "f".repeat(64), recordDigest: "0".repeat(64), scenarioHandleDigest, scenarioRelevant: true }],
     }
     expect(verifySanctuaryPostbootIntegrity(before, after, scenarioHandleDigest)).toEqual({
       auditDeltaCount: 1, deliveryDeltaCount: 1, preserved: true, sweepDeltaCount: 1,
@@ -157,25 +161,44 @@ describe("Sanctuary postboot relational integrity", () => {
   })
 
   it.each([
-    ["offset replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, telegramOffsetDigest: "f".repeat(64) })],
-    ["approval state replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, approvalStateDigest: "f".repeat(64) })],
+    ["offset replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, activeScenarioHandleDigest: "a".repeat(64), telegramNextUpdateId: 9 })],
+    ["approval state replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, activeScenarioHandleDigest: "a".repeat(64), approvalCheckpoints: [{ ...value.approvalCheckpoints[0]!, recordDigest: "f".repeat(64) }] })],
     ["approval execution replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, approvalExecutionCount: 2 })],
     ["fingerprint mutation", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, fingerprintDigest: "f".repeat(64) })],
-    ["sweep replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, sweeps: [value.sweeps[0]!, value.sweeps[0]!] })],
-    ["delivery replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, deliveries: [value.deliveries[0]!, value.deliveries[0]!] })],
-    ["audit replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, audits: [value.audits[0]!, value.audits[0]!] })],
+    ["sweep replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, activeScenarioHandleDigest: "a".repeat(64), sweeps: [value.sweeps[0]!, value.sweeps[0]!] })],
+    ["delivery replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, activeScenarioHandleDigest: "a".repeat(64), deliveries: [value.deliveries[0]!, value.deliveries[0]!] })],
+    ["audit replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, activeScenarioHandleDigest: "a".repeat(64), audits: [value.audits[0]!, value.audits[0]!] })],
   ])("rejects %s", (_name, mutate) => {
     const before = integritySnapshot()
     expect(verifySanctuaryPostbootIntegrity(before, mutate(before), "a".repeat(64))).toBeNull()
+  })
+
+  it("rejects same-id record mutation and repeated execution of the same attempt", () => {
+    const before = integritySnapshot()
+    const handle = "a".repeat(64)
+    const bound = { ...before, activeScenarioHandleDigest: handle }
+    expect(verifySanctuaryPostbootIntegrity(before, { ...bound, sweeps: [{ ...bound.sweeps[0]!, recordDigest: "f".repeat(64) }] }, handle)).toBeNull()
+    expect(verifySanctuaryPostbootIntegrity(before, {
+      ...bound,
+      approvalExecutionCount: 2,
+      restartAttempts: [...bound.restartAttempts, { ...bound.restartAttempts[0]!, recordDigest: "f".repeat(64) }],
+    }, handle)).toBeNull()
+  })
+
+  it("requires the live active scenario marker relation", () => {
+    const before = integritySnapshot()
+    expect(verifySanctuaryPostbootIntegrity(before, before, "a".repeat(64))).toBeNull()
+    expect(verifySanctuaryPostbootIntegrity(before, { ...before, activeScenarioHandleDigest: "b".repeat(64) }, "a".repeat(64))).toBeNull()
   })
 
   it("rejects new sweeps, deliveries, and relevant audit rows not bound to the active scenario", () => {
     const before = integritySnapshot()
     const after = {
       ...before,
-      sweeps: [...before.sweeps, { idDigest: "7".repeat(64), scenarioHandleDigest: "b".repeat(64), deliveryIdDigest: "8".repeat(64) }],
-      deliveries: [...before.deliveries, { idDigest: "8".repeat(64) }],
-      audits: [...before.audits, { idDigest: "9".repeat(64), scenarioHandleDigest: "b".repeat(64), scenarioRelevant: true }],
+      activeScenarioHandleDigest: "a".repeat(64),
+      sweeps: [...before.sweeps, { idDigest: "b".repeat(64), recordDigest: "c".repeat(64), scenarioHandleDigest: "b".repeat(64), deliveryIdDigest: "d".repeat(64) }],
+      deliveries: [...before.deliveries, { idDigest: "d".repeat(64), recordDigest: "e".repeat(64) }],
+      audits: [...before.audits, { idDigest: "f".repeat(64), recordDigest: "0".repeat(64), scenarioHandleDigest: "b".repeat(64), scenarioRelevant: true }],
     }
     expect(verifySanctuaryPostbootIntegrity(before, after, "a".repeat(64))).toBeNull()
   })
@@ -203,6 +226,7 @@ describe("Sanctuary live scenario capture", () => {
       const after = base()
       if (label === "unit-16a-pre-reboot-checkpoint") after.reboot = { ...after.reboot!, phase: "preflight", requestCount: 0, bootIdentityChanged: false }
       if (label === "unit-16a-reboot-request") after.reboot = { ...after.reboot!, phase: "requested", bootIdentityChanged: false }
+      if (label === "unit-16a-boot-recovery-milestones") after.postbootIntegrity = { ...after.postbootIntegrity!, activeScenarioHandleDigest: "a".repeat(64) }
       if (label.includes("opaque-identity-live")) after.telegramTurns.push(turnReceipt())
       if (label === "unit-15c-1-no-callback-terminalization") {
         after.approvals = [approval("expired")]
@@ -226,7 +250,7 @@ describe("Sanctuary live scenario capture", () => {
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
       if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
-      const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000)
+      const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000, "a".repeat(64))
       expect(assertions, label).not.toBeNull()
       expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toEqual(assertions)
     }

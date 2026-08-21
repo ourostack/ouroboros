@@ -21,22 +21,24 @@ type JsonObject = Record<string, unknown>
 const SHA256 = /^[0-9a-f]{64}$/u
 
 export interface SanctuaryPostbootIntegritySnapshot {
-  schemaVersion: "sanctuary-postboot-integrity-v1"
-  telegramOffsetDigest: string
-  approvalStateDigest: string
+  schemaVersion: "sanctuary-postboot-integrity-v2"
+  activeScenarioHandleDigest: string | null
+  telegramNextUpdateId: number
+  approvalCheckpoints: Array<{ idDigest: string; recordDigest: string }>
   approvalExecutionCount: number
+  restartAttempts: Array<{ idDigest: string; recordDigest: string; execution: boolean }>
   fingerprintDigest: string
-  sweeps: Array<{ idDigest: string; scenarioHandleDigest: string | null; deliveryIdDigest: string | null }>
-  deliveries: Array<{ idDigest: string }>
-  audits: Array<{ idDigest: string; scenarioHandleDigest: string | null; scenarioRelevant: boolean }>
+  sweeps: Array<{ idDigest: string; recordDigest: string; scenarioHandleDigest: string | null; deliveryIdDigest: string | null }>
+  deliveries: Array<{ idDigest: string; recordDigest: string }>
+  audits: Array<{ idDigest: string; recordDigest: string; scenarioHandleDigest: string | null; scenarioRelevant: boolean }>
 }
 
 function uniqueDigests(rows: Array<{ idDigest: string }>): boolean {
   return rows.every((row) => SHA256.test(row.idDigest)) && new Set(rows.map((row) => row.idDigest)).size === rows.length
 }
 
-function preservedPrefix<T extends { idDigest: string }>(before: T[], after: T[]): boolean {
-  return before.length <= after.length && before.every((row, index) => row.idDigest === after[index]?.idDigest)
+function preservedPrefix<T extends { recordDigest: string }>(before: T[], after: T[]): boolean {
+  return before.length <= after.length && before.every((row, index) => row.recordDigest === after[index]?.recordDigest)
 }
 
 export function verifySanctuaryPostbootIntegrity(
@@ -45,11 +47,21 @@ export function verifySanctuaryPostbootIntegrity(
   scenarioHandleDigest: string,
   options: { preserveCursors?: boolean } = {},
 ): { preserved: true; sweepDeltaCount: number; deliveryDeltaCount: number; auditDeltaCount: number } | null {
-  if (before.schemaVersion !== "sanctuary-postboot-integrity-v1" || after.schemaVersion !== before.schemaVersion || !SHA256.test(scenarioHandleDigest)) return null
-  if (options.preserveCursors !== false && (before.telegramOffsetDigest !== after.telegramOffsetDigest || before.approvalStateDigest !== after.approvalStateDigest
+  if (before.schemaVersion !== "sanctuary-postboot-integrity-v2" || after.schemaVersion !== before.schemaVersion || !SHA256.test(scenarioHandleDigest)
+    || before.activeScenarioHandleDigest !== null || after.activeScenarioHandleDigest !== scenarioHandleDigest) return null
+  if (!Number.isSafeInteger(before.telegramNextUpdateId) || !Number.isSafeInteger(after.telegramNextUpdateId)
+    || before.telegramNextUpdateId < 0 || after.telegramNextUpdateId < before.telegramNextUpdateId) return null
+  if (options.preserveCursors !== false && (JSON.stringify(before.approvalCheckpoints) !== JSON.stringify(after.approvalCheckpoints)
     || before.approvalExecutionCount !== after.approvalExecutionCount || before.fingerprintDigest !== after.fingerprintDigest)) return null
-  if (![before.sweeps, after.sweeps, before.deliveries, after.deliveries, before.audits, after.audits].every(uniqueDigests)) return null
-  if (!preservedPrefix(before.sweeps, after.sweeps) || !preservedPrefix(before.deliveries, after.deliveries) || !preservedPrefix(before.audits, after.audits)) return null
+  if (![before.approvalCheckpoints, after.approvalCheckpoints, before.sweeps, after.sweeps, before.deliveries, after.deliveries, before.audits, after.audits].every(uniqueDigests)) return null
+  const rows = [...before.approvalCheckpoints, ...after.approvalCheckpoints, ...before.restartAttempts, ...after.restartAttempts,
+    ...before.sweeps, ...after.sweeps, ...before.deliveries, ...after.deliveries, ...before.audits, ...after.audits]
+  if (!rows.every((row) => SHA256.test(row.recordDigest))) return null
+  if (!preservedPrefix(before.restartAttempts, after.restartAttempts) || !preservedPrefix(before.sweeps, after.sweeps)
+    || !preservedPrefix(before.deliveries, after.deliveries) || !preservedPrefix(before.audits, after.audits)) return null
+  const executionCount = (snapshot: SanctuaryPostbootIntegritySnapshot) => snapshot.restartAttempts.filter((row) => row.execution).length
+  if (before.approvalExecutionCount !== executionCount(before) || after.approvalExecutionCount !== executionCount(after)
+    || after.approvalExecutionCount !== before.approvalExecutionCount) return null
   const newSweeps = after.sweeps.slice(before.sweeps.length)
   const newDeliveries = after.deliveries.slice(before.deliveries.length)
   const newAudits = after.audits.slice(before.audits.length)
@@ -501,6 +513,7 @@ export function deriveSanctuaryScenarioAssertions(
   before: SanctuaryScenarioFacts,
   after: SanctuaryScenarioFacts,
   now: number,
+  scenarioHandleDigest?: string,
 ): JsonObject | null {
   const approval = intendedApproval(before, after)
   const newTurns = recordsAdded(before.telegramTurns, after.telegramTurns, (turn) => hash(turn))
@@ -526,7 +539,8 @@ export function deriveSanctuaryScenarioAssertions(
   const telegramResponses = deliveredTurns.length
   const approvalTransitions = delta(after, before, "approval.acceptance_transition")
   const postbootIntegrity = after.prebootIntegrity && after.postbootIntegrity
-    ? verifySanctuaryPostbootIntegrity(after.prebootIntegrity, after.postbootIntegrity, "0".repeat(64)) : null
+    && typeof scenarioHandleDigest === "string"
+    ? verifySanctuaryPostbootIntegrity(after.prebootIntegrity, after.postbootIntegrity, scenarioHandleDigest) : null
   switch (label) {
     case "unit-12c-1-opaque-identity":
     case "unit-14b-3-opaque-identity-live":
@@ -760,7 +774,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
         return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
       }
     }
-    const candidate = deriveSanctuaryScenarioAssertions(input.label, receipt.before, after, deps.now())
+    const candidate = deriveSanctuaryScenarioAssertions(input.label, receipt.before, after, deps.now(), receipt.scenarioHandleDigest)
     if (!candidate) return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
     const assertions = validateSanctuaryUnit16EvidenceAssertions(input.label, candidate)
     const sourceDigests = Object.fromEntries(input.sources.map((source) => [source, hash(after.sourceValues[source])]))
