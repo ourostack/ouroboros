@@ -74,6 +74,14 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
   return { agentRoot, before, deps, input, statePath, privateTurns: () => privateTurns }
 }
 
+function processCommand(input: SanctuaryHealthAcceptanceProbeInput): string {
+  return [
+    "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run",
+    "--label", input.label, "--scenario", input.scenarioHandleDigest,
+    "--owner-image", input.ownerImageDigest, "--owner-container", input.ownerContainerDigest,
+  ].join("\0")
+}
+
 describe("packaged Sanctuary health acceptance probe", () => {
   it("stops and verifies the exact scenario-bound in-container process before recovery", async () => {
     const fixture = setup("unit-16g-health-transition")
@@ -87,8 +95,9 @@ describe("packaged Sanctuary health acceptance probe", () => {
       expect(record).toMatchObject({ schemaVersion: "sanctuary-health-probe-process-v1", pid: 4321, ...fixture.input })
       await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
         agentRoot: fixture.agentRoot,
+        listPids: () => [4321],
         processAlive: () => alive,
-        readCommandLine: () => ["/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run", "--scenario", fixture.input.scenarioHandleDigest].join("\0"),
+        readCommandLine: () => processCommand(fixture.input),
         signal: (_pid, signal) => { signals.push(signal); alive = false },
         sleep: async () => {},
       })).resolves.toEqual({ stopped: true })
@@ -106,8 +115,51 @@ describe("packaged Sanctuary health acceptance probe", () => {
       registerSanctuaryHealthAcceptanceProbeProcess(fixture.input, { agentRoot: fixture.agentRoot, pid: 4321 })
       await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
         agentRoot: fixture.agentRoot,
+        listPids: () => [4321],
         processAlive: () => true,
         readCommandLine: () => "/usr/local/bin/node\0another-program.js\0run",
+        signal: (_pid, signal) => { signals.push(signal) },
+        sleep: async () => {},
+      })).rejects.toThrow(/process identity/u)
+      expect(signals).toEqual([])
+    } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("finds, terminates, and verifies an exact live process even after its marker was removed", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    let alive = true
+    const signals: NodeJS.Signals[] = []
+    try {
+      await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
+        agentRoot: fixture.agentRoot,
+        listPids: () => [4321],
+        processAlive: () => alive,
+        readCommandLine: () => processCommand(fixture.input),
+        signal: (_pid, signal) => { signals.push(signal); alive = false },
+        sleep: async () => {},
+      })).resolves.toEqual({ stopped: true })
+      expect(signals).toEqual(["SIGTERM"])
+    } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ["label drift", (input: SanctuaryHealthAcceptanceProbeInput) => processCommand({ ...input, label: "unit-16f-cron-fingerprint" })],
+    ["owner drift", (input: SanctuaryHealthAcceptanceProbeInput) => processCommand({ ...input, ownerImageDigest: "d".repeat(64) })],
+    ["duplicate scenario token", (input: SanctuaryHealthAcceptanceProbeInput) => `${processCommand(input)}\0--scenario\0${input.scenarioHandleDigest}`],
+  ])("rejects canonical argv decoys with %s", async (_name, command) => {
+    const fixture = setup("unit-16g-health-transition")
+    const signals: NodeJS.Signals[] = []
+    try {
+      registerSanctuaryHealthAcceptanceProbeProcess(fixture.input, { agentRoot: fixture.agentRoot, pid: 4321 })
+      await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
+        agentRoot: fixture.agentRoot,
+        listPids: () => [4321],
+        processAlive: () => true,
+        readCommandLine: () => command(fixture.input),
         signal: (_pid, signal) => { signals.push(signal) },
         sleep: async () => {},
       })).rejects.toThrow(/process identity/u)

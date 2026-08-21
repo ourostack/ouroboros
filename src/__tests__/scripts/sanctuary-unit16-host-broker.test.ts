@@ -14,6 +14,10 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
+    run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null }
+    markerPresent(): boolean
+  }): void
   createDispatchDrain(): {
     run<T>(operation: () => T | Promise<T>): Promise<T>
     stopAndDrain(): Promise<void>
@@ -43,6 +47,10 @@ interface HealthProbeRecord {
 
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
+    attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
+      run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null }
+      markerPresent(): boolean
+    }): void
     createDispatchDrain(): { run<T>(operation: () => T | Promise<T>): Promise<T>; stopAndDrain(): Promise<void> }
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
@@ -156,6 +164,22 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(healthProbeArtifactDisposition({ receipt: null, workspace: null, pending: { isFile: () => true } })).toBe("recovery_required")
     expect(healthProbeArtifactDisposition({ receipt: null, workspace: null, pending: null })).toBe("absent")
     expect(healthProbeArtifactDisposition({ receipt: { isFile: () => true }, workspace: null, pending: null })).toBe("complete")
+  })
+
+  it("always invokes the scenario-bound in-container absence attestation when the marker is missing", async () => {
+    const { attestHealthProbeProcessAbsent } = await broker()
+    const calls: Array<{ executable: string; args: string[] }> = []
+    const input = {
+      label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
+    }
+    expect(() => attestHealthProbeProcessAbsent(input, {
+      run: (executable, args) => { calls.push({ executable, args }); return { status: 0 } },
+      markerPresent: () => false,
+    })).not.toThrow()
+    expect(calls).toEqual([{ executable: "/usr/bin/docker", args: [
+      "exec", "ouro-butler", "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
+      "--label", input.label, "--scenario", input.scenarioHandleDigest, "--owner-image", input.ownerImageDigest, "--owner-container", input.ownerContainerDigest,
+    ] }])
   })
 
   it("rejects health probes for drifted owners and invalid labels before launch", async () => {
