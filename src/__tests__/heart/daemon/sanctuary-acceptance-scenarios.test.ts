@@ -127,7 +127,7 @@ const base = (): SanctuaryScenarioFacts => ({
   restartAttempts: [],
   telegramTurns: [],
   telegramNextUpdateId: 10,
-  zeroWork: { providerToolDigest: "1".repeat(64), outwardDigest: "2".repeat(64), approvalMutationDigest: "3".repeat(64) },
+  zeroWork: { providerToolDigest: "1".repeat(64), outwardDigest: "2".repeat(64), approvalMutationDigest: "3".repeat(64), sessionFriendDigest: "4".repeat(64) },
   identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64), canonicalSessionCount: 1, canonicalFriendCount: 1, sessionSurfaceDigest: "b".repeat(64), friendSurfaceDigest: "c".repeat(64) },
   container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
   provider: { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0 },
@@ -721,6 +721,8 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
     after.telegramNextUpdateId = 11
     after.zeroWork = { ...after.zeroWork!, outwardDigest: "f".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.zeroWork = { ...before.zeroWork!, sessionFriendDigest: "f".repeat(64) }
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
   })
 

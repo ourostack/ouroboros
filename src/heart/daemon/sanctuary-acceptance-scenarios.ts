@@ -211,7 +211,7 @@ export interface SanctuaryScenarioFacts {
   restartAttempts: SanctuaryScenarioRestartAttempt[]
   telegramTurns: SanctuaryScenarioTelegramTurnReceipt[]
   telegramNextUpdateId?: number
-  zeroWork?: { providerToolDigest: string; outwardDigest: string; approvalMutationDigest: string }
+  zeroWork?: { providerToolDigest: string; outwardDigest: string; approvalMutationDigest: string; sessionFriendDigest: string }
   identity?: { keyPresent: boolean; subjectOpaque: boolean; rawIdentityAbsent: boolean; liveSubjectObserved: boolean; inspectedRecordCount?: number; opaqueSubjectCount?: number; mismatchCount?: number; rawLeakCount?: number; surfaceDigest?: string; canonicalSessionCount?: number; canonicalFriendCount?: number; sessionSurfaceDigest?: string; friendSurfaceDigest?: string }
   container?: {
     exactImage: boolean; running: boolean; healthy: boolean; user: string; readOnlyRoot: boolean
@@ -592,7 +592,8 @@ export function deriveSanctuaryScenarioAssertions(
       const zeroWorkUnchanged = Boolean(before.zeroWork && after.zeroWork
         && before.zeroWork.providerToolDigest === after.zeroWork.providerToolDigest
         && before.zeroWork.outwardDigest === after.zeroWork.outwardDigest
-        && before.zeroWork.approvalMutationDigest === after.zeroWork.approvalMutationDigest)
+        && before.zeroWork.approvalMutationDigest === after.zeroWork.approvalMutationDigest
+        && before.zeroWork.sessionFriendDigest === after.zeroWork.sessionFriendDigest)
       if (!after.containment || !exactContainmentAudit(after.containment) || !distinctAccount || !offsetAdvanced || !zeroWorkUnchanged || !sessionStateUnchanged || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || forbiddenWorkEvent) return null
       return { auditRejected: true, distinctAccount, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
     }

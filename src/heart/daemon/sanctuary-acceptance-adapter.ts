@@ -639,6 +639,7 @@ function readBoundedIdentitySurfaces(agentRoot: string): string[] {
     pathFor(agentRoot, "friends"),
     pathFor(agentRoot, "state/sessions"),
     pathFor(agentRoot, "state/pending"),
+    pathFor(agentRoot, "state/pending-returns"),
     pathFor(agentRoot, "state/daemon/logs"),
   ]
   const records: string[] = []
@@ -1136,7 +1137,12 @@ export async function readDefaultSanctuaryScenarioFacts(
       object(JSON.parse(raw) as unknown, "canonical Telegram session")
       return true
     }).length
-    const sessionSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) => relativePath.startsWith(`state${path.sep}sessions${path.sep}`)))).digest("hex")
+    const sessionSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) =>
+      relativePath === path.join("state", "senses", "telegram", "identity-subjects.json")
+      || relativePath.startsWith(`state${path.sep}sessions${path.sep}`)
+      || relativePath.startsWith(`state${path.sep}pending${path.sep}`)
+      || relativePath.startsWith(`state${path.sep}pending-returns${path.sep}`),
+    ))).digest("hex")
     const friendSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) => relativePath.startsWith(`friends${path.sep}`)))).digest("hex")
     const canonicalFriendCount = surfacePairs.reduce((count, { relativePath, raw }) => {
       if (!relativePath.startsWith(`friends${path.sep}`) || !relativePath.endsWith(".json")) return count
@@ -1353,6 +1359,10 @@ export async function readDefaultSanctuaryScenarioFacts(
       approvalStoreDigest: digestOptionalFiles([approvalDatabasePath, `${approvalDatabasePath}-wal`, `${approvalDatabasePath}-shm`]),
       restartAttemptsRaw,
       restartCount: container?.restartCount ?? null,
+    })).digest("hex"),
+    sessionFriendDigest: createHash("sha256").update(JSON.stringify({
+      sessionSurfaceDigest: identity?.sessionSurfaceDigest ?? null,
+      friendSurfaceDigest: identity?.friendSurfaceDigest ?? null,
     })).digest("hex"),
   }
   return {

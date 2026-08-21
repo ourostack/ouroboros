@@ -770,6 +770,21 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.cron?.registered).toBe(true)
     expect(facts.containment?.sensitiveMaterialObserved).toBe(false)
     expect(JSON.stringify(facts.sourceValues)).not.toContain(credentials.botToken)
+    const baselineSessionDigest = facts.identity?.sessionSurfaceDigest
+    const sessionDerivedMutations = [
+      [path.join(agentRoot, "state", "pending", "telegram", "pending.json"), "{}\n"],
+      [path.join(agentRoot, "state", "pending-returns", "telegram-user", "return.json"), "{}\n"],
+      [path.join(agentRoot, "state", "senses", "telegram", "identity-subjects.json"), JSON.stringify({ version: 1, subject, legacySubjects: [] })],
+    ] as const
+    for (const [mutationPath, contents] of sessionDerivedMutations) {
+      fs.mkdirSync(path.dirname(mutationPath), { recursive: true })
+      fs.writeFileSync(mutationPath, contents)
+      const mutated = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+        readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! }, telegramCredentials: () => credentials,
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(mutated.identity?.sessionSurfaceDigest, mutationPath).not.toBe(baselineSessionDigest)
+      fs.unlinkSync(mutationPath)
+    }
     const tamperedLifecycle = audit.trim().split("\n").map((line, index) => {
       const record = JSON.parse(line) as { meta: Record<string, unknown> }
       return JSON.stringify(index === 1 ? { ...record, meta: { ...record.meta, lifecycleAt: 500 } } : record)
