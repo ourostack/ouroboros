@@ -462,29 +462,36 @@ function exactApprovalEvidence(
   callback: SanctuaryScenarioEvent | null
   continuation: SanctuaryScenarioEvent | null
   expiryObservedAt: number | null
+  expiryDeadlineAt: number | null
   terminalizedAt: number
+  staleCallback: SanctuaryScenarioEvent | null
 } | null {
   const fresh = recordsAdded(before.events, after.events, (entry) => hash(entry))
   const prompt = fresh.filter((entry) => entry.event === "senses.telegram_approval_prompt_bound" && entry.meta.approvalId === approval.approvalId)
   const terminals = fresh.filter((entry) => entry.event === "telegram.approval_prompt_terminalized" && entry.meta.approvalId === approval.approvalId)
   const callbacks = fresh.filter((entry) => entry.event === "telegram.callback_settled" && entry.meta.approvalId === approval.approvalId)
   const continuations = fresh.filter((entry) => entry.event === "senses.telegram_approval_continuation_delivered" && entry.meta.approvalId === approval.approvalId)
-  if (prompt.length !== 1 || terminals.length !== 1 || callbacks.length > 1 || continuations.length > 1) return null
+  const staleCallbacks = fresh.filter((entry) => entry.event === "telegram.approval_stale_callback_settled" && entry.meta.approvalId === approval.approvalId)
+  if (prompt.length !== 1 || terminals.length !== 1 || callbacks.length > 1 || continuations.length > 1 || staleCallbacks.length > 1) return null
   const expected = approvalEvidenceCoordinates(approval)
   const coordinatesMatch = (entry: SanctuaryScenarioEvent): boolean => entry.meta.scenarioHandleDigest !== undefined
     && typeof entry.meta.scenarioHandleDigest === "string" && SHA256.test(entry.meta.scenarioHandleDigest)
     && entry.meta.actionDigest === expected.actionDigest && entry.meta.targetDigest === expected.targetDigest
+    && entry.meta.checkpointDigest === approval.checkpointDigest
+    && typeof approval.suspendedSessionRevision === "string"
+    && entry.meta.suspendedSessionRevisionDigest === createHash("sha256").update(approval.suspendedSessionRevision, "utf8").digest("hex")
     && typeof entry.meta.messageIdDigest === "string" && SHA256.test(entry.meta.messageIdDigest)
     && typeof entry.meta.evidenceMac === "string" && SHA256.test(entry.meta.evidenceMac)
-  if (![...prompt, ...terminals, ...callbacks, ...continuations].every(coordinatesMatch)) return null
+  if (![...prompt, ...terminals, ...callbacks, ...continuations, ...staleCallbacks].every(coordinatesMatch)) return null
   const promptScenarioHandleDigest = prompt[0]!.meta.scenarioHandleDigest
   const promptMessageIdDigest = prompt[0]!.meta.messageIdDigest
-  if (![...terminals, ...callbacks, ...continuations].every((entry) => entry.meta.scenarioHandleDigest === promptScenarioHandleDigest
+  if (![...terminals, ...callbacks, ...continuations, ...staleCallbacks].every((entry) => entry.meta.scenarioHandleDigest === promptScenarioHandleDigest
     && entry.meta.messageIdDigest === promptMessageIdDigest)) return null
   const boundAt = Number(prompt[0]!.meta.boundAt)
   const terminalEditStartedAt = Number(terminals[0]!.meta.terminalEditStartedAt)
   const terminalizedAt = Number(terminals[0]!.meta.terminalizedAt)
   const expiryObservedAt = terminals[0]!.meta.expiryObservedAt === undefined ? null : Number(terminals[0]!.meta.expiryObservedAt)
+  const expiryDeadlineAt = terminals[0]!.meta.expiryDeadlineAt === undefined ? null : Number(terminals[0]!.meta.expiryDeadlineAt)
   if (!Number.isSafeInteger(boundAt) || boundAt < 0
     || !Number.isSafeInteger(terminalEditStartedAt) || terminalEditStartedAt < boundAt
     || !Number.isSafeInteger(terminalizedAt) || terminalizedAt < terminalEditStartedAt
@@ -493,6 +500,7 @@ function exactApprovalEvidence(
     || approval.expiresAt !== boundAt + SANCTUARY_APPROVAL_TTL_MS) return null
   if (approval.state === "expired") {
     if (expiryObservedAt === null || !Number.isSafeInteger(expiryObservedAt) || expiryObservedAt < boundAt
+      || expiryDeadlineAt !== null && expiryDeadlineAt !== approval.expiresAt
       || terminalEditStartedAt < expiryObservedAt) return null
   } else if (expiryObservedAt !== null) return null
   const callback = callbacks[0] ?? null
@@ -512,12 +520,18 @@ function exactApprovalEvidence(
       || typeof continuation.meta.deliveryDigest !== "string" || !SHA256.test(continuation.meta.deliveryDigest)
       || typeof continuation.meta.deliveryMessageIdDigest !== "string" || !SHA256.test(continuation.meta.deliveryMessageIdDigest)) return null
   }
-  return { boundAt, callback, continuation, expiryObservedAt, terminalizedAt }
+  const staleCallback = staleCallbacks[0] ?? null
+  if (staleCallback) {
+    const staleAt = Number(staleCallback.meta.staleAt)
+    if (!Number.isSafeInteger(staleAt) || staleAt < terminalizedAt || staleCallback.meta.acknowledged !== true
+      || staleCallback.meta.accepted !== false || staleCallback.meta.reason !== "stale_callback") return null
+  }
+  return { boundAt, callback, continuation, expiryObservedAt, expiryDeadlineAt, terminalizedAt, staleCallback }
 }
 
-function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null }): boolean {
+function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null; expiryDeadlineAt: number | null }): boolean {
   if (evidence.expiryObservedAt === null) return false
-  const elapsed = evidence.expiryObservedAt - evidence.boundAt
+  const elapsed = (evidence.expiryDeadlineAt ?? evidence.expiryObservedAt) - evidence.boundAt
   return elapsed >= SANCTUARY_APPROVAL_TTL_MS && elapsed <= SANCTUARY_APPROVAL_TTL_MS + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS
 }
 
@@ -727,7 +741,7 @@ export function deriveSanctuaryScenarioAssertions(
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "expired" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0) return null
       if (!approval.buttonsRemoved || !approval.terminalPrompt || !approval.staleAcknowledged) return null
       const evidence = exactApprovalEvidence(before, after, approval)
-      if (!evidence || evidence.callback !== null || evidence.continuation !== null || !terminalizedWithinTtlJitter(evidence)) return null
+      if (!evidence || evidence.callback !== null || evidence.continuation !== null || evidence.staleCallback === null || !terminalizedWithinTtlJitter(evidence)) return null
       const driver = after.interactiveDriver
       if (!driver || driver.label !== "unit-16k-timeout-stale" || !interactiveReceiptBindsApproval(driver, approval)
         || driver.callbackAttempts !== 1 || driver.distinctQueryCount !== 1 || driver.settledCount !== 1

@@ -1048,6 +1048,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     const boundEvents = auditEntries.filter((entry) => entry.meta.approvalId === record.approvalId)
     const terminalized = boundEvents.some((entry) => entry.event === "telegram.approval_prompt_terminalized" && entry.meta.buttonsRemoved === true)
     const callbackEvents = boundEvents.filter((entry) => entry.event === "telegram.callback_settled")
+    const staleCallbackEvents = boundEvents.filter((entry) => entry.event === "telegram.approval_stale_callback_settled")
     const claimCount = boundEvents.filter((entry) => entry.event === "approval.acceptance_transition" && entry.meta.state === "claimed").length
     const restartExecutionCount = boundEvents.filter((entry) => entry.event === "senses.telegram_approved_restart_end").length
     const resultDigest = createHash("sha256").update(JSON.stringify({ state: record.state, result: record.result })).digest("hex")
@@ -1078,7 +1079,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     settledCount: callbackEvents.length,
     claimCount,
     replayMutationCount: Math.max(0, restartExecutionCount - (record.state === "succeeded" ? 1 : 0)),
-    staleAcknowledged: callbackEvents.some((entry) => entry.meta.reason === "stale_callback" || entry.meta.reason === "expired"),
+    staleAcknowledged: [...callbackEvents, ...staleCallbackEvents].some((entry) => entry.meta.acknowledged === true && (entry.meta.reason === "stale_callback" || entry.meta.reason === "expired")),
     argumentDigest: record.argumentDigest,
     target: typeof record.arguments.container === "string" ? record.arguments.container : null,
     resultDigest,
@@ -1102,13 +1103,14 @@ export async function readDefaultSanctuaryScenarioFacts(
     const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
     const identityKey = identityRaw.trim()
     const approvalEvidenceKeys: Record<string, string[][]> = {
-      "senses.telegram_approval_prompt_bound": [["actionDigest", "approvalId", "boundAt", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest"]],
-      "telegram.callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "targetDigest"]],
+      "senses.telegram_approval_prompt_bound": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.approval_stale_callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "staleAt", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.approval_prompt_terminalized": [
-        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
-        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "checkpointDigest", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "checkpointDigest", "evidenceMac", "expiryDeadlineAt", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
       ],
-      "senses.telegram_approval_continuation_delivered": [["actionDigest", "approvalId", "boundAt", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "targetDigest"]],
+      "senses.telegram_approval_continuation_delivered": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
     }
     for (const entry of auditEntries.filter((candidate) => candidate.event in approvalEvidenceKeys
       && candidate.meta.scenarioHandleDigest === scenarioHandleDigest && typeof candidate.meta.approvalId === "string")) {

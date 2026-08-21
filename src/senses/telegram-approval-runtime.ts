@@ -168,7 +168,13 @@ export function createTelegramApprovalRuntime(options: {
         approvalId: committed.record.approvalId,
         decisionToken: committed.decisionToken,
         prompt,
-        ...(scenarioHandleDigest ? { acceptanceBinding: { scenarioHandleDigest, actionDigest, targetDigest } } : {}),
+        ...(scenarioHandleDigest ? { acceptanceBinding: {
+          scenarioHandleDigest,
+          actionDigest,
+          targetDigest,
+          checkpointDigest: committed.record.checkpointDigest,
+          suspendedSessionRevisionDigest: createHash("sha256").update(committed.record.suspendedSessionRevision!, "utf8").digest("hex"),
+        } } : {}),
       })
       store.bindPrompt({
         approvalId: committed.record.approvalId,
@@ -206,7 +212,7 @@ export function createTelegramApprovalRuntime(options: {
   }
 
   const continueTerminalRecord = (record: ApprovalRecord, acceptanceBinding?: {
-    scenarioHandleDigest: string; actionDigest: string; targetDigest: string; messageIdDigest: string; boundAt: number
+    scenarioHandleDigest: string; actionDigest: string; targetDigest: string; checkpointDigest: string; suspendedSessionRevisionDigest: string; messageIdDigest: string; boundAt: number
   }): Promise<{ accepted: boolean; terminalText: string }> => {
     tokens.remove(record.approvalId)
     return withSessionTurnLease(record.sessionPath, async (lease) => {

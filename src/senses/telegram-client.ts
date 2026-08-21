@@ -490,7 +490,7 @@ export interface TelegramApprovalDecision {
 export interface TelegramPersistedPendingApproval {
   approvalId: string
   messageId: string | null
-  deliveryState?: "pending" | "send_attempting" | "bound" | "delivery_indeterminate"
+  deliveryState?: "pending" | "send_attempting" | "bound" | "delivery_indeterminate" | "terminal_tombstone"
   approveCallbackData: string
   denyCallbackData: string
   expiresAt: number
@@ -499,14 +499,18 @@ export interface TelegramPersistedPendingApproval {
     scenarioHandleDigest: string
     actionDigest: string
     targetDigest: string
+    checkpointDigest: string
+    suspendedSessionRevisionDigest: string
     messageIdDigest: string
     boundAt: number
   }
   terminal?: { accepted: boolean; terminalText: string }
+  terminalizedAt?: number
+  tombstoneExpiresAt?: number
 }
 
 interface TelegramPendingApproval extends TelegramPersistedPendingApproval {
-  deliveryState: "pending" | "send_attempting" | "bound" | "delivery_indeterminate"
+  deliveryState: "pending" | "send_attempting" | "bound" | "delivery_indeterminate" | "terminal_tombstone"
   decisionToken?: string
 }
 
@@ -535,7 +539,7 @@ export class FileTelegramPendingApprovalStore implements TelegramPendingApproval
 }
 
 export interface TelegramApprovalTransport {
-  sendApproval(input: { approvalId: string; decisionToken: string; prompt: string; acceptanceBinding?: { scenarioHandleDigest: string; actionDigest: string; targetDigest: string } }): Promise<{
+  sendApproval(input: { approvalId: string; decisionToken: string; prompt: string; acceptanceBinding?: { scenarioHandleDigest: string; actionDigest: string; targetDigest: string; checkpointDigest: string; suspendedSessionRevisionDigest: string } }): Promise<{
     messageId: string
     approveCallbackData: string
     denyCallbackData: string
@@ -566,6 +570,7 @@ export interface TelegramApprovalTransportOptions {
 
 export const TELEGRAM_APPROVAL_TTL_MS = 300_000
 export const TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS = 30_000
+export const TELEGRAM_APPROVAL_TOMBSTONE_TTL_MS = 600_000
 
 function assertTelegramCallbackData(value: string): void {
   const bytes = Buffer.byteLength(value, "utf8")
@@ -608,8 +613,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     add(pending)
   }
 
-  const editTerminal = async (pending: TelegramPendingApproval, terminalText: string, expiryObservedAt?: number): Promise<void> => {
-    if (pending.messageId === null) return
+  const editTerminal = async (pending: TelegramPendingApproval, terminalText: string, expiryObservedAt?: number): Promise<number> => {
+    if (pending.messageId === null) return now()
     const terminalEditStartedAt = now()
     const base = {
       chat_id: options.expectedChatId,
@@ -633,8 +638,16 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       }
     }
     const terminalizedAt = now()
-    if (pending.acceptanceBinding) emitAcceptanceEvidence("telegram.approval_prompt_terminalized", pending, { ...(expiryObservedAt === undefined ? {} : { expiryObservedAt }), terminalEditStartedAt, terminalizedAt, buttonsRemoved: true })
+    if (pending.acceptanceBinding) emitAcceptanceEvidence("telegram.approval_prompt_terminalized", pending, { ...(expiryObservedAt === undefined ? {} : { expiryDeadlineAt: pending.expiresAt, expiryObservedAt }), terminalEditStartedAt, terminalizedAt, buttonsRemoved: true })
     else emitNervesEvent({ component: "senses", event: "telegram.approval_prompt_terminalized", message: "Telegram approval prompt was terminalized", meta: { approvalId: pending.approvalId, buttonsRemoved: true, ...options.acceptanceEventMeta?.() } })
+    return terminalizedAt
+  }
+
+  const retainTerminalTombstone = (pending: TelegramPendingApproval, terminalizedAt: number): void => {
+    pending.deliveryState = "terminal_tombstone"
+    pending.decisionToken = undefined
+    pending.terminalizedAt = terminalizedAt
+    pending.tombstoneExpiresAt = terminalizedAt + TELEGRAM_APPROVAL_TOMBSTONE_TTL_MS
   }
 
   const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<void> => {
@@ -655,6 +668,13 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const reconcileExpired = async (): Promise<void> => {
     let firstFailure: unknown
     for (const pending of uniquePending()) {
+      if (pending.deliveryState === "terminal_tombstone") {
+        if (pending.tombstoneExpiresAt !== undefined && now() >= pending.tombstoneExpiresAt) {
+          remove(pending)
+          persist()
+        }
+        continue
+      }
       if (!pending.terminal && now() < pending.expiresAt) continue
       try {
         if (pending.terminal) {
@@ -665,8 +685,9 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         }
         const expiryObservedAt = now()
         await options.onExpire?.(pending.approvalId)
-        await editTerminal(pending, "⚠️ Approval expired", expiryObservedAt)
-        remove(pending)
+        const terminalizedAt = await editTerminal(pending, "⚠️ Approval expired", expiryObservedAt)
+        if (pending.acceptanceBinding) retainTerminalTombstone(pending, terminalizedAt)
+        else remove(pending)
         persist()
       } catch (error) {
         firstFailure ??= error
@@ -770,6 +791,10 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       if (!pending) invalidReason = "stale_callback"
       else if (userId !== options.expectedUserId) invalidReason = "foreign_user"
       else if (chatId !== options.expectedChatId) invalidReason = "foreign_chat"
+      else if (pending.deliveryState === "terminal_tombstone") {
+        if (pending.messageId === null || messageId !== pending.messageId) invalidReason = "foreign_message"
+        else invalidReason = "stale_callback"
+      }
       else if (pending.deliveryState === "send_attempting" || pending.deliveryState === "delivery_indeterminate") invalidReason = "delivery_indeterminate"
       else if (pending.deliveryState !== "bound" || pending.messageId === null) invalidReason = "prompt_not_bound"
       else if (messageId !== pending.messageId) invalidReason = "foreign_message"
@@ -782,6 +807,13 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       }
       if (invalidReason) {
         await acknowledge(callback.id, true)
+        if (pending?.deliveryState === "terminal_tombstone" && invalidReason === "stale_callback") {
+          const staleAt = now()
+          emitAcceptanceEvidence("telegram.approval_stale_callback_settled", pending, { staleAt, acknowledged: true, accepted: false, reason: "stale_callback" })
+          remove(pending)
+          persist()
+          return { handled: true, accepted: false, reason: invalidReason }
+        }
         if (pending && invalidReason === "delivery_indeterminate" && callback.message) {
           pending.messageId = messageId
           await editTerminal(pending, pending.terminal?.terminalText ?? "⚠️ Approval prompt delivery was interrupted — no action was taken")
@@ -870,7 +902,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       persist()
     },
     listPendingDeliveries() {
-      return uniquePending().map(({ decisionToken: _secret, ...record }) => structuredClone(record))
+      return uniquePending().filter((record) => record.deliveryState !== "terminal_tombstone")
+        .map(({ decisionToken: _secret, ...record }) => structuredClone(record))
     },
   }
 }
