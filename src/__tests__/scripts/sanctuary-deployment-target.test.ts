@@ -205,6 +205,20 @@ describe("Sanctuary effective listener containment", () => {
     expect(attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["901"], socketInodesAfter: ["901"], tcpListenersBefore: [{ inode: "901", localAddress: "127.0.0.1", port: 6876 }], tcpListenersAfter: [{ inode: "901", localAddress: "127.0.0.1", port: 6876 }], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [], unixSocketsAfter: [] })).toMatchObject({ inboundTcpListenerCount: 0, loopbackTcpControlCount: 1 })
   })
 
+  it("keeps connected outbound TCP sockets in stable ownership without treating them as listeners", async () => {
+    const { attestOwnedListeners, parseProcNet } = await load()
+    const header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+    const connected = "  1: 0100007F:C001 08080808:01BB 01 00000000:00000000 00:00000000 00000000  1000 0 901"
+    const tcpListeners = parseProcNet(`${header}\n${connected}\n`, false)
+    expect(tcpListeners).toEqual([])
+    expect(attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["901"], socketInodesAfter: ["901"], socketInodesTerminal: ["901"], tcpListenersBefore: tcpListeners, tcpListenersAfter: tcpListeners, tcpListenersTerminal: tcpListeners, udpListenersBefore: [], udpListenersAfter: [], udpListenersTerminal: [], unixSocketsBefore: [], unixSocketsAfter: [], unixSocketsTerminal: [] })).toMatchObject({ ownedSocketCount: 1, inboundTcpListenerCount: 0 })
+  })
+
+  it("rejects a partial terminal listener inventory", async () => {
+    const { attestOwnedListeners } = await load()
+    expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["901"], socketInodesAfter: ["901"], socketInodesTerminal: ["901"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [], unixSocketsAfter: [] })).toThrow(/terminal listener inventory is incomplete/u)
+  })
+
   it("rejects an owned externally bound UDP listener", async () => {
     const { attestOwnedListeners } = await load()
     const udp = [{ inode: "902", localAddress: "0.0.0.0", port: 5353 }]
@@ -287,6 +301,60 @@ describe("Sanctuary effective listener containment", () => {
       ownedSocketInodes: () => socketSets.shift(),
       readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
     })).rejects.toThrow(/socket ownership/u)
+  })
+
+  it("rejects a TCP listener that appears only in the terminal network rescan", async () => {
+    const { runDeploymentTargetAudit } = await load()
+    const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
+    const tcpSamples = [[], [], [{ inode: "900", localAddress: "0.0.0.0", port: 8080 }]]
+    await expect(runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => snapshots.shift(),
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => ({ path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] }),
+      ownedSocketInodes: () => ["900"],
+      readTcpListeners: () => tcpSamples.shift(),
+      readUdpListeners: () => [],
+      readUnixSockets: () => [],
+    })).rejects.toThrow(/listener|TCP/u)
+    expect(tcpSamples).toHaveLength(0)
+  })
+
+  it("rejects a connected bound UDP socket that appears only in the terminal network rescan", async () => {
+    const { parseProcUdp, runDeploymentTargetAudit } = await load()
+    const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
+    const header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+    const connected = "  1: 0100007F:C001 08080808:0035 01 00000000:00000000 00:00000000 00000000  1000 0 900"
+    const udpSamples = [[], [], parseProcUdp(`${header}\n${connected}\n`, false)]
+    await expect(runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => snapshots.shift(),
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => ({ path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] }),
+      ownedSocketInodes: () => ["900"],
+      readTcpListeners: () => [],
+      readUdpListeners: () => udpSamples.shift(),
+      readUnixSockets: () => [],
+    })).rejects.toThrow(/listener|UDP/u)
+    expect(udpSamples).toHaveLength(0)
+  })
+
+  it("rejects a Unix listener path and state that appear only in the terminal network rescan", async () => {
+    const { runDeploymentTargetAudit } = await load()
+    const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
+    const unixSamples = [
+      [{ inode: "900", path: "", flags: "00000000", type: "0001", state: "03" }],
+      [{ inode: "900", path: "", flags: "00000000", type: "0001", state: "03" }],
+      [{ inode: "900", path: "/tmp/late-listener.sock", flags: "00010000", type: "0001", state: "01" }],
+    ]
+    await expect(runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => snapshots.shift(),
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => ({ path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] }),
+      ownedSocketInodes: () => ["900"],
+      readTcpListeners: () => [],
+      readUdpListeners: () => [],
+      readUnixSockets: () => unixSamples.shift(),
+    })).rejects.toThrow(/listener|Unix/u)
+    expect(unixSamples).toHaveLength(0)
   })
 
   it("binds exact cgroup-v2 membership to the Docker container identity", async () => {

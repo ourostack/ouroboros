@@ -161,9 +161,13 @@ function attestOwnedListeners(input) {
   }
   const before = inventory("Before")
   const after = inventory("After")
-  if (!exactSet(before.owned, after.owned)) throw new Error("target socket ownership changed")
-  if (before.signature !== after.signature) throw new Error("target listener inventory changed")
-  const { owned, tcp, udp, unix } = after
+  const terminalFields = ["socketInodesTerminal", "tcpListenersTerminal", "udpListenersTerminal", "unixSocketsTerminal"]
+  const providedTerminalFields = terminalFields.filter((field) => value[field] !== undefined)
+  if (providedTerminalFields.length !== 0 && providedTerminalFields.length !== terminalFields.length) throw new Error("terminal listener inventory is incomplete")
+  const terminal = providedTerminalFields.length === terminalFields.length ? inventory("Terminal") : after
+  if (!exactSet(before.owned, after.owned) || !exactSet(after.owned, terminal.owned)) throw new Error("target socket ownership changed")
+  if (before.signature !== after.signature || after.signature !== terminal.signature) throw new Error("target listener inventory changed")
+  const { owned, tcp, udp, unix } = terminal
   for (const listener of tcp) {
     if (listener.localAddress !== "127.0.0.1" || !DOCUMENTED_LOOPBACK_TCP_CONTROLS.has(listener.port)) throw new Error("target runtime owns an inbound TCP listener")
   }
@@ -320,6 +324,9 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   const netnsAfter = readNetns(provisional.targetPid)
   const membershipTerminal = readMembership(provisional.targetPid, provisional.targetContainerId)
   const socketInodesTerminal = readSockets(membershipTerminal.threadIds)
+  const tcpListenersTerminal = readTcp(provisional.targetPid)
+  const udpListenersTerminal = readUdp(provisional.targetPid)
+  const unixSocketsTerminal = readUnix(provisional.targetPid)
   const sameIds = (left, right) => exactSet(new Set(left), new Set(right))
   if (membershipBefore.path !== membershipTerminal.path || membershipAfter.path !== membershipTerminal.path) throw new Error("target cgroup changed")
   if (!sameIds(processIdsBefore, membershipTerminal.processIds) || !sameIds(processIdsAfter, membershipTerminal.processIds)) throw new Error("target cgroup process membership changed")
@@ -327,7 +334,7 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   if (!exactSet(new Set(socketInodesBefore), new Set(socketInodesTerminal)) || !exactSet(new Set(socketInodesAfter), new Set(socketInodesTerminal))) throw new Error("target socket ownership changed")
   const after = await capture()
   const deployment = attestDeploymentTarget({ profile: profileName, expectedImageId, topologyBefore: before, inspected: before, topologyAfter: after })
-  const listeners = { ...attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, tcpListenersBefore, tcpListenersAfter, udpListenersBefore, udpListenersAfter, unixSocketsBefore, unixSocketsAfter }), cgroupPath: membershipTerminal.path, threadCount: membershipTerminal.threadIds.length }
+  const listeners = { ...attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, socketInodesTerminal, tcpListenersBefore, tcpListenersAfter, tcpListenersTerminal, udpListenersBefore, udpListenersAfter, udpListenersTerminal, unixSocketsBefore, unixSocketsAfter, unixSocketsTerminal }), cgroupPath: membershipTerminal.path, threadCount: membershipTerminal.threadIds.length }
   return { schemaVersion: "sanctuary-effective-deployment-v1", deployment, listeners }
 }
 
