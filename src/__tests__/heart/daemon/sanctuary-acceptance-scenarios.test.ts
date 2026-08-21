@@ -23,6 +23,25 @@ const groundingDigest = (value: unknown) => createHash("sha256").update(JSON.str
 const systemGrounding = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
 const storageGrounding = { array: { state: "STARTED", usedBytes: 8_000_000_000_000, freeBytes: 2_000_000_000_000, usedPercent: 80, degraded: false }, shares: [], truncated: false }
 const groundingSource = "9".repeat(64)
+const approvalArgumentDigest = createHash("sha256").update(JSON.stringify({ container: "calibre-web" })).digest("hex")
+const canonicalTargetId = `Docker:${"7".repeat(64)}`
+const restartActionDigest = createHash("sha256").update(JSON.stringify({ operation: "restart", container: { id: canonicalTargetId, name: "calibre-web" } })).digest("hex")
+const promptActionDigest = createHash("sha256").update(JSON.stringify({ toolName: "unraid_restart_container", argumentDigest: approvalArgumentDigest })).digest("hex")
+const targetDigest = createHash("sha256").update(JSON.stringify({ container: "calibre-web" })).digest("hex")
+const approvalAuditEvent = (eventName: string, at: number, patch: Record<string, unknown> = {}) => ({
+  event: eventName,
+  at,
+  meta: {
+    scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", actionDigest: promptActionDigest,
+    targetDigest, messageIdDigest: "4".repeat(64), evidenceMac: "5".repeat(64), ...patch,
+  },
+})
+const approvalEvidence = (decision: "approve" | "deny", boundAt = 1_000, callbackAt = 121_000) => [
+  approvalAuditEvent("senses.telegram_approval_prompt_bound", boundAt, { boundAt }),
+  approvalAuditEvent("telegram.callback_settled", callbackAt, { boundAt, callbackAt, acknowledged: true, accepted: decision === "approve", reason: decision === "approve" ? "accepted" : "decision_refused" }),
+  approvalAuditEvent("senses.telegram_approval_continuation_delivered", callbackAt + 1, { boundAt, deliveredAt: callbackAt + 1, resultDigest: "6".repeat(64), deliveryMessageIdDigest: "7".repeat(64) }),
+  approvalAuditEvent("telegram.approval_prompt_terminalized", callbackAt + 2, { boundAt, terminalizedAt: callbackAt + 2, buttonsRemoved: true }),
+]
 const groundedTurn = (toolName: "unraid_get_system" | "unraid_get_storage", facts: unknown, responseText: string) => {
   const resultDigest = "5".repeat(64)
   const factDigest = groundingDigest(facts)
@@ -34,7 +53,7 @@ const groundedTurn = (toolName: "unraid_get_system" | "unraid_get_storage", fact
   }
 }
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
-const approval = (state: string) => ({ approvalId: "approval-1", state, toolName: "unraid_restart_container", createdAt: 1_000, expiresAt: 301_000, updatedAt: 302_000, attempted: state === "succeeded", continuationCompleted: true, buttonsRemoved: true, terminalPrompt: true, callbackCount: 0, settledCount: 0, claimCount: state === "succeeded" ? 1 : 0, replayMutationCount: 0, staleAcknowledged: true, argumentDigest: "d".repeat(64), target: "calibre-web", checkpointDigest: "2".repeat(64), approvalEpoch: 0, continuationEpoch: 1, continuationState: "completed", suspendedSessionRevision: "c".repeat(64) })
+const approval = (state: string) => ({ approvalId: "approval-1", state, toolName: "unraid_restart_container", createdAt: 1_000, expiresAt: 301_000, updatedAt: 302_000, attempted: state === "succeeded", continuationCompleted: true, buttonsRemoved: true, terminalPrompt: true, callbackCount: 0, settledCount: 0, claimCount: state === "succeeded" ? 1 : 0, replayMutationCount: 0, staleAcknowledged: true, argumentDigest: approvalArgumentDigest, target: "calibre-web", checkpointDigest: "2".repeat(64), approvalEpoch: 0, continuationEpoch: 1, continuationState: "completed", suspendedSessionRevision: "c".repeat(64) })
 const restartContinuationDriver = () => ({
   schemaVersion: "sanctuary-interactive-driver-receipt-v2" as const,
   label: "unit-16m-restart-continuation" as const,
@@ -61,9 +80,9 @@ const timeoutStaleDriver = () => ({
   claimCount: 0, mutationCount: 0, staleAcknowledged: true, promptTerminal: true,
 })
 const successfulRestart = () => ([
-  { state: "attempt_not_started" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 1_000, mutationAcknowledged: false, afterState: null },
-  { state: "attempting" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 2_000, mutationAcknowledged: false, afterState: null },
-  { state: "succeeded" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 3_000, mutationAcknowledged: true, afterState: "running" },
+  { state: "attempt_not_started" as const, actionDigest: restartActionDigest, argumentDigest: approvalArgumentDigest, target: "calibre-web", targetId: canonicalTargetId, approvalId: "approval-1", attemptId: "attempt-1", observedAt: 1_000, mutationAcknowledged: false, afterState: null },
+  { state: "attempting" as const, actionDigest: restartActionDigest, argumentDigest: approvalArgumentDigest, target: "calibre-web", targetId: canonicalTargetId, approvalId: "approval-1", attemptId: "attempt-1", observedAt: 2_000, mutationAcknowledged: false, afterState: null },
+  { state: "succeeded" as const, actionDigest: restartActionDigest, argumentDigest: approvalArgumentDigest, target: "calibre-web", targetId: canonicalTargetId, approvalId: "approval-1", attemptId: "attempt-1", observedAt: 3_000, mutationAcknowledged: true, afterState: "running" },
 ])
 const probeDigest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const probePhase = (ordinal: number, name: string, trigger: "cron" | "acceptance", fixtureStatus: 200 | 503 | null, opened: number, recovered: number, digestDue: boolean, deliveryKind: "transition" | "digest" | null) => ({
@@ -263,6 +282,89 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toMatchObject({ staleAcknowledged: true, mutationCount: 0 })
     after.interactiveDriver = { ...timeoutStaleDriver(), claimCount: 1 }
     expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toBeNull()
+  })
+
+  it("rejects every non-canonical restart action, target name, target id, and action digest", () => {
+    const valid = base()
+    valid.approvals = [approval("succeeded")]
+    valid.restartAttempts = successfulRestart()
+    valid.events = approvalEvidence("approve")
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), valid, 400_000)).not.toBeNull()
+
+    const wrongName = structuredClone(valid)
+    wrongName.approvals[0]!.target = "plex"
+    wrongName.approvals[0]!.argumentDigest = createHash("sha256").update(JSON.stringify({ container: "plex" })).digest("hex")
+    wrongName.restartAttempts = wrongName.restartAttempts.map((attempt) => ({ ...attempt, target: "plex", argumentDigest: wrongName.approvals[0]!.argumentDigest }))
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), wrongName, 400_000)).toBeNull()
+
+    const alias = structuredClone(valid)
+    alias.approvals[0]!.target = "/calibre-web"
+    alias.approvals[0]!.argumentDigest = createHash("sha256").update(JSON.stringify({ container: "/calibre-web" })).digest("hex")
+    alias.restartAttempts = alias.restartAttempts.map((attempt) => ({ ...attempt, target: "/calibre-web", argumentDigest: alias.approvals[0]!.argumentDigest }))
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), alias, 400_000)).toBeNull()
+
+    const wrongId = structuredClone(valid)
+    wrongId.restartAttempts = wrongId.restartAttempts.map((attempt) => ({ ...attempt, targetId: `Docker:${"8".repeat(64)}` }))
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), wrongId, 400_000)).toBeNull()
+
+    const wrongAction = structuredClone(valid)
+    wrongAction.restartAttempts = wrongAction.restartAttempts.map((attempt) => ({ ...attempt, actionDigest: "f".repeat(64) }))
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), wrongAction, 400_000)).toBeNull()
+  })
+
+  it("measures delayed approval from the authenticated prompt binding and requires exact callback, terminal, and resumed-delivery evidence", () => {
+    const after = base()
+    after.approvals = [approval("succeeded")]
+    after.restartAttempts = successfulRestart()
+    after.events = approvalEvidence("approve", 1_000, 121_000)
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), after, 400_000)).toMatchObject({ elapsedMs: 120_000, resumed: true })
+
+    for (const eventName of ["senses.telegram_approval_prompt_bound", "telegram.callback_settled", "telegram.approval_prompt_terminalized", "senses.telegram_approval_continuation_delivered"]) {
+      const missing = structuredClone(after)
+      missing.events = missing.events.filter((entry) => entry.event !== eventName)
+      expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), missing, 400_000), eventName).toBeNull()
+    }
+    const early = structuredClone(after)
+    early.events = approvalEvidence("approve", 1_000, 120_999)
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), early, 400_000)).toBeNull()
+    const unacknowledged = structuredClone(after)
+    unacknowledged.events = unacknowledged.events.map((entry) => entry.event === "telegram.callback_settled" ? { ...entry, meta: { ...entry.meta, acknowledged: false } } : entry)
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), unacknowledged, 400_000)).toBeNull()
+  })
+
+  it("requires denial acknowledgement plus resumed delivery while proving no mutation", () => {
+    const after = base()
+    after.approvals = [approval("denied")]
+    after.events = approvalEvidence("deny", 1_000, 2_000)
+    expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", base(), after, 400_000)).toMatchObject({ mutationCount: 0, resumed: true })
+    after.events = after.events.map((entry) => entry.event === "telegram.callback_settled" ? { ...entry, meta: { ...entry.meta, accepted: true, reason: "accepted" } } : entry)
+    expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", base(), after, 400_000)).toBeNull()
+  })
+
+  it.each(["unit-15c-1-no-callback-terminalization", "unit-16k-timeout-stale"] as const)("bounds %s terminalization to the exact TTL plus one reconciliation interval", (label) => {
+    const make = (terminalizedAt: number) => {
+      const before = base()
+      const after = base()
+      after.approvals = [approval("expired")]
+      after.approvals[0]!.updatedAt = terminalizedAt
+      after.events = [
+        approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }),
+        approvalAuditEvent("telegram.approval_prompt_terminalized", terminalizedAt, { boundAt: 1_000, terminalizedAt, buttonsRemoved: true }),
+      ]
+      if (label === "unit-15c-1-no-callback-terminalization") {
+        before.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: probeDigest(after.sourceValues["telegram-offset"]), inboundEventCount: 0 }
+      } else {
+        after.interactiveDriver = timeoutStaleDriver()
+        after.events.push(event("telegram.update_dropped"))
+      }
+      return { before, after }
+    }
+    for (const elapsed of [300_000, 301_000]) {
+      const { before, after } = make(1_000 + elapsed)
+      expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000), String(elapsed)).not.toBeNull()
+    }
+    const { before, after } = make(302_001)
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
   })
 
   it.each([
