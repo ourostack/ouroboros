@@ -23,6 +23,16 @@ function canonicalIsoTimestamp(value: unknown): value is string {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
 }
 
+function boundedHealthText(value: string): string {
+  if (Buffer.byteLength(value) <= MAX_HEALTH_TEXT_BYTES) return value
+  let output = ""
+  for (const character of value) {
+    if (Buffer.byteLength(output) + Buffer.byteLength(character) > MAX_HEALTH_TEXT_BYTES - 1) break
+    output += character
+  }
+  return `${output}…`
+}
+
 interface Incident { id: string; summary: string }
 interface HealthDelivery {
   id: string
@@ -183,16 +193,18 @@ export function createSanctuaryHealthSweep(options: {
   statePath: string
   fetch?: typeof fetch
   now?: () => Date
+  acceptanceEventMeta?: () => Record<string, string>
 }): SanctuaryHealthSweep {
   const fetchImpl = options.fetch ?? fetch
   const now = options.now ?? (() => new Date())
+  const acceptanceEventMeta = options.acceptanceEventMeta ?? (() => sanctuaryAcceptanceEventMeta("sanctuary"))
   const runSweep = async (): Promise<SanctuaryHealthSweepResult> => {
     const sweepId = randomUUID()
     const startedAt = now().toISOString()
-    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_start", message: "Sanctuary deterministic health sweep started", meta: { statePath: options.statePath, ...sanctuaryAcceptanceEventMeta("sanctuary") } })
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_start", message: "Sanctuary deterministic health sweep started", meta: { statePath: options.statePath, ...acceptanceEventMeta() } })
     const pendingState = load(options.statePath)
     if (pendingState.outbox?.status === "pending") {
-      emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status, ...sanctuaryAcceptanceEventMeta("sanctuary") } })
+      emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status, ...acceptanceEventMeta() } })
       return {
         message: pendingState.outbox.message,
         incidents: Object.values(pendingState.incidents),
@@ -259,12 +271,12 @@ export function createSanctuaryHealthSweep(options: {
         ? previous.indeterminateDeliveries.map((delivery) => `⚠️ prior Telegram delivery was indeterminate: ${delivery.message}`)
         : []),
     ]
-    const message = lines.length ? lines.join("\n") : null
+    const message = lines.length ? boundedHealthText(lines.join("\n")) : null
     const deliveryKind: HealthDelivery["kind"] = digestDue && (opened.length > 0 || recovered.length > 0)
       ? "transition_and_digest"
       : digestDue ? "digest" : "transition"
     const delivery = message ? { id: randomUUID(), message, status: "pending" as const, createdAt: now().toISOString(), kind: deliveryKind } : null
-    const acceptanceMeta = sanctuaryAcceptanceEventMeta("sanctuary")
+    const acceptanceMeta = acceptanceEventMeta()
     const completedAt = now().toISOString()
     const sweepReceipt = {
       sweepId,
@@ -287,7 +299,7 @@ export function createSanctuaryHealthSweep(options: {
       sweepReceipts: [...previous.sweepReceipts, sweepReceipt].slice(-500),
     }
     save(options.statePath, next)
-    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue, ...sanctuaryAcceptanceEventMeta("sanctuary") } })
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue, ...acceptanceEventMeta() } })
     return { message, incidents: Object.values(current), ...(delivery ? { deliveryId: delivery.id } : {}) }
   }
 
@@ -302,7 +314,7 @@ export function createSanctuaryHealthSweep(options: {
   })
 
   sweep.cacheDeliveryPayload = (deliveryId: string, message: string): Promise<void> => withHealthLock(options.statePath, () => {
-    if (typeof message !== "string" || message.trim().length === 0) throw new Error("Sanctuary health cached delivery payload must be nonempty")
+    if (typeof message !== "string" || message.trim().length === 0 || Buffer.byteLength(message) > MAX_HEALTH_TEXT_BYTES) throw new Error("Sanctuary health cached delivery payload must be nonempty and bounded")
     const state = load(options.statePath)
     if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
     state.outbox.summarizedMessage = message
@@ -311,7 +323,7 @@ export function createSanctuaryHealthSweep(options: {
   })
 
   sweep.markDelivered = (deliveryId: string, messageIds: number[]): Promise<void> => withHealthLock(options.statePath, () => {
-    if (!Array.isArray(messageIds) || messageIds.length < 1 || !messageIds.every((id) => Number.isSafeInteger(id) && id > 0)) {
+    if (!Array.isArray(messageIds) || messageIds.length < 1 || messageIds.length > 100 || !messageIds.every((id) => Number.isSafeInteger(id) && id > 0)) {
       throw new Error("Sanctuary health delivery receipt requires canonical Telegram message ids")
     }
     const state = load(options.statePath)
