@@ -17,7 +17,8 @@ import {
   type SanctuaryHealthHabitRunnerOptions,
 } from "./sanctuary-health-runner"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
-import type { SanctuarySchedulerLivenessReceipt } from "../heart/daemon/sanctuary-scheduler-liveness"
+import { verifySanctuarySchedulerLivenessReceiptMac, type SanctuarySchedulerLivenessReceipt } from "../heart/daemon/sanctuary-scheduler-liveness"
+import { readOrCreateTelegramIdentityKey } from "./telegram"
 
 const SHA256 = /^[0-9a-f]{64}$/u
 const TARGET_ENDPOINT = "https://books.mendelow.cloud/"
@@ -88,6 +89,7 @@ interface ProbeDependencies {
   runnerOptions?: SanctuaryHealthHabitRunnerOptions
   deferOwnerAttestation?: boolean
   waitForSchedulerReceipt?: (agentRoot: string, scenarioHandleDigest: string) => Promise<SanctuarySchedulerLivenessReceipt>
+  identityKey?: (agentRoot: string) => string
 }
 
 interface HealthSnapshot { exists: boolean; bytes: string }
@@ -389,6 +391,7 @@ function defaultDependencies(): ProbeDependencies {
     ambientFetch: fetch,
     now: () => new Date(),
     deferOwnerAttestation: true,
+    identityKey: readOrCreateTelegramIdentityKey,
     waitForSchedulerReceipt: async (agentRoot, scenarioHandleDigest) => {
       const receiptPath = path.join(agentRoot, "state", "acceptance", "scheduler-liveness-receipts", `${scenarioHandleDigest}.json`)
       const deadline = Date.now() + 16 * 60 * 1_000
@@ -520,11 +523,16 @@ export async function runSanctuaryHealthAcceptanceProbe(
       const initialState = readHealthState(statePath)
       const waitForSchedulerReceipt = dependencies.waitForSchedulerReceipt ?? defaultDependencies().waitForSchedulerReceipt!
       schedulerReceipt = await waitForSchedulerReceipt(dependencies.agentRoot, input.scenarioHandleDigest)
-      if (schedulerReceipt.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || schedulerReceipt.label !== input.label
+      const identityKey = (dependencies.identityKey ?? readOrCreateTelegramIdentityKey)(dependencies.agentRoot)
+      if (!verifySanctuarySchedulerLivenessReceiptMac(identityKey, schedulerReceipt as unknown as Record<string, unknown>)
+        || schedulerReceipt.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || schedulerReceipt.label !== input.label
         || schedulerReceipt.scenarioHandleDigest !== input.scenarioHandleDigest || schedulerReceipt.trigger !== "cron"
         || schedulerReceipt.before.sweepCount !== initialState.sweepReceipts.length || schedulerReceipt.before.deliveryCount !== initialState.deliveredReceipts.length
         || schedulerReceipt.sweepDelta !== 1 || schedulerReceipt.deliveryDelta !== 0 || schedulerReceipt.providerInvocationCount !== 0
-        || schedulerReceipt.privateTurnCount !== 0 || schedulerReceipt.nonReplay !== true) {
+        || schedulerReceipt.privateTurnCount !== 0 || schedulerReceipt.nonReplay !== true
+        || schedulerReceipt.schedulerOrigin.scenarioHandleDigest !== input.scenarioHandleDigest
+        || schedulerReceipt.schedulerOrigin.occurrenceId !== schedulerReceipt.occurrenceId
+        || schedulerReceipt.occurrenceId !== `cron:${schedulerReceipt.schedulerOrigin.slot}`) {
         throw new Error("Sanctuary scheduler liveness receipt is invalid")
       }
       phases.push(phaseFromState(statePath, input.scenarioHandleDigest, 1, "cron-unchanged", "cron", null))

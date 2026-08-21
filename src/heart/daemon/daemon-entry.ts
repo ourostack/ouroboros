@@ -57,6 +57,8 @@ import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
+import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
+import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -401,7 +403,17 @@ const daemon = new OuroDaemon({
   scheduler,
   healthMonitor,
   router,
-  nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId }) => {
+  schedulerFireVerifier: (command) => {
+    if (!supercronicSupervisor) throw new Error("Supercronic scheduler is unavailable")
+    const marker = readSanctuaryAcceptanceMarker("sanctuary")
+    return verifySanctuarySchedulerFireCommand(command, {
+      childPid: supercronicSupervisor.authenticatedSnapshot("habit:sanctuary").childPid,
+      identityKey: readOrCreateTelegramIdentityKey(path.join(getAgentBundlesRoot(), "sanctuary.ouro")),
+      scenarioHandleDigest: marker?.label === "unit-16f-cron-fingerprint" ? marker.scenarioHandleDigest : null, now: () => new Date(),
+      readFile: (target) => fs.readFileSync(target, "utf8"), readLink: (target) => fs.readlinkSync(target),
+    })
+  },
+  nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId, schedulerOrigin }) => {
     if (agent !== "sanctuary" || habitName !== "sanctuary-health") return null
     const marker = readSanctuaryAcceptanceMarker(agent)
     const schedulerScenario = marker?.label === "unit-16f-cron-fingerprint" ? marker : null
@@ -416,7 +428,7 @@ const daemon = new OuroDaemon({
       },
     } : {})
     if (schedulerScenario) {
-      if (!supercronicSupervisor || !before || !occurrenceId) throw new Error("Sanctuary scheduler liveness supervisor provenance is unavailable")
+      if (!supercronicSupervisor || !before || !occurrenceId || !schedulerOrigin) throw new Error("Sanctuary scheduler liveness supervisor provenance is unavailable")
       recordSanctuarySchedulerLivenessReceipt({
         agentRoot,
         trigger,
@@ -427,6 +439,8 @@ const daemon = new OuroDaemon({
         before,
         providerInvocationCount,
         privateTurnCount,
+        schedulerOrigin,
+        identityKey: readOrCreateTelegramIdentityKey(agentRoot),
       })
     }
     return result

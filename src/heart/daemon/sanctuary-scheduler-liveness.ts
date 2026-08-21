@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from "node:crypto"
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { SupercronicSupervisorSnapshot } from "./supercronic-supervisor"
+import type { SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
 
 const SHA256 = /^[0-9a-f]{64}$/u
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
@@ -46,7 +47,9 @@ export interface SanctuarySchedulerLivenessReceipt {
   privateTurnCount: 0
   sweep: { recordDigest: string; opened: 0; recovered: 0; digestDue: false; deliveryId: null }
   supervisor: SupercronicSupervisorSnapshot
+  schedulerOrigin: SanctuarySchedulerOrigin
   nonReplay: true
+  receiptMac: string
 }
 
 export interface RecordSanctuarySchedulerLivenessInput {
@@ -59,6 +62,8 @@ export interface RecordSanctuarySchedulerLivenessInput {
   before: SanctuarySchedulerLivenessCursor
   providerInvocationCount: number
   privateTurnCount: number
+  schedulerOrigin: SanctuarySchedulerOrigin
+  identityKey: string
   now?: () => Date
 }
 
@@ -68,16 +73,44 @@ export function readSanctuaryHealthCursor(agentRoot: string): SanctuaryScheduler
   return { sweepCount: state.sweepReceipts.length, deliveryCount: state.deliveredReceipts.length }
 }
 
-function durableExclusiveJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+type DurableFs = Pick<typeof fs, "mkdirSync" | "openSync" | "writeFileSync" | "fsyncSync" | "closeSync" | "linkSync" | "unlinkSync">
+
+export function durableExclusiveJson(filePath: string, value: unknown, deps: DurableFs = fs): void {
+  deps.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
   const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
+  let handle: number | null = null
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 })
-    fs.renameSync(temporary, filePath)
-    fs.chmodSync(filePath, 0o600)
+    handle = deps.openSync(temporary, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600)
+    deps.writeFileSync(handle, `${JSON.stringify(value)}\n`, "utf8")
+    deps.fsyncSync(handle)
+    deps.closeSync(handle)
+    handle = null
+    deps.linkSync(temporary, filePath)
+    const directory = deps.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try { deps.fsyncSync(directory) } finally { deps.closeSync(directory) }
   } finally {
-    try { fs.unlinkSync(temporary) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+    if (handle !== null) deps.closeSync(handle)
+    try { deps.unlinkSync(temporary) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   }
+}
+
+export function publishSanctuarySchedulerReceipt(filePath: string, value: unknown, deps: DurableFs = fs): void {
+  try { durableExclusiveJson(filePath, value, deps) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Sanctuary scheduler liveness receipt already exists"); throw error }
+}
+
+function unsignedReceipt(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "receiptMac"))
+}
+
+export function sanctuarySchedulerLivenessReceiptMac(identityKey: string, value: Record<string, unknown>): string {
+  return createHmac("sha256", identityKey).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(unsignedReceipt(value))}`).digest("hex")
+}
+
+export function verifySanctuarySchedulerLivenessReceiptMac(identityKey: string, value: Record<string, unknown>): boolean {
+  const observed = value.receiptMac
+  if (typeof observed !== "string" || !SHA256.test(observed)) return false
+  return timingSafeEqual(Buffer.from(observed, "hex"), Buffer.from(sanctuarySchedulerLivenessReceiptMac(identityKey, value), "hex"))
 }
 
 function validateSupervisor(snapshot: SupercronicSupervisorSnapshot): void {
@@ -99,6 +132,11 @@ export function recordSanctuarySchedulerLivenessReceipt(input: RecordSanctuarySc
   if (input.trigger !== "cron") throw new Error("Sanctuary scheduler liveness requires cron provenance")
   if (input.scenario.label !== "unit-16f-cron-fingerprint" || !SHA256.test(input.scenario.scenarioHandleDigest)) throw new Error("Sanctuary scheduler liveness scenario is invalid")
   if (input.occurrenceId.length === 0 || !UUID.test(input.runnerId)) throw new Error("Sanctuary scheduler liveness runner provenance is invalid")
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(input.identityKey) || input.schedulerOrigin.parentPid !== input.supervisor.childPid
+    || input.schedulerOrigin.scenarioHandleDigest !== input.scenario.scenarioHandleDigest || input.occurrenceId !== input.schedulerOrigin.occurrenceId
+    || input.occurrenceId !== `cron:${input.schedulerOrigin.slot}`
+    || !UUID.test(input.schedulerOrigin.schedulerRunId)
+    || input.schedulerOrigin.slot.length === 0 || !SHA256.test(input.schedulerOrigin.proofMac)) throw new Error("Sanctuary scheduler liveness authenticated origin is invalid")
   if (input.providerInvocationCount !== 0 || input.privateTurnCount !== 0) throw new Error("Sanctuary scheduler liveness performed paid work")
   validateSupervisor(input.supervisor)
   const statePath = path.join(input.agentRoot, "state", "health", "sanctuary-health.json")
@@ -111,7 +149,7 @@ export function recordSanctuarySchedulerLivenessReceipt(input: RecordSanctuarySc
     || after.deliveryCount - input.before.deliveryCount !== 0 || sweep.opened !== 0 || sweep.recovered !== 0 || sweep.digestDue !== false || sweep.deliveryId !== undefined) {
     throw new Error("Sanctuary scheduler liveness requires exactly one unchanged sweep")
   }
-  const receipt: SanctuarySchedulerLivenessReceipt = {
+  const unsigned: Omit<SanctuarySchedulerLivenessReceipt, "receiptMac"> = {
     schemaVersion: "sanctuary-scheduler-liveness-receipt-v1",
     label: "unit-16f-cron-fingerprint",
     scenarioHandleDigest: input.scenario.scenarioHandleDigest,
@@ -127,11 +165,12 @@ export function recordSanctuarySchedulerLivenessReceipt(input: RecordSanctuarySc
     privateTurnCount: 0,
     sweep: { recordDigest: createHash("sha256").update(JSON.stringify(sweep)).digest("hex"), opened: 0, recovered: 0, digestDue: false, deliveryId: null },
     supervisor: input.supervisor,
+    schedulerOrigin: input.schedulerOrigin,
     nonReplay: true,
   }
+  const receipt: SanctuarySchedulerLivenessReceipt = { ...unsigned, receiptMac: sanctuarySchedulerLivenessReceiptMac(input.identityKey, unsigned as unknown as Record<string, unknown>) }
   const receiptPath = path.join(input.agentRoot, "state", "acceptance", "scheduler-liveness-receipts", `${input.scenario.scenarioHandleDigest}.json`)
-  if (fs.existsSync(receiptPath)) throw new Error("Sanctuary scheduler liveness receipt already exists")
-  durableExclusiveJson(receiptPath, receipt)
+  publishSanctuarySchedulerReceipt(receiptPath, receipt)
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_scheduler_liveness", message: "Scheduler-origin Sanctuary health sweep attested", meta: { scenarioHandleDigest: input.scenario.scenarioHandleDigest, occurrenceId: input.occurrenceId, runnerId: input.runnerId } })
   return receipt
 }

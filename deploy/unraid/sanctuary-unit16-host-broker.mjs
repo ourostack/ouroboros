@@ -1,7 +1,7 @@
 #!/usr/local/bin/node
 
 import { spawn, spawnSync } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 
@@ -616,13 +616,21 @@ function healthProbeOperationBudgets() {
   return { startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000, composedCaptureMaxMs: 165_000 }
 }
 
-function requireHealthProbeCompleteAttestation(receipt, snapshot, input) {
+function requireHealthProbeCompleteAttestation(receipt, snapshot, input, readSchedulerIdentityKey = () => readFileSync(`${PRODUCTION_BUNDLE_SOURCE}/state/senses/telegram/identity.key`, "utf8").trim()) {
   const request = canonicalHealthProbeRequest(input)
   const value = object(receipt, "health probe receipt")
   exactKeys(value, HEALTH_PROBE_RECEIPT_KEYS, "health probe receipt")
   const observed = object(snapshot, "health probe complete owner")
+  const scheduler = request.label === "unit-16f-cron-fingerprint" && value.schedulerReceipt && typeof value.schedulerReceipt === "object" && !Array.isArray(value.schedulerReceipt) ? value.schedulerReceipt : null
+  const schedulerIdentityKey = scheduler ? readSchedulerIdentityKey() : ""
+  const expectedSchedulerMac = scheduler ? createHmac("sha256", schedulerIdentityKey).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(Object.fromEntries(Object.entries(scheduler).filter(([key]) => key !== "receiptMac")))}`).digest("hex") : ""
+  const schedulerOrigin = scheduler?.schedulerOrigin && typeof scheduler.schedulerOrigin === "object" && !Array.isArray(scheduler.schedulerOrigin) ? scheduler.schedulerOrigin : null
   const schedulerReceiptValid = request.label === "unit-16f-cron-fingerprint"
-    ? value.schedulerReceipt && object(value.schedulerReceipt, "scheduler liveness receipt").schemaVersion === "sanctuary-scheduler-liveness-receipt-v1"
+    ? scheduler !== null && scheduler.schemaVersion === "sanctuary-scheduler-liveness-receipt-v1" && typeof scheduler.receiptMac === "string" && SHA256.test(scheduler.receiptMac)
+      && timingSafeEqual(Buffer.from(scheduler.receiptMac, "hex"), Buffer.from(expectedSchedulerMac, "hex"))
+      && schedulerOrigin !== null && schedulerOrigin.scenarioHandleDigest === request.scenarioHandleDigest
+      && typeof schedulerOrigin.slot === "string" && scheduler.occurrenceId === `cron:${schedulerOrigin.slot}` && schedulerOrigin.occurrenceId === scheduler.occurrenceId
+      && typeof schedulerOrigin.schedulerRunId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(schedulerOrigin.schedulerRunId)
       && value.schedulerReceipt.trigger === "cron" && value.schedulerReceipt.scenarioHandleDigest === request.scenarioHandleDigest
       && value.schedulerReceipt.sweepDelta === 1 && value.schedulerReceipt.deliveryDelta === 0 && value.schedulerReceipt.nonReplay === true
     : value.schedulerReceipt === null

@@ -21,6 +21,7 @@ import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryPostbootIntegritySnapshot, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
+import { verifySanctuarySchedulerLivenessReceiptMac } from "./sanctuary-scheduler-liveness"
 import {
   mergeMachineRuntimeCredentialConfig,
   mergeRuntimeCredentialConfig,
@@ -627,7 +628,7 @@ function buildPostbootIntegritySnapshot(input: {
   }
 }
 
-function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryHealthProbeReceipt | undefined {
+function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string, identityKey: string | null): SanctuaryHealthProbeReceipt | undefined {
   if (raw === null) return undefined
   if (Buffer.byteLength(raw) > 128 * 1024) throw new Error("Sanctuary health probe receipt exceeds its bound")
   const receipt = object(JSON.parse(raw) as unknown, "Sanctuary health probe receipt")
@@ -662,7 +663,7 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
   if (receipt.fixtureSequenceDigest !== expectedSequenceDigest || receipt.deliveryCount !== deliveryCount) throw new Error("Sanctuary health probe receipt counters are invalid")
   if (label === "unit-16f-cron-fingerprint") {
     const scheduler = object(receipt.schedulerReceipt, "Sanctuary scheduler liveness receipt")
-    const schedulerKeys = ["after", "before", "deliveryDelta", "label", "nonReplay", "occurrenceId", "privateTurnCount", "providerInvocationCount", "recordedAt", "runnerId", "scenarioHandleDigest", "schemaVersion", "supervisor", "sweep", "sweepDelta", "trigger"].sort()
+    const schedulerKeys = ["after", "before", "deliveryDelta", "label", "nonReplay", "occurrenceId", "privateTurnCount", "providerInvocationCount", "receiptMac", "recordedAt", "runnerId", "scenarioHandleDigest", "schedulerOrigin", "schemaVersion", "supervisor", "sweep", "sweepDelta", "trigger"].sort()
     const supervisor = object(scheduler.supervisor, "Sanctuary scheduler supervisor snapshot")
     const supervisorKeys = ["args", "binaryPath", "childCount", "childPid", "crontabPath", "daemonPid", "healthy", "manifest", "namespace", "renderedCrontab", "schemaVersion"].sort()
     const before = object(scheduler.before, "Sanctuary scheduler before cursor")
@@ -670,8 +671,10 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
     const sweep = object(scheduler.sweep, "Sanctuary scheduler sweep")
     const manifest = Array.isArray(supervisor.manifest) ? supervisor.manifest : []
     const manifestJob = manifest.length === 1 ? object(manifest[0], "Sanctuary scheduler manifest job") : {}
+    const origin = object(scheduler.schedulerOrigin, "Sanctuary scheduler origin")
     const manifestKeys = ["agent", "command", "id", "lastRun", "schedule", "taskId", "taskPath"].sort()
-    if (JSON.stringify(Object.keys(scheduler).sort()) !== JSON.stringify(schedulerKeys)
+    if (!identityKey || !verifySanctuarySchedulerLivenessReceiptMac(identityKey, scheduler)
+      || JSON.stringify(Object.keys(scheduler).sort()) !== JSON.stringify(schedulerKeys)
       || scheduler.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || scheduler.label !== label || scheduler.scenarioHandleDigest !== scenarioHandleDigest
       || scheduler.trigger !== "cron" || typeof scheduler.occurrenceId !== "string" || scheduler.occurrenceId.length === 0
       || typeof scheduler.runnerId !== "string" || !/^[0-9a-f-]{36}$/u.test(scheduler.runnerId) || !canonicalIso(scheduler.recordedAt)
@@ -690,7 +693,11 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
       || JSON.stringify(Object.keys(manifestJob).sort()) !== JSON.stringify(manifestKeys)
       || manifestJob.taskId !== "sanctuary-health" || manifestJob.schedule !== "*/15 * * * *" || sweep.recordDigest !== phases[0]?.sweepReceiptDigest
       || manifestJob.taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
-      || manifestJob.command !== "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron") throw new Error("Sanctuary scheduler liveness receipt is invalid")
+      || manifestJob.command !== "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
+      || JSON.stringify(Object.keys(origin).sort()) !== JSON.stringify(["invocationPid", "invocationStartTime", "occurrenceId", "parentPid", "parentStartTime", "proofMac", "scenarioHandleDigest", "schedulerRunId", "slot"].sort())
+      || origin.parentPid !== supervisor.childPid || typeof origin.slot !== "string" || scheduler.occurrenceId !== `cron:${origin.slot}` || origin.occurrenceId !== scheduler.occurrenceId
+      || origin.scenarioHandleDigest !== scenarioHandleDigest
+      || typeof origin.schedulerRunId !== "string" || !/^[0-9a-f-]{36}$/u.test(origin.schedulerRunId) || typeof origin.proofMac !== "string" || !SHA256.test(origin.proofMac)) throw new Error("Sanctuary scheduler liveness receipt is invalid")
   } else if (receipt.schedulerReceipt !== null) throw new Error("Sanctuary health probe has an unexpected scheduler receipt")
   if (receipt.ownerImageDigestBefore !== receipt.ownerImageDigestAfter || receipt.ownerContainerDigestBefore !== receipt.ownerContainerDigestAfter
     || (label !== "unit-16f-cron-fingerprint" && receipt.beforeStateDigest !== receipt.restoredStateDigest) || receipt.cronFingerprintBefore !== receipt.cronFingerprintAfter
@@ -1241,7 +1248,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const postbootIntegrity = buildPostbootIntegritySnapshot({ offsetRaw, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries, activeScenarioHandleDigest: activeMarker?.scenarioHandleDigest ?? null })
   const prebootIntegrity = rebootCheckpoint && typeof rebootCheckpoint.prebootIntegrity === "object" && !Array.isArray(rebootCheckpoint.prebootIntegrity)
     ? rebootCheckpoint.prebootIntegrity as unknown as SanctuaryPostbootIntegritySnapshot : undefined
-  const healthProbe = parseHealthProbeReceipt(healthProbeRaw, label, scenarioHandleDigest)
+  const healthProbe = parseHealthProbeReceipt(healthProbeRaw, label, scenarioHandleDigest, identityRaw?.trim() ?? null)
   const interactiveDriver = parseInteractiveDriverReceipt(interactiveDriverRaw, label, scenarioHandleDigest)
   const healthSweeps = health ? (health.sweepReceipts as JsonObject[]).filter((receipt) => receipt.scenarioHandleDigest === scenarioHandleDigest) : []
   const healthDeliveries = health ? health.deliveredReceipts as JsonObject[] : []

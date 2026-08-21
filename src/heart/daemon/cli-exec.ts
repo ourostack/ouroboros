@@ -89,6 +89,7 @@ import { discoverMailImportFilePath } from "../mail-import-discovery"
 import { listSessionActivity } from "../session-activity"
 import { listTargetSessionCandidates } from "../target-resolution"
 import type { HabitSessionSummary } from "../habits/habit-session-summary"
+import { createSanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
 
 import type {
   OuroCliCommand,
@@ -1912,6 +1913,7 @@ function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } 
       noSend: true,
     }
   }
+  if (command.kind === "habit.poke") return createSanctuarySchedulerFireCommand(command) ?? command
   return command
 }
 

@@ -54,6 +54,7 @@ describe("daemon command plane branches", () => {
       rsvpHabitRunner?: unknown
       nativeHabitRunner?: unknown
       nativeHabitMatch?: unknown
+      schedulerFireVerifier?: unknown
       orphanStartupDrain?: (socketPath: string) => Promise<void>
     },
   ) => {
@@ -104,6 +105,7 @@ describe("daemon command plane branches", () => {
       rsvpHabitRunner: options?.rsvpHabitRunner,
       nativeHabitRunner: options?.nativeHabitRunner,
       nativeHabitMatch: options?.nativeHabitMatch,
+      schedulerFireVerifier: options?.schedulerFireVerifier,
       externalEventRoot: options?.externalEventRoot,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
@@ -1376,17 +1378,17 @@ describe("daemon command plane branches", () => {
       nativeHabitMatch: (agent: string, habitName: string) => agent === "sanctuary" && habitName === "sanctuary-health",
     })
     processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
-    const command = { kind: "habit.poke", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "cron:slot-1" } as const
+    const command = { kind: "habit.poke", agent: "sanctuary", habitName: "sanctuary-health", trigger: "overdue", occurrenceId: "overdue:slot-1" } as const
 
     const first = daemon.handleCommand(command)
     await vi.waitFor(() => expect(nativeHabitRunner).toHaveBeenCalledOnce())
     expect(nativeHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
-      occurrenceId: "cron:slot-1",
+      occurrenceId: "overdue:slot-1",
       runnerId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
     }))
-    await expect(daemon.handleCommand({ ...command, trigger: "overdue", occurrenceId: "overdue:slot-1" })).resolves.toEqual({
+    await expect(daemon.handleCommand({ ...command, occurrenceId: "overdue:slot-2" })).resolves.toEqual({
       ok: true,
-      message: "skipped overlapping native habit occurrence overdue:slot-1",
+      message: "skipped overlapping native habit occurrence overdue:slot-2",
     })
     deferred.resolve({ ok: true, message: "health sweep complete" })
     await expect(first).resolves.toEqual({ ok: true, message: "health sweep complete" })
@@ -1395,10 +1397,26 @@ describe("daemon command plane branches", () => {
     expect(readHabitLastRun(agentRoot, "sanctuary-health")).toMatch(/^\d{4}-/u)
     expect(listHabitRunReceipts(agentRoot)).toEqual([expect.objectContaining({
       habitName: "sanctuary-health",
-      trigger: "cron",
-      operationId: "cron:slot-1",
+      trigger: "overdue",
+      operationId: "overdue:slot-1",
       outcome: "no_change",
     })])
+  })
+
+  it("rejects a public cron string but runs a verifier-authenticated scheduler command", async () => {
+    const socketPath = tmpSocketPath("daemon-authenticated-scheduler-habit")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-authenticated-scheduler-habit-bundles-"))
+    writeHabitFile({ bundlesRoot, agent: "sanctuary", habitName: "sanctuary-health", cadence: "15m", lastRun: null })
+    const origin = { slot: "2026-08-21T07:15:00.000Z", schedulerRunId: "11111111-1111-4111-8111-111111111111", invocationPid: 101, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "a".repeat(64), occurrenceId: "cron:2026-08-21T07:15:00.000Z", scenarioHandleDigest: null }
+    const nativeHabitRunner = vi.fn(async () => ({ ok: true, message: "health sweep complete" }))
+    const schedulerFireVerifier = vi.fn(() => origin)
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { nativeHabitRunner, nativeHabitMatch: () => true, schedulerFireVerifier })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
+    await expect(daemon.handleCommand({ kind: "habit.poke", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" })).resolves.toEqual({ ok: false, error: "Sanctuary cron habit requires authenticated Supercronic provenance" })
+    const privateCommand = { kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: origin.occurrenceId, scenarioHandleDigest: "b".repeat(64), ...origin } as const
+    await expect(daemon.handleCommand(privateCommand)).resolves.toEqual({ ok: true, message: "health sweep complete" })
+    expect(schedulerFireVerifier).toHaveBeenCalledWith(privateCommand)
+    expect(nativeHabitRunner).toHaveBeenCalledWith(expect.objectContaining({ trigger: "cron", occurrenceId: origin.occurrenceId, schedulerOrigin: expect.objectContaining({ schedulerRunId: origin.schedulerRunId }) }))
   })
 
   it("derives a fallback occurrence for an ad-hoc native habit and records a declined run", async () => {
@@ -1451,7 +1469,7 @@ describe("daemon command plane branches", () => {
       kind: "habit.poke",
       agent: "sanctuary",
       habitName: "sanctuary-health",
-      trigger: "cron",
+      trigger: "overdue",
       occurrenceId: `cron:${_kind}`,
     })).resolves.toEqual({ ok: false, error: expectedError })
     expect(listHabitRunReceipts(path.join(bundlesRoot, "sanctuary.ouro"))).toEqual([
@@ -1477,7 +1495,7 @@ describe("daemon command plane branches", () => {
       kind: "habit.poke",
       agent: "sanctuary",
       habitName: "sanctuary-health",
-      trigger: "cron",
+      trigger: "overdue",
       occurrenceId: `cron:${kind}`,
     })).resolves.toEqual(runnerResult)
     expect(listHabitRunReceipts(path.join(bundlesRoot, "sanctuary.ouro"))).toEqual([
