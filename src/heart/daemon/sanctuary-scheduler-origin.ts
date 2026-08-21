@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto"
 import * as fs from "node:fs"
 
 import { getAgentRoot } from "../identity"
+import { emitNervesEvent } from "../../nerves/runtime"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 import { readSanctuaryAcceptanceMarker, type SanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 
@@ -124,6 +125,7 @@ export function verifySanctuarySchedulerFireCommand(command: SanctuarySchedulerF
   if (command.parentPid !== deps.childPid || invocation.parentPid !== command.parentPid || invocation.startTime !== command.invocationStartTime
     || parent.startTime !== command.parentStartTime || deps.readLink(`/proc/${command.parentPid}/exe`) !== SUPERCRONIC
     || deps.readFile(`/proc/${command.parentPid}/cmdline`) !== SUPERCRONIC_CMDLINE) throw new Error("scheduler fire ancestry is invalid")
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_scheduler_origin_authenticated", message: "Sanctuary scheduler origin authenticated", meta: { schedulerRunId: command.schedulerRunId, slot: command.slot } })
   return {
     slot: command.slot, schedulerRunId: command.schedulerRunId, invocationPid: command.invocationPid, parentPid: command.parentPid,
     parentStartTime: command.parentStartTime, invocationStartTime: command.invocationStartTime, proofMac: command.proofMac,
