@@ -625,7 +625,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         .run(record.approvalId, scenarioHandleDigest)
     })
     transaction()
-    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_transition", message: "acceptance-bound approval transitioned", meta: { scenarioHandleDigest, state: record.state } })
+    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_transition", message: "acceptance-bound approval transitioned", meta: { approvalId: record.approvalId, scenarioHandleDigest, toolName: record.toolName, argumentDigest: record.argumentDigest, state: record.state } })
   }
 
   const acceptanceDigest = (approvalId: string): string | null => {
@@ -641,7 +641,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     `).run(next.state, next.epoch, JSON.stringify(next), previous.approvalId, previous.state, previous.epoch, JSON.stringify(previous))
     if (changed.changes !== 1) fail("transition_conflict")
     const scenarioHandleDigest = acceptanceDigest(next.approvalId)
-    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_transition", message: "acceptance-bound approval transitioned", meta: { scenarioHandleDigest, state: next.state } })
+    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_transition", message: "acceptance-bound approval transitioned", meta: { approvalId: next.approvalId, scenarioHandleDigest, toolName: next.toolName, argumentDigest: next.argumentDigest, state: next.state } })
     return structuredClone(next)
   }
 
@@ -685,7 +685,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     `).run(to, timestamp(), input.approvalId, input.ownerId, input.epoch, from)
     if (changed.changes !== 1) fail(`continuation_${to}_not_eligible`)
     const scenarioHandleDigest = acceptanceDigest(input.approvalId)
-    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { scenarioHandleDigest, state: to } })
+    if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { approvalId: approval.approvalId, scenarioHandleDigest, toolName: approval.toolName, argumentDigest: approval.argumentDigest, state: to } })
     return combineContinuation(approval, readContinuationRow(input.approvalId))
   }
 
@@ -908,7 +908,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
           row = readContinuationRow(input.approvalId)
         }
         const scenarioHandleDigest = acceptanceDigest(input.approvalId)
-        if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { scenarioHandleDigest, state: row.state } })
+        if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { approvalId: approval.approvalId, scenarioHandleDigest, toolName: approval.toolName, argumentDigest: approval.argumentDigest, state: row.state } })
         return {
           claimed,
           interruptedAfterAttempt,
@@ -936,7 +936,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         `).run(completedAt, input.approvalId, input.ownerId, input.epoch)
         if (changed.changes !== 1) fail("continuation_completion_not_eligible")
         const scenarioHandleDigest = acceptanceDigest(input.approvalId)
-        if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { scenarioHandleDigest, state: "completed" } })
+        if (scenarioHandleDigest) emitNervesEvent({ component: "heart", event: "approval.acceptance_continuation_transition", message: "acceptance-bound approval continuation transitioned", meta: { approvalId: approval.approvalId, scenarioHandleDigest, toolName: approval.toolName, argumentDigest: approval.argumentDigest, state: "completed" } })
         return combineContinuation(approval, readContinuationRow(input.approvalId))
       })
     },
@@ -1014,5 +1014,36 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         database.close()
       })
     },
+  }
+}
+
+export interface ApprovalAcceptanceProjection {
+  approval: ApprovalRecord
+  continuation: ApprovalContinuationRecord | null
+}
+
+export function readApprovalsByScenarioHandleDigest(databasePath: string, scenarioHandleDigest: string): ApprovalAcceptanceProjection[] {
+  assertHash(scenarioHandleDigest, "invalid_scenario_handle_digest")
+  const database = new Database(databasePath, { readonly: true, fileMustExist: true })
+  try {
+    const rows = database.prepare(`
+      SELECT a.record_json, c.owner_id, c.owner_pid, c.epoch AS continuation_epoch, c.state AS continuation_state,
+        c.claimed_at, c.materialized_at, c.attempted_at AS continuation_attempted_at, c.continued_at
+      FROM approval_actions a
+      INNER JOIN approval_acceptance_scenarios s ON s.approval_id = a.approval_id
+      LEFT JOIN approval_continuations c ON c.approval_id = a.approval_id
+      WHERE s.scenario_handle_digest = ?
+      ORDER BY a.approval_id
+    `).all(scenarioHandleDigest) as Array<{ record_json: string; owner_id: string | null; owner_pid: number | null; continuation_epoch: number | null; continuation_state: ApprovalContinuationRecord["continuationState"] | null; claimed_at: string | null; materialized_at: string | null; continuation_attempted_at: string | null; continued_at: string | null }>
+    return rows.map((row) => ({
+      approval: parseApprovalRecord(JSON.parse(row.record_json) as unknown),
+      continuation: row.continuation_state === null ? null : {
+        continuationOwnerId: row.owner_id!, continuationOwnerPid: row.owner_pid!, continuationEpoch: row.continuation_epoch!,
+        continuationState: row.continuation_state, continuationClaimedAt: row.claimed_at!, continuationMaterializedAt: row.materialized_at,
+        continuationAttemptedAt: row.continuation_attempted_at, continuedAt: row.continued_at,
+      },
+    }))
+  } finally {
+    database.close()
   }
 }

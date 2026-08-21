@@ -521,12 +521,12 @@ interface EvidenceProvenance {
 
 type SanctuaryScenarioGate = "none" | "authorized-telegram-message" | "distinct-telegram-account-message"
   | "telegram-delayed-approve" | "telegram-deny" | "telegram-stale-callback"
-  | "telegram-concurrent-callback" | "telegram-restart-approve"
+  | "telegram-concurrent-callback" | "telegram-restart-approve" | "authorized-telegram-restart-no-callback"
 
-const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioGate> = {
+export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioGate> = {
   "unit-12c-1-opaque-identity": "none",
   "unit-14b-3-opaque-identity-live": "authorized-telegram-message",
-  "unit-15c-1-no-callback-terminalization": "none",
+  "unit-15c-1-no-callback-terminalization": "authorized-telegram-restart-no-callback",
   "unit-16a-pre-reboot-checkpoint": "none",
   "unit-16a-reboot-request": "none",
   "unit-16a-boot-recovery-milestones": "none",
@@ -536,8 +536,8 @@ const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, SanctuarySc
   "unit-16d-1-space": "authorized-telegram-message",
   "unit-16d-2-unauthorized": "distinct-telegram-account-message",
   "unit-16e-containment-audit": "none",
-  "unit-16e-1-stop-denial": "authorized-telegram-message",
-  "unit-16e-2-restart-denial": "authorized-telegram-message",
+  "unit-16e-1-stop-denial": "none",
+  "unit-16e-2-restart-denial": "none",
   "unit-16f-cron-fingerprint": "none",
   "unit-16g-health-transition": "none",
   "unit-16h-daily-digest": "none",
@@ -550,31 +550,31 @@ const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, SanctuarySc
 
 type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-offset" | "approval-journal"
   | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
-  | "health-runtime" | "digest-runtime" | "reboot-checkpoint"
+  | "health-runtime" | "digest-runtime" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts"
 
-const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
+export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
   "unit-12c-1-opaque-identity": ["identity-key", "approval-journal"],
-  "unit-14b-3-opaque-identity-live": ["identity-key", "telegram-audit", "approval-journal"],
+  "unit-14b-3-opaque-identity-live": ["identity-key", "telegram-audit", "approval-journal", "telegram-turn-receipts"],
   "unit-15c-1-no-callback-terminalization": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
   "unit-16a-pre-reboot-checkpoint": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect", "cron-runtime"],
   "unit-16a-reboot-request": ["reboot-checkpoint"],
   "unit-16a-boot-recovery-milestones": ["reboot-checkpoint", "container-inspect"],
   "unit-16b-runtime-vault-containment": ["container-inspect"],
   "unit-16c-provider-readiness": ["provider-live-check"],
-  "unit-16d-whats-up": ["telegram-audit", "telegram-offset"],
-  "unit-16d-1-space": ["telegram-audit", "telegram-offset", "container-inspect"],
-  "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect"],
+  "unit-16d-whats-up": ["telegram-audit", "telegram-offset", "telegram-turn-receipts"],
+  "unit-16d-1-space": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "restart-attempt-ledger", "container-inspect"],
+  "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "approval-journal", "restart-attempt-ledger", "container-inspect"],
   "unit-16e-containment-audit": ["telegram-audit", "container-inspect"],
   "unit-16e-1-stop-denial": ["telegram-audit", "approval-journal", "container-inspect"],
   "unit-16e-2-restart-denial": ["telegram-audit", "approval-journal", "container-inspect"],
   "unit-16f-cron-fingerprint": ["cron-runtime", "telegram-audit"],
   "unit-16g-health-transition": ["health-runtime", "telegram-audit", "container-inspect"],
   "unit-16h-daily-digest": ["digest-runtime", "cron-runtime", "telegram-audit"],
-  "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
-  "unit-16j-denial": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
-  "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
-  "unit-16l-duplicate-callback": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
-  "unit-16m-restart-continuation": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16j-denial": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16l-duplicate-callback": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16m-restart-continuation": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
 }
 
 function packagedHarnessSha256(value: unknown): string {
@@ -1258,6 +1258,10 @@ async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnes
       sourceDigest: normalizedEvidenceHash(sourceDigests),
     })
   }
+
+  const finalized = object(await deps.runAdapter(executable, { operation: "finalize_acceptance_scenarios" }), "scenario finalization result")
+  exactObjectKeys(finalized, ["finalized"], "scenario finalization result")
+  if (finalized.finalized !== true) throw new Error("scenario finalization failed")
 
   const live = await liveEvidenceProvenance(config, deps)
   for (const capture of captures) {

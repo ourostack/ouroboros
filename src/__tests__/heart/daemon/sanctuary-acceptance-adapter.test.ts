@@ -2,8 +2,10 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { createServer } from "node:net"
+import { createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
+import { openApprovalStore } from "../../../heart/approval-store"
 
 import {
   createSanctuaryAcceptanceAdapterDependencies,
@@ -12,6 +14,7 @@ import {
   executeSanctuaryAcceptanceAdapter,
   executeSanctuaryAcceptanceRevokedProbe,
   executeSanctuaryAcceptanceVaultProbe,
+  readDefaultSanctuaryScenarioFacts,
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
@@ -77,7 +80,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(Object.keys(contract.adapters).sort()).toEqual([
       "callback-inject", "callback-live", "capture-evidence-provenance", "closed-inventory", "config-materializer", "cursor-snapshot",
       "evidence-snapshot", "exact-id-revoke", "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
-      "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture",
+      "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
       "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",
     ])
     expect(Object.values(contract.adapters)).toEqual(expect.arrayContaining([
@@ -133,6 +136,59 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callbacks_concurrently", update, concurrency: 3 }, deps)).resolves.toMatchObject({ results: { length: 3 } })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callback_replay", update }, deps)).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     expect(peak).toBeGreaterThan(1)
+  })
+
+  it("binds scenario capture to the exact label gate and source contract", async () => {
+    const captureScenario = vi.fn(async (payload) => ({ state: "waiting", checkpointDigest: "a".repeat(64), payload }))
+    const deps = unit16Deps({ captureScenario })
+    const payload = {
+      operation: "capture_acceptance_scenario",
+      phase: "begin",
+      label: "unit-16d-whats-up",
+      externalGate: "authorized-telegram-message",
+      sources: ["telegram-audit", "telegram-offset", "telegram-turn-receipts"],
+    }
+    await expect(executeSanctuaryAcceptanceAdapter(payload, deps)).resolves.toMatchObject({ state: "waiting", checkpointDigest: "a".repeat(64) })
+    expect(captureScenario).toHaveBeenCalledWith({ phase: "begin", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset", "telegram-turn-receipts"] })
+    await expect(executeSanctuaryAcceptanceAdapter({ ...payload, externalGate: "none" }, deps)).rejects.toThrow("external gate")
+    await expect(executeSanctuaryAcceptanceAdapter({ ...payload, sources: ["telegram-audit"] }, deps)).rejects.toThrow("sources")
+    await expect(executeSanctuaryAcceptanceAdapter({ ...payload, label: "unknown" }, deps)).rejects.toThrow("label")
+  })
+
+  it("reads actual persisted source schemas and exact host facts without exposing raw Telegram identity", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-scenario-facts-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const identityKey = "k".repeat(43)
+    const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "123456789" }
+    const subjectPayload = ["ouroboros.telegram.subject.v1", `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`, `chat:${credentials.authorizedChatId.length}:${credentials.authorizedChatId}`].join("\0")
+    const subject = `tg_${createHmac("sha256", identityKey).update(subjectPayload).digest("base64url")}`
+    const audit = `${JSON.stringify({ ts: "2026-08-20T16:00:00.000Z", event: "senses.telegram_turn_end", meta: { scenarioHandleDigest, subject, deliveryCount: 1 } })}\n`
+    const cron = "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron\n"
+    const files: Record<string, string> = {
+      [`${agentRoot}/state/senses/telegram/identity.key`]: `${identityKey}\n`,
+      "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson": audit,
+      "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":10}\n',
+      [`${agentRoot}/state/approvals/checkpoints.json`]: "{}\n",
+      [`${agentRoot}/state/acceptance/telegram-turns.ndjson`]: `${JSON.stringify({ schemaVersion: "sanctuary-telegram-turn-receipt-v3", scenarioHandleDigest, status: "success", errorCategory: null, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests: [], providerInvocationCount: 1, toolInvocationCount: 0, deliveryCount: 1, deliveries: [{ messageIdDigest: "4".repeat(64), chunkDigest: "5".repeat(64) }], completedAt: "2026-08-20T16:00:01.000Z" })}\n`,
+      "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab": cron,
+      [`${agentRoot}/state/health/sanctuary-health.json`]: '{"deliveredReceipts":[]}\n',
+      "/run/ouro-acceptance/image-digest": "b".repeat(64),
+    }
+    const approvalDatabase = path.join(agentRoot, "state", "approvals", "approvals.sqlite")
+    openApprovalStore({ databasePath: approvalDatabase }).close()
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw new Error("missing fixture"); return files[file]! },
+      telegramCredentials: () => credentials,
+      hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(facts.identity).toMatchObject({ keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, mismatchCount: 0, rawLeakCount: 0 })
+    expect(facts.identity?.inspectedRecordCount).toBeGreaterThan(0)
+    expect(facts.identity?.opaqueSubjectCount).toBeGreaterThan(0)
+    expect(facts.container).toMatchObject({ exactImage: true, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false })
+    expect(facts.cron?.registered).toBe(true)
+    expect(facts.containment?.sensitiveMaterialObserved).toBe(false)
+    expect(JSON.stringify(facts.sourceValues)).not.toContain(credentials.botToken)
+    fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
   it("executes exact Unraid create/store/probe/read/revoke lifecycle operations", async () => {

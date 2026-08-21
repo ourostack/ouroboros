@@ -224,6 +224,7 @@ describe("Sanctuary acceptance harness", () => {
         const payload = rawPayload as Record<string, unknown>
         calls.push(payload)
         if (payload.operation === "capture_evidence_provenance") return evidenceProvenance
+        if (payload.operation === "finalize_acceptance_scenarios") return { finalized: true }
         const label = String(payload.label)
         if (label === completeEvidenceLabels[0] && payload.phase === "begin" && firstWaiting) {
           firstWaiting = false
