@@ -218,6 +218,10 @@ export interface RunSenseTurnResult {
   deliveries: OutwardSenseDelivery[]
   /** Delivery failures observed after the model's terminal answer. Mid-turn `speak` failures are returned to the model immediately. */
   deliveryFailures: OutwardSenseDeliveryFailure[]
+  /** Actual model invocation callbacks observed during this turn. */
+  providerInvocationCount?: number
+  /** Actual tool invocation callbacks observed during this turn. */
+  toolInvocationCount?: number
 }
 
 /**
@@ -305,6 +309,8 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   let terminalDeliveryKind: OutwardSenseDeliveryKind = "text"
   const deliveries: OutwardSenseDelivery[] = []
   const deliveryFailures: OutwardSenseDeliveryFailure[] = []
+  let providerInvocationCount = 0
+  let toolInvocationCount = 0
 
   const commitResponseText = (text: string): void => {
     const cleaned = stripThinkBlocks(text)
@@ -348,11 +354,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
   const callbacks: ChannelCallbacks = {
     settleOutputMode: "retractable_buffer",
-    onModelStart: () => {},
+    onModelStart: () => { providerInvocationCount += 1 },
     onModelStreamStart: () => {},
     onTextChunk: (chunk: string) => { pendingResponseText += chunk },
     onReasoningChunk: () => {},
-    onToolStart: () => {},
+    onToolStart: () => { toolInvocationCount += 1 },
     onToolEnd: (name: string, _summary: string, success: boolean) => {
       if (name === "settle" && success) terminalDeliveryKind = "settle"
     },
@@ -422,6 +428,8 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       ponderDeferred: false,
       deliveries,
       deliveryFailures,
+      providerInvocationCount,
+      toolInvocationCount,
     }
   }
 
@@ -480,6 +488,6 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     meta: { agentName, channel, sessionKey, friendId, ponderDeferred, responseLength: finalResponse.length },
   })
 
-  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures }
+  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures, providerInvocationCount, toolInvocationCount }
   })
 }

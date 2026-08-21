@@ -410,7 +410,12 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       component: "senses",
       event: "telegram.update_dropped",
       message: "Telegram update dropped before dispatch",
-      meta: { updateClass: update.message ? "message" : "other", reason: "unauthorized_or_unsupported", ...options.acceptanceEventMeta?.() },
+      meta: {
+        updateClass: update.message ? "message" : "other",
+        reason: "unauthorized_or_unsupported",
+        distinctAccount: Boolean(update.message?.from && (String(update.message.from.id) !== options.expectedUserId || String(update.message.chat.id) !== options.expectedChatId)),
+        ...options.acceptanceEventMeta?.(),
+      },
     })
   }
 
@@ -545,6 +550,7 @@ export interface TelegramApprovalTransportOptions {
   onExpire?: (approvalId: string) => void | Promise<void>
   resolveDecisionToken?: (approvalId: string) => Promise<string>
   now?: () => number
+  acceptanceEventMeta?: () => Record<string, string>
 }
 
 function assertTelegramCallbackData(value: string): void {
@@ -590,16 +596,19 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     try {
       await options.api.request("editMessageText", { ...base, text: escapeTelegramHtml(terminalText), parse_mode: "HTML" })
     } catch (error) {
-      if (error instanceof TelegramApiError && error.status === 400 && /message is not modified/i.test(error.message)) return
-      if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-      try {
-        await options.api.request("editMessageText", { ...base, text: terminalText })
-      } catch (fallbackError) {
-        if (!(fallbackError instanceof TelegramApiError) || fallbackError.status !== 400 || !/message is not modified/i.test(fallbackError.message)) {
-          throw fallbackError
+      const alreadyTerminal = error instanceof TelegramApiError && error.status === 400 && /message is not modified/i.test(error.message)
+      if (!alreadyTerminal) {
+        if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+        try {
+          await options.api.request("editMessageText", { ...base, text: terminalText })
+        } catch (fallbackError) {
+          if (!(fallbackError instanceof TelegramApiError) || fallbackError.status !== 400 || !/message is not modified/i.test(fallbackError.message)) {
+            throw fallbackError
+          }
         }
       }
     }
+    emitNervesEvent({ component: "senses", event: "telegram.approval_prompt_terminalized", message: "Telegram approval prompt was terminalized", meta: { approvalId: pending.approvalId, buttonsRemoved: true, ...options.acceptanceEventMeta?.() } })
   }
 
   const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<void> => {
@@ -740,6 +749,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
           remove(pending)
           persist()
         }
+        emitNervesEvent({ component: "senses", event: "telegram.callback_settled", message: "Telegram approval callback settled", meta: { approvalId: pending?.approvalId ?? null, reason: invalidReason, accepted: false, ...options.acceptanceEventMeta?.() } })
         return { handled: true, accepted: false, reason: invalidReason }
       }
 
@@ -769,7 +779,9 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         await editTerminal(pending!, outcome.terminalText)
         remove(pending!)
         persist()
-        return { handled: true, accepted: outcome.accepted, reason: outcome.accepted ? "accepted" : "decision_refused" }
+        const reason = outcome.accepted ? "accepted" : "decision_refused"
+        emitNervesEvent({ component: "senses", event: "telegram.callback_settled", message: "Telegram approval callback settled", meta: { approvalId: pending!.approvalId, reason, accepted: outcome.accepted, ...options.acceptanceEventMeta?.() } })
+        return { handled: true, accepted: outcome.accepted, reason }
       } catch (error) {
         if (decisionStarted && !pending!.terminal) {
           pending!.terminal = {
@@ -875,14 +887,16 @@ export async function sendTelegramText(
   chatId: string,
   text: string,
   signal?: AbortSignal,
+  onMessageDelivered?: (messageId: number, chunk: string) => void,
 ): Promise<number[]> {
   const results: number[] = []
-  const recordMessageId = (value: unknown): void => {
+  const recordMessageId = (value: unknown, chunk: string): void => {
     const messageId = value && typeof value === "object" && !Array.isArray(value)
       ? (value as { message_id?: unknown }).message_id
       : undefined
     if (!Number.isSafeInteger(messageId) || (messageId as number) < 1) throw new TelegramApiError("Telegram sendMessage result omitted a canonical message_id")
     results.push(messageId as number)
+    onMessageDelivered?.(messageId as number, chunk)
   }
   for (const chunk of splitTelegramText(text)) {
     try {
@@ -890,10 +904,10 @@ export async function sendTelegramText(
         chat_id: chatId,
         text: escapeTelegramHtml(chunk),
         parse_mode: "HTML",
-      }, signal))
+      }, signal), chunk)
     } catch (error) {
       if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-      recordMessageId(await api.request("sendMessage", { chat_id: chatId, text: chunk }, signal))
+      recordMessageId(await api.request("sendMessage", { chat_id: chatId, text: chunk }, signal), chunk)
     }
   }
   return results

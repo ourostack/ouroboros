@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto"
+import { createHmac, randomBytes, randomUUID } from "node:crypto"
 import {
   closeSync,
   constants as fsConstants,
@@ -63,20 +63,46 @@ const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
-const TELEGRAM_TURN_RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v1"
+const TELEGRAM_TURN_RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v2"
+const telegramTurnLedgerTails = new Map<string, Promise<void>>()
 
-function appendSanctuaryTurnReceipt(agentRoot: string, receipt: Record<string, unknown>): void {
+async function appendSanctuaryTurnReceipt(agentRoot: string, receipt: Record<string, unknown>): Promise<void> {
   const filePath = path.join(agentRoot, "state", "acceptance", "telegram-turns.ndjson")
-  mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
-  let existing: string[] = []
-  try { existing = readFileSync(filePath, "utf8").split("\n").filter(Boolean) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-  const lines = [...existing, JSON.stringify(receipt)].slice(-500)
-  const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
-  writeFileSync(temporary, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" })
-  const handle = openSync(temporary, "r")
-  try { fsyncSync(handle) } finally { closeSync(handle) }
-  renameSync(temporary, filePath)
+  const previous = telegramTurnLedgerTails.get(filePath) ?? Promise.resolve()
+  const current = previous.then(() => {
+    mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+    let existing: string[] = []
+    try {
+      const raw = readFileSync(filePath, "utf8")
+      if (Buffer.byteLength(raw) > 4 * 1024 * 1024) throw new Error("Telegram turn receipt ledger exceeds its bound")
+      existing = raw.split("\n").filter(Boolean)
+      if (existing.length > 500 || existing.some((line) => Buffer.byteLength(line) > 16 * 1024)) throw new Error("Telegram turn receipt ledger is invalid")
+      for (const line of existing) {
+        const value = JSON.parse(line) as Record<string, unknown>
+        if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["completedAt", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "telegramMessageIdDigests", "toolInvocationCount", "toolResultDigests", "updateDigest"].sort())
+          || value.schemaVersion !== "sanctuary-telegram-turn-receipt-v2" || !/^[0-9a-f]{64}$/u.test(String(value.scenarioHandleDigest))
+          || !["success", "error"].includes(String(value.status)) || (value.errorCategory !== null && (typeof value.errorCategory !== "string" || value.errorCategory.length > 128))
+          || ![value.updateDigest, value.sequenceDigest, value.responseDigest].every((digest) => /^[0-9a-f]{64}$/u.test(String(digest)))
+          || !Array.isArray(value.toolResultDigests) || value.toolResultDigests.length > 100 || !value.toolResultDigests.every((digest) => /^[0-9a-f]{64}$/u.test(String(digest)))
+          || !Array.isArray(value.telegramMessageIdDigests) || value.telegramMessageIdDigests.length > 100 || !value.telegramMessageIdDigests.every((digest) => /^[0-9a-f]{64}$/u.test(String(digest)))
+          || ![value.providerInvocationCount, value.toolInvocationCount].every((count) => count === null || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000))
+          || !Number.isSafeInteger(value.deliveryCount) || Number(value.deliveryCount) < 0 || Number(value.deliveryCount) > 100
+          || typeof value.completedAt !== "string" || value.completedAt.length > 30 || !Number.isFinite(Date.parse(value.completedAt)) || new Date(Date.parse(value.completedAt)).toISOString() !== value.completedAt) throw new Error("Telegram turn receipt ledger row is invalid")
+      }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+    const serialized = JSON.stringify(receipt)
+    if (Buffer.byteLength(serialized) > 16 * 1024) throw new Error("Telegram turn receipt exceeds its bound")
+    const lines = [...existing, serialized].slice(-500)
+    const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
+    writeFileSync(temporary, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" })
+    const handle = openSync(temporary, "r")
+    try { fsyncSync(handle) } finally { closeSync(handle) }
+    renameSync(temporary, filePath)
+    const directory = openSync(path.dirname(filePath), "r")
+    try { fsyncSync(directory) } finally { closeSync(directory) }
+  })
+  telegramTurnLedgerTails.set(filePath, current)
+  try { await current } finally { if (telegramTurnLedgerTails.get(filePath) === current) telegramTurnLedgerTails.delete(filePath) }
 }
 
 export interface CreateTelegramSenseAppOptions {
@@ -96,6 +122,8 @@ export interface CreateTelegramSenseAppOptions {
   identityKey?: string
   migrateIdentity?: () => Promise<void>
   subjectIndexHooks?: { afterCreateTemporary?: (temporaryPath: string) => void }
+  acceptanceMarker?: () => { scenarioHandleDigest: string } | null
+  acceptanceReceiptRoot?: string
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -486,12 +514,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
   }
 
-  const deliver = async (text: string, signal?: AbortSignal): Promise<number[]> => {
-    return sendTelegramText(api, authorizedChatId, text, signal)
+  const deliver = async (text: string, signal?: AbortSignal, onMessageDelivered?: (messageId: number, chunk: string) => void): Promise<number[]> => {
+    return sendTelegramText(api, authorizedChatId, text, signal, onMessageDelivered)
   }
 
   const onMessage = async (message: TelegramInboundMessage): Promise<void> => {
-    const acceptanceMarker = readSanctuaryAcceptanceMarker(options.agentName)
+    const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
     const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
     emitNervesEvent({
       component: "senses",
@@ -501,6 +529,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     })
     let deliveryCount = 0
     const deliveredMessageIds: number[] = []
+    const deliveredChunks: string[] = []
+    let receiptStatus: "success" | "error" = "success"
+    let errorCategory: string | null = null
+    let providerInvocationCount: number | null = null
+    let toolInvocationCount: number | null = null
+    let toolResultDigests: string[] = []
     try {
       const collected = await runWithSanctuaryToolReceiptCollection(() => runTurn({
         agentName: options.agentName,
@@ -515,7 +549,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         userMessage: message.text,
         deliverySink: {
           onDelivery: async (delivery) => {
-            deliveredMessageIds.push(...await deliver(delivery.text))
+            await deliver(delivery.text, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
             deliveryCount += 1
           },
         },
@@ -523,22 +557,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
       }))
       const result = collected.result
-      if (deliveryCount === 0 && result.response.trim()) deliveredMessageIds.push(...await deliver(result.response))
-      if (acceptanceMarker) {
-        const deliveredText = [...result.deliveries.map((delivery) => delivery.text), result.response].filter((value) => value.trim()).join("\n")
-        appendSanctuaryTurnReceipt(agentRoot, {
-          schemaVersion: "sanctuary-telegram-turn-receipt-v1",
-          scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
-          updateDigest: createHash("sha256").update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0update\0${message.updateId}\0${message.messageId}`).digest("hex"),
-          sequenceDigest: createHash("sha256").update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0sequence\0${message.updateId}`).digest("hex"),
-          responseDigest: createHash("sha256").update(deliveredText).digest("hex"),
-          toolResultDigests: collected.toolResultDigests,
-          providerTurnCount: 1,
-          toolInvocationCount: collected.toolResultDigests.length,
-          deliveryCount: deliveredMessageIds.length,
-          telegramMessageIdDigests: deliveredMessageIds.map((id) => createHash("sha256").update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0delivery\0${id}`).digest("hex")),
-          completedAt: new Date().toISOString(),
-        })
+      providerInvocationCount = result.providerInvocationCount ?? null
+      toolInvocationCount = result.toolInvocationCount ?? null
+      toolResultDigests = collected.toolResultDigests
+      if (deliveryCount === 0 && result.response.trim()) {
+        await deliver(result.response, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
       }
       emitNervesEvent({
         component: "senses",
@@ -547,6 +570,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         meta: { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta },
       })
     } catch (error) {
+      receiptStatus = "error"
+      errorCategory = error instanceof Error ? error.name : "unknown"
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -562,7 +587,31 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           ),
         },
       })
-      await deliver("I couldn't complete that turn. The failure was recorded; please try again.")
+      const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
+      if (deliveredMessageIds.length === 0) await deliver(fallback, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
+    } finally {
+      if (acceptanceMarker) {
+        const hmac = (purpose: string, value: string): string => createHmac("sha256", identityKey).update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0${purpose}\0${value}`, "utf8").digest("hex")
+        try {
+          await appendSanctuaryTurnReceipt(options.acceptanceReceiptRoot ?? agentRoot, {
+            schemaVersion: "sanctuary-telegram-turn-receipt-v2",
+            scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
+            status: receiptStatus,
+            errorCategory,
+            updateDigest: hmac("update", `${message.updateId}\0${message.messageId}`),
+            sequenceDigest: hmac("sequence", String(message.updateId)),
+            responseDigest: hmac("response", deliveredChunks.join("\n")),
+            toolResultDigests,
+            providerInvocationCount,
+            toolInvocationCount,
+            deliveryCount: deliveredMessageIds.length,
+            telegramMessageIdDigests: deliveredMessageIds.map((id) => hmac("delivery", String(id))),
+            completedAt: new Date().toISOString(),
+          })
+        } catch (error) {
+          emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_acceptance_receipt_error", message: "Telegram acceptance receipt persistence failed", meta: { agentName: options.agentName, scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest, category: error instanceof Error ? error.name : "unknown" } })
+        }
+      }
     }
   }
 

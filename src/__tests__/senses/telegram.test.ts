@@ -1,3 +1,7 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { createHmac } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTelegramSenseApp } from "../../senses/telegram"
@@ -8,6 +12,10 @@ function fixture(input: {
   approvalRuntime?: any
   pollRun?: () => Promise<void>
   botToken?: string
+  acceptanceMarker?: () => { scenarioHandleDigest: string } | null
+  acceptanceReceiptRoot?: string
+  runTurn?: any
+  api?: TelegramBotApi
 } = {}) {
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
@@ -16,7 +24,7 @@ function fixture(input: {
     run: vi.fn(input.pollRun ?? (async () => undefined)),
     stop: vi.fn(),
   }
-  const api: TelegramBotApi = {
+  const api: TelegramBotApi = input.api ?? {
     request: vi.fn(async () => ({ message_id: 71 })),
     stop: vi.fn(),
   }
@@ -25,7 +33,7 @@ function fixture(input: {
     onUpdate = options.onUpdate
     return poll
   })
-  const runTurn = vi.fn(async (options: any) => {
+  const runTurn = input.runTurn ?? vi.fn(async (options: any) => {
     await options.deliverySink.onDelivery({ kind: "settle", text: "All systems nominal." })
     return {
       response: "All systems nominal.",
@@ -52,6 +60,8 @@ function fixture(input: {
     approvalTransport: input.approvalRuntime ? undefined : approvalTransport,
     approvalRuntime: input.approvalRuntime,
     healthSweep: input.healthSweep,
+    acceptanceMarker: input.acceptanceMarker,
+    acceptanceReceiptRoot: input.acceptanceReceiptRoot,
   })
   return { app, api, poll, runTurn, approvalTransport, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
 }
@@ -78,6 +88,48 @@ describe("Telegram sense", () => {
       text: "All systems nominal.",
       parse_mode: "HTML",
     }, undefined)
+  })
+
+  it("persists one HMAC-bound acceptance receipt with observed provider, tool, and delivery counts", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-acceptance-receipt-"))
+    const runTurn = vi.fn(async (options: any) => {
+      await options.deliverySink.onDelivery({ kind: "settle", text: "grounded answer" })
+      return { response: "grounded answer", ponderDeferred: false, deliveries: [{ kind: "settle", text: "grounded answer" }], deliveryFailures: [], providerInvocationCount: 2, toolInvocationCount: 1 }
+    })
+    const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }), acceptanceReceiptRoot: root, runTurn })
+
+    await f.getOnMessage()({ updateId: 9, messageId: "10", userId: "42", chatId: "42", text: "status" })
+
+    const receipt = JSON.parse(fs.readFileSync(path.join(root, "state", "acceptance", "telegram-turns.ndjson"), "utf8"))
+    const digest = (purpose: string, value: string) => createHmac("sha256", "k".repeat(43)).update(`ouroboros.telegram.turn-receipt.v2\0${purpose}\0${value}`).digest("hex")
+    expect(receipt).toMatchObject({ schemaVersion: "sanctuary-telegram-turn-receipt-v2", scenarioHandleDigest: "a".repeat(64), status: "success", errorCategory: null, providerInvocationCount: 2, toolInvocationCount: 1, deliveryCount: 1, updateDigest: digest("update", ["9", "10"].join("\0")), sequenceDigest: digest("sequence", "9"), responseDigest: digest("response", "grounded answer"), telegramMessageIdDigests: [digest("delivery", "71")] })
+    expect(JSON.stringify(receipt)).not.toContain('"updateId":9')
+  })
+
+  it("records partial chunk delivery as an error without sending a duplicate fallback", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-partial-receipt-"))
+    const api: TelegramBotApi = { request: vi.fn().mockResolvedValueOnce({ message_id: 71 }).mockRejectedValueOnce(new Error("second chunk failed")), stop: vi.fn() }
+    const long = "x".repeat(7_000)
+    const runTurn = vi.fn(async (options: any) => {
+      await options.deliverySink.onDelivery({ kind: "settle", text: long })
+      return { response: long, ponderDeferred: false, deliveries: [], deliveryFailures: [], providerInvocationCount: 1, toolInvocationCount: 0 }
+    })
+    const f = fixture({ api, runTurn, acceptanceMarker: () => ({ scenarioHandleDigest: "b".repeat(64) }), acceptanceReceiptRoot: root })
+
+    await f.getOnMessage()({ updateId: 11, messageId: "12", userId: "42", chatId: "42", text: "long" })
+
+    expect(api.request).toHaveBeenCalledTimes(2)
+    const receipt = JSON.parse(fs.readFileSync(path.join(root, "state", "acceptance", "telegram-turns.ndjson"), "utf8"))
+    expect(receipt).toMatchObject({ status: "error", errorCategory: "Error", deliveryCount: 1, providerInvocationCount: null, toolInvocationCount: null })
+    expect(receipt.telegramMessageIdDigests).toHaveLength(1)
+  })
+
+  it("does not turn an acceptance receipt write failure into another Telegram reply", async () => {
+    const rootFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telegram-receipt-failure-")), "not-a-directory")
+    fs.writeFileSync(rootFile, "blocked")
+    const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: "c".repeat(64) }), acceptanceReceiptRoot: rootFile })
+    await f.getOnMessage()({ updateId: 13, messageId: "14", userId: "42", chatId: "42", text: "status" })
+    expect(f.api.request).toHaveBeenCalledTimes(1)
   })
 
   it("keeps the same opaque friend and session identity across bot-token rotation", async () => {
