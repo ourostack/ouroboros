@@ -1151,6 +1151,14 @@ describe("Telegram approval callback transport", () => {
   it.each([
     { name: "terminal MAC only", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: { terminalMac: "a".repeat(64) } },
     { name: "delivery-interruption tag only", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: { terminalKind: "delivery_interruption" as const } },
+    { name: "delivery interruption grafted onto tombstone state", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: {
+      terminalKind: "delivery_interruption" as const, terminal: { accepted: false, terminalText: "interrupted" },
+      terminalizedAt: 950, tombstoneExpiresAt: 1_550, tombstoneMac: "c".repeat(64),
+    } },
+    { name: "delivery interruption grafted onto expiry observation", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: {
+      terminalKind: "delivery_interruption" as const, terminal: { accepted: false, terminalText: "interrupted" },
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 900, observedAt: 901, evidenceMac: null },
+    } },
     { name: "decision attempt on interrupted delivery", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: {
       decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
     } },
@@ -1161,7 +1169,14 @@ describe("Telegram approval callback transport", () => {
       terminalizedAt: 950, tombstoneExpiresAt: 1_550, tombstoneMac: "c".repeat(64),
       decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "deny" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
     } },
+    { name: "decision attempt grafted onto expiry observation", deliveryState: "bound" as const, messageId: "99", extra: {
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 900, observedAt: 901, evidenceMac: null },
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
     { name: "expired partial authority", deliveryState: "bound" as const, messageId: "99", extra: { terminalMac: "a".repeat(64) } },
+    { name: "ordinary bound record carrying tombstone fields", deliveryState: "bound" as const, messageId: "99", extra: {
+      terminalizedAt: 950, tombstoneExpiresAt: 1_550, tombstoneMac: "c".repeat(64),
+    } },
   ])("classifies malformed callback state before acknowledgement: $name", async ({ deliveryState, messageId, extra }) => {
     const record = {
       approvalId: "invalid-callback", messageId, deliveryState,
@@ -1177,8 +1192,24 @@ describe("Telegram approval callback transport", () => {
     expect(fixture.onDecision).not.toHaveBeenCalled()
   })
 
+  it.each(["", "0", "01", "1e2", "-1", "9007199254740992"])("rejects noncanonical authority message id %j before callback acknowledgement", async (messageId) => {
+    const record = {
+      approvalId: "invalid-message", messageId, deliveryState: "bound" as const,
+      approveCallbackData: "a:invalid-message", denyCallbackData: "d:invalid-message", expiresAt: 2_000_000,
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    }
+    const fixture = approvalFixture({ records: [record] })
+
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:invalid-message"))).rejects.toThrow("invalid delivery routing")
+
+    expect(fixture.records()).toEqual([record])
+    expect(fixture.calls).toEqual([])
+    expect(fixture.onDecision).not.toHaveBeenCalled()
+  })
+
   it.each([
     { deliveryState: "bound" as const, messageId: "99", extra: { terminalMac: "a".repeat(64) } },
+    { deliveryState: "bound" as const, messageId: "99", extra: { terminalizedAt: 950, tombstoneExpiresAt: 1_550, tombstoneMac: "c".repeat(64) } },
     { deliveryState: "delivery_indeterminate" as const, messageId: null, extra: {
       decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
     } },

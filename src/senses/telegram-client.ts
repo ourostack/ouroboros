@@ -560,6 +560,16 @@ export function classifyTelegramPersistedApprovalState(
     || pending.tombstoneExpiresAt !== undefined
     || pending.tombstoneMac !== undefined
     || pending.staleTap !== undefined
+  const hasCompleteTombstoneState = pending.terminalizedAt !== undefined
+    && pending.tombstoneExpiresAt !== undefined
+    && pending.tombstoneMac !== undefined
+    && pending.expiryObservation !== undefined
+  const hasExclusiveTerminalState = pending.expiryObservation !== undefined || hasTombstoneState
+  const messageIdNumber = typeof pending.messageId === "string" ? Number(pending.messageId) : Number.NaN
+  const hasCanonicalMessageId = typeof pending.messageId === "string"
+    && /^[1-9][0-9]*$/u.test(pending.messageId)
+    && Number.isSafeInteger(messageIdNumber)
+    && String(messageIdNumber) === pending.messageId
   const validTerminal = hasTerminal
     && typeof pending.terminal!.accepted === "boolean"
     && typeof pending.terminal!.terminalText === "string"
@@ -571,15 +581,21 @@ export function classifyTelegramPersistedApprovalState(
     && validTerminal
     && pending.terminal!.accepted === false
     && !hasAuthority
+    && !hasExclusiveTerminalState
 
   if (pending.terminalKind !== undefined) {
     if (!exactDeliveryInterruption) throw new Error("Telegram persisted delivery-interruption terminal state is invalid")
     return "delivery_interruption"
   }
-  if (hasAuthority && hasTombstoneState) {
-    throw new Error("Telegram persisted action authority cannot coexist with tombstone state")
+  if (hasAuthority && hasExclusiveTerminalState) {
+    throw new Error("Telegram persisted action authority cannot coexist with expiry or tombstone state")
   }
-  if (hasAttempt && (pending.deliveryState !== "bound" || typeof pending.messageId !== "string" || pending.messageId.length === 0)) {
+  if (pending.deliveryState === "terminal_tombstone") {
+    if (!hasCompleteTombstoneState) throw new Error("Telegram persisted terminal tombstone is structurally incomplete")
+  } else if (hasTombstoneState) {
+    throw new Error("Telegram persisted tombstone state has invalid delivery routing")
+  }
+  if (hasAttempt && (pending.deliveryState !== "bound" || !hasCanonicalMessageId)) {
     throw new Error("Telegram persisted decision attempt has invalid delivery routing")
   }
   if (hasReceipt && (!hasAttempt || !hasTerminal || !hasTerminalMac)) {
