@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { inspect } from "node:util"
+import { createHash } from "node:crypto"
 
 import {
   TelegramApiError,
@@ -299,6 +300,46 @@ describe("Telegram approval callback transport", () => {
     } as never)
     await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "stale-save-failure" }))).rejects.toThrow("disk unavailable")
     expect(evidence.filter(({ event }) => event === "telegram.approval_stale_callback_settled")).toEqual([])
+  })
+
+  it("resumes the same durably attempted stale tap after restart before emitting success", async () => {
+    const queryId = "stale-resume"
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:approve", denyCallbackData: "d:deny",
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 20_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
+      staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: createHash("sha256").update(queryId).digest("hex"), attemptedAt: 2_100, consumedAt: null },
+    }]
+    const evidence: string[] = []
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), now: () => 2_200, signAcceptanceEvidence: () => "f".repeat(64),
+      onAcceptanceEvidence: (event: string) => { evidence.push(event) },
+    } as never)
+    await expect(transport.handleUpdate(approvalCallback("a:approve", { id: queryId }))).resolves.toMatchObject({ reason: "stale_callback" })
+    expect(records[0]).toMatchObject({ staleTap: { state: "consumed", attemptedAt: 2_100, consumedAt: 2_200 } })
+    expect(evidence.filter((event) => event === "telegram.approval_stale_callback_settled")).toHaveLength(1)
+  })
+
+  it.each([
+    { patch: { expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "e".repeat(64) } }, error: "expiry observation" },
+    { patch: { staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: "invalid", attemptedAt: 2_100, consumedAt: null } }, error: "stale-tap record" },
+  ])("fails closed on invalid persisted tombstone evidence: $error", async ({ patch, error }) => {
+    const record = {
+      approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny",
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 20_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
+      ...patch,
+    }
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => [record] as never, save: vi.fn() }, createOpaqueHandle: vi.fn(), onDecision: vi.fn(), now: () => 2_200,
+      signAcceptanceEvidence: () => "f".repeat(64),
+    } as never)
+    await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "stale-resume" }))).rejects.toThrow(error)
   })
 
   it("durably retires an unclaimed terminal tombstone at its bounded deadline", async () => {

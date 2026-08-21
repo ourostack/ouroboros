@@ -46,6 +46,33 @@ describe("Sanctuary interactive daemon control", () => {
     expect(handle).toHaveBeenCalledOnce()
   })
 
+  it("fails closed when stale settlement or isolated recovery proof is not exact", async () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    const baseApproval = {
+      approvalId: "approval-1", epoch: 0, toolName: "unraid_restart_container", arguments: { container: "calibre-web" },
+      checkpointDigest: "b".repeat(64), suspendedSessionRevision: "c".repeat(64),
+    }
+    const tombstone = {
+      approvalId: "approval-1", messageId: "42", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:opaque", denyCallbackData: "d:opaque",
+      expiresAt: 300_000, terminalizedAt: 301_000, tombstoneExpiresAt: 901_000,
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 300_000, observedAt: 300_500, evidenceMac: "f".repeat(64) },
+    }
+    const common = {
+      agentRoot: "/unused", readPending: () => [tombstone],
+      createSession: async () => ({ handle: vi.fn(async () => ({ handled: true, accepted: true, reason: "accepted" })), pendingApprovalIds: () => [], close: vi.fn() }),
+      proveIndeterminateRecovery: vi.fn(), writeCredentialObserved: () => false,
+    }
+    await expect(executeSanctuaryInteractiveEngine({ operation: "drive_timeout_stale", label: "unit-16k-timeout-stale", scenarioHandleDigest }, {
+      ...common, readApprovals: () => [{ approval: { ...baseApproval, state: "expired" } as never, continuation: null }],
+    })).rejects.toThrow("timeout stale callback proof failed")
+    await expect(executeSanctuaryInteractiveEngine({ operation: "prepare_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest }, {
+      ...common,
+      readApprovals: () => [{ approval: { ...baseApproval, state: "proposed" } as never, continuation: null }],
+      readPending: () => [{ ...tombstone, deliveryState: "bound" as const }],
+      proveIndeterminateRecovery: () => ({ observed: true, retryCount: 0, reopened: true, attemptedRecordDigest: "7".repeat(64), recoveredRecordDigest: "7".repeat(64) }),
+    })).rejects.toThrow("isolated attempted recovery proof failed")
+  })
+
   it("proves attempted recovery through a durable SQLite close and reopen", () => {
     const agentRoot = fs.mkdtempSync("/tmp/oi-recovery-")
     const approval = {
@@ -79,6 +106,8 @@ describe("Sanctuary interactive daemon control", () => {
       await expect(request(control.socketPath, { operation: "interactive_runtime_ready", label: "unit-16m-restart-continuation", scenarioHandleDigest }))
         .resolves.toEqual({ ok: true, result: { ready: true } })
       await expect(request(control.socketPath, { operation: "interactive_runtime_ready", label: "wrong", scenarioHandleDigest }))
+        .resolves.toEqual({ ok: false, error: "interactive runtime operation failed" })
+      await expect(request(control.socketPath, { operation: "drive_timeout_stale", label: "unit-16k-timeout-stale", scenarioHandleDigest }))
         .resolves.toEqual({ ok: false, error: "interactive runtime operation failed" })
       expect(transport.handleUpdate).not.toHaveBeenCalled()
     } finally {
