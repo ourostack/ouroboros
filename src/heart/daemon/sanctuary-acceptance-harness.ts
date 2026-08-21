@@ -1451,9 +1451,13 @@ async function rebootRequest(config: JsonObject, deps: AcceptanceHarnessDependen
   const idempotencyKey = deps.randomBytes(16).toString("hex")
   const preflight = object(await deps.runAdapter(executable, { operation: "reboot_preflight_snapshot", targetId }), "reboot preflight adapter result")
   const preflightDigest = opaqueDigest(preflight.digest, "reboot preflight digest")
-  if (preflight.safe !== true) throw new Error("reboot preflight is unsafe")
+  if (preflight.arrayReady !== true || typeof preflight.parityActive !== "boolean" || typeof preflight.moverActive !== "boolean" || typeof preflight.mutationActive !== "boolean") {
+    throw new Error("reboot preflight is invalid")
+  }
+  const unrelatedHostOperations = [preflight.parityActive, preflight.moverActive, preflight.mutationActive].filter((value) => value === true).length
+  if (preflight.safe !== true || unrelatedHostOperations !== 0) throw new Error("reboot preflight is unsafe")
   const prebootIntegrity = object(await deps.runAdapter(executable, { operation: "postboot_integrity_snapshot" }), "preboot integrity snapshot")
-  const base = { schemaVersion: 1, operation: "reboot", phase: "preflight", targetId, idempotencyDigest: digest(idempotencyKey), preflightDigest, prebootIntegrity, requestedAt: deps.now() }
+  const base = { schemaVersion: 1, operation: "reboot", phase: "preflight", targetId, idempotencyDigest: digest(idempotencyKey), preflightDigest, prebootIntegrity, unrelatedHostOperations, requestedAt: deps.now() }
   initializeCheckpoint(root, evidencePath, base)
   try {
     if (config.scenarioAdapter !== undefined) {
@@ -1462,8 +1466,9 @@ async function rebootRequest(config: JsonObject, deps: AcceptanceHarnessDependen
     const response = object(await deps.runAdapter(executable, { operation: "request_reboot", targetId, idempotencyKey, preflightDigest }), "reboot adapter result")
     if (response.accepted !== true || response.targetId !== targetId) throw new Error("reboot adapter did not accept the exact target")
     const requestId = text(response.requestId, "reboot requestId")
+    const reservationId = opaqueDigest(response.reservationId, "reboot reservationId")
     const prebootDigest = digest(text(response.prebootId, "reboot prebootId"))
-    replaceCheckpoint(root, evidencePath, { ...base, phase: "requested", requestId, prebootDigest })
+    replaceCheckpoint(root, evidencePath, { ...base, phase: "requested", requestId, reservationId, prebootDigest })
   } catch (error) {
     failedCheckpoint(root, evidencePath, base, error)
     throw error

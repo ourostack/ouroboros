@@ -740,6 +740,8 @@ describe("Sanctuary acceptance harness", () => {
     expect(runner).toContain("reboot-resume) TIME_LIMIT=780; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
     expect(runner).toContain('test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume')
     expect(runner).toContain("assert_health_probe_cleanup")
+    expect(runner).toContain('operation: "commit_reboot"')
+    expect(runner).not.toMatch(/^\s*\/sbin\/reboot\s*$/mu)
     expect(wrapper).toContain("--config")
     expect(wrapper).toContain("--contract")
     expect(adapterWrapper).toContain("sanctuary-acceptance-adapter.js")
@@ -1398,7 +1400,7 @@ describe("Sanctuary acceptance harness", () => {
     const deps = dependencies({
       adapter: async (executable, payload) => {
         calls.push({ executable, payload })
-        if (executable === "/safe/reboot") return { accepted: true, targetId: "sanctuary", requestId: "request-1", prebootId: "boot-1" }
+        if (executable === "/safe/reboot") return { accepted: true, targetId: "sanctuary", requestId: "request-1", reservationId: "a".repeat(64), prebootId: "boot-1" }
         poll += 1
         return poll === 1
           ? { state: "booting", targetId: "sanctuary", requestId: "request-1" }
@@ -1453,7 +1455,7 @@ describe("Sanctuary acceptance harness", () => {
         }
         if (payload.operation === "request_reboot") {
           order.push("request")
-          return { accepted: true, targetId: "sanctuary", requestId, prebootId: "boot-before" }
+          return { accepted: true, targetId: "sanctuary", requestId, reservationId: "a".repeat(64), prebootId: "boot-before" }
         }
         if (payload.operation === "poll_reboot") {
           order.push("reconnect")
@@ -1967,7 +1969,7 @@ executeSanctuaryAcceptanceHarness("reboot-request", {
     if (payload.operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64) }
     if (payload.operation === "postboot_integrity_snapshot") return { schemaVersion: "sanctuary-postboot-integrity-v1", telegramOffsetDigest: "1".repeat(64), approvalStateDigest: "2".repeat(64), approvalExecutionCount: 0, fingerprintDigest: "3".repeat(64), sweeps: [], deliveries: [], audits: [] }
     fs.appendFileSync(mutationPath, process.pid + "\n")
-    return { accepted: true, targetId: "sanctuary", requestId: String(process.pid), prebootId: "boot-before", preflightDigest: payload.preflightDigest }
+    return { accepted: true, targetId: "sanctuary", requestId: String(process.pid), reservationId: "a".repeat(64), prebootId: "boot-before", preflightDigest: payload.preflightDigest }
   },
   fetch: globalThis.fetch,
   now: Date.now,
@@ -2018,7 +2020,7 @@ executeSanctuaryAcceptanceHarness("reboot-request", {
     const dir = root()
     const file = path.join(dir, "reboot-identity.json")
     await executeSanctuaryAcceptanceHarness("reboot-request", { allowedRoot: dir, evidencePath: file, targetId: "sanctuary", adapter: "/reboot" }, dependencies({
-      adapter: async () => ({ accepted: true, targetId: "sanctuary", requestId: "r", prebootId: "boot-a" }),
+      adapter: async () => ({ accepted: true, targetId: "sanctuary", requestId: "r", reservationId: "a".repeat(64), prebootId: "boot-a" }),
     }))
     await expect(executeSanctuaryAcceptanceHarness("reboot-resume", { allowedRoot: dir, evidencePath: file, adapter: "/poll", timeoutMs: 10, intervalMs: 1 }, dependencies({
       adapter: async () => ({ state: "ready", targetId: "sanctuary", requestId: "r", bootId: "boot-a" }),

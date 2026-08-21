@@ -1264,7 +1264,10 @@ Packaged Unit 16 acceptance execution:
   root-owned private Unix socket (root:10001 mode 0660) to a root broker extracted
   from the same exact image. The broker accepts only fixed Unraid inventory/create/
   exact-revoke/rejection operations, exact production-container snapshots, and a
-  staged reboot request. The broker performs one atomic inspect of only
+  two-phase reboot reservation/final commit. Reservation drains queued owner
+  mutations and rejects new ones; after the requested checkpoint is fsynced, the
+  broker repeats the array/parity/mover/durable-health preflight and invokes the
+  fixed host reboot itself exactly once. The broker performs one atomic inspect of only
   `ouro-butler`, requires its immutable image ID, writes that exact typed/redacted
   snapshot before accepting requests, and exposes a nonnegative Docker restart
   count. Both initial and refreshed snapshots share the same exact schema. The

@@ -19,6 +19,7 @@ const BOOT_ID = "/proc/sys/kernel/random/boot_id"
 const MDCMD = "/usr/local/sbin/mdcmd"
 const TAILSCALE = "/usr/local/sbin/tailscale"
 const PGREP = "/usr/bin/pgrep"
+const REBOOT = "/sbin/reboot"
 const TARGET_SERVER = "sanctuary-unraid"
 const TARGET_HOST = "sanctuary"
 const KEY_ID = /^[A-Za-z0-9._:-]+$/u
@@ -830,18 +831,40 @@ function createHealthProbeOperationCoordinator() {
 
 function createOwnerMutationCoordinator() {
   let ownerTail = Promise.resolve()
-  let activeOperations = 0
+  let pendingOperations = 0
+  let rebootReservation = null
   const activeHealth = new Set()
   const enqueue = (operation) => {
+    if (rebootReservation !== null) return Promise.reject(new Error("owner mutation refused by reboot reservation"))
+    pendingOperations += 1
     const task = ownerTail.catch(() => {}).then(async () => {
-      activeOperations += 1
-      try { return await operation() } finally { activeOperations -= 1 }
+      try { return await operation() } finally { pendingOperations -= 1 }
     })
     ownerTail = task.then(() => {}, () => {})
     return task
   }
   return {
-    active() { return activeOperations > 0 },
+    active() { return pendingOperations > 0 },
+    async reserveReboot(reservationId, operation) {
+      text(reservationId, "reboot reservation", SHA256)
+      if (rebootReservation !== null) throw new Error("reboot reservation already exists")
+      rebootReservation = { id: reservationId, attempted: false }
+      try {
+        await ownerTail.catch(() => {})
+        if (pendingOperations !== 0 || activeHealth.size !== 0) throw new Error("reboot reservation could not drain owner mutations")
+        return await operation()
+      } catch (error) {
+        rebootReservation = null
+        throw error
+      }
+    },
+    async commitReboot(reservationId, operation) {
+      text(reservationId, "reboot reservation", SHA256)
+      if (rebootReservation?.id !== reservationId) throw new Error("reboot reservation is absent or mismatched")
+      if (rebootReservation.attempted) throw new Error("reboot commit was already attempted")
+      rebootReservation.attempted = true
+      return await operation()
+    },
     healthStart(scenario, operation) {
       text(scenario, "health owner scenario", SHA256)
       return enqueue(async () => {
@@ -1246,6 +1269,11 @@ async function dispatch(request, dependencies = {
   liveContainerProcessIdentity,
   parseProcStartTime,
   rebootPreflightSnapshot: observeRebootPreflight,
+  commitHostReboot: () => new Promise((resolve, reject) => {
+    const child = spawn(REBOOT, [], { cwd: "/", detached: true, stdio: "ignore", env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" } })
+    child.once("error", reject)
+    child.once("spawn", () => { child.unref(); resolve() })
+  }),
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
@@ -1313,11 +1341,34 @@ async function dispatch(request, dependencies = {
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
     const key = text(payload.idempotencyKey, "idempotency key", /^[0-9a-f]{32}$/u)
     const preflightDigest = text(payload.preflightDigest, "preflight digest", SHA256)
-    const preflight = object(dependencies.rebootPreflightSnapshot(), "reboot preflight")
-    if (preflight.digest !== preflightDigest) throw new Error("reboot preflight changed before commit")
-    if (preflight.safe !== true) throw new Error("reboot preflight is unsafe")
+    const requestId = createHash("sha256").update(`sanctuary-reboot\0${key}`).digest("hex")
+    const reservationId = createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex")
+    const reserve = dependencies.ownerMutationCoordinator?.reserveReboot
+    if (!reserve) throw new Error("reboot reservation coordinator is unavailable")
+    await reserve.call(dependencies.ownerMutationCoordinator, reservationId, async () => {
+      const preflight = object(dependencies.rebootPreflightSnapshot(), "reboot preflight")
+      if (preflight.digest !== preflightDigest) throw new Error("reboot preflight changed before commit")
+      if (preflight.safe !== true) throw new Error("reboot preflight is unsafe")
+    })
     const prebootId = text(dependencies.readBootId().trim(), "boot id", /^[A-Za-z0-9-]{4,128}$/u)
-    return { accepted: true, targetId: TARGET_HOST, requestId: createHash("sha256").update(`sanctuary-reboot\0${key}`).digest("hex"), prebootId, preflightDigest, staged: true }
+    return { accepted: true, targetId: TARGET_HOST, requestId, reservationId, prebootId, preflightDigest, staged: true }
+  }
+  if (operation === "commit_reboot") {
+    exactKeys(payload, ["operation", "targetId", "requestId", "reservationId"], operation)
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    const requestId = text(payload.requestId, "reboot request id", SHA256)
+    const reservationId = text(payload.reservationId, "reboot reservation", SHA256)
+    if (reservationId !== createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex")) throw new Error("reboot request reservation binding is invalid")
+    const commit = dependencies.ownerMutationCoordinator?.commitReboot
+    if (!commit) throw new Error("reboot reservation coordinator is unavailable")
+    await commit.call(dependencies.ownerMutationCoordinator, reservationId, async () => {
+      const preflight = object(dependencies.rebootPreflightSnapshot(), "final reboot preflight")
+      if (preflight.safe !== true || preflight.arrayReady !== true || preflight.parityActive !== false || preflight.moverActive !== false || preflight.mutationActive !== false) {
+        throw new Error("final reboot preflight is unsafe")
+      }
+      await dependencies.commitHostReboot()
+    })
+    return { committed: true, targetId: TARGET_HOST, requestId, reservationId }
   }
   if (operation === "reboot_preflight_snapshot") {
     exactKeys(payload, ["operation", "targetId"], operation)

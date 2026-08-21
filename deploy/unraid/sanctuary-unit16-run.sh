@@ -397,9 +397,26 @@ if test "$COMMAND" = reboot-request; then
   ' "$EVIDENCE_ROOT/reboot.json"
   sync -f "$EVIDENCE_ROOT/reboot.json"
   sync -f "$EVIDENCE_ROOT"
+  /usr/bin/timeout -s KILL 20 /usr/local/bin/node -e '
+    const fs = require("node:fs"); const net = require("node:net");
+    const checkpoint = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+    if (checkpoint.operation !== "reboot" || checkpoint.phase !== "requested"
+      || !/^[0-9a-f]{64}$/.test(checkpoint.requestId) || !/^[0-9a-f]{64}$/.test(checkpoint.reservationId)) process.exit(1);
+    const request = JSON.stringify({ operation: "commit_reboot", targetId: "sanctuary", requestId: checkpoint.requestId, reservationId: checkpoint.reservationId });
+    let raw = ""; const socket = net.createConnection(process.argv[1]);
+    socket.setEncoding("utf8"); socket.setTimeout(15000, () => socket.destroy(new Error("timeout")));
+    socket.on("connect", () => socket.end(request));
+    socket.on("data", (chunk) => { raw += chunk; if (Buffer.byteLength(raw) > 65536) socket.destroy(new Error("oversize")); });
+    socket.on("end", () => {
+      const envelope = JSON.parse(raw); const result = envelope && envelope.ok === true ? envelope.result : null;
+      if (!result || result.committed !== true || result.targetId !== "sanctuary"
+        || result.requestId !== checkpoint.requestId || result.reservationId !== checkpoint.reservationId) process.exitCode = 1;
+    });
+    socket.on("error", () => { process.exitCode = 1; });
+  ' "$BROKER_SOCKET" "$EVIDENCE_ROOT/reboot.json"
   HOST_REBOOT_COMMITTED=yes
   cleanup_unit16
   BROKER_PID=
   PRIVATE_ROOT=
-  /sbin/reboot
+  exit 0
 fi

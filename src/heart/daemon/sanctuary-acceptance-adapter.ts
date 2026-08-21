@@ -1180,19 +1180,21 @@ export async function readDefaultSanctuaryScenarioFacts(
   const rebootCheckpoint = parsedJson(rebootRaw)
   let reboot: SanctuaryScenarioFacts["reboot"]
   if (rebootCheckpoint?.operation === "reboot" && rebootCheckpoint.phase === "preflight" && rebootCheckpoint.targetId === TARGET_ID
-    && typeof rebootCheckpoint.idempotencyDigest === "string" && SHA256.test(rebootCheckpoint.idempotencyDigest)) {
+    && typeof rebootCheckpoint.idempotencyDigest === "string" && SHA256.test(rebootCheckpoint.idempotencyDigest)
+    && Number.isSafeInteger(rebootCheckpoint.unrelatedHostOperations) && Number(rebootCheckpoint.unrelatedHostOperations) >= 0) {
     reboot = {
-      phase: "preflight", requestDigest: rebootCheckpoint.idempotencyDigest, requestCount: 0, checkpointPersisted: true, unrelatedHostOperations: 0,
+      phase: "preflight", requestDigest: rebootCheckpoint.idempotencyDigest, requestCount: 0, checkpointPersisted: true, unrelatedHostOperations: Number(rebootCheckpoint.unrelatedHostOperations),
       bootIdentityChanged: false, hostReady: false, arrayReady: false, dockerReady: false, butlerReady: false, tailscaleReady: false, sshReady: false,
     }
   } else if (rebootCheckpoint?.operation === "reboot" && ["requested", "complete"].includes(String(rebootCheckpoint.phase))
     && typeof rebootCheckpoint.requestId === "string" && SHA256.test(rebootCheckpoint.requestId)
-    && typeof rebootCheckpoint.prebootDigest === "string" && SHA256.test(rebootCheckpoint.prebootDigest)) {
+    && typeof rebootCheckpoint.prebootDigest === "string" && SHA256.test(rebootCheckpoint.prebootDigest)
+    && Number.isSafeInteger(rebootCheckpoint.unrelatedHostOperations) && Number(rebootCheckpoint.unrelatedHostOperations) >= 0) {
     const milestones = container && container.recoveryMilestones && typeof container.recoveryMilestones === "object" && !Array.isArray(container.recoveryMilestones)
       ? container.recoveryMilestones as JsonObject : {}
     const complete = rebootCheckpoint.phase === "complete" && typeof rebootCheckpoint.postbootDigest === "string" && SHA256.test(rebootCheckpoint.postbootDigest)
     reboot = {
-      phase: rebootCheckpoint.phase as "requested" | "complete", requestDigest: createHash("sha256").update(rebootCheckpoint.requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0,
+      phase: rebootCheckpoint.phase as "requested" | "complete", requestDigest: createHash("sha256").update(rebootCheckpoint.requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: Number(rebootCheckpoint.unrelatedHostOperations),
       bootIdentityChanged: complete && rebootCheckpoint.postbootDigest !== rebootCheckpoint.prebootDigest,
       hostReady: milestones.hostReady === true, arrayReady: milestones.arrayReady === true, dockerReady: milestones.dockerReady === true,
       butlerReady: milestones.butlerReady === true, tailscaleReady: milestones.tailscaleReady === true, sshReady: milestones.sshReady === true,
@@ -1825,10 +1827,12 @@ async function requestReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapt
     operation: "request_reboot", targetId: TARGET_ID, idempotencyKey, preflightDigest,
   }), "host reboot staging")
   const requestId = text(response.requestId, "host reboot requestId")
+  const reservationId = text(response.reservationId, "host reboot reservationId")
   const prebootId = text(response.prebootId, "host reboot prebootId")
   if (response.accepted !== true || response.staged !== true || response.targetId !== TARGET_ID || response.preflightDigest !== preflightDigest
-    || requestId !== sha256(`sanctuary-reboot\0${idempotencyKey}`)) throw new Error("host reboot staging attestation is invalid")
-  return { accepted: true, targetId: TARGET_ID, requestId, prebootId, preflightDigest }
+    || requestId !== sha256(`sanctuary-reboot\0${idempotencyKey}`)
+    || reservationId !== sha256(`sanctuary-reboot-reservation\0${requestId}`)) throw new Error("host reboot staging attestation is invalid")
+  return { accepted: true, targetId: TARGET_ID, requestId, reservationId, prebootId, preflightDigest }
 }
 
 async function rebootPreflight(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {

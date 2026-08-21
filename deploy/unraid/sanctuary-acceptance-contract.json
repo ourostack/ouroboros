@@ -37,6 +37,7 @@
     "evidence-snapshot": { "operation": "evidence_snapshot", "authority": "fixed-postboot-state-read", "modelReachable": false, "timeoutMs": 15000 },
     "capture-evidence-provenance": { "operation": "capture_evidence_provenance", "authority": "fixed-live-continuity-read", "modelReachable": false, "timeoutMs": 15000 },
     "reboot-live-request": { "operation": "request_reboot", "authority": "fixed-sanctuary-host-reboot", "modelReachable": false, "timeoutMs": 15000 },
+    "reboot-final-commit": { "operation": "commit_reboot", "authority": "exclusive-drained-final-preflight-and-fixed-sanctuary-host-reboot", "modelReachable": false, "timeoutMs": 15000 },
     "reboot-poll": { "operation": "poll_reboot", "authority": "fixed-linux-boot-identity-read", "modelReachable": false, "timeoutMs": 15000 },
     "vault-backed-capability-verify": { "operation": "vault-backed-capability-verify", "authority": "fixed-container-vault-probe", "modelReachable": false, "timeoutMs": 15000 },
     "closed-inventory": { "operation": "closed-inventory", "authority": "fixed-unraid-key-directory-read", "modelReachable": false, "timeoutMs": 15000 },

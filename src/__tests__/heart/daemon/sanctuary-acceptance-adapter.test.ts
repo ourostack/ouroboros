@@ -487,7 +487,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       "evidence-snapshot", "exact-id-revoke", "health-probe-recovery", "health-probe-start", "health-probe-status",
       "interactive-duplicate-driver", "interactive-restart-driver", "interactive-timeout-stale-driver",
       "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
-      "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
+      "reboot-final-commit", "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
       "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",
     ])
     expect(Object.values(contract.adapters)).toEqual(expect.arrayContaining([
@@ -841,7 +841,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const postbootDigest = "2".repeat(64)
     const requestId = "3".repeat(64)
     const files: Record<string, string> = {
-      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "complete", targetId: "sanctuary", requestId, prebootDigest, postbootDigest, completedAt: 1 }),
+      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "complete", targetId: "sanctuary", requestId, prebootDigest, postbootDigest, unrelatedHostOperations: 0, completedAt: 1 }),
       "/run/ouro-acceptance/image-digest": "b".repeat(64),
       "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 1, profiles: { "sanctuary-telegram": ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"] } }),
     }
@@ -859,7 +859,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-reboot-preflight-"))
     const idempotencyDigest = "4".repeat(64)
     const files: Record<string, string> = {
-      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "preflight", targetId: "sanctuary", idempotencyDigest, requestedAt: 123 }),
+      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "preflight", targetId: "sanctuary", idempotencyDigest, unrelatedHostOperations: 0, requestedAt: 123 }),
     }
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16a-pre-reboot-checkpoint", "a".repeat(64), unit16Deps({
       readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
@@ -1138,6 +1138,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
           accepted: true, staged: true, targetId: "sanctuary",
           requestId,
           prebootId: "boot-after", preflightDigest: payload.preflightDigest,
+          reservationId: createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex"),
         }
       },
     })

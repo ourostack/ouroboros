@@ -39,6 +39,9 @@ interface BrokerModule {
     mutationActive(): boolean
   }): Record<string, unknown>
   createOwnerMutationCoordinator(): {
+    active(): boolean
+    reserveReboot<T>(reservationId: string, operation: () => T | Promise<T>): Promise<T>
+    commitReboot<T>(reservationId: string, operation: () => T | Promise<T>): Promise<T>
     healthStart<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     healthRecover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     healthOperation<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -197,6 +200,30 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(() => readBoundedProcStatus(oversized)).toThrow(/bound/u)
   })
 
+  it("drains already queued owner work and rejects new work once reboot is reserved", async () => {
+    const { createOwnerMutationCoordinator } = await broker()
+    const coordinator = createOwnerMutationCoordinator()
+    let release!: () => void
+    const first = coordinator.interactive(() => new Promise<void>((resolve) => { release = resolve }))
+    const second = coordinator.interactive(async () => undefined)
+    const reserved = coordinator.reserveReboot("a".repeat(64), async () => "reserved")
+    await expect(coordinator.interactive(async () => undefined)).rejects.toThrow(/reboot reservation/u)
+    expect(coordinator.active()).toBe(true)
+    release()
+    await Promise.all([first, second])
+    await expect(reserved).resolves.toBe("reserved")
+    expect(coordinator.active()).toBe(false)
+  })
+
+  it("commits a reboot reservation once and never retries an ambiguous commit", async () => {
+    const { createOwnerMutationCoordinator } = await broker()
+    const coordinator = createOwnerMutationCoordinator()
+    const reservation = "a".repeat(64)
+    await coordinator.reserveReboot(reservation, async () => undefined)
+    await expect(coordinator.commitReboot(reservation, async () => { throw new Error("ambiguous") })).rejects.toThrow(/ambiguous/u)
+    await expect(coordinator.commitReboot(reservation, async () => undefined)).rejects.toThrow(/already attempted/u)
+  })
+
   it("observes an idle array/mover/mutation preflight and rejects active or unknown host operations", async () => {
     const { observeRebootPreflight } = await broker()
     const idle = observeRebootPreflight({
@@ -213,13 +240,34 @@ describe("Sanctuary Unit 16 host broker", () => {
   })
 
   it("digest-binds request_reboot to a fresh unchanged broker preflight", async () => {
-    const { dispatch } = await broker()
+    const { createOwnerMutationCoordinator, dispatch } = await broker()
     const first = { arrayReady: true, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }
     const changed = { ...first, moverActive: true, safe: false, digest: "b".repeat(64) }
     const request = { operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: first.digest }
-    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), rebootPreflightSnapshot: () => first })).resolves.toMatchObject({ accepted: true, preflightDigest: first.digest })
-    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), rebootPreflightSnapshot: () => changed })).rejects.toThrow(/preflight changed/u)
-    await expect(dispatch({ ...request, preflightDigest: "b".repeat(64) }, { readBootId: () => "boot-id", containerSnapshot: () => ({}), rebootPreflightSnapshot: () => first })).rejects.toThrow(/preflight changed/u)
+    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => first })).resolves.toMatchObject({ accepted: true, preflightDigest: first.digest, reservationId: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => changed })).rejects.toThrow(/preflight changed/u)
+    await expect(dispatch({ ...request, preflightDigest: "b".repeat(64) }, { readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => first })).rejects.toThrow(/preflight changed/u)
+  })
+
+  it("rechecks preflight under the reservation and couples exactly one host reboot commit", async () => {
+    const { createOwnerMutationCoordinator, dispatch } = await broker()
+    const coordinator = createOwnerMutationCoordinator()
+    const safe = { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }
+    const staged = await dispatch({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: safe.digest }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+    }) as Record<string, unknown>
+    const commits: string[] = []
+    const committed = await dispatch({ operation: "commit_reboot", targetId: "sanctuary", requestId: staged.requestId, reservationId: staged.reservationId }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+      commitHostReboot: () => { commits.push("reboot") },
+    }) as Record<string, unknown>
+    expect(committed).toMatchObject({ committed: true, requestId: staged.requestId })
+    expect(commits).toEqual(["reboot"])
+    await expect(dispatch({ operation: "commit_reboot", targetId: "sanctuary", requestId: staged.requestId, reservationId: staged.reservationId }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+      commitHostReboot: () => { commits.push("retry") },
+    })).rejects.toThrow(/already attempted/u)
+    expect(commits).toEqual(["reboot"])
   })
   it("reads the exact denial target lifecycle without returning raw owner identifiers", async () => {
     const { denialTargetSnapshot, dispatch } = await broker()
@@ -555,7 +603,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     }
   })
   it("stages a bounded host reboot attestation without executing reboot", async () => {
-    const { dispatch } = await broker()
+    const { createOwnerMutationCoordinator, dispatch } = await broker()
     const result = await dispatch({
       operation: "request_reboot",
       targetId: "sanctuary",
@@ -564,6 +612,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     }, {
       readBootId: () => "11111111-2222-3333-4444-555555555555\n",
       containerSnapshot: () => { throw new Error("unexpected container snapshot") },
+      ownerMutationCoordinator: createOwnerMutationCoordinator(),
       rebootPreflightSnapshot: () => ({ arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }),
     }) as Record<string, unknown>
 
