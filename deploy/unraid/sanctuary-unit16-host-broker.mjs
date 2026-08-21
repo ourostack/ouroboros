@@ -294,7 +294,7 @@ function canonicalHealthProbeInput(input) {
 }
 
 function healthProbeDockerArgs(mode, input) {
-  if (mode !== "run" && mode !== "recover") throw new Error("health probe mode is invalid")
+  if (mode !== "run" && mode !== "stop" && mode !== "recover") throw new Error("health probe mode is invalid")
   const value = canonicalHealthProbeInput(input)
   return [
     "exec", PRODUCTION_CONTAINER, "/usr/local/bin/node", HEALTH_PROBE_ENTRY, mode,
@@ -338,10 +338,40 @@ function healthProbePendingPath(scenarioHandleDigest) {
   return `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/health-probe-pending/${scenarioHandleDigest}.json`
 }
 
-function startHealthProbe(input) {
+function healthProbeProcessPath(scenarioHandleDigest) {
+  return `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/health-probe-processes/${scenarioHandleDigest}.json`
+}
+
+function healthProbeArtifactDisposition({ receipt, workspace, pending }) {
+  if (receipt) return "complete"
+  if (workspace || pending) return "recovery_required"
+  return "absent"
+}
+
+async function waitForHealthProbeProcessMarker(record, timeoutMs = 5_000) {
+  const marker = healthProbeProcessPath(record.input.scenarioHandleDigest)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const metadata = statIfPresent(marker)
+    if (metadata) {
+      if (!metadata.isFile() || metadata.uid !== 10001 || (metadata.mode & 0o777) !== 0o600) throw new Error("health probe process marker metadata is invalid")
+      return
+    }
+    if (record.state !== "running") throw new Error("health probe exited before process registration")
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error("health probe process registration timed out")
+}
+
+async function startHealthProbe(input) {
   const value = canonicalHealthProbeInput(input)
   const existing = activeHealthProbes.get(value.scenarioHandleDigest)
-  if (existing || statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest)) || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))) {
+  const artifacts = {
+    receipt: statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest)),
+    workspace: statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)),
+    pending: statIfPresent(healthProbePendingPath(value.scenarioHandleDigest)),
+  }
+  if (existing || healthProbeArtifactDisposition(artifacts) !== "absent" || statIfPresent(healthProbeProcessPath(value.scenarioHandleDigest))) {
     throw new Error("health probe requires inspect-before-retry")
   }
   const child = spawn(DOCKER, healthProbeDockerArgs("run", value), {
@@ -358,6 +388,8 @@ function startHealthProbe(input) {
     record.exitCode = code
   })
   child.unref()
+  record.readyPromise = waitForHealthProbeProcessMarker(record)
+  await record.readyPromise
   return {
     state: "started",
     operationDigest: createHash("sha256").update(JSON.stringify({ operation: "start_health_probe", ...value })).digest("hex"),
@@ -376,7 +408,11 @@ function healthProbeStatus(input) {
     return { state: "complete" }
   }
   const record = activeHealthProbes.get(value.scenarioHandleDigest)
-  if (!record) return { state: statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)) ? "recovery_required" : "absent" }
+  if (!record) return { state: healthProbeArtifactDisposition({
+    receipt: null,
+    workspace: statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)),
+    pending: statIfPresent(healthProbePendingPath(value.scenarioHandleDigest)),
+  }) }
   requireStableHealthProbeOwner(record.input, value)
   if (record.state === "failed") return { state: "failed" }
   if (record.state === "running") return { state: "running" }
@@ -450,24 +486,40 @@ async function recoverHealthProbe(input) {
   const record = activeHealthProbes.get(value.scenarioHandleDigest)
   if (record && JSON.stringify(record.input) !== JSON.stringify(value)) throw new Error("health probe owner binding drifted")
   if (record?.recoveryPromise) return await record.recoveryPromise
-  const recovery = recoverAfterHealthProbeTermination(record, () => {
-    if (record) record.state = "recovering"
-    const workspace = statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))
-    const pending = statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))
-    if (!workspace && !pending) {
+  const recovery = (async () => {
+    if (record?.readyPromise) {
+      try { await record.readyPromise } catch { /* recovery still terminates an unready launch */ }
+    }
+    const processMarker = statIfPresent(healthProbeProcessPath(value.scenarioHandleDigest))
+    if (processMarker) {
+      if (!processMarker.isFile() || processMarker.uid !== 10001 || (processMarker.mode & 0o777) !== 0o600) throw new Error("health probe process marker metadata is invalid")
+      const stopped = spawnSync(DOCKER, healthProbeDockerArgs("stop", value), {
+        cwd: "/", encoding: "utf8", timeout: 15_000, maxBuffer: 64 * 1024,
+        env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+      })
+      if (stopped.error || stopped.status !== 0 || statIfPresent(healthProbeProcessPath(value.scenarioHandleDigest))) {
+        throw new Error("health probe in-container process termination failed")
+      }
+    }
+    return await recoverAfterHealthProbeTermination(record, () => {
+      if (record) record.state = "recovering"
+      const workspace = statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))
+      const pending = statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))
+      if (!workspace && !pending) {
+        activeHealthProbes.delete(value.scenarioHandleDigest)
+        return { recovered: false }
+      }
+      const result = spawnSync(DOCKER, healthProbeDockerArgs("recover", value), {
+        cwd: "/", encoding: "utf8", timeout: 45_000, maxBuffer: 64 * 1024,
+        env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+      })
+      if (result.error || result.status !== 0 || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)) || statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))) {
+        throw new Error("health probe recovery failed")
+      }
       activeHealthProbes.delete(value.scenarioHandleDigest)
-      return { recovered: false }
-    }
-    const result = spawnSync(DOCKER, healthProbeDockerArgs("recover", value), {
-      cwd: "/", encoding: "utf8", timeout: 45_000, maxBuffer: 64 * 1024,
-      env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+      return { recovered: true }
     })
-    if (result.error || result.status !== 0 || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)) || statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))) {
-      throw new Error("health probe recovery failed")
-    }
-    activeHealthProbes.delete(value.scenarioHandleDigest)
-    return { recovered: true }
-  })
+  })()
   if (record) record.recoveryPromise = recovery
   try {
     return await recovery
@@ -486,6 +538,24 @@ function healthProbeCoordinates(payload, snapshot) {
   const ownerContainerDigest = text(snapshot.containerId, "health probe owner container", SHA256)
   if (expectedImageId && ownerImage !== expectedImageId) throw new Error("health probe production owner drifted")
   return { label, scenarioHandleDigest, ownerImageDigest: ownerImage.slice("sha256:".length), ownerContainerDigest }
+}
+
+function createDispatchDrain() {
+  let accepting = true
+  const inFlight = new Set()
+  return {
+    run(operation) {
+      if (!accepting) return Promise.reject(new Error("host broker is shutting down"))
+      const task = Promise.resolve().then(operation)
+      inFlight.add(task)
+      void task.finally(() => inFlight.delete(task)).catch(() => {})
+      return task
+    },
+    async stopAndDrain() {
+      accepting = false
+      await Promise.allSettled([...inFlight])
+    },
+  }
 }
 
 async function dispatch(request, dependencies = {
@@ -615,11 +685,12 @@ async function main() {
     })
     connection.on("end", async () => {
       try {
-        const result = await dispatch(JSON.parse(input))
+        const result = await dispatchDrain.run(() => dispatch(JSON.parse(input)))
         connection.end(`${JSON.stringify({ ok: true, result })}\n`)
       } catch { connection.end(`${JSON.stringify({ ok: false, error: "host operation failed" })}\n`) }
     })
   })
+  const dispatchDrain = createDispatchDrain()
   server.listen(socket, () => {
     chownSync(socket, 0, 10001)
     chmodSync(socket, 0o660)
@@ -629,6 +700,7 @@ async function main() {
     if (shuttingDown) return
     shuttingDown = true
     server.close()
+    await dispatchDrain.stopAndDrain()
     let failed = false
     for (const record of [...activeHealthProbes.values()]) {
       try { await recoverHealthProbe(record.input) } catch { failed = true }
@@ -644,7 +716,9 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
 }
 
 export {
+  createDispatchDrain,
   dispatch,
+  healthProbeArtifactDisposition,
   healthProbeDockerArgs,
   parseVaultStatus,
   queryGraphqlAutostart,
