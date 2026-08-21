@@ -71,7 +71,7 @@ const WRITE_PROBE = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { 
 const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
 // container_snapshot may execute bounded 20s inspect + 30s vault + 30s recovery
 // probes + 10s GraphQL + 20s image-policy checks sequentially in the host broker.
-const ADAPTER_TIMEOUT_MS = 120_000
+const ADAPTER_TIMEOUT_MS = 180_000
 const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
 const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
