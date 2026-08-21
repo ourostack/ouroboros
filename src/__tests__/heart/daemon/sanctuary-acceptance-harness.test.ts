@@ -158,6 +158,12 @@ describe("Sanctuary acceptance harness", () => {
     })
   }
 
+  const seedRebootPhaseEvidence = (dir: string, harnessSha256: string): void => {
+    for (const label of ["unit-16a-pre-reboot-checkpoint", "unit-16a-reboot-request", "unit-16a-boot-recovery-milestones"]) {
+      fs.writeFileSync(path.join(dir, `${label}.json`), `${JSON.stringify(completeEvidence(label, harnessSha256))}\n`, { mode: 0o600 })
+    }
+  }
+
   it("builds and verifies one complete redacted Unit 16 evidence bundle", async () => {
     const dir = root()
     const harnessPath = path.join(dir, "packaged-harness.js")
@@ -209,8 +215,10 @@ describe("Sanctuary acceptance harness", () => {
     const dir = root()
     const harnessPath = path.join(dir, "packaged-harness.sh")
     fs.writeFileSync(harnessPath, "fixed harness bytes\n", { mode: 0o700 })
+    seedRebootPhaseEvidence(dir, createHash("sha256").update(fs.readFileSync(harnessPath)).digest("hex"))
     const calls: Array<Record<string, unknown>> = []
     let firstWaiting = true
+    let provenanceCapture = 0
     await executeSanctuaryAcceptanceHarness("evidence-snapshot", {
       allowedRoot: dir,
       schema: "sanctuary-unit-16-matrix-v1",
@@ -223,7 +231,10 @@ describe("Sanctuary acceptance harness", () => {
       adapter: async (_executable, rawPayload) => {
         const payload = rawPayload as Record<string, unknown>
         calls.push(payload)
-        if (payload.operation === "capture_evidence_provenance") return evidenceProvenance
+        if (payload.operation === "capture_evidence_provenance") return {
+          ...evidenceProvenance,
+          cursorDigest: (++provenanceCapture).toString(16).padStart(64, "0"),
+        }
         if (payload.operation === "finalize_acceptance_scenarios") return { finalized: true }
         const label = String(payload.label)
         if (label === completeEvidenceLabels[0] && payload.phase === "begin" && firstWaiting) {
@@ -232,7 +243,7 @@ describe("Sanctuary acceptance harness", () => {
         }
         return {
           state: "complete",
-          checkpointDigest: "d".repeat(64),
+          checkpointDigest: label.startsWith("unit-16a-") ? "e".repeat(64) : "d".repeat(64),
           sourceDigests: Object.fromEntries((payload.sources as string[]).map((source) => [source, "f".repeat(64)])),
           assertions: validAssertions(label),
         }
@@ -248,7 +259,7 @@ describe("Sanctuary acceptance harness", () => {
         producer: {
           command: "evidence-snapshot",
           adapterOperation: "capture_acceptance_scenario",
-          checkpointDigest: "d".repeat(64),
+          checkpointDigest: label.startsWith("unit-16a-") ? "e".repeat(64) : "d".repeat(64),
           sourceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
         },
       })
@@ -266,6 +277,10 @@ describe("Sanctuary acceptance harness", () => {
       externalGate: "telegram-delayed-approve",
     }))
     expect(calls).toContainEqual(expect.objectContaining({ phase: "poll", checkpointDigest: "d".repeat(64) }))
+    const livePhaseCursors = completeEvidenceLabels
+      .filter((label) => !label.startsWith("unit-16a-"))
+      .map((label) => (evidence(path.join(dir, `${label}.json`)).provenance as Record<string, unknown>).cursorDigest)
+    expect(new Set(livePhaseCursors).size).toBe(livePhaseCursors.length)
   })
 
   it("rejects every material semantic failure instead of accepting self-attestation", () => {
@@ -278,6 +293,9 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-16b-runtime-vault-containment", { manualAuthRequired: true }, /must be false/u)
     reject("unit-16d-whats-up", { responseCount: 0 }, /must equal 1/u)
     reject("unit-16h-daily-digest", { firedWithinMs: 960_001 }, /16-minute/u)
+    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16h-daily-digest", {
+      ...validAssertions("unit-16h-daily-digest"), firedWithinMs: 0,
+    })).not.toThrow()
     reject("unit-16i-delayed-approval", { elapsedMs: 119_999 }, /120 seconds/u)
     reject("unit-16i-delayed-approval", { state: "failed" }, /succeeded/u)
     reject("unit-16j-denial", { state: "succeeded" }, /denied/u)
@@ -304,24 +322,59 @@ describe("Sanctuary acceptance harness", () => {
     let dir = root()
     await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir, { adapter: "/untrusted" }), dependencies())).rejects.toThrow(/fixed packaged/u)
     dir = root()
-    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir, { timeoutMs: 3_600_001 }), dependencies())).rejects.toThrow(/timing bound/u)
+    await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir, { timeoutMs: 7_200_001 }), dependencies())).rejects.toThrow(/timing bound/u)
     dir = root()
+    seedRebootPhaseEvidence(dir, createHash("sha256").update(fs.readFileSync(config(dir).harnessPath as string)).digest("hex"))
     let clock = 1_800_000_000_000
     await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir), dependencies({
       now: () => { clock += 300_000; return clock },
       adapter: async () => ({ state: "waiting", checkpointDigest: "d".repeat(64) }),
     }))).rejects.toThrow(/timed out/u)
     dir = root()
+    seedRebootPhaseEvidence(dir, createHash("sha256").update(fs.readFileSync(config(dir).harnessPath as string)).digest("hex"))
     await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir), dependencies({
       adapter: async () => ({ state: "bogus", checkpointDigest: "d".repeat(64) }),
     }))).rejects.toThrow(/invalid state/u)
     dir = root()
+    seedRebootPhaseEvidence(dir, createHash("sha256").update(fs.readFileSync(config(dir).harnessPath as string)).digest("hex"))
     let call = 0
     await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir), dependencies({
       adapter: async () => (++call === 1
         ? { state: "waiting", checkpointDigest: "d".repeat(64) }
         : { state: "complete", checkpointDigest: "e".repeat(64), sourceDigests: {}, assertions: validAssertions(completeEvidenceLabels[0]!) }),
     }))).rejects.toThrow(/identity drifted/u)
+  })
+
+  it("always invokes public scenario cleanup after timeout and adapter error", async () => {
+    for (const failure of ["timeout", "adapter"] as const) {
+      const dir = root()
+      const harnessPath = path.join(dir, "harness.sh")
+      fs.writeFileSync(harnessPath, "harness\n", { mode: 0o700 })
+      const harnessSha256 = createHash("sha256").update(fs.readFileSync(harnessPath)).digest("hex")
+      seedRebootPhaseEvidence(dir, harnessSha256)
+      const operations: string[] = []
+      let clock = 1_800_000_000_000
+      await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", {
+        allowedRoot: dir,
+        schema: "sanctuary-unit-16-matrix-v1",
+        adapter: fixedAdapter,
+        provenanceAdapter: fixedAdapter,
+        harnessPath,
+        timeoutMs: 300_000,
+        intervalMs: 1,
+      }, dependencies({
+        now: () => { clock += 400_000; return clock },
+        adapter: async (_executable, rawPayload) => {
+          const payload = rawPayload as Record<string, unknown>
+          operations.push(String(payload.operation))
+          if (payload.operation === "finalize_acceptance_scenarios") return { finalized: true }
+          if (failure === "adapter") throw new Error("capture adapter failed")
+          return { state: "waiting", checkpointDigest: "d".repeat(64) }
+        },
+      }))).rejects.toThrow(failure === "adapter" ? /adapter failed/u : /timed out/u)
+      expect(operations.at(-1)).toBe("finalize_acceptance_scenarios")
+      expect(fs.existsSync(path.join(dir, `${completeEvidenceLabels[0]}.json`))).toBe(false)
+    }
   })
 
   it("refuses incomplete, duplicate, unsafe, and tampered Unit 16 evidence bundles", async () => {
@@ -391,13 +444,16 @@ describe("Sanctuary acceptance harness", () => {
       ["provenance-shape", (value: Record<string, any>, index: number) => { if (index === 0) delete value.provenance.imageDigest }],
       ["image-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.imageDigest = "d".repeat(64) }],
       ["container-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.containerDigest = "e".repeat(64) }],
-      ["cursor-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.cursorDigest = "f".repeat(64) }],
       ["harness-attestation-drift", (value: Record<string, any>, index: number) => { if (index === 1) value.provenance.harnessSha256 = "f".repeat(64) }],
       ["producer-command", (value: Record<string, any>, index: number) => { if (index === 0) value.producer.command = "operator-authored" }],
       ["capture-digest", (value: Record<string, any>, index: number) => { if (index === 0) value.producer.captureDigest = "f".repeat(64) }],
     ] as const) {
       await expect(run(name, createEntries(mutate))).rejects.toThrow(/contract|fields|provenance|harness|produced|capture digest/u)
     }
+
+    await expect(run("historical-cursor-variation", createEntries((value, index) => {
+      if (index === 1) value.provenance.cursorDigest = "f".repeat(64)
+    }))).resolves.toBeUndefined()
 
     await expect(run("fabricated-consensus", createEntries((value) => {
       value.provenance.imageDigest = "d".repeat(64)
@@ -521,7 +577,7 @@ describe("Sanctuary acceptance harness", () => {
       value.entries[0].sha256 = sha(value.entries[0].evidence)
     }, /evidence contract/u)
     await verifyMutation("entry-provenance", (value) => {
-      value.entries[1].evidence.provenance.cursorDigest = "f".repeat(64)
+      value.entries[1].evidence.provenance.imageDigest = "f".repeat(64)
       value.entries[1].sha256 = sha(value.entries[1].evidence)
     }, /provenance/u)
     await verifyMutation("continuity", (value) => { value.imageDigest = "f".repeat(64) }, /continuity coordinates/u)
@@ -569,7 +625,7 @@ describe("Sanctuary acceptance harness", () => {
       schemaVersion: 1,
       harnessExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
       adapterExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
-      adapterTimeoutMs: 15_000,
+      adapterTimeoutMs: 120_000,
       telegramTimeoutMs: 10_000,
     })
     expect(Object.keys(contract.commands).sort()).toEqual([
@@ -587,6 +643,19 @@ describe("Sanctuary acceptance harness", () => {
       "container-inspect": expect.objectContaining({ kind: "fixed-host-snapshot", path: "/run/ouro-acceptance/container-inspect.json" }),
       "provider-live-check": expect.objectContaining({ kind: "fixed-runtime-api", operation: "sanctuary-provider-readiness" }),
     }))
+    expect(contract.configTemplates["evidence-snapshot"]).toMatchObject({
+      fixed: { timeoutMs: 4_320_000 },
+      timing: { execution: "sequential", totalMs: 4_320_000 },
+    })
+    expect(contract.configTemplates["reboot-request"].fixed).toMatchObject({
+      scenarioTimeoutMs: 120_000,
+      scenarioAdapter: contract.adapterExecutable,
+      provenanceAdapter: contract.adapterExecutable,
+    })
+    const runner = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
+    expect(runner).toContain("evidence-snapshot) TIME_LIMIT=4380; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
+    expect(runner).toContain("reboot-resume) TIME_LIMIT=780; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
+    expect(runner).toContain('test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume')
     expect(wrapper).toContain("--config")
     expect(wrapper).toContain("--contract")
     expect(adapterWrapper).toContain("sanctuary-acceptance-adapter.js")
@@ -1256,6 +1325,65 @@ describe("Sanctuary acceptance harness", () => {
     expect(calls.filter((call) => call.executable === "/safe/reboot")).toHaveLength(1)
     expect(calls.filter((call) => call.executable === "/safe/poll")[0]!.payload).toEqual({ operation: "poll_reboot", targetId: "sanctuary", requestId: "request-1" })
     expect(evidence(file)).toMatchObject({ phase: "complete", targetId: "sanctuary", requestId: "request-1", postbootDigest: sha("boot-2") })
+  })
+
+  it("captures truthful preflight, requested, and postboot phases in order with per-phase cleanup", async () => {
+    const dir = root()
+    const file = path.join(dir, "reboot.json")
+    const harnessPath = path.join(dir, "harness.sh")
+    fs.writeFileSync(harnessPath, "harness\n", { mode: 0o700 })
+    const order: string[] = []
+    const requestId = "d".repeat(64)
+    const scenarioConfig = {
+      allowedRoot: dir,
+      evidencePath: file,
+      adapter: fixedAdapter,
+      scenarioAdapter: fixedAdapter,
+      provenanceAdapter: fixedAdapter,
+      harnessPath,
+      scenarioTimeoutMs: 30_000,
+      scenarioIntervalMs: 1,
+    }
+    const deps = dependencies({
+      adapter: async (_executable, rawPayload) => {
+        const payload = rawPayload as Record<string, unknown>
+        if (payload.operation === "capture_evidence_provenance") return evidenceProvenance
+        if (payload.operation === "finalize_acceptance_scenarios") { order.push("cleanup"); return { finalized: true } }
+        if (payload.operation === "capture_acceptance_scenario") {
+          const label = String(payload.label)
+          order.push(`capture:${label}:${String(evidence(file).phase)}`)
+          return {
+            state: "complete",
+            checkpointDigest: "e".repeat(64),
+            sourceDigests: Object.fromEntries((payload.sources as string[]).map((source) => [source, "f".repeat(64)])),
+            assertions: validAssertions(label),
+          }
+        }
+        if (payload.operation === "request_reboot") {
+          order.push("request")
+          return { accepted: true, targetId: "sanctuary", requestId, prebootId: "boot-before" }
+        }
+        if (payload.operation === "poll_reboot") {
+          order.push("reconnect")
+          return { state: "ready", targetId: "sanctuary", requestId, bootId: "boot-after" }
+        }
+        throw new Error("unexpected adapter operation")
+      },
+    })
+
+    await executeSanctuaryAcceptanceHarness("reboot-request", { ...scenarioConfig, targetId: "sanctuary" }, deps)
+    await executeSanctuaryAcceptanceHarness("reboot-resume", { ...scenarioConfig, timeoutMs: 100, intervalMs: 1 }, deps)
+
+    expect(order).toEqual([
+      "capture:unit-16a-pre-reboot-checkpoint:preflight", "cleanup",
+      "request",
+      "capture:unit-16a-reboot-request:requested", "cleanup",
+      "reconnect",
+      "capture:unit-16a-boot-recovery-milestones:complete", "cleanup",
+    ])
+    for (const label of ["unit-16a-pre-reboot-checkpoint", "unit-16a-reboot-request", "unit-16a-boot-recovery-milestones"]) {
+      expect(evidence(path.join(dir, `${label}.json`))).toMatchObject({ operation: label, phase: "complete" })
+    }
   })
 
   it("refuses duplicate reboot requests and fails resume on target drift or timeout", async () => {

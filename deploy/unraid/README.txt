@@ -1241,13 +1241,18 @@ Packaged Unit 16 acceptance execution:
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" unraid-key-rotate unraid-key-rotate.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-request
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-request reboot-request.json
-    # The preceding command verifies and fsyncs the requested checkpoint, then
-    # invokes the host reboot. Reconnect only after Unraid and Docker are ready.
+    # The preceding command captures and seals preflight evidence before it asks
+    # the broker to stage the reboot, then seals the requested-phase evidence and
+    # fsyncs the requested checkpoint before invoking the host reboot. Reconnect
+    # only after Unraid and Docker are ready.
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-resume
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-resume reboot-resume.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-snapshot
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-snapshot evidence-snapshot.json
-    # Complete the documented post-boot scenario matrix before indexing it.
+    # reboot-resume seals the changed boot identity and recovery milestones.
+    # evidence-snapshot then runs the remaining scenarios sequentially with a
+    # 72-minute aggregate bound; each completed scenario records provenance at
+    # capture time and always clears its public gate, private marker, and receipt.
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-index
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-index evidence-bundle-index.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-verify

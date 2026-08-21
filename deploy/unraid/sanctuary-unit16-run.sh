@@ -239,9 +239,9 @@ case "$COMMAND" in
   telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=yes; BUNDLE_MODE=readonly; BROKER=no ;;
   callback-inject) TIME_LIMIT=120; NETWORK=host; INPUT=yes; BUNDLE_MODE=rw; BROKER=no ;;
   unraid-key-rotate) TIME_LIMIT=600; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
-  evidence-snapshot) TIME_LIMIT=1860; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
-  reboot-request) TIME_LIMIT=120; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
-  reboot-resume) TIME_LIMIT=660; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
+  evidence-snapshot) TIME_LIMIT=4380; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
+  reboot-request) TIME_LIMIT=300; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
+  reboot-resume) TIME_LIMIT=780; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   *) TIME_LIMIT=120; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
 esac
 
@@ -252,7 +252,7 @@ assert_acceptance_state_inode() {
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$PRODUCTION_CONTAINER" stat -Lc '%d:%i' /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance)" = "$ACCEPTANCE_PIN_INODE" || return 1
 }
 
-if test "$COMMAND" = evidence-snapshot; then
+if test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then
   stop_exact_production_container
   BUNDLE_STATE_ROOT=$BUNDLE_ROOT/state
   test -d "$BUNDLE_STATE_ROOT" && test ! -L "$BUNDLE_STATE_ROOT" || exit 1
@@ -340,12 +340,14 @@ run_harness() {
       --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh \
       "$IMAGE_ID" "$COMMAND" --config /run/ouro-acceptance/config.json
   elif test "$BROKER" = yes; then
+    if test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then ACCEPTANCE_MOUNT="--mount type=bind,src=$ACCEPTANCE_PIN_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance"; else ACCEPTANCE_MOUNT=; fi
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
       --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
+      $ACCEPTANCE_MOUNT \
       --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
@@ -372,7 +374,7 @@ run_harness() {
 }
 
 run_harness
-if test "$COMMAND" = evidence-snapshot; then assert_acceptance_state_inode; fi
+if test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then assert_acceptance_state_inode; fi
 
 if test "$COMMAND" = reboot-request; then
   /usr/local/bin/node -e '

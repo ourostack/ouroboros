@@ -21,7 +21,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const MAX_ADAPTER_OUTPUT = 1_048_576
-const DEFAULT_ADAPTER_TIMEOUT_MS = 15_000
+const DEFAULT_ADAPTER_TIMEOUT_MS = 120_000
 const DEFAULT_TELEGRAM_TIMEOUT_MS = 10_000
 const PACKAGED_PROVENANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
@@ -308,6 +308,19 @@ export type SanctuaryUnit16EvidenceLabel = typeof SANCTUARY_UNIT_16_EVIDENCE_LAB
 
 const SANCTUARY_SCENARIO_ADAPTER_OPERATION = "capture_acceptance_scenario"
 const SANCTUARY_SCENARIO_COMMAND = "evidence-snapshot"
+const REBOOT_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
+  "unit-16a-pre-reboot-checkpoint",
+  "unit-16a-reboot-request",
+  "unit-16a-boot-recovery-milestones",
+])
+const MAX_MATRIX_TIMEOUT_MS = 7_200_000
+
+function scenarioTimeoutBudget(label: SanctuaryUnit16EvidenceLabel): number {
+  if (label === "unit-15c-1-no-callback-terminalization") return 360_000
+  if (label === "unit-16h-daily-digest") return 1_020_000
+  if (label === "unit-16i-delayed-approval") return 180_000
+  return SANCTUARY_SCENARIO_GATES[label] === "none" ? 30_000 : 300_000
+}
 
 function exactObjectKeys(value: JsonObject, expected: string[], label: string): void {
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) {
@@ -415,7 +428,7 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       exact(["firedWithinMs", "messageCount", "productionRestored", "scheduleObserved"])
       allTrue(["productionRestored", "scheduleObserved"])
       requiredInteger(value, "messageCount", 1, label)
-      if (integer(value.firedWithinMs, `${label} firedWithinMs`, 1) > 960_000) throw new Error(`${label} fired outside the 16-minute bound`)
+      if (integer(value.firedWithinMs, `${label} firedWithinMs`, 0) > 960_000) throw new Error(`${label} fired outside the 16-minute bound`)
       break
     case "unit-16i-delayed-approval":
       exact(["elapsedMs", "mutationCount", "promptTerminal", "replayMutationCount", "resumed", "state"])
@@ -555,15 +568,15 @@ type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-off
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
   "unit-12c-1-opaque-identity": ["identity-key", "identity-surface-audit", "approval-journal"],
   "unit-14b-3-opaque-identity-live": ["identity-key", "identity-surface-audit", "telegram-audit", "approval-journal", "telegram-turn-receipts"],
-  "unit-15c-1-no-callback-terminalization": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
-  "unit-16a-pre-reboot-checkpoint": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect", "cron-runtime"],
+  "unit-15c-1-no-callback-terminalization": ["telegram-audit", "telegram-offset", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-16a-pre-reboot-checkpoint": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect", "cron-runtime", "reboot-checkpoint"],
   "unit-16a-reboot-request": ["reboot-checkpoint"],
   "unit-16a-boot-recovery-milestones": ["reboot-checkpoint", "container-inspect"],
   "unit-16b-runtime-vault-containment": ["container-inspect"],
   "unit-16c-provider-readiness": ["provider-live-check"],
   "unit-16d-whats-up": ["telegram-audit", "telegram-offset", "telegram-turn-receipts"],
   "unit-16d-1-space": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "restart-attempt-ledger", "container-inspect"],
-  "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "approval-journal", "restart-attempt-ledger", "container-inspect"],
+  "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "approval-journal", "restart-attempt-ledger", "container-inspect", "containment-audit"],
   "unit-16e-containment-audit": ["telegram-audit", "container-inspect", "containment-audit"],
   "unit-16e-1-stop-denial": ["read-only-denial-receipt", "container-inspect"],
   "unit-16e-2-restart-denial": ["read-only-denial-receipt", "container-inspect"],
@@ -627,10 +640,9 @@ function completeEvidenceContract(value: JsonObject, label: string): EvidencePro
   return evidenceProvenance(value.provenance, label)
 }
 
-function sameProvenance(left: EvidenceProvenance, right: EvidenceProvenance): boolean {
+function sameStableProvenance(left: EvidenceProvenance, right: EvidenceProvenance): boolean {
   return left.imageDigest === right.imageDigest
     && left.containerDigest === right.containerDigest
-    && left.cursorDigest === right.cursorDigest
     && left.harnessSha256 === right.harnessSha256
 }
 
@@ -673,6 +685,7 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
   const harnessSha256 = packagedHarnessSha256(config.harnessPath)
   const byLabel = new Map(requested.map((entry) => [entry.label, entry.path]))
   let continuity: EvidenceProvenance | undefined
+  let latest: EvidenceProvenance | undefined
   const entries = SANCTUARY_UNIT_16_EVIDENCE_LABELS.map((label) => {
     const source = requirePrivateRegularFile(root, byLabel.get(label), `${label} evidence`)
     const value = object(JSON.parse(readFileSync(source, "utf8")) as unknown, `${label} evidence`)
@@ -680,21 +693,22 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
     const provenance = completeEvidenceContract(value, label)
     if (provenance.harnessSha256 !== harnessSha256) throw new Error(`${label} harness provenance does not match the packaged harness bytes`)
     continuity ??= provenance
-    if (!sameProvenance(continuity, provenance)) throw new Error(`${label} provenance breaks image, container, cursor, or harness continuity`)
+    if (!sameStableProvenance(continuity, provenance)) throw new Error(`${label} provenance breaks image, container, or harness continuity`)
+    latest = provenance
     return { label, sha256: normalizedEvidenceHash(value), evidence: value }
   })
-  const boundContinuity = continuity as EvidenceProvenance
   const live = await liveEvidenceProvenance(config, deps)
-  if (!matchesLiveProvenance(boundContinuity, live)) {
+  const finalContinuity = latest as EvidenceProvenance
+  if (!matchesLiveProvenance(finalContinuity, live)) {
     throw new Error("evidence coordinates do not match trusted live provenance")
   }
   const core = {
     schemaVersion: 1,
     operation: "sanctuary-unit-16-evidence-bundle",
     phase: "complete",
-    imageDigest: boundContinuity.imageDigest,
-    containerDigest: boundContinuity.containerDigest,
-    cursorDigest: boundContinuity.cursorDigest,
+    imageDigest: finalContinuity.imageDigest,
+    containerDigest: finalContinuity.containerDigest,
+    cursorDigest: finalContinuity.cursorDigest,
     harnessSha256,
     entries,
   }
@@ -710,6 +724,7 @@ async function verifyEvidenceBundle(config: JsonObject, deps: AcceptanceHarnessD
   }
   if (!Array.isArray(bundle.entries)) throw new Error("evidence bundle entries must be an array")
   let continuity: EvidenceProvenance | undefined
+  let latest: EvidenceProvenance | undefined
   const entries = bundle.entries.map((raw) => {
     const entry = object(raw, "evidence bundle entry")
     const label = text(entry.label, "evidence bundle label")
@@ -718,7 +733,8 @@ async function verifyEvidenceBundle(config: JsonObject, deps: AcceptanceHarnessD
     const provenance = completeEvidenceContract(evidence, label)
     if (provenance.harnessSha256 !== harnessSha256) throw new Error(`${label} harness provenance does not match the packaged harness bytes`)
     continuity ??= provenance
-    if (!sameProvenance(continuity, provenance)) throw new Error(`${label} provenance breaks image, container, cursor, or harness continuity`)
+    if (!sameStableProvenance(continuity, provenance)) throw new Error(`${label} provenance breaks image, container, or harness continuity`)
+    latest = provenance
     const sha256 = opaqueDigest(entry.sha256, `${label} entry hash`)
     if (sha256 !== normalizedEvidenceHash(evidence)) throw new Error("evidence bundle entry hash mismatch")
     return { label, sha256, evidence }
@@ -726,9 +742,9 @@ async function verifyEvidenceBundle(config: JsonObject, deps: AcceptanceHarnessD
   if (!exactEvidenceLabels(entries) || new Set(entries.map((entry) => entry.label)).size !== entries.length) {
     throw new Error("evidence bundle does not contain the complete Unit 16 evidence matrix")
   }
-  const boundContinuity = continuity as EvidenceProvenance
   const live = await liveEvidenceProvenance(config, deps)
-  if (!matchesLiveProvenance(boundContinuity, live)) {
+  const finalContinuity = latest as EvidenceProvenance
+  if (!matchesLiveProvenance(finalContinuity, live)) {
     throw new Error("evidence bundle coordinates do not match trusted live provenance")
   }
   const core = {
@@ -741,8 +757,8 @@ async function verifyEvidenceBundle(config: JsonObject, deps: AcceptanceHarnessD
     harnessSha256: opaqueDigest(bundle.harnessSha256, "bundle harnessSha256"),
     entries,
   }
-  if (core.imageDigest !== boundContinuity.imageDigest || core.containerDigest !== boundContinuity.containerDigest
-    || core.cursorDigest !== boundContinuity.cursorDigest || core.harnessSha256 !== boundContinuity.harnessSha256) {
+  if (core.imageDigest !== finalContinuity.imageDigest || core.containerDigest !== finalContinuity.containerDigest
+    || core.cursorDigest !== finalContinuity.cursorDigest || core.harnessSha256 !== finalContinuity.harnessSha256) {
     throw new Error("evidence bundle continuity coordinates do not match its entries")
   }
   if (opaqueDigest(bundle.bundleDigest, "bundle digest") !== normalizedEvidenceHash(core)) throw new Error("evidence bundle digest mismatch")
@@ -1205,25 +1221,24 @@ async function unraidKeyRotate(config: JsonObject, deps: AcceptanceHarnessDepend
   }
 }
 
-async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
-  const root = privateAllowedRoot(config)
-  const executable = adapter(config.adapter, "scenario adapter")
-  if (executable !== PACKAGED_PROVENANCE_ADAPTER || config.provenanceAdapter !== PACKAGED_PROVENANCE_ADAPTER) {
-    throw new Error("scenario matrix requires the fixed packaged acceptance adapter")
-  }
-  const timeoutMs = integer(config.timeoutMs, "scenario timeoutMs", 300_000)
-  const intervalMs = integer(config.intervalMs, "scenario intervalMs", 1)
-  if (timeoutMs > 3_600_000 || intervalMs > 30_000) throw new Error("scenario timing bound is invalid")
-  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
-  for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
-    refuseExistingCheckpoint(root, confinedPath(root, path.join(root, `${label}.json`), `${label} evidencePath`))
-  }
-
-  const captures: Array<{ label: SanctuaryUnit16EvidenceLabel; checkpointDigest: string; assertions: JsonObject; sourceDigest: string }> = []
-  for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
-    const gate = SANCTUARY_SCENARIO_GATES[label]
-    const sources = SANCTUARY_SCENARIO_SOURCES[label]
-    const deadline = deps.now() + timeoutMs
+async function captureScenarioEvidence(input: {
+  config: JsonObject
+  root: string
+  executable: string
+  harnessSha256: string
+  label: SanctuaryUnit16EvidenceLabel
+  deadline: number
+  intervalMs: number
+  deps: AcceptanceHarnessDependencies
+}): Promise<void> {
+  const { config, root, executable, harnessSha256, label, deadline, intervalMs, deps } = input
+  const evidencePath = path.join(root, `${label}.json`)
+  refuseExistingCheckpoint(root, evidencePath)
+  const gate = SANCTUARY_SCENARIO_GATES[label]
+  const sources = SANCTUARY_SCENARIO_SOURCES[label]
+  let capture: { checkpointDigest: string; assertions: JsonObject; sourceDigest: string; provenance: Omit<EvidenceProvenance, "harnessSha256"> } | undefined
+  let operationError: unknown
+  try {
     let response = object(await deps.runAdapter(executable, {
       operation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
       phase: "begin",
@@ -1251,36 +1266,63 @@ async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnes
     const sourceDigests = object(response.sourceDigests, `${label} sourceDigests`)
     exactObjectKeys(sourceDigests, sources, `${label} sourceDigests`)
     for (const source of sources) opaqueDigest(sourceDigests[source], `${label} ${source} source digest`)
-    captures.push({
-      label,
+    capture = {
       checkpointDigest,
       assertions: validateSanctuaryUnit16EvidenceAssertions(label, response.assertions),
       sourceDigest: normalizedEvidenceHash(sourceDigests),
-    })
-  }
-
-  const finalized = object(await deps.runAdapter(executable, { operation: "finalize_acceptance_scenarios" }), "scenario finalization result")
-  exactObjectKeys(finalized, ["finalized"], "scenario finalization result")
-  if (finalized.finalized !== true) throw new Error("scenario finalization failed")
-
-  const live = await liveEvidenceProvenance(config, deps)
-  for (const capture of captures) {
-    const value = {
-      schemaVersion: 1,
-      operation: capture.label,
-      phase: "complete",
-      provenance: { ...live, harnessSha256 },
-      producer: {
-        command: SANCTUARY_SCENARIO_COMMAND,
-        adapterOperation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
-        checkpointDigest: capture.checkpointDigest,
-        sourceDigest: capture.sourceDigest,
-        captureDigest: normalizedEvidenceHash(capture.assertions),
-      },
-      assertions: capture.assertions,
+      provenance: await liveEvidenceProvenance(config, deps),
     }
-    completeEvidenceContract(value, capture.label)
-    initializeCheckpoint(root, path.join(root, `${capture.label}.json`), value)
+  } catch (error) {
+    operationError = error
+  }
+  let cleanupError: unknown
+  try {
+    const finalized = object(await deps.runAdapter(executable, { operation: "finalize_acceptance_scenarios" }), "scenario finalization result")
+    exactObjectKeys(finalized, ["finalized"], "scenario finalization result")
+    if (finalized.finalized !== true) throw new Error("scenario finalization failed")
+  } catch (error) {
+    cleanupError = error
+  }
+  if (operationError) throw operationError
+  if (cleanupError) throw cleanupError
+  if (!capture) throw new Error(`${label} scenario capture was not produced`)
+  const value = {
+    schemaVersion: 1,
+    operation: label,
+    phase: "complete",
+    provenance: { ...capture.provenance, harnessSha256 },
+    producer: {
+      command: SANCTUARY_SCENARIO_COMMAND,
+      adapterOperation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
+      checkpointDigest: capture.checkpointDigest,
+      sourceDigest: capture.sourceDigest,
+      captureDigest: normalizedEvidenceHash(capture.assertions),
+    },
+    assertions: capture.assertions,
+  }
+  completeEvidenceContract(value, label)
+  initializeCheckpoint(root, evidencePath, value)
+}
+
+async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
+  const root = privateAllowedRoot(config)
+  const executable = adapter(config.adapter, "scenario adapter")
+  if (executable !== PACKAGED_PROVENANCE_ADAPTER || config.provenanceAdapter !== PACKAGED_PROVENANCE_ADAPTER) {
+    throw new Error("scenario matrix requires the fixed packaged acceptance adapter")
+  }
+  const timeoutMs = integer(config.timeoutMs, "scenario total timeoutMs", 1)
+  const intervalMs = integer(config.intervalMs, "scenario intervalMs", 1)
+  if (timeoutMs > MAX_MATRIX_TIMEOUT_MS || intervalMs > 30_000) throw new Error("scenario timing bound is invalid")
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
+  const totalDeadline = deps.now() + timeoutMs
+  for (const label of REBOOT_SCENARIO_LABELS) {
+    const value = object(JSON.parse(readFileSync(requirePrivateRegularFile(root, path.join(root, `${label}.json`), `${label} phase evidence`), "utf8")) as unknown, `${label} phase evidence`)
+    const provenance = completeEvidenceContract(value, label)
+    if (provenance.harnessSha256 !== harnessSha256) throw new Error(`${label} phase evidence does not match the packaged harness`)
+  }
+  for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS.filter((candidate) => !REBOOT_SCENARIO_LABELS.has(candidate))) {
+    const scenarioDeadline = Math.min(totalDeadline, deps.now() + scenarioTimeoutBudget(label))
+    await captureScenarioEvidence({ config, root, executable, harnessSha256, label, deadline: scenarioDeadline, intervalMs, deps })
   }
 }
 
@@ -1307,6 +1349,28 @@ async function evidenceSnapshot(config: JsonObject, deps: AcceptanceHarnessDepen
   })
 }
 
+async function captureRebootScenario(
+  config: JsonObject,
+  root: string,
+  label: SanctuaryUnit16EvidenceLabel,
+  deps: AcceptanceHarnessDependencies,
+): Promise<void> {
+  const executable = adapter(config.scenarioAdapter, "reboot scenario adapter")
+  if (executable !== PACKAGED_PROVENANCE_ADAPTER || config.provenanceAdapter !== PACKAGED_PROVENANCE_ADAPTER) {
+    throw new Error("reboot scenario capture requires the fixed packaged acceptance adapter")
+  }
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
+  const intervalMs = integer(config.scenarioIntervalMs, "reboot scenario intervalMs", 1)
+  const timeoutMs = integer(config.scenarioTimeoutMs, "reboot scenario timeoutMs", 1)
+  if (timeoutMs > scenarioTimeoutBudget(label) || intervalMs > 30_000) throw new Error("reboot scenario timing bound is invalid")
+  await captureScenarioEvidence({
+    config, root, executable, harnessSha256, label,
+    deadline: deps.now() + timeoutMs,
+    intervalMs,
+    deps,
+  })
+}
+
 async function rebootRequest(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
   const root = privateAllowedRoot(config)
   const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
@@ -1317,6 +1381,9 @@ async function rebootRequest(config: JsonObject, deps: AcceptanceHarnessDependen
   const base = { schemaVersion: 1, operation: "reboot", phase: "preflight", targetId, idempotencyDigest: digest(idempotencyKey), requestedAt: deps.now() }
   initializeCheckpoint(root, evidencePath, base)
   try {
+    if (config.scenarioAdapter !== undefined) {
+      await captureRebootScenario(config, root, "unit-16a-pre-reboot-checkpoint", deps)
+    }
     const response = object(await deps.runAdapter(executable, { operation: "request_reboot", targetId, idempotencyKey }), "reboot adapter result")
     if (response.accepted !== true || response.targetId !== targetId) throw new Error("reboot adapter did not accept the exact target")
     const requestId = text(response.requestId, "reboot requestId")
@@ -1326,34 +1393,46 @@ async function rebootRequest(config: JsonObject, deps: AcceptanceHarnessDependen
     failedCheckpoint(root, evidencePath, base, error)
     throw error
   }
+  if (config.scenarioAdapter !== undefined) {
+    await captureRebootScenario(config, root, "unit-16a-reboot-request", deps)
+  }
 }
 
 async function rebootResume(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
   const root = privateAllowedRoot(config)
   const evidencePath = confinedPath(root, config.evidencePath, "evidencePath")
   const checkpoint = readCheckpoint(root, evidencePath)
-  if (checkpoint.operation !== "reboot" || checkpoint.phase !== "requested") throw new Error("reboot checkpoint is not resumable")
+  if (checkpoint.operation !== "reboot" || (checkpoint.phase !== "requested" && checkpoint.phase !== "complete")) throw new Error("reboot checkpoint is not resumable")
   const targetId = text(checkpoint.targetId, "checkpoint targetId")
   const requestId = text(checkpoint.requestId, "checkpoint requestId")
   const prebootDigest = opaqueDigest(checkpoint.prebootDigest, "checkpoint prebootDigest")
-  const executable = adapter(config.adapter, "reboot poll adapter")
-  const timeoutMs = integer(config.timeoutMs, "timeoutMs", 1)
-  const intervalMs = integer(config.intervalMs, "intervalMs", 1)
-  const deadline = deps.now() + timeoutMs
-  while (deps.now() < deadline) {
-    const response = object(await deps.runAdapter(executable, { operation: "poll_reboot", targetId, requestId }), "reboot poll result")
-    if (response.targetId !== targetId || response.requestId !== requestId) throw new Error("reboot target drift")
-    if (response.state === "ready") {
-      const bootId = text(response.bootId, "reboot bootId")
-      const postbootDigest = digest(bootId)
-      if (postbootDigest === prebootDigest) throw new Error("reboot boot identity did not change")
-      replaceCheckpoint(root, evidencePath, { ...checkpoint, phase: "complete", postbootDigest, completedAt: deps.now() })
-      return
+  if (checkpoint.phase === "requested") {
+    const executable = adapter(config.adapter, "reboot poll adapter")
+    const timeoutMs = integer(config.timeoutMs, "timeoutMs", 1)
+    const intervalMs = integer(config.intervalMs, "intervalMs", 1)
+    const deadline = deps.now() + timeoutMs
+    let complete = false
+    while (deps.now() < deadline) {
+      const response = object(await deps.runAdapter(executable, { operation: "poll_reboot", targetId, requestId }), "reboot poll result")
+      if (response.targetId !== targetId || response.requestId !== requestId) throw new Error("reboot target drift")
+      if (response.state === "ready") {
+        const bootId = text(response.bootId, "reboot bootId")
+        const postbootDigest = digest(bootId)
+        if (postbootDigest === prebootDigest) throw new Error("reboot boot identity did not change")
+        replaceCheckpoint(root, evidencePath, { ...checkpoint, phase: "complete", postbootDigest, completedAt: deps.now() })
+        complete = true
+        break
+      }
+      if (response.state !== "booting" && response.state !== "offline") throw new Error("reboot poll returned an invalid state")
+      await deps.sleep(intervalMs)
     }
-    if (response.state !== "booting" && response.state !== "offline") throw new Error("reboot poll returned an invalid state")
-    await deps.sleep(intervalMs)
+    if (!complete) throw new Error("reboot resume timed out")
+  } else {
+    opaqueDigest(checkpoint.postbootDigest, "checkpoint postbootDigest")
   }
-  throw new Error("reboot resume timed out")
+  if (config.scenarioAdapter !== undefined && !pathEntryExists(path.join(root, "unit-16a-boot-recovery-milestones.json"))) {
+    await captureRebootScenario(config, root, "unit-16a-boot-recovery-milestones", deps)
+  }
 }
 
 export async function executeSanctuaryAcceptanceHarness(

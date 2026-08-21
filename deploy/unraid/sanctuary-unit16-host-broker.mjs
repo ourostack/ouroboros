@@ -12,10 +12,12 @@ const DOCKER = "/usr/bin/docker"
 const PRODUCTION_CONTAINER = "ouro-butler"
 const AUTOSTART_FILE = "/var/lib/docker/unraid-autostart"
 const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"
+const PRODUCTION_RUNTIME_SOURCE = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
+const PRODUCTION_BUNDLE_SOURCE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
 const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
 const BOOT_ID = "/proc/sys/kernel/random/boot_id"
 const MDCMD = "/usr/local/sbin/mdcmd"
-const TAILSCALE = "/usr/bin/tailscale"
+const TAILSCALE = "/usr/local/sbin/tailscale"
 const PGREP = "/usr/bin/pgrep"
 const TARGET_SERVER = "sanctuary-unraid"
 const TARGET_HOST = "sanctuary"
@@ -211,13 +213,13 @@ async function containerSnapshot(expectedImage) {
   const publishedPortCount = Object.values(ports).reduce((count, bindings) => count + (Array.isArray(bindings) ? bindings.length : 0), 0)
   const mounts = Array.isArray(value.mounts) ? value.mounts.map((raw) => {
     const mount = object(raw, "container mount")
-    return { destination: mount.Destination, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
+    return { destination: mount.Destination, source: mount.Source, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
   }).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : []
   const expectedMounts = [
-    { destination: "/home/ouro/.ouro-cli", rw: true, type: "bind" },
-    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", rw: true, type: "bind" },
+    { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, rw: true, type: "bind" },
+    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, rw: true, type: "bind" },
   ]
-  const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.rw === expected.rw && mount.type === expected.type))
+  const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.rw === expected.rw && mount.type === expected.type))
   const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))
     && Array.isArray(value.securityOpt) && value.securityOpt.includes("no-new-privileges")
   const running = value.running === true
