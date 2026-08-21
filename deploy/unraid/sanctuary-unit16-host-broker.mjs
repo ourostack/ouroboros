@@ -938,8 +938,13 @@ function createOwnerMutationCoordinator() {
       if (rebootReservation?.id !== reservationId || rebootReservation.processBindingDigest !== processBindingDigest) throw new Error("reboot reservation is absent or mismatched")
       if (rebootReservation.stoppedProof === null) throw new Error("reboot owner is not stopped")
       if (rebootReservation.attempted) throw new Error("reboot commit was already attempted")
-      rebootReservation.attempted = true
-      return await operation(rebootReservation.stoppedProof)
+      const markAttempted = () => {
+        if (rebootReservation.attempted) throw new Error("reboot commit was already attempted")
+        rebootReservation.attempted = true
+      }
+      const result = await operation(rebootReservation.stoppedProof, markAttempted)
+      if (!rebootReservation.attempted) throw new Error("reboot commit was not attempted")
+      return result
     },
     healthStart(scenario, operation) {
       text(scenario, "health owner scenario", SHA256)
@@ -1456,12 +1461,14 @@ async function dispatch(request, dependencies = {
     if (reservationId !== createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex")) throw new Error("reboot request reservation binding is invalid")
     const commit = dependencies.ownerMutationCoordinator?.commitReboot
     if (!commit) throw new Error("reboot reservation coordinator is unavailable")
-    await commit.call(dependencies.ownerMutationCoordinator, reservationId, processBindingDigest, async (stoppedProof) => {
+    await commit.call(dependencies.ownerMutationCoordinator, reservationId, processBindingDigest, async (stoppedProof, markAttempted) => {
       await dependencies.verifyStoppedRebootOwner(stoppedProof)
       const preflight = object(dependencies.rebootPreflightSnapshot(), "final reboot preflight")
       if (preflight.safe !== true || preflight.arrayReady !== true || preflight.parityActive !== false || preflight.moverActive !== false || preflight.mutationActive !== false) {
         throw new Error("final reboot preflight is unsafe")
       }
+      await dependencies.verifyStoppedRebootOwner(stoppedProof)
+      markAttempted()
       await dependencies.commitHostReboot()
     })
     return { committed: true, targetId: TARGET_HOST, requestId, reservationId, processBindingDigest }

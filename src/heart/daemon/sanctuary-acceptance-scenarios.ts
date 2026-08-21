@@ -289,7 +289,7 @@ export interface SanctuaryScenarioFacts {
   interactiveDriver?: SanctuaryInteractiveDriverReceipt
   denial?: SanctuaryReadOnlyDenialReceipt
   liveGrounding?: { toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }
-  reboot?: { phase: "preflight" | "requested" | "complete"; requestDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
+  reboot?: { phase: "preflight" | "requested" | "complete"; requestDigest: string; processBindingDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
   containment?: SanctuaryContainmentAuditEvidence
 }
 
@@ -574,14 +574,14 @@ export function deriveSanctuaryScenarioAssertions(
       return { buttonsRemoved: approval.buttonsRemoved, elapsedMs, mutationCount: 0, noInboundUpdate, replayMutationCount: approval.replayMutationCount, terminalExpired: approval.state === "expired", ttlMs: approval.expiresAt - approval.createdAt }
     }
     case "unit-16a-pre-reboot-checkpoint":
-      if (!after.reboot || after.reboot.phase !== "preflight" || after.reboot.requestCount !== 0 || !after.container?.running || !after.container.healthy || after.reboot.unrelatedHostOperations !== 0) return null
-      return { approvalDigest: hash(after.approvals), auditDigest: hash(after.events), containerDigest: hash(after.container), fingerprintDigest: hash(after.cron), offsetDigest: hash(after.sourceValues["telegram-offset"]), ready: Boolean(after.container?.running && after.container.healthy), unrelatedHostOperations: after.reboot.unrelatedHostOperations }
+      if (!after.reboot || after.reboot.phase !== "preflight" || !SHA256.test(after.reboot.processBindingDigest) || after.reboot.requestCount !== 0 || !after.container?.running || !after.container.healthy || after.reboot.unrelatedHostOperations !== 0) return null
+      return { approvalDigest: hash(after.approvals), auditDigest: hash(after.events), containerDigest: hash(after.container), fingerprintDigest: hash(after.cron), offsetDigest: hash(after.sourceValues["telegram-offset"]), processBindingDigest: after.reboot.processBindingDigest, ready: Boolean(after.container?.running && after.container.healthy), unrelatedHostOperations: after.reboot.unrelatedHostOperations }
     case "unit-16a-reboot-request":
-      if (!after.reboot || after.reboot.phase !== "requested" || after.reboot.requestCount !== 1 || !after.reboot.checkpointPersisted) return null
-      return { exactlyOnce: true, requestCheckpointPersisted: true, requestDigest: after.reboot.requestDigest }
+      if (!after.reboot || after.reboot.phase !== "requested" || !SHA256.test(after.reboot.processBindingDigest) || after.reboot.requestCount !== 1 || !after.reboot.checkpointPersisted) return null
+      return { exactlyOnce: true, processBindingDigest: after.reboot.processBindingDigest, requestCheckpointPersisted: true, requestDigest: after.reboot.requestDigest }
     case "unit-16a-boot-recovery-milestones":
-      if (!after.reboot || after.reboot.phase !== "complete" || !after.reboot.bootIdentityChanged || !after.reboot.arrayReady || !after.reboot.butlerReady || !after.reboot.dockerReady || !after.reboot.hostReady || !after.reboot.sshReady || !after.reboot.tailscaleReady || !postbootIntegrity) return null
-      return { arrayReady: after.reboot.arrayReady, bootIdentityChanged: true, butlerReady: after.reboot.butlerReady, dockerReady: after.reboot.dockerReady, hostReady: after.reboot.hostReady, postbootIntegrityPreserved: true, sshReady: after.reboot.sshReady, tailscaleReady: after.reboot.tailscaleReady }
+      if (!after.reboot || after.reboot.phase !== "complete" || !SHA256.test(after.reboot.processBindingDigest) || !after.reboot.bootIdentityChanged || !after.reboot.arrayReady || !after.reboot.butlerReady || !after.reboot.dockerReady || !after.reboot.hostReady || !after.reboot.sshReady || !after.reboot.tailscaleReady || !postbootIntegrity) return null
+      return { arrayReady: after.reboot.arrayReady, bootIdentityChanged: true, butlerReady: after.reboot.butlerReady, dockerReady: after.reboot.dockerReady, hostReady: after.reboot.hostReady, postbootIntegrityPreserved: true, processBindingDigest: after.reboot.processBindingDigest, sshReady: after.reboot.sshReady, tailscaleReady: after.reboot.tailscaleReady }
     case "unit-16b-runtime-vault-containment":
       if (!after.container) return null
       if (!after.container.autostartExact || !after.container.exactImage || after.container.manualAuthRequired

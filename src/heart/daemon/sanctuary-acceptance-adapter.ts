@@ -1183,20 +1183,22 @@ export async function readDefaultSanctuaryScenarioFacts(
   let reboot: SanctuaryScenarioFacts["reboot"]
   if (rebootCheckpoint?.operation === "reboot" && rebootCheckpoint.phase === "preflight" && rebootCheckpoint.targetId === TARGET_ID
     && typeof rebootCheckpoint.idempotencyDigest === "string" && SHA256.test(rebootCheckpoint.idempotencyDigest)
+    && typeof rebootCheckpoint.processBindingDigest === "string" && SHA256.test(rebootCheckpoint.processBindingDigest)
     && Number.isSafeInteger(rebootCheckpoint.unrelatedHostOperations) && Number(rebootCheckpoint.unrelatedHostOperations) >= 0) {
     reboot = {
-      phase: "preflight", requestDigest: rebootCheckpoint.idempotencyDigest, requestCount: 0, checkpointPersisted: true, unrelatedHostOperations: Number(rebootCheckpoint.unrelatedHostOperations),
+      phase: "preflight", requestDigest: rebootCheckpoint.idempotencyDigest, processBindingDigest: rebootCheckpoint.processBindingDigest, requestCount: 0, checkpointPersisted: true, unrelatedHostOperations: Number(rebootCheckpoint.unrelatedHostOperations),
       bootIdentityChanged: false, hostReady: false, arrayReady: false, dockerReady: false, butlerReady: false, tailscaleReady: false, sshReady: false,
     }
   } else if (rebootCheckpoint?.operation === "reboot" && ["requested", "complete"].includes(String(rebootCheckpoint.phase))
     && typeof rebootCheckpoint.requestId === "string" && SHA256.test(rebootCheckpoint.requestId)
     && typeof rebootCheckpoint.prebootDigest === "string" && SHA256.test(rebootCheckpoint.prebootDigest)
+    && typeof rebootCheckpoint.processBindingDigest === "string" && SHA256.test(rebootCheckpoint.processBindingDigest)
     && Number.isSafeInteger(rebootCheckpoint.unrelatedHostOperations) && Number(rebootCheckpoint.unrelatedHostOperations) >= 0) {
     const milestones = container && container.recoveryMilestones && typeof container.recoveryMilestones === "object" && !Array.isArray(container.recoveryMilestones)
       ? container.recoveryMilestones as JsonObject : {}
     const complete = rebootCheckpoint.phase === "complete" && typeof rebootCheckpoint.postbootDigest === "string" && SHA256.test(rebootCheckpoint.postbootDigest)
     reboot = {
-      phase: rebootCheckpoint.phase as "requested" | "complete", requestDigest: createHash("sha256").update(rebootCheckpoint.requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: Number(rebootCheckpoint.unrelatedHostOperations),
+      phase: rebootCheckpoint.phase as "requested" | "complete", requestDigest: createHash("sha256").update(rebootCheckpoint.requestId).digest("hex"), processBindingDigest: rebootCheckpoint.processBindingDigest, requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: Number(rebootCheckpoint.unrelatedHostOperations),
       bootIdentityChanged: complete && rebootCheckpoint.postbootDigest !== rebootCheckpoint.prebootDigest,
       hostReady: milestones.hostReady === true, arrayReady: milestones.arrayReady === true, dockerReady: milestones.dockerReady === true,
       butlerReady: milestones.butlerReady === true, tailscaleReady: milestones.tailscaleReady === true, sshReady: milestones.sshReady === true,

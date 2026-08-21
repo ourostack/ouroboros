@@ -377,19 +377,22 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       if (integer(value.ttlMs, `${label} ttlMs`, 1) > integer(value.elapsedMs, `${label} elapsedMs`, 1)) throw new Error(`${label} elapsedMs must reach ttlMs`)
       break
     case "unit-16a-pre-reboot-checkpoint":
-      exact(["approvalDigest", "auditDigest", "containerDigest", "fingerprintDigest", "offsetDigest", "ready", "unrelatedHostOperations"])
+      exact(["approvalDigest", "auditDigest", "containerDigest", "fingerprintDigest", "offsetDigest", "processBindingDigest", "ready", "unrelatedHostOperations"])
       for (const key of ["approvalDigest", "auditDigest", "containerDigest", "fingerprintDigest", "offsetDigest"]) opaqueDigest(value[key], `${label} ${key}`)
+      opaqueDigest(value.processBindingDigest, `${label} processBindingDigest`)
       requiredTrue(value, "ready", label)
       requiredInteger(value, "unrelatedHostOperations", 0, label)
       break
     case "unit-16a-reboot-request":
-      exact(["exactlyOnce", "requestCheckpointPersisted", "requestDigest"])
+      exact(["exactlyOnce", "processBindingDigest", "requestCheckpointPersisted", "requestDigest"])
       allTrue(["exactlyOnce", "requestCheckpointPersisted"])
+      opaqueDigest(value.processBindingDigest, `${label} processBindingDigest`)
       opaqueDigest(value.requestDigest, `${label} requestDigest`)
       break
     case "unit-16a-boot-recovery-milestones":
-      exact(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "postbootIntegrityPreserved", "sshReady", "tailscaleReady"])
+      exact(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "postbootIntegrityPreserved", "processBindingDigest", "sshReady", "tailscaleReady"])
       allTrue(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "postbootIntegrityPreserved", "sshReady", "tailscaleReady"])
+      opaqueDigest(value.processBindingDigest, `${label} processBindingDigest`)
       break
     case "unit-16b-runtime-vault-containment":
       exact(["autostartExact", "exactImage", "manualAuthRequired", "mountCount", "nonRootUid", "publishedPortCount", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])

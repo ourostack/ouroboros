@@ -142,6 +142,33 @@ prepare_live_facts() {
   chown 0:0 "$IMAGE_FACT" "$CONTAINER_FACT" "$PROCESS_BINDING_FACT" "$HEALTH_FACT" "$CONTAINER_INSPECT_FACT"
 }
 
+refresh_live_facts() {
+  REFRESHED_SNAPSHOT=$PRIVATE_ROOT/broker-container-inspect.refresh.json
+  rm -f -- "$REFRESHED_SNAPSHOT"
+  /usr/bin/timeout -s KILL 60 /usr/local/bin/node -e '
+    const fs = require("node:fs");
+    const net = require("node:net");
+    const [socketPath, outputPath] = process.argv.slice(1);
+    const socket = net.createConnection(socketPath);
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.end(JSON.stringify({ operation: "container_snapshot", targetId: "sanctuary" })));
+    socket.on("data", (chunk) => {
+      response += chunk;
+      if (Buffer.byteLength(response) > 1024 * 1024) socket.destroy(new Error("container snapshot response exceeds its bound"));
+    });
+    socket.on("end", () => {
+      const envelope = JSON.parse(response);
+      if (!envelope || envelope.ok !== true || !envelope.result || typeof envelope.result !== "object" || Array.isArray(envelope.result)) process.exit(1);
+      fs.writeFileSync(outputPath, `${JSON.stringify(envelope.result)}\n`, { flag: "wx", mode: 0o600 });
+    });
+    socket.on("error", () => process.exit(1));
+  ' "$BROKER_SOCKET" "$REFRESHED_SNAPSHOT"
+  test "$(stat -c '%u:%g %a' "$REFRESHED_SNAPSHOT")" = "0:0 600" || return 1
+  mv -f -- "$REFRESHED_SNAPSHOT" "$BROKER_SNAPSHOT"
+  prepare_live_facts
+}
+
 restore_production_container() {
   EXPECTED_CONTAINER_ID=$(cat "$CONTAINER_FACT") || return 1
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}}' "$EXPECTED_CONTAINER_ID")" = "$EXPECTED_CONTAINER_ID" || return 1
@@ -313,6 +340,7 @@ if test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || te
   /usr/bin/timeout -s KILL 10 /bin/mount --bind "$ACCEPTANCE_PIN_ROOT" "$ACCEPTANCE_STATE_ROOT"
   restore_production_container
   PRODUCTION_STOPPED=no
+  refresh_live_facts
   assert_acceptance_state_inode
 fi
 
@@ -361,6 +389,7 @@ run_harness() {
       --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
+      --mount "type=bind,src=$PROCESS_BINDING_FACT,dst=/run/ouro-acceptance/process-binding-digest,readonly" \
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
       --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
       --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
@@ -378,6 +407,7 @@ run_harness() {
       --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
+      --mount "type=bind,src=$PROCESS_BINDING_FACT,dst=/run/ouro-acceptance/process-binding-digest,readonly" \
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
       --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
       --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
