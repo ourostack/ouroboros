@@ -1,6 +1,8 @@
 import { pathToFileURL } from "node:url"
 import path from "node:path"
 import fs from "node:fs"
+import os from "node:os"
+import { spawn, spawnSync } from "node:child_process"
 
 import { describe, expect, it } from "vitest"
 
@@ -19,6 +21,7 @@ type TargetModule = {
   parseProcStatIdentity(content: string, expectedPid: number): { state: string; starttime: string }
   runThawWatchdog(targetContainerId: string, targetPid: number, parentPid: number, parentBootId: string, parentStarttime: string, root: string, dependencies: Record<string, unknown>): Promise<void>
   withPausedTarget<T>(target: { targetContainerId: string; targetPid: number }, operation: () => T, dependencies: Record<string, unknown>): T
+  runKillableCommand(executable: string, args: string[], timeoutMs: number): Promise<string>
 }
 
 async function load(): Promise<TargetModule> {
@@ -235,6 +238,61 @@ describe("Sanctuary fixed deployment target", () => {
     expect(parseProcStatIdentity(`42 (auditor worker (phase two)) S ${fieldsFromPpidThroughStarttime.join(" ")} 0 0\n`, 42))
       .toEqual({ state: "S", starttime: "987654" })
     expect(() => parseProcStatIdentity(`43 (auditor) S ${fieldsFromPpidThroughStarttime.join(" ")}\n`, 42)).toThrow(/identity/u)
+    expect(parseProcStatIdentity(`42 (auditor.worker (phase)\nnext) S ${fieldsFromPpidThroughStarttime.join(" ")} 0 0\n`, 42))
+      .toEqual({ state: "S", starttime: "987654" })
+  })
+
+  it("rejects a real watchdog child killed after readiness instead of accepting a stale ready file", async () => {
+    const { armThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    let childPid = 0
+    expect(() => armThawWatchdog({ targetContainerId: stagingId, targetPid: 321 }, {
+      now: () => 1_000,
+      mkdirSync: () => undefined,
+      spawn: () => {
+        const killed = spawnSync(process.execPath, ["-e", "process.kill(process.pid, 'SIGKILL')"])
+        childPid = killed.pid!
+        return { pid: childPid, unref: () => undefined }
+      },
+      existsSync: (file: string) => file.endsWith("/ready"),
+      readFileSync: () => `${JSON.stringify({ watchdogPid: childPid, watchdogBootId: bootId, watchdogStarttime: "555", readyAt: 1_000 })}\n`,
+      readParentIdentity: (pid: number) => {
+        if (pid === process.pid) return { bootId, state: "S", starttime: "987654" }
+        throw Object.assign(new Error("watchdog exited"), { code: "ENOENT" })
+      },
+    })).toThrow(/watchdog.*(?:alive|identity|exited)/u)
+  })
+
+  it.each(["before-pause", "during-pause"])("restores and fails when a real watchdog child dies %s", async (phase) => {
+    const { withPausedTarget } = await load()
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+    const childState = (): string => spawnSync("ps", ["-o", "stat=", "-p", String(child.pid)]).stdout.toString().trim()
+    const killChild = (): void => {
+      if (childState() && !childState().startsWith("Z")) process.kill(child.pid!, "SIGKILL")
+      for (let attempt = 0; attempt < 50 && !childState().startsWith("Z"); attempt += 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+    }
+    let paused = false
+    let pauseCalls = 0
+    let operationCalls = 0
+    if (phase === "before-pause") killChild()
+    try {
+      expect(() => withPausedTarget({ targetContainerId: stagingId, targetPid: 321 }, () => { operationCalls += 1 }, {
+        armWatchdog: () => ({
+          assertLive: () => { if (!childState() || childState().startsWith("Z")) throw new Error("watchdog child is not alive") },
+          disarm: () => ({ status: "disarmed" }),
+        }),
+        runDocker: (args: string[]) => {
+          if (args[0] === "pause") { paused = true; pauseCalls += 1; if (phase === "during-pause") killChild() }
+          if (args[0] === "unpause") paused = false
+          return args[0] === "inspect" ? JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 }) : ""
+        },
+      })).toThrow(/watchdog/u)
+      expect(paused).toBe(false)
+      expect(operationCalls).toBe(0)
+      expect(pauseCalls).toBe(phase === "before-pause" ? 0 : 1)
+    } finally {
+      if (childState() && !childState().startsWith("Z")) process.kill(child.pid!, "SIGKILL")
+    }
   })
 
   it("arms the detached child with the exact captured parent boot/start identity", async () => {
@@ -284,6 +342,32 @@ describe("Sanctuary fixed deployment target", () => {
     expect(calls.map(({ args }) => args[0])).toEqual(["inspect", "inspect"])
     expect(calls.every(({ timeoutMs }) => timeoutMs > 0 && timeoutMs <= 20_000)).toBe(true)
     expect(JSON.parse(files.get(`${root}/watchdog-terminal.json`)!)).toMatchObject({ status: "disarmed", containerId: stagingId, pid: 321, parentBootId: bootId, parentStarttime: "987654" })
+  })
+
+  it("retries a transient parent identity read without thawing and accepts the same live identity", async () => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    let polls = 0
+    let reads = 0
+    const commands: string[][] = []
+    await runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
+      now: () => polls * 100,
+      sleep: async () => { polls += 1 },
+      existsSync: (file: string) => file.endsWith("/disarm") && polls >= 2,
+      writeFileSync: () => undefined,
+      readParentIdentity: () => {
+        reads += 1
+        if (reads === 1) throw Object.assign(new Error("temporary proc read"), { code: "EIO" })
+        return { bootId, state: "S", starttime: "987654" }
+      },
+      runDocker: async (args: string[]) => {
+        commands.push(args)
+        return JSON.stringify({ containerId: stagingId, running: true, paused: false, restarting: false, dead: false, pid: 321 })
+      },
+      enforcementMs: 1_000,
+    })
+    expect(commands.some(([command]) => command === "unpause")).toBe(false)
+    expect(reads).toBeGreaterThanOrEqual(2)
   })
 
   it.each([
@@ -341,6 +425,36 @@ describe("Sanctuary fixed deployment target", () => {
     })).rejects.toThrow(/timed out|deadline/u)
     expect(calls).toBe(2)
     expect(clock).toBe(1_000)
+  })
+
+  it("kills a real TERM-ignoring process group at the hard wall-clock deadline", async () => {
+    const { runKillableCommand } = await load()
+    const startedAt = Date.now()
+    await expect(runKillableCommand(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], 150))
+      .rejects.toThrow(/deadline|timed out/u)
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
+
+  it("never writes a successful recovery receipt after a late blocked inspection return", async () => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    let clock = 0
+    const writes: string[] = []
+    let calls = 0
+    await expect(runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
+      now: () => clock,
+      sleep: async () => undefined,
+      existsSync: () => false,
+      writeFileSync: (file: string) => { writes.push(file) },
+      readParentIdentity: () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }) },
+      runDocker: async () => {
+        calls += 1
+        if (calls > 1) clock = 1_001
+        return JSON.stringify({ containerId: stagingId, running: true, paused: false, restarting: false, dead: false, pid: 321 })
+      },
+      enforcementMs: 1_000,
+    })).rejects.toThrow(/deadline/u)
+    expect(writes.some((file) => file.endsWith("/watchdog-terminal.json"))).toBe(false)
   })
 
   it("prevents the target from executing inter-scan process, thread, and socket birth/death schedules", async () => {
