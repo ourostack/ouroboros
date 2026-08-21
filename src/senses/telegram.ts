@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto"
+import { AsyncLocalStorage } from "node:async_hooks"
 import {
   closeSync,
   constants as fsConstants,
@@ -24,6 +25,7 @@ import { getAgentRoot } from "../heart/identity"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
+import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
 import { runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import {
@@ -45,6 +47,7 @@ import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
+import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 
 export interface TelegramSenseCredentials {
   botToken: string
@@ -66,6 +69,32 @@ const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
+const TELEGRAM_ACCEPTANCE_AUDIT_EVENTS = new Set([
+  "approval.acceptance_continuation_transition",
+  "approval.acceptance_transition",
+  "senses.sanctuary_health_delivered",
+  "senses.sanctuary_read_receipt",
+  "senses.telegram_approved_restart_end",
+  "senses.telegram_approved_restart_error",
+  "senses.telegram_approved_restart_start",
+  "senses.telegram_turn_end",
+  "senses.telegram_turn_error",
+  "senses.telegram_turn_start",
+  "telegram.approval_prompt_terminalized",
+  "telegram.callback_settled",
+  "telegram.update_dropped",
+])
+const telegramAcceptanceAuditOwner = new AsyncLocalStorage<string>()
+type TelegramAcceptanceAuditRecord = {
+  agentName: string
+  identityKey: string
+  ledger: TelegramAuditLedger
+  ownerDigest: string
+  references: number
+  scenarioHandleDigest: () => string | undefined
+  unregister: () => void
+}
+const telegramAcceptanceAudits = new Map<string, TelegramAcceptanceAuditRecord>()
 const TELEGRAM_TURN_RECEIPT_DOMAINS = {
   "sanctuary-telegram-turn-receipt-v3": "ouroboros.telegram.turn-receipt.v3",
   "sanctuary-telegram-turn-receipt-v4": "ouroboros.telegram.turn-receipt.v4",
@@ -74,6 +103,64 @@ const TELEGRAM_TURN_LEDGER_MAX_BYTES = 4 * 1024 * 1024
 const TELEGRAM_TURN_LEDGER_MAX_ROWS = 500
 const TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES = 16 * 1024
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
+
+export function telegramAcceptanceAuditOwnerDigest(identityKey: string, agentName: string, root: string): string {
+  return createHmac("sha256", identityKey)
+    .update(`ouroboros.telegram.acceptance-audit-owner.v1\0${agentName}\0${root}`, "utf8")
+    .digest("hex")
+}
+
+function acquireTelegramAcceptanceAudit(
+  root: string,
+  agentName: string,
+  identityKey: string,
+  privateValues: readonly string[],
+  scenarioHandleDigest: () => string | undefined,
+  releaseHook?: () => void,
+  maxBytes?: number,
+): { ledger: TelegramAuditLedger; ownerDigest: string; release(): void } {
+  const existing = telegramAcceptanceAudits.get(root)
+  if (existing) {
+    if (existing.identityKey !== identityKey) throw new Error("Telegram acceptance audit identity changed while active")
+    existing.ledger.assertHealthy()
+    existing.references += 1
+    let released = false
+    return { ledger: existing.ledger, ownerDigest: existing.ownerDigest, release: () => {
+      if (released) return
+      released = true
+      existing.references -= 1
+      if (existing.references === 0) {
+        try { existing.unregister() } finally { telegramAcceptanceAudits.delete(root) }
+        releaseHook?.()
+      }
+    } }
+  }
+  const ledger = createTelegramAuditLedger({ root, identityKey, privateValues, _maxBytes: maxBytes })
+  const ownerDigest = telegramAcceptanceAuditOwnerDigest(identityKey, agentName, root)
+  const record: TelegramAcceptanceAuditRecord = { agentName, identityKey, ledger, ownerDigest, references: 1, scenarioHandleDigest, unregister: () => undefined }
+  record.unregister = registerGlobalLogSink((event) => {
+    if (!TELEGRAM_ACCEPTANCE_AUDIT_EVENTS.has(event.event)) return
+    const explicitOwner = event.meta.acceptanceAuditOwnerDigest
+    const contextualOwner = telegramAcceptanceAuditOwner.getStore()
+    if (explicitOwner !== ownerDigest && contextualOwner !== ownerDigest) return
+    const scenario = event.meta.scenarioHandleDigest
+    if (typeof scenario !== "string" || !/^[0-9a-f]{64}$/u.test(scenario) || record.scenarioHandleDigest() !== scenario) {
+      ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
+    }
+    ledger.append(event)
+  })
+  telegramAcceptanceAudits.set(root, record)
+  let released = false
+  return { ledger, ownerDigest, release: () => {
+    if (released) return
+    released = true
+    record.references -= 1
+    if (record.references === 0) {
+      try { record.unregister() } finally { telegramAcceptanceAudits.delete(root) }
+      releaseHook?.()
+    }
+  } }
+}
 
 export function sanctuaryTelegramTurnReceiptDigest(identityKey: string, schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS, purpose: string, value: string): string {
   return createHmac("sha256", identityKey).update(`${TELEGRAM_TURN_RECEIPT_DOMAINS[schemaVersion]}\0${purpose}\0${value}`, "utf8").digest("hex")
@@ -93,6 +180,31 @@ function canonicalReceiptJson(value: unknown): string {
 export function sanctuaryTelegramTurnReceiptMac(identityKey: string, value: Record<string, unknown>): string {
   const unsigned = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "receiptMac"))
   return sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "receipt", canonicalReceiptJson(unsigned))
+}
+
+export function sanctuaryTelegramAuditLifecycleMac(
+  identityKey: string,
+  schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS,
+  event: string,
+  meta: Record<string, unknown>,
+): string {
+  const unsigned = Object.fromEntries(Object.entries(meta).filter(([key]) => key !== "lifecycleMac"))
+  return sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, "audit-lifecycle", canonicalReceiptJson({ event, meta: unsigned }))
+}
+
+export function sanctuaryTelegramUnauthorizedDropMac(
+  identityKey: string,
+  schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS,
+  value: {
+    scenarioHandleDigest: string
+    updateDigest: string
+    senderIdentityDigest: string
+    authorizedIdentityDigest: string
+    senderDistinct: boolean
+    nextOffsetDigest: string
+  },
+): string {
+  return sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, "unauthorized-drop", canonicalReceiptJson(value))
 }
 
 function sameTelegramLedgerMetadata(left: import("node:fs").BigIntStats, right: import("node:fs").BigIntStats): boolean {
@@ -240,6 +352,10 @@ export interface CreateTelegramSenseAppOptions {
   _runWithToolReceiptCollection?: typeof runWithSanctuaryToolReceiptCollection
   /** Test seam for simulating a ledger mutation after its pre-read metadata check. */
   _afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
+  /** Test seam for proving constructor/stop release error aggregation. */
+  _acceptanceAuditReleaseHook?: () => void
+  /** Test seam for proving exhaustion is fenced before effects. */
+  _acceptanceAuditMaxBytes?: number
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -344,9 +460,10 @@ export function readOrCreateTelegramIdentityKey(agentRoot: string, hooks: {
   }
 }
 
-function opaqueTelegramSubject(identityKey: string, authorizedUserId: string, authorizedChatId: string): string {
+function opaqueTelegramSubject(identityKey: string, botToken: string, authorizedUserId: string, authorizedChatId: string): string {
   const payload = [
     TELEGRAM_SUBJECT_DOMAIN,
+    `bot:${botToken.length}:${botToken}`,
     `user:${authorizedUserId.length}:${authorizedUserId}`,
     `chat:${authorizedChatId.length}:${authorizedChatId}`,
   ].join("\0")
@@ -371,7 +488,7 @@ function readTelegramSubjectIndex(agentRoot: string, subject: string): string[] 
   const parsed: unknown = JSON.parse(text)
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Telegram identity subject index is invalid")
   const record = parsed as Record<string, unknown>
-  if (record.version !== 1 || record.subject !== subject || !Array.isArray(record.legacySubjects)
+  if (record.version !== 1 || typeof record.subject !== "string" || !TELEGRAM_SUBJECT.test(record.subject) || !Array.isArray(record.legacySubjects)
     || Object.keys(record).sort().join(",") !== "legacySubjects,subject,version") {
     throw new Error("Telegram identity subject index is invalid")
   }
@@ -379,7 +496,7 @@ function readTelegramSubjectIndex(agentRoot: string, subject: string): string[] 
   if (!legacySubjects.every((candidate): candidate is string => typeof candidate === "string" && TELEGRAM_SUBJECT.test(candidate))) {
     throw new Error("Telegram identity subject index is invalid")
   }
-  return [...new Set(legacySubjects)]
+  return record.subject === subject ? [] : [record.subject]
 }
 
 function discoverTelegramFilesystemSubjects(agentRoot: string): string[] {
@@ -524,7 +641,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const identityKey = options.identityKey === undefined
     ? readOrCreateTelegramIdentityKey(agentRoot)
     : canonicalTelegramIdentityKey(options.identityKey)
-  const subject = opaqueTelegramSubject(identityKey, authorizedUserId, authorizedChatId)
+  const subject = opaqueTelegramSubject(identityKey, botToken, authorizedUserId, authorizedChatId)
   const transportError = (error: unknown): string => redactTelegramPrivateValues(
     error,
     [botToken, authorizedUserId, authorizedChatId],
@@ -539,19 +656,56 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const runTurn = options.runTurn ?? runSenseTurn
   const collectToolReceipts = options._runWithToolReceiptCollection ?? runWithSanctuaryToolReceiptCollection
   const useSanctuaryRuntime = options.agentName === "sanctuary" && !options.runTurn
-  const toolContext = useSanctuaryRuntime ? createSanctuaryToolContext(options.agentName) : undefined
-  const approvalRuntime = options.approvalRuntime ?? (useSanctuaryRuntime ? createTelegramApprovalRuntime({
-    agentName: options.agentName,
-    api,
-    authorizedUserId,
-    authorizedChatId,
-    subject,
-    toolContext: toolContext ?? {},
-  }) : undefined)
-  const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
-  const interactiveControl = useSanctuaryRuntime && approvalTransport
-    ? createSanctuaryInteractiveControl({ agentRoot, transport: approvalTransport, authorizedUserId, authorizedChatId })
+  const readScenarioHandleDigest = (): string | undefined => (options.acceptanceMarker
+    ? options.acceptanceMarker()
+    : readSanctuaryAcceptanceMarker(options.agentName))?.scenarioHandleDigest
+  const acceptanceAuditLease = useSanctuaryRuntime
+    ? acquireTelegramAcceptanceAudit(
+      agentRoot,
+      options.agentName,
+      identityKey,
+      [botToken, authorizedUserId, authorizedChatId],
+      readScenarioHandleDigest,
+      options._acceptanceAuditReleaseHook,
+      options._acceptanceAuditMaxBytes,
+    )
     : undefined
+  const acceptanceAudit = acceptanceAuditLease?.ledger
+  const acceptanceAuditBarrier = (): void => {
+    acceptanceAudit?.assertHealthy()
+    acceptanceAudit?.assertCapacity(8)
+  }
+  const releaseAcceptanceAudit = (primaryError?: unknown): void => {
+    try {
+      acceptanceAuditLease?.release()
+    } catch (releaseError) {
+      if (primaryError !== undefined) throw new AggregateError([primaryError, releaseError], "Telegram sense construction and audit release failed")
+      throw releaseError
+    }
+    if (primaryError !== undefined) throw primaryError
+  }
+  let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
+  let approvalRuntime: TelegramApprovalRuntime | undefined
+  let approvalTransport: TelegramApprovalTransport | undefined
+  let interactiveControl: ReturnType<typeof createSanctuaryInteractiveControl> | undefined
+  try {
+    toolContext = useSanctuaryRuntime ? createSanctuaryToolContext(options.agentName) : undefined
+    approvalRuntime = options.approvalRuntime ?? (useSanctuaryRuntime ? createTelegramApprovalRuntime({
+      agentName: options.agentName,
+      api,
+      authorizedUserId,
+      authorizedChatId,
+      subject,
+      toolContext: toolContext ?? {},
+      effectBarrier: acceptanceAuditBarrier,
+    }) : undefined)
+    approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
+    interactiveControl = useSanctuaryRuntime && approvalTransport
+      ? createSanctuaryInteractiveControl({ agentRoot, transport: approvalTransport, authorizedUserId, authorizedChatId })
+      : undefined
+  } catch (error) {
+    releaseAcceptanceAudit(error)
+  }
   const healthSweep = options.healthSweep
   const migrateIdentity = options.migrateIdentity ?? (async () => {
     const legacySubjects = new Set([
@@ -563,12 +717,18 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     if (legacySubjects.size > 1) throw new Error("Telegram legacy identity subject migration is ambiguous")
     const migrationSubjects = [...legacySubjects]
     for (const legacySubject of migrationSubjects) {
+      acceptanceAuditBarrier()
       migrateTelegramSessionIdentity(agentRoot, legacySubject, legacySubject, subject)
+      acceptanceAuditBarrier()
       await migrateTelegramFriendIdentity(agentRoot, legacySubject, subject)
     }
+    acceptanceAuditBarrier()
     migrateTelegramSessionIdentity(agentRoot, authorizedUserId, authorizedChatId, subject)
+    acceptanceAuditBarrier()
     await migrateTelegramFriendIdentity(agentRoot, authorizedUserId, subject)
+    acceptanceAuditBarrier()
     approvalRuntime?.migrateIdentity?.(migrationSubjects)
+    acceptanceAuditBarrier()
     writeTelegramSubjectIndex(agentRoot, subject, migrationSubjects, options.subjectIndexHooks)
   })
   let approvalReconcileTimer: ReturnType<typeof setTimeout> | undefined
@@ -611,10 +771,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const runHealthSweep = async (): Promise<void> => {
     if (!healthSweep) return
     try {
+      acceptanceAuditBarrier()
       const result = await healthSweep()
       if (result.message) {
+        acceptanceAuditBarrier()
         if (result.deliveryId) await healthSweep.markDeliveryAttempting?.(result.deliveryId)
         const messageIds = await deliver(result.message)
+        acceptanceAuditBarrier()
         if (result.deliveryId) await healthSweep.markDelivered?.(result.deliveryId, messageIds)
         emitNervesEvent({
           component: "senses",
@@ -624,6 +787,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         })
       }
     } catch (error) {
+      acceptanceAuditBarrier()
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -635,18 +799,36 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const deliver = async (text: string, signal?: AbortSignal, onMessageDelivered?: (messageId: number, chunk: string) => void): Promise<number[]> => {
+    acceptanceAuditBarrier()
     return sendTelegramText(api, authorizedChatId, text, signal, onMessageDelivered)
   }
 
-  const onMessage = async (message: TelegramInboundMessage): Promise<void> => {
+  const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
     const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
     const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
+    const groundedAcceptance = acceptanceMarker?.label === "unit-16d-whats-up" || acceptanceMarker?.label === "unit-16d-1-space"
+    const acceptanceSchema = groundedAcceptance ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
+    const auditDigest = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, acceptanceSchema, purpose, value)
+    const lifecycleCoordinates = acceptanceMarker ? {
+      scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
+      turnDigest: auditDigest("turn", `${message.updateId}\0${message.messageId}`),
+      updateDigest: auditDigest("update", `${message.updateId}\0${message.messageId}`),
+      subject,
+      identityDigest: auditDigest("identity", subject),
+      sessionDigest: auditDigest("session", `telegram:${subject}`),
+      argumentDigest: auditDigest("argument", message.text),
+    } : {}
+    const lifecycleStartedAt = Date.now()
+    const lifecycleMeta = (event: string, meta: Record<string, unknown>, lifecycleAt: number): Record<string, unknown> => acceptanceMarker
+      ? { ...meta, lifecycleAt, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, acceptanceSchema, event, { ...meta, lifecycleAt }) }
+      : meta
     emitNervesEvent({
       component: "senses",
       event: "senses.telegram_turn_start",
       message: "Telegram authorized turn started",
-      meta: { agentName: options.agentName, subject, ...acceptanceMeta },
+      meta: lifecycleMeta("senses.telegram_turn_start", { agentName: options.agentName, subject, ...acceptanceMeta, ...lifecycleCoordinates }, lifecycleStartedAt),
     })
+    acceptanceAuditBarrier()
     let deliveryCount = 0
     const deliveredMessageIds: number[] = []
     const deliveredChunks: string[] = []
@@ -660,6 +842,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         : null
     const bufferedGroundedDeliveries: string[] = []
     try {
+      acceptanceAuditBarrier()
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
@@ -702,7 +885,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_end",
         message: "Telegram authorized turn completed",
-        meta: { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta },
+        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
     } catch (error) {
       receiptStatus = "error"
@@ -712,21 +895,24 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_error",
         message: "Telegram authorized turn failed",
-        meta: {
+        meta: lifecycleMeta("senses.telegram_turn_error", {
           agentName: options.agentName,
           subject,
           ...acceptanceMeta,
-          error: redactTelegramPrivateValues(
-            error,
-            [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId],
-          ),
-        },
+          ...lifecycleCoordinates,
+          ...(acceptanceMarker ? {
+            outcome: "error",
+            errorDigest: auditDigest("error", redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId])),
+            deliveryCount: deliveredMessageIds.length,
+          } : { error: redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]) }),
+        }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
       if (deliveredMessageIds.length === 0) await deliver(fallback, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
     } finally {
       if (acceptanceMarker) {
-        const grounded = acceptanceMarker.label === "unit-16d-whats-up" || acceptanceMarker.label === "unit-16d-1-space"
+        acceptanceAuditBarrier()
+        const grounded = groundedAcceptance
         const schemaVersion = grounded ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
         const hmac = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, purpose, value)
         const redact = (value: string): string => [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]
@@ -762,30 +948,72 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
   }
 
+  const onMessage = (message: TelegramInboundMessage): Promise<void> => telegramAcceptanceAuditOwner.run(
+    acceptanceAuditLease?.ownerDigest ?? "",
+    () => onMessageBody(message),
+  )
+
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
     if (!update.callback_query || !approvalTransport) return false
-    const result = await approvalTransport.handleUpdate(update)
-    return result.handled
+    return telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", async () => {
+      acceptanceAuditBarrier()
+      const result = await approvalTransport.handleUpdate(update)
+      acceptanceAuditBarrier()
+      return result.handled
+    })
   }
 
-  const poll = (options.createLongPoll ?? createTelegramLongPoll)({
-    api,
-    expectedUserId: authorizedUserId,
-    expectedChatId: authorizedChatId,
-    offsetStore,
-    inboxStore,
-    onMessage,
-    onUpdate,
-    acceptanceEventMeta: () => sanctuaryAcceptanceEventMeta(options.agentName),
-  })
+  let poll: TelegramLongPoll
+  try {
+    poll = (options.createLongPoll ?? createTelegramLongPoll)({
+      api,
+      expectedUserId: authorizedUserId,
+      expectedChatId: authorizedChatId,
+      offsetStore,
+      inboxStore,
+      onMessage,
+      onUpdate,
+      acceptanceEventMeta: (update, distinctAccount) => {
+        const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
+        if (!marker) return {}
+        const auditOwnerMeta = acceptanceAuditLease ? { acceptanceAuditOwnerDigest: acceptanceAuditLease.ownerDigest } : {}
+        const messageId = update?.message?.message_id ?? update?.callback_query?.message?.message_id
+        const senderId = update?.message?.from?.id
+        if (!update || messageId === undefined || senderId === undefined) return { scenarioHandleDigest: marker.scenarioHandleDigest, ...auditOwnerMeta }
+        const schemaVersion = marker.label === "unit-16d-whats-up" || marker.label === "unit-16d-1-space"
+          ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
+        const digest = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, purpose, value)
+        const senderDistinct = String(senderId) !== authorizedUserId
+        if (distinctAccount !== senderDistinct) throw new Error("Telegram dropped-update identity classification mismatch")
+        const binding = {
+          scenarioHandleDigest: marker.scenarioHandleDigest,
+          updateDigest: digest("update", `${update.update_id}\0${messageId}`),
+          senderIdentityDigest: digest("sender-identity", String(senderId)),
+          authorizedIdentityDigest: digest("sender-identity", authorizedUserId),
+          senderDistinct,
+          nextOffsetDigest: digest("next-update-id", String(update.update_id + 1)),
+        }
+        return { ...binding, ...auditOwnerMeta, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, schemaVersion, binding) }
+      },
+      onBeforeDispatch: acceptanceAuditBarrier,
+      onDispatchSettled: () => acceptanceAudit?.assertHealthy(),
+    })
+  } catch (error) {
+    releaseAcceptanceAudit(error)
+  }
 
   return {
     run(signal) {
       if (runPromise) return runPromise
-      runPromise = (async () => {
+      runPromise = telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", async () => {
+        acceptanceAudit?.assertHealthy()
+        acceptanceAuditBarrier()
         await migrateIdentity()
+        acceptanceAuditBarrier()
         await approvalRuntime?.recover()
+        acceptanceAuditBarrier()
         await interactiveControl?.start()
+        acceptanceAuditBarrier()
         await approvalTransport?.reconcileExpired()
         await runHealthSweep()
         emitNervesEvent({
@@ -804,30 +1032,40 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           await approvalReconcileInFlight
           await interactiveControl?.stop()
         }
-      })()
+      })
       return runPromise
     },
     async sendProactive(text, signal) {
-      await deliver(requiredText(text, "proactive message"), signal)
+      await telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", () => deliver(requiredText(text, "proactive message"), signal))
     },
     stop() {
       if (stopPromise) return stopPromise
-      stopPromise = (async () => {
+      stopPromise = telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", async () => {
+        const errors: unknown[] = []
+        const attempt = async (operation: () => void | Promise<void>): Promise<void> => {
+          try { await operation() } catch (error) { errors.push(error) }
+        }
         approvalReconciliationActive = false
         clearApprovalReconcileTimer()
-        poll.stop()
-        await runPromise?.catch(() => undefined)
-        await approvalReconcileInFlight
-        await interactiveControl?.stop()
-        api.stop()
-        approvalRuntime?.close()
-        emitNervesEvent({
-          component: "senses",
-          event: "senses.telegram_poll_end",
-          message: "Telegram long poll stopped",
-          meta: { agentName: options.agentName, subject },
+        await attempt(() => poll.stop())
+        await attempt(async () => { await runPromise?.catch(() => undefined) })
+        await attempt(async () => { await approvalReconcileInFlight })
+        await attempt(async () => { await interactiveControl?.stop() })
+        await attempt(() => api.stop())
+        await attempt(() => approvalRuntime?.close())
+        await attempt(() => {
+          emitNervesEvent({
+            component: "senses",
+            event: "senses.telegram_poll_end",
+            message: "Telegram long poll stopped",
+            meta: { agentName: options.agentName, subject },
+          })
         })
-      })()
+        await attempt(() => acceptanceAudit?.assertHealthy())
+        await attempt(() => acceptanceAuditLease?.release())
+        if (errors.length === 1) throw errors[0]
+        if (errors.length > 1) throw new AggregateError(errors, "Telegram sense cleanup failed")
+      })
       return stopPromise
     },
   }

@@ -417,6 +417,7 @@ export async function executeApprovalDecision(options: ExecuteApprovalDecisionOp
     result = await options.execute(attempted.toolName, structuredClone(attempted.arguments))
   } catch (error) {
     if (!(error instanceof ApprovalExecutionFailedError)) throw error
+    await options.hooks?.afterHandler?.()
     return options.approvalStore.complete({
       approvalId: attempted.approvalId,
       ownerId: attempted.ownerId!,

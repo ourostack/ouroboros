@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto"
-
 import { emitNervesEvent } from "../nerves/runtime"
 
 export type SanctuaryGroundingToolName = "unraid_get_system" | "unraid_get_storage"
@@ -32,7 +31,9 @@ export function projectSanctuaryGrounding(toolName: string, result: unknown): Re
     if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(exact)) throw new Error("Sanctuary system grounding shape is invalid")
     for (const key of ["serverName", "unraidVersion", "apiVersion", "arrayState"]) if (typeof data[key] !== "string" || !data[key]) throw new Error("Sanctuary system grounding value is invalid")
     if (typeof data.degraded !== "boolean" || (data.uptimeSeconds !== null && (!Number.isSafeInteger(data.uptimeSeconds) || Number(data.uptimeSeconds) < 0))) throw new Error("Sanctuary system grounding value is invalid")
-    return { serverName: data.serverName, unraidVersion: data.unraidVersion, apiVersion: data.apiVersion, arrayState: data.arrayState, degraded: data.degraded }
+    const facts = { serverName: data.serverName, unraidVersion: data.unraidVersion, apiVersion: data.apiVersion, arrayState: data.arrayState, degraded: data.degraded }
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_grounding_projected", message: "Sanctuary grounding facts projected", meta: { toolName } })
+    return facts
   }
   const exact = ["array", "shares", "sourceIdentityDigest", "truncated"]
   if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(exact) || !Array.isArray(data.shares) || typeof data.truncated !== "boolean") throw new Error("Sanctuary storage grounding shape is invalid")
@@ -42,6 +43,7 @@ export function projectSanctuaryGrounding(toolName: string, result: unknown): Re
     || ![array.usedBytes, array.freeBytes].every((value) => value === null || (Number.isSafeInteger(value) && Number(value) >= 0))
     || (array.usedPercent !== null && (typeof array.usedPercent !== "number" || !Number.isFinite(array.usedPercent)))) throw new Error("Sanctuary storage array grounding value is invalid")
   const { sourceIdentityDigest: _sourceIdentityDigest, ...facts } = data
+  emitNervesEvent({ component: "senses", event: "senses.sanctuary_grounding_projected", message: "Sanctuary grounding facts projected", meta: { toolName } })
   return structuredClone(facts)
 }
 

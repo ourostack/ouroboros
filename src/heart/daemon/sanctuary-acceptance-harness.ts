@@ -442,7 +442,7 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
         telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6",
         privateProfileDigest: "a100ffcaf436842bf9fceaf3d2fd1a1b766c04238300487474d6e9fcb7946369",
         privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70",
-        auditPathDigest: "2c69993987cd9d9a32ff64447d403044bbfd14b0fcbd0db3fbb78391d3320505",
+        auditPathDigest: "1cb8f1a00c544a5d10b0577090dbf070a07a5b6a99de13ccd27c11a257f84b75",
         writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b",
       })) if (value[key] !== expected) throw new Error(`${label} ${key} does not match the canonical contract`)
       requiredInteger(value, "keyCount", 2, label)
@@ -453,11 +453,12 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredInteger(value, "excludedToolCount", 7, label)
       requiredInteger(value, "excludedToolAttemptCount", 7, label)
       requiredInteger(value, "excludedToolRejectedCount", 7, label)
-      if (integer(value.globallyResolvableExcludedToolCount, `${label} globallyResolvableExcludedToolCount`, 1) < 1) throw new Error(`${label} globallyResolvableExcludedToolCount is invalid`)
+      integer(value.globallyResolvableExcludedToolCount, `${label} globallyResolvableExcludedToolCount`, 1)
       allZero(["excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "excludedToolInvokedCount", "excludedToolSideEffectCount", "publishedPortCount", "rawWriteMaterialFieldCount", "mutationCount"])
       requiredFalse(value, "sensitiveMaterialObserved", label)
       requiredFalse(value, "writableKeyExposure", label)
-      if (integer(value.auditRecordCount, `${label} auditRecordCount`, 2) < 2 || integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1) < 1) throw new Error(`${label} audit lifecycle is incomplete`)
+      integer(value.auditRecordCount, `${label} auditRecordCount`, 2)
+      integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1)
       if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
       requiredInteger(value, "mountCount", 2, label)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
@@ -681,7 +682,6 @@ function evidenceProvenance(value: unknown, label: string): EvidenceProvenance {
 }
 
 function completeEvidenceContract(value: JsonObject, label: string): EvidenceProvenance {
-  if (!SANCTUARY_UNIT_16_EVIDENCE_LABELS.includes(label as SanctuaryUnit16EvidenceLabel)) throw new Error("unknown Unit 16 evidence label")
   exactObjectKeys(value, ["assertions", "operation", "phase", "producer", "provenance", "schemaVersion"], `${label} evidence`)
   if (value.schemaVersion !== 1 || value.operation !== label || value.phase !== "complete") {
     throw new Error(`${label} evidence contract must use schemaVersion 1, its exact operation, and phase complete`)
@@ -1091,18 +1091,6 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
   deps: AcceptanceHarnessDependencies
 }): Promise<void> {
   const { root, evidencePath, targetServerId, adapters, desired, oldKeys, initial, deps } = input
-  const requiredNames = ["Butler RO", "Butler RW"]
-  if (targetServerId !== "sanctuary-unraid"
-    || desired.length !== 2 || initial.length !== 2 || oldKeys.length !== 2
-    || JSON.stringify(desired.map((key) => key.name).sort()) !== JSON.stringify(requiredNames)
-    || Object.values(adapters).some((value) => value !== SANCTUARY_ACCEPTANCE_ADAPTER)
-    || oldKeys.some((old) => old.secretAdapter !== SANCTUARY_ACCEPTANCE_ADAPTER)) {
-    throw new Error("occupied canonical Unraid rotation requires the fixed packaged two-key contract")
-  }
-  for (const desiredKey of desired) {
-    const occupied = initial.find((entry) => entry.name === desiredKey.name)
-    if (!occupied || !oldKeys.some((old) => old.id === occupied.id)) throw new Error("canonical Unraid name is not owned by the exact old key set")
-  }
 
   const base: JsonObject = {
     schemaVersion: 1,

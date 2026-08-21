@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { inspect } from "node:util"
+import { registerGlobalLogSink } from "../../nerves"
+import { createTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 
 import {
   TelegramApiError,
@@ -36,6 +38,7 @@ describe("Telegram approval callback transport", () => {
     save?: (records: ReturnType<TelegramPendingApprovalStore["load"]>, call: number) => void
     handles?: string[]
     resolveDecisionToken?: () => Promise<string | undefined>
+    effectBarrier?: () => void
   } = {}) {
     let records = structuredClone(input.records ?? [])
     const saves: ReturnType<TelegramPendingApprovalStore["load"]>[] = []
@@ -68,6 +71,7 @@ describe("Telegram approval callback transport", () => {
       onExpire: input.onExpire,
       resolveDecisionToken: input.resolveDecisionToken ?? (async () => "restored-secret-token"),
       now: input.now ?? (() => 1_000_000),
+      effectBarrier: input.effectBarrier,
     })
     return { transport, calls, onDecision, records: () => records, saves }
   }
@@ -104,6 +108,21 @@ describe("Telegram approval callback transport", () => {
     expect(JSON.stringify(fixture.records())).not.toContain("secret-token")
     expect(fixture.saves.slice(0, 3).map((save) => save[0]?.deliveryState)).toEqual(["pending", "send_attempting", "bound"])
     expect(fixture.saves[0]?.[0]?.messageId).toBeNull()
+  })
+
+  it("blocks approval persistence, delivery, and callback mutation when the audit barrier fails", async () => {
+    const failure = new Error("Telegram audit ledger lacks reserved capacity")
+    const send = approvalFixture({ effectBarrier: () => { throw failure } })
+    await expect(send.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?" }))
+      .rejects.toBe(failure)
+    expect(send.calls).toEqual([])
+    expect(send.saves).toEqual([])
+
+    const callback = approvalFixture({ effectBarrier: () => { throw failure } })
+    await expect(callback.transport.handleUpdate(approvalCallback("a:approve"))).rejects.toBe(failure)
+    expect(callback.calls).toEqual([])
+    expect(callback.onDecision).not.toHaveBeenCalled()
+    expect(callback.saves).toEqual([])
   })
 
   it("persists an indeterminate prompt delivery when sendMessage may have escaped", async () => {
@@ -656,7 +675,7 @@ describe("Telegram durable authorized long poll", () => {
     expect(migrated.acknowledgeIndeterminateWarning(migratedWarning)).toBe(true)
     expect(migrated.quarantineStranded()).toEqual([])
     expect(JSON.parse(readFileSync(inboxPath, "utf8"))).toMatchObject({
-      version: 3,
+      version: 4,
       indeterminate: [expect.objectContaining({ quarantinedAt: 2_000, warningAcknowledged: true })],
     })
 
@@ -716,7 +735,7 @@ describe("Telegram durable authorized long poll", () => {
     const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
     const onMessage = vi.fn(async () => {
       expect(inboxStore.load()).toHaveLength(1)
-      expect(offset).toBe(12)
+      expect(offset).toBe(0)
       throw new Error("synthetic turn crash")
     })
     const api: TelegramBotApi = {
@@ -728,7 +747,7 @@ describe("Telegram durable authorized long poll", () => {
     const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, inboxStore, onMessage })
 
     await expect(poll.pollOnce()).rejects.toThrow("synthetic turn crash")
-    expect(offset).toBe(12)
+    expect(offset).toBe(0)
     expect(inboxStore.loadIndeterminate()).toHaveLength(1)
     let persisted = readFileSync(inboxPath, "utf8")
     expect(JSON.parse(persisted).indeterminate[0].warningAcknowledged).toBe(false)
@@ -803,10 +822,17 @@ describe("Telegram durable authorized long poll", () => {
         { update_id: 3, message: { message_id: 3, chat: { id: 10, type: "private" }, text: "no sender" } },
       ]),
     }
-    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage })
+    const acceptanceEventMeta = vi.fn(() => ({}))
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage, acceptanceEventMeta })
     await poll.pollOnce()
     expect(onMessage).not.toHaveBeenCalled()
     expect(offset).toBe(4)
+    expect(acceptanceEventMeta.mock.calls.map(([update, distinctAccount]) => [update?.update_id, distinctAccount])).toEqual([
+      [0, false],
+      [1, false],
+      [2, false],
+      [3, false],
+    ])
   })
 
   it("fails closed on corrupt offset state and stops an active poll", async () => {
@@ -825,6 +851,189 @@ describe("Telegram durable authorized long poll", () => {
     })
     poll.stop()
     await expect(poll.pollOnce()).rejects.toThrow("stopped")
+  })
+
+  it.each([
+    ["authorized message", { update_id: 7, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } }],
+    ["authorized callback", { update_id: 7, callback_query: { id: "query", from: { id: 10 }, data: "a:opaque", message: { message_id: 8, chat: { id: 10 } } } }],
+    ["unauthorized drop", { update_id: 7, message: { message_id: 8, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } }],
+  ] as const)("checks acceptance audit exhaustion before any %s effect", async (_label, update) => {
+    const offsetStore = { load: () => 0, save: vi.fn() }
+    const inboxStore = {
+      quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      acknowledgeIndeterminateWarning: vi.fn(() => true), capture: vi.fn(() => true), claim: vi.fn(() => true),
+      complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
+    }
+    const onMessage = vi.fn(async () => undefined)
+    const onUpdate = vi.fn(async () => true)
+    const acceptanceEventMeta = vi.fn(() => ({}))
+    const onBeforeDispatch = vi.fn(() => { throw new Error("Telegram audit ledger exceeds its bound") })
+    const onDispatchSettled = vi.fn()
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) }, expectedUserId: "10", expectedChatId: "10",
+      offsetStore, inboxStore, onMessage, onUpdate, acceptanceEventMeta, onBeforeDispatch, onDispatchSettled,
+    })
+
+    await expect(poll.pollOnce()).rejects.toThrow("Telegram audit ledger exceeds its bound")
+    expect(onBeforeDispatch).toHaveBeenCalledOnce()
+    expect(offsetStore.save).not.toHaveBeenCalled()
+    expect(inboxStore.capture).not.toHaveBeenCalled()
+    expect(inboxStore.claim).not.toHaveBeenCalled()
+    expect(inboxStore.complete).not.toHaveBeenCalled()
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(acceptanceEventMeta).not.toHaveBeenCalled()
+    expect(onDispatchSettled).not.toHaveBeenCalled()
+  })
+
+  it("checks audit health after a failed dispatch and preserves both failures", async () => {
+    const dispatchFailure = new Error("turn dispatch failed")
+    const auditFailure = new Error("Telegram audit ledger is corrupt")
+    const onDispatchSettled = vi.fn(() => { throw auditFailure })
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [
+        { update_id: 7, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } },
+      ]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore: {
+        quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+        acknowledgeIndeterminateWarning: vi.fn(() => true), capture: vi.fn(() => true), claim: vi.fn(() => true),
+        complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
+      },
+      onMessage: async () => { throw dispatchFailure },
+      onDispatchSettled,
+    })
+
+    const thrown = await poll.pollOnce().catch((error) => error as unknown)
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toEqual([dispatchFailure, auditFailure])
+    expect(onDispatchSettled).toHaveBeenCalledOnce()
+  })
+
+  it("does not commit a dropped update offset until its audit settlement succeeds", async () => {
+    const update = { update_id: 7, message: { message_id: 8, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } }
+    let offset = 0
+    let settlementAttempts = 0
+    const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
+    const api = { stop: vi.fn(), request: vi.fn(async () => [update]) }
+    const first = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      onDispatchSettled: () => {
+        settlementAttempts += 1
+        throw new Error("synthetic audit append failure")
+      },
+    })
+
+    await expect(first.pollOnce()).rejects.toThrow("synthetic audit append failure")
+    expect(offset).toBe(0)
+
+    const restarted = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      onDispatchSettled: () => { settlementAttempts += 1 },
+    })
+    await expect(restarted.pollOnce()).resolves.toBe(8)
+    expect(offset).toBe(8)
+    expect(api.request).toHaveBeenCalledTimes(2)
+    expect(settlementAttempts).toBe(2)
+  })
+
+  it("redelivers a dropped update after real append-chain tampering between preflight and commit", async () => {
+    const directory = makeTempDirectory("ouro-telegram-drop-audit-io-")
+    const identityKey = "k".repeat(43)
+    const scenarioHandleDigest = "a".repeat(64)
+    const update = { update_id: 7, message: { message_id: 8, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } }
+    let offset = 0
+    const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
+    const firstLedger = createTelegramAuditLedger({ root: directory, identityKey })
+    const unregisterFirst = registerGlobalLogSink((event) => {
+      if (event.event === "telegram.update_dropped" && event.meta.scenarioHandleDigest === scenarioHandleDigest) firstLedger.append(event)
+    })
+    const first = createTelegramLongPoll({
+      api: {
+        stop: vi.fn(),
+        request: vi.fn(async () => {
+          writeFileSync(firstLedger.ledgerPath, `${readFileSync(firstLedger.ledgerPath, "utf8")}tampered-after-preflight\n`)
+          return [update]
+        }),
+      },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      acceptanceEventMeta: () => ({ scenarioHandleDigest }),
+      onBeforeDispatch: () => firstLedger.assertHealthy(),
+      onDispatchSettled: () => firstLedger.assertHealthy(),
+    })
+
+    await expect(first.pollOnce()).rejects.toThrow(/audit ledger/iu)
+    expect(offset).toBe(0)
+    unregisterFirst()
+    rmSync(firstLedger.ledgerPath, { force: true })
+    rmSync(firstLedger.headPath, { force: true })
+
+    const restartedLedger = createTelegramAuditLedger({ root: directory, identityKey })
+    const unregisterRestarted = registerGlobalLogSink((event) => {
+      if (event.event === "telegram.update_dropped" && event.meta.scenarioHandleDigest === scenarioHandleDigest) restartedLedger.append(event)
+    })
+    const restarted = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      acceptanceEventMeta: () => ({ scenarioHandleDigest }),
+      onBeforeDispatch: () => restartedLedger.assertHealthy(),
+      onDispatchSettled: () => restartedLedger.assertHealthy(),
+    })
+
+    await expect(restarted.pollOnce()).resolves.toBe(8)
+    expect(offset).toBe(8)
+    expect(readFileSync(restartedLedger.ledgerPath, "utf8")).toContain("telegram.update_dropped")
+    unregisterRestarted()
+  })
+
+  it("suppresses an authorized side effect after audit settlement fails before offset commit", async () => {
+    const directory = makeTempDirectory("ouro-telegram-audit-settlement-")
+    const inboxPath = join(directory, "inbox.json")
+    const offsetPath = join(directory, "offset.json")
+    const update = { update_id: 7, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "status" } }
+    const api = { stop: vi.fn(), request: vi.fn(async () => [update]) }
+    const onMessage = vi.fn(async () => undefined)
+    const first = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: new FileTelegramOffsetStore(offsetPath),
+      inboxStore: new FileTelegramUpdateInboxStore(inboxPath),
+      onMessage,
+      onDispatchSettled: () => { throw new Error("synthetic audit append failure") },
+    })
+
+    await expect(first.pollOnce()).rejects.toThrow("synthetic audit append failure")
+    expect(new FileTelegramOffsetStore(offsetPath).load()).toBe(0)
+    expect(onMessage).toHaveBeenCalledOnce()
+
+    const restarted = createTelegramLongPoll({
+      api,
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: new FileTelegramOffsetStore(offsetPath),
+      inboxStore: new FileTelegramUpdateInboxStore(inboxPath),
+      onMessage,
+    })
+    await expect(restarted.pollOnce()).resolves.toBe(8)
+    expect(new FileTelegramOffsetStore(offsetPath).load()).toBe(8)
+    expect(onMessage).toHaveBeenCalledOnce()
   })
 
   it("propagates a non-shutdown polling failure from the joined run lifecycle", async () => {
@@ -890,6 +1099,9 @@ describe("Telegram durable authorized long poll", () => {
     expect(inbox.claim(zero)).toBe(false)
     inbox.complete(zero)
     inbox.complete(zero)
+    expect(inbox.capture(zero)).toBe(false)
+    inbox.commit(zero)
+    inbox.commit(zero)
     expect(inbox.capture(zero)).toBe(true)
     expect(inbox.load()).toHaveLength(2)
 
