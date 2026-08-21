@@ -2,7 +2,7 @@
 
 import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 
 const KEY_ROOT = "/boot/config/plugins/dynamix.my.servers/keys"
@@ -45,6 +45,7 @@ const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", 
 let expectedImageId = ""
 const activeHealthProbes = new Map()
 const ownerMutationCoordinator = createOwnerMutationCoordinator()
+const interactiveRestartDriver = createInteractiveRestartDriver()
 const healthProbeCoordinator = {
   start: (scenario, operation) => ownerMutationCoordinator.healthStart(scenario, operation),
   recover: (scenario, operation) => ownerMutationCoordinator.healthRecover(scenario, operation),
@@ -397,6 +398,17 @@ function healthProbeProcessPath(scenarioHandleDigest) {
   return `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/health-probe-processes/${scenarioHandleDigest}.json`
 }
 
+function healthOwnerMutationActive() {
+  if (activeHealthProbes.size > 0) return true
+  for (const root of ["health-probe-workspaces", "health-probe-pending", "health-probe-processes"]
+    .map((name) => `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/${name}`)) {
+    let directory
+    try { directory = opendirSync(root) } catch (error) { if (error.code === "ENOENT") continue; throw error }
+    try { if (directory.readSync() !== null) return true } finally { directory.closeSync() }
+  }
+  return false
+}
+
 function healthProbeArtifactDisposition({ receipt, workspace, pending }) {
   if (receipt) return "complete"
   if (workspace || pending) return "recovery_required"
@@ -719,6 +731,30 @@ function createOwnerMutationCoordinator() {
   }
 }
 
+function createInteractiveRestartDriver(options = {}) {
+  const records = new Map()
+  const tasks = new Set()
+  const defer = options.defer ?? ((operation) => setTimeout(operation, 250))
+  return {
+    poll(input, operation) {
+      const key = input.scenarioHandleDigest
+      const existing = records.get(key)
+      if (existing?.state === "complete") return { state: "complete", receipt: existing.receipt }
+      if (existing?.state === "failed") return { state: "failed", errorDigest: existing.errorDigest }
+      if (existing) return { state: "waiting" }
+      records.set(key, { state: "waiting" })
+      const task = new Promise((resolve) => defer(resolve)).then(operation).then(
+          (receipt) => { records.set(key, { state: "complete", receipt }) },
+          (error) => { records.set(key, { state: "failed", errorDigest: createHash("sha256").update(error instanceof Error ? error.name : "unknown").digest("hex") }) },
+      )
+      tasks.add(task)
+      void task.finally(() => tasks.delete(task)).catch(() => {})
+      return { state: "waiting" }
+    },
+    async stopAndDrain() { await Promise.allSettled([...tasks]) },
+  }
+}
+
 function canonicalInteractiveRequest(input, expectedLabel) {
   const value = object(input, "interactive driver input")
   exactKeys(value, ["label", "scenarioHandleDigest"], "interactive driver input")
@@ -741,6 +777,11 @@ const RESTART_RECEIPT_KEYS = [
   "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore",
   "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved",
   "indeterminateRetryCount",
+]
+const PREPARED_RESTART_RECEIPT_KEYS = [
+  "schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest",
+  "suspendedSessionRevisionDigest", "approvalEpochBefore", "pendingDigestBefore", "indeterminateRecoveryObserved",
+  "ownerImageDigest", "ownerContainerDigest", "restartCountBefore",
 ]
 
 function requireInteractiveReceipt(receipt, input) {
@@ -766,6 +807,18 @@ function requireInteractiveReceipt(receipt, input) {
     || value.mutationCount !== 1 || value.indeterminateRecoveryObserved !== true || value.indeterminateRetryCount !== 0) {
     throw new Error("interactive driver receipt is invalid")
   }
+  return value
+}
+
+function requirePreparedRestartReceipt(receipt, input) {
+  const value = object(receipt, "restart continuation prepared receipt")
+  exactKeys(value, PREPARED_RESTART_RECEIPT_KEYS, "restart continuation prepared receipt")
+  if (value.schemaVersion !== "sanctuary-interactive-driver-receipt-v2" || (value.phase !== "prepared" && value.phase !== "attempted_or_indeterminate")
+    || value.label !== input.label || value.scenarioHandleDigest !== input.scenarioHandleDigest
+    || ![value.approvalIdDigest, value.checkpointDigest, value.suspendedSessionRevisionDigest, value.pendingDigestBefore,
+      value.ownerImageDigest, value.ownerContainerDigest].every((item) => typeof item === "string" && SHA256.test(item))
+    || !Number.isSafeInteger(value.approvalEpochBefore) || value.approvalEpochBefore < 0 || value.indeterminateRecoveryObserved !== true
+    || !Number.isSafeInteger(value.restartCountBefore) || value.restartCountBefore < 0) throw new Error("restart continuation prepared receipt is invalid")
   return value
 }
 
@@ -887,17 +940,15 @@ async function driveRestartContinuation(input, dependencies = {
   const existing = dependencies.readReceipt(value)
   if (existing) {
     if (existing.phase === "complete") return requireInteractiveReceipt(existing, value)
-    if ((existing.phase !== "prepared" && existing.phase !== "attempted_or_indeterminate")
-      || !SHA256.test(existing.ownerImageDigest) || !SHA256.test(existing.ownerContainerDigest) || !Number.isSafeInteger(existing.restartCountBefore)) {
-      throw new Error("restart continuation requires inspect-before-retry")
-    }
+    let recoverable
+    try { recoverable = requirePreparedRestartReceipt(existing, value) } catch { throw new Error("restart continuation requires inspect-before-retry") }
     const observed = object(await dependencies.snapshot(), "restart continuation recovery owner")
-    if (observed.imageId !== `sha256:${existing.ownerImageDigest}` || observed.containerId !== existing.ownerContainerDigest
-      || observed.running !== true || observed.health !== "healthy" || observed.restartCount !== existing.restartCountBefore + 1) {
+    if (observed.imageId !== `sha256:${recoverable.ownerImageDigest}` || observed.containerId !== recoverable.ownerContainerDigest
+      || observed.running !== true || observed.health !== "healthy" || observed.restartCount !== recoverable.restartCountBefore + 1) {
       throw new Error("restart continuation requires inspect-before-retry")
     }
     const reconciled = object(await dependencies.runtime("reconcile_restart_continuation", value), "restart continuation reconciliation")
-    const receipt = { ...existing, ...reconciled, phase: "complete", restartCountAfter: observed.restartCount }
+    const receipt = { ...recoverable, ...reconciled, phase: "complete", restartCountAfter: observed.restartCount }
     delete receipt.restarted
     requireInteractiveReceipt(receipt, value)
     dependencies.persistReceipt(value, receipt)
@@ -944,6 +995,8 @@ async function dispatch(request, dependencies = {
   driveDuplicateCallbacks,
   driveRestartContinuation,
   ownerMutationCoordinator,
+  interactiveRestartDriver,
+  healthOwnerMutationActive,
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
@@ -1052,12 +1105,16 @@ async function dispatch(request, dependencies = {
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
     const expectedLabel = operation === "drive_duplicate_callbacks" ? "unit-16l-duplicate-callback" : "unit-16m-restart-continuation"
     const input = canonicalInteractiveRequest({ label: payload.label, scenarioHandleDigest: payload.scenarioHandleDigest }, expectedLabel)
+    if (dependencies.healthOwnerMutationActive?.()) throw new Error("owner mutation refused while durable health probe artifacts are active")
     const drive = operation === "drive_duplicate_callbacks" ? dependencies.driveDuplicateCallbacks : dependencies.driveRestartContinuation
     if (!drive) throw new Error("interactive production runtime driver is unavailable")
     const execute = async () => requireInteractiveReceipt(await drive(input), input)
-    return dependencies.ownerMutationCoordinator
-      ? await dependencies.ownerMutationCoordinator.interactive(execute)
-      : await execute()
+    if (operation === "drive_restart_continuation") {
+      if (!dependencies.interactiveRestartDriver) throw new Error("interactive restart driver is unavailable")
+      const owned = () => dependencies.ownerMutationCoordinator ? dependencies.ownerMutationCoordinator.interactive(execute) : execute()
+      return dependencies.interactiveRestartDriver.poll(input, owned)
+    }
+    return dependencies.ownerMutationCoordinator ? await dependencies.ownerMutationCoordinator.interactive(execute) : await execute()
   }
   throw new Error("host broker operation is not whitelisted")
 }
@@ -1105,6 +1162,7 @@ async function main() {
     shuttingDown = true
     server.close()
     await dispatchDrain.stopAndDrain()
+    await interactiveRestartDriver.stopAndDrain()
     let failed = false
     for (const record of [...activeHealthProbes.values()]) {
       try { await recoverHealthProbe(record.input) } catch { failed = true }
@@ -1125,10 +1183,12 @@ export {
   createDispatchDrain,
   createHealthProbeOperationCoordinator,
   createOwnerMutationCoordinator,
+  createInteractiveRestartDriver,
   dispatch,
   healthProbeArtifactDisposition,
   healthProbeDockerArgs,
   healthProbeOperationBudgets,
+  healthOwnerMutationActive,
   parseVaultStatus,
   queryGraphqlAutostart,
   driveDuplicateCallbacks,

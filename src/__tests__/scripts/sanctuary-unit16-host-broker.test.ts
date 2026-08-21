@@ -16,6 +16,8 @@ interface BrokerDependencies {
   driveDuplicateCallbacks?(input: Record<string, string>): unknown
   driveRestartContinuation?(input: Record<string, string>): unknown
   ownerMutationCoordinator?: ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
+  interactiveRestartDriver?: ReturnType<BrokerModule["createInteractiveRestartDriver"]>
+  healthOwnerMutationActive?(): boolean
   healthProbeCoordinator?: {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -28,6 +30,10 @@ interface BrokerModule {
     healthRecover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     healthOperation<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     interactive<T>(operation: () => T | Promise<T>): Promise<T>
+  }
+  createInteractiveRestartDriver(options?: { defer(operation: () => void): void }): {
+    poll(input: Record<string, string>, operation: () => unknown | Promise<unknown>): Record<string, unknown>
+    stopAndDrain(): Promise<void>
   }
   runInteractiveDriver(input: Record<string, string>, dependencies?: {
     run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string }
@@ -90,6 +96,7 @@ interface HealthProbeRecord {
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
     createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
+    createInteractiveRestartDriver: BrokerModule["createInteractiveRestartDriver"]
     runInteractiveDriver(input: Record<string, string>, dependencies?: { run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string } }): Record<string, unknown>
     driveRestartContinuation: BrokerModule["driveRestartContinuation"]
     driveDuplicateCallbacks: BrokerModule["driveDuplicateCallbacks"]
@@ -139,7 +146,7 @@ describe("Sanctuary Unit 16 host broker", () => {
   })
 
   it("drives a crash-safe restart continuation without raw approval coordinates crossing the broker", async () => {
-    const { dispatch } = await broker()
+    const { createInteractiveRestartDriver, dispatch } = await broker()
     const calls: Record<string, string>[] = []
     const coordinates = { targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }
     const result = {
@@ -150,12 +157,34 @@ describe("Sanctuary Unit 16 host broker", () => {
       pendingDigestBefore: "1".repeat(64), pendingDigestAfter: "1".repeat(64), pendingRestored: true,
       callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
     }
-    await expect(dispatch({ operation: "drive_restart_continuation", ...coordinates }, {
+    let begin!: () => void
+    const asyncDriver = createInteractiveRestartDriver({ defer: (operation) => { begin = operation } })
+    const dependencies: BrokerDependencies = {
       readBootId: () => "unused", containerSnapshot: () => ({}),
       driveRestartContinuation: (input) => { calls.push(input); return result },
-    })).resolves.toEqual(result)
+      interactiveRestartDriver: asyncDriver,
+    }
+    await expect(dispatch({ operation: "drive_restart_continuation", ...coordinates }, dependencies)).resolves.toEqual({ state: "waiting" })
+    expect(calls).toEqual([])
+    begin()
+    await asyncDriver.stopAndDrain()
+    await expect(dispatch({ operation: "drive_restart_continuation", ...coordinates }, dependencies)).resolves.toEqual({ state: "complete", receipt: result })
     expect(calls).toEqual([{ label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest }])
     expect(JSON.stringify(calls)).not.toMatch(/approval-|session-/u)
+  })
+
+  it("redacts async restart failures and never relaunches a failed host task", async () => {
+    const { createInteractiveRestartDriver } = await broker()
+    let begin!: () => void
+    let calls = 0
+    const driver = createInteractiveRestartDriver({ defer: (operation) => { begin = operation } })
+    const input = { label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }
+    expect(driver.poll(input, () => { calls += 1; throw new Error("secret raw failure") })).toEqual({ state: "waiting" })
+    begin()
+    await driver.stopAndDrain()
+    expect(driver.poll(input, () => { calls += 1 })).toEqual({ state: "failed", errorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    expect(calls).toBe(1)
+    expect(JSON.stringify(driver.poll(input, () => {}))).not.toContain("secret raw failure")
   })
 
   it("coordinates owner mutation across health and interactive operations in both orderings", async () => {
@@ -279,6 +308,16 @@ describe("Sanctuary Unit 16 host broker", () => {
     await expect(dispatch({ operation: "drive_duplicate_callbacks", ...duplicate }, dependencies)).resolves.toEqual(receipt)
   })
 
+  it("refuses interactive mutation when durable health artifacts survive broker memory", async () => {
+    const { dispatch } = await broker()
+    let drove = false
+    await expect(dispatch({ operation: "drive_duplicate_callbacks", targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest: "a".repeat(64) }, {
+      readBootId: () => "unused", containerSnapshot: () => ({}), healthOwnerMutationActive: () => true,
+      driveDuplicateCallbacks: () => { drove = true; return {} },
+    })).rejects.toThrow(/durable health probe artifacts are active/u)
+    expect(drove).toBe(false)
+  })
+
   it("persists restart preparation, re-enters after the exact owner restart, and never retries the action", async () => {
     const { driveRestartContinuation } = await broker()
     const input = { label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }
@@ -317,6 +356,16 @@ describe("Sanctuary Unit 16 host broker", () => {
       snapshot: () => ({ imageId: `sha256:${"e".repeat(64)}`, containerId: "f".repeat(64), running: true, health: "healthy", restartCount: 5 }),
     })).resolves.toMatchObject({ phase: "complete", restartCountBefore: 4, restartCountAfter: 5, indeterminateRetryCount: 0 })
     expect(recoveredWrites).toHaveLength(1)
+
+    for (const corruption of [{ label: "unit-16l-duplicate-callback" }, { scenarioHandleDigest: "9".repeat(64) }, { rawApprovalId: "approval-raw" }]) {
+      const calls: string[] = []
+      await expect(driveRestartContinuation(input, {
+        readReceipt: () => ({ ...prepared, ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4, ...corruption }),
+        persistReceipt: () => { calls.push("persist") }, runtime: () => { calls.push("runtime"); return reconciled },
+        restart: () => { calls.push("restart"); return {} }, snapshot: () => { calls.push("snapshot"); return {} },
+      })).rejects.toThrow(/inspect-before-retry/u)
+      expect(calls).toEqual([])
+    }
   })
   it("stages a bounded host reboot attestation without executing reboot", async () => {
     const { dispatch } = await broker()
