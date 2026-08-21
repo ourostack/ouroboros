@@ -373,5 +373,6 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('{ ok: false, error: "host operation failed" }')
     expect(source).not.toMatch(/console\.(?:log|error|warn)/u)
     expect(source).not.toContain("/var/run/docker.sock")
+    expect(source).not.toContain("return { recovered: false }")
   })
 })
