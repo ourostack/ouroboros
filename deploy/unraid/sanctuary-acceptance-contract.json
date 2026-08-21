@@ -135,7 +135,7 @@
         "timeoutMs": 4320000,
         "intervalMs": 2000
       },
-      "timing": { "execution": "sequential", "noneMs": 30000, "externalGateMs": 300000, "noCallbackMs": 360000, "dailyDigestMs": 1020000, "delayedApprovalMs": 180000, "totalMs": 4320000 }
+      "timing": { "execution": "sequential", "cleanupReservePerScenarioMs": 5000, "noneMs": 35000, "externalGateMs": 305000, "noCallbackMs": 365000, "dailyDigestMs": 1025000, "delayedApprovalMs": 185000, "totalMs": 4320000 }
     },
     "reboot-request": {
       "fixed": {
@@ -146,7 +146,7 @@
         "scenarioAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
         "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
         "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
-        "scenarioTimeoutMs": 120000,
+        "scenarioTimeoutMs": 125000,
         "scenarioIntervalMs": 2000
       }
     },
@@ -160,7 +160,7 @@
         "scenarioAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
         "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
         "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
-        "scenarioTimeoutMs": 120000,
+        "scenarioTimeoutMs": 125000,
         "scenarioIntervalMs": 2000
       }
     },

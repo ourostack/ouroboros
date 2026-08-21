@@ -49,7 +49,7 @@ function validHealthProbeReceipt(scenarioHandleDigest: string, patch: Record<str
     beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64),
     cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false,
     fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503, 503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z",
-    phases, providerInvocationCount: 1, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+    phases, privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
     ...patch,
   }
 }
@@ -353,7 +353,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(validHealthProbeReceipt(scenarioHandleDigest)); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
-    expect(facts.healthProbe).toMatchObject({ label: "unit-16h-daily-digest", scenarioHandleDigest, clockMode: "local-daily-boundary", providerInvocationCount: 1, deliveryCount: 1 })
+    expect(facts.healthProbe).toMatchObject({ label: "unit-16h-daily-digest", scenarioHandleDigest, clockMode: "local-daily-boundary", privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1 })
     expect(facts.sourceValues["health-probe-receipt"]).toEqual(facts.healthProbe)
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
@@ -364,6 +364,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ["unrestored state", { restoredStateDigest: "8".repeat(64) }],
     ["non-boundary clock", { effectiveNow: "2026-08-20T16:00:00.001Z" }],
     ["mismatched delivery count", { deliveryCount: 2 }],
+    ["missing private turn count", { privateTurnCount: undefined }],
+    ["provider count below private turns", { privateTurnCount: 2, providerInvocationCount: 1 }],
+    ["provider count above bound", { providerInvocationCount: 1_001 }],
     ["mismatched fixture sequence", { fixtureSequenceDigest: "9".repeat(64) }],
     ["malformed phase", { phases: [{ ordinal: 1, name: "digest-first", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64), extra: true }] }],
   ])("rejects a health probe receipt with %s", async (_label, patch) => {

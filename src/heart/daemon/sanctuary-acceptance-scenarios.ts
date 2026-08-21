@@ -8,6 +8,7 @@ import {
   clearSanctuaryAcceptanceGateStatus,
   clearSanctuaryAcceptanceMarker,
   publishSanctuaryAcceptanceGateStatus,
+  readSanctuaryAcceptanceMarker,
   writeSanctuaryAcceptanceMarker,
 } from "./sanctuary-acceptance-marker"
 import { validateSanctuaryUnit16EvidenceAssertions, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
@@ -98,6 +99,7 @@ export interface SanctuaryHealthProbeReceipt {
   clockMode: "ambient" | "local-daily-boundary"
   effectiveNow: string
   phases: SanctuaryHealthProbePhase[]
+  privateTurnCount: number
   providerInvocationCount: number
   deliveryCount: number
   workspaceAbsent: boolean
@@ -301,7 +303,7 @@ export function deriveSanctuaryScenarioAssertions(
         || after.healthProbe.phases[0]?.name !== "cron-unchanged" || after.healthProbe.phases[0].trigger !== "cron" || after.healthProbe.phases[0].fixtureStatus !== null
         || after.healthProbe.phases[0].opened !== 0 || after.healthProbe.phases[0].recovered !== 0 || after.healthProbe.phases[0].digestDue
         || after.healthProbe.phases[0].deliveryKind !== null || after.healthProbe.phases[0].deliveryReceiptDigest !== null
-        || after.healthProbe.providerInvocationCount !== 0 || after.healthProbe.deliveryCount !== 0 || telegramResponses !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0) return null
+        || after.healthProbe.privateTurnCount !== 0 || after.healthProbe.providerInvocationCount !== 0 || after.healthProbe.deliveryCount !== 0 || telegramResponses !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0) return null
       return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
     case "unit-16g-health-transition": {
       const probe = after.healthProbe
@@ -309,7 +311,8 @@ export function deriveSanctuaryScenarioAssertions(
         ["live-baseline", null, 0, 0, null], ["live-repeat", null, 0, 0, null], ["fixture-fail", 503, 1, 0, "transition"],
         ["fixture-repeat", 503, 0, 0, null], ["fixture-recover", 200, 0, 1, "transition"], ["fixture-refail", 503, 1, 0, "transition"],
       ] as const
-      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "ambient" || probe.providerInvocationCount !== 3 || probe.deliveryCount !== 3 || probe.phases.length !== exactPhases.length
+      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "ambient" || probe.privateTurnCount !== 3
+        || probe.providerInvocationCount < probe.privateTurnCount || probe.providerInvocationCount > 1_000 || probe.deliveryCount !== 3 || probe.phases.length !== exactPhases.length
         || !probe.phases.every((phase, index) => phase.ordinal === index + 1 && phase.name === exactPhases[index]![0] && phase.trigger === "acceptance"
           && phase.fixtureStatus === exactPhases[index]![1] && phase.opened === exactPhases[index]![2] && phase.recovered === exactPhases[index]![3]
           && phase.deliveryKind === exactPhases[index]![4] && phase.digestDue === false && (phase.deliveryKind === null) === (phase.deliveryReceiptDigest === null))) return null
@@ -317,7 +320,8 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16h-daily-digest": {
       const probe = after.healthProbe
-      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "local-daily-boundary" || probe.providerInvocationCount !== 1 || probe.deliveryCount !== 1 || probe.phases.length !== 2
+      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "local-daily-boundary" || probe.privateTurnCount !== 1
+        || probe.providerInvocationCount < probe.privateTurnCount || probe.providerInvocationCount > 1_000 || probe.deliveryCount !== 1 || probe.phases.length !== 2
         || probe.phases[0]?.ordinal !== 1 || probe.phases[0].name !== "digest-first" || probe.phases[0].trigger !== "acceptance" || probe.phases[0].fixtureStatus !== 503
         || !probe.phases[0].digestDue || probe.phases[0].deliveryKind !== "digest" || probe.phases[0].deliveryReceiptDigest === null
         || probe.phases[1]?.ordinal !== 2 || probe.phases[1].name !== "digest-repeat" || probe.phases[1].trigger !== "acceptance" || probe.phases[1].fixtureStatus !== 503
@@ -357,8 +361,8 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
       const capturedBefore = await deps.readFacts(input.label, scenarioHandleDigest)
       const before = { ...capturedBefore, sourceValues: Object.fromEntries(Object.entries(capturedBefore.sourceValues).map(([source, value]) => [source, hash(value)])) }
       const receipt: Receipt = { schemaVersion: "sanctuary-acceptance-receipt-v1", label: input.label, gate: input.externalGate, sources: [...input.sources], checkpointDigest, scenarioHandleDigest, startedAt, before }
-      atomicPrivateJson(receiptPath(checkpointDigest), receipt)
       writeSanctuaryAcceptanceMarker("sanctuary", { schemaVersion: "sanctuary-acceptance-marker-v1", label: input.label, scenarioHandleDigest, startedAt })
+      atomicPrivateJson(receiptPath(checkpointDigest), receipt)
       publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "waiting", startedAt }, deps.gateStatusPath)
       emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_scenario_begin", message: "Sanctuary live acceptance scenario began", meta: { label: input.label, gate: input.externalGate, scenarioHandleDigest } })
       return { state: "waiting", checkpointDigest }
@@ -394,6 +398,34 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
   }
 }
 
-export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string): void {
-  clearSanctuaryAcceptanceGateStatus(gateStatusPath)
+export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string, configuredReceiptRoot?: string): void {
+  const receiptRoot = configuredReceiptRoot ?? path.join(getAgentRoot("sanctuary"), "state", "acceptance", "receipts")
+  const errors: unknown[] = []
+  let marker: ReturnType<typeof readSanctuaryAcceptanceMarker> = null
+  try { marker = readSanctuaryAcceptanceMarker("sanctuary") } catch (error) { errors.push(error) }
+  if (marker) {
+    try {
+      const entries = fs.readdirSync(receiptRoot, { withFileTypes: true })
+      if (entries.length > 32) throw new Error("acceptance receipt cleanup exceeds its bound")
+      const matches = entries.flatMap((entry) => {
+        if (!entry.isFile() || !entry.name.endsWith(".json") || !SHA256.test(entry.name.slice(0, -5))) return []
+        const filePath = path.join(receiptRoot, entry.name)
+        const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+        try {
+          const metadata = fs.fstatSync(handle)
+          if (!metadata.isFile() || metadata.size > 4 * 1024 * 1024 || (metadata.mode & 0o777) !== 0o600) throw new Error("acceptance receipt cleanup found an invalid file")
+          const receipt = JSON.parse(fs.readFileSync(handle, "utf8")) as Receipt
+          const pathMetadata = fs.lstatSync(filePath)
+          if (!pathMetadata.isFile() || pathMetadata.dev !== metadata.dev || pathMetadata.ino !== metadata.ino) throw new Error("acceptance receipt changed during cleanup")
+          return receipt.checkpointDigest === entry.name.slice(0, -5) && receipt.scenarioHandleDigest === marker!.scenarioHandleDigest
+            && receipt.label === marker!.label && receipt.startedAt === marker!.startedAt ? [filePath] : []
+        } finally { fs.closeSync(handle) }
+      })
+      if (matches.length !== 1) throw new Error("active acceptance receipt is absent or ambiguous")
+      fs.unlinkSync(matches[0]!)
+    } catch (error) { errors.push(error) }
+    try { clearSanctuaryAcceptanceMarker("sanctuary", marker.scenarioHandleDigest) } catch (error) { errors.push(error) }
+  }
+  try { clearSanctuaryAcceptanceGateStatus(gateStatusPath) } catch (error) { errors.push(error) }
+  if (errors.length > 0) throw new AggregateError(errors, "Sanctuary scenario finalization failed")
 }

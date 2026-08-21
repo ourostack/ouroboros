@@ -31,7 +31,7 @@ type JsonObject = Record<string, unknown>
 
 export interface AcceptanceHarnessDependencies {
   readSecret(): string
-  runAdapter(executable: string, payload: unknown): Promise<unknown>
+  runAdapter(executable: string, payload: unknown, timeoutMs?: number): Promise<unknown>
   fetch: typeof fetch
   now(): number
   randomBytes(size: number): Buffer
@@ -47,13 +47,13 @@ export function createSanctuaryAcceptanceHarnessDependencies(
   const telegramTimeoutMs = options.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS
   return {
     readSecret: () => readFileSync(secretFd, "utf8"),
-    runAdapter: async (executable, payload) => {
+    runAdapter: async (executable, payload, remainingMs) => {
       requireAbsoluteExecutable(executable)
       const result = spawnSync(executable, [], {
         input: `${JSON.stringify(payload)}\n`,
         encoding: "utf8",
         maxBuffer: MAX_ADAPTER_OUTPUT,
-        timeout: adapterTimeoutMs,
+        timeout: Math.max(1, Math.min(adapterTimeoutMs, remainingMs ?? adapterTimeoutMs)),
         cwd: "/",
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
         stdio: ["pipe", "pipe", "ignore"],
@@ -308,6 +308,7 @@ export type SanctuaryUnit16EvidenceLabel = typeof SANCTUARY_UNIT_16_EVIDENCE_LAB
 
 const SANCTUARY_SCENARIO_ADAPTER_OPERATION = "capture_acceptance_scenario"
 const SANCTUARY_SCENARIO_COMMAND = "evidence-snapshot"
+const SCENARIO_CLEANUP_RESERVE_MS = 5_000
 const REBOOT_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16a-pre-reboot-checkpoint",
   "unit-16a-reboot-request",
@@ -316,10 +317,11 @@ const REBOOT_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
 const MAX_MATRIX_TIMEOUT_MS = 7_200_000
 
 function scenarioTimeoutBudget(label: SanctuaryUnit16EvidenceLabel): number {
-  if (label === "unit-15c-1-no-callback-terminalization") return 360_000
-  if (label === "unit-16h-daily-digest") return 1_020_000
-  if (label === "unit-16i-delayed-approval") return 180_000
-  return SANCTUARY_SCENARIO_GATES[label] === "none" ? 30_000 : 300_000
+  if (REBOOT_SCENARIO_LABELS.has(label)) return 125_000
+  if (label === "unit-15c-1-no-callback-terminalization") return 365_000
+  if (label === "unit-16h-daily-digest") return 1_025_000
+  if (label === "unit-16i-delayed-approval") return 185_000
+  return SANCTUARY_SCENARIO_GATES[label] === "none" ? 35_000 : 305_000
 }
 
 function exactObjectKeys(value: JsonObject, expected: string[], label: string): void {
@@ -646,13 +648,15 @@ function sameStableProvenance(left: EvidenceProvenance, right: EvidenceProvenanc
     && left.harnessSha256 === right.harnessSha256
 }
 
-async function liveEvidenceProvenance(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<Omit<EvidenceProvenance, "harnessSha256">> {
+async function liveEvidenceProvenance(config: JsonObject, deps: AcceptanceHarnessDependencies, deadline?: number): Promise<Omit<EvidenceProvenance, "harnessSha256">> {
   const executable = adapter(config.provenanceAdapter, "provenanceAdapter")
   if (executable !== PACKAGED_PROVENANCE_ADAPTER) throw new Error("provenanceAdapter must be the packaged Sanctuary acceptance adapter")
+  const remainingMs = deadline === undefined ? undefined : deadline - deps.now()
+  if (remainingMs !== undefined && remainingMs <= 0) throw new Error("live evidence provenance exceeded its remaining deadline")
   const capture = object(await deps.runAdapter(executable, {
     operation: "capture_evidence_provenance",
     schema: "sanctuary-unit-16-provenance-v1",
-  }), "live provenance")
+  }, remainingMs), "live provenance")
   const expectedKeys = ["containerDigest", "cursorDigest", "imageDigest"]
   if (JSON.stringify(Object.keys(capture).sort()) !== JSON.stringify(expectedKeys)) {
     throw new Error("live provenance must contain the exact image, container, and cursor coordinates")
@@ -1236,29 +1240,36 @@ async function captureScenarioEvidence(input: {
   refuseExistingCheckpoint(root, evidencePath)
   const gate = SANCTUARY_SCENARIO_GATES[label]
   const sources = SANCTUARY_SCENARIO_SOURCES[label]
+  const operationDeadline = deadline - SCENARIO_CLEANUP_RESERVE_MS
+  const runBefore = async (payload: unknown, callLabel: string, callDeadline = operationDeadline): Promise<unknown> => {
+    const remainingMs = callDeadline - deps.now()
+    if (remainingMs <= 0) throw new Error(`${label} ${callLabel} timed out at its remaining deadline`)
+    return deps.runAdapter(executable, payload, remainingMs)
+  }
   let capture: { checkpointDigest: string; assertions: JsonObject; sourceDigest: string; provenance: Omit<EvidenceProvenance, "harnessSha256"> } | undefined
   let operationError: unknown
   try {
-    let response = object(await deps.runAdapter(executable, {
+    let response = object(await runBefore({
       operation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
       phase: "begin",
       label,
       externalGate: gate,
       sources,
-    }), `${label} begin result`)
+    }, "begin"), `${label} begin result`)
     exactObjectKeys(response, response.state === "complete" ? ["assertions", "checkpointDigest", "sourceDigests", "state"] : ["checkpointDigest", "state"], `${label} begin result`)
     const checkpointDigest = opaqueDigest(response.checkpointDigest, `${label} checkpointDigest`)
     while (response.state === "waiting") {
-      if (deps.now() >= deadline) throw new Error(`${label} live scenario timed out while awaiting ${gate}`)
-      await deps.sleep(intervalMs)
-      response = object(await deps.runAdapter(executable, {
+      const remainingBeforeSleep = operationDeadline - deps.now()
+      if (remainingBeforeSleep <= 0) throw new Error(`${label} live scenario timed out while awaiting ${gate}`)
+      await deps.sleep(Math.min(intervalMs, remainingBeforeSleep))
+      response = object(await runBefore({
         operation: SANCTUARY_SCENARIO_ADAPTER_OPERATION,
         phase: "poll",
         label,
         externalGate: gate,
         sources,
         checkpointDigest,
-      }), `${label} poll result`)
+      }, "poll"), `${label} poll result`)
       exactObjectKeys(response, response.state === "complete" ? ["assertions", "checkpointDigest", "sourceDigests", "state"] : ["checkpointDigest", "state"], `${label} poll result`)
       if (opaqueDigest(response.checkpointDigest, `${label} checkpointDigest`) !== checkpointDigest) throw new Error(`${label} checkpoint identity drifted`)
     }
@@ -1270,18 +1281,24 @@ async function captureScenarioEvidence(input: {
       checkpointDigest,
       assertions: validateSanctuaryUnit16EvidenceAssertions(label, response.assertions),
       sourceDigest: normalizedEvidenceHash(sourceDigests),
-      provenance: await liveEvidenceProvenance(config, deps),
+      provenance: await liveEvidenceProvenance(config, deps, operationDeadline),
     }
   } catch (error) {
     operationError = error
   }
   let cleanupError: unknown
   try {
-    const finalized = object(await deps.runAdapter(executable, { operation: "finalize_acceptance_scenarios" }), "scenario finalization result")
+    const cleanupRemainingMs = Math.max(1, deadline - deps.now())
+    const finalized = object(await deps.runAdapter(executable, { operation: "finalize_acceptance_scenarios" }, cleanupRemainingMs), "scenario finalization result")
     exactObjectKeys(finalized, ["finalized"], "scenario finalization result")
     if (finalized.finalized !== true) throw new Error("scenario finalization failed")
   } catch (error) {
     cleanupError = error
+  }
+  if (operationError && cleanupError) {
+    const operationMessage = operationError instanceof Error ? operationError.message : "unknown operation error"
+    const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : "unknown cleanup error"
+    throw new AggregateError([operationError, cleanupError], `${label} scenario operation failed: ${operationMessage}; cleanup failed: ${cleanupMessage}`)
   }
   if (operationError) throw operationError
   if (cleanupError) throw cleanupError

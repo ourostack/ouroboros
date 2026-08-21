@@ -319,7 +319,7 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
   if (raw === null) return undefined
   if (Buffer.byteLength(raw) > 128 * 1024) throw new Error("Sanctuary health probe receipt exceeds its bound")
   const receipt = object(JSON.parse(raw) as unknown, "Sanctuary health probe receipt")
-  const exactKeys = ["beforeStateDigest", "clockMode", "cronDegradedAfter", "cronDegradedBefore", "cronFingerprintAfter", "cronFingerprintBefore", "cronRegisteredAfter", "cronRegisteredBefore", "deliveryCount", "effectiveNow", "fixtureSequenceDigest", "label", "ownerContainerDigestAfter", "ownerContainerDigestBefore", "ownerImageDigestAfter", "ownerImageDigestBefore", "phases", "productionRestored", "providerInvocationCount", "realCheckEquivalent", "restoredStateDigest", "scenarioHandleDigest", "schemaVersion", "snapshotAbsent", "socketAbsent", "workspaceAbsent"].sort()
+  const exactKeys = ["beforeStateDigest", "clockMode", "cronDegradedAfter", "cronDegradedBefore", "cronFingerprintAfter", "cronFingerprintBefore", "cronRegisteredAfter", "cronRegisteredBefore", "deliveryCount", "effectiveNow", "fixtureSequenceDigest", "label", "ownerContainerDigestAfter", "ownerContainerDigestBefore", "ownerImageDigestAfter", "ownerImageDigestBefore", "phases", "privateTurnCount", "productionRestored", "providerInvocationCount", "realCheckEquivalent", "restoredStateDigest", "scenarioHandleDigest", "schemaVersion", "snapshotAbsent", "socketAbsent", "workspaceAbsent"].sort()
   const supportedLabel = label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest"
   const digestFields = ["ownerImageDigestBefore", "ownerImageDigestAfter", "ownerContainerDigestBefore", "ownerContainerDigestAfter", "beforeStateDigest", "restoredStateDigest", "cronFingerprintBefore", "cronFingerprintAfter", "fixtureSequenceDigest"] as const
   const booleanFields = ["cronRegisteredBefore", "cronRegisteredAfter", "cronDegradedBefore", "cronDegradedAfter", "workspaceAbsent", "socketAbsent", "snapshotAbsent", "realCheckEquivalent", "productionRestored"] as const
@@ -328,8 +328,9 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
     || !digestFields.every((field) => typeof receipt[field] === "string" && SHA256.test(receipt[field]))
     || !booleanFields.every((field) => typeof receipt[field] === "boolean") || !canonicalIso(receipt.effectiveNow)
     || (receipt.clockMode !== "ambient" && receipt.clockMode !== "local-daily-boundary")
-    || !Number.isSafeInteger(receipt.providerInvocationCount) || Number(receipt.providerInvocationCount) < 0
-    || !Number.isSafeInteger(receipt.deliveryCount) || Number(receipt.deliveryCount) < 0
+    || !Number.isSafeInteger(receipt.privateTurnCount) || Number(receipt.privateTurnCount) < 0 || Number(receipt.privateTurnCount) > 1_000
+    || !Number.isSafeInteger(receipt.providerInvocationCount) || Number(receipt.providerInvocationCount) < Number(receipt.privateTurnCount) || Number(receipt.providerInvocationCount) > 1_000
+    || !Number.isSafeInteger(receipt.deliveryCount) || Number(receipt.deliveryCount) < 0 || Number(receipt.deliveryCount) > 1_000
     || !Array.isArray(receipt.phases) || receipt.phases.length < 1 || receipt.phases.length > 8) throw new Error("Sanctuary health probe receipt schema is invalid")
   const phases = receipt.phases.map((rawPhase, index) => {
     const phase = object(rawPhase, "Sanctuary health probe phase")

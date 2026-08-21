@@ -38,7 +38,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 function dependencies(input: {
   secret?: string
-  adapter?: (executable: string, payload: unknown) => Promise<unknown>
+  adapter?: (executable: string, payload: unknown, timeoutMs?: number) => Promise<unknown>
   fetch?: typeof fetch
   now?: () => number
   sleep?: (milliseconds: number) => Promise<void>
@@ -328,8 +328,11 @@ describe("Sanctuary acceptance harness", () => {
     seedRebootPhaseEvidence(dir, createHash("sha256").update(fs.readFileSync(config(dir).harnessPath as string)).digest("hex"))
     let clock = 1_800_000_000_000
     await expect(executeSanctuaryAcceptanceHarness("evidence-snapshot", config(dir), dependencies({
-      now: () => { clock += 300_000; return clock },
-      adapter: async () => ({ state: "waiting", checkpointDigest: "d".repeat(64) }),
+      now: () => clock,
+      sleep: async () => { clock += 300_000 },
+      adapter: async (_executable, rawPayload) => (rawPayload as Record<string, unknown>).operation === "finalize_acceptance_scenarios"
+        ? { finalized: true }
+        : { state: "waiting", checkpointDigest: "d".repeat(64) },
     }))).rejects.toThrow(/timed out/u)
     dir = root()
     seedRebootPhaseEvidence(dir, createHash("sha256").update(fs.readFileSync(config(dir).harnessPath as string)).digest("hex"))
@@ -364,7 +367,8 @@ describe("Sanctuary acceptance harness", () => {
         timeoutMs: 300_000,
         intervalMs: 1,
       }, dependencies({
-        now: () => { clock += 400_000; return clock },
+        now: () => clock,
+        sleep: async () => { clock += 400_000 },
         adapter: async (_executable, rawPayload) => {
           const payload = rawPayload as Record<string, unknown>
           operations.push(String(payload.operation))
@@ -376,6 +380,33 @@ describe("Sanctuary acceptance harness", () => {
       expect(operations.at(-1)).toBe("finalize_acceptance_scenarios")
       expect(fs.existsSync(path.join(dir, `${completeEvidenceLabels[0]}.json`))).toBe(false)
     }
+  })
+
+  it("preserves both operation and cleanup diagnostics under one bounded deadline", async () => {
+    const dir = root()
+    const harnessPath = path.join(dir, "harness.sh")
+    fs.writeFileSync(harnessPath, "harness\n", { mode: 0o700 })
+    seedRebootPhaseEvidence(dir, createHash("sha256").update(fs.readFileSync(harnessPath)).digest("hex"))
+    const timeouts: number[] = []
+    let thrown: unknown
+    try {
+      await executeSanctuaryAcceptanceHarness("evidence-snapshot", {
+        allowedRoot: dir, schema: "sanctuary-unit-16-matrix-v1", adapter: fixedAdapter,
+        provenanceAdapter: fixedAdapter, harnessPath, timeoutMs: 300_000, intervalMs: 1,
+      }, dependencies({
+        adapter: async (_executable, rawPayload, timeoutMs) => {
+          timeouts.push(timeoutMs as number)
+          const payload = rawPayload as Record<string, unknown>
+          if (payload.operation === "finalize_acceptance_scenarios") throw new Error("private cleanup failed")
+          throw new Error("capture operation failed")
+        },
+      }))
+    } catch (error) { thrown = error }
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toHaveLength(2)
+    expect((thrown as Error).message).toMatch(/capture operation failed.*private cleanup failed/u)
+    expect(timeouts).toHaveLength(2)
+    expect(timeouts.every((timeout) => Number.isSafeInteger(timeout) && timeout > 0 && timeout <= 300_000)).toBe(true)
   })
 
   it("refuses incomplete, duplicate, unsafe, and tampered Unit 16 evidence bundles", async () => {
@@ -649,7 +680,7 @@ describe("Sanctuary acceptance harness", () => {
       timing: { execution: "sequential", totalMs: 4_320_000 },
     })
     expect(contract.configTemplates["reboot-request"].fixed).toMatchObject({
-      scenarioTimeoutMs: 120_000,
+      scenarioTimeoutMs: 125_000,
       scenarioAdapter: contract.adapterExecutable,
       provenanceAdapter: contract.adapterExecutable,
     })

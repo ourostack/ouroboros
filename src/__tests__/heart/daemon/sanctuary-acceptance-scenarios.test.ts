@@ -45,7 +45,8 @@ const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-trans
     beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true,
     cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: probeDigest(fixtureSequence), clockMode: label === "unit-16h-daily-digest" ? "local-daily-boundary" as const : "ambient" as const,
     effectiveNow: label === "unit-16h-daily-digest" ? "2026-08-20T16:00:00.000Z" : "2026-08-20T15:00:00.000Z", phases,
-    providerInvocationCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 3 : 1, deliveryCount: phases.filter((phase) => phase.deliveryReceiptDigest !== null).length,
+    privateTurnCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 3 : 1,
+    providerInvocationCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 5 : 2, deliveryCount: phases.filter((phase) => phase.deliveryReceiptDigest !== null).length,
     workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
   }
 }
@@ -113,6 +114,23 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.existsSync(gate)).toBe(false)
   })
 
+  it("finalizes the exact active private marker, receipt, and public gate", async () => {
+    const receipts = path.join(root, "cleanup-receipts")
+    const gate = path.join(root, "cleanup-evidence", "current-scenario-gate.json")
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset"] })
+    const marker = path.join(root, "sanctuary.ouro", "state", "acceptance", "active-scenario.json")
+    expect(fs.readdirSync(receipts)).toHaveLength(1)
+    expect(fs.existsSync(marker)).toBe(true)
+    expect(fs.existsSync(gate)).toBe(true)
+
+    finalizeSanctuaryScenarioCapture(gate, receipts)
+
+    expect(fs.readdirSync(receipts)).toHaveLength(0)
+    expect(fs.existsSync(marker)).toBe(false)
+    expect(fs.existsSync(gate)).toBe(false)
+  })
+
   it("waits instead of self-attesting absent negative and containment facts", () => {
     const before = base()
     const containment = base(); containment.container!.updaterDisabled = false
@@ -162,7 +180,7 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, after, 400_000)).toMatchObject({ firedWithinMs: 0 })
   })
 
-  it("derives the exact production health-probe counts for cron, transitions, and digest", () => {
+  it("derives exact private-turn and delivery counts from observed health-probe metrics", () => {
     const before = base()
     const cron = base(); cron.healthProbe = healthProbe("unit-16f-cron-fingerprint")
     const transitions = base(); transitions.healthProbe = healthProbe("unit-16g-health-transition")
@@ -172,7 +190,7 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toMatchObject({ firedWithinMs: 0, messageCount: 1 })
   })
 
-  it("rejects health-probe phase, provider-count, and restoration drift", () => {
+  it("rejects health-probe phase, private-turn, provider-bound, and restoration drift", () => {
     const before = base()
     const cron = base(); cron.healthProbe = { ...healthProbe("unit-16f-cron-fingerprint"), providerInvocationCount: 1 }
     expect(deriveSanctuaryScenarioAssertions("unit-16f-cron-fingerprint", before, cron, 400_000)).toBeNull()
@@ -180,10 +198,16 @@ describe("Sanctuary live scenario capture", () => {
     const transitions = base(); transitions.healthProbe = healthProbe("unit-16g-health-transition")
     transitions.healthProbe.phases[4] = { ...transitions.healthProbe.phases[4]!, recovered: 0 }
     expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toBeNull()
+    transitions.healthProbe = { ...healthProbe("unit-16g-health-transition"), privateTurnCount: 2 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toBeNull()
     transitions.healthProbe = { ...healthProbe("unit-16g-health-transition"), providerInvocationCount: 2 }
     expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toBeNull()
+    transitions.healthProbe = { ...healthProbe("unit-16g-health-transition"), providerInvocationCount: 1_001 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toBeNull()
 
-    const digest = base(); digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), providerInvocationCount: 0 }
+    const digest = base(); digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), privateTurnCount: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
+    digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), providerInvocationCount: 0 }
     expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
     digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), restoredStateDigest: "9".repeat(64) }
     expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
