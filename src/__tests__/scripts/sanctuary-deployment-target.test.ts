@@ -15,6 +15,7 @@ type TargetModule = {
   cgroupProcessIds(rootPid: number, containerId: string, dependencies: Record<string, unknown>): { path: string; processIds: number[]; threadIds: number[] }
   ownedSocketInodes(threadIds: number[], dependencies?: Record<string, unknown>): string[]
   queryGraphqlAutostart(fetchImpl: typeof fetch, readDescriptor: () => string): Promise<Map<string, { containerId: string; autoStart: boolean }>>
+  withPausedTarget<T>(target: { targetContainerId: string; targetPid: number }, operation: () => T, dependencies: { runDocker(args: string[]): string }): T
 }
 
 async function load(): Promise<TargetModule> {
@@ -36,6 +37,8 @@ function input(profile: "staging" | "final") {
     : [record("ouro-butler", productionId, true, true), record("ouro-butler-rollback", rollbackId, false, false)]
   return { profile, expectedImageId: imageId, topologyBefore: records, inspected: records, topologyAfter: records }
 }
+
+const quiesceTarget = <T>(_target: unknown, operation: () => T) => operation()
 
 describe("Sanctuary fixed deployment target", () => {
   it("packages Unit 16 with the fixed staging profile and no caller-selected container", () => {
@@ -85,6 +88,7 @@ describe("Sanctuary fixed deployment target", () => {
       readTcpListeners: () => [],
       readUdpListeners: () => [],
       readUnixSockets: () => [{ inode: "900", path: "/tmp/ouroboros-daemon.sock", flags: "00010000", type: "0001", state: "01" }],
+      quiesceTarget,
     })).resolves.toMatchObject({ deployment: { targetContainerId: stagingId }, listeners: { inboundTcpListenerCount: 0, inboundUdpListenerCount: 0 } })
     expect(snapshots).toHaveLength(0)
   })
@@ -101,11 +105,12 @@ describe("Sanctuary fixed deployment target", () => {
       readTcpListeners: () => { events.push("tcp"); return [] },
       readUdpListeners: () => { events.push("udp"); return [] },
       readUnixSockets: () => { events.push("unix"); return [] },
+      quiesceTarget: <T>(_target: unknown, operation: () => T) => { events.push("pause"); try { return operation() } finally { events.push("unpause") } },
     })
     expect(events.filter((event) => event === "topology")).toHaveLength(2)
     expect(events.lastIndexOf("topology")).toBeLessThan(events.lastIndexOf("membership"))
     const completeTerminalSample = ["netns", "membership", "fds", "tcp", "udp", "unix", "membership", "fds", "netns"]
-    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual([...completeTerminalSample, ...completeTerminalSample])
+    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual(["pause", ...completeTerminalSample, ...completeTerminalSample, "unpause", "topology"])
   })
 
   it("cannot discard a listener opened by a target thread between FD and protocol sampling", async () => {
@@ -133,6 +138,7 @@ describe("Sanctuary fixed deployment target", () => {
       },
       readUdpListeners: () => [],
       readUnixSockets: () => [],
+      quiesceTarget,
     })).rejects.toThrow(/cgroup thread|listener|TCP/u)
   })
 
@@ -152,7 +158,105 @@ describe("Sanctuary fixed deployment target", () => {
       readTcpListeners: () => [],
       readUdpListeners: () => [],
       readUnixSockets: () => [],
+      quiesceTarget,
     })).rejects.toThrow(/did not converge/u)
+  })
+
+  it("quiesces the exact immutable target for the complete terminal scan and restores its original running state", async () => {
+    const { withPausedTarget } = await load()
+    const calls: string[][] = []
+    let paused = false
+    const state = () => JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+    const result = withPausedTarget({ targetContainerId: stagingId, targetPid: 321 }, () => {
+      expect(paused).toBe(true)
+      return "contained"
+    }, {
+      runDocker: (args: string[]) => {
+        calls.push(args)
+        if (args[0] === "pause") paused = true
+        if (args[0] === "unpause") paused = false
+        return args[0] === "inspect" ? state() : ""
+      },
+    })
+    expect(result).toBe("contained")
+    expect(paused).toBe(false)
+    expect(calls.map(([operation, _format, _template, id]) => [operation, operation === "inspect" ? id : _format])).toEqual([
+      ["inspect", stagingId], ["pause", stagingId], ["inspect", stagingId], ["unpause", stagingId], ["inspect", stagingId],
+    ])
+  })
+
+  it.each([
+    ["pause command", "pause"],
+    ["paused-state inspection", "paused-inspect"],
+    ["terminal scan", "operation"],
+  ])("always attempts exact-ID thaw after a %s failure", async (_label, failure) => {
+    const { withPausedTarget } = await load()
+    const calls: string[][] = []
+    let paused = false
+    let inspections = 0
+    expect(() => withPausedTarget({ targetContainerId: stagingId, targetPid: 321 }, () => {
+      if (failure === "operation") throw new Error("scan failed")
+    }, {
+      runDocker: (args: string[]) => {
+        calls.push(args)
+        if (args[0] === "inspect") {
+          inspections += 1
+          if (failure === "paused-inspect" && inspections === 2) throw new Error("inspect failed")
+          return JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+        }
+        if (args[0] === "pause") {
+          paused = true
+          if (failure === "pause") throw new Error("pause failed after effect")
+        }
+        if (args[0] === "unpause") paused = false
+        return ""
+      },
+    })).toThrow()
+    expect(calls).toContainEqual(["unpause", stagingId])
+    expect(paused).toBe(false)
+  })
+
+  it("fails closed when thaw or resumed-state proof fails", async () => {
+    const { withPausedTarget } = await load()
+    for (const failure of ["unpause", "restored-state"]) {
+      let paused = false
+      let inspections = 0
+      expect(() => withPausedTarget({ targetContainerId: stagingId, targetPid: 321 }, () => "contained", {
+        runDocker: (args: string[]) => {
+          if (args[0] === "inspect") {
+            inspections += 1
+            const resumed = failure !== "restored-state" || inspections < 3
+            return JSON.stringify({ containerId: stagingId, running: resumed, paused, restarting: false, dead: false, pid: 321 })
+          }
+          if (args[0] === "pause") paused = true
+          if (args[0] === "unpause") {
+            if (failure === "unpause") throw new Error("unpause failed")
+            paused = false
+          }
+          return ""
+        },
+      })).toThrow(/restore|resume/u)
+    }
+  })
+
+  it("rejects paused, stopped, restarting, dead, PID-drifted, and foreign target state before scanning", async () => {
+    const { withPausedTarget } = await load()
+    const invalid = [
+      { containerId: stagingId, running: true, paused: true, restarting: false, dead: false, pid: 321 },
+      { containerId: stagingId, running: false, paused: false, restarting: false, dead: false, pid: 321 },
+      { containerId: stagingId, running: true, paused: false, restarting: true, dead: false, pid: 321 },
+      { containerId: stagingId, running: true, paused: false, restarting: false, dead: true, pid: 321 },
+      { containerId: stagingId, running: true, paused: false, restarting: false, dead: false, pid: 322 },
+      { containerId: productionId, running: true, paused: false, restarting: false, dead: false, pid: 321 },
+    ]
+    for (const state of invalid) {
+      const calls: string[][] = []
+      expect(() => withPausedTarget({ targetContainerId: stagingId, targetPid: 321 }, () => undefined, {
+        runDocker: (args: string[]) => { calls.push(args); return JSON.stringify(state) },
+      })).toThrow(/state|identity/u)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.[0]).toBe("inspect")
+    }
   })
 
   it("pins canonical names to list-time IDs before the single inspect", async () => {
@@ -336,6 +440,7 @@ describe("Sanctuary effective listener containment", () => {
     ]
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(), readNetns: () => "net:[42]", cgroupProcessIds: () => memberships.shift(), ownedSocketInodes: () => [], readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
+      quiesceTarget,
     })).rejects.toThrow(/cgroup process/u)
   })
 
@@ -353,6 +458,7 @@ describe("Sanctuary effective listener containment", () => {
     ]
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(), readNetns: () => "net:[42]", cgroupProcessIds: () => memberships.shift(), ownedSocketInodes: () => [], readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
+      quiesceTarget,
     })).rejects.toThrow(error)
   })
 
@@ -366,6 +472,7 @@ describe("Sanctuary effective listener containment", () => {
       cgroupProcessIds: () => ({ path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] }),
       ownedSocketInodes: () => socketSets.shift(),
       readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
+      quiesceTarget,
     })).rejects.toThrow(/socket ownership/u)
   })
 
@@ -382,6 +489,7 @@ describe("Sanctuary effective listener containment", () => {
       readTcpListeners: () => tcpSamples.shift(),
       readUdpListeners: () => [],
       readUnixSockets: () => [],
+      quiesceTarget,
     })).rejects.toThrow(/listener|TCP/u)
     expect(tcpSamples).toHaveLength(0)
   })
@@ -401,6 +509,7 @@ describe("Sanctuary effective listener containment", () => {
       readTcpListeners: () => [],
       readUdpListeners: () => udpSamples.shift(),
       readUnixSockets: () => [],
+      quiesceTarget,
     })).rejects.toThrow(/listener|UDP/u)
     expect(udpSamples).toHaveLength(0)
   })
@@ -422,6 +531,7 @@ describe("Sanctuary effective listener containment", () => {
       readTcpListeners: () => [],
       readUdpListeners: () => [],
       readUnixSockets: () => unixSamples.shift(),
+      quiesceTarget,
     })).rejects.toThrow(/listener|Unix/u)
     expect(unixSamples).toHaveLength(0)
   })
