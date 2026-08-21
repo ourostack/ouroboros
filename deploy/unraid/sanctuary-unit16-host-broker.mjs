@@ -31,6 +31,14 @@ const HEALTH_PROBE_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-pr
 const HEALTH_PROBE_TERM_GRACE_MS = 5_000
 const HEALTH_PROBE_KILL_GRACE_MS = 5_000
 const HEALTH_PROBE_LABELS = new Set(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"])
+const HEALTH_PROBE_RECEIPT_KEYS = [
+  "schemaVersion", "label", "scenarioHandleDigest", "ownerImageDigestBefore", "ownerImageDigestAfter",
+  "ownerContainerDigestBefore", "ownerContainerDigestAfter", "beforeStateDigest", "restoredStateDigest",
+  "cronFingerprintBefore", "cronFingerprintAfter", "cronRegisteredBefore", "cronRegisteredAfter",
+  "cronDegradedBefore", "cronDegradedAfter", "fixtureSequenceDigest", "clockMode", "effectiveNow", "phases",
+  "providerInvocationCount", "privateTurnCount", "deliveryCount", "workspaceAbsent", "socketAbsent",
+  "snapshotAbsent", "realCheckEquivalent", "productionRestored",
+]
 const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
 let expectedImageId = ""
@@ -372,6 +380,35 @@ function healthProbeArtifactDisposition({ receipt, workspace, pending }) {
   return "absent"
 }
 
+function healthProbeOperationBudgets() {
+  return { startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000 }
+}
+
+function requireHealthProbeCompleteAttestation(receipt, snapshot, input) {
+  const request = canonicalHealthProbeRequest(input)
+  const value = object(receipt, "health probe receipt")
+  exactKeys(value, HEALTH_PROBE_RECEIPT_KEYS, "health probe receipt")
+  const observed = object(snapshot, "health probe complete owner")
+  if (value.schemaVersion !== "sanctuary-health-probe-receipt-v1" || value.label !== request.label
+    || value.scenarioHandleDigest !== request.scenarioHandleDigest
+    || !SHA256.test(value.ownerImageDigestAfter) || !SHA256.test(value.ownerContainerDigestAfter)
+    || observed.imageId !== `sha256:${value.ownerImageDigestAfter}` || observed.containerId !== value.ownerContainerDigestAfter
+    || observed.running !== true || observed.health !== "healthy") {
+    throw new Error("health probe complete attestation is invalid")
+  }
+}
+
+function readHealthProbeReceipt(file) {
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = fstatSync(fd)
+    if (!metadata.isFile() || metadata.uid !== 10001 || (metadata.mode & 0o777) !== 0o600 || metadata.size > MAX_REQUEST) {
+      throw new Error("health probe receipt metadata is invalid")
+    }
+    return object(JSON.parse(readFileSync(fd, "utf8")), "health probe receipt")
+  } finally { closeSync(fd) }
+}
+
 function attestHealthProbeProcessAbsent(input, dependencies = {
   run: spawnSync,
   markerPresent: () => Boolean(statIfPresent(healthProbeProcessPath(input.scenarioHandleDigest))),
@@ -441,7 +478,9 @@ async function healthProbeStatus(input, fullSnapshot = () => containerSnapshot(e
   const receipt = statIfPresent(healthProbeReceiptPath(request.scenarioHandleDigest))
   if (receipt) {
     if (!receipt.isFile() || receipt.uid !== 10001 || (receipt.mode & 0o777) !== 0o600) throw new Error("health probe receipt metadata is invalid")
-    return { state: "complete", containerSnapshot: await fullSnapshot() }
+    const snapshot = object(await fullSnapshot(), "health probe complete owner")
+    requireHealthProbeCompleteAttestation(readHealthProbeReceipt(healthProbeReceiptPath(request.scenarioHandleDigest)), snapshot, request)
+    return { state: "complete", containerSnapshot: snapshot }
   }
   const record = activeHealthProbes.get(request.scenarioHandleDigest)
   if (!record) return { state: healthProbeArtifactDisposition({
@@ -465,6 +504,7 @@ async function healthProbeStatus(input, fullSnapshot = () => containerSnapshot(e
   if (!finalReceipt || !finalReceipt.isFile() || finalReceipt.uid !== 10001 || (finalReceipt.mode & 0o777) !== 0o600) {
     throw new Error("health probe final receipt is absent or invalid")
   }
+  requireHealthProbeCompleteAttestation(readHealthProbeReceipt(healthProbeReceiptPath(value.scenarioHandleDigest)), snapshot, request)
   activeHealthProbes.delete(value.scenarioHandleDigest)
   return { state: "complete", containerSnapshot: snapshot }
 }
@@ -757,9 +797,11 @@ export {
   dispatch,
   healthProbeArtifactDisposition,
   healthProbeDockerArgs,
+  healthProbeOperationBudgets,
   parseVaultStatus,
   queryGraphqlAutostart,
   recoverAfterHealthProbeTermination,
   requireStableHealthProbeOwner,
+  requireHealthProbeCompleteAttestation,
   terminateHealthProbeChild,
 }
