@@ -600,7 +600,7 @@ describe("Telegram sense", () => {
 
     const running = f.app.run()
     await vi.advanceTimersByTimeAsync(3_000)
-    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
 
     const stopping = f.app.stop()
     finishPolling()
@@ -722,7 +722,7 @@ describe("Telegram sense", () => {
     expect(neverStarted.api.stop).toHaveBeenCalledOnce()
   })
 
-  it("caps persistent reconciliation retries with exponential backoff", async () => {
+  it("never stops the one-second observer after persistent reconciliation failures", async () => {
     vi.useFakeTimers()
     let finishPolling!: () => void
     const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
@@ -731,7 +731,7 @@ describe("Telegram sense", () => {
       .mockRejectedValue(new Error("persistent failure"))
     const running = f.app.run()
     await vi.advanceTimersByTimeAsync(40_000)
-    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(6)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(41)
     const stopping = f.app.stop()
     finishPolling()
     await stopping

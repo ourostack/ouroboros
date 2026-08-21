@@ -61,7 +61,6 @@ export interface TelegramSenseApp {
 type TelegramTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 type TelegramLongPollFactory = (options: TelegramLongPollOptions) => TelegramLongPoll
 const APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS = 1_000
-const APPROVAL_EXPIRY_MAX_CONSECUTIVE_FAILURES = 5
 const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
@@ -583,8 +582,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   })
   let approvalReconcileTimer: ReturnType<typeof setTimeout> | undefined
   let approvalReconciliationActive = false
-  let approvalReconcileInFlight: Promise<void> | undefined
-  let approvalReconcileFailures = 0
+  const approvalReconciliationsInFlight = new Set<Promise<void>>()
   let nextApprovalReconcileDeadline: number | undefined
   let stopPromise: Promise<void> | undefined
   let runPromise: Promise<void> | undefined
@@ -596,20 +594,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   const scheduleApprovalReconcile = (): void => {
     if (!approvalTransport || !approvalReconciliationActive) return
-    if (approvalReconcileFailures >= APPROVAL_EXPIRY_MAX_CONSECUTIVE_FAILURES) return
-    const scheduledAt = nextApprovalReconcileDeadline ?? (Date.now() + APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS * (approvalReconcileFailures === 0 ? 1 : 2 ** approvalReconcileFailures))
-    nextApprovalReconcileDeadline = scheduledAt
+    const scheduledAt = nextApprovalReconcileDeadline ?? (Date.now() + APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS)
+    nextApprovalReconcileDeadline = scheduledAt + APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS
     const delay = Math.max(0, scheduledAt - Date.now())
     approvalReconcileTimer = setTimeout(() => {
       approvalReconcileTimer = undefined
-      nextApprovalReconcileDeadline = approvalReconcileFailures === 0
-        ? scheduledAt + APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS
-        : undefined
-      const reconciliation = approvalTransport.reconcileExpired().then(() => {
-        approvalReconcileFailures = 0
-      }).catch((error) => {
-        approvalReconcileFailures += 1
-        nextApprovalReconcileDeadline = undefined
+      scheduleApprovalReconcile()
+      const reconciliation = approvalTransport.reconcileExpired().catch((error) => {
         emitNervesEvent({
           level: "error",
           component: "senses",
@@ -618,10 +609,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           meta: { agentName: options.agentName, subject, error: transportError(error) },
         })
       }).finally(() => {
-        approvalReconcileInFlight = undefined
-        scheduleApprovalReconcile()
+        approvalReconciliationsInFlight.delete(reconciliation)
       })
-      approvalReconcileInFlight = reconciliation
+      approvalReconciliationsInFlight.add(reconciliation)
     }, delay)
   }
 
@@ -803,7 +793,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await migrateIdentity()
         await approvalRuntime?.recover()
         await interactiveControl?.start()
-        await approvalTransport?.reconcileExpired()
+        try {
+          await approvalTransport?.reconcileExpired()
+        } catch (error) {
+          emitNervesEvent({
+            level: "error",
+            component: "senses",
+            event: "senses.telegram_approval_reconcile_error",
+            message: "Telegram approval expiry reconciliation failed",
+            meta: { agentName: options.agentName, subject, error: transportError(error) },
+          })
+        }
         await runHealthSweep()
         emitNervesEvent({
           component: "senses",
@@ -820,7 +820,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           approvalReconciliationActive = false
           nextApprovalReconcileDeadline = undefined
           clearApprovalReconcileTimer()
-          await approvalReconcileInFlight
+          await Promise.all([...approvalReconciliationsInFlight])
           await interactiveControl?.stop()
         }
       })()
@@ -837,7 +837,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         clearApprovalReconcileTimer()
         poll.stop()
         await runPromise?.catch(() => undefined)
-        await approvalReconcileInFlight
+        await Promise.all([...approvalReconciliationsInFlight])
         await interactiveControl?.stop()
         api.stop()
         approvalRuntime?.close()

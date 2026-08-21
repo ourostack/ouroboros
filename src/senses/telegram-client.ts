@@ -580,6 +580,7 @@ function assertTelegramCallbackData(value: string): void {
 export function createTelegramApprovalTransport(options: TelegramApprovalTransportOptions): TelegramApprovalTransport {
   const now = options.now ?? Date.now
   const pendingByCallback = new Map<string, TelegramPendingApproval>()
+  const terminalizingApprovalIds = new Set<string>()
 
   const uniquePending = (): TelegramPendingApproval[] => [...new Set(pendingByCallback.values())]
   const persist = (): void => options.pendingStore.save(uniquePending().map(({ decisionToken: _secret, ...record }) => record))
@@ -676,6 +677,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         continue
       }
       if (!pending.terminal && now() < pending.expiresAt) continue
+      if (terminalizingApprovalIds.has(pending.approvalId)) continue
+      terminalizingApprovalIds.add(pending.approvalId)
       try {
         if (pending.terminal) {
           await editTerminal(pending, pending.terminal.terminalText)
@@ -691,6 +694,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         persist()
       } catch (error) {
         firstFailure ??= error
+      } finally {
+        terminalizingApprovalIds.delete(pending.approvalId)
       }
     }
     if (firstFailure !== undefined) throw firstFailure
