@@ -108,7 +108,7 @@ const base = (): SanctuaryScenarioFacts => ({
   cron: { registered: true, fingerprint: "a".repeat(64), receiptDigest: "b".repeat(64), sweepCount: 0 },
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
   digest: { scheduleObserved: true, messageCount: 0, firedWithinMs: 1_000, productionRestored: true },
-  reboot: { phase: "complete", requestDigest: "c".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
+  reboot: { phase: "complete", requestDigest: "c".repeat(64), processBindingDigest: "d".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
   denial: validDenialReceiptForFacts(),
   containment: {
     schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "1".repeat(64),

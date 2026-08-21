@@ -842,7 +842,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const postbootDigest = "2".repeat(64)
     const requestId = "3".repeat(64)
     const files: Record<string, string> = {
-      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "complete", targetId: "sanctuary", requestId, prebootDigest, postbootDigest, unrelatedHostOperations: 0, completedAt: 1 }),
+      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "complete", targetId: "sanctuary", requestId, prebootDigest, postbootDigest, processBindingDigest: "6".repeat(64), unrelatedHostOperations: 0, completedAt: 1 }),
       "/run/ouro-acceptance/image-digest": "b".repeat(64),
       "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 1, profiles: { "sanctuary-telegram": ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"] } }),
     }
@@ -852,7 +852,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       now: () => 123_456,
     }), agentRoot)
     expect(facts.capturedAt).toBe(123_456)
-    expect(facts.reboot).toEqual({ phase: "complete", requestDigest: createHash("sha256").update(requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true })
+    expect(facts.reboot).toEqual({ phase: "complete", requestDigest: createHash("sha256").update(requestId).digest("hex"), processBindingDigest: "6".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true })
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
@@ -860,13 +860,19 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-reboot-preflight-"))
     const idempotencyDigest = "4".repeat(64)
     const files: Record<string, string> = {
-      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "preflight", targetId: "sanctuary", idempotencyDigest, unrelatedHostOperations: 0, requestedAt: 123 }),
+      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "preflight", targetId: "sanctuary", idempotencyDigest, processBindingDigest: "5".repeat(64), unrelatedHostOperations: 0, requestedAt: 123 }),
     }
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16a-pre-reboot-checkpoint", "a".repeat(64), unit16Deps({
       readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
-    expect(facts.reboot).toMatchObject({ phase: "preflight", requestDigest: idempotencyDigest, requestCount: 0, checkpointPersisted: true, bootIdentityChanged: false })
+    expect(facts.reboot).toMatchObject({ phase: "preflight", requestDigest: idempotencyDigest, processBindingDigest: "5".repeat(64), requestCount: 0, checkpointPersisted: true, bootIdentityChanged: false })
+    files["/evidence/reboot.json"] = JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "preflight", targetId: "sanctuary", idempotencyDigest, unrelatedHostOperations: 0, requestedAt: 123 })
+    const unbound = await readDefaultSanctuaryScenarioFacts("unit-16a-pre-reboot-checkpoint", "a".repeat(64), unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(unbound.reboot).toBeUndefined()
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

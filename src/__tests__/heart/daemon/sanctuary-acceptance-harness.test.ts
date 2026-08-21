@@ -131,8 +131,8 @@ describe("Sanctuary acceptance harness", () => {
     switch (label) {
       case "unit-12c-1-opaque-identity": case "unit-14b-3-opaque-identity-live": return { identityBound: true, opaqueSubject: true, rawIdentityAbsent: true }
       case "unit-15c-1-no-callback-terminalization": return { buttonsRemoved: true, elapsedMs: 60_000, mutationCount: 0, noInboundUpdate: true, replayMutationCount: 0, terminalExpired: true, ttlMs: 60_000 }
-      case "unit-16a-pre-reboot-checkpoint": return { approvalDigest: "d".repeat(64), auditDigest: "d".repeat(64), containerDigest: "d".repeat(64), fingerprintDigest: "d".repeat(64), offsetDigest: "d".repeat(64), ready: true, unrelatedHostOperations: 0 }
-      case "unit-16a-reboot-request": return { exactlyOnce: true, requestCheckpointPersisted: true, requestDigest: "d".repeat(64) }
+      case "unit-16a-pre-reboot-checkpoint": return { approvalDigest: "d".repeat(64), auditDigest: "d".repeat(64), containerDigest: "d".repeat(64), fingerprintDigest: "d".repeat(64), offsetDigest: "d".repeat(64), processBindingDigest: "d".repeat(64), ready: true, unrelatedHostOperations: 0 }
+      case "unit-16a-reboot-request": return { exactlyOnce: true, processBindingDigest: "d".repeat(64), requestCheckpointPersisted: true, requestDigest: "d".repeat(64) }
       case "unit-16a-boot-recovery-milestones": return { arrayReady: true, bootIdentityChanged: true, butlerReady: true, dockerReady: true, hostReady: true, postbootIntegrityPreserved: true, sshReady: true, tailscaleReady: true }
       case "unit-16b-runtime-vault-containment": return { autostartExact: true, exactImage: true, manualAuthRequired: false, mountCount: 2, nonRootUid: 10001, publishedPortCount: 0, readOnlyRoot: true, updaterDisabled: true, vaultUnlocked: true }
       case "unit-16c-provider-readiness": return { baseUrlsExact: true, credentialIdentitiesDistinct: true, geminiCandidateReady: true, innerReady: true, modelsExact: true, outwardReady: true, providersDistinct: true, silentFallback: false, vaultCoordinatesExact: true }
