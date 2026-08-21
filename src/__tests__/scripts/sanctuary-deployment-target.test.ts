@@ -180,8 +180,13 @@ describe("Sanctuary fixed deployment target", () => {
     })
     expect(result).toBe("contained")
     expect(paused).toBe(false)
-    expect(calls.map(([operation, _format, _template, id]) => [operation, operation === "inspect" ? id : _format])).toEqual([
-      ["inspect", stagingId], ["pause", stagingId], ["inspect", stagingId], ["unpause", stagingId], ["inspect", stagingId],
+    const template = '{"containerId":{{json .Id}},"running":{{json .State.Running}},"paused":{{json .State.Paused}},"restarting":{{json .State.Restarting}},"dead":{{json .State.Dead}},"pid":{{json .State.Pid}}}'
+    expect(calls).toEqual([
+      ["inspect", "--format", template, stagingId],
+      ["pause", stagingId],
+      ["inspect", "--format", template, stagingId],
+      ["unpause", stagingId],
+      ["inspect", "--format", template, stagingId],
     ])
   })
 
