@@ -7,11 +7,15 @@ import { describe, expect, it } from "vitest"
 
 interface BrokerDependencies {
   readBootId(): string
-  containerSnapshot(): unknown
-  containerOwnerSnapshot?(): unknown
+  containerSnapshot(): unknown | Promise<unknown>
+  containerOwnerSnapshot?(): unknown | Promise<unknown>
   startHealthProbe?(input: Record<string, string>): unknown
   healthProbeStatus?(input: Record<string, string>): unknown
   recoverHealthProbe?(input: Record<string, string>): unknown
+  healthProbeCoordinator?: {
+    start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
+    recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
+  }
 }
 
 interface BrokerModule {
@@ -267,6 +271,37 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(events).toEqual(["snapshot"])
     releaseSnapshot()
     await Promise.all([started, recovered])
+    expect(events).toEqual(["snapshot", "launch", "recover"])
+  })
+
+  it("wires same-scenario serialization around dispatch before the delayed owner snapshot", async () => {
+    const { createHealthProbeOperationCoordinator, dispatch } = await broker()
+    const coordinator = createHealthProbeOperationCoordinator()
+    let releaseSnapshot!: () => void
+    const snapshotReady = new Promise<void>((resolve) => { releaseSnapshot = resolve })
+    const events: string[] = []
+    const payload = { targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }
+    const dependencies: BrokerDependencies = {
+      readBootId: () => "unused",
+      healthProbeCoordinator: coordinator,
+      containerSnapshot: async () => {
+        events.push("snapshot")
+        await snapshotReady
+        return { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }
+      },
+      containerOwnerSnapshot: () => ({ imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64) }),
+      startHealthProbe: () => { events.push("launch"); return { state: "started", operationDigest: "d".repeat(64) } },
+      recoverHealthProbe: () => { events.push("recover"); return { recovered: true } },
+    }
+    const starting = dispatch({ operation: "start_health_probe", ...payload }, dependencies)
+    await Promise.resolve()
+    await Promise.resolve()
+    const recovering = dispatch({ operation: "recover_health_probe", ...payload }, dependencies)
+    expect(events).toEqual(["snapshot"])
+    releaseSnapshot()
+    await Promise.all([starting, recovering])
+    expect(events).toEqual(["snapshot", "launch", "recover"])
+    await expect(dispatch({ operation: "start_health_probe", ...payload }, dependencies)).rejects.toThrow(/recovered scenario/u)
     expect(events).toEqual(["snapshot", "launch", "recover"])
   })
 
