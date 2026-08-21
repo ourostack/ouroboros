@@ -544,6 +544,31 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.events).toEqual([{ event: "senses.telegram_approved_restart_end", at: Date.parse("2026-08-20T16:00:00.000Z"), meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } }])
   })
 
+  it("exact-parses broker-owned interactive receipts without accepting synthetic aliases", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-interactive-receipt-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const receiptPath = `${agentRoot}/state/acceptance/interactive-driver-receipts/${scenarioHandleDigest}.json`
+    const receipt = {
+      schemaVersion: "sanctuary-interactive-driver-receipt-v1", phase: "complete", label: "unit-16m-restart-continuation", scenarioHandleDigest,
+      approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64), suspendedSessionRevisionDigest: "3".repeat(64), approvalEpochBefore: 0,
+      approvalEpochAfterRestart: 0, continuationEpochAfter: 1, ownerImageDigest: "4".repeat(64), ownerContainerDigest: "5".repeat(64),
+      restartCountBefore: 7, restartCountAfter: 8, pendingDigestBefore: "6".repeat(64), pendingDigestAfter: "6".repeat(64), pendingRestored: true,
+      callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
+    }
+    const deps = unit16Deps({
+      readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(receipt); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      hostRequest: async () => validOwnerSnapshot(),
+    })
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16m-restart-continuation", scenarioHandleDigest, deps, agentRoot)
+      const { phase: _phase, ...expected } = receipt
+      expect(facts.interactiveDriver).toEqual(expected)
+      const withAlias = { ...receipt, restartObserved: true }
+      deps.readFixedFile = (file) => { if (file === receiptPath) return JSON.stringify(withAlias); throw Object.assign(new Error("missing"), { code: "ENOENT" }) }
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16m-restart-continuation", scenarioHandleDigest, deps, agentRoot)).rejects.toThrow(/shape is invalid/u)
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
   it("parses the real reboot checkpoint schema and binds live host recovery milestones", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-reboot-facts-"))
     const prebootDigest = "1".repeat(64)
