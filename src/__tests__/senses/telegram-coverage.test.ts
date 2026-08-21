@@ -11,6 +11,10 @@ const mocks = vi.hoisted(() => ({
   createTelegramLongPoll: vi.fn(),
   sendTelegramText: vi.fn(),
   createSanctuaryToolContext: vi.fn(() => ({ sanctuary: true })),
+  runWithSanctuaryToolReceiptCollection: vi.fn(async (operation: () => Promise<unknown>, observer?: { toolResultDigests: string[] }) => {
+    const result = await operation()
+    return { result, toolResultDigests: [...(observer?.toolResultDigests ?? [])] }
+  }),
   createTelegramApprovalRuntime: vi.fn(),
   emitNervesEvent: vi.fn(),
 }))
@@ -18,7 +22,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot }))
 vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig: mocks.readRuntimeCredentialConfig }))
 vi.mock("../../senses/shared-turn", () => ({ runSenseTurn: mocks.runSenseTurn }))
-vi.mock("../../senses/sanctuary-runtime", () => ({ createSanctuaryToolContext: mocks.createSanctuaryToolContext }))
+vi.mock("../../senses/sanctuary-runtime", () => ({
+  createSanctuaryToolContext: mocks.createSanctuaryToolContext,
+  runWithSanctuaryToolReceiptCollection: mocks.runWithSanctuaryToolReceiptCollection,
+}))
 vi.mock("../../senses/telegram-approval-runtime", () => ({ createTelegramApprovalRuntime: mocks.createTelegramApprovalRuntime }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: mocks.emitNervesEvent }))
 vi.mock("../../senses/telegram-client", async (importActual) => ({
@@ -529,7 +536,7 @@ describe("Telegram sense coverage contracts", () => {
     const turnOptions = mocks.runSenseTurn.mock.calls[0]![0]
     expect(turnOptions).not.toHaveProperty("toolContext")
     expect(turnOptions).not.toHaveProperty("approvalCoordinatorFactory")
-    expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined)
+    expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined, expect.any(Function))
   })
 
   it("uses one deterministic domain-safe opaque subject for turn, friend, identity, and log surfaces", async () => {
@@ -581,6 +588,7 @@ describe("Telegram sense coverage contracts", () => {
       privateCredentials.authorizedChatId,
       "fallback",
       undefined,
+      expect.any(Function),
     )
 
     const privateSurfaces = JSON.stringify({ turn: first, logs: mocks.emitNervesEvent.mock.calls })
@@ -604,7 +612,7 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
       toolContext: { sanctuary: true }, approvalCoordinatorFactory: f.runtime.coordinator,
     }))
-    expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined)
+    expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined, expect.any(Function))
 
     mocks.sendTelegramText.mockClear()
     mocks.runSenseTurn.mockImplementationOnce(async (options: any) => {
@@ -612,7 +620,7 @@ describe("Telegram sense coverage contracts", () => {
       return { response: "also returned", deliveries: [], deliveryFailures: [], ponderDeferred: false }
     })
     await f.getOnMessage()({ updateId: 2, messageId: "3", text: "again" })
-    expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "streamed", undefined)
+    expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "streamed", undefined, expect.any(Function))
 
     mocks.sendTelegramText.mockClear()
     mocks.runSenseTurn.mockResolvedValueOnce({ response: "   ", deliveries: [], deliveryFailures: [], ponderDeferred: false })
@@ -625,7 +633,7 @@ describe("Telegram sense coverage contracts", () => {
     mocks.runSenseTurn.mockRejectedValueOnce(failure)
     createTelegramSenseApp({ agentName: "butler", credentials })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
-    expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "I couldn't complete that turn. The failure was recorded; please try again.", undefined)
+    expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "I couldn't complete that turn. The failure was recorded; please try again.", undefined, expect.any(Function))
   })
 
   it("redacts transport secrets and raw Telegram identifiers from logged failures", async () => {
@@ -702,7 +710,7 @@ describe("Telegram sense coverage contracts", () => {
     const app = createTelegramSenseApp({ agentName: "butler", credentials })
     const controller = new AbortController()
     await app.sendProactive("  hello  ", controller.signal)
-    expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "hello", controller.signal)
+    expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "hello", controller.signal, undefined)
     await expect(app.sendProactive("   ")).rejects.toThrow("proactive message is missing")
   })
 
