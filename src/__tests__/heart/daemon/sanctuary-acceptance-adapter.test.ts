@@ -114,6 +114,30 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       ])
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
+
+  it("executes the fixed in-container interactive operations without accepting extra coordinates", async () => {
+    const interactiveRuntime = vi.fn(async (payload: Record<string, unknown>) => ({ phase: payload.operation }))
+    const deps = unit16Deps({ interactiveRuntime } as never)
+    const scenarioHandleDigest = "a".repeat(64)
+
+    await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "drive_duplicate_callbacks", label: "unit-16l-duplicate-callback", scenarioHandleDigest,
+    }, deps)).resolves.toEqual({ phase: "drive_duplicate_callbacks" })
+    await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "prepare_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest,
+    }, deps)).resolves.toEqual({ phase: "prepare_restart_continuation" })
+    await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "reconcile_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest,
+    }, deps)).resolves.toEqual({ phase: "reconcile_restart_continuation" })
+    expect(interactiveRuntime.mock.calls.map(([payload]) => payload)).toEqual([
+      { operation: "drive_duplicate_callbacks", label: "unit-16l-duplicate-callback", scenarioHandleDigest },
+      { operation: "prepare_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest },
+      { operation: "reconcile_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest },
+    ])
+    await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "drive_duplicate_callbacks", label: "unit-16l-duplicate-callback", scenarioHandleDigest, approvalId: "leak",
+    }, deps)).rejects.toThrow(/interactive runtime payload shape/iu)
+  })
   it("composes the default health capture through exact start, running, complete, and recovery calls", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-default-health-capture-"))
     const agentRoot = path.join(root, "sanctuary.ouro")
@@ -220,6 +244,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(Object.keys(contract.adapters).sort()).toEqual([
       "callback-inject", "callback-live", "capture-evidence-provenance", "closed-inventory", "config-materializer", "cursor-snapshot",
       "evidence-snapshot", "exact-id-revoke", "health-probe-recovery", "health-probe-start", "health-probe-status",
+      "interactive-duplicate-driver", "interactive-restart-driver",
       "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
       "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
       "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",
@@ -549,7 +574,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const scenarioHandleDigest = "a".repeat(64)
     const receiptPath = `${agentRoot}/state/acceptance/interactive-driver-receipts/${scenarioHandleDigest}.json`
     const receipt = {
-      schemaVersion: "sanctuary-interactive-driver-receipt-v1", phase: "complete", label: "unit-16m-restart-continuation", scenarioHandleDigest,
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", label: "unit-16m-restart-continuation", scenarioHandleDigest,
       approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64), suspendedSessionRevisionDigest: "3".repeat(64), approvalEpochBefore: 0,
       approvalEpochAfterRestart: 0, continuationEpochAfter: 1, ownerImageDigest: "4".repeat(64), ownerContainerDigest: "5".repeat(64),
       restartCountBefore: 7, restartCountAfter: 8, pendingDigestBefore: "6".repeat(64), pendingDigestAfter: "6".repeat(64), pendingRestored: true,
