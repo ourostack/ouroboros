@@ -11,20 +11,30 @@ import { createUnraidReadTools } from "../repertoire/tools-unraid"
 import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
+import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryToolGrounding } from "./sanctuary-grounding"
 
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
+const sanctuaryToolGroundings = new AsyncLocalStorage<SanctuaryToolGrounding[]>()
 const acceptanceLedgerTails = new Map<string, Promise<void>>()
 
-export async function runWithSanctuaryToolReceiptCollection<T>(operation: () => Promise<T>, observer?: { toolResultDigests: string[] }): Promise<{ result: T; toolResultDigests: string[] }> {
+export interface SanctuaryToolReceiptObserver { toolResultDigests: string[]; toolGroundings?: SanctuaryToolGrounding[] }
+
+export async function runWithSanctuaryToolReceiptCollection<T>(operation: () => Promise<T>, observer?: SanctuaryToolReceiptObserver): Promise<{ result: T; toolResultDigests: string[]; toolGroundings?: SanctuaryToolGrounding[] }> {
   const digests = observer?.toolResultDigests ?? []
-  const result = await sanctuaryToolReceipts.run(digests, operation)
-  return { result, toolResultDigests: [...digests] }
+  const groundings = observer?.toolGroundings ?? []
+  const result = await sanctuaryToolReceipts.run(digests, () => sanctuaryToolGroundings.run(groundings, operation))
+  return { result, toolResultDigests: [...digests], ...(groundings.length > 0 ? { toolGroundings: structuredClone(groundings) } : {}) }
 }
 
-function collectToolResult(result: unknown): string {
+function collectToolResult(result: unknown, toolName?: string): { resultDigest: string; groundingDigest?: string } {
   const digest = createHash("sha256").update(JSON.stringify(result)).digest("hex")
   sanctuaryToolReceipts.getStore()?.push(digest)
-  return digest
+  let facts: Record<string, unknown> | null = null
+  try { facts = toolName ? projectSanctuaryGrounding(toolName, result) : null } catch { /* validated tool adapters own malformed-result failure */ }
+  if (!facts || (toolName !== "unraid_get_system" && toolName !== "unraid_get_storage")) return { resultDigest: digest }
+  const groundingDigest = sanctuaryGroundingDigest(facts)
+  sanctuaryToolGroundings.getStore()?.push({ toolName, resultDigest: digest, groundingDigest, facts })
+  return { resultDigest: digest, groundingDigest }
 }
 
 function machineConfig(agentName: string): Record<string, unknown> {
@@ -99,7 +109,8 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   const acceptanceRead = <TArgs extends unknown[], TResult>(toolName: string, read: (...args: TArgs) => Promise<TResult>) => async (...args: TArgs): Promise<TResult> => {
     try {
       const result = await read(...args)
-      emitNervesEvent({ component: "senses", event: "senses.sanctuary_read_receipt", message: "Sanctuary live read completed", meta: { toolName, success: true, resultDigest: collectToolResult(result), ...sanctuaryAcceptanceEventMeta(agentName) } })
+      const receipt = collectToolResult(result, toolName)
+      emitNervesEvent({ component: "senses", event: "senses.sanctuary_read_receipt", message: "Sanctuary live read completed", meta: { toolName, success: true, ...receipt, ...sanctuaryAcceptanceEventMeta(agentName) } })
       return result
     } catch (error) {
       emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_read_receipt_error", message: "Sanctuary live read failed", meta: { toolName, success: false, category: error instanceof Error ? error.name : "unknown", ...sanctuaryAcceptanceEventMeta(agentName) } })

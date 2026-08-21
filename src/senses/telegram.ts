@@ -41,7 +41,8 @@ import {
   type TelegramUpdateInboxStore,
   type TelegramUpdate,
 } from "./telegram-client"
-import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "./sanctuary-runtime"
+import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
+import { sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 
@@ -119,10 +120,11 @@ function readStableBoundedTelegramLedger(filePath: string, afterPreReadStat?: (f
 }
 
 function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
-  const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest"].sort()
+  const grounded = value.schemaVersion === "sanctuary-telegram-turn-receipt-v4"
+  const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest", ...(grounded ? ["toolGroundings"] : [])].sort()
   const deliveries = value.deliveries
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(exactKeys)
-    || value.schemaVersion !== "sanctuary-telegram-turn-receipt-v3"
+    || (!grounded && value.schemaVersion !== "sanctuary-telegram-turn-receipt-v3")
     || typeof value.scenarioHandleDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.scenarioHandleDigest)
     || (value.status !== "success" && value.status !== "error")
     || (value.status === "success"
@@ -133,10 +135,19 @@ function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
     || !Array.isArray(deliveries) || deliveries.length > 100 || !deliveries.every((delivery) => {
       if (!delivery || typeof delivery !== "object" || Array.isArray(delivery)) return false
       const record = delivery as Record<string, unknown>
-      return JSON.stringify(Object.keys(record).sort()) === JSON.stringify(["chunkDigest", "messageIdDigest"])
+      return JSON.stringify(Object.keys(record).sort()) === JSON.stringify(grounded ? ["chunkDigest", "messageIdDigest", "redactedText", "utf16Units"] : ["chunkDigest", "messageIdDigest"])
         && typeof record.chunkDigest === "string" && /^[0-9a-f]{64}$/u.test(record.chunkDigest)
         && typeof record.messageIdDigest === "string" && /^[0-9a-f]{64}$/u.test(record.messageIdDigest)
+        && (!grounded || (typeof record.redactedText === "string" && record.redactedText.length === record.utf16Units && record.utf16Units <= 1_200))
     })
+    || (grounded && (!Array.isArray(value.toolGroundings) || value.toolGroundings.length !== 1 || !value.toolGroundings.every((raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false
+      const record = raw as Record<string, unknown>
+      if (JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(["facts", "groundingDigest", "resultDigest", "toolName"]) || (record.toolName !== "unraid_get_system" && record.toolName !== "unraid_get_storage")
+        || typeof record.resultDigest !== "string" || !/^[0-9a-f]{64}$/u.test(record.resultDigest) || typeof record.groundingDigest !== "string" || !/^[0-9a-f]{64}$/u.test(record.groundingDigest)
+        || !record.facts || typeof record.facts !== "object" || Array.isArray(record.facts)) return false
+      return sanctuaryGroundingDigest(record.facts as Record<string, unknown>) === record.groundingDigest && (value.toolResultDigests as string[]).includes(record.resultDigest)
+    })))
     || ![value.providerInvocationCount, value.toolInvocationCount].every((count) => Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000)
     || !Number.isSafeInteger(value.deliveryCount) || value.deliveryCount !== deliveries.length
     || typeof value.completedAt !== "string" || value.completedAt.length > 30 || !Number.isFinite(Date.parse(value.completedAt)) || new Date(Date.parse(value.completedAt)).toISOString() !== value.completedAt) throw new Error("Telegram turn receipt ledger row is invalid")
@@ -198,7 +209,7 @@ export interface CreateTelegramSenseAppOptions {
   identityKey?: string
   migrateIdentity?: () => Promise<void>
   subjectIndexHooks?: { afterCreateTemporary?: (temporaryPath: string) => void }
-  acceptanceMarker?: () => { scenarioHandleDigest: string } | null
+  acceptanceMarker?: () => { scenarioHandleDigest: string; label?: string } | null
   acceptanceReceiptRoot?: string
   /** Test seam for observing receipt evidence across a rejected turn. */
   _runWithToolReceiptCollection?: typeof runWithSanctuaryToolReceiptCollection
@@ -617,7 +628,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     let receiptStatus: "success" | "error" = "success"
     let errorCategory: string | null = null
     const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
-    const toolReceiptObserver = { toolResultDigests: [] as string[] }
+    const toolReceiptObserver: SanctuaryToolReceiptObserver = { toolResultDigests: [], toolGroundings: [] }
     try {
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
@@ -675,10 +686,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     } finally {
       if (acceptanceMarker) {
         const hmac = (purpose: string, value: string): string => createHmac("sha256", identityKey).update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0${purpose}\0${value}`, "utf8").digest("hex")
-        const deliveries = deliveredMessageIds.map((messageId, index) => ({ messageIdDigest: hmac("delivery", String(messageId)), chunkDigest: hmac("chunk", deliveredChunks[index] ?? "") }))
+        const grounded = acceptanceMarker.label === "unit-16d-whats-up" || acceptanceMarker.label === "unit-16d-1-space"
+        const redact = (value: string): string => [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]
+          .reduce((text, privateValue) => privateValue.length >= 5 ? text.replaceAll(privateValue, "[REDACTED]") : text, value)
+        const deliveries = deliveredMessageIds.map((messageId, index) => {
+          const chunk = deliveredChunks[index] ?? ""
+          return { messageIdDigest: hmac("delivery", String(messageId)), chunkDigest: hmac("chunk", chunk), ...(grounded ? { redactedText: redact(chunk), utf16Units: redact(chunk).length } : {}) }
+        })
         try {
           await appendSanctuaryTurnReceipt(options.acceptanceReceiptRoot ?? agentRoot, {
-            schemaVersion: "sanctuary-telegram-turn-receipt-v3",
+            schemaVersion: grounded ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3",
             scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
             status: receiptStatus,
             errorCategory,
@@ -686,6 +703,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             sequenceDigest: hmac("sequence", String(message.updateId)),
             responseDigest: hmac("response", JSON.stringify(deliveries)),
             toolResultDigests: toolReceiptObserver.toolResultDigests,
+            ...(grounded ? { toolGroundings: toolReceiptObserver.toolGroundings } : {}),
             providerInvocationCount: turnMetricsObserver.providerInvocationCount,
             toolInvocationCount: turnMetricsObserver.toolInvocationCount,
             deliveryCount: deliveries.length,
