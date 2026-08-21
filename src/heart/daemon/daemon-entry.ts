@@ -55,6 +55,8 @@ import { readAgentConfigForAgent } from "../auth/auth-flow"
 import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
+import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
+import { readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -399,9 +401,35 @@ const daemon = new OuroDaemon({
   scheduler,
   healthMonitor,
   router,
-  nativeHabitRunner: async ({ agent, habitName }) => {
+  nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId }) => {
     if (agent !== "sanctuary" || habitName !== "sanctuary-health") return null
-    return runSanctuaryHealthHabit(agent)
+    const marker = readSanctuaryAcceptanceMarker(agent)
+    const schedulerScenario = marker?.label === "unit-16f-cron-fingerprint" ? marker : null
+    const agentRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
+    const before = schedulerScenario ? readSanctuaryHealthCursor(agentRoot) : null
+    let providerInvocationCount = 0
+    let privateTurnCount = 0
+    const result = await runSanctuaryHealthHabit(agent, schedulerScenario ? {
+      acceptanceMetrics: {
+        onPrivateTurnStart: () => { privateTurnCount += 1 },
+        onProviderInvocation: () => { providerInvocationCount += 1 },
+      },
+    } : {})
+    if (schedulerScenario) {
+      if (!supercronicSupervisor || !before || !occurrenceId) throw new Error("Sanctuary scheduler liveness supervisor provenance is unavailable")
+      recordSanctuarySchedulerLivenessReceipt({
+        agentRoot,
+        trigger,
+        occurrenceId,
+        runnerId,
+        scenario: schedulerScenario,
+        supervisor: supercronicSupervisor.authenticatedSnapshot("habit:sanctuary"),
+        before,
+        providerInvocationCount,
+        privateTurnCount,
+      })
+    }
+    return result
   },
   nativeHabitMatch: (agent, habitName) => agent === "sanctuary" && habitName === "sanctuary-health",
   mode,
