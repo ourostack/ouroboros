@@ -140,7 +140,7 @@ describe("Telegram approval callback transport", () => {
       "telegram.approval_prompt_terminalized",
       "telegram.callback_settled",
     ])
-    expect(evidence[1]!.meta).toMatchObject({ terminalizedAt: 1_125_037, buttonsRemoved: true, evidenceMac: expect.stringMatching(/^mac:/u) })
+    expect(evidence[1]!.meta).toMatchObject({ terminalEditStartedAt: 1_125_037, terminalizedAt: 1_125_037, buttonsRemoved: true, evidenceMac: expect.stringMatching(/^mac:/u) })
     expect(evidence[2]!.meta).toMatchObject({ callbackAt: 1_120_037, acknowledged: true, accepted: true, reason: "accepted", evidenceMac: expect.stringMatching(/^mac:/u) })
   })
 
@@ -166,7 +166,7 @@ describe("Telegram approval callback transport", () => {
     clock = 1_300_900
     await transport.reconcileExpired()
     expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_prompt_terminalized", meta: {
-      boundAt: 1_000_000, expiryObservedAt: 1_300_900, terminalizedAt: fallback ? 1_310_900 : 1_305_900, buttonsRemoved: true,
+      boundAt: 1_000_000, expiryObservedAt: 1_300_900, terminalEditStartedAt: 1_300_900, terminalizedAt: fallback ? 1_310_900 : 1_305_900, buttonsRemoved: true,
     } })
   })
 
