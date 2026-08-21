@@ -164,22 +164,31 @@ describe("Telegram sense", () => {
       })
       expect(events.map(({ event }) => event)).toEqual(expect.arrayContaining(["senses.telegram_turn_start", "senses.telegram_turn_end"]))
       const firstScenarioRows = events.length
+      marker = { scenarioHandleDigest: "b".repeat(64) }
+      await onMessage({ updateId: 5, messageId: "6", userId: "42", chatId: "42", text: "direct second scenario" })
+      const directRotation = verifyTelegramAuditLedger({
+        ledgerRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8"),
+        headRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "utf8"),
+        identityKey: "k".repeat(43),
+      })
+      expect(directRotation.length).toBeGreaterThan(firstScenarioRows)
+      expect(new Set(directRotation.map(({ meta }) => meta.scenarioHandleDigest).filter(Boolean))).toEqual(new Set(["a".repeat(64), "b".repeat(64)]))
       marker = null
-      await onMessage({ updateId: 5, messageId: "6", userId: "42", chatId: "42", text: "ordinary again" })
+      await onMessage({ updateId: 7, messageId: "8", userId: "42", chatId: "42", text: "ordinary again" })
       expect(verifyTelegramAuditLedger({
         ledgerRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8"),
         headRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "utf8"),
         identityKey: "k".repeat(43),
-      })).toHaveLength(firstScenarioRows)
-      marker = { scenarioHandleDigest: "b".repeat(64) }
-      await onMessage({ updateId: 7, messageId: "8", userId: "42", chatId: "42", text: "second scenario" })
+      })).toHaveLength(directRotation.length)
+      marker = { scenarioHandleDigest: "c".repeat(64) }
+      await onMessage({ updateId: 9, messageId: "10", userId: "42", chatId: "42", text: "third scenario" })
       const bothScenarios = verifyTelegramAuditLedger({
         ledgerRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8"),
         headRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "utf8"),
         identityKey: "k".repeat(43),
       })
-      expect(bothScenarios.length).toBeGreaterThan(firstScenarioRows)
-      expect(new Set(bothScenarios.map(({ meta }) => meta.scenarioHandleDigest).filter(Boolean))).toEqual(new Set(["a".repeat(64), "b".repeat(64)]))
+      expect(bothScenarios.length).toBeGreaterThan(directRotation.length)
+      expect(new Set(bothScenarios.map(({ meta }) => meta.scenarioHandleDigest).filter(Boolean))).toEqual(new Set(["a".repeat(64), "b".repeat(64), "c".repeat(64)]))
     } finally {
       await app.stop()
       fs.rmSync(root, { recursive: true, force: true })
@@ -190,6 +199,7 @@ describe("Telegram sense", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-scenario-drift-"))
     let scenario = "a".repeat(64)
     let onMessage!: (message: TelegramInboundMessage) => Promise<void>
+    const api = { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() }
     const approvalRuntime = {
       transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) },
       coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
@@ -200,16 +210,107 @@ describe("Telegram sense", () => {
       identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
       _toolContext: {} as never,
       acceptanceMarker: () => ({ scenarioHandleDigest: scenario }), migrateIdentity: async () => undefined,
-      api: { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() },
+      _runTurn: async (options) => {
+        scenario = "b".repeat(64)
+        await options.deliverySink.onDelivery({ kind: "settle", text: "must not escape" })
+        return { response: "must not escape", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+      },
+      api,
       offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: (options) => { onMessage = options.onMessage; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
       approvalRuntime: approvalRuntime as never,
     })
-    scenario = "b".repeat(64)
-    await expect(onMessage({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "status" }))
+    await expect(onMessage({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "hello" }))
       .rejects.toThrow("scenario ownership drift")
-    await expect(app.stop()).rejects.toThrow("Telegram sense cleanup failed")
+    expect(api.request).not.toHaveBeenCalled()
+    await expect(app.stop()).rejects.toThrow("scenario ownership drift")
     fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("fails closed when an acceptance scenario appears during an ordinary in-flight effect", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-scenario-appears-"))
+    let marker: { scenarioHandleDigest: string } | null = null
+    let onMessage!: (message: TelegramInboundMessage) => Promise<void>
+    let releaseTurn!: () => void
+    let announceTurnStarted!: () => void
+    const turnStarted = new Promise<void>((resolve) => { announceTurnStarted = resolve })
+    const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve })
+    const api = { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() }
+    const approvalRuntime = {
+      transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+    }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
+      _toolContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
+      _runTurn: async (options) => {
+        announceTurnStarted()
+        await turnGate
+        await options.deliverySink.onDelivery({ kind: "settle", text: "must not escape" })
+        return { response: "must not escape", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+      },
+      api, offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: (options) => { onMessage = options.onMessage; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
+      approvalRuntime: approvalRuntime as never,
+    })
+    try {
+      const turn = onMessage({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "hello" })
+      await turnStarted
+      marker = { scenarioHandleDigest: "a".repeat(64) }
+      releaseTurn()
+      await expect(turn).rejects.toThrow("acceptance audit verification failed")
+      expect(api.request).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH))).toBe(false)
+    } finally {
+      await app.stop()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("binds interactive control callbacks to the scenario active when each request arrives", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-interactive-owner-"))
+    let marker: { scenarioHandleDigest: string } | null = null
+    let runRequest!: <T>(operation: () => T | Promise<T>) => Promise<T>
+    const approvalRuntime = {
+      transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+    }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
+      _toolContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
+      api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
+      approvalRuntime: approvalRuntime as never,
+      _createInteractiveControl: ((options) => {
+        runRequest = options.runRequest!
+        return { socketPath: path.join(root, "unused.sock"), start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) }
+      }) as never,
+    })
+    try {
+      marker = { scenarioHandleDigest: "a".repeat(64) }
+      await runRequest(() => emitNervesEvent({
+        component: "senses", event: "senses.telegram_turn_start", message: "interactive scenario A",
+        meta: { scenarioHandleDigest: marker!.scenarioHandleDigest },
+      }))
+      marker = { scenarioHandleDigest: "b".repeat(64) }
+      await runRequest(() => emitNervesEvent({
+        component: "senses", event: "senses.telegram_turn_start", message: "interactive scenario B",
+        meta: { scenarioHandleDigest: marker!.scenarioHandleDigest },
+      }))
+      const events = verifyTelegramAuditLedger({
+        ledgerRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8"),
+        headRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "utf8"),
+        identityKey: "k".repeat(43),
+      })
+      expect(events.map(({ meta }) => meta.scenarioHandleDigest)).toEqual(["a".repeat(64), "b".repeat(64)])
+    } finally {
+      await app.stop()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it("records authenticated callback recovery settlement in the live chained ledger", async () => {

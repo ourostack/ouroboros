@@ -615,9 +615,8 @@ function exactApprovalEvidence(
     || callback.meta.boundAt !== boundAt
     || (callback.event === "telegram.callback_settled" && (callback.meta.acknowledged !== true || callback.meta.acknowledgementState !== "acknowledged"))
     || (callback.event === "telegram.callback_recovery_settled" && (callback.meta.acknowledgementState !== "indeterminate_after_restart"
-      || !Number.isSafeInteger(Number(callback.meta.recoveredAt)) || Number(callback.meta.recoveredAt) < callbackAt
-      || Number(callback.meta.recoveredAt) > terminalEditStartedAt
-      || callback.at < Number(callback.meta.recoveredAt)
+      || !Number.isSafeInteger(Number(callback.meta.recoveredAt)) || Number(callback.meta.recoveredAt) < terminalizedAt
+      || !Number.isSafeInteger(callback.at) || callback.at < Number(callback.meta.recoveredAt)
       || typeof callback.meta.decisionAttemptDigest !== "string" || !SHA256.test(callback.meta.decisionAttemptDigest)))) return null
   }
   const continuation = continuations[0] ?? null

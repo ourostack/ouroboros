@@ -89,6 +89,7 @@ const TELEGRAM_ACCEPTANCE_AUDIT_EVENTS = new Set([
   "telegram.update_dropped",
 ])
 const telegramAcceptanceAuditOwner = new AsyncLocalStorage<string>()
+const telegramAcceptanceAuditScenario = new AsyncLocalStorage<string | null>()
 const telegramAcceptanceAuditExplicitCommit = new AsyncLocalStorage<boolean>()
 type TelegramAcceptanceAuditRecord = {
   agentName: string
@@ -700,6 +701,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const ensureAcceptanceAudit = (): ReturnType<typeof acquireTelegramAcceptanceAudit> | undefined => {
     if (!useSanctuaryRuntime) return undefined
     const scenarioHandleDigest = readScenarioHandleDigest()
+    const effectScenarioHandleDigest = telegramAcceptanceAuditScenario.getStore()
+    if (effectScenarioHandleDigest !== undefined && (scenarioHandleDigest ?? null) !== effectScenarioHandleDigest) {
+      const error = new Error("Telegram acceptance audit scenario ownership drift")
+      acceptanceAuditLease?.ledger.poison(error)
+      throw error
+    }
     if (scenarioHandleDigest === undefined) {
       if (acceptanceAuditLease) {
         if (acceptanceEffectDepth > 0) acceptanceAuditLease.ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
@@ -719,7 +726,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         options._acceptanceAuditMaxBytes,
       )
     } else if (scenarioHandleDigest !== acceptanceAuditLease.scenarioHandleDigest) {
-      acceptanceAuditLease.ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
+      if (acceptanceEffectDepth > 0) acceptanceAuditLease.ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
+      retireAcceptanceAudit()
+      acceptanceAuditLease = acquireTelegramAcceptanceAudit(
+        options.acceptanceReceiptRoot ?? agentRoot,
+        options.agentName,
+        identityKey,
+        [botToken, authorizedUserId, authorizedChatId],
+        scenarioHandleDigest,
+        options._acceptanceAuditReleaseHook,
+        options._acceptanceAuditMaxBytes,
+      )
     }
     return acceptanceAuditLease
   }
@@ -732,18 +749,23 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const runWithAcceptanceAuditOwner = async <T>(operation: () => T | Promise<T>): Promise<T> => {
     acceptanceAuditBarrier()
+    const scenarioHandleDigest = readScenarioHandleDigest() ?? null
     const ownerDigest = acceptanceAuditLease?.ownerDigest ?? ""
     acceptanceEffectDepth += 1
     try {
-      const result = await telegramAcceptanceAuditOwner.run(ownerDigest, operation)
-      acceptanceAuditBarrier()
-      return result
-    } catch (error) {
-      try { acceptanceAuditBarrier() } catch (auditError) {
-        if (error === auditError) throw auditError
-        throw new AggregateError([error, auditError], "Telegram effect and acceptance audit verification failed")
-      }
-      throw error
+      return await telegramAcceptanceAuditScenario.run(scenarioHandleDigest, () => telegramAcceptanceAuditOwner.run(ownerDigest, async () => {
+        try {
+          const result = await operation()
+          acceptanceAuditBarrier()
+          return result
+        } catch (error) {
+          try { acceptanceAuditBarrier() } catch (auditError) {
+            if (error === auditError) throw auditError
+            throw new AggregateError([error, auditError], "Telegram effect and acceptance audit verification failed")
+          }
+          throw error
+        }
+      }))
     } finally {
       acceptanceEffectDepth -= 1
     }
@@ -823,7 +845,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }) : undefined)
     approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
     interactiveControl = useSanctuaryRuntime && approvalTransport
-      ? (options._createInteractiveControl ?? createSanctuaryInteractiveControl)({ agentRoot, transport: approvalTransport, authorizedUserId, authorizedChatId })
+      ? (options._createInteractiveControl ?? createSanctuaryInteractiveControl)({
+        agentRoot,
+        transport: approvalTransport,
+        authorizedUserId,
+        authorizedChatId,
+        runRequest: runWithAcceptanceAuditOwner,
+      })
       : undefined
   } catch (error) {
     releaseAcceptanceAudit(error)

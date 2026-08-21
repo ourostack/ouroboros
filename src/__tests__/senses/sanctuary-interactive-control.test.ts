@@ -96,12 +96,19 @@ describe("Sanctuary interactive daemon control", () => {
       handleUpdate: vi.fn(),
       listPendingDeliveries: vi.fn(() => []),
     }
-    const control = createSanctuaryInteractiveControl({ agentRoot, transport: transport as never, authorizedUserId: "42", authorizedChatId: "42" })
+    const owners: string[] = []
+    let owner = "startup-owner"
+    const runRequest = vi.fn(async <T>(operation: () => T | Promise<T>): Promise<T> => {
+      owners.push(owner)
+      return operation()
+    })
+    const control = createSanctuaryInteractiveControl({ agentRoot, transport: transport as never, authorizedUserId: "42", authorizedChatId: "42", runRequest })
     expect(await sanctuaryInteractiveControlReady(control.socketPath, 20)).toBe(false)
     await control.start()
     try {
       expect(fs.statSync(control.socketPath).mode & 0o777).toBe(0o600)
       expect(await sanctuaryInteractiveControlReady(control.socketPath, 100)).toBe(true)
+      owner = "scenario-a-owner"
       const scenarioHandleDigest = "a".repeat(64)
       await expect(request(control.socketPath, { operation: "interactive_runtime_ready", label: "unit-16m-restart-continuation", scenarioHandleDigest }))
         .resolves.toEqual({ ok: true, result: { ready: true } })
@@ -110,6 +117,8 @@ describe("Sanctuary interactive daemon control", () => {
       await expect(request(control.socketPath, { operation: "drive_timeout_stale", label: "unit-16k-timeout-stale", scenarioHandleDigest }))
         .resolves.toEqual({ ok: false, error: "interactive runtime operation failed" })
       expect(transport.handleUpdate).not.toHaveBeenCalled()
+      expect(runRequest).toHaveBeenCalledTimes(4)
+      expect(owners).toEqual(["scenario-a-owner", "scenario-a-owner", "scenario-a-owner", "scenario-a-owner"])
     } finally {
       await control.stop()
       fs.rmSync(agentRoot, { recursive: true, force: true })

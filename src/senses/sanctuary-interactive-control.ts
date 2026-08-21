@@ -192,8 +192,15 @@ export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: Sanc
   } finally { session.close() }
 }
 
-export function createSanctuaryInteractiveControl(options: { agentRoot: string; transport: TelegramApprovalTransport; authorizedUserId: string; authorizedChatId: string }): { socketPath: string; start(): Promise<void>; stop(): Promise<void> } {
+export function createSanctuaryInteractiveControl(options: {
+  agentRoot: string
+  transport: TelegramApprovalTransport
+  authorizedUserId: string
+  authorizedChatId: string
+  runRequest?: <T>(operation: () => T | Promise<T>) => Promise<T>
+}): { socketPath: string; start(): Promise<void>; stop(): Promise<void> } {
   const socketPath = path.join(options.agentRoot, "state", "acceptance", "telegram-control.sock")
+  const runRequest = options.runRequest ?? (async <T>(operation: () => T | Promise<T>): Promise<T> => operation())
   let server: Server | undefined
   let updateId = 2_100_000_000
   return {
@@ -207,7 +214,7 @@ export function createSanctuaryInteractiveControl(options: { agentRoot: string; 
         connection.setEncoding("utf8")
         connection.on("error", () => undefined)
         connection.on("data", (chunk) => { raw += chunk; if (Buffer.byteLength(raw) > MAX_CONTROL_REQUEST) connection.destroy() })
-        connection.on("end", () => { void (async () => {
+        connection.on("end", () => { void runRequest(async () => {
           try {
             emitNervesEvent({ component: "senses", event: "senses.sanctuary_interactive_control_request", message: "Sanctuary interactive control request received", meta: { bytes: Buffer.byteLength(raw) } })
             const parsed = object(JSON.parse(raw), "interactive control request")
@@ -221,13 +228,28 @@ export function createSanctuaryInteractiveControl(options: { agentRoot: string; 
               agentRoot: options.agentRoot,
               readApprovals: (digest) => readApprovalsByScenarioHandleDigest(path.join(options.agentRoot, "state", "approvals", "approvals.sqlite"), digest),
               readPending: () => new FileTelegramPendingApprovalStore(path.join(options.agentRoot, "state", "approvals", "telegram-pending.json")).load(),
-              createSession: async () => ({ handle: ({ callbackData, queryId, messageId }) => options.transport.handleUpdate({ update_id: updateId++, callback_query: { id: queryId, from: { id: Number(options.authorizedUserId) }, data: callbackData, message: { message_id: Number(messageId), chat: { id: Number(options.authorizedChatId) } } } }), pendingApprovalIds: () => options.transport.listPendingDeliveries().map(({ approvalId }) => approvalId), close: () => undefined }),
+              createSession: async () => ({
+                handle: ({ callbackData, queryId, messageId }) => runRequest(() => options.transport.handleUpdate({
+                  update_id: updateId++,
+                  callback_query: {
+                    id: queryId,
+                    from: { id: Number(options.authorizedUserId) },
+                    data: callbackData,
+                    message: {
+                      message_id: Number(messageId),
+                      chat: { id: Number(options.authorizedChatId) },
+                    },
+                  },
+                })),
+                pendingApprovalIds: () => options.transport.listPendingDeliveries().map(({ approvalId }) => approvalId),
+                close: () => undefined,
+              }),
               proveIndeterminateRecovery: (approval, digest) => proveSanctuaryAttemptedRecoveryWithoutRetry(options.agentRoot, digest, approval),
               writeCredentialObserved: () => /credential|api[_-]?key|token|secret/iu.test(raw),
             })
             connection.end(`${JSON.stringify({ ok: true, result })}\n`)
           } catch { connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }
-        })() })
+        }).catch(() => { if (!connection.destroyed) connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }) })
       })
       await new Promise<void>((resolve, reject) => { server!.once("error", reject); server!.listen(socketPath, () => { server!.off("error", reject); chmodSync(socketPath, 0o600); resolve() }) })
     },
