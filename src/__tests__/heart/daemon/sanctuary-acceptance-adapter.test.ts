@@ -6,6 +6,7 @@ import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
+import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
 import {
   createSanctuaryAcceptanceAdapterDependencies,
@@ -50,6 +51,33 @@ function validHealthProbeReceipt(scenarioHandleDigest: string, patch: Record<str
     cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false,
     fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503, 503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z",
     phases, privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+    ...patch,
+  }
+}
+
+function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1,
+    containerId: "2".repeat(64),
+    imageId: `sha256:${"1".repeat(64)}`,
+    running: true,
+    health: "healthy",
+    user: "10001:10001",
+    readOnlyRoot: true,
+    mountCount: 2,
+    mountsDigest: "3".repeat(64),
+    mountsExact: true,
+    publishedPortCount: 0,
+    networkMode: "host",
+    securityExact: true,
+    writableKeyExposure: false,
+    restartPolicy: "unless-stopped",
+    restartCount: 0,
+    autostartExact: true,
+    updaterDisabled: true,
+    vaultUnlocked: true,
+    manualAuthRequired: false,
+    recoveryMilestones: { hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
     ...patch,
   }
 }
@@ -169,6 +197,148 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ ...payload, externalGate: "none" }, deps)).rejects.toThrow("external gate")
     await expect(executeSanctuaryAcceptanceAdapter({ ...payload, sources: ["telegram-audit"] }, deps)).rejects.toThrow("sources")
     await expect(executeSanctuaryAcceptanceAdapter({ ...payload, label: "unknown" }, deps)).rejects.toThrow("label")
+  })
+
+  it("drives health scenarios through exact private broker start, status, and recovery payloads", async () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    const operationDigest = "b".repeat(64)
+    const snapshot = validOwnerSnapshot()
+    const hostRequest = vi.fn(async (payload: Record<string, unknown>) => {
+      if (payload.operation === "start_health_probe") return { state: "started", operationDigest }
+      if (payload.operation === "health_probe_status") return hostRequest.mock.calls.filter(([call]) => call.operation === "health_probe_status").length === 1
+        ? { state: "running" }
+        : { state: "complete", containerSnapshot: snapshot }
+      if (payload.operation === "recover_health_probe") return { recovered: true }
+      throw new Error("unexpected host operation")
+    })
+    const factory = (sanctuaryAcceptanceAdapter as unknown as {
+      createSanctuaryHealthAcceptanceScenarioDriver?: (request: typeof hostRequest) => {
+        begin(label: string, handle: string): Promise<void>
+        poll(label: string, handle: string): Promise<{ state: "waiting" } | { state: "ready"; containerSnapshot: Record<string, unknown> }>
+        recover(label: string, handle: string): Promise<void>
+      }
+    }).createSanctuaryHealthAcceptanceScenarioDriver
+    expect(factory, "the adapter must expose one fixed health scenario driver").toBeTypeOf("function")
+    const driver = factory!(hostRequest)
+
+    await expect(driver.begin("unit-16g-health-transition", scenarioHandleDigest)).resolves.toBeUndefined()
+    await expect(driver.poll("unit-16g-health-transition", scenarioHandleDigest)).resolves.toEqual({ state: "waiting" })
+    await expect(driver.poll("unit-16g-health-transition", scenarioHandleDigest)).resolves.toEqual({ state: "ready", containerSnapshot: snapshot })
+    await expect(driver.recover("unit-16g-health-transition", scenarioHandleDigest)).resolves.toBeUndefined()
+
+    expect(hostRequest.mock.calls.map(([payload]) => payload)).toEqual([
+      { operation: "start_health_probe", targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest },
+      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest },
+      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest },
+      { operation: "recover_health_probe", targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest },
+    ])
+  })
+
+  it.each([
+    ["unknown status", { state: "mystery" }],
+    ["running status with extra fields", { state: "running", extra: true }],
+    ["complete status without owner snapshot", { state: "complete" }],
+    ["complete status with malformed owner snapshot", { state: "complete", containerSnapshot: { imageId: "wrong" } }],
+  ])("rejects %s from the health probe broker", async (_case, response) => {
+    const hostRequest = vi.fn(async () => response)
+    const factory = (sanctuaryAcceptanceAdapter as unknown as {
+      createSanctuaryHealthAcceptanceScenarioDriver?: (request: typeof hostRequest) => {
+        poll(label: string, handle: string): Promise<unknown>
+      }
+    }).createSanctuaryHealthAcceptanceScenarioDriver
+    expect(factory).toBeTypeOf("function")
+    const driver = factory!(hostRequest)
+    await expect(driver.poll("unit-16h-daily-digest", "a".repeat(64))).rejects.toThrow(/health probe.*(?:state|snapshot|response)/iu)
+  })
+
+  it.each([
+    ["start response with an invalid operation digest", "begin", { state: "started", operationDigest: "wrong" }],
+    ["start response with extra fields", "begin", { state: "started", operationDigest: "b".repeat(64), extra: true }],
+    ["recovery response with extra fields", "recover", { recovered: true, extra: true }],
+    ["recovery response without a boolean attestation", "recover", { recovered: "yes" }],
+  ] as const)("rejects %s", async (_case, method, response) => {
+    const hostRequest = vi.fn(async () => response)
+    const factory = (sanctuaryAcceptanceAdapter as unknown as {
+      createSanctuaryHealthAcceptanceScenarioDriver?: (request: typeof hostRequest) => {
+        begin(label: string, handle: string): Promise<void>
+        recover(label: string, handle: string): Promise<void>
+      }
+    }).createSanctuaryHealthAcceptanceScenarioDriver
+    expect(factory).toBeTypeOf("function")
+    const driver = factory!(hostRequest)
+    await expect(driver[method]("unit-16f-cron-fingerprint", "a".repeat(64))).rejects.toThrow(/health probe.*response/iu)
+  })
+
+  it("skips the duplicate before-owner snapshot and reuses the independently attested after-owner snapshot", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-driven-health-owner-"))
+    const hostRequest = vi.fn(async () => { throw new Error("duplicate container snapshot") })
+    const readFacts = readDefaultSanctuaryScenarioFacts as unknown as (
+      label: "unit-16g-health-transition",
+      handle: string,
+      deps: SanctuaryAcceptanceAdapterDependencies,
+      root: string,
+      options: { skipContainerSnapshot?: boolean; containerSnapshot?: Record<string, unknown> },
+    ) => ReturnType<typeof readDefaultSanctuaryScenarioFacts>
+    const dependencies = unit16Deps({
+      readFixedFile: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      hostRequest,
+    })
+    try {
+      const before = await readFacts("unit-16g-health-transition", "a".repeat(64), dependencies, agentRoot, { skipContainerSnapshot: true })
+      expect(before.container).toBeUndefined()
+      expect(hostRequest).not.toHaveBeenCalled()
+
+      const snapshot = validOwnerSnapshot()
+      const after = await readFacts("unit-16g-health-transition", "a".repeat(64), dependencies, agentRoot, { containerSnapshot: snapshot })
+      expect(after.container).toMatchObject({ exactImage: false, running: true, healthy: true, user: "10001:10001" })
+      expect(after.sourceValues["container-inspect"]).toEqual(snapshot)
+      expect(hostRequest).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("awaits asynchronous scenario finalization and preserves recovery plus cleanup failures", async () => {
+    const recoveryError = new Error("health recovery failed")
+    const cleanupError = new Error("private cleanup failed")
+    const aggregate = new AggregateError([recoveryError, cleanupError], "health recovery failed; private cleanup failed")
+    let awaited = false
+    const finalization = {
+      then(_resolve: (value?: void) => void, reject: (reason: unknown) => void) {
+        awaited = true
+        reject(aggregate)
+      },
+    }
+    const deps = unit16Deps({ finalizeScenarios: vi.fn(() => finalization as unknown as void) })
+
+    const execution = executeSanctuaryAcceptanceAdapter({ operation: "finalize_acceptance_scenarios" }, deps)
+    await expect(execution).rejects.toBe(aggregate)
+    expect(awaited).toBe(true)
+    expect((aggregate as AggregateError).errors).toEqual([recoveryError, cleanupError])
+  })
+
+  it("recovers the active health probe before local cleanup and aggregates both failures", async () => {
+    const order: string[] = []
+    const recoveryError = new Error("health recovery failed")
+    const cleanupError = new Error("private cleanup failed")
+    const factory = (sanctuaryAcceptanceAdapter as unknown as {
+      createSanctuaryAcceptanceScenarioFinalizer?: (dependencies: {
+        readActiveScenario(): { label: string; scenarioHandleDigest: string } | null
+        recoverHealthScenario(label: string, handle: string): Promise<void>
+        finalizeLocal(): void
+      }) => () => Promise<void>
+    }).createSanctuaryAcceptanceScenarioFinalizer
+    expect(factory).toBeTypeOf("function")
+    const finalize = factory!({
+      readActiveScenario: () => { order.push("read"); return { label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) } },
+      recoverHealthScenario: async () => { order.push("recover"); throw recoveryError },
+      finalizeLocal: () => { order.push("local"); throw cleanupError },
+    })
+
+    const thrown = await finalize().catch((error) => error as unknown)
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toEqual([recoveryError, cleanupError])
+    expect(order).toEqual(["read", "recover", "local"])
   })
 
   it("reads actual persisted source schemas and exact host facts without exposing raw Telegram identity", async () => {
