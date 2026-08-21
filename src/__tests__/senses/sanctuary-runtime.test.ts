@@ -92,10 +92,13 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 10 } })
     await expect(context.sanctuary!.getSystem()).resolves.toEqual({ ok: true, data: { uptime: 10 } })
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_read_receipt", meta: expect.objectContaining({ toolName: "unraid_get_system", success: true, resultDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) }) }))
-    runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 11 } })
+    const systemFacts = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", uptimeSeconds: 11, degraded: false }
+    const projectedSystemFacts = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
+    runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: systemFacts })
     await expect(runWithSanctuaryToolReceiptCollection(() => context.sanctuary!.getSystem())).resolves.toEqual({
-      result: { ok: true, data: { uptime: 11 } },
+      result: { ok: true, data: systemFacts },
       toolResultDigests: [expect.stringMatching(/^[0-9a-f]{64}$/u)],
+      toolGroundings: [{ toolName: "unraid_get_system", resultDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), groundingDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), facts: projectedSystemFacts }],
     })
     const rejectedObserver = { toolResultDigests: [] as string[] }
     runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 12 } })

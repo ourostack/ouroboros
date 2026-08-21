@@ -19,6 +19,19 @@ import { readSanctuaryAcceptanceMarker, secureRenameBoundInodeSync } from "../..
 import { createSanctuaryAcceptanceScenarioFinalizer } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
+const groundingDigest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+const systemGrounding = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
+const storageGrounding = { array: { state: "STARTED", usedBytes: 8_000_000_000_000, freeBytes: 2_000_000_000_000, usedPercent: 80, degraded: false }, shares: [], truncated: false }
+const groundedTurn = (toolName: "unraid_get_system" | "unraid_get_storage", facts: unknown, responseText: string) => {
+  const resultDigest = "5".repeat(64)
+  const factDigest = groundingDigest(facts)
+  return {
+    status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64),
+    toolResultDigests: [resultDigest], providerTurnCount: 1, toolInvocationCount: 1, deliveryCount: 1,
+    telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000, responseText, responseUtf16Units: responseText.length,
+    toolGroundings: [{ toolName, resultDigest, groundingDigest: factDigest, facts }],
+  }
+}
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
 const approval = (state: string) => ({ approvalId: "approval-1", state, toolName: "unraid_restart_container", createdAt: 1_000, expiresAt: 301_000, updatedAt: 302_000, attempted: state === "succeeded", continuationCompleted: true, buttonsRemoved: true, terminalPrompt: true, callbackCount: 0, settledCount: 0, claimCount: state === "succeeded" ? 1 : 0, replayMutationCount: 0, staleAcknowledged: true, argumentDigest: "d".repeat(64), target: "calibre-web", checkpointDigest: "2".repeat(64), approvalEpoch: 0, continuationEpoch: 1, continuationState: "completed", suspendedSessionRevision: "c".repeat(64) })
 const restartContinuationDriver = () => ({
@@ -38,6 +51,13 @@ const duplicateCallbackDriver = () => ({
   callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "6".repeat(64), barrierObserved: true,
   settledCount: 2, claimCount: 1, mutationCount: 1, staleReplayAttempts: 1,
   staleReplaySettled: true, staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false,
+})
+const timeoutStaleDriver = () => ({
+  schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1" as const, label: "unit-16k-timeout-stale" as const,
+  scenarioHandleDigest: "a".repeat(64), approvalIdDigest: createHash("sha256").update("approval-1").digest("hex"), checkpointDigest: "2".repeat(64),
+  suspendedSessionRevisionDigest: createHash("sha256").update("c".repeat(64)).digest("hex"), approvalEpochBefore: 0,
+  callbackAttempts: 1, distinctQueryCount: 1, callbackDataDigest: "6".repeat(64), settledCount: 1,
+  claimCount: 0, mutationCount: 0, staleAcknowledged: true, promptTerminal: true,
 })
 const successfulRestart = () => ([
   { state: "attempt_not_started" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 1_000, mutationAcknowledged: false, afterState: null },
@@ -101,21 +121,48 @@ describe("Sanctuary live scenario capture", () => {
         before.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: createHash("sha256").update(JSON.stringify(after.sourceValues["telegram-offset"])).digest("hex"), inboundEventCount: 0 }
       }
       if (label === "unit-16d-whats-up" || label === "unit-16d-1-space") {
-        const resultDigest = "5".repeat(64)
-        after.telegramTurns.push(turnReceipt([resultDigest]))
-        after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: label === "unit-16d-whats-up" ? "unraid_get_system" : "unraid_get_storage", success: true, resultDigest } })
+        const system = label === "unit-16d-whats-up"
+        const toolName = system ? "unraid_get_system" : "unraid_get_storage"
+        const facts = system ? systemGrounding : storageGrounding
+        const responseText = system ? "Sanctuary is running Unraid 7.2.3 with the array STARTED." : "There is 2 TB free and the array is 80% used."
+        const factDigest = groundingDigest(facts)
+        after.telegramTurns.push(groundedTurn(toolName, facts, responseText))
+        after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest } })
+        ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, facts }
       }
       if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
       if (label === "unit-16j-denial") after.approvals = [approval("denied")]
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart() }
-      if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.events.push(event("telegram.update_dropped")) }
+      if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
       if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
       const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000)
       expect(assertions, label).not.toBeNull()
       expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toEqual(assertions)
     }
+  })
+
+  it.each([
+    ["unit-16d-whats-up", "unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED."],
+    ["unit-16d-1-space", "unraid_get_storage", storageGrounding, "There is 2 TB free and the array is 80% used."],
+  ] as const)("requires bounded accurate response content bound to an independent live read for %s", (label, toolName, facts, responseText) => {
+    const before = base()
+    const after = base()
+    const factDigest = groundingDigest(facts)
+    const validTurn = groundedTurn(toolName, facts, responseText)
+    after.telegramTurns = [validTurn]
+    after.events = [{ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest } }]
+    ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, facts }
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toMatchObject({ accurate: true, grounded: true, liveFactsMatched: true, responseWithinLimit: true })
+
+    after.telegramTurns = [{ ...validTurn, responseText: "Everything looks fine.", responseUtf16Units: 22 }]
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    after.telegramTurns = [{ ...validTurn, responseText: "x".repeat(1_201), responseUtf16Units: 1_201 }]
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    after.telegramTurns = [validTurn]
+    ;(after as any).liveGrounding = { toolName, groundingDigest: "f".repeat(64), facts }
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
   })
 
   it("requires independently attested butler restart and restored pending checkpoint for unit-16m", () => {

@@ -86,10 +86,14 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
   }
 }
 
-function validInteractiveReceipt(label: "unit-16l-duplicate-callback" | "unit-16m-restart-continuation", scenarioHandleDigest: string) {
+function validInteractiveReceipt(label: "unit-16k-timeout-stale" | "unit-16l-duplicate-callback" | "unit-16m-restart-continuation", scenarioHandleDigest: string) {
   const common = {
     schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", label, scenarioHandleDigest,
     approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64), suspendedSessionRevisionDigest: "3".repeat(64), approvalEpochBefore: 0,
+  }
+  if (label === "unit-16k-timeout-stale") return {
+    ...common, schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1", callbackAttempts: 1, distinctQueryCount: 1,
+    callbackDataDigest: "4".repeat(64), settledCount: 1, claimCount: 0, mutationCount: 0, staleAcknowledged: true, promptTerminal: true,
   }
   return label === "unit-16l-duplicate-callback" ? {
     ...common, callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "4".repeat(64), barrierObserved: true,
@@ -113,7 +117,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const pending = [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound", approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }]
     const hostRequests: Array<Record<string, unknown>> = []
     let restartPolls = 0
-    let currentLabel = "unit-16l-duplicate-callback"
+    let currentLabel = "unit-16k-timeout-stale"
     const driver = createSanctuaryInteractiveAcceptanceScenarioDriver({
       agentRoot: root,
       readApprovals: () => [{ approval: approvalRecord as never, continuation: null }],
@@ -129,10 +133,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     })
     try {
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
+      currentLabel = "unit-16l-duplicate-callback"
+      await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
       currentLabel = "unit-16m-restart-continuation"
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "waiting" })
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
       expect(hostRequests).toEqual([
+        { operation: "drive_timeout_stale", targetId: "sanctuary", label: "unit-16k-timeout-stale", scenarioHandleDigest },
         { operation: "drive_duplicate_callbacks", targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest },
         { operation: "drive_restart_continuation", targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest },
         { operation: "drive_restart_continuation", targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest },
@@ -736,6 +743,43 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
     }), agentRoot)).rejects.toThrow("Telegram turn receipt ledger row is invalid")
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("parses bounded redacted grounding receipts and binds them to an independent live read", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-turn-grounding-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const facts = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
+    const groundingDigest = createHash("sha256").update(JSON.stringify(facts)).digest("hex")
+    const text = "Sanctuary is running Unraid 7.2.3 with the array STARTED."
+    const receipt = {
+      schemaVersion: "sanctuary-telegram-turn-receipt-v4", scenarioHandleDigest, status: "success", errorCategory: null,
+      updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests: ["4".repeat(64)],
+      toolGroundings: [{ toolName: "unraid_get_system", resultDigest: "4".repeat(64), groundingDigest, facts }],
+      providerInvocationCount: 1, toolInvocationCount: 1, deliveryCount: 1,
+      deliveries: [{ messageIdDigest: "5".repeat(64), chunkDigest: "6".repeat(64), redactedText: text, utf16Units: text.length }],
+      completedAt: "2026-08-20T16:00:01.000Z",
+    }
+    const ledgerPath = `${agentRoot}/state/acceptance/telegram-turns.ndjson`
+    const deps = unit16Deps({
+      readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      readLiveGrounding: vi.fn(async () => ({ toolName: "unraid_get_system", groundingDigest, facts })),
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    } as any)
+    const observed = await readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, deps, agentRoot)
+    expect(observed.telegramTurns[0]).toMatchObject({ responseText: text, responseUtf16Units: text.length, toolGroundings: receipt.toolGroundings })
+    expect((observed as any).liveGrounding).toEqual({ toolName: "unraid_get_system", groundingDigest, facts })
+
+    for (const patch of [
+      { deliveries: [{ ...receipt.deliveries[0], utf16Units: text.length + 1 }] },
+      { deliveries: [{ ...receipt.deliveries[0], redactedText: "x".repeat(1_201), utf16Units: 1_201 }] },
+      { toolGroundings: [{ ...receipt.toolGroundings[0], groundingDigest: "f".repeat(64) }] },
+      { toolGroundings: [{ ...receipt.toolGroundings[0], toolName: "unraid_restart_container" }] },
+    ]) {
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
+        readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify({ ...receipt, ...patch })}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      }), agentRoot)).rejects.toThrow("Telegram turn receipt ledger row is invalid")
+    }
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

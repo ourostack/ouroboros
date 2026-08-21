@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { createHmac } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTelegramSenseApp } from "../../senses/telegram"
@@ -52,7 +52,7 @@ function fixture(input: {
   approvalRuntime?: any
   pollRun?: () => Promise<void>
   botToken?: string
-  acceptanceMarker?: () => { scenarioHandleDigest: string } | null
+  acceptanceMarker?: () => { scenarioHandleDigest: string; label?: string } | null
   acceptanceReceiptRoot?: string
   runTurn?: any
   api?: TelegramBotApi
@@ -140,13 +140,20 @@ describe("Telegram sense", () => {
       await options.deliverySink.onDelivery({ kind: "settle", text: "grounded answer" })
       return { response: "grounded answer", ponderDeferred: false, deliveries: [{ kind: "settle", text: "grounded answer" }], deliveryFailures: [], providerInvocationCount: 2, toolInvocationCount: 1 }
     })
-    const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }), acceptanceReceiptRoot: root, runTurn })
+    const grounding = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
+    const groundingHash = createHash("sha256").update(JSON.stringify(grounding)).digest("hex")
+    const runWithToolReceiptCollection = async (operation: () => Promise<unknown>, observer: { toolResultDigests: string[]; toolGroundings?: unknown[] }) => {
+      observer.toolResultDigests.push(HEX_DIGEST)
+      observer.toolGroundings?.push({ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, facts: grounding })
+      return { result: await operation(), toolResultDigests: [...observer.toolResultDigests], toolGroundings: [...(observer.toolGroundings ?? [])] }
+    }
+    const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64), label: "unit-16d-whats-up" }), acceptanceReceiptRoot: root, runTurn, runWithToolReceiptCollection })
 
     await f.getOnMessage()({ updateId: 9, messageId: "10", userId: "42", chatId: "42", text: "status" })
 
     const receipt = JSON.parse(fs.readFileSync(path.join(root, "state", "acceptance", "telegram-turns.ndjson"), "utf8"))
-    const deliveries = [{ messageIdDigest: receiptDigest("delivery", "71"), chunkDigest: receiptDigest("chunk", "grounded answer") }]
-    expect(receipt).toMatchObject({ schemaVersion: "sanctuary-telegram-turn-receipt-v3", scenarioHandleDigest: "a".repeat(64), status: "success", errorCategory: null, providerInvocationCount: 2, toolInvocationCount: 1, deliveryCount: 1, updateDigest: receiptDigest("update", ["9", "10"].join("\0")), sequenceDigest: receiptDigest("sequence", "9"), responseDigest: receiptDigest("response", JSON.stringify(deliveries)), deliveries })
+    const deliveries = [{ messageIdDigest: receiptDigest("delivery", "71"), chunkDigest: receiptDigest("chunk", "grounded answer"), redactedText: "grounded answer", utf16Units: 15 }]
+    expect(receipt).toMatchObject({ schemaVersion: "sanctuary-telegram-turn-receipt-v4", scenarioHandleDigest: "a".repeat(64), status: "success", errorCategory: null, providerInvocationCount: 2, toolInvocationCount: 1, deliveryCount: 1, updateDigest: receiptDigest("update", ["9", "10"].join("\0")), sequenceDigest: receiptDigest("sequence", "9"), responseDigest: receiptDigest("response", JSON.stringify(deliveries)), deliveries, toolGroundings: [{ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, facts: grounding }] })
     expect(JSON.stringify(receipt)).not.toContain('"updateId":9')
     expect(JSON.stringify(receipt)).not.toContain('"messageId":"10"')
   })
