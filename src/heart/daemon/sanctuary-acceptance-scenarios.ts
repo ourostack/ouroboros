@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto"
+import { createHash, randomBytes, randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
@@ -8,6 +8,7 @@ import {
   clearSanctuaryAcceptanceGateStatus,
   clearSanctuaryAcceptanceMarker,
   publishSanctuaryAcceptanceGateStatus,
+  quarantineSanctuaryAcceptanceMarker,
   readSanctuaryAcceptanceMarker,
   writeSanctuaryAcceptanceMarker,
 } from "./sanctuary-acceptance-marker"
@@ -402,29 +403,51 @@ export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string, config
   const receiptRoot = configuredReceiptRoot ?? path.join(getAgentRoot("sanctuary"), "state", "acceptance", "receipts")
   const errors: unknown[] = []
   let marker: ReturnType<typeof readSanctuaryAcceptanceMarker> = null
-  try { marker = readSanctuaryAcceptanceMarker("sanctuary") } catch (error) { errors.push(error) }
-  if (marker) {
+  let markerReadable = true
+  let normalCleanupFailed = false
+  try { marker = readSanctuaryAcceptanceMarker("sanctuary") } catch (error) { markerReadable = false; errors.push(error) }
+  let activeReceipt: string | null = null
+  let receiptSetCanonical = true
+  try {
+    const entries = fs.readdirSync(receiptRoot, { withFileTypes: true })
+    if (entries.length > 32) throw new Error("acceptance receipt cleanup exceeds its bound")
+    if (entries.length !== (marker ? 1 : 0)) throw new Error(marker ? "active acceptance receipt is absent or ambiguous" : "acceptance receipt exists without an active marker")
+    if (marker) {
+      const entry = entries[0]!
+      if (!entry.isFile() || !entry.name.endsWith(".json") || !SHA256.test(entry.name.slice(0, -5))) throw new Error("acceptance receipt cleanup found a noncanonical entry")
+      const filePath = path.join(receiptRoot, entry.name)
+      const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      try {
+        const metadata = fs.fstatSync(handle)
+        if (!metadata.isFile() || metadata.size > 4 * 1024 * 1024 || (metadata.mode & 0o777) !== 0o600) throw new Error("acceptance receipt cleanup found an invalid file")
+        const receipt = JSON.parse(fs.readFileSync(handle, "utf8")) as Receipt
+        const pathMetadata = fs.lstatSync(filePath)
+        if (!pathMetadata.isFile() || pathMetadata.dev !== metadata.dev || pathMetadata.ino !== metadata.ino) throw new Error("acceptance receipt changed during cleanup")
+        if (receipt.checkpointDigest !== entry.name.slice(0, -5) || receipt.scenarioHandleDigest !== marker.scenarioHandleDigest
+          || receipt.label !== marker.label || receipt.startedAt !== marker.startedAt) throw new Error("active acceptance receipt is absent or ambiguous")
+        activeReceipt = filePath
+      } finally { fs.closeSync(handle) }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") { receiptSetCanonical = false; errors.push(error) }
+    else if (marker) { receiptSetCanonical = false; errors.push(new Error("active acceptance receipt is absent or ambiguous")) }
+  }
+  if (markerReadable && marker && receiptSetCanonical && activeReceipt) {
+    try { fs.unlinkSync(activeReceipt) } catch (error) { normalCleanupFailed = true; errors.push(error) }
+    if (!normalCleanupFailed) {
+      try { clearSanctuaryAcceptanceMarker("sanctuary", marker.scenarioHandleDigest) } catch (error) { normalCleanupFailed = true; errors.push(error) }
+    }
+  }
+  if (!markerReadable || !receiptSetCanonical || (marker && activeReceipt === null) || normalCleanupFailed) {
     try {
-      const entries = fs.readdirSync(receiptRoot, { withFileTypes: true })
-      if (entries.length > 32) throw new Error("acceptance receipt cleanup exceeds its bound")
-      const matches = entries.flatMap((entry) => {
-        if (!entry.isFile() || !entry.name.endsWith(".json") || !SHA256.test(entry.name.slice(0, -5))) return []
-        const filePath = path.join(receiptRoot, entry.name)
-        const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
-        try {
-          const metadata = fs.fstatSync(handle)
-          if (!metadata.isFile() || metadata.size > 4 * 1024 * 1024 || (metadata.mode & 0o777) !== 0o600) throw new Error("acceptance receipt cleanup found an invalid file")
-          const receipt = JSON.parse(fs.readFileSync(handle, "utf8")) as Receipt
-          const pathMetadata = fs.lstatSync(filePath)
-          if (!pathMetadata.isFile() || pathMetadata.dev !== metadata.dev || pathMetadata.ino !== metadata.ino) throw new Error("acceptance receipt changed during cleanup")
-          return receipt.checkpointDigest === entry.name.slice(0, -5) && receipt.scenarioHandleDigest === marker!.scenarioHandleDigest
-            && receipt.label === marker!.label && receipt.startedAt === marker!.startedAt ? [filePath] : []
-        } finally { fs.closeSync(handle) }
-      })
-      if (matches.length !== 1) throw new Error("active acceptance receipt is absent or ambiguous")
-      fs.unlinkSync(matches[0]!)
-    } catch (error) { errors.push(error) }
-    try { clearSanctuaryAcceptanceMarker("sanctuary", marker.scenarioHandleDigest) } catch (error) { errors.push(error) }
+      const quarantineRoot = path.join(path.dirname(receiptRoot), "quarantine")
+      fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 })
+      fs.chmodSync(quarantineRoot, 0o700)
+      fs.renameSync(receiptRoot, path.join(quarantineRoot, `receipts-${randomUUID()}`))
+      fs.mkdirSync(receiptRoot, { recursive: true, mode: 0o700 })
+      fs.chmodSync(receiptRoot, 0o700)
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push(error) }
+    try { quarantineSanctuaryAcceptanceMarker("sanctuary") } catch (error) { errors.push(error) }
   }
   try { clearSanctuaryAcceptanceGateStatus(gateStatusPath) } catch (error) { errors.push(error) }
   if (errors.length > 0) throw new AggregateError(errors, "Sanctuary scenario finalization failed")

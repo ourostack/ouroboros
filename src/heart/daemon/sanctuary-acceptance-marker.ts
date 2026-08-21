@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { AsyncLocalStorage } from "node:async_hooks"
+import { randomUUID } from "node:crypto"
 
 import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -75,6 +76,23 @@ export function clearSanctuaryAcceptanceMarker(agentName: string, scenarioHandle
   if (current.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("acceptance marker ownership mismatch")
   fs.unlinkSync(markerPath(agentName))
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_marker_cleared", message: "Sanctuary acceptance marker cleared", meta: { scenarioHandleDigest } })
+}
+
+export function quarantineSanctuaryAcceptanceMarker(agentName: string): string | null {
+  if (agentName !== "sanctuary") throw new Error("acceptance markers are restricted to Sanctuary")
+  const filePath = markerPath(agentName)
+  const quarantineRoot = path.join(path.dirname(filePath), "quarantine")
+  const quarantinePath = path.join(quarantineRoot, `active-scenario-${randomUUID()}.json`)
+  fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 })
+  fs.chmodSync(quarantineRoot, 0o700)
+  try {
+    fs.renameSync(filePath, quarantinePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_marker_quarantined", message: "Sanctuary acceptance marker was quarantined", meta: { quarantinePath } })
+  return quarantinePath
 }
 
 export function sanctuaryAcceptanceEventMeta(agentName: string): { scenarioHandleDigest: string } | Record<string, never> {

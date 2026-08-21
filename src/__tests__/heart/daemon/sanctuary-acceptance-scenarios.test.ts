@@ -15,6 +15,7 @@ import {
   type SanctuaryScenarioFacts,
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 import { SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
+import { readSanctuaryAcceptanceMarker } from "../../../heart/daemon/sanctuary-acceptance-marker"
 
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
@@ -129,6 +130,46 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.readdirSync(receipts)).toHaveLength(0)
     expect(fs.existsSync(marker)).toBe(false)
     expect(fs.existsSync(gate)).toBe(false)
+  })
+
+  it("quarantines corrupt marker and receipt state before surfacing cleanup failure", () => {
+    const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
+    const receipts = path.join(acceptanceRoot, "receipts")
+    const gate = path.join(root, "corrupt-evidence", "current-scenario-gate.json")
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(acceptanceRoot, "active-scenario.json"), "{}\n", { mode: 0o600 })
+    fs.writeFileSync(path.join(receipts, "not-a-receipt"), "untrusted\n", { mode: 0o600 })
+    fs.mkdirSync(path.dirname(gate), { recursive: true })
+    fs.writeFileSync(gate, "{}\n")
+
+    expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow("Sanctuary scenario finalization failed")
+
+    expect(readSanctuaryAcceptanceMarker("sanctuary")).toBeNull()
+    expect(fs.readdirSync(receipts)).toEqual([])
+    expect(fs.existsSync(gate)).toBe(false)
+    const quarantine = fs.readdirSync(path.join(acceptanceRoot, "quarantine"))
+    expect(quarantine.some((entry) => entry.startsWith("active-scenario-"))).toBe(true)
+    expect(quarantine.some((entry) => entry.startsWith("receipts-"))).toBe(true)
+  })
+
+  it("atomically quarantines an ambiguous active receipt set without losing evidence", async () => {
+    const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
+    const receipts = path.join(acceptanceRoot, "receipts")
+    const gate = path.join(root, "ambiguous-evidence", "current-scenario-gate.json")
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset"] })
+    const original = fs.readdirSync(receipts)[0]!
+    fs.copyFileSync(path.join(receipts, original), path.join(receipts, `${"f".repeat(64)}.json`))
+    fs.chmodSync(path.join(receipts, `${"f".repeat(64)}.json`), 0o600)
+
+    expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow("Sanctuary scenario finalization failed")
+
+    expect(readSanctuaryAcceptanceMarker("sanctuary")).toBeNull()
+    expect(fs.readdirSync(receipts)).toEqual([])
+    const quarantinedReceiptRoot = fs.readdirSync(path.join(acceptanceRoot, "quarantine"))
+      .find((entry) => entry.startsWith("receipts-"))
+    expect(quarantinedReceiptRoot).toBeDefined()
+    expect(fs.readdirSync(path.join(acceptanceRoot, "quarantine", quarantinedReceiptRoot!))).toHaveLength(2)
   })
 
   it("waits instead of self-attesting absent negative and containment facts", () => {
