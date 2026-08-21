@@ -314,6 +314,17 @@ export type SanctuaryUnit16EvidenceLabel = typeof SANCTUARY_UNIT_16_EVIDENCE_LAB
 const SANCTUARY_SCENARIO_ADAPTER_OPERATION = "capture_acceptance_scenario"
 const SANCTUARY_SCENARIO_COMMAND = "evidence-snapshot"
 const SCENARIO_CLEANUP_RESERVE_MS = 5_000
+const MAX_SCENARIO_INTERVAL_MS = 30_000
+const SCENARIO_CAPTURE_ADAPTER_TIMEOUT_MS = 210_000
+const APPROVAL_TTL_MS = 300_000
+const STALE_CALLBACK_INJECTION_TIMEOUT_MS = 120_000
+const TIMEOUT_STALE_SCENARIO_MS =
+  SCENARIO_CAPTURE_ADAPTER_TIMEOUT_MS
+  + APPROVAL_TTL_MS
+  + STALE_CALLBACK_INJECTION_TIMEOUT_MS
+  + MAX_SCENARIO_INTERVAL_MS
+  + SCENARIO_CAPTURE_ADAPTER_TIMEOUT_MS
+  + SCENARIO_CLEANUP_RESERVE_MS
 const REBOOT_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16a-pre-reboot-checkpoint",
   "unit-16a-reboot-request",
@@ -321,11 +332,12 @@ const REBOOT_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
 ])
 const MAX_MATRIX_TIMEOUT_MS = 7_200_000
 
-function scenarioTimeoutBudget(label: SanctuaryUnit16EvidenceLabel): number {
+export function sanctuaryScenarioTimeoutBudget(label: SanctuaryUnit16EvidenceLabel): number {
   if (REBOOT_SCENARIO_LABELS.has(label)) return 125_000
   if (label === "unit-15c-1-no-callback-terminalization") return 365_000
   if (label === "unit-16h-daily-digest") return 1_025_000
   if (label === "unit-16i-delayed-approval") return 185_000
+  if (label === "unit-16k-timeout-stale") return TIMEOUT_STALE_SCENARIO_MS
   return SANCTUARY_SCENARIO_GATES[label] === "none" ? 35_000 : 305_000
 }
 
@@ -467,8 +479,8 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredTrue(value, "promptTerminal", label)
       break
     case "unit-16m-restart-continuation":
-      exact(["attemptedIndeterminateRetryCount", "mutationCount", "preAttemptResumed", "restartObserved", "state"])
-      allTrue(["preAttemptResumed", "restartObserved"])
+      exact(["attemptedIndeterminateRetryCount", "checkpointEpochPreserved", "continuationEpochAdvanced", "mutationCount", "ownerContainerChanged", "preAttemptResumed", "restartObserved", "state"])
+      allTrue(["checkpointEpochPreserved", "continuationEpochAdvanced", "ownerContainerChanged", "preAttemptResumed", "restartObserved"])
       requiredInteger(value, "attemptedIndeterminateRetryCount", 0, label)
       requiredInteger(value, "mutationCount", 1, label)
       if (value.state !== "succeeded") throw new Error(`${label} state must be succeeded`)
@@ -570,7 +582,7 @@ export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, Sanc
 
 type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-offset" | "approval-journal"
   | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
-  | "health-runtime" | "digest-runtime" | "health-probe-receipt" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit"
+  | "health-runtime" | "digest-runtime" | "health-probe-receipt" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit" | "interactive-driver-receipt"
 
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
   "unit-12c-1-opaque-identity": ["identity-key", "identity-surface-audit", "approval-journal"],
@@ -593,8 +605,8 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
   "unit-16j-denial": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
   "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
-  "unit-16l-duplicate-callback": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
-  "unit-16m-restart-continuation": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16l-duplicate-callback": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
+  "unit-16m-restart-continuation": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
 }
 
 function packagedHarnessSha256(value: unknown): string {
@@ -1334,7 +1346,7 @@ async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnes
   }
   const timeoutMs = integer(config.timeoutMs, "scenario total timeoutMs", 1)
   const intervalMs = integer(config.intervalMs, "scenario intervalMs", 1)
-  if (timeoutMs > MAX_MATRIX_TIMEOUT_MS || intervalMs > 30_000) throw new Error("scenario timing bound is invalid")
+  if (timeoutMs > MAX_MATRIX_TIMEOUT_MS || intervalMs > MAX_SCENARIO_INTERVAL_MS) throw new Error("scenario timing bound is invalid")
   const harnessSha256 = packagedHarnessSha256(config.harnessPath)
   const totalDeadline = deps.now() + timeoutMs
   for (const label of REBOOT_SCENARIO_LABELS) {
@@ -1343,7 +1355,7 @@ async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnes
     if (provenance.harnessSha256 !== harnessSha256) throw new Error(`${label} phase evidence does not match the packaged harness`)
   }
   for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS.filter((candidate) => !REBOOT_SCENARIO_LABELS.has(candidate))) {
-    const scenarioDeadline = Math.min(totalDeadline, deps.now() + scenarioTimeoutBudget(label))
+    const scenarioDeadline = Math.min(totalDeadline, deps.now() + sanctuaryScenarioTimeoutBudget(label))
     await captureScenarioEvidence({ config, root, executable, harnessSha256, label, deadline: scenarioDeadline, intervalMs, deps })
   }
 }
@@ -1384,7 +1396,7 @@ async function captureRebootScenario(
   const harnessSha256 = packagedHarnessSha256(config.harnessPath)
   const intervalMs = integer(config.scenarioIntervalMs, "reboot scenario intervalMs", 1)
   const timeoutMs = integer(config.scenarioTimeoutMs, "reboot scenario timeoutMs", 1)
-  if (timeoutMs > scenarioTimeoutBudget(label) || intervalMs > 30_000) throw new Error("reboot scenario timing bound is invalid")
+  if (timeoutMs > sanctuaryScenarioTimeoutBudget(label) || intervalMs > MAX_SCENARIO_INTERVAL_MS) throw new Error("reboot scenario timing bound is invalid")
   await captureScenarioEvidence({
     config, root, executable, harnessSha256, label,
     deadline: deps.now() + timeoutMs,
