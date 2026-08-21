@@ -81,7 +81,7 @@ describe("doctor and bounded-repair documentation contract", () => {
     const changelog = JSON.parse(readRepoFile("changelog.json")) as {
       versions: Array<{ version: string; changes: string[] }>
     }
-    expect(packageJson.version).toBe("0.1.0-alpha.734")
+    expect(packageJson.version).toBe("0.1.0-alpha.735")
     expect(wrapper.version).toBe(packageJson.version)
     expect(changelog.versions[0]?.version).toBe(packageJson.version)
     expect(changelog.versions[0]?.changes.join("\n")).toContain("Mendelow Cloud Butler for Sanctuary")

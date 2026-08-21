@@ -1,4 +1,5 @@
 import * as fs from "node:fs"
+import { createHash } from "node:crypto"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -50,6 +51,27 @@ describe("container credential bootstrap", () => {
     const file = path.join(directory, "credentials.json")
     fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, credentials: messages }), { mode: 0o600 })
     return file
+  }
+
+  type MachineIdMigration = { sourceMachineId: string; targetMachineId: string }
+
+  async function loadWithMigration(
+    enabledAgents: string[],
+    options: {
+      path: string
+      machineIdMigration: MachineIdMigration
+      persist?: (message: unknown) => Promise<boolean>
+      apply?: (message: unknown) => boolean
+    },
+  ): Promise<string[]> {
+    return (loadContainerCredentialBootstrap as unknown as (
+      agents: string[],
+      migrationOptions: typeof options,
+    ) => Promise<string[]>)(enabledAgents, options)
+  }
+
+  function digest(bytes: Buffer): string {
+    return createHash("sha256").update(bytes).digest("hex")
   }
 
   it("persists a claimed bootstrap before caching it or deleting the recoverable envelope", async () => {
@@ -239,6 +261,153 @@ describe("container credential bootstrap", () => {
       .rejects.toThrow("machineId does not match this machine")
     expect(bootstrapMocks.machineIdentity).toHaveBeenCalledTimes(1)
     expect(persist).not.toHaveBeenCalled()
+  })
+
+  it("migrates only exact sanctuary-unraid messages to in-memory sanctuary clones", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const first = {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary-unraid",
+      runtimeConfig: { telegramBotToken: "secret" },
+    }
+    const second = {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "other",
+      machineId: "sanctuary-unraid",
+      providerCredentialRecords: [{ provider: "openai-compatible", credential: "secret" }],
+    }
+    const file = envelopeFixture([first, second])
+    const original = fs.readFileSync(file)
+    const originalDigest = digest(original)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadWithMigration(["sanctuary", "other"], {
+      path: file,
+      machineIdMigration: { sourceMachineId: "sanctuary-unraid", targetMachineId: "sanctuary" },
+      persist,
+      apply,
+    })).resolves.toEqual(["other", "sanctuary"])
+
+    expect(persist).toHaveBeenCalledTimes(2)
+    expect(apply).toHaveBeenCalledTimes(2)
+    for (const callback of [persist, apply]) {
+      expect(callback).toHaveBeenNthCalledWith(1, { ...first, machineId: "sanctuary" })
+      expect(callback).toHaveBeenNthCalledWith(2, { ...second, machineId: "sanctuary" })
+      expect(callback.mock.calls[0]?.[0]).not.toBe(first)
+      expect(callback.mock.calls[1]?.[0]).not.toBe(second)
+    }
+    expect(first.machineId).toBe("sanctuary-unraid")
+    expect(second.machineId).toBe("sanctuary-unraid")
+    expect(digest(original)).toBe(originalDigest)
+  })
+
+  it.each([
+    ["blank source", { sourceMachineId: "", targetMachineId: "sanctuary" }],
+    ["whitespace source", { sourceMachineId: " sanctuary-unraid", targetMachineId: "sanctuary" }],
+    ["blank target", { sourceMachineId: "sanctuary-unraid", targetMachineId: "" }],
+    ["whitespace target", { sourceMachineId: "sanctuary-unraid", targetMachineId: "sanctuary " }],
+    ["equal identities", { sourceMachineId: "sanctuary", targetMachineId: "sanctuary" }],
+    ["wrong current target", { sourceMachineId: "sanctuary-unraid", targetMachineId: "other-machine" }],
+  ])("rejects %s migration authority before persist/apply and preserves the claimed bytes", async (_name, migration) => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary",
+      runtimeConfig: { telegramBotToken: "secret" },
+    })
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadWithMigration(["sanctuary"], {
+      path: file,
+      machineIdMigration: migration,
+      persist,
+      apply,
+    })).rejects.toThrow(/machine|migration|source|target/i)
+
+    expect(persist).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
+    expect(digest(fs.readFileSync(`${file}.consuming`))).toBe(digest(original))
+  })
+
+  it.each([
+    ["absent source id", undefined],
+    ["wrong source id", "sanctuary"],
+    ["trimmed-only source id", "sanctuary-unraid "],
+  ])("rejects a mixed envelope with %s before the first persist/apply", async (_name, secondMachineId) => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const file = envelopeFixture([
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "sanctuary",
+        machineId: "sanctuary",
+        runtimeConfig: { telegramBotToken: "secret" },
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "other",
+        ...(secondMachineId === undefined ? {} : { machineId: secondMachineId }),
+        runtimeConfig: { anotherSecret: "secret" },
+      },
+    ])
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadWithMigration(["sanctuary", "other"], {
+      path: file,
+      machineIdMigration: { sourceMachineId: "sanctuary-unraid", targetMachineId: "sanctuary" },
+      persist,
+      apply,
+    })).rejects.toThrow(/machineId|source/i)
+
+    expect(persist).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
+  })
+
+  it("keeps the default importer strict when an alias is not explicitly authorized", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary-unraid",
+      runtimeConfig: { telegramBotToken: "secret" },
+    })
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist, apply }))
+      .rejects.toThrow("machineId does not match this machine")
+    expect(persist).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
+  })
+
+  it("rejects whitespace-padded machine identity on the default importer path", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: " sanctuary ",
+      runtimeConfig: { telegramBotToken: "secret" },
+    })
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist, apply }))
+      .rejects.toThrow("machineId does not match this machine")
+    expect(persist).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
   })
 
   it("durably discards only an identical redundant source and resumes the claimed envelope", async () => {
