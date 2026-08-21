@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { inspect } from "node:util"
+import { registerGlobalLogSink } from "../../nerves"
+import { createTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 
 import {
   TelegramApiError,
@@ -943,6 +945,61 @@ describe("Telegram durable authorized long poll", () => {
     expect(offset).toBe(8)
     expect(api.request).toHaveBeenCalledTimes(2)
     expect(settlementAttempts).toBe(2)
+  })
+
+  it("redelivers a dropped update after real append-chain tampering between preflight and commit", async () => {
+    const directory = makeTempDirectory("ouro-telegram-drop-audit-io-")
+    const identityKey = "k".repeat(43)
+    const scenarioHandleDigest = "a".repeat(64)
+    const update = { update_id: 7, message: { message_id: 8, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } }
+    let offset = 0
+    const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }
+    const firstLedger = createTelegramAuditLedger({ root: directory, identityKey })
+    const unregisterFirst = registerGlobalLogSink((event) => {
+      if (event.event === "telegram.update_dropped" && event.meta.scenarioHandleDigest === scenarioHandleDigest) firstLedger.append(event)
+    })
+    const first = createTelegramLongPoll({
+      api: {
+        stop: vi.fn(),
+        request: vi.fn(async () => {
+          writeFileSync(firstLedger.ledgerPath, `${readFileSync(firstLedger.ledgerPath, "utf8")}tampered-after-preflight\n`)
+          return [update]
+        }),
+      },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      acceptanceEventMeta: () => ({ scenarioHandleDigest }),
+      onBeforeDispatch: () => firstLedger.assertHealthy(),
+      onDispatchSettled: () => firstLedger.assertHealthy(),
+    })
+
+    await expect(first.pollOnce()).rejects.toThrow(/audit ledger/iu)
+    expect(offset).toBe(0)
+    unregisterFirst()
+    rmSync(firstLedger.ledgerPath, { force: true })
+    rmSync(firstLedger.headPath, { force: true })
+
+    const restartedLedger = createTelegramAuditLedger({ root: directory, identityKey })
+    const unregisterRestarted = registerGlobalLogSink((event) => {
+      if (event.event === "telegram.update_dropped" && event.meta.scenarioHandleDigest === scenarioHandleDigest) restartedLedger.append(event)
+    })
+    const restarted = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore,
+      onMessage: vi.fn(),
+      acceptanceEventMeta: () => ({ scenarioHandleDigest }),
+      onBeforeDispatch: () => restartedLedger.assertHealthy(),
+      onDispatchSettled: () => restartedLedger.assertHealthy(),
+    })
+
+    await expect(restarted.pollOnce()).resolves.toBe(8)
+    expect(offset).toBe(8)
+    expect(readFileSync(restartedLedger.ledgerPath, "utf8")).toContain("telegram.update_dropped")
+    unregisterRestarted()
   })
 
   it("suppresses an authorized side effect after audit settlement fails before offset commit", async () => {

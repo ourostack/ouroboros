@@ -32,6 +32,15 @@ afterEach(() => {
 })
 
 describe("Telegram acceptance audit ledger", () => {
+  it("retains the first explicit poison as a sticky health failure", () => {
+    const ledger = createTelegramAuditLedger({ root, identityKey })
+    const first = new Error("scenario drift")
+    expect(() => ledger.poison(first)).toThrow(first)
+    expect(() => ledger.poison(new Error("later failure"))).toThrow(first)
+    expect(() => ledger.assertHealthy()).toThrow(first)
+    expect(() => ledger.assertCapacity()).toThrow(first)
+  })
+
   it("appends canonical MAC-chained rows and authenticates its persisted head", () => {
     const ledger = createTelegramAuditLedger({ root, identityKey, privateValues })
     ledger.append(event("senses.telegram_turn_start", "2026-08-20T20:00:00.000Z"))
