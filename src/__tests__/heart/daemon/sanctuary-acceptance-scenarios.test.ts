@@ -26,8 +26,8 @@ const restartContinuationDriver = () => ({
   label: "unit-16m-restart-continuation" as const,
   scenarioHandleDigest: "a".repeat(64), approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64),
   approvalEpochBefore: 0, approvalEpochAfterRestart: 0, continuationEpochAfter: 1,
-  ownerContainerDigestBefore: "3".repeat(64), ownerContainerDigestAfter: "4".repeat(64),
-  ownerRestartCountBefore: 7, ownerRestartCountAfter: 8, pendingRestored: true, callbackAttempts: 1,
+  ownerLifecycleDigestBefore: "3".repeat(64), ownerLifecycleDigestAfter: "4".repeat(64),
+  restartInvocationCount: 1, pendingRestored: true, callbackAttempts: 1,
 })
 const successfulRestart = () => ([
   { state: "attempt_not_started" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 1_000, mutationAcknowledged: false, afterState: null },
@@ -120,7 +120,7 @@ describe("Sanctuary live scenario capture", () => {
       preAttemptResumed: true,
       checkpointEpochPreserved: true,
       continuationEpochAdvanced: true,
-      ownerContainerChanged: true,
+      butlerRestartObserved: true,
     })
     after.interactiveDriver = { ...restartContinuationDriver(), pendingRestored: false }
     expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()

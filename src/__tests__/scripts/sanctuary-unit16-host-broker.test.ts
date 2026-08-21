@@ -135,7 +135,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       operation: "restart_butler_for_acceptance", targetId: "sanctuary", label: "unit-16m-restart-continuation",
       scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0,
     }
-    const result = { restarted: true, beforeContainerDigest: "1".repeat(64), afterContainerDigest: "2".repeat(64), restartCountBefore: 7, restartCountAfter: 8 }
+    const result = { restarted: true, beforeLifecycleDigest: "1".repeat(64), afterLifecycleDigest: "2".repeat(64), restartInvocationCount: 1 }
     await expect(dispatch(request, {
       readBootId: () => "unused", containerSnapshot: () => { throw new Error("unexpected snapshot") },
       restartButlerForAcceptance: (input) => { calls.push(input); return result },
@@ -156,14 +156,14 @@ describe("Sanctuary Unit 16 host broker", () => {
       snapshot: async () => {
         snapshots += 1
         return snapshots === 1
-          ? { containerId: "1".repeat(64), restartCount: 7, running: true, health: "healthy" }
-          : { containerId: "2".repeat(64), restartCount: 8, running: true, health: "healthy" }
+          ? { lifecycleDigest: "1".repeat(64), running: true, health: "healthy" }
+          : { lifecycleDigest: "2".repeat(64), running: true, health: "healthy" }
       },
       run: (executable, args) => { calls.push({ executable, args }); return { status: 0 } },
       sleep: async () => {},
     })
     expect(calls).toEqual([{ executable: "/usr/bin/docker", args: ["restart", "ouro-butler"] }])
-    expect(result).toEqual({ restarted: true, beforeContainerDigest: "1".repeat(64), afterContainerDigest: "2".repeat(64), restartCountBefore: 7, restartCountAfter: 8 })
+    expect(result).toEqual({ restarted: true, beforeLifecycleDigest: "1".repeat(64), afterLifecycleDigest: "2".repeat(64), restartInvocationCount: 1 })
   })
 
   it("starts, polls, and recovers only the fixed owner-bound health probe", async () => {

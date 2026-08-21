@@ -105,7 +105,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       callbackProbe: async (update) => { callbackUpdates.push(update); if (currentLabel === "unit-16m-restart-continuation") continuation = { continuationState: "completed", continuationEpoch: 1 }; return { settled: true, claimed: callbackUpdates.length === 1, mutated: callbackUpdates.length === 1 } },
       hostRequest: async (payload) => {
         hostRequests.push(payload)
-        return { restarted: true, beforeContainerDigest: "1".repeat(64), afterContainerDigest: "2".repeat(64), restartCountBefore: 7, restartCountAfter: 8 }
+        return { restarted: true, beforeLifecycleDigest: "1".repeat(64), afterLifecycleDigest: "2".repeat(64), restartInvocationCount: 1 }
       },
     })
     try {
