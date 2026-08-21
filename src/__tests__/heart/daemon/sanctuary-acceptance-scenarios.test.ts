@@ -21,6 +21,14 @@ import { createSanctuaryAcceptanceScenarioFinalizer } from "../../../heart/daemo
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
 const approval = (state: string) => ({ approvalId: "approval-1", state, toolName: "unraid_restart_container", createdAt: 1_000, expiresAt: 301_000, updatedAt: 302_000, attempted: state === "succeeded", continuationCompleted: true, buttonsRemoved: true, terminalPrompt: true, callbackCount: 0, settledCount: 0, claimCount: state === "succeeded" ? 1 : 0, replayMutationCount: 0, staleAcknowledged: true, argumentDigest: "d".repeat(64), target: "calibre-web" })
+const restartContinuationDriver = () => ({
+  schemaVersion: "sanctuary-interactive-driver-receipt-v1" as const,
+  label: "unit-16m-restart-continuation" as const,
+  scenarioHandleDigest: "a".repeat(64), approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64),
+  approvalEpochBefore: 0, approvalEpochAfterRestart: 0, continuationEpochAfter: 1,
+  ownerContainerDigestBefore: "3".repeat(64), ownerContainerDigestAfter: "4".repeat(64),
+  ownerRestartCountBefore: 7, ownerRestartCountAfter: 8, pendingRestored: true, callbackAttempts: 1,
+})
 const successfulRestart = () => ([
   { state: "attempt_not_started" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 1_000, mutationAcknowledged: false, afterState: null },
   { state: "attempting" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 2_000, mutationAcknowledged: false, afterState: null },
@@ -93,11 +101,29 @@ describe("Sanctuary live scenario capture", () => {
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart() }
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.events.push(event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
-      if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
+      if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
       const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000)
       expect(assertions, label).not.toBeNull()
       expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toEqual(assertions)
     }
+  })
+
+  it("requires independently attested butler restart and restored pending checkpoint for unit-16m", () => {
+    const before = base()
+    const after = base()
+    after.approvals = [approval("succeeded")]
+    after.restartAttempts = successfulRestart()
+    after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } })
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
+    after.interactiveDriver = restartContinuationDriver()
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toMatchObject({
+      preAttemptResumed: true,
+      checkpointEpochPreserved: true,
+      continuationEpochAdvanced: true,
+      ownerContainerChanged: true,
+    })
+    after.interactiveDriver = { ...restartContinuationDriver(), pendingRestored: false }
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
   })
 
   it.each([

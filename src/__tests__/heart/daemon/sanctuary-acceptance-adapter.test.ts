@@ -11,6 +11,7 @@ import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../h
 
 import {
   createSanctuaryAcceptanceAdapterDependencies,
+  createSanctuaryInteractiveAcceptanceScenarioDriver,
   createSanctuaryAcceptanceVaultProbeDependencies,
   executeSanctuaryAcceptanceCallbackProbe,
   executeSanctuaryAcceptanceAdapter,
@@ -84,6 +85,43 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it("drives exact current duplicate callbacks and a restart-before-decision from durable proposal coordinates", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-interactive-driver-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const approvalRecord = {
+      approvalId: "approval-1", state: "proposed", toolName: "unraid_restart_container", arguments: { container: "calibre-web" },
+      checkpointDigest: "b".repeat(64), epoch: 0, suspendedSessionRevision: "c".repeat(64),
+    }
+    const pending = [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound", approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }]
+    const callbackUpdates: Array<Record<string, unknown>> = []
+    const hostRequests: Array<Record<string, unknown>> = []
+    let currentLabel = "unit-16l-duplicate-callback"
+    const driver = createSanctuaryInteractiveAcceptanceScenarioDriver({
+      agentRoot: root,
+      readApprovals: () => [{ approval: approvalRecord as never, continuation: null }],
+      readPending: () => pending,
+      credentials: () => ({ botToken: "unused", authorizedUserId: "123", authorizedChatId: "123" }),
+      callbackProbe: async (update) => { callbackUpdates.push(update); return { settled: true, claimed: callbackUpdates.length === 1, mutated: callbackUpdates.length === 1 } },
+      hostRequest: async (payload) => {
+        hostRequests.push(payload)
+        return { restarted: true, beforeContainerDigest: "1".repeat(64), afterContainerDigest: "2".repeat(64), restartCountBefore: 7, restartCountAfter: 8 }
+      },
+    })
+    try {
+      await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
+      expect(callbackUpdates).toHaveLength(2)
+      expect(callbackUpdates[0]).toEqual(callbackUpdates[1])
+      expect(callbackUpdates[0]).toMatchObject({ callback_query: { from: { id: 123 }, data: "a:opaque", message: { message_id: 42, chat: { id: 123 } } } })
+
+      callbackUpdates.length = 0
+      currentLabel = "unit-16m-restart-continuation"
+      await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
+      expect(hostRequests).toEqual([{ operation: "restart_butler_for_acceptance", targetId: "sanctuary", label: currentLabel, scenarioHandleDigest, approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0 }])
+      expect(callbackUpdates).toHaveLength(1)
+      const receipt = JSON.parse(fs.readFileSync(path.join(root, "state/acceptance/interactive-driver-receipts", `${scenarioHandleDigest}.json`), "utf8"))
+      expect(receipt).toMatchObject({ label: currentLabel, pendingRestored: true, approvalEpochBefore: 0, approvalEpochAfterRestart: 0, callbackAttempts: 1 })
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
   it("composes the default health capture through exact start, running, complete, and recovery calls", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-default-health-capture-"))
     const agentRoot = path.join(root, "sanctuary.ouro")

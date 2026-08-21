@@ -12,6 +12,7 @@ interface BrokerDependencies {
   startHealthProbe?(input: Record<string, string>): unknown
   healthProbeStatus?(input: Record<string, string>): unknown
   recoverHealthProbe?(input: Record<string, string>): unknown
+  restartButlerForAcceptance?(input: Record<string, unknown>): unknown
   healthProbeCoordinator?: {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -115,6 +116,24 @@ describe("Sanctuary Unit 16 host broker", () => {
       readBootId: () => "unused",
       containerSnapshot: () => snapshot,
     })).rejects.toThrow(/shape is invalid/u)
+  })
+
+  it("restarts only the production butler for an exact owner-bound continuation request", async () => {
+    const { dispatch } = await broker()
+    const calls: Record<string, unknown>[] = []
+    const request = {
+      operation: "restart_butler_for_acceptance", targetId: "sanctuary", label: "unit-16m-restart-continuation",
+      scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0,
+    }
+    const result = { restarted: true, beforeContainerDigest: "1".repeat(64), afterContainerDigest: "2".repeat(64), restartCountBefore: 7, restartCountAfter: 8 }
+    await expect(dispatch(request, {
+      readBootId: () => "unused", containerSnapshot: () => { throw new Error("unexpected snapshot") },
+      restartButlerForAcceptance: (input) => { calls.push(input); return result },
+    })).resolves.toEqual(result)
+    expect(calls).toEqual([{ label: request.label, scenarioHandleDigest: request.scenarioHandleDigest, approvalId: request.approvalId, checkpointDigest: request.checkpointDigest, approvalEpoch: 0 }])
+    await expect(dispatch({ ...request, label: "unit-16l-duplicate-callback" }, {
+      readBootId: () => "unused", containerSnapshot: () => ({}), restartButlerForAcceptance: () => result,
+    })).rejects.toThrow(/label is invalid/u)
   })
 
   it("starts, polls, and recovers only the fixed owner-bound health probe", async () => {
