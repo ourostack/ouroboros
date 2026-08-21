@@ -610,6 +610,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
   const editTerminal = async (pending: TelegramPendingApproval, terminalText: string, expiryObservedAt?: number): Promise<void> => {
     if (pending.messageId === null) return
+    const terminalEditStartedAt = now()
     const base = {
       chat_id: options.expectedChatId,
       message_id: Number(pending.messageId),
@@ -632,7 +633,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       }
     }
     const terminalizedAt = now()
-    if (pending.acceptanceBinding) emitAcceptanceEvidence("telegram.approval_prompt_terminalized", pending, { ...(expiryObservedAt === undefined ? {} : { expiryObservedAt }), terminalizedAt, buttonsRemoved: true })
+    if (pending.acceptanceBinding) emitAcceptanceEvidence("telegram.approval_prompt_terminalized", pending, { ...(expiryObservedAt === undefined ? {} : { expiryObservedAt }), terminalEditStartedAt, terminalizedAt, buttonsRemoved: true })
     else emitNervesEvent({ component: "senses", event: "telegram.approval_prompt_terminalized", message: "Telegram approval prompt was terminalized", meta: { approvalId: pending.approvalId, buttonsRemoved: true, ...options.acceptanceEventMeta?.() } })
   }
 

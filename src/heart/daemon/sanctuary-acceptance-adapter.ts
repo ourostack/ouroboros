@@ -1105,8 +1105,8 @@ export async function readDefaultSanctuaryScenarioFacts(
       "senses.telegram_approval_prompt_bound": [["actionDigest", "approvalId", "boundAt", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest"]],
       "telegram.callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "targetDigest"]],
       "telegram.approval_prompt_terminalized": [
-        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalizedAt"],
-        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalizedAt"],
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "evidenceMac", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
       ],
       "senses.telegram_approval_continuation_delivered": [["actionDigest", "approvalId", "boundAt", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "targetDigest"]],
     }

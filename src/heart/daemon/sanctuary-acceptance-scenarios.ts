@@ -482,26 +482,31 @@ function exactApprovalEvidence(
   if (![...terminals, ...callbacks, ...continuations].every((entry) => entry.meta.scenarioHandleDigest === promptScenarioHandleDigest
     && entry.meta.messageIdDigest === promptMessageIdDigest)) return null
   const boundAt = Number(prompt[0]!.meta.boundAt)
+  const terminalEditStartedAt = Number(terminals[0]!.meta.terminalEditStartedAt)
   const terminalizedAt = Number(terminals[0]!.meta.terminalizedAt)
   const expiryObservedAt = terminals[0]!.meta.expiryObservedAt === undefined ? null : Number(terminals[0]!.meta.expiryObservedAt)
   if (!Number.isSafeInteger(boundAt) || boundAt < 0
-    || !Number.isSafeInteger(terminalizedAt) || terminalizedAt < boundAt
+    || !Number.isSafeInteger(terminalEditStartedAt) || terminalEditStartedAt < boundAt
+    || !Number.isSafeInteger(terminalizedAt) || terminalizedAt < terminalEditStartedAt
+    || terminalizedAt - terminalEditStartedAt > SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS
     || terminals[0]!.meta.boundAt !== boundAt || terminals[0]!.meta.buttonsRemoved !== true
     || approval.expiresAt !== boundAt + SANCTUARY_APPROVAL_TTL_MS) return null
   if (approval.state === "expired") {
     if (expiryObservedAt === null || !Number.isSafeInteger(expiryObservedAt) || expiryObservedAt < boundAt
-      || terminalizedAt < expiryObservedAt || terminalizedAt - expiryObservedAt > SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS) return null
+      || terminalEditStartedAt < expiryObservedAt) return null
   } else if (expiryObservedAt !== null) return null
   const callback = callbacks[0] ?? null
   if (callback) {
     const callbackAt = Number(callback.meta.callbackAt)
-    if (!Number.isSafeInteger(callbackAt) || callbackAt < boundAt || callbackAt > terminalizedAt
+    if (!Number.isSafeInteger(callbackAt) || callbackAt < boundAt || callbackAt > terminalEditStartedAt
       || callback.meta.boundAt !== boundAt || callback.meta.acknowledged !== true) return null
   }
   const continuation = continuations[0] ?? null
   if (continuation) {
     const deliveredAt = Number(continuation.meta.deliveredAt)
-    if (!Number.isSafeInteger(deliveredAt) || deliveredAt < boundAt || deliveredAt > terminalizedAt
+    const callbackAt = callback === null ? null : Number(callback.meta.callbackAt)
+    if (!Number.isSafeInteger(deliveredAt) || deliveredAt < boundAt || deliveredAt > terminalEditStartedAt
+      || callbackAt !== null && deliveredAt < callbackAt
       || continuation.meta.boundAt !== boundAt || typeof continuation.meta.resultDigest !== "string" || !SHA256.test(continuation.meta.resultDigest)
       || continuation.meta.resultDigest !== approval.resultDigest
       || typeof continuation.meta.deliveryDigest !== "string" || !SHA256.test(continuation.meta.deliveryDigest)
