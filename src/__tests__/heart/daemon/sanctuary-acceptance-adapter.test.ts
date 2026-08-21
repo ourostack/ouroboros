@@ -7,6 +7,7 @@ import { createHash, createHmac } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
+import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
 
 import {
   createSanctuaryAcceptanceAdapterDependencies,
@@ -83,6 +84,70 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it("composes the default health capture through exact start, running, complete, and recovery calls", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-default-health-capture-"))
+    const agentRoot = path.join(root, "sanctuary.ouro")
+    const receiptRoot = path.join(agentRoot, "state", "acceptance", "receipts")
+    const gateStatusPath = path.join(root, "current-scenario-gate.json")
+    const ownerSnapshot = validOwnerSnapshot()
+    const requests: Record<string, unknown>[] = []
+    let statusCount = 0
+    let complete = false
+    const hostRequest = vi.fn(async (payload: Record<string, unknown>) => {
+      requests.push(payload)
+      if (payload.operation === "start_health_probe") return { state: "started", operationDigest: "a".repeat(64) }
+      if (payload.operation === "health_probe_status") {
+        statusCount += 1
+        if (statusCount === 1) return { state: "running" }
+        complete = true
+        return { state: "complete", containerSnapshot: ownerSnapshot }
+      }
+      if (payload.operation === "recover_health_probe") return { recovered: true }
+      throw new Error(`unexpected host operation: ${String(payload.operation)}`)
+    })
+    const deps = createSanctuaryAcceptanceAdapterDependencies(3, {
+      hostRequest,
+      scenarioCapture: { agentRoot, receiptRoot, gateStatusPath },
+    })
+    const healthState = '{"incidents":{},"lastDigestDay":null,"updatedAt":"1970-01-01T00:00:00.000Z","outbox":null,"indeterminateDeliveries":[],"deliveredReceipts":[],"sweepReceipts":[]}\n'
+    const cron = "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron\n"
+    deps.readFixedFile = (file) => {
+      if (file.endsWith("/state/health/sanctuary-health.json")) return healthState
+      if (file.endsWith("/.ouro-cli/scheduler/sanctuary.crontab")) return cron
+      if (file === "/run/ouro-acceptance/image-digest") return "1".repeat(64)
+      if (file.includes("/health-probe-receipts/") && complete) {
+        const handle = path.basename(file, ".json")
+        return `${JSON.stringify(validHealthProbeReceipt(handle))}\n`
+      }
+      throw Object.assign(new Error("missing fixture"), { code: "ENOENT" })
+    }
+    try {
+      const payload = {
+        operation: "capture_acceptance_scenario", phase: "begin", label: "unit-16h-daily-digest",
+        externalGate: SANCTUARY_SCENARIO_GATES["unit-16h-daily-digest"], sources: SANCTUARY_SCENARIO_SOURCES["unit-16h-daily-digest"],
+      }
+      const begin = await executeSanctuaryAcceptanceAdapter(payload, deps) as Record<string, unknown>
+      const checkpointDigest = begin.checkpointDigest as string
+      await expect(executeSanctuaryAcceptanceAdapter({ ...payload, phase: "poll", checkpointDigest }, deps)).resolves.toEqual(begin)
+      const result = await executeSanctuaryAcceptanceAdapter({ ...payload, phase: "poll", checkpointDigest }, deps)
+      expect(result).toMatchObject({ state: "complete", sourceDigests: { "container-inspect": expect.stringMatching(/^[0-9a-f]{64}$/u) } })
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+    const scenarioHandleDigest = (requests[0] as { scenarioHandleDigest: string }).scenarioHandleDigest
+    expect(requests).toEqual([
+      { operation: "start_health_probe", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
+      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
+      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
+      { operation: "recover_health_probe", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
+    ])
+  })
+
+  it("declares the exact after-owner source set for every health scenario", () => {
+    expect(SANCTUARY_SCENARIO_SOURCES["unit-16f-cron-fingerprint"]).toEqual(["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
+    expect(SANCTUARY_SCENARIO_SOURCES["unit-16g-health-transition"]).toEqual(["health-probe-receipt", "telegram-audit", "container-inspect"])
+    expect(SANCTUARY_SCENARIO_SOURCES["unit-16h-daily-digest"]).toEqual(["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
+  })
   it("uses one bounded redacted request over the private host broker socket", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unit16-broker-client-"))
     const invoke = async (reply: string | null, timeoutMs = 200): Promise<unknown> => {
