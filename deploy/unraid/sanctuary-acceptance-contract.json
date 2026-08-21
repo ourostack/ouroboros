@@ -47,7 +47,10 @@
     "unraid-key-rotate": { "operation": "unraid-key-rotate", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
     "config-materializer": { "operation": "materialize_config", "authority": "fixed-contract-offset-inventory-evidence-read", "modelReachable": false, "timeoutMs": 120000 },
     "scenario-capture": { "operation": "capture_acceptance_scenario", "authority": "fixed-runtime-audit-telegram-container-scenario", "modelReachable": false, "timeoutMs": 120000, "phases": ["begin", "poll"], "publicGateStatus": "/evidence/current-scenario-gate.json contains only label,gate,phase,startedAt", "response": "waiting:{state,checkpointDigest}|complete:{state,checkpointDigest,sourceDigests,assertions}" },
-    "scenario-finalize": { "operation": "finalize_acceptance_scenarios", "authority": "fixed-public-gate-private-marker-receipt-cleanup", "modelReachable": false, "timeoutMs": 120000, "response": "{finalized:true}" }
+    "scenario-finalize": { "operation": "finalize_acceptance_scenarios", "authority": "fixed-public-gate-private-marker-receipt-cleanup", "modelReachable": false, "timeoutMs": 120000, "response": "{finalized:true}" },
+    "health-probe-start": { "operation": "start_health_probe", "authority": "fixed-owner-bound-packaged-health-probe-start", "modelReachable": false, "timeoutMs": 15000, "response": "{state:started,operationDigest}" },
+    "health-probe-status": { "operation": "health_probe_status", "authority": "fixed-owner-reobservation-and-final-attestation", "modelReachable": false, "timeoutMs": 15000, "response": "{state:running|complete|failed|recovery_required|absent}" },
+    "health-probe-recovery": { "operation": "recover_health_probe", "authority": "fixed-owner-bound-health-snapshot-restore", "modelReachable": false, "timeoutMs": 60000, "response": "{recovered:boolean}" }
   },
   "scenarioSources": {
     "identity-key": { "kind": "fixed-file", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key", "redaction": "sha256-only" },
@@ -65,6 +68,7 @@
     "cron-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-cron-readiness", "redaction": "typed-counters-and-digests-only" },
     "health-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-health-transition", "redaction": "typed-counters-and-digests-only" },
     "digest-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-daily-digest", "redaction": "typed-counters-and-digests-only" },
+    "health-probe-receipt": { "kind": "fixed-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/health-probe-receipts/<scenarioHandleDigest>.json", "redaction": "owner-state-cron-fixture-clock-phase-and-delivery-digests-only" },
     "reboot-checkpoint": { "kind": "fixed-json", "path": "/evidence/reboot.json", "redaction": "typed-state-and-digests-only" }
   },
   "configTemplates": {

@@ -17,9 +17,23 @@ ACCEPTANCE_CANONICAL_PINNED=no
 ACCEPTANCE_PIN_ROOT=
 ACCEPTANCE_STATE_ROOT=
 
+assert_health_probe_cleanup() {
+  /usr/bin/timeout -s KILL 10 /usr/local/bin/node -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const acceptance = process.argv[1];
+    for (const name of ["health-probe-workspaces", "health-probe-pending"]) {
+      const target = path.join(acceptance, name);
+      if (fs.existsSync(target) && fs.readdirSync(target).length !== 0) process.exit(1);
+    }
+    if (fs.existsSync(process.argv[2])) process.exit(1);
+  ' "$ACCEPTANCE_STATE_ROOT" "$BUNDLE_ROOT/state/health/sanctuary-health.json.lease"
+}
+
 cleanup_unit16() {
   CLEANUP_STATUS=$?
   if test -n "$BROKER_PID"; then kill "$BROKER_PID" 2>/dev/null || true; wait "$BROKER_PID" 2>/dev/null || true; fi
+  if test "$ACCEPTANCE_CANONICAL_PINNED" = yes && ! assert_health_probe_cleanup; then CLEANUP_STATUS=1; fi
   if test "$PRODUCTION_STOPPED" = yes && test "$HOST_REBOOT_COMMITTED" = no; then
     if ! restore_production_container; then CLEANUP_STATUS=1; fi
     PRODUCTION_STOPPED=no
