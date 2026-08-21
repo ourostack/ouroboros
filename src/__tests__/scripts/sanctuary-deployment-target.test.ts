@@ -349,7 +349,7 @@ describe("Sanctuary effective listener containment", () => {
     const memberships = [
       { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] },
       { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] },
-      terminal,
+      terminal, terminal, terminal, terminal,
     ]
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(), readNetns: () => "net:[42]", cgroupProcessIds: () => memberships.shift(), ownedSocketInodes: () => [], readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
@@ -359,7 +359,7 @@ describe("Sanctuary effective listener containment", () => {
   it("rejects owned FD socket drift visible only after the listener scans", async () => {
     const { runDeploymentTargetAudit } = await load()
     const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
-    const socketSets = [["900", "900"], ["900"], ["900", "901"]]
+    const socketSets = [["900", "900"], ["900"], ["900", "901"], ["900", "901"], ["900", "901"], ["900", "901"]]
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(),
       readNetns: () => "net:[42]",
@@ -372,7 +372,8 @@ describe("Sanctuary effective listener containment", () => {
   it("rejects a TCP listener that appears only in the terminal network rescan", async () => {
     const { runDeploymentTargetAudit } = await load()
     const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
-    const tcpSamples = [[], [], [{ inode: "900", localAddress: "0.0.0.0", port: 8080 }]]
+    const terminalTcp = [{ inode: "900", localAddress: "0.0.0.0", port: 8080 }]
+    const tcpSamples = [[], [], terminalTcp, terminalTcp]
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(),
       readNetns: () => "net:[42]",
@@ -390,7 +391,8 @@ describe("Sanctuary effective listener containment", () => {
     const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
     const header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
     const connected = "  1: 0100007F:C001 08080808:0035 01 00000000:00000000 00:00000000 00000000  1000 0 900"
-    const udpSamples = [[], [], parseProcUdp(`${header}\n${connected}\n`, false)]
+    const terminalUdp = parseProcUdp(`${header}\n${connected}\n`, false)
+    const udpSamples = [[], [], terminalUdp, terminalUdp]
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(),
       readNetns: () => "net:[42]",
@@ -409,6 +411,7 @@ describe("Sanctuary effective listener containment", () => {
     const unixSamples = [
       [{ inode: "900", path: "", flags: "00000000", type: "0001", state: "03" }],
       [{ inode: "900", path: "", flags: "00000000", type: "0001", state: "03" }],
+      [{ inode: "900", path: "/tmp/late-listener.sock", flags: "00010000", type: "0001", state: "01" }],
       [{ inode: "900", path: "/tmp/late-listener.sock", flags: "00010000", type: "0001", state: "01" }],
     ]
     await expect(runDeploymentTargetAudit("staging", imageId, {

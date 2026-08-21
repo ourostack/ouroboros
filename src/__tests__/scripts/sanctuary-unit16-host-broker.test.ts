@@ -77,7 +77,7 @@ interface BrokerModule {
   }
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string): Promise<boolean>
+  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; forbidden: string[] }): Promise<boolean>
   denialTargetSnapshot(dependencies?: {
     run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null; stdout?: string }
   }): Record<string, unknown>
@@ -126,7 +126,7 @@ async function broker(): Promise<BrokerModule> {
     createDispatchDrain(): { run<T>(operation: () => T | Promise<T>): Promise<T>; stopAndDrain(): Promise<void> }
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string): Promise<boolean>
+    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; forbidden: string[] }): Promise<boolean>
     denialTargetSnapshot: BrokerModule["denialTargetSnapshot"]
     healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
     healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
@@ -924,6 +924,22 @@ describe("Sanctuary Unit 16 host broker", () => {
     ]) {
       await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], responseWith(invalidTopology), productionId)).resolves.toBe(false)
     }
+    const stagingProfile = { containerName: "ouro-butler-staging", requiredStopped: [], forbidden: ["ouro-butler", "ouro-butler-rollback"] }
+    await expect(queryGraphqlAutostart(
+      [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
+      responseWith([{ id: `${serverId}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }]),
+      stagingId,
+      stagingProfile,
+    )).resolves.toBe(true)
+    await expect(queryGraphqlAutostart(
+      [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
+      responseWith([
+        { id: `${serverId}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true },
+        { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: false },
+      ]),
+      stagingId,
+      stagingProfile,
+    )).resolves.toBe(false)
   })
 
   it("requires successful live runtime and both provider vault reads", async () => {

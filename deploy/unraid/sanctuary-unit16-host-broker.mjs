@@ -144,7 +144,7 @@ function autostartFileExact() {
     : counts.production === 1 && counts.staging === 0 && counts.rollback === 0 && counts.legacy === 0
 }
 
-async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = fetch, expectedContainerId = activeContainerId) {
+async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = fetch, expectedContainerId = activeContainerId, profile = activeProfile) {
   text(expectedContainerId, "attested target container id", SHA256)
   const matches = records.filter((record) => record.name === "Butler RO" && record.roles.length === 0
     && JSON.stringify(flattened(record)) === JSON.stringify(RO_PERMISSIONS))
@@ -164,13 +164,24 @@ async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = f
   if (!serverIdentity) throw new Error("Unraid server identity is invalid")
   const containers = object(data.docker, "Unraid topology docker").containers
   if (!Array.isArray(containers)) throw new Error("Unraid container topology is invalid")
-  const production = containers.filter((raw) => {
+  const canonicalNames = new Set(["ouro-butler", "ouro-butler-staging", "ouro-butler-rollback"])
+  const topology = new Map()
+  for (const raw of containers) {
     const container = object(raw, "Unraid topology container")
-    return Array.isArray(container.names) && container.names.some((name) => name === activeContainer || name === `/${activeContainer}`)
-  })
-  if (production.length !== 1) return false
-  const identity = typeof production[0].id === "string" ? /^([0-9a-f]{64}):([0-9a-f]{64})$/u.exec(production[0].id) : null
-  return Boolean(identity && identity[1] === serverIdentity[1] && identity[2] === expectedContainerId && production[0].autoStart === true)
+    if (!Array.isArray(container.names) || container.names.some((name) => typeof name !== "string")) throw new Error("Unraid container topology identity is invalid")
+    const canonical = container.names.map((name) => name.replace(/^\//u, "")).filter((name) => canonicalNames.has(name))
+    if (canonical.length > 1) return false
+    if (canonical.length === 0) continue
+    const identity = typeof container.id === "string" ? /^([0-9a-f]{64}):([0-9a-f]{64})$/u.exec(container.id) : null
+    if (!identity || identity[1] !== serverIdentity[1] || typeof container.autoStart !== "boolean" || topology.has(canonical[0])) return false
+    topology.set(canonical[0], { containerId: identity[2], autoStart: container.autoStart })
+  }
+  const expectedNames = new Set([profile.containerName, ...profile.requiredStopped])
+  if (topology.size !== expectedNames.size || [...expectedNames].some((name) => !topology.has(name))
+    || profile.forbidden.some((name) => topology.has(name))) return false
+  const target = topology.get(profile.containerName)
+  if (!target || target.containerId !== expectedContainerId || target.autoStart !== true) return false
+  return profile.requiredStopped.every((name) => topology.get(name)?.autoStart === false)
 }
 
 function updaterDisabled(expectedImage) {

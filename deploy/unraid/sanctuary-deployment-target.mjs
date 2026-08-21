@@ -18,6 +18,7 @@ const DOCUMENTED_UNIX_CONTROLS = [
   "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock",
 ]
 const DOCUMENTED_LOOPBACK_TCP_CONTROLS = new Set([6876])
+const TERMINAL_CONTAINMENT_MAX_SAMPLES = 8
 const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
 
@@ -295,6 +296,53 @@ function parseProcUnix(content) {
     .map((fields) => ({ inode: fields[6], path: fields.slice(7).join(" "), flags: fields[3], type: fields[4], state: fields[5] }))
 }
 
+function sortedUnique(values) {
+  return [...new Set(values)].sort((left, right) => String(left).localeCompare(String(right)))
+}
+
+function sortedRecords(values) {
+  return [...values].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+}
+
+function sameMembership(left, right) {
+  return left.path === right.path
+    && exactSet(new Set(left.processIds), new Set(right.processIds))
+    && exactSet(new Set(left.threadIds), new Set(right.threadIds))
+}
+
+function completeContainmentSnapshot(provisional, readers) {
+  const netnsBefore = readers.readNetns(provisional.targetPid)
+  const membershipBefore = readers.readMembership(provisional.targetPid, provisional.targetContainerId)
+  const socketInodesBefore = sortedUnique(readers.readSockets(membershipBefore.threadIds))
+  const tcpListenersRaw = readers.readTcp(provisional.targetPid)
+  const udpListenersRaw = readers.readUdp(provisional.targetPid)
+  const unixSocketsRaw = readers.readUnix(provisional.targetPid)
+  const membershipAfter = readers.readMembership(provisional.targetPid, provisional.targetContainerId)
+  const socketInodesAfter = sortedUnique(readers.readSockets(membershipAfter.threadIds))
+  const netnsAfter = readers.readNetns(provisional.targetPid)
+  if (netnsBefore !== netnsAfter || !sameMembership(membershipBefore, membershipAfter)
+    || !exactSet(new Set(socketInodesBefore), new Set(socketInodesAfter))) return null
+  const owned = new Set(socketInodesAfter)
+  return {
+    netns: netnsAfter,
+    membership: membershipAfter,
+    socketInodes: socketInodesAfter,
+    tcpListeners: sortedRecords(tcpListenersRaw.filter((listener) => owned.has(listener.inode))),
+    udpListeners: sortedRecords(udpListenersRaw.filter((listener) => owned.has(listener.inode))),
+    unixSockets: sortedRecords(unixSocketsRaw.filter((socket) => owned.has(socket.inode))),
+  }
+}
+
+function convergedTerminalContainment(provisional, readers) {
+  let previous = null
+  for (let attempt = 0; attempt < TERMINAL_CONTAINMENT_MAX_SAMPLES; attempt += 1) {
+    const current = completeContainmentSnapshot(provisional, readers)
+    if (current && previous && JSON.stringify(current) === JSON.stringify(previous)) return current
+    previous = current
+  }
+  throw new Error("terminal containment snapshot did not converge")
+}
+
 async function runDeploymentTargetAudit(profileName, expectedImageId, dependencies = {}) {
   const capture = dependencies.captureCanonicalRecords ?? captureCanonicalRecords
   const before = await capture()
@@ -323,12 +371,14 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   const unixSocketsAfter = readUnix(provisional.targetPid)
   const netnsAfter = readNetns(provisional.targetPid)
   const after = await capture()
-  const membershipTerminal = readMembership(provisional.targetPid, provisional.targetContainerId)
-  const socketInodesTerminal = readSockets(membershipTerminal.threadIds)
-  const tcpListenersTerminal = readTcp(provisional.targetPid)
-  const udpListenersTerminal = readUdp(provisional.targetPid)
-  const unixSocketsTerminal = readUnix(provisional.targetPid)
+  const terminal = convergedTerminalContainment(provisional, { readNetns, readMembership, readSockets, readTcp, readUdp, readUnix })
+  const membershipTerminal = terminal.membership
+  const socketInodesTerminal = terminal.socketInodes
+  const tcpListenersTerminal = terminal.tcpListeners
+  const udpListenersTerminal = terminal.udpListeners
+  const unixSocketsTerminal = terminal.unixSockets
   const sameIds = (left, right) => exactSet(new Set(left), new Set(right))
+  if (netnsBefore !== netnsAfter || netnsAfter !== terminal.netns) throw new Error("target network namespace changed")
   if (membershipBefore.path !== membershipTerminal.path || membershipAfter.path !== membershipTerminal.path) throw new Error("target cgroup changed")
   if (!sameIds(processIdsBefore, membershipTerminal.processIds) || !sameIds(processIdsAfter, membershipTerminal.processIds)) throw new Error("target cgroup process membership changed")
   if (!sameIds(membershipBefore.threadIds, membershipTerminal.threadIds) || !sameIds(membershipAfter.threadIds, membershipTerminal.threadIds)) throw new Error("target cgroup thread membership changed")
