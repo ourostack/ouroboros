@@ -406,26 +406,30 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   const readTcp = dependencies.readTcpListeners ?? ((pid) => [...parseProcNet(readFileSync(`/proc/${pid}/net/tcp`, "utf8"), false), ...parseProcNet(readFileSync(`/proc/${pid}/net/tcp6`, "utf8"), true)])
   const readUdp = dependencies.readUdpListeners ?? ((pid) => [...parseProcUdp(readFileSync(`/proc/${pid}/net/udp`, "utf8"), false), ...parseProcUdp(readFileSync(`/proc/${pid}/net/udp6`, "utf8"), true)])
   const readUnix = dependencies.readUnixSockets ?? ((pid) => parseProcUnix(readFileSync(`/proc/${pid}/net/unix`, "utf8")))
-  const netnsBefore = readNetns(provisional.targetPid)
-  const membershipBefore = readMembership(provisional.targetPid, provisional.targetContainerId)
-  const processIdsBefore = membershipBefore.processIds
-  const socketInodesBefore = readSockets(membershipBefore.threadIds)
-  const tcpListenersBefore = readTcp(provisional.targetPid)
-  const udpListenersBefore = readUdp(provisional.targetPid)
-  const unixSocketsBefore = readUnix(provisional.targetPid)
-  const membershipAfter = readMembership(provisional.targetPid, provisional.targetContainerId)
-  if (membershipBefore.path !== membershipAfter.path) throw new Error("target cgroup changed")
-  if (JSON.stringify(processIdsBefore) !== JSON.stringify(membershipAfter.processIds)) throw new Error("target cgroup process membership changed")
-  if (JSON.stringify(membershipBefore.threadIds) !== JSON.stringify(membershipAfter.threadIds)) throw new Error("target cgroup thread membership changed")
-  const processIdsAfter = membershipAfter.processIds
-  const socketInodesAfter = readSockets(membershipAfter.threadIds)
-  const tcpListenersAfter = readTcp(provisional.targetPid)
-  const udpListenersAfter = readUdp(provisional.targetPid)
-  const unixSocketsAfter = readUnix(provisional.targetPid)
-  const netnsAfter = readNetns(provisional.targetPid)
-  const after = await capture()
   const quiesceTarget = dependencies.quiesceTarget ?? withPausedTarget
-  const terminal = quiesceTarget(provisional, () => convergedTerminalContainment(provisional, { readNetns, readMembership, readSockets, readTcp, readUdp, readUnix }))
+  const containment = quiesceTarget(provisional, () => {
+    const netnsBefore = readNetns(provisional.targetPid)
+    const membershipBefore = readMembership(provisional.targetPid, provisional.targetContainerId)
+    const processIdsBefore = membershipBefore.processIds
+    const socketInodesBefore = readSockets(membershipBefore.threadIds)
+    const tcpListenersBefore = readTcp(provisional.targetPid)
+    const udpListenersBefore = readUdp(provisional.targetPid)
+    const unixSocketsBefore = readUnix(provisional.targetPid)
+    const membershipAfter = readMembership(provisional.targetPid, provisional.targetContainerId)
+    if (membershipBefore.path !== membershipAfter.path) throw new Error("target cgroup changed")
+    if (JSON.stringify(processIdsBefore) !== JSON.stringify(membershipAfter.processIds)) throw new Error("target cgroup process membership changed")
+    if (JSON.stringify(membershipBefore.threadIds) !== JSON.stringify(membershipAfter.threadIds)) throw new Error("target cgroup thread membership changed")
+    const processIdsAfter = membershipAfter.processIds
+    const socketInodesAfter = readSockets(membershipAfter.threadIds)
+    const tcpListenersAfter = readTcp(provisional.targetPid)
+    const udpListenersAfter = readUdp(provisional.targetPid)
+    const unixSocketsAfter = readUnix(provisional.targetPid)
+    const netnsAfter = readNetns(provisional.targetPid)
+    const terminal = convergedTerminalContainment(provisional, { readNetns, readMembership, readSockets, readTcp, readUdp, readUnix })
+    return { membershipBefore, processIdsBefore, socketInodesBefore, tcpListenersBefore, udpListenersBefore, unixSocketsBefore, membershipAfter, processIdsAfter, socketInodesAfter, tcpListenersAfter, udpListenersAfter, unixSocketsAfter, netnsBefore, netnsAfter, terminal }
+  })
+  const after = await capture()
+  const { membershipBefore, processIdsBefore, socketInodesBefore, tcpListenersBefore, udpListenersBefore, unixSocketsBefore, membershipAfter, processIdsAfter, socketInodesAfter, tcpListenersAfter, udpListenersAfter, unixSocketsAfter, netnsBefore, netnsAfter, terminal } = containment
   const membershipTerminal = terminal.membership
   const socketInodesTerminal = terminal.socketInodes
   const tcpListenersTerminal = terminal.tcpListeners

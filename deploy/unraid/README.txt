@@ -1135,13 +1135,14 @@ Packaged deployment-target containment gates:
   container ID; Unit 16 carries that immutable ID into every launcher and broker
   Docker operation and binds it to the GraphQL PrefixedID suffix. It scans every
   cgroup process and requires stable before/after process, owned-socket, and
-  listener inventories. After the final topology capture, it verifies the exact
-  immutable-ID target is running and unpaused, pauses that ID without changing
-  restart or autostart state, and samples cgroup, all-thread descriptors, TCP,
-  UDP, and Unix inventories until two complete internally stable snapshots
-  match, failing closed after eight attempts. It always makes bounded exact-ID
-  unpause attempts and verifies the same ID and PID resumed their original
-  running, unpaused state before returning or surfacing a scan failure. It
+  listener inventories. Between the two canonical topology captures, it verifies
+  the exact immutable-ID target is running and unpaused, pauses that ID without
+  changing restart or autostart state, and performs every cgroup, all-thread
+  descriptor, TCP, UDP, and Unix observation inside that one quiesced window,
+  including two matching complete terminal snapshots; nonconvergence fails
+  closed after eight attempts. It always makes bounded exact-ID unpause attempts,
+  verifies the same ID and PID resumed their original running, unpaused state,
+  and only then performs the final full-profile topology capture. It
   rejects every owned UDP listener and every externally reachable owned TCP listener. Only loopback
   Mailbox port 6876 plus stream-listening endpoints at the fixed daemon and
   acceptance Unix control paths are permitted; all other named Unix endpoint
