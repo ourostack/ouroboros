@@ -1,15 +1,33 @@
 #!/bin/sh
 set -eu
 
-CONFIG_ROOT=/mnt/user/appdata/ouro-butler/acceptance/configs
-EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/acceptance/evidence
 RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
 BUNDLE_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+test "$#" -ge 1 || exit 2
+IMAGE_ID=$1
+shift
 TARGET_PROFILE=staging
-PRODUCTION_CONTAINER=ouro-butler-staging
+if test "${1:-}" = --profile; then
+  test "$#" -ge 2 || exit 2
+  TARGET_PROFILE=$2
+  shift 2
+fi
+case "$TARGET_PROFILE" in
+  staging)
+    CONFIG_ROOT=/mnt/user/appdata/ouro-butler/acceptance/configs
+    EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/acceptance/evidence
+    PRODUCTION_CONTAINER=ouro-butler-staging
+    ;;
+  final)
+    CONFIG_ROOT=/mnt/user/appdata/ouro-butler/acceptance/final/configs
+    EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/acceptance/final/evidence
+    PRODUCTION_CONTAINER=ouro-butler
+    ;;
+  *) exit 2 ;;
+esac
 TARGET_CONTAINER_ID=
-IMAGE_ID=${1:-}
-MODE=${2:-}
+MODE=${1:-}
+case "$MODE" in --*) exit 2 ;; esac
 BROKER_PID=
 PRIVATE_ROOT=
 PRODUCTION_STOPPED=no
@@ -57,6 +75,23 @@ cleanup_unit16() {
 }
 trap cleanup_unit16 EXIT HUP INT TERM
 
+case "$MODE" in
+  materialize)
+    test "$#" -eq 2 || { test "$#" -eq 3 && test "$2" = cursor-snapshot; } || exit 2
+    COMMAND=${2:-}
+    PHASE=${3:-}
+    ;;
+  *)
+    test "$#" -eq 2 || exit 2
+    COMMAND=$MODE
+    CONFIG_NAME=${2:-}
+    ;;
+esac
+case "$COMMAND" in
+  telegram-bootstrap|cursor-snapshot|cursor-delta|callback-inject|unraid-key-rotate|evidence-snapshot|reboot-request|reboot-resume|evidence-bundle-index|evidence-bundle-verify) ;;
+  *) exit 2 ;;
+esac
+
 IMAGE_DIGEST=${IMAGE_ID#sha256:}
 test "$IMAGE_DIGEST" != "$IMAGE_ID" || exit 2
 test "${#IMAGE_DIGEST}" -eq 64 || exit 2
@@ -66,23 +101,6 @@ test -d "$CONFIG_ROOT" && test ! -L "$CONFIG_ROOT" || exit 1
 test -d "$EVIDENCE_ROOT" && test ! -L "$EVIDENCE_ROOT" || exit 1
 test "$(stat -c '%u:%g %a' "$CONFIG_ROOT")" = "10001:10001 700" || exit 1
 test "$(stat -c '%u:%g %a' "$EVIDENCE_ROOT")" = "10001:10001 700" || exit 1
-
-case "$MODE" in
-  materialize)
-    test "$#" -eq 3 || { test "$#" -eq 4 && test "$3" = cursor-snapshot; } || exit 2
-    COMMAND=${3:-}
-    PHASE=${4:-}
-    ;;
-  *)
-    test "$#" -eq 3 || exit 2
-    COMMAND=$MODE
-    CONFIG_NAME=${3:-}
-    ;;
-esac
-case "$COMMAND" in
-  telegram-bootstrap|cursor-snapshot|cursor-delta|callback-inject|unraid-key-rotate|evidence-snapshot|reboot-request|reboot-resume|evidence-bundle-index|evidence-bundle-verify) ;;
-  *) exit 2 ;;
-esac
 
 PRIVATE_ROOT=$(mktemp -d /run/ouro-unit16.XXXXXX)
 chmod 0700 "$PRIVATE_ROOT"
@@ -114,10 +132,10 @@ start_broker() {
   TARGET_CONTAINER_ID=$(/usr/local/bin/node -e '
     const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const deployment = value && value.deployment;
     if (value?.schemaVersion !== "sanctuary-effective-deployment-v1" || deployment?.schemaVersion !== "sanctuary-deployment-target-v1"
-      || deployment.profile !== "staging" || deployment.targetContainerName !== "ouro-butler-staging"
+      || deployment.profile !== process.argv[3] || deployment.targetContainerName !== process.argv[4]
       || deployment.targetImageId !== process.argv[2] || !/^[0-9a-f]{64}$/.test(deployment.targetContainerId)) process.exit(1);
     process.stdout.write(deployment.targetContainerId);
-  ' "$PRIVATE_ROOT/deployment-target.json" "$IMAGE_ID")
+  ' "$PRIVATE_ROOT/deployment-target.json" "$IMAGE_ID" "$TARGET_PROFILE" "$PRODUCTION_CONTAINER")
   test -n "$TARGET_CONTAINER_ID" || return 1
   /usr/local/bin/node "$BROKER_PROGRAM" "$TARGET_PROFILE" "$TARGET_CONTAINER_ID" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
   BROKER_PID=$!

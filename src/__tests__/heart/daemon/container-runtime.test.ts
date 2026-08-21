@@ -1474,7 +1474,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(launcher).toContain("/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh")
     expect(launcher).toContain('"$COMMAND" --config /run/ouro-acceptance/config.json')
     expect(launcher).toContain('3<&3')
-    expect(launcher).toContain('MODE=${2:-}')
+    expect(launcher).toContain('MODE=${1:-}')
     expect(launcher).toContain('if test "$MODE" = materialize; then')
     expect(launcher).toContain('dst=/run/ouro-acceptance/closed-inventory.json,readonly')
     expect(launcher).toContain('dst=/run/ouro-host-acceptance,readonly')

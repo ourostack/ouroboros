@@ -52,7 +52,7 @@ describe("Sanctuary fixed deployment target", () => {
     expect(source).toContain("TARGET_PROFILE=staging")
     expect(source).toContain("PRODUCTION_CONTAINER=ouro-butler-staging")
     expect(source).toContain('test "${1:-}" = --profile')
-    expect(source).toContain("TARGET_PROFILE=final")
+    expect(source).toContain("  final)")
     expect(source).toContain("PRODUCTION_CONTAINER=ouro-butler")
     expect(source).toContain("acceptance/final/configs")
     expect(source).toContain("acceptance/final/evidence")

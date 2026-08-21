@@ -110,6 +110,12 @@ jobs:
           node scripts/package-assets.cjs "$PACKAGE_ROOT/package"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           docker build --pull --no-cache --file "$PACKAGE_ROOT/package/deploy/unraid/Dockerfile" --tag ouro-butler-package-smoke:"$PACKAGE_VERSION" "$PACKAGE_ROOT/package"
+          docker run --rm --entrypoint /bin/sh ouro-butler-package-smoke:"$PACKAGE_VERSION" -ceu '
+            test "$(id -u)" = 10001
+            test "$(id -g)" = 10001
+            command -v bw >/dev/null
+            test "$(bw --version)" = 2026.8.0
+          '
           docker run --rm --entrypoint node ouro-butler-package-smoke:"$PACKAGE_VERSION" -e '
             const expected = process.argv[1]
             const packageVersion = require("/opt/ouro/package.json").version

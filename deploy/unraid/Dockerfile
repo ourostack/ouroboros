@@ -12,7 +12,9 @@ RUN apt-get update \
 
 WORKDIR /opt/ouro
 COPY package.json npm-shrinkwrap.json ./
-RUN npm ci --omit=dev --legacy-peer-deps --workspaces=false --no-audit --no-fund
+RUN npm ci --omit=dev --legacy-peer-deps --workspaces=false --no-audit --no-fund \
+  && test -x /opt/ouro/node_modules/.bin/bw \
+  && ln -s /opt/ouro/node_modules/.bin/bw /usr/local/bin/bw
 COPY dist ./dist
 COPY assets ./assets
 COPY skills ./skills
@@ -23,5 +25,9 @@ RUN chown -R 10001:10001 /opt/ouro /home/ouro
 
 USER 10001:10001
 ENV HOME=/home/ouro
+RUN test "$(id -u)" = "10001" \
+  && test "$(id -g)" = "10001" \
+  && command -v bw >/dev/null \
+  && test "$(bw --version)" = "2026.8.0"
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD ["node","/opt/ouro/dist/heart/daemon/container-healthcheck.js","--agent","sanctuary"]
 ENTRYPOINT ["node","/opt/ouro/dist/heart/daemon/daemon-entry.js"]

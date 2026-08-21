@@ -1406,6 +1406,16 @@ Packaged Unit 16 acceptance execution:
       --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit16-run.sh >"$UNIT16_LAUNCHER_TMP"
     install -m 0755 -o root -g root "$UNIT16_LAUNCHER_TMP" "$UNIT16_ROOT/sanctuary-unit16-run.sh"
     rm -f -- "$UNIT16_LAUNCHER_TMP"
+  After final activation, create the disjoint final-profile roots and invoke the
+  same immutable launcher with its only non-staging selector. The selector is a
+  closed `staging|final` enum; it never accepts a container name, ID, or path:
+    UNIT18_ROOT=/mnt/user/appdata/ouro-butler/acceptance/final
+    install -d -m 0700 -o 10001 -g 10001 "$UNIT18_ROOT/configs" "$UNIT18_ROOT/evidence"
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize evidence-snapshot
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final evidence-snapshot evidence-snapshot.json
+  Use `--profile final` on every final pre-reboot and post-reboot materialize/run
+  command. Omitting it remains the byte-for-byte Unit 16 staging path. Never mix
+  staging and final config/evidence roots or reuse a config across profiles.
   Never hand-author a Unit 16 config. Materialize it from the exact image, then
   execute it in the order below. Before every execution the launcher regenerates
   the config from the packaged fixed contract and requires byte-for-byte equality.
