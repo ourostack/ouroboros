@@ -803,10 +803,17 @@ describe("Telegram durable authorized long poll", () => {
         { update_id: 3, message: { message_id: 3, chat: { id: 10, type: "private" }, text: "no sender" } },
       ]),
     }
-    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage })
+    const acceptanceEventMeta = vi.fn(() => ({}))
+    const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore, onMessage, acceptanceEventMeta })
     await poll.pollOnce()
     expect(onMessage).not.toHaveBeenCalled()
     expect(offset).toBe(4)
+    expect(acceptanceEventMeta.mock.calls.map(([update, distinctAccount]) => [update?.update_id, distinctAccount])).toEqual([
+      [0, false],
+      [1, false],
+      [2, false],
+      [3, false],
+    ])
   })
 
   it("fails closed on corrupt offset state and stops an active poll", async () => {

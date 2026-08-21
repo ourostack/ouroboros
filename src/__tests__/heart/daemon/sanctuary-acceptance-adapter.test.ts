@@ -6,7 +6,7 @@ import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
-import { sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
+import { sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac } from "../../../senses/telegram"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
 
@@ -786,6 +786,32 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
     expect(duplicate.identity?.canonicalFriendCount).toBe(2)
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("rejects a tampered unauthorized Telegram sender binding", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unauthorized-binding-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const identityKey = "k".repeat(43)
+    const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "123456789" }
+    const binding = {
+      scenarioHandleDigest,
+      updateDigest: "1".repeat(64),
+      senderIdentityDigest: "d".repeat(64),
+      authorizedIdentityDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "sender-identity", credentials.authorizedUserId),
+      senderDistinct: true,
+    }
+    const drop = { ts: "2026-08-20T16:00:00.000Z", event: "telegram.update_dropped", meta: { ...binding, distinctAccount: true, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, "sanctuary-telegram-turn-receipt-v3", binding) } }
+    const files: Record<string, string> = {
+      [`${agentRoot}/state/senses/telegram/identity.key`]: `${identityKey}\n`,
+      "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson": `${JSON.stringify(drop)}\n`,
+    }
+    const deps = unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
+      telegramCredentials: () => credentials,
+    })
+    files["/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"] = `${JSON.stringify({ ...drop, meta: { ...drop.meta, senderIdentityDigest: "c".repeat(64) } })}\n`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16d-2-unauthorized", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("sender binding MAC")
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

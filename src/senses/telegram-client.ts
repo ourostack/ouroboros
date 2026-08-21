@@ -376,7 +376,7 @@ export interface TelegramLongPollOptions {
   inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
-  acceptanceEventMeta?: (update?: TelegramUpdate) => Record<string, string>
+  acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
 }
 
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
@@ -406,6 +406,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       await options.onMessage(message)
       return
     }
+    const distinctAccount = Boolean(update.message?.from && String(update.message.from.id) !== options.expectedUserId)
     emitNervesEvent({
       component: "senses",
       event: "telegram.update_dropped",
@@ -413,8 +414,8 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       meta: {
         updateClass: update.message ? "message" : "other",
         reason: "unauthorized_or_unsupported",
-        distinctAccount: Boolean(update.message?.from && (String(update.message.from.id) !== options.expectedUserId || String(update.message.chat.id) !== options.expectedChatId)),
-        ...options.acceptanceEventMeta?.(update),
+        distinctAccount,
+        ...options.acceptanceEventMeta?.(update, distinctAccount),
       },
     })
   }

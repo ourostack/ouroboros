@@ -558,9 +558,20 @@ describe("Telegram sense coverage contracts", () => {
     expect(end.meta).toMatchObject({ outcome: "success", errorDigest: null, deliveryCount: 1 })
     expect(JSON.stringify(lifecycle)).not.toMatch(/918273645|817263540|"42"|"43"/u)
     const longPollOptions = mocks.createTelegramLongPoll.mock.calls.at(-1)![0]
-    const droppedMeta = longPollOptions.acceptanceEventMeta({ update_id: 123456789, message: { message_id: 987654321, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "unauthorized" } })
-    expect(droppedMeta).toEqual({ scenarioHandleDigest: "a".repeat(64), updateDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    const droppedMeta = longPollOptions.acceptanceEventMeta({ update_id: 123456789, message: { message_id: 987654321, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "unauthorized" } }, true)
+    expect(droppedMeta).toEqual({
+      scenarioHandleDigest: "a".repeat(64),
+      updateDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      senderIdentityDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      authorizedIdentityDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      senderDistinct: true,
+      dropMac: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    })
+    expect(droppedMeta.senderIdentityDigest).not.toBe(droppedMeta.authorizedIdentityDigest)
     expect(JSON.stringify(droppedMeta)).not.toMatch(/123456789|987654321|"99"/u)
+    const authorizedWrongChat = longPollOptions.acceptanceEventMeta({ update_id: 123456790, message: { message_id: 987654322, from: { id: 42 }, chat: { id: 99, type: "private" }, text: "wrong chat" } }, false)
+    expect(authorizedWrongChat).toMatchObject({ senderDistinct: false })
+    expect(authorizedWrongChat.senderIdentityDigest).toBe(authorizedWrongChat.authorizedIdentityDigest)
   })
 
   it("uses one deterministic domain-safe opaque subject for turn, friend, identity, and log surfaces", async () => {

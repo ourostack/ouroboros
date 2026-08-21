@@ -188,7 +188,10 @@ describe("Sanctuary live scenario capture", () => {
         after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } })
         ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts }
       }
-      if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true } })
+      if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: {
+        scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true,
+        senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true, dropMac: "f".repeat(64),
+      } })
       if (label === "unit-16e-2-restart-denial") after.denial = { ...after.denial!, label, operation: "restart" }
       if (label === "unit-16j-denial") { after.approvals = [approval("denied")]; after.events.push(...auditTurn()) }
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
@@ -682,8 +685,9 @@ describe("Sanctuary live scenario capture", () => {
   })
 
   it("requires exactly one fresh scenario-bound distinct-account drop", () => {
-    const historical = { ...event("telegram.update_dropped"), meta: { scenarioHandleDigest, updateDigest: "0".repeat(64), distinctAccount: true } }
-    const freshDistinct = { ...event("telegram.update_dropped"), at: 2, meta: { scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true } }
+    const binding = { senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true, dropMac: "f".repeat(64) }
+    const historical = { ...event("telegram.update_dropped"), meta: { scenarioHandleDigest, updateDigest: "0".repeat(64), distinctAccount: true, ...binding } }
+    const freshDistinct = { ...event("telegram.update_dropped"), at: 2, meta: { scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true, ...binding } }
     const before = base(); before.events = [historical]
     const after = base(); after.events = [historical, freshDistinct]
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toMatchObject({ auditRejected: true, distinctAccount: true })
@@ -693,6 +697,12 @@ describe("Sanctuary live scenario capture", () => {
     after.events = [historical, freshDistinct, { ...freshDistinct, at: 3, meta: { ...freshDistinct.meta, updateDigest: "2".repeat(64) } }]
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
     after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, updateDigest: "not-a-digest" } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, senderIdentityDigest: freshDistinct.meta.authorizedIdentityDigest } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, senderDistinct: false } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, dropMac: "not-a-mac" } }]
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
     after.events = [historical, freshDistinct, { ...event("senses.sanctuary_health_delivered"), at: 3, meta: { scenarioHandleDigest, deliveryCount: 1 } }]
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()

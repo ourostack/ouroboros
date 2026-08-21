@@ -105,6 +105,20 @@ export function sanctuaryTelegramAuditLifecycleMac(
   return sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, "audit-lifecycle", canonicalReceiptJson({ event, meta: unsigned }))
 }
 
+export function sanctuaryTelegramUnauthorizedDropMac(
+  identityKey: string,
+  schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS,
+  value: {
+    scenarioHandleDigest: string
+    updateDigest: string
+    senderIdentityDigest: string
+    authorizedIdentityDigest: string
+    senderDistinct: boolean
+  },
+): string {
+  return sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, "unauthorized-drop", canonicalReceiptJson(value))
+}
+
 function sameTelegramLedgerMetadata(left: import("node:fs").BigIntStats, right: import("node:fs").BigIntStats): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
@@ -803,16 +817,25 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     inboxStore,
     onMessage,
     onUpdate,
-    acceptanceEventMeta: (update) => {
+    acceptanceEventMeta: (update, distinctAccount) => {
       const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
       if (!marker) return {}
       const messageId = update?.message?.message_id ?? update?.callback_query?.message?.message_id
-      const updateDigest = update && messageId !== undefined
-        ? sanctuaryTelegramTurnReceiptDigest(identityKey,
-          marker.label === "unit-16d-whats-up" || marker.label === "unit-16d-1-space" ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3",
-          "update", `${update.update_id}\0${messageId}`)
-        : undefined
-      return { scenarioHandleDigest: marker.scenarioHandleDigest, ...(updateDigest ? { updateDigest } : {}) }
+      const senderId = update?.message?.from?.id
+      if (!update || messageId === undefined || senderId === undefined) return { scenarioHandleDigest: marker.scenarioHandleDigest }
+      const schemaVersion = marker.label === "unit-16d-whats-up" || marker.label === "unit-16d-1-space"
+        ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
+      const digest = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, purpose, value)
+      const senderDistinct = String(senderId) !== authorizedUserId
+      if (distinctAccount !== senderDistinct) throw new Error("Telegram dropped-update identity classification mismatch")
+      const binding = {
+        scenarioHandleDigest: marker.scenarioHandleDigest,
+        updateDigest: digest("update", `${update.update_id}\0${messageId}`),
+        senderIdentityDigest: digest("sender-identity", String(senderId)),
+        authorizedIdentityDigest: digest("sender-identity", authorizedUserId),
+        senderDistinct,
+      }
+      return { ...binding, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, schemaVersion, binding) }
     },
   })
 

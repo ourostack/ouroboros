@@ -563,6 +563,11 @@ export function deriveSanctuaryScenarioAssertions(
       const distinctAccount = drop.meta.distinctAccount === true
         && typeof drop.meta.scenarioHandleDigest === "string" && SHA256.test(drop.meta.scenarioHandleDigest)
         && typeof drop.meta.updateDigest === "string" && SHA256.test(drop.meta.updateDigest)
+        && typeof drop.meta.senderIdentityDigest === "string" && SHA256.test(drop.meta.senderIdentityDigest)
+        && typeof drop.meta.authorizedIdentityDigest === "string" && SHA256.test(drop.meta.authorizedIdentityDigest)
+        && drop.meta.senderIdentityDigest !== drop.meta.authorizedIdentityDigest
+        && drop.meta.senderDistinct === true
+        && typeof drop.meta.dropMac === "string" && SHA256.test(drop.meta.dropMac)
       const providerInvocationCount = newTurns.reduce((sum, turn) => sum + turn.providerTurnCount, 0)
       const toolInvocationCount = newTurns.reduce((sum, turn) => sum + turn.toolInvocationCount, 0)
       const durableToolRecordCount = delta(after, before, "senses.sanctuary_read_receipt")

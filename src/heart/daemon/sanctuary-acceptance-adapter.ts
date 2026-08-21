@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
-import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramSenseCredentials } from "../../senses/telegram"
+import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
@@ -1084,6 +1084,29 @@ export async function readDefaultSanctuaryScenarioFacts(
       if (typeof entry.meta.lifecycleMac !== "string" || !SHA256.test(entry.meta.lifecycleMac)
         || entry.meta.lifecycleMac !== sanctuaryTelegramAuditLifecycleMac(identityKey, auditSchema, entry.event, entry.meta)) {
         throw new Error("Telegram audit lifecycle MAC is invalid")
+      }
+    }
+    if (label === "unit-16d-2-unauthorized") {
+      const expectedAuthorizedIdentityDigest = sanctuaryTelegramTurnReceiptDigest(identityKey, auditSchema, "sender-identity", credentials.authorizedUserId)
+      for (const entry of auditEntries.filter((candidate) => candidate.event === "telegram.update_dropped")) {
+        const binding = {
+          scenarioHandleDigest: entry.meta.scenarioHandleDigest,
+          updateDigest: entry.meta.updateDigest,
+          senderIdentityDigest: entry.meta.senderIdentityDigest,
+          authorizedIdentityDigest: entry.meta.authorizedIdentityDigest,
+          senderDistinct: entry.meta.senderDistinct,
+        }
+        if (typeof binding.scenarioHandleDigest !== "string" || !SHA256.test(binding.scenarioHandleDigest)
+          || typeof binding.updateDigest !== "string" || !SHA256.test(binding.updateDigest)
+          || typeof binding.senderIdentityDigest !== "string" || !SHA256.test(binding.senderIdentityDigest)
+          || typeof binding.authorizedIdentityDigest !== "string" || !SHA256.test(binding.authorizedIdentityDigest)
+          || binding.authorizedIdentityDigest !== expectedAuthorizedIdentityDigest
+          || binding.senderIdentityDigest === binding.authorizedIdentityDigest
+          || binding.senderDistinct !== true || entry.meta.distinctAccount !== true
+          || typeof entry.meta.dropMac !== "string" || !SHA256.test(entry.meta.dropMac)
+          || entry.meta.dropMac !== sanctuaryTelegramUnauthorizedDropMac(identityKey, auditSchema, binding as {
+            scenarioHandleDigest: string; updateDigest: string; senderIdentityDigest: string; authorizedIdentityDigest: string; senderDistinct: boolean
+          })) throw new Error("Telegram unauthorized sender binding MAC is invalid")
       }
     }
     const identityPayload = [
