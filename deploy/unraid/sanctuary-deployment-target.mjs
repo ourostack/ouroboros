@@ -246,7 +246,7 @@ function parseProcNet(content, ipv6) {
 }
 
 function parseProcUdp(content, ipv6) {
-  return content.split(/\r?\n/u).slice(1).filter(Boolean).map((line) => line.trim().split(/\s+/u)).filter((fields) => fields[3] === "07" && fields[2].endsWith(":0000")).map((fields) => {
+  return content.split(/\r?\n/u).slice(1).filter(Boolean).map((line) => line.trim().split(/\s+/u)).map((fields) => {
     const [address, portHex] = fields[1].split(":")
     const localAddress = ipv6 ? address : [6, 4, 2, 0].map((offset) => Number.parseInt(address.slice(offset, offset + 2), 16)).join(".")
     return { inode: fields[9], localAddress, port: Number.parseInt(portHex, 16) }
@@ -318,9 +318,16 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   const udpListenersAfter = readUdp(provisional.targetPid)
   const unixSocketsAfter = readUnix(provisional.targetPid)
   const netnsAfter = readNetns(provisional.targetPid)
+  const membershipTerminal = readMembership(provisional.targetPid, provisional.targetContainerId)
+  const socketInodesTerminal = readSockets(membershipTerminal.threadIds)
+  const sameIds = (left, right) => exactSet(new Set(left), new Set(right))
+  if (membershipBefore.path !== membershipTerminal.path || membershipAfter.path !== membershipTerminal.path) throw new Error("target cgroup changed")
+  if (!sameIds(processIdsBefore, membershipTerminal.processIds) || !sameIds(processIdsAfter, membershipTerminal.processIds)) throw new Error("target cgroup process membership changed")
+  if (!sameIds(membershipBefore.threadIds, membershipTerminal.threadIds) || !sameIds(membershipAfter.threadIds, membershipTerminal.threadIds)) throw new Error("target cgroup thread membership changed")
+  if (!exactSet(new Set(socketInodesBefore), new Set(socketInodesTerminal)) || !exactSet(new Set(socketInodesAfter), new Set(socketInodesTerminal))) throw new Error("target socket ownership changed")
   const after = await capture()
   const deployment = attestDeploymentTarget({ profile: profileName, expectedImageId, topologyBefore: before, inspected: before, topologyAfter: after })
-  const listeners = { ...attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, tcpListenersBefore, tcpListenersAfter, udpListenersBefore, udpListenersAfter, unixSocketsBefore, unixSocketsAfter }), cgroupPath: membershipAfter.path, threadCount: membershipAfter.threadIds.length }
+  const listeners = { ...attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, tcpListenersBefore, tcpListenersAfter, udpListenersBefore, udpListenersAfter, unixSocketsBefore, unixSocketsAfter }), cgroupPath: membershipTerminal.path, threadCount: membershipTerminal.threadIds.length }
   return { schemaVersion: "sanctuary-effective-deployment-v1", deployment, listeners }
 }
 

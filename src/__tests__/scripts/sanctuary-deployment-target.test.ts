@@ -211,12 +211,30 @@ describe("Sanctuary effective listener containment", () => {
     expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["902"], socketInodesAfter: ["902"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: udp, udpListenersAfter: udp, unixSocketsBefore: [], unixSocketsAfter: [] })).toThrow(/UDP/u)
   })
 
-  it("parses only unconnected bound UDP sockets from the kernel inventory", async () => {
-    const { parseProcUdp } = await load()
+  it("inventories every bound IPv4 UDP socket, including connected sockets", async () => {
+    const { attestOwnedListeners, parseProcUdp } = await load()
     const header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
     const bound = "  1: 00000000:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000 0 902"
     const connected = "  2: 0100007F:C001 08080808:0035 01 00000000:00000000 00:00000000 00000000  1000 0 903"
-    expect(parseProcUdp(`${header}\n${bound}\n${connected}\n`, false)).toEqual([{ inode: "902", localAddress: "0.0.0.0", port: 5353 }])
+    const unbound = "  3: 00000000:0000 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000 0 904"
+    const parsed = parseProcUdp(`${header}\n${bound}\n${connected}\n${unbound}\n`, false)
+    expect(parsed).toEqual([
+      { inode: "902", localAddress: "0.0.0.0", port: 5353 },
+      { inode: "903", localAddress: "127.0.0.1", port: 49153 },
+    ])
+    const connectedOnly = parsed.filter(({ inode }) => inode === "903")
+    expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["903"], socketInodesAfter: ["903"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: connectedOnly, udpListenersAfter: connectedOnly, unixSocketsBefore: [], unixSocketsAfter: [] })).toThrow(/UDP/u)
+  })
+
+  it("inventories connected bound IPv6 UDP sockets", async () => {
+    const { attestOwnedListeners, parseProcUdp } = await load()
+    const header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+    const connected = "  1: 00000000000000000000000001000000:C001 00000000000000000000000008080808:0035 01 00000000:00000000 00:00000000 00000000  1000 0 905"
+    const parsed = parseProcUdp(`${header}\n${connected}\n`, true)
+    expect(parsed).toEqual([
+      { inode: "905", localAddress: "00000000000000000000000001000000", port: 49153 },
+    ])
+    expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["905"], socketInodesAfter: ["905"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: parsed, udpListenersAfter: parsed, unixSocketsBefore: [], unixSocketsAfter: [] })).toThrow(/UDP/u)
   })
 
   it("deduplicates inherited descriptors for the same stable socket inode", async () => {
@@ -239,6 +257,36 @@ describe("Sanctuary effective listener containment", () => {
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(), readNetns: () => "net:[42]", cgroupProcessIds: () => memberships.shift(), ownedSocketInodes: () => [], readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
     })).rejects.toThrow(/cgroup process/u)
+  })
+
+  it.each([
+    ["process", { path: `/docker/${stagingId}`, processIds: [321, 322], threadIds: [321, 401, 322] }, /cgroup process/u],
+    ["thread", { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401, 402] }, /cgroup thread/u],
+    ["path", { path: `/docker/${productionId}`, processIds: [321], threadIds: [321, 401] }, /cgroup changed/u],
+  ])("rejects cgroup %s drift visible only after the listener scans", async (_label, terminal, error) => {
+    const { runDeploymentTargetAudit } = await load()
+    const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
+    const memberships = [
+      { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] },
+      { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] },
+      terminal,
+    ]
+    await expect(runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => snapshots.shift(), readNetns: () => "net:[42]", cgroupProcessIds: () => memberships.shift(), ownedSocketInodes: () => [], readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
+    })).rejects.toThrow(error)
+  })
+
+  it("rejects owned FD socket drift visible only after the listener scans", async () => {
+    const { runDeploymentTargetAudit } = await load()
+    const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
+    const socketSets = [["900", "900"], ["900"], ["900", "901"]]
+    await expect(runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => snapshots.shift(),
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => ({ path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] }),
+      ownedSocketInodes: () => socketSets.shift(),
+      readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
+    })).rejects.toThrow(/socket ownership/u)
   })
 
   it("binds exact cgroup-v2 membership to the Docker container identity", async () => {
