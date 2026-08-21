@@ -21,6 +21,9 @@ interface BrokerDependencies {
   interactiveRestartDriver?: ReturnType<BrokerModule["createInteractiveRestartDriver"]>
   healthOwnerMutationActive?(): boolean
   rebootPreflightSnapshot?(): Record<string, unknown>
+  stopExactRebootOwner?(processBindingDigest: string): unknown | Promise<unknown>
+  verifyStoppedRebootOwner?(proof: Record<string, unknown>): unknown | Promise<unknown>
+  commitHostReboot?(): unknown | Promise<unknown>
   healthProbeCoordinator?: {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -28,6 +31,7 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  productionProcessBindingDigest(value: Record<string, unknown>): string
   assertStableContainerProcess(before: Record<string, unknown>, after: Record<string, unknown>): void
   readBoundedProcStatus(file: string): string
   liveContainerProcessUser(pid: number, dependencies?: { readFile(file: string): string }): string
@@ -40,8 +44,9 @@ interface BrokerModule {
   }): Record<string, unknown>
   createOwnerMutationCoordinator(): {
     active(): boolean
-    reserveReboot<T>(reservationId: string, operation: () => T | Promise<T>): Promise<T>
-    commitReboot<T>(reservationId: string, operation: () => T | Promise<T>): Promise<T>
+    reserveReboot<T>(reservationId: string, processBindingDigest: string, operation: () => T | Promise<T>): Promise<T>
+    stopRebootOwner<T>(reservationId: string, processBindingDigest: string, operation: () => T | Promise<T>): Promise<T>
+    commitReboot<T>(reservationId: string, processBindingDigest: string, operation: (proof: Record<string, unknown>) => T | Promise<T>): Promise<T>
     healthStart<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     healthRecover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     healthOperation<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -145,6 +150,7 @@ async function broker(): Promise<BrokerModule> {
     liveContainerProcessUser: BrokerModule["liveContainerProcessUser"]
     liveContainerProcessIdentity: BrokerModule["liveContainerProcessIdentity"]
     parseProcStartTime: BrokerModule["parseProcStartTime"]
+    productionProcessBindingDigest: BrokerModule["productionProcessBindingDigest"]
     healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
     healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
     healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
@@ -162,7 +168,7 @@ async function broker(): Promise<BrokerModule> {
 
 describe("Sanctuary Unit 16 host broker", () => {
   it("binds effective PID1 UID and GID to the inspected live container process", async () => {
-    const { assertStableContainerProcess, liveContainerProcessIdentity, liveContainerProcessUser, parseProcStartTime, readBoundedProcStatus } = await broker()
+    const { assertStableContainerProcess, liveContainerProcessIdentity, liveContainerProcessUser, parseProcStartTime, productionProcessBindingDigest, readBoundedProcStatus } = await broker()
     const reads: string[] = []
     expect(liveContainerProcessUser(4321, { readFile: (file) => {
       reads.push(file)
@@ -195,6 +201,12 @@ describe("Sanctuary Unit 16 host broker", () => {
       { processStartTime: "9999" },
       { processInode: "9999" },
     ]) expect(() => assertStableContainerProcess(stable, { ...stable, ...drift })).toThrow(/changed/u)
+    const bindingInput = { containerId: "a".repeat(64), imageId: `sha256:${"b".repeat(64)}`, pid: 4321, restartCount: 4, startedAt: "2026-08-20T00:00:00.000Z", processStartTime: "1234", processInode: "5678:5679" }
+    const binding = productionProcessBindingDigest(bindingInput)
+    expect(binding).toMatch(/^[0-9a-f]{64}$/u)
+    for (const drift of [{ pid: 4322 }, { restartCount: 5 }, { startedAt: "2026-08-20T00:00:01.000Z" }, { processStartTime: "9999" }, { processInode: "9999:9998" }]) {
+      expect(productionProcessBindingDigest({ ...bindingInput, ...drift })).not.toBe(binding)
+    }
     const oversized = path.join(fs.mkdtempSync("/tmp/sanctuary-proc-status-"), "status")
     fs.writeFileSync(oversized, "x".repeat(128 * 1024 + 1))
     expect(() => readBoundedProcStatus(oversized)).toThrow(/bound/u)
@@ -206,7 +218,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     let release!: () => void
     const first = coordinator.interactive(() => new Promise<void>((resolve) => { release = resolve }))
     const second = coordinator.interactive(async () => undefined)
-    const reserved = coordinator.reserveReboot("a".repeat(64), async () => "reserved")
+    const reserved = coordinator.reserveReboot("a".repeat(64), "b".repeat(64), async () => "reserved")
     await expect(coordinator.interactive(async () => undefined)).rejects.toThrow(/reboot reservation/u)
     expect(coordinator.active()).toBe(true)
     release()
@@ -219,9 +231,12 @@ describe("Sanctuary Unit 16 host broker", () => {
     const { createOwnerMutationCoordinator } = await broker()
     const coordinator = createOwnerMutationCoordinator()
     const reservation = "a".repeat(64)
-    await coordinator.reserveReboot(reservation, async () => undefined)
-    await expect(coordinator.commitReboot(reservation, async () => { throw new Error("ambiguous") })).rejects.toThrow(/ambiguous/u)
-    await expect(coordinator.commitReboot(reservation, async () => undefined)).rejects.toThrow(/already attempted/u)
+    const binding = "b".repeat(64)
+    await coordinator.reserveReboot(reservation, binding, async () => undefined)
+    await expect(coordinator.commitReboot(reservation, binding, async () => undefined)).rejects.toThrow(/not stopped/u)
+    await coordinator.stopRebootOwner(reservation, binding, async () => ({ processBindingDigest: binding }))
+    await expect(coordinator.commitReboot(reservation, binding, async () => { throw new Error("ambiguous") })).rejects.toThrow(/ambiguous/u)
+    await expect(coordinator.commitReboot(reservation, binding, async () => undefined)).rejects.toThrow(/already attempted/u)
   })
 
   it("observes an idle array/mover/mutation preflight and rejects active or unknown host operations", async () => {
@@ -243,31 +258,68 @@ describe("Sanctuary Unit 16 host broker", () => {
     const { createOwnerMutationCoordinator, dispatch } = await broker()
     const first = { arrayReady: true, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }
     const changed = { ...first, moverActive: true, safe: false, digest: "b".repeat(64) }
-    const request = { operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: first.digest }
-    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => first })).resolves.toMatchObject({ accepted: true, preflightDigest: first.digest, reservationId: expect.stringMatching(/^[0-9a-f]{64}$/u) })
-    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => changed })).rejects.toThrow(/preflight changed/u)
-    await expect(dispatch({ ...request, preflightDigest: "b".repeat(64) }, { readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => first })).rejects.toThrow(/preflight changed/u)
+    const binding = "c".repeat(64)
+    const request = { operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: first.digest, processBindingDigest: binding }
+    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => first })).resolves.toMatchObject({ accepted: true, preflightDigest: first.digest, processBindingDigest: binding, reservationId: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => changed })).rejects.toThrow(/preflight changed/u)
+    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: "d".repeat(64) }), ownerMutationCoordinator: createOwnerMutationCoordinator(), rebootPreflightSnapshot: () => first })).rejects.toThrow(/process generation changed/u)
   })
 
   it("rechecks preflight under the reservation and couples exactly one host reboot commit", async () => {
     const { createOwnerMutationCoordinator, dispatch } = await broker()
     const coordinator = createOwnerMutationCoordinator()
     const safe = { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }
-    const staged = await dispatch({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: safe.digest }, {
-      readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+    const binding = "b".repeat(64)
+    const staged = await dispatch({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: safe.digest, processBindingDigest: binding }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
     }) as Record<string, unknown>
+    await dispatch({ operation: "stop_reboot_owner", targetId: "sanctuary", requestId: staged.requestId, reservationId: staged.reservationId, processBindingDigest: binding }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+      stopExactRebootOwner: () => ({ processBindingDigest: binding, containerId: "c".repeat(64), imageId: `sha256:${"d".repeat(64)}`, restartCount: 0, startedAt: "2026-08-20T00:00:00.000Z" }),
+    })
     const commits: string[] = []
-    const committed = await dispatch({ operation: "commit_reboot", targetId: "sanctuary", requestId: staged.requestId, reservationId: staged.reservationId }, {
-      readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+    const committed = await dispatch({ operation: "commit_reboot", targetId: "sanctuary", requestId: staged.requestId, reservationId: staged.reservationId, processBindingDigest: binding }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+      verifyStoppedRebootOwner: () => undefined,
       commitHostReboot: () => { commits.push("reboot") },
     }) as Record<string, unknown>
     expect(committed).toMatchObject({ committed: true, requestId: staged.requestId })
     expect(commits).toEqual(["reboot"])
-    await expect(dispatch({ operation: "commit_reboot", targetId: "sanctuary", requestId: staged.requestId, reservationId: staged.reservationId }, {
+    await expect(dispatch({ operation: "commit_reboot", targetId: "sanctuary", requestId: staged.requestId, reservationId: staged.reservationId, processBindingDigest: binding }, {
       readBootId: () => "boot-id", containerSnapshot: () => ({}), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+      verifyStoppedRebootOwner: () => undefined,
       commitHostReboot: () => { commits.push("retry") },
     })).rejects.toThrow(/already attempted/u)
     expect(commits).toEqual(["reboot"])
+  })
+
+  it("fails closed when the reserved production generation drifts before stop or after stop", async () => {
+    const { createOwnerMutationCoordinator, dispatch } = await broker()
+    const safe = { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }
+    const binding = "b".repeat(64)
+    const stage = async (coordinator: ReturnType<BrokerModule["createOwnerMutationCoordinator"]>) => dispatch({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: safe.digest, processBindingDigest: binding }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: coordinator, rebootPreflightSnapshot: () => safe,
+    }) as Promise<Record<string, unknown>>
+    const beforeStop = createOwnerMutationCoordinator()
+    const stagedBefore = await stage(beforeStop)
+    await expect(dispatch({ operation: "stop_reboot_owner", targetId: "sanctuary", requestId: stagedBefore.requestId, reservationId: stagedBefore.reservationId, processBindingDigest: binding }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: beforeStop, rebootPreflightSnapshot: () => safe,
+      stopExactRebootOwner: () => { throw new Error("production process generation changed before exact stop") },
+    })).rejects.toThrow(/generation changed/u)
+
+    const afterStop = createOwnerMutationCoordinator()
+    const stagedAfter = await stage(afterStop)
+    await dispatch({ operation: "stop_reboot_owner", targetId: "sanctuary", requestId: stagedAfter.requestId, reservationId: stagedAfter.reservationId, processBindingDigest: binding }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: afterStop, rebootPreflightSnapshot: () => safe,
+      stopExactRebootOwner: () => ({ processBindingDigest: binding }),
+    })
+    const commits: string[] = []
+    await expect(dispatch({ operation: "commit_reboot", targetId: "sanctuary", requestId: stagedAfter.requestId, reservationId: stagedAfter.reservationId, processBindingDigest: binding }, {
+      readBootId: () => "boot-id", containerSnapshot: () => ({ processBindingDigest: binding }), ownerMutationCoordinator: afterStop, rebootPreflightSnapshot: () => safe,
+      verifyStoppedRebootOwner: () => { throw new Error("exact stopped production owner generation changed") },
+      commitHostReboot: () => { commits.push("reboot") },
+    })).rejects.toThrow(/generation changed/u)
+    expect(commits).toEqual([])
   })
   it("reads the exact denial target lifecycle without returning raw owner identifiers", async () => {
     const { denialTargetSnapshot, dispatch } = await broker()
@@ -609,9 +661,10 @@ describe("Sanctuary Unit 16 host broker", () => {
       targetId: "sanctuary",
       idempotencyKey: "0123456789abcdef0123456789abcdef",
       preflightDigest: "a".repeat(64),
+      processBindingDigest: "b".repeat(64),
     }, {
       readBootId: () => "11111111-2222-3333-4444-555555555555\n",
-      containerSnapshot: () => { throw new Error("unexpected container snapshot") },
+      containerSnapshot: () => ({ processBindingDigest: "b".repeat(64) }),
       ownerMutationCoordinator: createOwnerMutationCoordinator(),
       rebootPreflightSnapshot: () => ({ arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }),
     }) as Record<string, unknown>
@@ -1055,6 +1108,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       targetId: "another-host",
       idempotencyKey: "0123456789abcdef0123456789abcdef",
       preflightDigest: "a".repeat(64),
+      processBindingDigest: "b".repeat(64),
     })).rejects.toThrow(/target host is invalid/u)
   })
 
@@ -1076,7 +1130,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('JSON.stringify(value.capDrop) === JSON.stringify(["ALL"])')
     expect(source).toContain('JSON.stringify(value.securityOpt) === JSON.stringify(["no-new-privileges"])')
     expect(source).toContain('"vault", "status", "--agent", "sanctuary"')
-    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(4)
+    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(5)
     expect(source).toContain('const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"')
     expect(source).toContain('chownSync(socket, 0, 10001)')
     expect(source).toContain('chmodSync(socket, 0o660)')

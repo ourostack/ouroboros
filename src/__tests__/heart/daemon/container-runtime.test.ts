@@ -869,11 +869,17 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(launcher).not.toMatch(/autostart.*(?:write|install|rm|mv)/iu)
     expect(launcher.match(/exec 3<&0; exec \/opt\/ouro\/deploy\/unraid\/sanctuary-acceptance-harness\.sh/g)).toHaveLength(2)
     expect(launcher.match(/<\&3/g)?.length).toBeGreaterThanOrEqual(2)
-    expect(launcher.indexOf("PRODUCTION_STOPPED=yes", launcher.indexOf("quiesce_production_telegram_poller")))
-      .toBeLessThan(launcher.indexOf('/usr/bin/docker stop --time 30 "$EXPECTED_CONTAINER_ID"'))
     const prepareFacts = launcher.slice(launcher.indexOf("prepare_live_facts()"), launcher.indexOf("restore_production_container()"))
     expect(prepareFacts).not.toContain("/usr/bin/docker inspect")
     expect(prepareFacts).toContain('install -m 0444 -o 0 -g 0 "$BROKER_SNAPSHOT" "$CONTAINER_INSPECT_FACT"')
+    const launcherSnapshotKeys = JSON.parse(prepareFacts.match(/const expectedKeys = (\[[^;]+\]);/u)![1]!) as string[]
+    expect(launcherSnapshotKeys).toEqual([
+      "autostartExact", "containerId", "health", "imageId", "liveProcessUser", "manualAuthRequired", "mountCount", "mountsDigest",
+      "mountsExact", "networkMode", "processBindingDigest", "publishedPortCount", "readOnlyRoot", "recoveryMilestones", "restartCount",
+      "restartPolicy", "running", "schemaVersion", "securityExact", "updaterDisabled", "user", "vaultUnlocked", "writableKeyExposure",
+    ])
+    expect(prepareFacts).toContain('value.liveProcessUser !== "10001:10001"')
+    expect(prepareFacts).toContain('fs.writeFileSync(process.argv[6], `${value.processBindingDigest}\\n`)')
     for (const fact of ["autostartExact", "updaterDisabled", "vaultUnlocked", "manualAuthRequired"]) {
       expect(prepareFacts).toContain(fact)
     }
@@ -906,8 +912,10 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(launcher).toContain('materialize-config "$COMMAND"')
     expect(launcher).toContain('cmp -s "$EXPECTED_CONFIG" "$CONFIG_PATH"')
     expect(launcher).toContain('operation: "commit_reboot"')
+    expect(launcher).toContain('operation: "stop_reboot_owner"')
+    expect(launcher).toContain('dst=/run/ouro-acceptance/process-binding-digest,readonly')
     const finalCommit = launcher.slice(launcher.indexOf('if test "$COMMAND" = reboot-request; then'), launcher.indexOf('exit 0', launcher.indexOf('if test "$COMMAND" = reboot-request; then')))
-    expect(finalCommit.indexOf("stop_exact_production_container")).toBeLessThan(finalCommit.indexOf('sync -f "$EVIDENCE_ROOT/reboot.json"'))
+    expect(finalCommit.indexOf('operation: "stop_reboot_owner"')).toBeLessThan(finalCommit.indexOf('sync -f "$EVIDENCE_ROOT/reboot.json"'))
     expect(finalCommit.indexOf("HOST_REBOOT_COMMIT_STATE=attempting")).toBeLessThan(finalCommit.indexOf('operation: "commit_reboot"'))
     expect(finalCommit.indexOf("HOST_REBOOT_COMMIT_STATE=confirmed")).toBeGreaterThan(finalCommit.indexOf('operation: "commit_reboot"'))
     expect(launcher).toContain('test "$HOST_REBOOT_COMMIT_STATE" = not_sent')

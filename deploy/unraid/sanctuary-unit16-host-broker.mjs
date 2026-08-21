@@ -308,6 +308,22 @@ function assertStableContainerProcess(before, after) {
   if (before.running !== true || after.running !== true || stableFields.some((field) => before[field] !== after[field])) throw new Error("production container PID1 changed during attestation")
 }
 
+function productionProcessBindingDigest(value) {
+  const generation = {
+    containerId: text(value.containerId, "process binding container id", SHA256),
+    imageId: text(value.imageId, "process binding image id", IMAGE_ID),
+    pid: value.pid,
+    restartCount: value.restartCount,
+    startedAt: text(value.startedAt, "process binding started at"),
+    processStartTime: text(value.processStartTime, "process binding start time", /^[0-9]+$/u),
+    processInode: text(value.processInode, "process binding inode", /^[0-9]+:[0-9]+$/u),
+  }
+  if (!Number.isSafeInteger(generation.pid) || generation.pid <= 0 || !Number.isSafeInteger(generation.restartCount) || generation.restartCount < 0) {
+    throw new Error("production process binding generation is invalid")
+  }
+  return createHash("sha256").update(JSON.stringify(generation)).digest("hex")
+}
+
 async function containerSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
   const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},"startedAt":{{json .State.StartedAt}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}}}'
@@ -351,6 +367,7 @@ async function containerSnapshot(expectedImage) {
   const processAfter = liveContainerProcessIdentity(rebound.pid)
   assertStableContainerProcess({ ...value, ...processBefore }, { ...rebound, ...processAfter })
   const liveProcessUser = processAfter.user
+  const processBindingDigest = productionProcessBindingDigest({ ...rebound, ...processAfter })
   const healthy = value.health === "healthy"
   const vault = vaultStatus(running, healthy)
   const milestones = recoveryMilestones(running, healthy)
@@ -362,6 +379,7 @@ async function containerSnapshot(expectedImage) {
     health: text(value.health, "container health", /^(?:healthy|starting|unhealthy|missing)$/u),
     user: configuredUser,
     liveProcessUser,
+    processBindingDigest,
     readOnlyRoot: value.readOnlyRoot === true,
     mountCount: mounts.length,
     mountsDigest: createHash("sha256").update(JSON.stringify(mounts)).digest("hex"),
@@ -376,6 +394,51 @@ async function containerSnapshot(expectedImage) {
     updaterDisabled: updaterDisabled(expectedImage),
     ...vault,
     recoveryMilestones: milestones,
+  }
+}
+
+function inspectRebootOwner(containerId = PRODUCTION_CONTAINER) {
+  const template = '{"containerId":{{json .Id}},"name":{{json .Name}},"imageId":{{json .Image}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},"startedAt":{{json .State.StartedAt}},"health":{{json .State.Health.Status}},"restartCount":{{json .RestartCount}}}'
+  const result = spawnSync(DOCKER, ["inspect", "--format", template, containerId], {
+    cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("bounded reboot owner inspection failed")
+  return object(JSON.parse(result.stdout ?? ""), "reboot owner inspection")
+}
+
+function runningRebootOwnerGeneration() {
+  const before = inspectRebootOwner()
+  if (before.name !== `/${PRODUCTION_CONTAINER}` || before.imageId !== expectedImageId || before.running !== true || before.health !== "healthy"
+    || !Number.isSafeInteger(before.pid) || before.pid <= 0 || !Number.isSafeInteger(before.restartCount) || before.restartCount < 0) {
+    throw new Error("reboot owner generation is invalid")
+  }
+  const processBefore = liveContainerProcessIdentity(before.pid)
+  const after = inspectRebootOwner(before.containerId)
+  const processAfter = liveContainerProcessIdentity(after.pid)
+  assertStableContainerProcess({ ...before, ...processBefore }, { ...after, ...processAfter })
+  return { ...after, ...processAfter, processBindingDigest: productionProcessBindingDigest({ ...after, ...processAfter }) }
+}
+
+function stopExactRebootOwner(expectedBinding) {
+  text(expectedBinding, "reboot process binding", SHA256)
+  const generation = runningRebootOwnerGeneration()
+  if (generation.processBindingDigest !== expectedBinding) throw new Error("production process generation changed before exact stop")
+  const result = spawnSync(DOCKER, ["stop", "--time", "30", generation.containerId], {
+    cwd: "/", encoding: "utf8", timeout: 45_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("exact production owner stop failed")
+  const proof = { containerId: generation.containerId, imageId: generation.imageId, restartCount: generation.restartCount, startedAt: generation.startedAt, processBindingDigest: expectedBinding }
+  verifyStoppedRebootOwner(proof)
+  return proof
+}
+
+function verifyStoppedRebootOwner(proof) {
+  const value = inspectRebootOwner(text(proof.containerId, "stopped owner container id", SHA256))
+  if (value.containerId !== proof.containerId || value.name !== `/${PRODUCTION_CONTAINER}` || value.imageId !== proof.imageId
+    || value.restartCount !== proof.restartCount || value.startedAt !== proof.startedAt || value.running !== false || value.pid !== 0) {
+    throw new Error("exact stopped production owner generation changed")
   }
 }
 
@@ -845,10 +908,11 @@ function createOwnerMutationCoordinator() {
   }
   return {
     active() { return pendingOperations > 0 },
-    async reserveReboot(reservationId, operation) {
+    async reserveReboot(reservationId, processBindingDigest, operation) {
       text(reservationId, "reboot reservation", SHA256)
+      text(processBindingDigest, "reboot process binding", SHA256)
       if (rebootReservation !== null) throw new Error("reboot reservation already exists")
-      rebootReservation = { id: reservationId, attempted: false }
+      rebootReservation = { id: reservationId, processBindingDigest, stoppedProof: null, attempted: false }
       try {
         await ownerTail.catch(() => {})
         if (pendingOperations !== 0 || activeHealth.size !== 0) throw new Error("reboot reservation could not drain owner mutations")
@@ -858,12 +922,24 @@ function createOwnerMutationCoordinator() {
         throw error
       }
     },
-    async commitReboot(reservationId, operation) {
+    async stopRebootOwner(reservationId, processBindingDigest, operation) {
       text(reservationId, "reboot reservation", SHA256)
-      if (rebootReservation?.id !== reservationId) throw new Error("reboot reservation is absent or mismatched")
+      text(processBindingDigest, "reboot process binding", SHA256)
+      if (rebootReservation?.id !== reservationId || rebootReservation.processBindingDigest !== processBindingDigest) throw new Error("reboot reservation process binding is absent or mismatched")
+      if (rebootReservation.stoppedProof !== null) throw new Error("reboot owner was already stopped")
+      const proof = object(await operation(), "stopped reboot owner proof")
+      if (proof.processBindingDigest !== processBindingDigest) throw new Error("stopped reboot owner proof binding is invalid")
+      rebootReservation.stoppedProof = proof
+      return proof
+    },
+    async commitReboot(reservationId, processBindingDigest, operation) {
+      text(reservationId, "reboot reservation", SHA256)
+      text(processBindingDigest, "reboot process binding", SHA256)
+      if (rebootReservation?.id !== reservationId || rebootReservation.processBindingDigest !== processBindingDigest) throw new Error("reboot reservation is absent or mismatched")
+      if (rebootReservation.stoppedProof === null) throw new Error("reboot owner is not stopped")
       if (rebootReservation.attempted) throw new Error("reboot commit was already attempted")
       rebootReservation.attempted = true
-      return await operation()
+      return await operation(rebootReservation.stoppedProof)
     },
     healthStart(scenario, operation) {
       text(scenario, "health owner scenario", SHA256)
@@ -1268,7 +1344,10 @@ async function dispatch(request, dependencies = {
   liveContainerProcessUser,
   liveContainerProcessIdentity,
   parseProcStartTime,
+  productionProcessBindingDigest,
   rebootPreflightSnapshot: observeRebootPreflight,
+  stopExactRebootOwner,
+  verifyStoppedRebootOwner,
   commitHostReboot: () => new Promise((resolve, reject) => {
     const child = spawn(REBOOT, [], { cwd: "/", detached: true, stdio: "ignore", env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" } })
     child.once("error", reject)
@@ -1337,43 +1416,63 @@ async function dispatch(request, dependencies = {
     return { valid: false, status: response.status, id }
   }
   if (operation === "request_reboot") {
-    exactKeys(payload, ["operation", "targetId", "idempotencyKey", "preflightDigest"], operation)
+    exactKeys(payload, ["operation", "targetId", "idempotencyKey", "preflightDigest", "processBindingDigest"], operation)
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
     const key = text(payload.idempotencyKey, "idempotency key", /^[0-9a-f]{32}$/u)
     const preflightDigest = text(payload.preflightDigest, "preflight digest", SHA256)
+    const processBindingDigest = text(payload.processBindingDigest, "process binding digest", SHA256)
     const requestId = createHash("sha256").update(`sanctuary-reboot\0${key}`).digest("hex")
     const reservationId = createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex")
     const reserve = dependencies.ownerMutationCoordinator?.reserveReboot
     if (!reserve) throw new Error("reboot reservation coordinator is unavailable")
-    await reserve.call(dependencies.ownerMutationCoordinator, reservationId, async () => {
+    await reserve.call(dependencies.ownerMutationCoordinator, reservationId, processBindingDigest, async () => {
       const preflight = object(dependencies.rebootPreflightSnapshot(), "reboot preflight")
       if (preflight.digest !== preflightDigest) throw new Error("reboot preflight changed before commit")
       if (preflight.safe !== true) throw new Error("reboot preflight is unsafe")
+      const owner = object(await dependencies.containerSnapshot(), "reboot reservation production owner")
+      if (owner.processBindingDigest !== processBindingDigest) throw new Error("production process generation changed before reboot reservation")
     })
     const prebootId = text(dependencies.readBootId().trim(), "boot id", /^[A-Za-z0-9-]{4,128}$/u)
-    return { accepted: true, targetId: TARGET_HOST, requestId, reservationId, prebootId, preflightDigest, staged: true }
+    return { accepted: true, targetId: TARGET_HOST, requestId, reservationId, prebootId, preflightDigest, processBindingDigest, staged: true }
   }
-  if (operation === "commit_reboot") {
-    exactKeys(payload, ["operation", "targetId", "requestId", "reservationId"], operation)
+  if (operation === "stop_reboot_owner") {
+    exactKeys(payload, ["operation", "targetId", "requestId", "reservationId", "processBindingDigest"], operation)
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
     const requestId = text(payload.requestId, "reboot request id", SHA256)
     const reservationId = text(payload.reservationId, "reboot reservation", SHA256)
+    const processBindingDigest = text(payload.processBindingDigest, "process binding digest", SHA256)
+    if (reservationId !== createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex")) throw new Error("reboot request reservation binding is invalid")
+    const stop = dependencies.ownerMutationCoordinator?.stopRebootOwner
+    if (!stop || !dependencies.stopExactRebootOwner) throw new Error("exact reboot owner stop is unavailable")
+    await stop.call(dependencies.ownerMutationCoordinator, reservationId, processBindingDigest, () => dependencies.stopExactRebootOwner(processBindingDigest))
+    return { stopped: true, targetId: TARGET_HOST, requestId, reservationId, processBindingDigest }
+  }
+  if (operation === "commit_reboot") {
+    exactKeys(payload, ["operation", "targetId", "requestId", "reservationId", "processBindingDigest"], operation)
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    const requestId = text(payload.requestId, "reboot request id", SHA256)
+    const reservationId = text(payload.reservationId, "reboot reservation", SHA256)
+    const processBindingDigest = text(payload.processBindingDigest, "process binding digest", SHA256)
     if (reservationId !== createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex")) throw new Error("reboot request reservation binding is invalid")
     const commit = dependencies.ownerMutationCoordinator?.commitReboot
     if (!commit) throw new Error("reboot reservation coordinator is unavailable")
-    await commit.call(dependencies.ownerMutationCoordinator, reservationId, async () => {
+    await commit.call(dependencies.ownerMutationCoordinator, reservationId, processBindingDigest, async (stoppedProof) => {
+      await dependencies.verifyStoppedRebootOwner(stoppedProof)
       const preflight = object(dependencies.rebootPreflightSnapshot(), "final reboot preflight")
       if (preflight.safe !== true || preflight.arrayReady !== true || preflight.parityActive !== false || preflight.moverActive !== false || preflight.mutationActive !== false) {
         throw new Error("final reboot preflight is unsafe")
       }
       await dependencies.commitHostReboot()
     })
-    return { committed: true, targetId: TARGET_HOST, requestId, reservationId }
+    return { committed: true, targetId: TARGET_HOST, requestId, reservationId, processBindingDigest }
   }
   if (operation === "reboot_preflight_snapshot") {
-    exactKeys(payload, ["operation", "targetId"], operation)
+    exactKeys(payload, ["operation", "targetId", "processBindingDigest"], operation)
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
-    return dependencies.rebootPreflightSnapshot()
+    const processBindingDigest = text(payload.processBindingDigest, "process binding digest", SHA256)
+    const owner = object(await dependencies.containerSnapshot(), "reboot preflight production owner")
+    if (owner.processBindingDigest !== processBindingDigest) throw new Error("production process generation changed before reboot preflight")
+    return { ...dependencies.rebootPreflightSnapshot(), processBindingDigest }
   }
   if (operation === "container_snapshot") {
     exactKeys(payload, ["operation", "targetId"], operation)
@@ -1518,6 +1617,7 @@ export {
   liveContainerProcessUser,
   liveContainerProcessIdentity,
   parseProcStartTime,
+  productionProcessBindingDigest,
   observeRebootPreflight,
   parseVaultStatus,
   queryGraphqlAutostart,

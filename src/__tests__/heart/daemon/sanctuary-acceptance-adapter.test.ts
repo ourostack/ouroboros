@@ -74,6 +74,7 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
     health: "healthy",
     user: "10001:10001",
     liveProcessUser: "10001:10001",
+    processBindingDigest: "4".repeat(64),
     readOnlyRoot: true,
     mountCount: 2,
     mountsDigest: "3".repeat(64),
@@ -487,7 +488,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       "evidence-snapshot", "exact-id-revoke", "health-probe-recovery", "health-probe-start", "health-probe-status",
       "interactive-duplicate-driver", "interactive-restart-driver", "interactive-timeout-stale-driver",
       "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
-      "reboot-final-commit", "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
+      "reboot-final-commit", "reboot-live-request", "reboot-owner-stop", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
       "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",
     ])
     expect(Object.values(contract.adapters)).toEqual(expect.arrayContaining([
@@ -1121,6 +1122,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const files: Record<string, string> = {
       "/run/ouro-acceptance/image-digest": "a".repeat(64),
       "/run/ouro-acceptance/container-digest": "b".repeat(64),
+      "/run/ouro-acceptance/process-binding-digest": "f".repeat(64),
       "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":4}\n',
       "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson": "event\n",
       "/run/ouro-acceptance/postboot-health.json": JSON.stringify({ healthy: true }),
@@ -1131,13 +1133,14 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       readFixedFile: (file) => files[file]!,
       hostRequest: async (payload) => {
         calls.push(payload)
+        if (payload.operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64), processBindingDigest: payload.processBindingDigest }
         const requestId = payload.idempotencyKey === "c".repeat(32)
           ? "0601926a228a699dfc43ce0bde272b874aea53e6b894c0bd85118bddd7bb7884"
           : "697764ef46c1e7073061a38e3c37eb7c7f7f2f37c9391dd7c603058fbce91d8e"
         return {
           accepted: true, staged: true, targetId: "sanctuary",
           requestId,
-          prebootId: "boot-after", preflightDigest: payload.preflightDigest,
+          prebootId: "boot-after", preflightDigest: payload.preflightDigest, processBindingDigest: payload.processBindingDigest,
           reservationId: createHash("sha256").update(`sanctuary-reboot-reservation\0${requestId}`).digest("hex"),
         }
       },
@@ -1146,10 +1149,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       imageDigest: "a".repeat(64), containerDigest: "b".repeat(64), cursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "evidence_snapshot", schema: "postboot-health-v1" }, deps)).resolves.toMatchObject({ healthy: true, containerImageDigest: "a".repeat(64) })
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32), preflightDigest: "e".repeat(64) }, deps)).resolves.toMatchObject({ accepted: true, targetId: "sanctuary", prebootId: "boot-after" })
-    const requested = await executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "d".repeat(32), preflightDigest: "e".repeat(64) }, deps) as any
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "reboot_preflight_snapshot", targetId: "sanctuary" }, deps)).resolves.toMatchObject({ safe: true, processBindingDigest: "f".repeat(64) })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32), preflightDigest: "e".repeat(64), processBindingDigest: "f".repeat(64) }, deps)).resolves.toMatchObject({ accepted: true, targetId: "sanctuary", prebootId: "boot-after" })
+    const requested = await executeSanctuaryAcceptanceAdapter({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "d".repeat(32), preflightDigest: "e".repeat(64), processBindingDigest: "f".repeat(64) }, deps) as any
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "poll_reboot", targetId: "sanctuary", requestId: requested.requestId }, deps)).resolves.toEqual({ targetId: "sanctuary", requestId: requested.requestId, state: "ready", bootId: "boot-after" })
-    expect(calls).toContainEqual({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32), preflightDigest: "e".repeat(64) })
+    expect(calls).toContainEqual({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32), preflightDigest: "e".repeat(64), processBindingDigest: "f".repeat(64) })
+    expect(calls).toContainEqual({ operation: "reboot_preflight_snapshot", targetId: "sanctuary", processBindingDigest: "f".repeat(64) })
   })
 
   it("binds postboot continuity to every validated restart-attempt field and lifecycle row", async () => {

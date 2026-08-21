@@ -50,7 +50,7 @@ function dependencies(input: {
     readSecret: () => input.secret ?? "",
     runAdapter: async (executable, payload, timeoutMs) => {
       const operation = (payload as Record<string, unknown>).operation
-      if (operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64) }
+      if (operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64), processBindingDigest: "f".repeat(64) }
       if (operation === "postboot_integrity_snapshot") return emptyIntegrity
       return input.adapter ? input.adapter(executable, payload, timeoutMs) : { ok: true }
     },
@@ -1412,7 +1412,8 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: file, targetId: "sanctuary", adapter: "/safe/reboot",
     }, deps)
     const requested = evidence(file)
-    expect(requested).toMatchObject({ phase: "requested", targetId: "sanctuary", requestId: "request-1", prebootDigest: sha("boot-1") })
+    expect(requested).toMatchObject({ phase: "requested", targetId: "sanctuary", requestId: "request-1", processBindingDigest: "f".repeat(64), prebootDigest: sha("boot-1") })
+    expect(calls.find((call) => call.executable === "/safe/reboot" && (call.payload as Record<string, unknown>).operation === "request_reboot")?.payload).toMatchObject({ processBindingDigest: "f".repeat(64) })
     await executeSanctuaryAcceptanceHarness("reboot-resume", {
       evidencePath: file, adapter: "/safe/poll", timeoutMs: 100, intervalMs: 1,
     }, deps)
@@ -1966,7 +1967,7 @@ executeSanctuaryAcceptanceHarness("reboot-request", {
 }, {
   readSecret: () => "",
   runAdapter: async (_executable, payload) => {
-    if (payload.operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64) }
+    if (payload.operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64), processBindingDigest: "f".repeat(64) }
     if (payload.operation === "postboot_integrity_snapshot") return { schemaVersion: "sanctuary-postboot-integrity-v1", telegramOffsetDigest: "1".repeat(64), approvalStateDigest: "2".repeat(64), approvalExecutionCount: 0, fingerprintDigest: "3".repeat(64), sweeps: [], deliveries: [], audits: [] }
     fs.appendFileSync(mutationPath, process.pid + "\n")
     return { accepted: true, targetId: "sanctuary", requestId: String(process.pid), reservationId: "a".repeat(64), prebootId: "boot-before", preflightDigest: payload.preflightDigest }

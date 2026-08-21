@@ -117,6 +117,7 @@ const TELEGRAM_OFFSET = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/tel
 const TELEGRAM_AUDIT = "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"
 const IMAGE_DIGEST_FILE = "/run/ouro-acceptance/image-digest"
 const CONTAINER_DIGEST_FILE = "/run/ouro-acceptance/container-digest"
+const PROCESS_BINDING_DIGEST_FILE = "/run/ouro-acceptance/process-binding-digest"
 const POSTBOOT_HEALTH_FILE = "/run/ouro-acceptance/postboot-health.json"
 const BOOT_ID_FILE = "/run/ouro-acceptance/boot-id"
 const TELEGRAM_POLLER_COUNT_FILE = "/run/ouro-acceptance/telegram-poller-count.json"
@@ -319,7 +320,7 @@ function healthScenarioCoordinates(label: string, scenarioHandleDigest: string):
 function ownerContainerSnapshot(value: unknown): JsonObject {
   const snapshot = object(value, "health probe owner snapshot")
   exactKeys(snapshot, [
-    "schemaVersion", "containerId", "imageId", "running", "health", "user", "liveProcessUser", "readOnlyRoot", "mountCount",
+    "schemaVersion", "containerId", "imageId", "running", "health", "user", "liveProcessUser", "processBindingDigest", "readOnlyRoot", "mountCount",
     "mountsDigest", "mountsExact", "publishedPortCount", "networkMode", "securityExact", "writableKeyExposure",
     "restartPolicy", "restartCount", "autostartExact", "updaterDisabled", "vaultUnlocked", "manualAuthRequired",
     "recoveryMilestones",
@@ -330,6 +331,7 @@ function ownerContainerSnapshot(value: unknown): JsonObject {
     || typeof snapshot.imageId !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(snapshot.imageId)
     || typeof snapshot.running !== "boolean" || typeof snapshot.health !== "string" || !["healthy", "starting", "unhealthy", "missing"].includes(snapshot.health)
     || typeof snapshot.user !== "string" || snapshot.user.length < 1 || snapshot.user.length > 64 || snapshot.liveProcessUser !== "10001:10001"
+    || typeof snapshot.processBindingDigest !== "string" || !SHA256.test(snapshot.processBindingDigest)
     || typeof snapshot.readOnlyRoot !== "boolean" || !Number.isSafeInteger(snapshot.mountCount) || Number(snapshot.mountCount) < 0
     || typeof snapshot.mountsDigest !== "string" || !SHA256.test(snapshot.mountsDigest) || typeof snapshot.mountsExact !== "boolean"
     || !Number.isSafeInteger(snapshot.publishedPortCount) || Number(snapshot.publishedPortCount) < 0
@@ -1821,25 +1823,28 @@ async function requestReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapt
   if (text(payload.targetId, "targetId") !== TARGET_ID) throw new Error("targetId is invalid")
   const idempotencyKey = text(payload.idempotencyKey, "idempotencyKey")
   const preflightDigest = text(payload.preflightDigest, "preflightDigest")
+  const processBindingDigest = text(payload.processBindingDigest, "processBindingDigest")
   if (!/^[0-9a-f]{32}$/u.test(idempotencyKey)) throw new Error("idempotencyKey is invalid")
-  if (!SHA256.test(preflightDigest)) throw new Error("preflightDigest is invalid")
+  if (!SHA256.test(preflightDigest) || !SHA256.test(processBindingDigest)) throw new Error("reboot binding digest is invalid")
   const response = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
-    operation: "request_reboot", targetId: TARGET_ID, idempotencyKey, preflightDigest,
+    operation: "request_reboot", targetId: TARGET_ID, idempotencyKey, preflightDigest, processBindingDigest,
   }), "host reboot staging")
   const requestId = text(response.requestId, "host reboot requestId")
   const reservationId = text(response.reservationId, "host reboot reservationId")
   const prebootId = text(response.prebootId, "host reboot prebootId")
-  if (response.accepted !== true || response.staged !== true || response.targetId !== TARGET_ID || response.preflightDigest !== preflightDigest
+  if (response.accepted !== true || response.staged !== true || response.targetId !== TARGET_ID || response.preflightDigest !== preflightDigest || response.processBindingDigest !== processBindingDigest
     || requestId !== sha256(`sanctuary-reboot\0${idempotencyKey}`)
     || reservationId !== sha256(`sanctuary-reboot-reservation\0${requestId}`)) throw new Error("host reboot staging attestation is invalid")
-  return { accepted: true, targetId: TARGET_ID, requestId, reservationId, prebootId, preflightDigest }
+  return { accepted: true, targetId: TARGET_ID, requestId, reservationId, prebootId, preflightDigest, processBindingDigest }
 }
 
 async function rebootPreflight(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   if (text(payload.targetId, "targetId") !== TARGET_ID) throw new Error("targetId is invalid")
-  const result = object(await dependency(deps.hostRequest, "Sanctuary host broker")({ operation: "reboot_preflight_snapshot", targetId: TARGET_ID }), "host reboot preflight")
+  const processBindingDigest = fixedFile(deps, PROCESS_BINDING_DIGEST_FILE).trim()
+  if (!SHA256.test(processBindingDigest)) throw new Error("process binding digest is invalid")
+  const result = object(await dependency(deps.hostRequest, "Sanctuary host broker")({ operation: "reboot_preflight_snapshot", targetId: TARGET_ID, processBindingDigest }), "host reboot preflight")
   const digest = text(result.digest, "host reboot preflight digest")
-  if (!SHA256.test(digest) || result.safe !== true || result.arrayReady !== true || result.parityActive !== false || result.moverActive !== false || result.mutationActive !== false) {
+  if (!SHA256.test(digest) || result.processBindingDigest !== processBindingDigest || result.safe !== true || result.arrayReady !== true || result.parityActive !== false || result.moverActive !== false || result.mutationActive !== false) {
     throw new Error("host reboot preflight attestation is invalid")
   }
   return result

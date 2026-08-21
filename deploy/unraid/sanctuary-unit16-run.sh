@@ -93,6 +93,7 @@ BROKER_SNAPSHOT=$PRIVATE_ROOT/broker-container-inspect.json
 BROKER_PROGRAM=$PRIVATE_ROOT/sanctuary-unit16-host-broker.mjs
 IMAGE_FACT=$PRIVATE_ROOT/image-digest
 CONTAINER_FACT=$PRIVATE_ROOT/container-digest
+PROCESS_BINDING_FACT=$PRIVATE_ROOT/process-binding-digest
 HEALTH_FACT=$PRIVATE_ROOT/postboot-health.json
 POLLER_FACT=$PRIVATE_ROOT/telegram-poller-count.json
 CONTAINER_INSPECT_FACT=$PRIVATE_ROOT/container-inspect.json
@@ -121,9 +122,10 @@ prepare_live_facts() {
   /usr/local/bin/node -e '
       const fs = require("node:fs");
       const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-      const expectedKeys = ["autostartExact", "containerId", "health", "imageId", "manualAuthRequired", "mountCount", "mountsDigest", "mountsExact", "networkMode", "publishedPortCount", "readOnlyRoot", "recoveryMilestones", "restartCount", "restartPolicy", "running", "schemaVersion", "securityExact", "updaterDisabled", "user", "vaultUnlocked", "writableKeyExposure"];
+      const expectedKeys = ["autostartExact", "containerId", "health", "imageId", "liveProcessUser", "manualAuthRequired", "mountCount", "mountsDigest", "mountsExact", "networkMode", "processBindingDigest", "publishedPortCount", "readOnlyRoot", "recoveryMilestones", "restartCount", "restartPolicy", "running", "schemaVersion", "securityExact", "updaterDisabled", "user", "vaultUnlocked", "writableKeyExposure"];
       if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys) || value.schemaVersion !== 1
         || value.imageId !== process.argv[2] || !/^[0-9a-f]{64}$/.test(value.containerId)
+        || value.liveProcessUser !== "10001:10001" || !/^[0-9a-f]{64}$/.test(value.processBindingDigest)
         || !/^[0-9a-f]{64}$/.test(value.mountsDigest) || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0
         || typeof value.autostartExact !== "boolean" || typeof value.updaterDisabled !== "boolean"
         || typeof value.vaultUnlocked !== "boolean" || typeof value.manualAuthRequired !== "boolean"
@@ -134,9 +136,10 @@ prepare_live_facts() {
       fs.writeFileSync(process.argv[3], `${value.imageId.slice("sha256:".length)}\n`);
       fs.writeFileSync(process.argv[4], `${value.containerId}\n`);
       fs.writeFileSync(process.argv[5], `${JSON.stringify({ healthy: value.health === "healthy" })}\n`);
-    ' "$CONTAINER_INSPECT_FACT" "$IMAGE_ID" "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT"
-  chmod 0444 "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT" "$CONTAINER_INSPECT_FACT"
-  chown 0:0 "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT" "$CONTAINER_INSPECT_FACT"
+      fs.writeFileSync(process.argv[6], `${value.processBindingDigest}\n`);
+    ' "$CONTAINER_INSPECT_FACT" "$IMAGE_ID" "$IMAGE_FACT" "$CONTAINER_FACT" "$HEALTH_FACT" "$PROCESS_BINDING_FACT"
+  chmod 0444 "$IMAGE_FACT" "$CONTAINER_FACT" "$PROCESS_BINDING_FACT" "$HEALTH_FACT" "$CONTAINER_INSPECT_FACT"
+  chown 0:0 "$IMAGE_FACT" "$CONTAINER_FACT" "$PROCESS_BINDING_FACT" "$HEALTH_FACT" "$CONTAINER_INSPECT_FACT"
 }
 
 restore_production_container() {
@@ -325,6 +328,7 @@ run_harness() {
       --mount "type=bind,src=$POLLER_FACT,dst=/run/ouro-acceptance/telegram-poller-count.json,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
+      --mount "type=bind,src=$PROCESS_BINDING_FACT,dst=/run/ouro-acceptance/process-binding-digest,readonly" \
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
       --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
       --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
@@ -402,9 +406,25 @@ if test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || te
 if test "$COMMAND" = reboot-request; then
   /usr/local/bin/node -e '
     const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    if (value.operation !== "reboot" || value.phase !== "requested" || !/^[0-9a-f]{64}$/.test(value.requestId)) process.exit(1);
+    if (value.operation !== "reboot" || value.phase !== "requested" || !/^[0-9a-f]{64}$/.test(value.requestId)
+      || !/^[0-9a-f]{64}$/.test(value.reservationId) || !/^[0-9a-f]{64}$/.test(value.processBindingDigest)) process.exit(1);
   ' "$EVIDENCE_ROOT/reboot.json"
-  stop_exact_production_container
+  PRODUCTION_STOPPED=yes
+  /usr/bin/timeout -s KILL 60 /usr/local/bin/node -e '
+    const fs = require("node:fs"); const net = require("node:net");
+    const checkpoint = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+    const request = JSON.stringify({ operation: "stop_reboot_owner", targetId: "sanctuary", requestId: checkpoint.requestId, reservationId: checkpoint.reservationId, processBindingDigest: checkpoint.processBindingDigest });
+    let raw = ""; const socket = net.createConnection(process.argv[1]);
+    socket.setEncoding("utf8"); socket.setTimeout(55000, () => socket.destroy(new Error("timeout")));
+    socket.on("connect", () => socket.end(request));
+    socket.on("data", (chunk) => { raw += chunk; if (Buffer.byteLength(raw) > 65536) socket.destroy(new Error("oversize")); });
+    socket.on("end", () => {
+      const envelope = JSON.parse(raw); const result = envelope && envelope.ok === true ? envelope.result : null;
+      if (!result || result.stopped !== true || result.targetId !== "sanctuary" || result.requestId !== checkpoint.requestId
+        || result.reservationId !== checkpoint.reservationId || result.processBindingDigest !== checkpoint.processBindingDigest) process.exitCode = 1;
+    });
+    socket.on("error", () => { process.exitCode = 1; });
+  ' "$BROKER_SOCKET" "$EVIDENCE_ROOT/reboot.json"
   sync -f "$EVIDENCE_ROOT/reboot.json"
   sync -f "$EVIDENCE_ROOT"
   HOST_REBOOT_COMMIT_STATE=attempting
@@ -413,7 +433,7 @@ if test "$COMMAND" = reboot-request; then
     const checkpoint = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
     if (checkpoint.operation !== "reboot" || checkpoint.phase !== "requested"
       || !/^[0-9a-f]{64}$/.test(checkpoint.requestId) || !/^[0-9a-f]{64}$/.test(checkpoint.reservationId)) process.exit(1);
-    const request = JSON.stringify({ operation: "commit_reboot", targetId: "sanctuary", requestId: checkpoint.requestId, reservationId: checkpoint.reservationId });
+    const request = JSON.stringify({ operation: "commit_reboot", targetId: "sanctuary", requestId: checkpoint.requestId, reservationId: checkpoint.reservationId, processBindingDigest: checkpoint.processBindingDigest });
     let raw = ""; const socket = net.createConnection(process.argv[1]);
     socket.setEncoding("utf8"); socket.setTimeout(15000, () => socket.destroy(new Error("timeout")));
     socket.on("connect", () => socket.end(request));
@@ -421,7 +441,8 @@ if test "$COMMAND" = reboot-request; then
     socket.on("end", () => {
       const envelope = JSON.parse(raw); const result = envelope && envelope.ok === true ? envelope.result : null;
       if (!result || result.committed !== true || result.targetId !== "sanctuary"
-        || result.requestId !== checkpoint.requestId || result.reservationId !== checkpoint.reservationId) process.exitCode = 1;
+        || result.requestId !== checkpoint.requestId || result.reservationId !== checkpoint.reservationId
+        || result.processBindingDigest !== checkpoint.processBindingDigest) process.exitCode = 1;
     });
     socket.on("error", () => { process.exitCode = 1; });
   ' "$BROKER_SOCKET" "$EVIDENCE_ROOT/reboot.json"
