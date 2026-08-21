@@ -107,4 +107,10 @@ describe("observability/runtime", () => {
     expect(events[0]?.event).toBe("runtime.durable_info")
     expect(sink.barrier).toHaveBeenCalledOnce()
   })
+
+  it("rejects a durability barrier when no durable sink is configured", async () => {
+    const logger = createLogger({ sinks: [] })
+
+    await expect(logger.durabilityBarrier()).rejects.toThrow("No durable Nerves sink is configured")
+  })
 })

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "fs"
+import { mkdtempSync, readFileSync, renameSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { gunzipSync } from "zlib"
@@ -66,6 +66,27 @@ describe("observability/sinks", () => {
     sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.failure", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
 
     await expect(sink.barrier()).rejects.toThrow()
+  })
+
+  it("rejects the durability barrier when the containing directory cannot be fsynced", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ouro-observability-barrier-directory-failure-"))
+    const movedDir = `${dir}-moved`
+    const filePath = join(dir, "events.ndjson")
+    const sink = createNdjsonFileSink(filePath)
+    sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.directory_failure", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        if (readFileSync(filePath, "utf8").length > 0) break
+      } catch {
+        // File write is asynchronous; retry briefly.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    renameSync(dir, movedDir)
+
+    await expect(sink.barrier()).rejects.toThrow()
+    rmSync(movedDir, { recursive: true, force: true })
   })
 
   it("does not resolve a barrier until a post-append rotation preserves the event", async () => {
