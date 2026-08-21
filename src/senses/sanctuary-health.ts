@@ -110,6 +110,13 @@ function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM" }
 }
 
+function removeHealthLeaseDirectory(leasePath: string): void {
+  const entries = fs.readdirSync(leasePath, { withFileTypes: true })
+  if (entries.some((entry) => !entry.isFile() || entry.name !== "owner.json")) throw new Error("Sanctuary health lease contains unexpected entries")
+  if (entries.length === 1) fs.unlinkSync(path.join(leasePath, "owner.json"))
+  fs.rmdirSync(leasePath)
+}
+
 async function acquireHealthFileLease(statePath: string, timeoutMs: number): Promise<SanctuaryHealthStateLease> {
   const leasePath = `${statePath}.lease`
   const ownerPath = path.join(leasePath, "owner.json")
@@ -136,7 +143,7 @@ async function acquireHealthFileLease(statePath: string, timeoutMs: number): Pro
         throw new Error("Sanctuary health lease ownership is invalid", { cause: ownerError })
       }
       if (!processIsAlive(owner.pid)) {
-        fs.rmSync(leasePath, { recursive: true, force: false })
+        removeHealthLeaseDirectory(leasePath)
         continue
       }
       if (Date.now() >= deadline) throw new Error("Sanctuary health state lease timed out")
@@ -149,7 +156,7 @@ function releaseHealthFileLease(lease: SanctuaryHealthStateLease): void {
   const leasePath = `${lease.statePath}.lease`
   const owner = healthLeaseOwner(JSON.parse(fs.readFileSync(path.join(leasePath, "owner.json"), "utf8")) as unknown)
   if (owner.nonce !== lease.nonce || owner.pid !== process.pid) throw new Error("Sanctuary health lease ownership changed")
-  fs.rmSync(leasePath, { recursive: true, force: false })
+  removeHealthLeaseDirectory(leasePath)
 }
 
 export async function withSanctuaryHealthStateLease<T>(

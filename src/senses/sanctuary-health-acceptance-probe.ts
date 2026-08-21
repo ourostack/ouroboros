@@ -389,6 +389,14 @@ function defaultDependencies(): ProbeDependencies {
   }
 }
 
+function removeProbeWorkspace(workspace: string): void {
+  const allowed = new Set(["checkpoint.json", "normalization.json", "snapshot.json", "verify.json"])
+  const entries = fs.readdirSync(workspace, { withFileTypes: true })
+  if (entries.some((entry) => !entry.isFile() || !allowed.has(entry.name))) throw new Error("Sanctuary health acceptance workspace contains unexpected entries")
+  for (const entry of entries) fs.unlinkSync(path.join(workspace, entry.name))
+  fs.rmdirSync(workspace)
+}
+
 async function normalizeWorkingState(input: {
   workspace: string
   statePath: string
@@ -541,7 +549,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
     const cronFingerprintAfter = digestBytes(cronAfter)
     const cronRegisteredAfter = canonicalCron(cronAfter)
     const observedFixtureSequence = fixture?.observed ?? []
-    fs.rmSync(workspace, { recursive: true, force: false })
+    removeProbeWorkspace(workspace)
     const receipt: SanctuaryHealthAcceptanceProbeReceipt = {
       schemaVersion: "sanctuary-health-probe-receipt-v1",
       label: input.label,
@@ -582,7 +590,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
   } catch (error) {
     try { if (fixture?.server.listening) await closeServer(fixture.server) } catch { /* restoration remains authoritative */ }
     try { restoreState(statePath, snapshot) } catch { /* recovery checkpoint remains for the fixed recovery operation */ }
-    try { fs.rmSync(workspace, { recursive: true, force: false }) } catch { /* retain checkpoint for recovery */ }
+    try { removeProbeWorkspace(workspace) } catch { /* retain checkpoint for recovery */ }
     emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_health_acceptance_error", message: "Sanctuary health acceptance probe failed", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest, error: error instanceof Error ? error.message : String(error) } })
     throw error
   }
@@ -643,7 +651,7 @@ export async function recoverSanctuaryHealthAcceptanceProbe(
   }
   const snapshot = JSON.parse(fs.readFileSync(path.join(workspace, "snapshot.json"), "utf8")) as HealthSnapshot
   await withSanctuaryHealthStateLease(statePath, async () => restoreState(statePath, snapshot))
-  fs.rmSync(workspace, { recursive: true, force: false })
+  removeProbeWorkspace(workspace)
   if (fs.existsSync(pendingPath)) fs.unlinkSync(pendingPath)
   emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_recovered", message: "Sanctuary health acceptance probe state was restored", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest } })
   return { recovered: true }
