@@ -119,7 +119,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     await expect(dispatch({ operation: "recover_health_probe", ...coordinates }, dependencies)).resolves.toEqual({ recovered: true })
     expect(calls).toEqual([
       { operation: "start", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
-      { operation: "status", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
+      { operation: "status", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest } },
       { operation: "recover", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
     ])
   })
@@ -366,7 +366,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('const PRODUCTION_BUNDLE_SOURCE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
     expect(source).toContain("mount.source === expected.source")
     expect(source).toContain('"vault", "status", "--agent", "sanctuary"')
-    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(1)
+    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(2)
     expect(source).toContain('const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"')
     expect(source).toContain('chownSync(socket, 0, 10001)')
     expect(source).toContain('chmodSync(socket, 0o660)')
