@@ -99,6 +99,18 @@ describe("Sanctuary live scenario capture", () => {
     }
   })
 
+  it.each([
+    "unit-16f-cron-fingerprint",
+    "unit-16g-health-transition",
+    "unit-16h-daily-digest",
+  ] as const)("rejects stopped and unhealthy independently injected owner snapshots for %s", (label) => {
+    const before = base()
+    const stopped = base(); stopped.healthProbe = healthProbe(label); stopped.container = { ...stopped.container!, running: false }
+    const unhealthy = base(); unhealthy.healthProbe = healthProbe(label); unhealthy.container = { ...unhealthy.container!, healthy: false }
+    expect(deriveSanctuaryScenarioAssertions(label, before, stopped, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions(label, before, unhealthy, 400_000)).toBeNull()
+  })
+
   it("keeps the opaque handle private while persisting and completing the bound receipt", async () => {
     const receipts = path.join(root, "receipts")
     const gate = path.join(root, "evidence", "current-scenario-gate.json")
