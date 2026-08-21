@@ -509,9 +509,9 @@ describe("Telegram approval runtime orchestration", () => {
   it("reconciles terminal tombstones, missing journals, and interrupted prompt deliveries", async () => {
     const runtime = makeRuntime()
     runtimeMocks.transport.listPendingDeliveries.mockReturnValue([
-      { approvalId: "terminal", terminal: { terminalText: "already terminal" } },
+      { approvalId: "terminal", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "already terminal" } },
       { approvalId: "missing" },
-      { approvalId: "missing-terminal", deliveryState: "delivery_indeterminate", terminal: { terminalText: "interrupted" } },
+      { approvalId: "missing-terminal", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "interrupted" } },
       { approvalId: "pending-prompt", deliveryState: "pending" },
       { approvalId: "indeterminate-prompt", deliveryState: "delivery_indeterminate" },
     ])
@@ -555,8 +555,8 @@ describe("Telegram approval runtime orchestration", () => {
   it("isolates every startup recovery record and surfaces one sanitized aggregate after processing later work", async () => {
     const runtime = makeRuntime()
     runtimeMocks.transport.listPendingDeliveries.mockReturnValue([
-      { approvalId: "first", terminal: { terminalText: "first terminal" } },
-      { approvalId: "second", terminal: { terminalText: "second terminal" } },
+      { approvalId: "first", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "first terminal" } },
+      { approvalId: "second", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "second terminal" } },
       { approvalId: "bound", deliveryState: "bound", messageId: "101" },
     ])
     runtimeMocks.store.read.mockImplementation((approvalId) => ({
@@ -614,6 +614,36 @@ describe("Telegram approval runtime orchestration", () => {
 
     expect(runtimeMocks.transport.terminalizeOrphaned).not.toHaveBeenCalled()
     expect(runtimeMocks.transport.recoverDecisionAttempt).not.toHaveBeenCalled()
+  })
+
+  it.each(["terminalMac", "settlementReceipt"] as const)("fails startup and preserves a partial %s authority record without a canonical journal", async (field) => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "partial-authority", deliveryState: "bound", messageId: "101",
+      terminal: { accepted: true, terminalText: "tampered" },
+      ...(field === "terminalMac" ? { terminalMac: "a".repeat(64) } : { settlementReceipt: { schemaVersion: "telegram-approval-settlement-receipt-v1" } }),
+    }])
+    runtimeMocks.store.read.mockReturnValue(undefined)
+
+    await expect(runtime.recover()).rejects.toThrow("fenced approval journal")
+
+    expect(runtimeMocks.transport.terminalizeOrphaned).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
+  })
+
+  it("routes a partial authority record with a journal through validating recovery and preserves it on rejection", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "partial-authority", deliveryState: "bound", messageId: "101",
+      terminal: { accepted: false, terminalText: "altered" }, terminalMac: "a".repeat(64),
+    }])
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, approvalId: "partial-authority", state: "succeeded" })
+    runtimeMocks.transport.recoverDecisionAttempt.mockRejectedValue(new Error("incomplete authority state"))
+
+    await expect(runtime.recover()).rejects.toThrow("incomplete authority state")
+
+    expect(runtimeMocks.transport.recoverDecisionAttempt).toHaveBeenCalledWith("partial-authority")
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
   })
 
   it.each(["succeeded", "denied"])("routes a persisted decision attempt through authenticated recovery even when the journal is already %s", async (state) => {

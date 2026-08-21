@@ -831,6 +831,7 @@ describe("Telegram approval callback transport", () => {
       denyCallbackData: "d:indeterminate",
       expiresAt: 999_999,
       terminal: { accepted: false, terminalText: "not executed" },
+      terminalKind: "delivery_interruption" as const,
     }
     const fixture = approvalFixture({ records: [record], onExpire })
 
@@ -840,7 +841,7 @@ describe("Telegram approval callback transport", () => {
     expect(fixture.records()).toEqual([])
   })
 
-  it("retries a terminal tombstone immediately without waiting for its original expiry", async () => {
+  it("preserves an untyped terminal record instead of retrying cleanup", async () => {
     const onExpire = vi.fn()
     const record = {
       approvalId: "terminal-now",
@@ -853,20 +854,11 @@ describe("Telegram approval callback transport", () => {
     }
     const fixture = approvalFixture({ records: [record], onExpire })
 
-    await fixture.transport.reconcileExpired()
+    await expect(fixture.transport.reconcileExpired()).rejects.toThrow("not a typed delivery interruption")
 
     expect(onExpire).not.toHaveBeenCalled()
-    expect(fixture.records()).toEqual([])
-    expect(fixture.calls.at(-1)).toEqual({
-      method: "editMessageText",
-      body: {
-        chat_id: "10",
-        message_id: 99,
-        text: "✅ Approved — action completed",
-        parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [] },
-      },
-    })
+    expect(fixture.records()).toEqual([record])
+    expect(fixture.calls).toEqual([])
   })
 
   it("atomically consumes concurrent duplicate callbacks before authority", async () => {
@@ -1032,7 +1024,7 @@ describe("Telegram approval callback transport", () => {
 
   it("covers terminal edit idempotence, plaintext fallback, and hard failures", async () => {
     const record = { approvalId: "a", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 999_999 }
-    const idempotent = approvalFixture({ records: [{ ...record, terminal: { accepted: false, terminalText: "done" } }], apiRequest: async () => { throw new TelegramApiError("message is not modified", { status: 400 }) } })
+    const idempotent = approvalFixture({ records: [record], apiRequest: async () => { throw new TelegramApiError("message is not modified", { status: 400 }) } })
     await expect(idempotent.transport.reconcileExpired()).resolves.toBeUndefined()
 
     let unchangedCalls = 0
@@ -1062,15 +1054,16 @@ describe("Telegram approval callback transport", () => {
     }
   })
 
-  it("requires a restored decision token and preserves refused terminal outcomes", async () => {
+  it("requires a restored decision token and rejects an unfenced terminal outcome", async () => {
     const record = { approvalId: "a", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }
     const missing = approvalFixture({ records: [record], resolveDecisionToken: async () => undefined })
     await expect(missing.transport.handleUpdate(approvalCallback("a:x"))).rejects.toThrow("decision token resolver")
     expect(missing.transport.listPendingDeliveries()).toHaveLength(1)
 
     const refused = approvalFixture({ records: [{ ...record, terminal: { accepted: false, terminalText: "refused" } }] })
-    await expect(refused.transport.handleUpdate(approvalCallback("a:x"))).resolves.toEqual({ handled: true, accepted: false, reason: "decision_refused" })
+    await expect(refused.transport.handleUpdate(approvalCallback("a:x"))).rejects.toThrow("authority-bearing terminal state is incomplete")
     expect(refused.onDecision).not.toHaveBeenCalled()
+    expect(refused.records()).toHaveLength(1)
   })
 
   it("terminalizes missing, null-message, and bound recovered approvals safely", async () => {
@@ -1079,8 +1072,54 @@ describe("Telegram approval callback transport", () => {
     const record = { approvalId: "a", messageId: null, deliveryState: "delivery_indeterminate" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 2_000_000 }
     const indeterminate = approvalFixture({ records: [record] })
     await indeterminate.transport.terminalizeRecovered("a", "done")
-    expect(indeterminate.transport.listPendingDeliveries()).toEqual([{ ...record, terminal: { accepted: false, terminalText: "done" } }])
+    expect(indeterminate.transport.listPendingDeliveries()).toEqual([{ ...record, terminal: { accepted: false, terminalText: "done" }, terminalKind: "delivery_interruption" }])
     expect(JSON.stringify(indeterminate.transport.listPendingDeliveries())).not.toContain("secret")
+  })
+
+  it.each([
+    { terminal: { accepted: false, terminalText: "altered acceptance" }, receipt: false },
+    { terminal: { accepted: true, terminalText: "altered text" }, receipt: true },
+  ])("fails closed and preserves a terminal authority record whose decision attempt was deleted", async ({ terminal, receipt }) => {
+    const record = {
+      approvalId: "partial", messageId: "99", deliveryState: "bound" as const,
+      approveCallbackData: "a:partial", denyCallbackData: "d:partial", expiresAt: 2_000_000,
+      terminal, terminalMac: "a".repeat(64),
+      ...(receipt ? { settlementReceipt: {
+        schemaVersion: "telegram-approval-settlement-receipt-v1" as const, kind: "recovery" as const,
+        callbackAt: 900, accepted: true, reason: "accepted" as const,
+        acknowledgementState: "indeterminate_after_restart" as const, recoveredAt: 1_000,
+        decisionAttemptDigest: "b".repeat(64), evidenceMac: "c".repeat(64),
+      } } : {}),
+    }
+    const fixture = approvalFixture({ records: [record] })
+
+    await expect(fixture.transport.terminalizeRecovered("partial", "canonical terminal"))
+      .rejects.toThrow("authority-bearing terminal state is incomplete")
+
+    expect(fixture.records()).toEqual([record])
+    expect(fixture.calls).toEqual([])
+    expect(fixture.onDecision).not.toHaveBeenCalled()
+
+    const expiryFixture = approvalFixture({ records: [{ ...record, expiresAt: 999_999 }] })
+    await expect(expiryFixture.transport.reconcileExpired())
+      .rejects.toThrow("authority-bearing terminal state is incomplete")
+    expect(expiryFixture.records()).toEqual([{ ...record, expiresAt: 999_999 }])
+    expect(expiryFixture.calls).toEqual([])
+  })
+
+  it("refuses to orphan-clean authority-bearing terminal state", async () => {
+    const record = {
+      approvalId: "partial", messageId: "99", deliveryState: "bound" as const,
+      approveCallbackData: "a:partial", denyCallbackData: "d:partial", expiresAt: 2_000_000,
+      terminal: { accepted: true, terminalText: "altered" }, terminalMac: "a".repeat(64),
+    }
+    const fixture = approvalFixture({ records: [record] })
+
+    await expect(fixture.transport.terminalizeOrphaned("partial", "missing journal"))
+      .rejects.toThrow("cannot be orphan-cleaned")
+
+    expect(fixture.records()).toEqual([record])
+    expect(fixture.calls).toEqual([])
   })
 
   it("removes an orphaned transport row without invoking canonical expiry", async () => {

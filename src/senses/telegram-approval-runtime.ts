@@ -369,10 +369,20 @@ export function createTelegramApprovalRuntime(options: {
     let failureCount = 0
     let fencedFailure: unknown
     for (const pending of transport.listPendingDeliveries()) {
+      const hasAuthorityBearingTerminalState = pending.decisionAttempt !== undefined
+        || pending.terminalMac !== undefined
+        || pending.settlementReceipt !== undefined
+      const isTypedDeliveryInterruption = pending.terminalKind === "delivery_interruption"
+        && pending.deliveryState === "delivery_indeterminate"
+        && pending.messageId === null
+        && pending.terminal?.accepted === false
+      const mustFailClosed = hasAuthorityBearingTerminalState || Boolean(pending.terminal && !isTypedDeliveryInterruption)
       try {
         const existing = store.read(pending.approvalId)
         if (!existing) {
-          if (pending.decisionAttempt) throw new Error("Telegram fenced approval journal is unavailable")
+          if (hasAuthorityBearingTerminalState || (pending.terminal && !isTypedDeliveryInterruption)) {
+            throw new Error("Telegram fenced approval journal is unavailable")
+          }
           const orphanRecovery = await transport.terminalizeOrphaned(
             pending.approvalId,
             "⚠️ Approval record is unavailable — no action was taken",
@@ -389,11 +399,12 @@ export function createTelegramApprovalRuntime(options: {
           })
           continue
         }
-        if (pending.decisionAttempt) {
+        if (hasAuthorityBearingTerminalState) {
           await transport.recoverDecisionAttempt(pending.approvalId)
           continue
         }
         if (pending.terminal) {
+          if (!isTypedDeliveryInterruption) throw new Error("Telegram persisted terminal state is not a typed delivery interruption")
           await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
           continue
         }
@@ -433,7 +444,7 @@ export function createTelegramApprovalRuntime(options: {
         await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
       } catch (error) {
         failureCount += 1
-        if (pending.decisionAttempt) fencedFailure ??= error
+        if (mustFailClosed) fencedFailure ??= error
       }
     }
     if (failureCount > 0) {
