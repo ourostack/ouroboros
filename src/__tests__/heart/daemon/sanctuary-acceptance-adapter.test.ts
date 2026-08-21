@@ -96,12 +96,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const callbackUpdates: Array<Record<string, unknown>> = []
     const hostRequests: Array<Record<string, unknown>> = []
     let currentLabel = "unit-16l-duplicate-callback"
+    let continuation: null | { continuationState: "completed"; continuationEpoch: number } = null
     const driver = createSanctuaryInteractiveAcceptanceScenarioDriver({
       agentRoot: root,
-      readApprovals: () => [{ approval: approvalRecord as never, continuation: null }],
+      readApprovals: () => [{ approval: approvalRecord as never, continuation: continuation as never }],
       readPending: () => pending,
       credentials: () => ({ botToken: "unused", authorizedUserId: "123", authorizedChatId: "123" }),
-      callbackProbe: async (update) => { callbackUpdates.push(update); return { settled: true, claimed: callbackUpdates.length === 1, mutated: callbackUpdates.length === 1 } },
+      callbackProbe: async (update) => { callbackUpdates.push(update); if (currentLabel === "unit-16m-restart-continuation") continuation = { continuationState: "completed", continuationEpoch: 1 }; return { settled: true, claimed: callbackUpdates.length === 1, mutated: callbackUpdates.length === 1 } },
       hostRequest: async (payload) => {
         hostRequests.push(payload)
         return { restarted: true, beforeContainerDigest: "1".repeat(64), afterContainerDigest: "2".repeat(64), restartCountBefore: 7, restartCountAfter: 8 }
@@ -112,6 +113,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expect(callbackUpdates).toHaveLength(2)
       expect(callbackUpdates[0]).toEqual(callbackUpdates[1])
       expect(callbackUpdates[0]).toMatchObject({ callback_query: { from: { id: 123 }, data: "a:opaque", message: { message_id: 42, chat: { id: 123 } } } })
+      driver.complete(currentLabel as never, scenarioHandleDigest)
 
       callbackUpdates.length = 0
       currentLabel = "unit-16m-restart-continuation"
