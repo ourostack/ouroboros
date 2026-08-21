@@ -52,7 +52,7 @@
     "health-probe-status": { "operation": "health_probe_status", "authority": "fixed-fast-running-state-or-full-owner-reobservation-and-final-attestation", "modelReachable": false, "timeoutMs": 170000, "response": "{state:running|failed|recovery_required|absent}|{state:complete,containerSnapshot}" },
     "health-probe-recovery": { "operation": "recover_health_probe", "authority": "fixed-fast-owner-bound-health-snapshot-restore", "modelReachable": false, "timeoutMs": 90000, "response": "{recovered:boolean}" },
     "interactive-duplicate-driver": { "operation": "drive_duplicate_callbacks", "authority": "fixed-operator-only-production-runtime-duplicate-callback-drive", "modelReachable": false, "timeoutMs": 170000, "request": "{targetId,label,scenarioHandleDigest}", "response": "sanctuary-interactive-driver-receipt-v2" },
-    "interactive-restart-driver": { "operation": "drive_restart_continuation", "authority": "fixed-operator-only-two-phase-production-owner-restart-and-reconciliation", "modelReachable": false, "timeoutMs": 240000, "request": "{targetId,label,scenarioHandleDigest}", "response": "sanctuary-interactive-driver-receipt-v2" }
+    "interactive-restart-driver": { "operation": "drive_restart_continuation", "authority": "fixed-operator-only-asynchronous-two-phase-production-owner-restart-and-reconciliation", "modelReachable": false, "timeoutMs": 240000, "request": "{targetId,label,scenarioHandleDigest}", "response": "{state:waiting}|{state:complete,receipt:sanctuary-interactive-driver-receipt-v2}|{state:failed,errorDigest}" }
   },
   "scenarioSources": {
     "identity-key": { "kind": "fixed-file", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key", "redaction": "sha256-only" },
