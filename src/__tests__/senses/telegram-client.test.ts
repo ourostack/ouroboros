@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { inspect } from "node:util"
-import { createHash } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 
 import {
   TelegramApiError,
@@ -497,6 +497,26 @@ describe("Telegram approval callback transport", () => {
     expect(records).toHaveLength(1)
   })
 
+  it.each(["reconcile", "callback"] as const)("rolls back a transient terminal tombstone commit during expired %s", async (driver) => {
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
+    }]
+    let failed = false
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => {
+        if (!failed && next[0]?.deliveryState === "terminal_tombstone") { failed = true; throw new Error("transient tombstone save") }
+        records = structuredClone(next)
+      } }, createOpaqueHandle: vi.fn(), onDecision: vi.fn(), onExpire: vi.fn(), now: () => 1_000, signAcceptanceEvidence: () => "f".repeat(64),
+    } as never)
+    const drive = () => driver === "reconcile" ? transport.reconcileExpired() : transport.handleUpdate(approvalCallback("a:approve"))
+    await expect(drive()).rejects.toThrow("transient tombstone save")
+    expect(records[0]).toMatchObject({ deliveryState: "bound", expiryObservation: expect.objectContaining({ observedAt: 1_000 }) })
+    await drive()
+    expect(records[0]).toMatchObject({ deliveryState: "terminal_tombstone", tombstoneMac: "f".repeat(64) })
+  })
+
   it("durably retires an unclaimed terminal tombstone at its bounded deadline", async () => {
     let clock = 2_000_000
     const saves: unknown[] = []
@@ -567,6 +587,73 @@ describe("Telegram approval callback transport", () => {
     })
     await restarted.handleUpdate(approvalCallback("a:approve", { id: "decision-query" }))
     expect(order.slice(0, 2)).toEqual(["claim", "ack"])
+  })
+
+  it("lets an authenticated pre-deadline decision attempt resume after wall-clock expiry", async () => {
+    let clock = 999
+    let durable: ReturnType<TelegramPendingApprovalStore["load"]> = [{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000 }]
+    const onDecision = vi.fn()
+      .mockRejectedValueOnce(new Error("crash before claim"))
+      .mockResolvedValueOnce({ accepted: true, terminalText: "done" })
+    const onExpire = vi.fn()
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(durable), save: (next) => { durable = structuredClone(next) } }, createOpaqueHandle: vi.fn(),
+      onDecision, onExpire, resolveDecisionToken: async () => "token", now: () => clock,
+    })
+    await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "decision-query" }))).rejects.toThrow("crash before claim")
+    clock = 1_001
+    await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "decision-query" }))).resolves.toMatchObject({ accepted: true })
+    expect(onExpire).not.toHaveBeenCalled()
+  })
+
+  it("rejects valid-shaped decision-attempt tamper against its token MAC and approval binding", async () => {
+    const decisionToken = "decision-token"
+    const acceptanceBinding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const payload = { approvalId: "approval-1", messageId: "99", expiresAt: 1_000, approveCallbackData: "a:approve", denyCallbackData: "d:deny", acceptanceBinding,
+      schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve", queryIdDigest: createHash("sha256").update("decision-query").digest("hex"), attemptedAt: 900 }
+    const evidenceMac = createHmac("sha256", decisionToken).update(JSON.stringify(payload)).digest("hex")
+    const api = { stop: vi.fn(), request: vi.fn(async () => true) }
+    const onDecision = vi.fn()
+    const transport = createTelegramApprovalTransport({
+      api, expectedUserId: "10", expectedChatId: "10", pendingStore: { load: () => [{
+        approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000, acceptanceBinding,
+        decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve", queryIdDigest: payload.queryIdDigest, attemptedAt: 901, evidenceMac },
+      }] as never, save: vi.fn() }, createOpaqueHandle: vi.fn(), onDecision, resolveDecisionToken: async () => decisionToken, now: () => 901,
+    } as never)
+    await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "decision-query" }))).rejects.toThrow("decision attempt")
+    expect(api.request).not.toHaveBeenCalled()
+    expect(onDecision).not.toHaveBeenCalled()
+  })
+
+  it("recovers a poll-quarantined decision attempt at startup without Telegram redispatch", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "telegram-decision-recovery-")); tempDirectories.push(directory)
+    const pendingStore = new FileTelegramPendingApprovalStore(join(directory, "pending.json"))
+    pendingStore.save([{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 10_000 }])
+    const offsetStore = new FileTelegramOffsetStore(join(directory, "offset.json"))
+    const inboxStore = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    const update = approvalCallback("a:approve", { id: "decision-query" })
+    const firstTransport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10", pendingStore, createOpaqueHandle: vi.fn(),
+      onDecision: vi.fn(async () => { throw new Error("crash after poll offset commit") }), resolveDecisionToken: async () => "token", now: () => 1_000,
+    })
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async (method: string) => method === "getUpdates" ? [update] : true) }, expectedUserId: "10", expectedChatId: "10",
+      offsetStore, inboxStore, onMessage: vi.fn(), onUpdate: async (input) => (await firstTransport.handleUpdate(input)).handled,
+    })
+    await expect(poll.pollOnce()).rejects.toThrow("crash after poll offset commit")
+    expect(offsetStore.load()).toBe(2)
+    expect(inboxStore.loadIndeterminate()).toHaveLength(1)
+    expect(pendingStore.load()[0]).toMatchObject({ decisionAttempt: expect.objectContaining({ attemptedAt: 1_000 }) })
+
+    const onDecision = vi.fn(async () => ({ accepted: true, terminalText: "done" }))
+    const restarted = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10", pendingStore, createOpaqueHandle: vi.fn(),
+      onDecision, resolveDecisionToken: async () => "token", now: () => 2_000,
+    }) as ReturnType<typeof createTelegramApprovalTransport> & { recoverDecisionAttempt(approvalId: string): Promise<boolean> }
+    await expect(restarted.recoverDecisionAttempt("approval-1")).resolves.toBe(true)
+    expect(onDecision).toHaveBeenCalledOnce()
+    expect(pendingStore.load()).toEqual([])
   })
 
   it("acknowledges, decides once, terminalizes, removes buttons, and refuses replay", async () => {
