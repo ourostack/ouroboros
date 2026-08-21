@@ -657,7 +657,7 @@ describe("Sanctuary acceptance harness", () => {
       schemaVersion: 1,
       harnessExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
       adapterExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
-      adapterTimeoutMs: 120_000,
+      adapterTimeoutMs: 180_000,
       telegramTimeoutMs: 10_000,
     })
     expect(Object.keys(contract.commands).sort()).toEqual([
@@ -673,8 +673,8 @@ describe("Sanctuary acceptance harness", () => {
       "health-probe-status": expect.objectContaining({ operation: "health_probe_status", modelReachable: false }),
       "health-probe-recovery": expect.objectContaining({ operation: "recover_health_probe", modelReachable: false }),
     }))
-    expect(contract.adapters["health-probe-start"].timeoutMs).toBe(110_000)
-    expect(contract.adapters["health-probe-status"].timeoutMs).toBe(110_000)
+    expect(contract.adapters["health-probe-start"].timeoutMs).toBe(170_000)
+    expect(contract.adapters["health-probe-status"].timeoutMs).toBe(170_000)
     expect(contract.adapters["health-probe-recovery"].timeoutMs).toBe(90_000)
     expect(contract.adapters["health-probe-recovery"].timeoutMs).toBeLessThan(contract.adapterTimeoutMs)
     expect(contract.scenarioSources).toEqual(expect.objectContaining({

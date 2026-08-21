@@ -28,6 +28,8 @@ interface BrokerModule {
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
   healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
   healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
+  healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number }
+  requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>): void
   requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
   terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
   recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
@@ -58,6 +60,8 @@ async function broker(): Promise<BrokerModule> {
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
     healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
     healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
+    healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number }
+    requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>): void
     requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
     terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
     recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
@@ -150,6 +154,38 @@ describe("Sanctuary Unit 16 host broker", () => {
       recoverHealthProbe: (input) => { calls.push(`recover:${input.ownerImageDigest}`); return { recovered: true } },
     })).resolves.toEqual({ recovered: true })
     expect(calls).toEqual(["owner", `recover:${"b".repeat(64)}`])
+  })
+
+  it("keeps declared socket deadlines above bounded blocked-operation maxima", async () => {
+    const { healthProbeOperationBudgets } = await broker()
+    const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as any
+    const budgets = healthProbeOperationBudgets()
+    expect(budgets).toEqual({ startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000 })
+    expect(contract.adapters["health-probe-start"].timeoutMs).toBeGreaterThan(budgets.startMaxMs)
+    expect(contract.adapters["health-probe-status"].timeoutMs).toBeGreaterThan(budgets.completeStatusMaxMs)
+    expect(contract.adapters["health-probe-recovery"].timeoutMs).toBeGreaterThan(budgets.recoveryMaxMs)
+    expect(contract.adapterTimeoutMs).toBeGreaterThan(contract.adapters["health-probe-status"].timeoutMs)
+  })
+
+  it.each([
+    ["image drift", { imageId: `sha256:${"d".repeat(64)}` }],
+    ["container drift", { containerId: "d".repeat(64) }],
+    ["stopped owner", { running: false }],
+    ["unhealthy owner", { health: "unhealthy" }],
+  ])("rejects complete retry attestation with %s", async (_case, mutation) => {
+    const { requireHealthProbeCompleteAttestation } = await broker()
+    const request = { label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }
+    const receipt = {
+      schemaVersion: "sanctuary-health-probe-receipt-v1", label: request.label, scenarioHandleDigest: request.scenarioHandleDigest,
+      ownerImageDigestBefore: "b".repeat(64), ownerImageDigestAfter: "b".repeat(64), ownerContainerDigestBefore: "c".repeat(64), ownerContainerDigestAfter: "c".repeat(64),
+      beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
+      cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
+      clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+    }
+    const snapshot = { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy", ...mutation }
+    expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request)).toThrow(/complete attestation/u)
+    expect(() => requireHealthProbeCompleteAttestation(receipt, { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }, request)).not.toThrow()
   })
 
   it("constructs an exact argv-only packaged probe invocation", async () => {
