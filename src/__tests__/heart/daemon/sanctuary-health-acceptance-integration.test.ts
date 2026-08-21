@@ -28,6 +28,7 @@ describe("Sanctuary health acceptance integration", () => {
     const scenarioHandleDigest = "a".repeat(64)
     const healthPath = path.join(agentRoot, "state", "health", "sanctuary-health.json")
     const approvalPath = path.join(agentRoot, "state", "approvals", "approvals.sqlite")
+    fs.mkdirSync(path.dirname(healthPath), { recursive: true })
     fs.mkdirSync(path.dirname(approvalPath), { recursive: true })
     openApprovalStore({ databasePath: approvalPath }).close()
     try {
