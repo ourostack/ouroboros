@@ -19,6 +19,7 @@ import {
   executeSanctuaryAcceptanceRevokedProbe,
   executeSanctuaryAcceptanceVaultProbe,
   proveAttemptedRecoveryWithoutRetry,
+  probeSanctuaryReadOnlyMutationDenial,
   readDefaultSanctuaryScenarioFacts,
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
@@ -107,6 +108,77 @@ function validInteractiveReceipt(label: "unit-16k-timeout-stale" | "unit-16l-dup
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it.each([
+    ["unit-16e-1-stop-denial", "mutation AcceptanceStopDenial"],
+    ["unit-16e-2-restart-denial", "mutation AcceptanceWriteProbe"],
+  ] as const)("targets only exact calibre-web for %s read-only denial probes", async (label, mutationName) => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { docker: { containers: [
+        { id: "Docker:ouro-butler", names: ["/ouro-butler"], state: "started", status: "Up" },
+        { id: "Docker:calibre-web-shadow", names: ["/calibre-web-shadow"], state: "started", status: "Up" },
+        { id: "Docker:calibre-web", names: ["/calibre-web"], state: "started", status: "Up" },
+      ] } } }))
+      .mockResolvedValueOnce(jsonResponse({ data: null, errors: [{ extensions: { code: "FORBIDDEN" } }] }, 403))
+      .mockResolvedValueOnce(jsonResponse({ data: { docker: { containers: [
+        { id: "Docker:ouro-butler", names: ["/ouro-butler"], state: "started", status: "Up" },
+        { id: "Docker:calibre-web-shadow", names: ["/calibre-web-shadow"], state: "started", status: "Up" },
+        { id: "Docker:calibre-web", names: ["/calibre-web"], state: "started", status: "Up" },
+      ] } } }))
+
+    await expect(probeSanctuaryReadOnlyMutationDenial(
+      label,
+      new URL("http://127.0.0.1:2378/graphql"),
+      "read-only-key",
+      fetchImpl,
+    )).resolves.toMatchObject({ denied: true, operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart", probeCompleted: true })
+
+    const mutation = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)) as { query: string; variables: { id: string } }
+    expect(mutation.query).toContain(mutationName)
+    expect(mutation.variables).toEqual({ id: "Docker:calibre-web" })
+    expect(JSON.stringify(fetchImpl.mock.calls)).not.toContain("Docker:ouro-butler\"}")
+  })
+
+  it("captures exact redacted Unit-16e containment evidence from packaged profiles, host inventory, audit, and container policy", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-containment-audit-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const telegramTools = ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"]
+    const privateTools = ["send_message", "rest"]
+    const audit = [
+      { ts: "2026-08-20T16:00:00.000Z", event: "senses.telegram_turn_start", meta: { scenarioHandleDigest } },
+      { ts: "2026-08-20T16:00:01.000Z", event: "senses.telegram_turn_end", meta: { scenarioHandleDigest, deliveryCount: 1 } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n"
+    const files: Record<string, string> = {
+      "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson": audit,
+      "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 1, profiles: { "sanctuary-telegram": telegramTools, "sanctuary-health-private": privateTools } }),
+    }
+    const hostRequest = vi.fn(async (payload: Record<string, unknown>) => payload.operation === "inventory_keys" ? { keys: [
+      { id: "ro-private-id", name: "Butler RO", permissions: READ_PERMISSIONS, roles: [] },
+      { id: "rw-private-id", name: "Butler RW", permissions: [...READ_PERMISSIONS, { resource: "DOCKER", actions: ["UPDATE_ANY"] }], roles: [] },
+    ] } : validOwnerSnapshot())
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", scenarioHandleDigest, unit16Deps({
+        readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+        hostRequest,
+      }), agentRoot)
+      expect(hostRequest).toHaveBeenCalledWith({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" })
+      expect(facts.containment).toMatchObject({
+        schemaVersion: "sanctuary-containment-audit-v1",
+        keyCount: 2, keyRoleAssignmentCount: 0,
+        telegramToolCount: 10, privateToolCount: 2, resolvedHandlerCount: 12,
+        excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0,
+        auditRecordCount: 2, auditLifecyclePairCount: 1,
+        containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host",
+        readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
+        rawWriteCredentialFieldCount: 0, typedWriteExecutorCount: 1, sensitiveMaterialObserved: false,
+      })
+      for (const field of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramSchemaDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"] as const) {
+        expect(facts.containment?.[field]).toMatch(/^[0-9a-f]{64}$/u)
+      }
+      expect(facts.sourceValues["containment-audit"]).toEqual(facts.containment)
+      expect(JSON.stringify(facts.sourceValues["containment-audit"])).not.toMatch(/ro-private-id|rw-private-id|read-only-key/u)
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
   it("delegates exact current duplicate and restart-continuation proposals to the production-owner broker", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-interactive-driver-"))
     const scenarioHandleDigest = "a".repeat(64)
